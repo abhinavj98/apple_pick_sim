@@ -18,7 +18,7 @@ git submodule update --init --recursive
 ```
 
 ### 2. Install Newton
-Follow the quickstart instructions in the [Newton README]([newton/README.md](https://github.com/newton-physics/newton/blob/main/README.md)) to set up the environment and install dependencies.
+Follow the quickstart instructions in the [Newton README](https://github.com/newton-physics/newton/blob/main/README.md) to set up the environment and install dependencies.
 
 
 #### Example Setup using `uv` (Recommended)

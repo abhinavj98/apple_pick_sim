@@ -28,6 +28,7 @@ Navigate to the `newton` directory and creating a virtual environment:
 cd newton && uv sync --extra examples && cd ..
 ```
 
+
 ## Running the Simulation
 
 To run the `example_apple_stem.py` simulation, execute the following command from the root of this repository:

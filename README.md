@@ -25,8 +25,7 @@ Follow the quickstart instructions in the [Newton README](https://github.com/new
 Navigate to the `newton` directory and creating a virtual environment:
 
 ```bash
-cd newton
-uv sync
+cd newton && uv sync --extra examples && cd ..
 ```
 
 ## Running the Simulation
@@ -37,4 +36,6 @@ To run the `example_apple_stem.py` simulation, execute the following command fro
 uv run --directory newton python ../apple_pick_sim/example_apple_stem.py
 ```
 
-This command runs the script using the environment configured in the `newton` directory.
+This command runs apple simulation with 3 different branch stiffnesses. The terminal prints the forces and torques experienced by the stem
+
+To apply forces on the apple, use your right click and drag on the apple.

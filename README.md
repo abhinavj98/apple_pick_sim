@@ -18,11 +18,10 @@ git submodule update --init --recursive
 ```
 
 ### 2. Install Newton
-Follow the quickstart instructions in the [Newton README](https://github.com/newton-physics/newton/blob/main/README.md) to set up the environment and install dependencies.
 
 
-#### Example Setup using `uv` (Recommended)
-Navigate to the `newton` directory and creating a virtual environment:
+#### Setup using `uv` (Recommended)
+Navigate to the `newton` directory and create a virtual environment:
 
 ```bash
 cd newton && uv sync --extra examples && cd ..

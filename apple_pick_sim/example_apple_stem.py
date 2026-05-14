@@ -1,4 +1,7 @@
 import math
+import os
+import sys
+
 import numpy as np
 import warp as wp
 
@@ -573,6 +576,13 @@ class ExampleAppleStem:
 
 
 if __name__ == "__main__":
+    # Default Newton viewer is OpenGL; that crashes without a display (SSH, CI, many servers).
+    # If the user did not pick a viewer and this looks like a headless Linux session, use null.
+    if "--viewer" not in sys.argv and sys.platform.startswith("linux"):
+        if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+            sys.argv.extend(["--viewer", "null", "--num-frames", "2000"])
+            print("No DISPLAY/WAYLAND_DISPLAY: using --viewer null --num-frames 2000 (override with --viewer gl).")
+
     viewer, args = newton.examples.init()
     example = ExampleAppleStem(viewer, args)
     #Warmup to let the system settle
@@ -581,6 +591,6 @@ if __name__ == "__main__":
         example.step(warmup = True)
 
     print("Starting simulation...")
-    while True:
+    while viewer.is_running():
         example.step()
         example.render()

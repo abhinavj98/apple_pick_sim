@@ -1,0 +1,29 @@
+---
+description: Repo layout, Newton submodule, and how to run apple pick simulations
+alwaysApply: true
+---
+
+# Apple Pick Sim — project context
+
+## What this repo is
+
+- **Purpose**: Robotic apple-picking simulation built on the [Newton](https://github.com/newton-physics/newton) physics engine.
+- **Layout**:
+  - `newton/` — git **submodule** (upstream Newton). Treat as vendored: avoid drive-by edits unless the task is explicitly to patch Newton or sync with upstream.
+  - `apple_pick_sim/` — project-local simulation scripts (e.g. `example_apple_stem.py`). Prefer new simulation logic here.
+
+## Environment and runs
+
+- Install/sync Newton deps from the submodule root, e.g. `cd newton && uv sync --extra examples`.
+- Example run from the **repository root** (matches README):
+
+```bash
+uv run --directory newton python ../apple_pick_sim/example_apple_stem.py
+```
+
+- If clones are missing Newton: `git submodule update --init --recursive`.
+
+## Agent behavior
+
+- Match existing Newton APIs and patterns when scripting against `newton`; do not invent APIs that are not used elsewhere in examples or tests under `newton/newton/`.
+- Keep diffs focused: simulation-specific behavior belongs in `apple_pick_sim/` unless a Newton change is required and justified.

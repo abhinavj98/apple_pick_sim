@@ -1,0 +1,31 @@
+---
+description: Enforce test-driven development (tests first, then code)
+alwaysApply: true
+---
+
+# Test-Driven Development (TDD)
+
+**Always perform TDD; this takes priority over rushing implementation.**
+
+## Workflow
+
+- **Tests first**: when implementing a feature or fixing a bug, write or adjust tests before changing production code.
+- **Accuracy over coverage**: assert correct behavior (inputs/outputs, edge cases, error paths), not merely executing lines.
+- **Red → Green → Refactor**:
+  - Add or identify a failing test that shows the gap or bug (confirm it fails for the expected reason).
+  - Implement the smallest change that makes the test pass.
+  - Refactor while keeping tests green.
+
+## Quality bar
+
+- **Run tests locally** after substantive changes; do not leave the worktree knowingly red.
+- **Prefer deterministic tests**: avoid timing, unseeded randomness, network, and external services unless the harness explicitly controls them.
+- **Keep tests maintainable**: clear names, minimal mocking, and assertions on externally visible behavior.
+
+## Example (bug fix)
+
+```text
+1. Reproduce in a test → failing (red)
+2. Fix production code → passing (green)
+3. Clean up duplication / names → still passing (refactor)
+```

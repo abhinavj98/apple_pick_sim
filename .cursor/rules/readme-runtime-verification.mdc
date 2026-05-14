@@ -1,0 +1,31 @@
+---
+description: Keep README accurate; run documented runtime commands before finalizing
+alwaysApply: true
+---
+
+# README and runtime command verification
+
+Documentation and runnable commands must match each other. Follow **`uv`** conventions from `.cursor/rules/uv-package-manager.mdc`.
+
+## When to update `README.md`
+
+Update **`README.md`** whenever you change how people install, sync, run, or test the project (paths, extras, script names, env vars, submodule steps). If **`docs/ROADMAP.md`** lists the same canonical commands under **Agent execution notes**, keep those blocks in sync too.
+
+## Before finalizing a change set
+
+1. **Identify affected commands** — every install, sync, run, or test command you added, edited, or that could be broken by the change (including examples in chat if you are pasting them as “the” way to run).
+2. **Execute them** from the paths the docs assume (usually **repository root** unless the README says otherwise). Use **`uv run …`** / `uv sync` as documented.
+3. **Require success** — commands must complete **without error** (non-zero exit, tracebacks, or missing-module failures). If a command fails, **fix the code or the docs**; do not leave broken instructions as the final state.
+4. **Optional smoke** — If the README documents a long-running or interactive simulation, at least run a **minimal non-interactive** check when possible (e.g. import check, `--help`, or the shortest test path you added); if that is impossible in the environment, say so explicitly in the PR/summary instead of assuming success.
+
+## Anti-patterns
+
+```markdown
+<!-- ❌ BAD — never ship untested copy-paste instructions -->
+Run: `python apple_pick_sim/foo.py`
+
+<!-- ✅ GOOD — matches tested uv usage and repo layout -->
+uv run --directory newton python ../apple_pick_sim/foo.py
+```
+
+Do not mark work “done” while documented primary paths still fail locally.

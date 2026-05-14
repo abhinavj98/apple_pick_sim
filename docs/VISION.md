@@ -1,0 +1,95 @@
+# Project vision
+
+## Document status
+
+| Field | Value |
+|--------|--------|
+| **Last reviewed** | 2026-05-13 |
+| **Owner** | Abhinav |
+| **Related** | `./ROADMAP.md` |
+
+**How to use this file:** keep it short (about one to three screens). Detailed sequencing lives in `docs/ROADMAP.md`. Update **Last reviewed** when scope, success criteria, or non-goals change.
+
+**For agents:** this file is the source of truth for intent, boundaries, and success criteria. If details are missing, infer from `ROADMAP.md` and code; do not contradict this document without maintainer input. When unsure, follow **Ambiguity defaults** at the bottom.
+
+## One-line mission
+
+Build an apple-picking simulator whose parameters are grounded in and refined against real-world data, to improve sim-to-real transfer for manipulation of compliant plant tissue and fruit.
+
+## Problem statement
+
+- **Context:** Highly stiff contact and articulated plant models were historically unstable in simulation. The Newton physics engine’s AVBD-style formulation enables stable simulation of stiff, coupled systems relevant to trees, stems, and fruit.
+- **Pain:** Matching contact forces, dynamics, and compliance for sim-to-real transfer remains difficult without data and a clear calibration loop.
+- **Opportunity:** Combine rich simulation (Newton), policy learning, and real trajectories so the simulator becomes a testbed for deformable and articulated manipulation under procedural scene variation.
+
+## Target outcomes (vision-level)
+
+1. **Visual and structural variance:** Read properties of the fruiting system from configuration or data files, then procedurally vary geometry and layout so policies and estimators see diverse but plausible canopies and fruit.
+2. **Manipulation stack:** Use Newton with appropriate solvers for plant and fruit physics, and integrate MuJoCo-based control and contact where needed for a Franka FR3 arm interacting with the scene.
+3. **Learning infrastructure:** Build reinforcement-learning tooling so a policy can be trained in simulation; exploration and reward design should support objectives such as maximizing Fisher information (informative trajectories for identification and downstream transfer).
+4. **Real-world data:** Collect trajectories with the same (or closely matched) policy and sensing assumptions used in simulation, so datasets align across the sim–real gap.
+5. **Calibration loop:** Use real-world observations together with gradients or sensitivity information from the Newton-based simulator to update physical and scene parameters, tightening agreement where it matters for manipulation.
+6. **Manipulation Policy:** Then learn a final apple-picking policy via RL in this fine-tuned simulation
+
+## Success criteria (measurable where possible)
+
+| Criterion | How we know | Notes |
+|-----------|-------------|--------|
+| Procedural fruiting variance | Automated script or test asserts distinct geometry or labels across seeds; runs in CI or locally | Same generator API, different seeds → different valid scenes |
+| Simulated pick / interaction | Regression test or recorded metric on a canonical scenario (e.g. stem load, slip, or task success) | Golden scenarios may start simple and grow with milestones |
+| Policy and data alignment | Documented policy interface; real logs can be ingested next to sim rollouts without ad hoc rewrites | Formats and observation spaces stay versioned |
+| Parameter updates improve fit | Quantitative comparison (e.g. force, pose, or event error) drops on a held-out real segment after calibration | Exact metric chosen in roadmap; may evolve |
+
+## In scope
+
+- Newton-based dynamics for plant and fruit where the project already relies on Newton; project-local orchestration and scenarios under `apple_pick_sim/`.
+- Procedural or data-driven variation of fruiting-system assets from structured inputs.
+- Integration paths for arm simulation and control (e.g. MuJoCo + Franka FR3) that match documented milestones.
+- RL training harnesses, logging, and evaluation hooks tied to the simulator.
+- Real-data collection protocols and file formats that pair with simulation and calibration.
+
+## Out of scope (non-goals)
+
+Explicit boundaries so work does not expand by default.
+
+- Production deployment, certification, or safety case for physical robots (research and simulation first).
+- Full-farm logistics, economics, or long-horizon fleet scheduling.
+- Replacing Newton as the primary tree and fruit dynamics backend unless a milestone explicitly migrates physics.
+- Open-ended “any manipulator / any crop” generalization without a scoped milestone.
+
+## Constraints and assumptions
+
+- **Technical:** The `newton/` submodule remains the vendored physics engine; prefer new simulation logic in `apple_pick_sim/`. Python environment and runs follow project `uv` conventions (see `README.md` and `.cursor/rules/`).
+- **Dependencies:** Upstream Newton APIs and licenses apply; do not assume unavailable proprietary assets unless provided.
+- **Performance / quality:** Tests and CI-facing paths should be deterministic where practical (seeded randomness, no undeclared network dependencies). Real-time visualization is desirable but not a substitute for reproducible metrics.
+
+## Guiding principles (architecture and process)
+
+- Prefer **deterministic** simulations and tests unless a document explicitly opts into nondeterminism.
+- Keep **simulation-specific** code and scenarios under `apple_pick_sim/`; avoid drive-by edits in `newton/` unless the task is to patch or sync the submodule.
+- Use **test-driven development**: failing test first, smallest change to green, then refactor.
+- Prefer **small, reversible** changes over speculative frameworks.
+- When vision, roadmap, and code disagree, **surface the conflict** to the maintainer instead of silently rewriting intent.
+
+## Key terms (glossary)
+
+| Term | Definition |
+|------|------------|
+| **Newton** | The physics engine used as a submodule (`newton/`) for this project’s dynamics. |
+| **AVBD** | A solver / formulation class in Newton suited to stiff multibody and contact-heavy models; referenced when discussing stable stiff simulation. |
+| **Fruiting system** | The branch, stem, leaf, and fruit arrangement treated as one configurable scene or asset family. |
+| **Sim-to-real** | Closing the gap between simulated and physical behavior (forces, timing, contacts, sensing). |
+| **Fisher information** | In this vision, a quantitative notion of how informative trajectories are for estimating parameters or reducing uncertainty; used to shape learning objectives, not as a one-line substitute for task success. |
+
+## For agents: ambiguity defaults
+
+When this document and the codebase disagree, **stop and surface the conflict** in your summary (do not silently “fix” the vision).
+
+If something is unspecified:
+
+1. Prefer **tests and existing patterns** in this repository over inventing new conventions.
+2. Prefer **small, reversible changes** over large speculative frameworks.
+3. Prefer **project-local code** (`apple_pick_sim/`) over edits to vendored submodules unless the task explicitly requires upstream changes.
+4. Follow **`.cursor/rules/`** and **TDD** (tests first) for implementation work.
+
+**Next doc to read:** `docs/ROADMAP.md` for phased work and current focus.

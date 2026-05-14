@@ -18,6 +18,8 @@ If you have already cloned the repository without the recursive flag, you can in
 git submodule update --init --recursive
 ```
 
+The Newton submodule is cloned from [abhinavj98/newton](https://github.com/abhinavj98/newton) (this repo’s fork of upstream Newton). Inside `newton/`, `origin` is that fork and `upstream` is [newton-physics/newton](https://github.com/newton-physics/newton); use `git fetch upstream` there when you want changes from the official project.
+
 ### 2. Install Newton
 
 From the repository root, sync the Newton submodule’s environment (examples extra matches the viewer and script dependencies used here):

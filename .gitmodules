@@ -1,4 +1,4 @@
 [submodule "newton"]
 	path = newton
-	url = git@github.com:newton-physics/newton.git
+	url = git@github.com:abhinavj98/newton.git
 	branch = main

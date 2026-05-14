@@ -18,7 +18,7 @@ import pytest
 import warp as wp
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
-RANGES_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges.json"
+RANGES_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_straight_rod_test.json"
 
 
 # ---------------------------------------------------------------------------
@@ -241,17 +241,17 @@ def test_generate_scene_returns_scene():
     assert scene.model is not None
 
 
-def test_generate_scene_disable_self_collision_neighbor_pairs_match_joint_defaults():
-    """Neighbor-only filters duplicate joint parent/child pairs; finalize deduplicates."""
+def test_generate_scene_disable_self_collision_superset_of_joint_default_filters():
+    """enable_self_collisions=False adds intra-chain filter pairs (see _apply_all_chain_collision_filters)."""
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 0
     scene_on = fs.generate_scene(ranges, seed=seed, enable_self_collisions=True)
     scene_off = fs.generate_scene(ranges, seed=seed, enable_self_collisions=False)
-    assert (
-        scene_off.model.shape_collision_filter_pairs
-        == scene_on.model.shape_collision_filter_pairs
-    )
+    pairs_on = scene_on.model.shape_collision_filter_pairs
+    pairs_off = scene_off.model.shape_collision_filter_pairs
+    assert pairs_on <= pairs_off
+    assert len(pairs_off) > len(pairs_on)
 
 
 def test_short_rollout_disable_self_collision_no_crash():
@@ -447,3 +447,53 @@ def test_manual_params_skips_primary():
     fp = fs.geometry_fingerprint(scene)
     assert fp["primary_base_pos"] is None
     assert fp["apple_pos"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Fixed-joint wrenches (SolverVBD)
+# ---------------------------------------------------------------------------
+
+
+def test_iter_fixed_joint_indices_full_fixture():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_scene(ranges, seed=3, device="cpu")
+    pairs = fs.iter_fixed_joint_indices(scene.model)
+    labels = [lab for _, lab in pairs]
+    assert len(pairs) == 4
+    assert "joint_primary_secondary" in labels
+    assert "joint_secondary_spur" in labels
+    assert "joint_spur_stem" in labels
+    assert "joint_stem_apple" in labels
+
+
+def test_iter_fixed_joint_indices_omit_apple():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_scene(ranges, seed=3, device="cpu", omit=frozenset({"apple"}))
+    labels = [lab for _, lab in fs.iter_fixed_joint_indices(scene.model)]
+    assert len(labels) == 3
+    assert "joint_stem_apple" not in labels
+
+
+def test_fixed_joint_wrenches_finite_after_substep():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_scene(ranges, seed=3, device="cpu")
+    sim_dt = (1.0 / 60.0) / 10.0
+    scene.state_0.clear_forces()
+    contacts = scene.model.collide(scene.state_0)
+    q_prev = scene.state_0.body_q.numpy().copy()
+    scene.solver.step(scene.state_0, scene.state_1, scene.control, contacts, sim_dt)
+    scene.state_0, scene.state_1 = scene.state_1, scene.state_0
+    wrenches = fs.fixed_joint_wrenches_child_com_vbd(
+        scene.model,
+        scene.solver,
+        body_q=scene.state_0.body_q.numpy(),
+        body_q_prev=q_prev,
+        dt=sim_dt,
+    )
+    assert len(wrenches) == 4
+    for w in wrenches:
+        assert np.isfinite(w.force_world).all()
+        assert np.isfinite(w.torque_at_child_com_world).all()

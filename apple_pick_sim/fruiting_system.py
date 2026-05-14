@@ -4,7 +4,7 @@ Entry point
 -----------
 >>> import json
 >>> from apple_pick_sim.fruiting_system import load_ranges, generate_scene, geometry_fingerprint
->>> ranges = load_ranges("apple_pick_sim/fixtures/fruiting_system_ranges.json")
+>>> ranges = load_ranges("apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json")
 >>> scene  = generate_scene(ranges, seed=42)
 >>> fp     = geometry_fingerprint(scene)
 
@@ -14,9 +14,16 @@ remaining pieces are connected in order with the first rod pinned at ``base_pos`
 You can also pass ``omit=...`` to :func:`sample_params` (and :func:`generate_scene`)
 to force segments off without editing the JSON; omission is applied **during**
 sampling so downstream directions match skipping intermediate rods.
-Ranges are read from a JSON file (see ``apple_pick_sim/fixtures/fruiting_system_ranges.json``)
+Ranges are read from a JSON file (see ``apple_pick_sim/fixtures/`` — tests use
+``fruiting_system_ranges_straight_rod_test.json``; :mod:`example_fruiting_system` defaults to
+``fruiting_system_ranges_example_variance.json``).
 and a seed, using the same Newton ``ModelBuilder`` rod/capsule + ``SolverVBD`` pattern as
 ``apple_pick_sim/example_apple_stem.py``.
+
+Use :func:`iter_fixed_joint_indices` and :func:`fixed_joint_wrenches_child_com_vbd` (re-exported
+from this module) to read **SolverVBD** fixed-joint wrenches on the child at COM via
+:meth:`newton.solvers.SolverVBD.gather_joint_wrench_child_com`; see
+``apple_pick_sim/vbd_fixed_joint_wrenches.py``.
 """
 
 from __future__ import annotations
@@ -33,6 +40,12 @@ import warp as wp
 
 import newton
 import newton.solvers
+
+from apple_pick_sim.vbd_fixed_joint_wrenches import (
+    FixedJointWrenchRecord,
+    fixed_joint_wrenches_child_com_vbd,
+    iter_fixed_joint_indices,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -326,9 +339,10 @@ def generate_scene(
         device: Warp device string (e.g. ``"cpu"``, ``"cuda:0"``). Defaults to
             ``"cpu"`` for deterministic headless use.
         omit: Forwarded to :func:`sample_params` to force segments off without editing JSON.
-        enable_self_collisions: If ``False``, add explicit shape collision filter pairs only
-            between **consecutive** chain bodies (primary through apple, in kinematic order).
-            Non-adjacent links may still collide with each other; ground contact is unchanged.
+        enable_self_collisions: If ``False``, register shape collision filter pairs between
+            every pair of distinct chain bodies (primary through apple), so the articulation
+            does not self-collide; ground contact is unchanged. If ``True`` (default), only
+            Newton joint parent/child filters apply, so non-adjacent chain links may collide.
 
     Returns:
         A :class:`FruitingSystemScene` ready to simulate.
@@ -457,7 +471,7 @@ def _build_scene(
         base_pos: World-space anchor for the first rod segment base.
         device: Warp device string passed to :meth:`~newton.ModelBuilder.finalize`.
         enable_self_collisions: When ``False``, register shape collision filter pairs between
-            each consecutive pair of chain bodies (kinematic neighbors only).
+            every pair of distinct chain bodies (see :func:`_apply_all_chain_collision_filters`).
     """
     if not any((params.primary, params.secondary, params.spur, params.stem)):
         raise ValueError(
@@ -558,7 +572,13 @@ def _build_scene(
             mass=apple_mass,
             label="apple",
         )
-        builder.add_shape_sphere(body=apple_body, radius=params.apple_radius)
+        # Do not add sphere volume mass again: default ShapeConfig density (~1000)
+        # would double-count vs explicit apple_mass on add_link.
+        apple_shape_cfg = builder.default_shape_cfg.copy()
+        apple_shape_cfg.density = 0.0
+        builder.add_shape_sphere(
+            body=apple_body, radius=params.apple_radius, cfg=apple_shape_cfg
+        )
         j_st2apple = _connect_rod_tip_to_apple(
             builder,
             stem_tip_body=prev_bodies[-1],

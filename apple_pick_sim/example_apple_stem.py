@@ -21,7 +21,7 @@ class AppleModelBuilder(newton.ModelBuilder):
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
         closed: bool = False,
-        key: str | None = None,
+        label: str | None = None,
         wrap_in_articulation: bool = True,
     ) -> tuple[list[int], list[int]]:
         if cfg is None:
@@ -97,10 +97,10 @@ class AppleModelBuilder(newton.ModelBuilder):
             com_offset = wp.vec3(0.0, 0.0, half_height)
 
             # Generate unique keys for each entity type to avoid conflicts
-            body_key = f"{key}_body_{i}" if key else None
-            shape_key = f"{key}_capsule_{i}" if key else None
+            body_label = f"{label}_body_{i}" if label else None
+            shape_label = f"{label}_capsule_{i}" if label else None
 
-            child_body = self.add_link(xform=body_q, com=com_offset, key=body_key)
+            child_body = self.add_link(xform=body_q, com=com_offset, label=body_label)
 
             # Place capsule so it spans from start to end along +Z
             capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
@@ -125,7 +125,7 @@ class AppleModelBuilder(newton.ModelBuilder):
                 radius=r,
                 half_height=half_height,
                 cfg=cfg,
-                key=shape_key,
+                label=shape_label,
             )
             link_bodies.append(child_body)
 
@@ -152,7 +152,7 @@ class AppleModelBuilder(newton.ModelBuilder):
             child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
             # Joint key: numbered 1 through num_joints
-            joint_key = f"{key}_cable_{i + 1}" if key else None
+            joint_label = f"{label}_cable_{i + 1}" if label else None
 
             # Pre-scale rod stiffnesses here so solver kernels do not need per-segment length normalization.
             # Use the parent segment length L.
@@ -178,7 +178,7 @@ class AppleModelBuilder(newton.ModelBuilder):
                 bend_damping=bend_damping,
                 stretch_stiffness=stretch_ke_eff,
                 stretch_damping=stretch_damping,
-                key=joint_key,
+                label=joint_label,
                 collision_filter_parent=True,
                 enabled=True,
             )
@@ -187,9 +187,9 @@ class AppleModelBuilder(newton.ModelBuilder):
         # Optionally (by default) wrap all rod joints into a single articulation.
         if wrap_in_articulation and link_joints:
             # Derive a default articulation key if none is provided.
-            rod_art_key = f"{key}_articulation" if key else None
+            rod_art_label = f"{label}_articulation" if label else None
 
-            self.add_articulation(link_joints, key=rod_art_key)
+            self.add_articulation(link_joints, label=rod_art_label)
 
         return link_bodies, link_joints
 
@@ -316,7 +316,7 @@ class ExampleAppleStem:
                 stretch_damping=0.0,
                 cfg=stem_cfg,
                 wrap_in_articulation=False,
-                key=f"stem_{variant['label']}",
+                label=f"stem_{variant['label']}",
             )
 
             base_body = stem_bodies[0]

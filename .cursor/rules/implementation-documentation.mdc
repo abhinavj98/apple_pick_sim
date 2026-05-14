@@ -1,0 +1,36 @@
+---
+description: For major or important changes, add human-readable implementation notes tied to tests
+alwaysApply: true
+---
+
+# Implementation documentation (major / important work)
+
+When you implement **non-trivial or important** behavior—physics/math, coordinate conventions, control flow that is easy to misread, or anything a future reader must not get wrong—add or update a **short, focused** document so a supervising human can verify intent and reduce technical debt.
+
+## What to write
+
+- **Math and logic**: equations, frames/units, discretization choices, stability assumptions, and invariants—not a repeat of `docs/VISION.md` strategy, but **how this slice works in code**.
+- **Code map**: which modules/functions own which responsibility; one or two small citations (file + symbol) are enough when the code is the detail.
+- **Tie to tests**: list the **test module(s) and key test names** (or classes) that prove the behavior; say what each group is meant to catch.
+- **How to verify**: the exact **`uv run`** command(s) from `README.md` / `docs/ROADMAP.md` that exercise this area (pytest, smoke script, etc.).
+
+Write for a **human reviewer**: plain language first, then precision; avoid jargon without defining it once.
+
+## Where to put it
+
+- Prefer a new file under `docs/` with a clear name, e.g. `docs/<feature>-implementation.md`, unless an existing doc is already the natural home (then extend that file with a dated subsection).
+
+## When you can skip
+
+- Trivial refactors, typo fixes, or behavior that is fully obvious from tests and names alone.
+
+## Example (doc snippet)
+
+```markdown
+## Behavior summary
+Stem breakage uses … (one paragraph).
+
+## Tests
+- `newton/tests/test_foo.py::test_bar` — ensures …
+Run: `uv run --directory newton pytest newton/tests/test_foo.py -q` (see README).
+```

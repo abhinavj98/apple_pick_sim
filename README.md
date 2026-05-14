@@ -5,6 +5,7 @@ This repository contains simulation code for robotic apple picking using the [Ne
 ## Installation
 
 ### 1. Clone the repository
+
 Clone this repository and initialize the submodules to pull in the Newton dependency.
 
 ```bash
@@ -19,67 +20,85 @@ git submodule update --init --recursive
 
 ### 2. Install Newton
 
-
-#### Setup using `uv` (Recommended)
-Navigate to the `newton` directory and create a virtual environment:
+From the repository root, sync the Newton submodule’s environment (examples extra matches the viewer and script dependencies used here):
 
 ```bash
 cd newton && uv sync --extra examples && cd ..
 ```
 
+All `uv run` commands below assume the **repository root** as the current working directory unless noted otherwise.
 
-## Running the Simulation
+## Running the simulation
 
-To run the `example_apple_stem.py` simulation, execute the following command from the root of this repository:
+### `example_apple_stem.py`
 
 ```bash
 uv run --directory newton python ../apple_pick_sim/example_apple_stem.py
 ```
 
-This command runs apple simulation with 3 different branch stiffnesses. The terminal prints the forces and torques experienced by the stem
+This runs the apple simulation with three branch stiffness presets. The terminal prints forces and torques on the stem. To apply forces on the apple, use right-click and drag on the apple in the viewer.
 
-To apply forces on the apple, use your right click and drag on the apple.
+### `example_fruiting_system.py` (variational fruiting)
 
-**Variational fruiting system** (new random layout each run unless you pass ``--seed``; same viewer pattern as the stem example):
+Procedural **primary → secondary → spur → stem → apple** layout from `apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json` (default for
+`example_fruiting_system.py`); each run draws a new sample unless you pass `--seed`. Unit tests
+use `fruiting_system_ranges_straight_rod_test.json` for deterministic, nearly vertical chains.
+Uses the same Newton viewer pattern as the stem example.
+
+The script imports the `apple_pick_sim` package, so set `PYTHONPATH` to the repository root:
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py
 ```
 
-Append ``--no-self-collision`` for  collision filtering.
+Useful options (see also the script docstring):
 
-From Python, call ``ExampleFruitingSystem.regenerate()`` (optional seed) to build another instance while keeping the viewer. See ``apple_pick_sim/example_fruiting_system.py``.
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py \
+  --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 123
+```
+
+**Collisions:** By default, `generate_scene(..., enable_self_collisions=True)` only relies on Newton’s joint **parent/child** collision filters (adjacent rod segments do not collide). **Non-adjacent** chain capsules can still collide with each other and with the apple; that is physically meaningful but can be stiff if segment length is small relative to capsule radius (next-but-one overlap) or if contacts fight cable constraints.
+
+Pass **`--no-self-collision`** to set `enable_self_collisions=False`, which registers **shape collision filter pairs between every pair of distinct chain bodies** (primary through apple), so the tree does not self-collide; **ground contact is unchanged**. Use this if you need a more stable run without intra-chain contacts.
+
+From Python, call `ExampleFruitingSystem.regenerate()` (optional seed) to rebuild while keeping the viewer. See `apple_pick_sim/example_fruiting_system.py`.
 
 ## P0 variational fruiting (JSON + seed)
 
-Range bounds live in `apple_pick_sim/fixtures/fruiting_system_ranges.json`.
-The generator is `apple_pick_sim/fruiting_system.py` (module docstring has full API details).
+Range fixtures live under `apple_pick_sim/fixtures/`: **`fruiting_system_ranges_example_variance.json`**
+(wide angles; default for the viewer example) and **`fruiting_system_ranges_straight_rod_test.json`**
+(nearly −Z chain; default for tests). The generator is `apple_pick_sim/fruiting_system.py` (module docstring describes the API).
 
-**Geometry-only smoke check** (no viewer required; run from repo root):
+**Geometry-only smoke check** (no viewer; paths assume `uv`’s working directory is `newton/`):
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python -c "
 from apple_pick_sim.fruiting_system import load_ranges, generate_scene, geometry_fingerprint
-ranges = load_ranges('../apple_pick_sim/fixtures/fruiting_system_ranges.json')
+ranges = load_ranges('../apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json')
 scene  = generate_scene(ranges, seed=42)
 import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 "
 ```
 
-**Generate and run a short headless VBD rollout** (run from repo root):
+**Short headless VBD rollout**:
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python -c "
 from apple_pick_sim.fruiting_system import load_ranges, generate_scene, geometry_fingerprint, run_rollout
-ranges = load_ranges('../apple_pick_sim/fixtures/fruiting_system_ranges.json')
+ranges = load_ranges('../apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json')
 scene  = generate_scene(ranges, seed=42)
 run_rollout(scene, num_steps=20, sim_substeps=10)
 import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 "
 ```
 
-**Tests** (from repository root):
+## Tests
+
+From the repository root:
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -v -p no:launch_testing
 ```
+
+`PYTHONPATH` must include the repo root so `apple_pick_sim` imports resolve; `--directory newton` selects Newton’s `pyproject.toml` and virtual environment.

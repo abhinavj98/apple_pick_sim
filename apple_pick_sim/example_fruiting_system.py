@@ -10,6 +10,13 @@ Each **script run** uses a new random seed unless you pass ``--seed``.
 From code, call :meth:`ExampleFruitingSystem.regenerate` to build another instance
 with a new seed while keeping the same viewer.
 
+**Fixed-joint wrenches (GL viewer):** after each physics frame, the example logs the
+magnitude of constraint **force** and **torque** (child body, world frame at COM) for
+every ``joint_*`` **FIXED** joint into the viewer **Plots** window (names prefixed
+``FJ``). Right-click drag applies picking forces; reaction wrenches rise in those
+plots. CUDA graph capture is disabled here so wrenches can be read on the host each
+substep.
+
 Run from the repository root (see README)::
 
     uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py
@@ -17,10 +24,12 @@ Run from the repository root (see README)::
 Optional arguments (Newton example parser + extras)::
 
     uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py \\
-        --json ../apple_pick_sim/fixtures/fruiting_system_ranges.json --seed 123
+        --json ../apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 123
 
-    ``--no-self-collision`` keeps **adjacent** link filtering only (joint defaults). It no longer
-    registers filters for every chain body pair, so distant links may collide (ground unchanged).
+    ``--no-self-collision`` sets ``enable_self_collisions=False``: collision filter pairs are
+    registered between **every pair of distinct chain bodies** (no intra-chain contacts); ground
+    is unchanged. Default (flag omitted) keeps only joint parent/child filters, so non-adjacent
+    links may collide.
 """
 
 from __future__ import annotations
@@ -31,15 +40,23 @@ import secrets
 import sys
 from pathlib import Path
 
+import numpy as np
 import newton
 import newton.examples
 import warp as wp
 
-from apple_pick_sim.fruiting_system import FruitingSystemScene, generate_scene, geometry_fingerprint, load_ranges
+from apple_pick_sim.fruiting_system import (
+    FruitingSystemScene,
+    fixed_joint_wrenches_child_com_vbd,
+    generate_scene,
+    geometry_fingerprint,
+    load_ranges,
+)
+from apple_pick_sim.vbd_fixed_joint_wrenches import FixedJointWrenchRecord
 
 
 def _default_ranges_path() -> Path:
-    return Path(__file__).resolve().parent / "fixtures" / "fruiting_system_ranges.json"
+    return Path(__file__).resolve().parent / "fixtures" / "fruiting_system_ranges_example_variance.json"
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -48,7 +65,10 @@ def _make_parser() -> argparse.ArgumentParser:
         "--json",
         type=str,
         default=None,
-        help="Path to fruiting-system range JSON (default: apple_pick_sim/fixtures/fruiting_system_ranges.json).",
+        help=(
+            "Path to fruiting-system range JSON (default: "
+            "apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json)."
+        ),
     )
     parser.add_argument(
         "--seed",
@@ -59,7 +79,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-self-collision",
         action="store_true",
-        help="Adjacent chain links only (no longer filters all chain pairs; ground unchanged).",
+        help="Filter collisions between all chain bodies (primary→apple); ground unchanged.",
     )
     return parser
 
@@ -91,6 +111,7 @@ class ExampleFruitingSystem:
         self.graph = None
         self.collision_pipeline = None
         self.contacts = None
+        self._fixed_joint_wrenches: list[FixedJointWrenchRecord] = []
 
         self.regenerate(first_seed)
 
@@ -136,26 +157,25 @@ class ExampleFruitingSystem:
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.viewer.set_model(self.model)
+        self._fixed_joint_wrenches = []
         self.capture()
         self.sim_time = 0.0
         return seed
 
     def capture(self) -> None:
-        if self.solver.device.is_cuda:
-            self.capturing = True
-            with wp.ScopedCapture() as cap:
-                self.simulate()
-            self.capturing = False
-            self.graph = cap.graph
-        else:
-            self.graph = None
+        # Wrench readout uses host-visible body_q each substep; skip CUDA graph capture.
+        self.graph = None
 
     def simulate(self) -> None:
-        for _ in range(self.sim_substeps):
+        last = self.sim_substeps - 1
+        for i in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
 
             self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+            if i == last:
+                q_prev = self.state_0.body_q.numpy().copy()
 
             self.solver.step(
                 self.state_0,
@@ -167,6 +187,16 @@ class ExampleFruitingSystem:
 
             self.state_0, self.state_1 = self.state_1, self.state_0
 
+            if i == last:
+                self._fixed_joint_wrenches = fixed_joint_wrenches_child_com_vbd(
+                    self.model,
+                    self.solver,
+                    body_q=self.state_0.body_q.numpy(),
+                    body_q_prev=q_prev,
+                    dt=self.sim_dt,
+                    control=self.control,
+                )
+
     def step(self, warmup: bool = False) -> None:
         del warmup  # unused; kept for API symmetry with example_apple_stem
         if self.graph:
@@ -175,10 +205,20 @@ class ExampleFruitingSystem:
             self.simulate()
         self.sim_time += self.frame_dt
 
+    def _log_fixed_joint_wrench_scalars(self) -> None:
+        """Plot SolverVBD fixed-joint wrench magnitudes (last substep of the frame)."""
+        for w in self._fixed_joint_wrenches:
+            short = w.label.removeprefix("joint_") or w.label
+            fmag = float(np.linalg.norm(w.force_world))
+            tmag = float(np.linalg.norm(w.torque_at_child_com_world))
+            self.viewer.log_scalar(f"FJ {short} |F| [N]", fmag, smoothing=3)
+            self.viewer.log_scalar(f"FJ {short} |τ| [N·m]", tmag, smoothing=3)
+
     def render(self) -> None:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
+        self._log_fixed_joint_wrench_scalars()
         self.viewer.end_frame()
 
     def test_final(self, tolerance: float = 0.05) -> None:

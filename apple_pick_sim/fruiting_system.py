@@ -2,28 +2,28 @@
 
 Entry point
 -----------
->>> import json
 >>> from apple_pick_sim.fruiting_system import load_ranges, generate_scene, geometry_fingerprint
 >>> ranges = load_ranges("apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json")
->>> scene  = generate_scene(ranges, seed=42)
->>> fp     = geometry_fingerprint(scene)
+>>> scene = generate_scene(ranges, seed=42)
+>>> fp = geometry_fingerprint(scene)
 
-The generator builds a **primary → secondary → spur → stem → apple** chain. Any
-segment whose range entry is JSON ``null`` (Python ``None``) is omitted; the
-remaining pieces are connected in order with the first rod pinned at ``base_pos``.
-You can also pass ``omit=...`` to :func:`sample_params` (and :func:`generate_scene`)
-to force segments off without editing the JSON; omission is applied **during**
-sampling so downstream directions match skipping intermediate rods.
-Ranges are read from a JSON file (see ``apple_pick_sim/fixtures/`` — tests use
-``fruiting_system_ranges_straight_rod_test.json``; :mod:`example_fruiting_system` defaults to
-``fruiting_system_ranges_example_variance.json``).
-and a seed, using the same Newton ``ModelBuilder`` rod/capsule + ``SolverVBD`` pattern as
-``apple_pick_sim/example_apple_stem.py``.
+The generator builds a **primary → secondary → spur → stem → apple** chain from a
+JSON range file and a deterministic **seed**, using the same Newton
+``ModelBuilder`` rod/capsule + ``SolverVBD`` pattern as ``example_apple_stem.py``.
+Fixtures: tests use ``apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json``;
+:mod:`example_fruiting_system` defaults to
+``fruiting_system_ranges_example_variance.json``.
 
-Use :func:`iter_fixed_joint_indices` and :func:`fixed_joint_wrenches_child_com_vbd` (re-exported
-from this module) to read **SolverVBD** fixed-joint wrenches on the child at COM via
-:meth:`newton.solvers.SolverVBD.gather_joint_wrench_child_com`; see
-``apple_pick_sim/vbd_fixed_joint_wrenches.py``.
+Any segment whose range entry is JSON ``null`` (Python ``None``) is omitted; the
+remaining pieces connect in order with the first rod pinned at ``base_pos``. Use
+``omit=...`` on :func:`sample_params` / :func:`generate_scene` to force segments off
+without editing JSON; omission is applied **during** sampling so directions stay
+consistent when skipping intermediate rods.
+
+Fixed-joint wrenches: :func:`iter_fruiting_fixed_joint_indices` and
+:func:`fixed_joint_wrenches_child_com_vbd` with ``joint_pairs`` from
+:attr:`FruitingSystemScene.fruiting_fixed_joints`, or :func:`measure_fruiting_forces`.
+See ``apple_pick_sim/vbd_fixed_joint_wrenches.py`` and ``docs/WRENCH_READOUT.md``.
 """
 
 from __future__ import annotations
@@ -46,6 +46,49 @@ from apple_pick_sim.vbd_fixed_joint_wrenches import (
     fixed_joint_wrenches_child_com_vbd,
     iter_fixed_joint_indices,
 )
+
+
+# Small rigid-joint linear/angular damping so inter-segment FIXED joints settle
+# (matches equilibrium tests; avoids undamped oscillation in viewer FJ plots).
+FRUITING_VBD_RIGID_JOINT_KD = 5.0e-4
+
+
+def make_fruiting_solver_vbd(model: newton.Model, **overrides: Any) -> newton.solvers.SolverVBD:
+    """Construct the default :class:`~newton.solvers.SolverVBD` used for fruiting scenes.
+
+    Extra keyword arguments override defaults (e.g. ``iterations=80``).
+    """
+    kwargs: dict[str, Any] = {
+        "iterations": 50,
+        "friction_epsilon": 0.1,
+        "rigid_contact_k_start": 1.0e4,
+        "rigid_joint_linear_k_start": 1.0e8,
+        "rigid_joint_angular_k_start": 1.0e6,
+        "rigid_joint_linear_kd": FRUITING_VBD_RIGID_JOINT_KD,
+        "rigid_joint_angular_kd": FRUITING_VBD_RIGID_JOINT_KD,
+    }
+    kwargs.update(overrides)
+    return newton.solvers.SolverVBD(model, **kwargs)
+
+
+def example_collision_pipeline(
+    model: newton.Model,
+    args: Any | None = None,
+    *,
+    broad_phase: str | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Same collision pipeline factory as Newton examples (explicit broad-phase default).
+
+    Pass the result to :func:`run_rollout` or :meth:`newton.Model.collide` so headless
+    rollouts match ``example_fruiting_system.py`` (which uses
+    ``newton.examples.create_collision_pipeline``).
+    """
+    import newton.examples
+
+    return newton.examples.create_collision_pipeline(
+        model, args=args, broad_phase=broad_phase, **kwargs
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +153,11 @@ class FruitingSystemScene:
     spur_bodies: list[int]
     stem_bodies: list[int]
     apple_body: int | None
+
+    # Explicit (joint_index, label) for inter-rod and rod–apple FIXED joints (sorted by index)
+    fruiting_fixed_joints: tuple[tuple[int, str], ...]
+    # Cable / bend-stretch joints from each ``add_rod`` (articulation order, not including link joints)
+    cable_joint_indices: tuple[int, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +451,8 @@ def run_rollout(
     num_steps: int = 20,
     sim_substeps: int = 10,
     fps: float = 60.0,
+    *,
+    collision_pipeline: Any | None = None,
 ) -> None:
     """Advance a scene's simulation in-place for ``num_steps`` frames.
 
@@ -411,6 +461,9 @@ def run_rollout(
         num_steps: Number of rendered frames to simulate.
         sim_substeps: Sub-steps per frame.
         fps: Frames per second (determines per-frame dt).
+        collision_pipeline: Optional pipeline from :func:`example_collision_pipeline`
+            (same as ``example_fruiting_system``). If ``None``, uses the model's default
+            pipeline (first :meth:`~newton.Model.collide` initializes it).
     """
     frame_dt = 1.0 / fps
     sim_dt = frame_dt / sim_substeps
@@ -418,9 +471,47 @@ def run_rollout(
     for _ in range(num_steps):
         for _ in range(sim_substeps):
             scene.state_0.clear_forces()
-            contacts = scene.model.collide(scene.state_0)
+            if collision_pipeline is None:
+                contacts = scene.model.collide(scene.state_0)
+            else:
+                contacts = scene.model.collide(
+                    scene.state_0, collision_pipeline=collision_pipeline
+                )
             scene.solver.step(scene.state_0, scene.state_1, scene.control, contacts, sim_dt)
             scene.state_0, scene.state_1 = scene.state_1, scene.state_0
+
+
+def iter_fruiting_fixed_joint_indices(scene: FruitingSystemScene) -> list[tuple[int, str]]:
+    """Return ``(joint_index, label)`` for FIXED joints recorded on this scene."""
+    return list(scene.fruiting_fixed_joints)
+
+
+def measure_fruiting_forces(
+    scene: FruitingSystemScene,
+    body_q: Any,
+    body_q_prev: Any,
+    dt: float,
+    *,
+    control: newton.Control | None = None,
+) -> dict[str, Any]:
+    """Return fixed-joint wrench records plus cable joint index metadata.
+
+    Cable **scalar forces** are not computed here; penalty-style cable metrics follow
+    the ``example_apple_stem.py`` pattern (joint displacement × stiffness) when needed.
+    """
+    fixed = fixed_joint_wrenches_child_com_vbd(
+        scene.model,
+        scene.solver,
+        body_q=body_q,
+        body_q_prev=body_q_prev,
+        dt=dt,
+        control=control,
+        joint_pairs=list(scene.fruiting_fixed_joints),
+    )
+    return {
+        "fixed_joints": fixed,
+        "cable_joint_indices": scene.cable_joint_indices,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -428,28 +519,17 @@ def run_rollout(
 # ---------------------------------------------------------------------------
 
 
-def _apply_neighbor_chain_collision_filters(
-    builder: newton.ModelBuilder,
-    body_indices: list[int],
-) -> None:
-    """Add shape collision filter pairs for each consecutive pair of chain bodies."""
-    if len(body_indices) < 2:
-        return
-    for body1, body2 in zip(body_indices[:-1], body_indices[1:]):
-        for shape1 in builder.body_shapes.get(body1, []):
-            for shape2 in builder.body_shapes.get(body2, []):
-                builder.add_shape_collision_filter_pair(shape1, shape2)
-
 def _apply_all_chain_collision_filters(
     builder: newton.ModelBuilder,
+    chain_body_indices: list[int],
 ) -> None:
-    """Add shape collision filter pairs for all chain body pairs."""
-    for body1 in builder.body_shapes.keys():
-        for shape1 in builder.body_shapes.get(body1, []):
-            for body2 in builder.body_shapes.keys():
-                if body1 != body2:
-                    for shape2 in builder.body_shapes.get(body2, []):
-                        builder.add_shape_collision_filter_pair(shape1, shape2)
+    """Add shape collision filter pairs for every distinct pair of chain bodies."""
+    bodies = chain_body_indices
+    for i, body1 in enumerate(bodies):
+        for body2 in bodies[i + 1 :]:
+            for shape1 in builder.body_shapes.get(body1, []):
+                for shape2 in builder.body_shapes.get(body2, []):
+                    builder.add_shape_collision_filter_pair(shape1, shape2)
 
 
 
@@ -477,6 +557,9 @@ def _build_scene(
         raise ValueError(
             "At least one rod segment (primary, secondary, spur, or stem) must be non-None."
         )
+
+    cable_joint_indices: list[int] = []
+    fruiting_fixed_joints: list[tuple[int, str]] = []
 
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
@@ -529,6 +612,7 @@ def _build_scene(
             label=name,
         )
         all_joints.extend(joints)
+        cable_joint_indices.extend(joints)
 
         if prev_bodies is None:
             builder.body_mass[bodies[0]] = 0.0
@@ -544,6 +628,7 @@ def _build_scene(
                 key=f"joint_{prev_name}_{name}",
             )
             all_joints.append(j_link)
+            fruiting_fixed_joints.append((j_link, f"joint_{prev_name}_{name}"))
 
         seg_bodies[name] = bodies
         prev_bodies = bodies
@@ -567,8 +652,9 @@ def _build_scene(
         # sphere pole (joint anchor) meets the capsule tip.
         apple_pos = stem_tip_pt + last_seg_dir * params.apple_radius
         apple_mass = (4.0 / 3.0) * math.pi * params.apple_radius**3 * params.apple_density
+        apple_quat = wp.quat_identity()
         apple_body = builder.add_link(
-            xform=wp.transform(apple_pos, wp.quat_identity()),
+            xform=wp.transform(apple_pos, apple_quat),
             mass=apple_mass,
             label="apple",
         )
@@ -587,9 +673,11 @@ def _build_scene(
             segment_dir_world=last_seg_dir,
             apple_radius=params.apple_radius,
             apple_body=apple_body,
+            apple_quat=apple_quat,
             key=f"joint_{last_name}_apple",
         )
         all_joints.append(j_st2apple)
+        fruiting_fixed_joints.append((j_st2apple, f"joint_{last_name}_apple"))
 
     # add_articulation requires joints in monotonically increasing index order.
     all_joints = sorted(all_joints)
@@ -604,22 +692,16 @@ def _build_scene(
     if apple_body is not None:
         chain_bodies.append(apple_body)
     if not enable_self_collisions:
-        # _apply_neighbor_chain_collision_filters(builder, chain_bodies)
-        _apply_all_chain_collision_filters(builder)
+        _apply_all_chain_collision_filters(builder, chain_bodies)
     builder.add_ground_plane()
     builder.color()
 
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, -9.81))
 
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=50,
-        friction_epsilon=0.1,
-        rigid_contact_k_start=1.0e4,
-        rigid_joint_linear_k_start=1.0e8,
-        rigid_joint_angular_k_start=1.0e6,
-    )
+    fruiting_fixed_joints.sort(key=lambda p: p[0])
+
+    solver = make_fruiting_solver_vbd(model)
 
     state_0 = model.state()
     state_1 = model.state()
@@ -637,6 +719,8 @@ def _build_scene(
         spur_bodies=seg_bodies["spur"],
         stem_bodies=seg_bodies["stem"],
         apple_body=apple_body,
+        fruiting_fixed_joints=tuple(fruiting_fixed_joints),
+        cable_joint_indices=tuple(cable_joint_indices),
     )
 
 
@@ -682,6 +766,7 @@ def _connect_rod_tip_to_apple(
     segment_dir_world: wp.vec3,
     apple_radius: float,
     apple_body: int,
+    apple_quat: wp.quat,
     key: str,
 ) -> int:
     """Add a fixed joint attaching the apple to the distal end of the last rod segment.
@@ -690,12 +775,15 @@ def _connect_rod_tip_to_apple(
     (same construction as ``example_apple_stem.py``). The child anchor is offset
     from the apple COM toward the stem by one radius so the stem-side pole of
     the sphere meets the rod tip instead of burying the COM at the junction.
+    The child offset is expressed in the apple body's local frame (rotated by
+    ``apple_quat`` from world).
     """
     segment_vector_world = segment_dir_world * stem_seg_length
     parent_local_anchor = wp.quat_rotate(
         wp.quat_inverse(stem_tip_quat), segment_vector_world
     )
-    child_local_anchor = segment_dir_world * (-apple_radius)
+    stem_toward_apple_world = segment_dir_world * (-apple_radius)
+    child_local_anchor = wp.quat_rotate(wp.quat_inverse(apple_quat), stem_toward_apple_world)
     return builder.add_joint_fixed(
         parent=stem_tip_body,
         child=apple_body,

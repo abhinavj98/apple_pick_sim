@@ -12,10 +12,11 @@ with a new seed while keeping the same viewer.
 
 **Fixed-joint wrenches (GL viewer):** after each physics frame, the example logs the
 magnitude of constraint **force** and **torque** (child body, world frame at COM) for
-every ``joint_*`` **FIXED** joint into the viewer **Plots** window (names prefixed
-``FJ``). Right-click drag applies picking forces; reaction wrenches rise in those
-plots. CUDA graph capture is disabled here so wrenches can be read on the host each
-substep.
+each inter-segment **FIXED** joint recorded on :class:`~apple_pick_sim.fruiting_system.FruitingSystemScene`
+into the viewer **Plots** window (names prefixed ``FJ``). Right-click drag applies picking forces;
+reaction wrenches rise in those plots. CUDA graph capture is disabled here so wrenches can be read on the host each
+substep. Collision detection uses :func:`~apple_pick_sim.fruiting_system.example_collision_pipeline`
+(same as :func:`run_rollout` when you pass that pipeline).
 
 Run from the repository root (see README)::
 
@@ -46,13 +47,14 @@ import newton.examples
 import warp as wp
 
 from apple_pick_sim.fruiting_system import (
+    FixedJointWrenchRecord,
     FruitingSystemScene,
+    example_collision_pipeline,
     fixed_joint_wrenches_child_com_vbd,
     generate_scene,
     geometry_fingerprint,
     load_ranges,
 )
-from apple_pick_sim.vbd_fixed_joint_wrenches import FixedJointWrenchRecord
 
 
 def _default_ranges_path() -> Path:
@@ -153,7 +155,7 @@ class ExampleFruitingSystem:
         self.control = self._scene.control
         self.solver = self._scene.solver
 
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, self.args)
+        self.collision_pipeline = example_collision_pipeline(self.model, self.args)
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.viewer.set_model(self.model)
@@ -188,6 +190,9 @@ class ExampleFruitingSystem:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
             if i == last:
+                joint_pairs = (
+                    list(self._scene.fruiting_fixed_joints) if self._scene is not None else None
+                )
                 self._fixed_joint_wrenches = fixed_joint_wrenches_child_com_vbd(
                     self.model,
                     self.solver,
@@ -195,6 +200,7 @@ class ExampleFruitingSystem:
                     body_q_prev=q_prev,
                     dt=self.sim_dt,
                     control=self.control,
+                    joint_pairs=joint_pairs,
                 )
 
     def step(self, warmup: bool = False) -> None:

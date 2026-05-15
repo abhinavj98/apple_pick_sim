@@ -17,7 +17,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-05-14 (P0: variational geometry + joint-level force readouts **implemented**; **exit before M1:** manual verification + refactor. **M1 next:** FR3 + custom EE, rigid EE–apple contact, coupled model + **arm-side** force measurement.) |
+| **Last updated** | 2026-05-15 (**[M1] active** — FR3 + custom EE, rigid EE–apple contact, two-`Model` staggered coupling, **arm-side** force measurement. **[P0] Done** — variance, fixed-joint wrenches, refactor landed; optional stretch deferred.) |
 | **Owner** | Abhinav |
 | **Vision** | See `docs/VISION.md` |
 
@@ -38,8 +38,8 @@
 
 Owner intent drives phase order (vision outcomes stay valid; **order** is explicit here):
 
-1. **Now — Outcome 1 (P0 wrap-up):** **Variational geometry** (JSON ranges + seed → `fruiting_system` / `SolverVBD` scene) and **joint-level force readouts** (cable-joint proxies where used, plus **fixed-joint** wrenches via **`SolverVBD.gather_joint_wrench_child_com`** and `apple_pick_sim/vbd_fixed_joint_wrenches.py`, surfaced in tests and `example_fruiting_system.py`) are **implemented**. **Before [M1]:** maintainer **manual verification** (viewer, seeds, interaction sanity) and a **refactor** pass (API consolidation, docs/checkbox alignment, any tests uncovered by review). See `docs/VISION.md` *Procedural fruiting variance*; detail under [P0].
-2. **Next — Outcome 2 (manipulation stack):** Integrate a **Franka FR3** with a **custom end-effector**, add **rigid contact** between the end-effector and the apple, and run the **two-`Model`** **`SolverMuJoCo` + `SolverVBD`** **staggered coupling** (proxy bodies + one-step lag — cable joints still cannot live on the MuJoCo model). **Measure forces on the robot arm** (MuJoCo / `body_f` / joint-level readouts as agreed) **and** reuse **P0 VBD telemetry** on the cable model. **End-effector wrench input** remains in scope for driving the arm. See vision *Manipulation stack*; see [M1] for architecture, DoD, and the coupling skeleton.
+1. **Done — Outcome 1 ([P0]):** **Variational geometry** and **joint-level force readouts** shipped; refactor (collision/readout API, ``measure_fruiting_forces``, solver damping, docs) landed. Optional P0 stretch (1.a floating EE, force-rises-with-load, richer cable scalars) **deferred**. See `docs/VISION.md` *Procedural fruiting variance*; archive under [P0].
+2. **Now — Outcome 2 (manipulation stack, [M1]):** Integrate a **Franka FR3** with a **custom end-effector**, add **rigid contact** between the end-effector and the apple, and run the **two-`Model`** **`SolverMuJoCo` + `SolverVBD`** **staggered coupling** (proxy bodies + one-step lag — cable joints still cannot live on the MuJoCo model). **Measure forces on the robot arm** (MuJoCo / `body_f` / joint-level readouts as agreed) **and** reuse **P0 VBD telemetry** on the cable model. **End-effector wrench input** drives the arm in M1 tests. See vision *Manipulation stack*; see [M1] for architecture, DoD, and the coupling skeleton.
 3. **Later — Outcome 3 (learning):** **RL infrastructure** for an **exploration policy** (and downstream training hooks). Scope, stack, and reward/exploration design are **TBD** in this file until you promote specifics from discussion into milestones and “Current focus”.
 
 Later vision phases (real data, calibration, final pick policy) remain in milestones below; they are **not** active until the maintainer moves focus past arm integration and RL foundations.
@@ -48,56 +48,39 @@ Later vision phases (real data, calibration, final pick policy) remain in milest
 
 ## Current focus
 
-**Active milestone:** [P0] — **Wrap-up** (variational **geometry** and **joint-level force measurements** are in code; **exit before [M1]** is **manual verification** plus **refactor** — not new feature scope unless verification exposes a gap).
+**Active milestone:** [M1] — **FR3 manipulation stack** (two-`Model` **`SolverMuJoCo` + `SolverVBD`** coupling).
 
-**In one sentence, the goal right now:** Validate the shipped fruiting stack in the viewer and tests, then **tidy APIs and docs** so [P0] is merge-clean. **[M1]** starts only after that exit: **Franka FR3 + custom end-effector**, **rigid EE–apple contact**, **two-`Model` coupled stepping**, and **instrumented loads on the robot arm** as well as the existing VBD cable/apple readouts.
+**In one sentence, the goal right now:** Extend **[P0]**’s fruiting scene with a **Franka FR3 + custom end-effector**, **rigid EE–apple contact** on the coupled stack, the **staggered proxy coupling protocol**, and **force readouts on both** the VBD cable model (reuse P0) **and** the robot arm.
 
-**Implementation pattern (authoritative for P0 “geometry”):** Follow `apple_pick_sim/example_apple_stem.py`: sample parameters → build **control polylines** and per-segment **quaternions** → `ModelBuilder` **`add_rod`** (capsule segments + **cable** joints for stretch/bend) for each woody segment chain; **stem** + **apple** as link(s) with **`add_shape_sphere`** (or agreed primitive) and a suitable joint; integrate with **`newton.solvers.SolverVBD`**. This is **analytic / primitive-based** scene construction, **not** generation of external **triangle meshes** (OBJ/STL) unless a later milestone promotes that.
+**Build on (do not reimplement):** `apple_pick_sim/fruiting_system.py` — `generate_scene`, `run_rollout`, `measure_fruiting_forces`, `vbd_fixed_joint_wrenches.py`. Reference patterns: `newton/newton/examples/ik/example_ik_franka.py`, `newton/newton/examples/cloth/example_cloth_franka.py` (adjacent, not the M1 recipe), and the **two-`Model` staggered coupling skeleton** at the bottom of [M1] in this file.
 
-**Canonical fruiting system (design target for P0):**
+**Next up (ordered — mirrors [M1] Next actions):**
 
-| Segment | Role | Compliance / stiffness (intent) |
-|---------|------|----------------------------------|
-| **Primary branch** | Main structural member | **Stiffer** (baseline “tree” limb) |
-| **Secondary branch** | Lateral continuation | **Softer** than primary (lower bending stiffness or equivalent material) |
-| **Spur** | Short segment before fruit | Short; carries stem attachment |
-| **Stem** | Fruit attachment | Connects spur to apple |
-| **Apple** | Terminal body | Rigid or softly stiff fruit body per sim conventions |
+1. [ ] **Slice 1 — Proxy primitives:** `sync_proxy_state` Warp kernel + `harvest_proxy_wrenches(...)` under `apple_pick_sim/`; **first sub-task:** VBD wrench-readout spike (direct read / narrow `newton/` extension / velocity-delta reconstruction); unit tests in isolation (no MuJoCo step yet).
+2. [ ] **Slice 2 — FR3 + custom EE + full 1.b loop:** `robot_model` + `cable_model`, collision-equipped gripper **proxy**, **rigid EE–apple contact**, staggered protocol, FR3 TCP `body_f` wrenches, P0 VBD readouts + **arm-side** force extraction; coupling / contact tests.
+3. [ ] **Slice 3 — Commands + docs:** README and Agent execution notes for **1.b** FR3 flows; verify per `.cursor/rules/readme-runtime-verification.mdc`.
 
-**Variation inputs:** A **JSON** file describes allowed ranges (e.g. **min / max**) for geometric and material-style parameters — examples include segment **counts**, **lengths**, **radii** (capsule thickness), **bend / stretch stiffness**, **density**, and apple size/mass. The generator samples (deterministically from **seed**) within those bounds and instantiates the **ModelBuilder** graph (bodies, capsules, joints, articulations) plus **`SolverVBD`** settings for each instance.
+**Explicitly not in this milestone:** IK / trajectory control, soft multi-finger grasping, full `SensorContact` plumbing, rollout log schema (M2), calibration (M4), RL harness (M2). See [M1] *Explicitly not* for the full list.
 
-**Next up (ordered):**
+**Blockers (if any):** None assumed. Justified `newton/` edits only for proxy wrench readout if Slice 1 spike requires a narrow public API (see [M1] Slice 1 spike).
 
-1. [x] **JSON schema + fixtures:** `apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json` (tests, nearly vertical) and `fruiting_system_ranges_example_variance.json` (viewer example, wide angles) — documented min/max ranges for all five segments and apple.
-2. [x] **Generator + Newton geometry:** `apple_pick_sim/fruiting_system.py` — `generate_scene(ranges, seed)` → `FruitingSystemScene` with full primary → secondary → spur → stem → apple topology via rod/capsule + sphere + `SolverVBD`.
-3. [x] **Sim hook:** `run_rollout(scene, num_steps, sim_substeps)` runs a deterministic headless VBD rollout in-place.
-4. [x] **Tests:** pytest tests in `apple_pick_sim/tests/test_fruiting_system.py` — fixture schema, parameter bounds, stiffness ordering, body counts, geometry fingerprint stability/variance, rollout crash-safety, rollout determinism, self-collision toggle — all green.
-5. [x] **Document commands:** README updated with generate-only and generate+sim `uv` commands and test command.
-6. [x] **Joint-level force readouts (core):** Fixed-joint wrenches via **`SolverVBD.gather_joint_wrench_child_com`** (`apple_pick_sim/vbd_fixed_joint_wrenches.py`, re-exported from `fruiting_system.py`); viewer **FJ** plots in `example_fruiting_system.py`; pytest coverage for wrench finiteness / joint iteration.
-7. [ ] **Manual verification:** Exercise `example_fruiting_system.py` (seeds, optional `--no-self-collision`); confirm interaction forces and **FJ** wrench traces are plausible across the chain.
-8. [ ] **Refactor before M1:** Consolidate naming/docs (e.g. optional unified `measure_fruiting_forces`-style API for cable + fixed joints if still desired), README + [P0] checklist alignment, any tests or small fixes found during verification. **Optional stretch goals** (only if promoted during refactor): **1.a** floating EE handle, dedicated **force-rises-with-load** ordering test.
-
-**Explicitly not in this milestone:** MuJoCo/FR3 wiring, two-`Model` proxy coupling, custom EE, rigid EE–apple contact in the coupled stack, **arm-side** force logging, rollout log schema, real-data adapters, calibration stubs, and RL harnesses — those are **[M1]**+ unless reprioritized.
-
-**Blockers (if any):** None assumed; if Newton-only geometry is required for variance, keep logic in `apple_pick_sim/` and avoid drive-by `newton/` edits unless patching the submodule is in scope.
-
-**Last completed slice:** Variational `fruiting_system` + **fixed-joint wrench telemetry** (gather API + example viewer + tests); see `apple_pick_sim/vbd_fixed_joint_wrenches.py`, `example_fruiting_system.py`.
+**Last completed slice (prior milestone):** [P0] variational fruiting + fixed-joint wrench telemetry + refactor; exited 2026-05-15.
 
 ---
 
 ## Milestones
 
-Phases below follow **Sequencing** at the top: **[P0] wrap-up** (verify + refactor) → **FR3 + custom EE + coupled contact** ([M1]) → RL (details TBD) → later vision phases.
+Phases below follow **Sequencing** at the top: **[P0] Done** → **[M1] active** (FR3 + custom EE + coupled contact) → RL (details TBD) → later vision phases.
 
 ### [P0] — Variational fruiting system generation & force telemetry
 
-- **Status:** In progress — **variance + core joint-level readouts are implemented**; **exit before [M1]** is **manual verification** and **refactor** (see **Current focus**), not open-ended feature work unless review finds a gap.
+- **Status:** Done (exited 2026-05-15; optional stretch deferred to backlog / [M1] needs)
 - **Links:** N/A
 - **Vision:** Outcome 1 (*Visual and structural variance*); success row *Procedural fruiting variance*; plus **instrumented loads** on the same VBD-built scene.
 
 **Objective (variance — done):** From a **JSON** file of **min/max** bounds on geometry and material-like parameters, plus a **seed**, **variationally generate** a **Newton-ready scene** for a **fixed topology**: **primary branch (stiff)** → **secondary branch (softer)** → **short spur** → **stem** → **apple**, built like **`example_apple_stem.py`** (polylines + **`add_rod`** capsule chains + primitive fruit body, **`SolverVBD`**). Run a short reproducible simulation and prove variance and determinism with tests.
 
-**Objective (force telemetry — core shipped):** **Fixed-joint** constraint wrenches via **`newton.solvers.SolverVBD.gather_joint_wrench_child_com`** (child at COM, world frame; Newton implementation under `newton/newton/_src/solvers/vbd/`) are wrapped in **`apple_pick_sim/vbd_fixed_joint_wrenches.py`**, re-exported from **`fruiting_system.py`**, exercised in **pytest**, and visualized as **FJ** plots in **`example_fruiting_system.py`**. Per-cable-joint **penalty-style** metrics remain available through the same **`ModelBuilder` + `SolverVBD`** patterns as `example_apple_stem.py` (`get_forces()`-style joint displacement × stiffness where used). **Remaining P0 work** is **validation + refactor** so APIs and docs are stable for **[M1]** consumption (optional unified `measure_*` helper, **1.a** floating handle, and **force-rises-with-load** tests are **stretch** unless promoted during refactor).
+**Objective (force telemetry — core shipped):** **Fixed-joint** constraint wrenches via **`newton.solvers.SolverVBD.gather_joint_wrench_child_com`** (child at COM, world frame; Newton implementation under `newton/newton/_src/solvers/vbd/`) are wrapped in **`apple_pick_sim/vbd_fixed_joint_wrenches.py`**, re-exported from **`fruiting_system.py`**, exercised in **pytest**, and visualized as **FJ** plots in **`example_fruiting_system.py`**. Per-cable-joint **penalty-style** metrics remain available through the same **`ModelBuilder` + `SolverVBD`** patterns as `example_apple_stem.py` (`get_forces()`-style joint displacement × stiffness where used). **Structured readout:** ``measure_fruiting_forces`` returns fixed-joint records plus ``cable_joint_indices`` (cable scalars still via stem example patterns). **Deferred (not required for P0 exit):** optional stretch (**1.a**, **force-rises-with-load**, richer cable scalars in ``measure_*``); maintainer may still run viewer smoke ad hoc.
 
 **Definition of done (checklist):**
 
@@ -117,14 +100,14 @@ Phases below follow **Sequencing** at the top: **[P0] wrap-up** (verify + refact
 
 **Exit before [M1] (process):**
 
-- [ ] **Manual verification** — viewer passes (seeds, self-collision flag); **FJ** traces and picking interaction look plausible on representative instances.
-- [ ] **Refactor + alignment** — public helper names / module boundaries match maintainer intent; README + this roadmap’s checkboxes match shipped code; any small fixes from review land with tests.
+- [x] **Refactor + alignment (code shipped)** — collision/readout API, ``measure_fruiting_forces``, README / WRENCH / tests; exited to [M1] 2026-05-15.
+- [ ] **Manual verification** — *Deferred* (not a gate for [M1]); ad hoc: `example_fruiting_system.py` (seeds, `--no-self-collision`, **FJ** traces).
 
 **Optional stretch (promote during refactor only if needed):**
 
 - [ ] **1.a Floating-EE handle** — opt-in free-floating body fused to apple via `add_joint_fixed` on the same VBD `Model` (no FR3).
 - [ ] **`apply_ee_wrench` + acceleration pytest** on 1.a (see `newton/newton/tests/test_body_force.py` spirit).
-- [ ] **`measure_fruiting_forces` (or equivalent)** — structured dict for cable joints + fixed joints; document penalty vs. gather semantics for [M4].
+- [ ] **`measure_fruiting_forces` (or equivalent)** — structured dict for cable joints + fixed joints; document penalty vs. gather semantics for [M4]. *(Fixed joints + cable **indices** shipped in `measure_fruiting_forces`; cable **scalar** forces still follow `example_apple_stem.py`.)*
 - [ ] **Force-rises-with-load test** — monotonic load on apple; assert ordering vs. segment stiffness intent.
 - [ ] **New `uv run …` paths** — only if the refactor adds entrypoints; verify per `.cursor/rules/readme-runtime-verification.mdc`.
 
@@ -135,24 +118,21 @@ Phases below follow **Sequencing** at the top: **[P0] wrap-up** (verify + refact
 - Start with **scalar stiffness / thickness / length** parameters if full anisotropic materials are not yet exposed in the chosen Newton API; document the mapping from JSON fields to sim bodies.
 - **Triangle mesh import/generation** (OBJ/STL, high-res render meshes) is **out of scope for P0** unless promoted from **Backlog**; P0 “geometry” means the **capsule/sphere + cable joint** representation consistent with `example_apple_stem.py`.
 
-**Next actions (ordered, small slices):**
+**Next actions:** *(none — milestone complete; work continues under [M1])*
 
-1. [ ] **Manual verification** (mirror **Current focus** item 7).
-2. [ ] **Refactor + docs** (mirror **Current focus** item 8).
-3. [ ] **(Conditional)** If stretch goals are in scope: 1.a handle → `apply_ee_wrench` pytest → unified `measure_*` + force-rises-with-load → README / Agent execution notes.
-
-**Completed (archive as you go):**
+**Completed (archive):**
 
 - [x] JSON schema + fixtures (`apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json`, `fruiting_system_ranges_example_variance.json`)
 - [x] Generator module (`apple_pick_sim/fruiting_system.py`) with `load_ranges`, `sample_params`, `generate_scene`, `geometry_fingerprint`, `run_rollout`
 - [x] pytest tests in `apple_pick_sim/tests/test_fruiting_system.py` — variance + fixed-joint wrench coverage
 - [x] Example viewer + **FJ** fixed-joint wrench telemetry (`example_fruiting_system.py`)
+- [x] Refactor before M1: collision pipeline, ``fruiting_fixed_joints``, ``measure_fruiting_forces``, ``make_fruiting_solver_vbd``, chain collision filters, docs
 
 ---
 
 ### [M1] — FR3 manipulation stack (two-`Model` coupling)
 
-- **Status:** Planned (starts after **[P0] exit** — **manual verification** + **refactor** in **Current focus**; do not duplicate P0 DoD here)
+- **Status:** In progress (active since 2026-05-15; **[P0] Done** — reuse `fruiting_system` / wrench readouts; do not duplicate P0 DoD here)
 - **Links:** Reference patterns: `newton/newton/examples/cloth/example_cloth_franka.py` (Featherstone+VBD coupling on one `Model` — *adjacent* but **not** the M1 recipe, see below), `newton/newton/examples/ik/example_ik_franka.py` (FR3 URDF import + TCP body), `newton/newton/tests/test_body_force.py` (external wrench API), and the **"two-`Model` staggered coupling skeleton"** at the bottom of this section (authoritative pattern for M1).
 - **Vision:** Outcome 2 (*Manipulation stack*). MuJoCo enters as **`SolverMuJoCo` inside Newton** — there is **no separate MuJoCo runtime** in this milestone.
 
@@ -528,7 +508,8 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 - Run example sim (smoke): from repo root, `uv run --directory newton python ../apple_pick_sim/example_apple_stem.py`
 - Tests (Newton / shared env): `uv run --directory newton python -m newton.tests` (narrow with path/file when iterating, e.g. `uv run --directory newton python -m newton.tests -k test_cable`)
 - P0 fruiting-system tests: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -v -p no:launch_testing` (from repo root; `PYTHONPATH` ensures `apple_pick_sim` is importable; `--directory newton` sets the uv project but cwd becomes `newton/`)
-- P0 **manual verification** (viewer): `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py` (see README for flags); confirm **FJ** wrench plots during interaction.
+- P0 fruiting viewer (smoke / ad hoc): `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py` (see README for flags)
+- M1 work: follow **Current focus** and [M1] *Next actions*; add `uv run` entry-points here as slices land
 
 **Stop and ask the maintainer when:**
 

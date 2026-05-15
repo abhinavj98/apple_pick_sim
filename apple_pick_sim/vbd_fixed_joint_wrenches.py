@@ -27,7 +27,12 @@ class FixedJointWrenchRecord:
 
 
 def iter_fixed_joint_indices(model: newton.Model) -> list[tuple[int, str]]:
-    """Return ``(joint_index, label)`` for fruiting-style fixed joints (label prefix ``joint_``)."""
+    """Return ``(joint_index, label)`` for joints whose label starts with ``joint_`` and type is FIXED.
+
+    Prefer :func:`apple_pick_sim.fruiting_system.iter_fruiting_fixed_joint_indices` for
+    scenes built by :func:`~apple_pick_sim.fruiting_system.generate_scene`, which uses
+    explicit joint metadata instead of this heuristic.
+    """
     jt = model.joint_type.numpy()
     out: list[tuple[int, str]] = []
     for j, label in enumerate(model.joint_label):
@@ -47,8 +52,9 @@ def fixed_joint_wrenches_child_com_vbd(
     body_q_prev: Any,
     dt: float,
     control: newton.Control | None = None,
+    joint_pairs: list[tuple[int, str]] | None = None,
 ) -> list[FixedJointWrenchRecord]:
-    """Return per-fixed-joint wrenches aligned with :func:`iter_fixed_joint_indices` order.
+    """Return per-fixed-joint wrenches for the given joints (child at COM, world frame).
 
     Args:
         model: Finalized Newton model.
@@ -58,11 +64,17 @@ def fixed_joint_wrenches_child_com_vbd(
         body_q_prev: Pre-step body transforms for the same macro-step (world frame).
         dt: Step size [s].
         control: Optional control buffer passed to the gather API.
+        joint_pairs: Optional explicit ``(joint_index, label)`` list (e.g. from
+            :attr:`apple_pick_sim.fruiting_system.FruitingSystemScene.fruiting_fixed_joints`).
+            If ``None``, uses :func:`iter_fixed_joint_indices`.
 
     Returns:
-        One :class:`FixedJointWrenchRecord` per fixed joint (``joint_`` prefix), in joint-index order.
+        One :class:`FixedJointWrenchRecord` per joint in ``joint_pairs`` order (or heuristic order).
     """
-    pairs = list(iter_fixed_joint_indices(model))
+    if joint_pairs is None:
+        pairs = list(iter_fixed_joint_indices(model))
+    else:
+        pairs = list(joint_pairs)
     if not pairs:
         return []
 

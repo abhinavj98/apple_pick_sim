@@ -412,6 +412,56 @@ def test_rollout_deterministic():
     )
 
 
+def test_run_rollout_with_example_collision_pipeline_matches_default():
+    """Explicit example collision pipeline must match bare collide for identical rollouts."""
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    seed = 5
+    scene_a = fs.generate_scene(ranges, seed=seed, device="cpu")
+    scene_b = fs.generate_scene(ranges, seed=seed, device="cpu")
+    pipe = fs.example_collision_pipeline(scene_b.model, args=None)
+    fs.run_rollout(scene_a, num_steps=4, sim_substeps=6, fps=60.0)
+    fs.run_rollout(
+        scene_b,
+        num_steps=4,
+        sim_substeps=6,
+        fps=60.0,
+        collision_pipeline=pipe,
+    )
+    q_a = scene_a.state_0.body_q.to("cpu").numpy()
+    q_b = scene_b.state_0.body_q.to("cpu").numpy()
+    np.testing.assert_allclose(q_a, q_b, atol=1e-5)
+
+
+def test_fruiting_fixed_joints_matches_label_heuristic():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_scene(ranges, seed=3, device="cpu")
+    assert list(scene.fruiting_fixed_joints) == fs.iter_fixed_joint_indices(scene.model)
+
+
+def test_measure_fruiting_forces_returns_fixed_and_cable_indices():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_scene(ranges, seed=3, device="cpu")
+    sim_dt = (1.0 / 60.0) / 10.0
+    scene.state_0.clear_forces()
+    pipe = fs.example_collision_pipeline(scene.model, args=None)
+    contacts = scene.model.collide(scene.state_0, collision_pipeline=pipe)
+    q_prev = scene.state_0.body_q.numpy().copy()
+    scene.solver.step(scene.state_0, scene.state_1, scene.control, contacts, sim_dt)
+    scene.state_0, scene.state_1 = scene.state_1, scene.state_0
+    out = fs.measure_fruiting_forces(
+        scene,
+        scene.state_0.body_q.numpy(),
+        body_q_prev=q_prev,
+        dt=sim_dt,
+    )
+    assert "fixed_joints" in out and "cable_joint_indices" in out
+    assert len(out["fixed_joints"]) == len(scene.fruiting_fixed_joints)
+    assert len(out["cable_joint_indices"]) > 0
+
+
 def test_ranges_null_secondary_loads_and_scene_skips_secondary():
     """JSON null for a rod segment omits that piece from params and the built scene."""
     fs = _import_module()
@@ -482,7 +532,8 @@ def test_fixed_joint_wrenches_finite_after_substep():
     scene = fs.generate_scene(ranges, seed=3, device="cpu")
     sim_dt = (1.0 / 60.0) / 10.0
     scene.state_0.clear_forces()
-    contacts = scene.model.collide(scene.state_0)
+    pipe = fs.example_collision_pipeline(scene.model, args=None)
+    contacts = scene.model.collide(scene.state_0, collision_pipeline=pipe)
     q_prev = scene.state_0.body_q.numpy().copy()
     scene.solver.step(scene.state_0, scene.state_1, scene.control, contacts, sim_dt)
     scene.state_0, scene.state_1 = scene.state_1, scene.state_0
@@ -492,6 +543,7 @@ def test_fixed_joint_wrenches_finite_after_substep():
         body_q=scene.state_0.body_q.numpy(),
         body_q_prev=q_prev,
         dt=sim_dt,
+        joint_pairs=list(scene.fruiting_fixed_joints),
     )
     assert len(wrenches) == 4
     for w in wrenches:

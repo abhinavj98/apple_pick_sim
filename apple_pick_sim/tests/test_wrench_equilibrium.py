@@ -60,12 +60,10 @@ section 6.
 
 NOTE ON JOINT DAMPING
 ---------------------
-FIXED inter-segment joints default to ``rigid_joint_linear_kd=0`` in
-``_build_scene``, which leaves them undamped: the system oscillates around
-the equilibrium pose indefinitely and wrenches fluctuate with it.  The test
-helpers replace the built-in solver with one that sets a **small**
-``rigid_joint_linear_kd`` (see ``_JOINT_KD``): enough to damp oscillations
-within the settling horizon without the huge effective stiffness that a
+Inter-segment FIXED joints use a **small** default ``rigid_joint_linear_kd`` /
+``rigid_joint_angular_kd`` in :func:`apple_pick_sim.fruiting_system.make_fruiting_solver_vbd`
+(see ``FRUITING_VBD_RIGID_JOINT_KD`` in ``fruiting_system.py``): enough to damp
+oscillations within the settling horizon without the huge effective stiffness that a
 large ``kd`` produces together with ``rigid_joint_linear_k_start ~ 1e8``.
 
 FRAME & SIGN SUMMARY (see also docs/WRENCH_READOUT.md)
@@ -89,7 +87,6 @@ TEST STRUCTURE
 
 from __future__ import annotations
 
-import dataclasses
 import math
 from pathlib import Path
 
@@ -110,11 +107,6 @@ _RANGES_FIXTURE = (
 # subtree body can touch the ground (z = 0) after the chain settles.
 _BASE_Z = 4.0
 
-# Small joint linear damping for test settling only.  Large kd with stiff
-# joints inflates the augmented-Lagrangian constraint readout; keep this
-# small enough that F_z stays near the static m·g value after settling.
-_JOINT_KD = 5.0e-4
-
 
 # ---------------------------------------------------------------------------
 # Scene-building helpers
@@ -128,36 +120,13 @@ def _import_fs():
     return fs
 
 
-def _damped_solver(scene):
-    """Return a new SolverVBD with small linear/angular kd on rigid joints.
-
-    The ``_build_scene`` default uses ``rigid_joint_linear_kd=0``, leaving
-    FIXED joints undamped and the system oscillating.  Replacing the solver
-    with a lightly damped variant allows the chain to settle without blowing
-    up the constraint force readout.  All solver parameters other than kd
-    match ``_build_scene``.
-    """
-    import newton.solvers
-
-    return newton.solvers.SolverVBD(
-        scene.model,
-        iterations=50,
-        friction_epsilon=0.1,
-        rigid_contact_k_start=1.0e4,
-        rigid_joint_linear_k_start=1.0e8,
-        rigid_joint_angular_k_start=1.0e6,
-        rigid_joint_linear_kd=_JOINT_KD,
-        rigid_joint_angular_kd=_JOINT_KD,
-    )
-
-
 def _make_minimal_scene(apple_radius: float, apple_density: float, device: str = "cpu"):
     """Minimal scene: 2-segment vertical stem + apple only.
 
     The chain hangs straight down from ``_BASE_Z``.  Starting configuration
     already approximates mechanical equilibrium; the solver primarily needs
     to build up its Lagrange multipliers (AVBD dual variables).
-    Returns the scene with a damped solver for reliable equilibrium testing.
+    Returns the scene built by ``_build_scene`` (default fruiting solver includes light rigid-joint kd).
     """
     fs = _import_fs()
     params = fs.FruitingSystemParams(
@@ -178,7 +147,7 @@ def _make_minimal_scene(apple_radius: float, apple_density: float, device: str =
         apple_density=apple_density,
     )
     scene = fs._build_scene(params, base_pos=(0.0, 0.0, _BASE_Z), device=device)
-    return dataclasses.replace(scene, solver=_damped_solver(scene))
+    return scene
 
 
 def _make_full_chain_scene(device: str = "cpu"):
@@ -186,7 +155,6 @@ def _make_full_chain_scene(device: str = "cpu"):
 
     All segments point straight down so the chain starts near equilibrium.
     Masses are deterministic (no random sampling) for exact analytic expectations.
-    Returns the scene with a damped solver.
     """
     fs = _import_fs()
     params = fs.FruitingSystemParams(
@@ -234,7 +202,7 @@ def _make_full_chain_scene(device: str = "cpu"):
         apple_density=850.0,
     )
     scene = fs._build_scene(params, base_pos=(0.0, 0.0, _BASE_Z), device=device)
-    return dataclasses.replace(scene, solver=_damped_solver(scene))
+    return scene
 
 
 # ---------------------------------------------------------------------------
@@ -247,8 +215,12 @@ def _settle(scene, *, num_frames: int = 220, substeps: int = 10, fps: float = 60
 
     The chain starts (approximately) at its equilibrium configuration; the
     AVBD dual variables (Lagrange multipliers) need a few seconds of
-    simulation time to converge.  With small ``_JOINT_KD`` the oscillation
-    around equilibrium is damped slowly enough to avoid distorting ``F_z``.
+    simulation time to converge.  Light rigid-joint ``kd`` from
+    ``fruiting_system.make_fruiting_solver_vbd`` damps oscillation
+    around equilibrium slowly enough to avoid distorting ``F_z``.
+
+    Uses :func:`apple_pick_sim.fruiting_system.example_collision_pipeline` so
+    collision detection matches ``example_fruiting_system.py``.
 
     Returns:
         Tuple ``(q_prev_np, sim_dt)`` ready for
@@ -256,6 +228,8 @@ def _settle(scene, *, num_frames: int = 220, substeps: int = 10, fps: float = 60
         ``q_prev_np`` is the snapshot taken *before* the final substep so the
         wrench API receives a consistent ``(body_q_prev → body_q, dt)`` pair.
     """
+    fs = _import_fs()
+    pipe = fs.example_collision_pipeline(scene.model)
     frame_dt = 1.0 / fps
     sim_dt = frame_dt / substeps
     last_frame = num_frames - 1
@@ -265,7 +239,7 @@ def _settle(scene, *, num_frames: int = 220, substeps: int = 10, fps: float = 60
     for f in range(num_frames):
         for s in range(substeps):
             scene.state_0.clear_forces()
-            contacts = scene.model.collide(scene.state_0)
+            contacts = scene.model.collide(scene.state_0, collision_pipeline=pipe)
             if f == last_frame and s == last_sub:
                 q_prev_np = scene.state_0.body_q.numpy().copy()
             scene.solver.step(
@@ -294,12 +268,13 @@ def _settle_joint_fz_last_frame_mean(
     sim_dt = frame_dt / substeps
     last_frame = num_frames - 1
     fs = _import_fs()
+    pipe = fs.example_collision_pipeline(scene.model)
     accum: dict[str, list[float]] = {lab: [] for lab in joint_labels}
 
     for f in range(num_frames):
         for s in range(substeps):
             scene.state_0.clear_forces()
-            contacts = scene.model.collide(scene.state_0)
+            contacts = scene.model.collide(scene.state_0, collision_pipeline=pipe)
             q_prev_np = scene.state_0.body_q.numpy().copy()
             scene.solver.step(
                 scene.state_0, scene.state_1, scene.control, contacts, sim_dt
@@ -312,6 +287,7 @@ def _settle_joint_fz_last_frame_mean(
                     body_q=scene.state_0.body_q.numpy(),
                     body_q_prev=q_prev_np,
                     dt=sim_dt,
+                    joint_pairs=list(scene.fruiting_fixed_joints),
                 )
                 by_label = {w.label: w for w in wrenches}
                 for lab in joint_labels:
@@ -367,6 +343,7 @@ def _get_wrenches_by_label(scene, q_prev_np, sim_dt) -> dict:
         body_q=scene.state_0.body_q.numpy(),
         body_q_prev=q_prev_np,
         dt=sim_dt,
+        joint_pairs=list(scene.fruiting_fixed_joints),
     )
     return {w.label: w for w in wrenches}
 

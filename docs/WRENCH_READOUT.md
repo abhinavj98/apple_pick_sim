@@ -16,7 +16,9 @@ wrenches = fixed_joint_wrenches_child_com_vbd(
     body_q=state_0.body_q.numpy(),   # post-step transforms
     body_q_prev=q_prev,              # pre-step transforms (same macro-step)
     dt=sim_dt,
+    joint_pairs=list(scene.fruiting_fixed_joints),  # explicit fruiting joints (recommended)
 )
+# Or omit joint_pairs to fall back to iter_fixed_joint_indices(model) (label heuristic).
 ```
 
 Each element is a `FixedJointWrenchRecord` with two fields:
@@ -26,8 +28,12 @@ Each element is a `FixedJointWrenchRecord` with two fields:
 | `force_world` | `np.ndarray (3,) float32` | Linear force on the **child** body from the joint [N], **world frame** |
 | `torque_at_child_com_world` | `np.ndarray (3,) float32` | Total torque on the **child** about its COM [N·m], **world frame** |
 
-The API iterates over every joint whose label begins with `joint_` and whose
-type is `JointType.FIXED` (see `iter_fixed_joint_indices`).
+For scenes from ``apple_pick_sim.fruiting_system.generate_scene``, pass
+``joint_pairs=list(scene.fruiting_fixed_joints)`` (or use
+``apple_pick_sim.fruiting_system.measure_fruiting_forces``). The legacy helper
+``apple_pick_sim.vbd_fixed_joint_wrenches.iter_fixed_joint_indices`` matches
+today’s fruiting labels (``joint_*`` prefix + FIXED) but is not ideal once extra
+fixed joints exist (e.g. M1 proxies).
 
 ---
 
@@ -192,6 +198,12 @@ interpret while preserving seed-to-seed variation in lengths and stiffness.
 ---
 
 ## 7. Tolerances
+
+**Rigid joint damping:** ``apple_pick_sim.fruiting_system.make_fruiting_solver_vbd``
+applies small ``rigid_joint_linear_kd`` / ``rigid_joint_angular_kd`` (constant
+``FRUITING_VBD_RIGID_JOINT_KD`` in ``fruiting_system.py``) so inter-segment FIXED
+joints settle; the viewer, headless rollouts, and ``test_wrench_equilibrium.py``
+share this solver configuration.
 
 The AVBD solver uses an augmented-Lagrangian penalty method; constraint
 violations are small but not exactly zero.  The expected tolerances at

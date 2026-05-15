@@ -83,17 +83,23 @@ import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 "
 ```
 
-**Short headless VBD rollout**:
+**Short headless VBD rollout** (optional: pass ``collision_pipeline=example_collision_pipeline(scene.model)`` to match the viewer’s ``create_collision_pipeline`` path):
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python -c "
-from apple_pick_sim.fruiting_system import load_ranges, generate_scene, geometry_fingerprint, run_rollout
+from apple_pick_sim.fruiting_system import (
+    load_ranges, generate_scene, geometry_fingerprint, run_rollout,
+    example_collision_pipeline,
+)
 ranges = load_ranges('../apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json')
 scene  = generate_scene(ranges, seed=42)
-run_rollout(scene, num_steps=20, sim_substeps=10)
+pipe = example_collision_pipeline(scene.model, args=None)
+run_rollout(scene, num_steps=20, sim_substeps=10, collision_pipeline=pipe)
 import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 "
 ```
+
+**Structured force readout** (fixed-joint wrenches plus ``cable_joint_indices`` metadata; cable scalar forces follow ``example_apple_stem.py`` when needed): call ``measure_fruiting_forces`` from ``apple_pick_sim.fruiting_system`` with post-step ``body_q``, pre-step ``body_q_prev``, and ``dt`` after a ``SolverVBD`` substep.
 
 ## Tests
 

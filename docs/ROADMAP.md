@@ -17,7 +17,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-05-15 (**[M1] active** — FR3 + custom EE, rigid EE–apple contact, two-`Model` staggered coupling, **arm-side** force measurement. **[P0] Done** — variance, fixed-joint wrenches, refactor landed; optional stretch deferred.) |
+| **Last updated** | 2026-05-18 (**[M1] active** — FR3 + custom EE **loaded** on `robot_model` (`testfr3_resolved.usda`); **next:** keyboard driver for interactive testing, then **re-verify coupled forces** on the FR3 stack. **[P0] Done**.) |
 | **Owner** | Abhinav |
 | **Vision** | See `docs/VISION.md` |
 
@@ -39,7 +39,7 @@
 Owner intent drives phase order (vision outcomes stay valid; **order** is explicit here):
 
 1. **Done — Outcome 1 ([P0]):** **Variational geometry** and **joint-level force readouts** shipped; refactor (collision/readout API, ``measure_fruiting_forces``, solver damping, docs) landed. Optional P0 stretch (1.a floating EE, force-rises-with-load, richer cable scalars) **deferred**. See `docs/VISION.md` *Procedural fruiting variance*; archive under [P0].
-2. **Now — Outcome 2 (manipulation stack, [M1]):** Integrate a **Franka FR3** with a **custom end-effector**, add **rigid contact** between the end-effector and the apple, and run the **two-`Model`** **`SolverMuJoCo` + `SolverVBD`** **staggered coupling** (proxy bodies + one-step lag — cable joints still cannot live on the MuJoCo model). **Measure forces on the robot arm** (MuJoCo / `body_f` / joint-level readouts as agreed) **and** reuse **P0 VBD telemetry** on the cable model. **End-effector wrench input** drives the arm in M1 tests. See vision *Manipulation stack*; see [M1] for architecture, DoD, and the coupling skeleton.
+2. **Now — Outcome 2 (manipulation stack, [M1]):** **FR3 + custom EE loaded** on the two-`Model` stack; **next:** **keyboard teleop** for interactive testing, then **re-verify coupled forces** and stability on the articulated arm. Still to finish: **rigid EE–apple contact**, **robot-arm force readouts**, and acceptance tuning. See vision *Manipulation stack*; see [M1] for architecture, DoD, and the coupling skeleton.
 3. **Later — Outcome 3 (learning):** **RL infrastructure** for an **exploration policy** (and downstream training hooks). Scope, stack, and reward/exploration design are **TBD** in this file until you promote specifics from discussion into milestones and “Current focus”.
 
 Later vision phases (real data, calibration, final pick policy) remain in milestones below; they are **not** active until the maintainer moves focus past arm integration and RL foundations.
@@ -50,21 +50,24 @@ Later vision phases (real data, calibration, final pick policy) remain in milest
 
 **Active milestone:** [M1] — **FR3 manipulation stack** (two-`Model` **`SolverMuJoCo` + `SolverVBD`** coupling).
 
-**In one sentence, the goal right now:** Extend **[P0]**’s fruiting scene with a **Franka FR3 + custom end-effector**, **rigid EE–apple contact** on the coupled stack, the **staggered proxy coupling protocol**, and **force readouts on both** the VBD cable model (reuse P0) **and** the robot arm.
+**In one sentence, the goal right now:** The **FR3 + custom EE** is **loaded** on the coupled stack — add a **keyboard driver** for interactive testing, then **re-verify coupled forces** (proxy/stem harvest, stability) under real arm motion before finishing EE–apple contact and arm-side readouts.
 
-**Build on (do not reimplement):** `apple_pick_sim/fruiting_system.py` — `generate_scene`, `run_rollout`, `measure_fruiting_forces`, `vbd_fixed_joint_wrenches.py`. Reference patterns: `newton/newton/examples/ik/example_ik_franka.py`, `newton/newton/examples/cloth/example_cloth_franka.py` (adjacent, not the M1 recipe), and the **two-`Model` staggered coupling skeleton** at the bottom of [M1] in this file.
+**Build on (do not reimplement):** `apple_pick_sim/fruiting_system.py` — `generate_scene`, **`generate_coupled_cable_scene`**, `run_rollout`, `measure_fruiting_forces`, `vbd_fixed_joint_wrenches.py`; `apple_pick_sim/proxy_coupling.py` for staggered sync/harvest; **`apple_pick_sim/coupled_fruiting.py`** + **`apple_pick_sim/fr3_robot.py`** for the MuJoCo+VBD loop and FR3 import (`build_coupled_fruiting_fr3`, `assets/testfr3_resolved.usda`). Architecture reference: **`docs/mujoco-vbd-coupling-architecture.md`**, **`docs/fr3-usd-import-implementation.md`**. Newton patterns: `newton/newton/examples/ik/example_ik_franka.py`, `newton/newton/examples/cloth/example_cloth_franka.py` (adjacent, not the M1 recipe), and the **two-`Model` staggered coupling skeleton** at the bottom of [M1].
 
 **Next up (ordered — mirrors [M1] Next actions):**
 
-1. [ ] **Slice 1 — Proxy primitives:** `sync_proxy_state` Warp kernel + `harvest_proxy_wrenches(...)` under `apple_pick_sim/`; **first sub-task:** VBD wrench-readout spike (direct read / narrow `newton/` extension / velocity-delta reconstruction); unit tests in isolation (no MuJoCo step yet).
-2. [ ] **Slice 2 — FR3 + custom EE + full 1.b loop:** `robot_model` + `cable_model`, collision-equipped gripper **proxy**, **rigid EE–apple contact**, staggered protocol, FR3 TCP `body_f` wrenches, P0 VBD readouts + **arm-side** force extraction; coupling / contact tests.
-3. [ ] **Slice 3 — Commands + docs:** README and Agent execution notes for **1.b** FR3 flows; verify per `.cursor/rules/readme-runtime-verification.mdc`.
+1. [x] **Slice 1 — Proxy primitives:** `sync_proxy_state` + `harvest_proxy_wrenches` (velocity-delta option 3) in `apple_pick_sim/proxy_coupling.py`; unit tests in `apple_pick_sim/tests/test_proxy_coupling.py`.
+2. [x] **Slice 2a–b (placeholder + stem harvest):** `generate_coupled_cable_scene`, **`build_coupled_fruiting_placeholder`**, unified-sync + stem-harvest path; tests `test_coupled_cable_scene.py`, `test_coupled_fruiting_system.py`, `test_coupling_stability.py`, `test_proxy_coupling.py`.
+3. [x] **Slice 2 — FR3 robot loaded:** `assets/testfr3_resolved.usda`, bundled `assets/fr3/`, `fr3_robot.py`, `build_coupled_fruiting_fr3`, IK bootstrap + root placement, `test_fr3_usd_import.py`, FR3 coupled tests, `--robot fr3` on `example_coupled_fruiting.py`; see `docs/fr3-usd-import-implementation.md`.
+4. [ ] **Slice 2c — Keyboard driver for testing:** Interactive TCP teleop on the **coupled FR3** stack (IK → `joint_target_*` → MuJoCo step each substep) so the arm can be exercised in the viewer without scripted wrenches. Build on / finish `example_fr3_keyboard.py`, `Fr3EEVelocityController`, and `--fr3-keyboard` in `example_coupled_fruiting.py`; document keys and smoke paths in README.
+5. [ ] **Slice 2d — Coupled forces re-check:** With the loaded arm, re-run proxy harvest + stem-harvest / `--debug-coupling-forces` and headless checks (`verify_coupling.py`, `test_coupling_stability.py`); confirm applied vs harvested wrenches are sane under keyboard-driven motion (not only placeholder-TCP regressions). **Then:** arm-side force readouts, EE–apple contact scenarios, stability pass, `disable_contacts=False` tuning as needed.
+6. [ ] **Slice 3 — Commands + docs:** README and Agent execution notes for **1.b** FR3 + keyboard + coupling-debug flows; verify per `.cursor/rules/readme-runtime-verification.mdc`.
 
-**Explicitly not in this milestone:** IK / trajectory control, soft multi-finger grasping, full `SensorContact` plumbing, rollout log schema (M2), calibration (M4), RL harness (M2). See [M1] *Explicitly not* for the full list.
+**Explicitly not in this milestone:** Full IK / trajectory control beyond teleop, soft multi-finger grasping, full `SensorContact` plumbing, rollout log schema (M2), calibration (M4), RL harness (M2). See [M1] *Explicitly not* for the full list.
 
-**Blockers (if any):** None assumed. Justified `newton/` edits only for proxy wrench readout if Slice 1 spike requires a narrow public API (see [M1] Slice 1 spike).
+**Blockers (if any):** None for FR3 load or keyboard work. **Placeholder-only** coupled instability (`--robot` default / free TCP) remains a **known limitation** for comparison — FR3 is the stack to tune and validate forces on next.
 
-**Last completed slice (prior milestone):** [P0] variational fruiting + fixed-joint wrench telemetry + refactor; exited 2026-05-15.
+**Last completed slice:** [M1] Slice 2 — **FR3 + custom EE loaded** on `robot_model` (`testfr3_resolved.usda`, `build_coupled_fruiting_fr3`) (2026-05-18). Prior: Slice 2b stem-harvest + `docs/mujoco-vbd-coupling-architecture.md`; Slice 2a `generate_coupled_cable_scene`; Slice 1 `proxy_coupling.py`; P0 exited 2026-05-15.
 
 ---
 
@@ -171,6 +174,36 @@ robot_builder.add_urdf(
 4. Advance the VBD solver one step on `cable_model` / `vbd_state_0` (rod + apple + **EE–apple and proxy** contacts/joints + any apple↔proxy **fixed** joint used for baselines).
 5. **Harvest** the net wrench on each proxy body from the just-completed VBD step — read it from VBD's per-body force/torque accumulators if they're exposed (preferred), else reconstruct from the velocity delta (see Slice 4 spike below). Store as the new lagged wrench used at step 1 of the next iteration.
 
+**Implemented harvest paths (Slice 2b, `apple_pick_sim/coupled_fruiting.py`):**
+
+| Path | When | Harvest | Sync |
+|------|------|---------|------|
+| **Stem-harvest (default)** | `GripperProxyConfig.fix_to_apple=True` | `harvest_stem_joint_wrench` — stem→apple FIXED joint via `gather_joint_wrench_child_com`; under-relax (`stem_coupling_gain`, force/torque caps) | `sync_proxy_and_apple_state` — co-teleport proxy + apple from TCP |
+| **Velocity-delta** | `fix_to_apple=False` | `harvest_proxy_wrenches` — option 3 from Slice 4 spike | `sync_proxy_state` — proxy only |
+
+See **`docs/mujoco-vbd-coupling-architecture.md`** for per-model ownership and the full substep diagram.
+
+**Current progress (2026-05-18):**
+
+- [x] Slice 1 — `proxy_coupling.py` (`sync_proxy_state`, velocity-delta harvest, `align_proxy_body_q_prev_for_vbd`); `test_proxy_coupling.py`.
+- [x] Slice 2a — `generate_coupled_cable_scene` / `CoupledCableScene` (P0 tree + gripper proxy); `test_coupled_cable_scene.py`.
+- [x] Slice 2b (placeholder) — `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_placeholder` (free-floating TCP box, `disable_contacts=True`, robot gravity off), stem-harvest + unified apple sync; `example_coupled_fruiting.py`; `test_coupled_fruiting_system.py`, `test_coupling_stability.py`; headless `diagnostics/verify_coupling.py`.
+- [x] Slice 2 (FR3 load) — **`assets/testfr3_resolved.usda`** + bundled `assets/fr3/`; `build_coupled_fruiting_fr3` on `robot_model` (IK bootstrap, placement); see `docs/fr3-usd-import-implementation.md`.
+- [ ] Slice 2c — **Keyboard driver** for interactive coupled testing (`example_fr3_keyboard.py`, `--fr3-keyboard` on coupled example).
+- [ ] Slice 2d — **Coupled forces re-verification** on FR3 (harvest caps, `--debug-coupling-forces`, stability acceptance); then contact tuning, arm-side readouts, `disable_contacts=False` as needed.
+- [ ] Slice 3 — README / execution notes for FR3 **1.b** + keyboard + coupling-debug flows.
+
+**Known limitations (placeholder TCP — historical; FR3 is loaded):**
+
+- **`example_coupled_fruiting.py` with default `fix_to_apple=True` is visually / numerically unstable** for many seeds (e.g. `--seed 42`): MuJoCo reports huge **QACC** on the free TCP within the first few substeps (`WARNING: Nan, Inf or huge value in QACC at DOF …`).
+- **Root cause (accepted for now):** explicit **one-step-lag** feedback + **stem-joint harvest** reading **stiff VBD penalty spikes** (~kN) when the apple is kinematically teleported each substep while the stem remains a high-stiffness FIXED joint; harvested wrenches **saturate** `stem_force_cap_N` (80 N default) and slam a **~50 g** free body with **no arm structure** and **zero robot gravity** (`disable_contacts=True`).
+- **`fix_to_apple=False` + velocity-delta harvest** stays ~mg–centi-Newton scale in headless checks — useful for proxy/sync regression, not the default grasp baseline.
+- **`test_coupling_stability.py`** asserts finiteness and cap compliance, **not** quiescent MuJoCo motion or small TCP velocities; passing tests does **not** imply a stable interactive demo.
+- **`--no-self-collision` / `--mujoco-viewer`** are not the primary instability drivers; they only change cable collisions or add a second viewer window.
+- **Workarounds for placeholder mode:** `--only-vbd` for tree motion; `--robot fr3` for the loaded arm; `--debug-coupling-forces` to compare applied vs harvested wrenches.
+
+**Active tuning (Slice 2d, with FR3 loaded):** stem-harvest gain/cap schedule, optional harvest filtering after teleport, timestep/substep study, and interactive stability + **force sanity** under keyboard teleop on the **fixed-base articulated** robot.
+
 Items the implementation must add on top of P0:
 
 - `harvest_proxy_wrenches(vbd_solver, vbd_state, vbd_contacts, dt) -> wp.array(spatial_vector)` — not in Newton; lives under `apple_pick_sim/`. **Preferred implementation**: read the VBD-internal per-body force/torque accumulators populated during contact + constraint solves (see `newton/_src/solvers/vbd/rigid_vbd_kernels.py` — `accumulate_body_body_contacts_per_body`, `accumulate_body_particle_contacts_per_body`, and the `joint_lambda_lin` constraint Lagrangians). One readout per proxy, summed into a single spatial wrench. **Fixed-joint reactions on the VBD tree** (apple, handle, stem, etc.) use **[P0]’s Newton API path** — `SolverVBD.gather_joint_wrench_child_com` — not this harvester.
@@ -217,8 +250,8 @@ SolverMuJoCo(
 - [ ] **Custom end-effector:** FR3 import extended with **project-specific EE geometry** (URDF fragment, extra shapes, or documented asset) and tested load path.
 - [ ] **Rigid EE–apple contact:** At least one headless scenario where apple and EE (or **gripper proxy** on `cable_model`) interact through **rigid / stiff contact**; contact pipeline and filters documented.
 - [ ] **Robot-arm force readouts:** Documented + tested extraction of **interaction forces/torques on the FR3 chain** from the **coupled** sim (agreed links / joints / `body_f` / MuJoCo diagnostics).
-- [ ] **Builder integration:** A function in `apple_pick_sim/` extends the P0 builder to produce **1.b** (`robot_model` + `cable_model`, FR3 + proxy bodies + EE) from `(range_json, seed)`, with the FR3 base parked so the TCP / EE starts near the sampled apple.
-- [ ] **Two-`Model` staggered step loop:** One reproducible script under `apple_pick_sim/` runs **`SolverMuJoCo` + `SolverVBD`** headlessly and deterministically, implementing the protocol above. The proxy sync kernel and `harvest_proxy_wrenches` are unit-tested separately.
+- [x] **Builder integration (robot half):** :func:`~apple_pick_sim.coupled_fruiting.build_coupled_fruiting_fr3` + :func:`~apple_pick_sim.fruiting_system.generate_coupled_cable_scene` produce **1.b** (`robot_model` + `cable_model`, FR3 + proxy + placement). **Remaining:** EE–apple contact scenarios and documented `(range_json, seed)` entry if not already covered by coupled example flags.
+- [x] **Two-`Model` staggered step loop (placeholder):** :class:`~apple_pick_sim.coupled_fruiting.CoupledFruitingScene` + :meth:`~apple_pick_sim.coupled_fruiting.CoupledFruitingScene.coupled_substep` with placeholder TCP; `example_coupled_fruiting.py`; `test_coupled_fruiting_system.py`. **Remaining:** same loop on **FR3** with stability acceptance (Slice 2).
 - [ ] **End-effector wrench on FR3:** Documented application of wrenches to the MuJoCo robot `body_f` (TCP / agreed link), once per substep, with tests that build on **[P0]** patterns where applicable.
 - [ ] **Reuse [P0] telemetry on 1.b:** **[P0]** fixed-joint + cable-side readouts run on `cable_model` (including apple↔**gripper-proxy** when that joint exists); coupling / load-path test compares against an agreed baseline (e.g. fused-proxy regression, P0-only recording, or **1.a** if present).
 - [ ] **Constraint-Lagrangian caveat documented:** Where cable joints still use penalty proxies, docstrings state that and link **[M4]**; fixed-joint gather path documented per Newton API.
@@ -228,7 +261,7 @@ SolverMuJoCo(
 
 - Newton-native by default; do **not** introduce a separate MuJoCo binary or runtime. `SolverMuJoCo` already lives in Newton; that is the only "MuJoCo" surface in M1.
 - Keep all new logic under `apple_pick_sim/`. The only justifiable `newton/` edits are if `solver.joint_penalty_k` lookup needs a kernel for parity with the rest of the example (the existing TODO in `example_apple_stem.py::step` already notes this) — open a focused PR if it does.
-- The two-`Model` coupling is **one-way per step with a one-step lag**. Do not attempt fixed-point iteration inside a step in M1 — accept the lag, document the implied stability/timestep constraint, and revisit only if a scenario diverges.
+- The two-`Model` coupling is **one-way per step with a one-step lag**. Do not attempt fixed-point iteration inside a step in M1 — accept the lag, document the implied stability/timestep constraint. **FR3 is loaded** — use keyboard teleop (Slice 2c) then **re-verify coupled forces** (Slice 2d) on the articulated arm; placeholder-TCP paths remain for low-force regression (`fix_to_apple=False`, velocity-delta).
 - Proxy bodies must mirror the *effective* inertia of the relevant robot subchain (often dominated by the hand + chain reduced-mass terms), not the raw link inertia, so that VBD-side contact/joint solutions remain well-conditioned. Tune by test, not by guess.
 - Per `.cursor/rules/test-driven-development.mdc`, ship each slice **red → green**: **[P0]** stretch (1.a) owns wrench-acceleration tests **if** that path is promoted; **M1** adds failing coupling / contact tests before the full **1.b** loop and proxy-harvest unit tests before integrating MuJoCo stepping.
 - Deterministic settings only (seeded P0 instance, fixed substep count, fixed wrench schedule for tests). Do not introduce viewer-coupled randomness into pytest paths.
@@ -236,9 +269,11 @@ SolverMuJoCo(
 
 **Next actions (ordered, small slices):**
 
-1. [ ] **Slice 1 — Proxy primitives (incl. VBD wrench-readout spike for *proxies*):** Add `sync_proxy_state` Warp kernel and `harvest_proxy_wrenches(...)` under `apple_pick_sim/`. **First sub-task**: a short, focused spike that establishes which of the three options in the "Slice 4 spike" paragraph (direct read / narrow public extension / velocity-delta reconstruction) `harvest_proxy_wrenches` will use; pick the cheapest one that passes a momentum-balance unit test on a mocked 1-body VBD scene. Unit tests exercise both helpers in isolation (synthetic robot states, no MuJoCo solver yet).
-2. [ ] **Slice 2 — FR3 + custom EE + 1.b (full two-`Model` loop + EE–apple contact):** Build `robot_model` with FR3 URDF + EE, build `cable_model` with collision-equipped **proxy** and **rigid contact** to the apple (and optional **fixed** fusion for regression), run the staggered protocol headlessly for *N* frames, apply wrenches on the FR3 TCP `body_f`, wire **[P0]** VBD readouts + **arm-side** force extraction, add coupling / contact tests.
-3. [ ] **Slice 3 — Commands + docs:** README and Agent execution notes for **1.b** FR3 flows updated and verified per `.cursor/rules/readme-runtime-verification.mdc`.
+1. [x] **Slice 1 — Proxy primitives (incl. VBD wrench-readout spike for *proxies*):** `apple_pick_sim/proxy_coupling.py` — velocity-delta harvest (option 3); `apple_pick_sim/tests/test_proxy_coupling.py`.
+2. [x] **Slice 2 — FR3 robot loaded:** `testfr3_resolved.usda`, `build_coupled_fruiting_fr3`, placement + bootstrap tests; `--robot fr3` on coupled example.
+3. [ ] **Slice 2c — Keyboard driver for testing:** Interactive TCP teleop on coupled FR3 (`example_fr3_keyboard.py`, `--fr3-keyboard`, `Fr3EEVelocityController`); README smoke paths.
+4. [ ] **Slice 2d — Coupled forces + stability on FR3:** Re-check proxy/stem harvest and applied wrenches under teleop; `verify_coupling.py` / `--debug-coupling-forces`; then EE–apple contact, arm-side readouts, `disable_contacts=False` tuning as needed.
+5. [ ] **Slice 3 — Commands + docs:** README and Agent execution notes for **1.b** FR3 + keyboard + coupling-debug flows; verified per `.cursor/rules/readme-runtime-verification.mdc`.
 
 **Two-`Model` staggered coupling skeleton (authoritative reference):**
 
@@ -375,7 +410,9 @@ vbd_state_0, vbd_state_1 = vbd_state_1, vbd_state_0
 
 **Completed (archive as you go):**
 
-- [ ] *(none yet)*
+- [x] Slice 1 — `apple_pick_sim/proxy_coupling.py` + `tests/test_proxy_coupling.py` (2026-05-15).
+- [x] Slice 2a — `generate_coupled_cable_scene` / `CoupledCableScene` + `tests/test_coupled_cable_scene.py` (2026-05-15).
+- [x] Slice 2b (placeholder) — `coupled_fruiting.py`, `example_coupled_fruiting.py`, stem-harvest + unified sync, `tests/test_coupled_fruiting_system.py`, `tests/test_coupling_stability.py`, `diagnostics/verify_coupling.py`, `docs/mujoco-vbd-coupling-architecture.md` (2026-05-18).
 
 ---
 
@@ -508,7 +545,17 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 - Run example sim (smoke): from repo root, `uv run --directory newton python ../apple_pick_sim/example_apple_stem.py`
 - Tests (Newton / shared env): `uv run --directory newton python -m newton.tests` (narrow with path/file when iterating, e.g. `uv run --directory newton python -m newton.tests -k test_cable`)
 - P0 fruiting-system tests: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -v -p no:launch_testing` (from repo root; `PYTHONPATH` ensures `apple_pick_sim` is importable; `--directory newton` sets the uv project but cwd becomes `newton/`)
+- M1 coupled cable scene (Slice 2a): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupled_cable_scene.py -q -p no:launch_testing`
+- M1 coupled fruiting (Slice 2b placeholder loop): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupled_fruiting_system.py -q -p no:launch_testing`
+- M1 proxy coupling (Slice 1): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_proxy_coupling.py -q -p no:launch_testing`
+- M1 coupling stability (longer-horizon): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupling_stability.py -q -p no:launch_testing`
+- M1 coupling verification CLI: `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/verify_coupling.py --num-substeps 600 --max-force 5 --max-torque 1`
 - P0 fruiting viewer (smoke / ad hoc): `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py` (see README for flags)
+- M1 coupled viewer (placeholder default): `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py` (see README; `--viewer null --num-frames …` smoke; `--only-vbd` for stable cable-only motion). **Note:** placeholder `fix_to_apple=True` may still blow up — use `--robot fr3` for the loaded arm.
+- M1 FR3 loaded (Slice 2 done): `PYTHONPATH=$(pwd) uv run --directory newton python -m unittest apple_pick_sim.tests.test_fr3_usd_import -v`; `test_coupled_fruiting_system.py::test_fr3_*`; `example_coupled_fruiting.py --robot fr3`; see `docs/fr3-usd-import-implementation.md`.
+- M1 keyboard teleop (Slice 2c — next): `example_fr3_keyboard.py` (standalone); `example_coupled_fruiting.py --robot fr3 --fr3-keyboard --viewer gl` (coupled stack; focus viewer window).
+- M1 coupled forces debug (Slice 2d — after keyboard): `example_coupled_fruiting.py --robot fr3 --debug-coupling-forces`; `diagnostics/verify_coupling.py` for headless checks.
+- M1 architecture doc: `docs/mujoco-vbd-coupling-architecture.md`
 - M1 work: follow **Current focus** and [M1] *Next actions*; add `uv run` entry-points here as slices land
 
 **Stop and ask the maintainer when:**

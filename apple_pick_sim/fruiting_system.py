@@ -24,6 +24,42 @@ Fixed-joint wrenches: :func:`iter_fruiting_fixed_joint_indices` and
 :func:`fixed_joint_wrenches_child_com_vbd` with ``joint_pairs`` from
 :attr:`FruitingSystemScene.fruiting_fixed_joints`, or :func:`measure_fruiting_forces`.
 See ``apple_pick_sim/vbd_fixed_joint_wrenches.py`` and ``docs/WRENCH_READOUT.md``.
+
+M1 coupled cable: :func:`generate_coupled_cable_scene` builds the P0 fruiting tree on one
+``Model`` plus a collision-equipped **gripper proxy** body for staggered robot coupling
+(see ``docs/ROADMAP.md`` [M1]).
+
+Staggered VBD ↔ MuJoCo force transfer
+---------------------------------------
+The cable tree and the robot arm live on **two separate** ``Model`` instances with
+**different solvers** (``SolverVBD`` vs ``SolverMuJoCo``). They cannot share joints, so
+interaction is bridged by a **gripper proxy** rigid body on the cable model that mirrors
+the robot TCP pose. The proxy has collision geometry so VBD can resolve EE–apple contact
+while the robot side is integrated by MuJoCo.
+
+Per simulation substep the **staggered, one-step-lag** protocol (implemented in
+``apple_pick_sim/coupled_fruiting.py``; kernels in ``apple_pick_sim/proxy_coupling.py``)
+exchanges wrenches through the proxy pair registered via
+:meth:`CoupledCableScene.proxy_registry`:
+
+1. **MuJoCo ← VBD (lagged):** Apply the wrench harvested at the *previous* substep
+   (``proxy_forces[robot_tcp]``) into ``robot_state.body_f[tcp]``. MuJoCo integrates
+   the robot with this external load plus any user EE wrench.
+2. **MuJoCo step:** Advance the robot ``Model`` by ``dt``.
+3. **Kinematic sync (robot → proxy):** Copy TCP pose/velocity onto the cable-model
+   proxy body. Subtract the *same* lagged wrench and a gravity term from the proxy's
+   linear/angular velocity so VBD does not **double-integrate** forces MuJoCo already
+   applied (``sync_proxy_state`` in ``proxy_coupling.py``).
+4. **VBD step:** Collide and integrate the cable model (rods, apple, proxy contacts).
+5. **VBD → MuJoCo (harvest for next step):** Infer the net spatial wrench the cable
+   exerted on the proxy from the proxy velocity jump across the VBD step
+   (``harvest_proxy_wrenches``; velocity-delta option 3 in the roadmap). Store in
+   ``proxy_forces`` for step 1 of the *next* substep.
+
+Spatial wrenches are **world frame**, linear then angular ``[N, N·m]``. The one-step lag
+means coupling is explicit (not a fixed-point iteration within a step); stability depends
+on timestep and proxy mass/stiffness. P0 fixed-joint readouts on the cable tree
+(:func:`measure_fruiting_forces`) are independent of this proxy wrench channel.
 """
 
 from __future__ import annotations
@@ -51,6 +87,18 @@ from apple_pick_sim.vbd_fixed_joint_wrenches import (
 # Small rigid-joint linear/angular damping so inter-segment FIXED joints settle
 # (matches equilibrium tests; avoids undamped oscillation in viewer FJ plots).
 FRUITING_VBD_RIGID_JOINT_KD = 5.0e-4
+
+
+def _pin_body_vbd_prescribed(builder: newton.ModelBuilder, body_id: int) -> None:
+    """Make a body non-integrated by VBD (``inv_mass == 0``) while staying articulation-valid.
+
+    Pose/velocity are overwritten each MuJoCo substep by staggered coupling sync.
+    ``BodyFlags.KINEMATIC`` is not set because Newton only allows kinematic bodies on
+    world-root joints; the apple remains a dynamic-flag child of the stem.
+    """
+    builder.body_mass[body_id] = 0.0
+    builder.body_inv_mass[body_id] = 0.0
+    builder.body_inv_inertia[body_id] = wp.mat33(0.0)
 
 
 def make_fruiting_solver_vbd(model: newton.Model, **overrides: Any) -> newton.solvers.SolverVBD:
@@ -158,6 +206,93 @@ class FruitingSystemScene:
     fruiting_fixed_joints: tuple[tuple[int, str], ...]
     # Cable / bend-stretch joints from each ``add_rod`` (articulation order, not including link joints)
     cable_joint_indices: tuple[int, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class GripperProxyConfig:
+    """Gripper proxy rigid body added on the cable ``Model`` for M1 coupling.
+
+    The proxy is the VBD-side stand-in for the robot TCP: its pose tracks the MuJoCo
+    body each substep, and contact/joint reactions on the proxy are harvested as wrenches
+    fed back into ``robot_state.body_f`` on the next substep (see module docstring).
+    Mass and box half-extents should match the robot TCP link built in
+    ``coupled_fruiting.build_placeholder_tcp_robot_model`` so velocity-delta harvest
+    uses consistent inertia.
+    """
+
+    mass: float = 5.0
+    box_half_extents: tuple[float, float, float] = (0.05, 0.05, 0.05)
+    label: str = "gripper_proxy"
+    fix_to_apple: bool = False
+    """If ``True``, weld the proxy to the apple with a FIXED joint at the exterior pole.
+
+    Use with :func:`generate_coupled_cable_scene` and
+    :func:`~apple_pick_sim.coupled_fruiting.build_coupled_fruiting_placeholder` (default).
+    Pass ``GripperProxyConfig(fix_to_apple=False)`` for the velocity-delta / free-proxy harvest path.
+    """
+
+
+@dataclasses.dataclass
+class CoupledCableScene:
+    """P0 fruiting cable ``Model`` plus gripper proxy body(ies) for two-``Model`` M1.
+
+    Shares the same fields as :class:`FruitingSystemScene` so :func:`run_rollout` and
+    :func:`measure_fruiting_forces` work unchanged. Pair with ``apple_pick_sim/coupled_fruiting.py``
+    for the MuJoCo robot ``Model`` and staggered coupling loop (M1 Slice 2b).
+
+    **Force path:** ``gripper_proxy_body`` is the VBD body that receives mirrored TCP
+    state and participates in cable-side collision. :meth:`proxy_registry` maps the robot
+    TCP index → ``gripper_proxy_body`` for ``sync_proxy_state`` / ``harvest_proxy_wrenches``.
+    When ``gripper_proxy_apple_joint`` is set (``fix_to_apple``), the proxy is rigidly
+    attached to the apple—a regression baseline without free proxy dynamics.
+    """
+
+    model: newton.Model
+    state_0: Any
+    state_1: Any
+    control: Any
+    solver: newton.solvers.SolverVBD
+    params: FruitingSystemParams
+
+    primary_bodies: list[int]
+    secondary_bodies: list[int]
+    spur_bodies: list[int]
+    stem_bodies: list[int]
+    apple_body: int | None
+
+    fruiting_fixed_joints: tuple[tuple[int, str], ...]
+    cable_joint_indices: tuple[int, ...]
+
+    gripper_proxy_body: int
+    gripper_proxy_config: GripperProxyConfig
+    gripper_proxy_apple_joint: int | None = None
+    """Apple-body-frame vector from apple COM to proxy COM when ``gripper_proxy_apple_joint`` is set."""
+    gripper_proxy_offset_in_apple_frame: tuple[float, float, float] | None = None
+
+    def proxy_registry(self, robot_body_id: int):
+        """Map robot TCP body id → cable ``gripper_proxy_body`` for staggered wrench I/O.
+
+        Used by :meth:`apple_pick_sim.coupled_fruiting.CoupledFruitingScene.coupled_substep`:
+        harvest writes ``proxy_forces[robot_body_id]``; sync reads the same slot when
+        undoing the lagged coupling velocity on the proxy.
+        """
+        from apple_pick_sim.proxy_coupling import ProxyBodyRegistry
+
+        return ProxyBodyRegistry.from_mapping({robot_body_id: self.gripper_proxy_body})
+
+
+@dataclasses.dataclass
+class _FruitingChainArtifacts:
+    """Mutable builder state for the fruiting rod chain before ``finalize``."""
+
+    cable_joint_indices: list[int]
+    fruiting_fixed_joints: list[tuple[int, str]]
+    seg_bodies: dict[str, list[int]]
+    apple_body: int | None
+    all_joints: list[int]
+    chain_bodies: list[int]
+    proxy_placement_origin: wp.vec3
+    proxy_placement_dir: wp.vec3
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +542,56 @@ def generate_scene(
     )
 
 
+def generate_coupled_cable_scene(
+    ranges: dict,
+    seed: int,
+    *,
+    base_pos: tuple[float, float, float] = (0.0, 0.0, 3.0),
+    device: str | None = None,
+    omit: Collection[str] | None = None,
+    enable_self_collisions: bool = True,
+    gripper_proxy: GripperProxyConfig | None = None,
+) -> CoupledCableScene:
+    """Build the VBD cable ``Model``: P0 fruiting tree + collision-equipped gripper proxy.
+
+    This is **Model B** in the two-``Model`` stack: ``SolverVBD`` integrates rods,
+    apple, and the gripper proxy. The robot arm (**Model A**, ``SolverMuJoCo``) is built
+    separately in ``coupled_fruiting.build_coupled_fruiting_placeholder``; coupling forces
+    never cross ``Model`` boundaries directly—they flow through the proxy registry and
+    per-substep ``proxy_forces`` buffer (see module docstring).
+
+    The proxy body is a free rigid body (or FIXED to the apple when
+    ``gripper_proxy.fix_to_apple``) placed near the apple for EE–apple contact during
+    staggered ``SolverMuJoCo`` + ``SolverVBD`` coupling. P0 body indices and fixed-joint
+    metadata match :func:`generate_scene` for the same ``(ranges, seed)``.
+
+    Args:
+        ranges: Range dict as returned by :func:`load_ranges`.
+        seed: Deterministic integer seed.
+        base_pos: World-space position of the first rod segment's base (pinned).
+        device: Warp device string. Defaults to ``"cpu"``.
+        omit: Forwarded to :func:`sample_params`.
+        enable_self_collisions: Same semantics as :func:`generate_scene` (proxy is excluded
+            from intra-chain filter pairs so it can contact the apple).
+        gripper_proxy: Proxy mass/shape/placement options; defaults to :class:`GripperProxyConfig`.
+
+    Returns:
+        A :class:`CoupledCableScene` ready for VBD-only rollouts or robot coupling.
+    """
+    if device is None:
+        device = "cpu"
+
+    params = sample_params(ranges, seed, omit=omit)
+    proxy_cfg = gripper_proxy if gripper_proxy is not None else GripperProxyConfig()
+    return _build_coupled_cable_scene(
+        params,
+        base_pos=base_pos,
+        device=device,
+        enable_self_collisions=enable_self_collisions,
+        gripper_proxy=proxy_cfg,
+    )
+
+
 def geometry_fingerprint(scene: FruitingSystemScene) -> dict:
     """Return a dict of scalar geometry summaries extracted from a built scene.
 
@@ -443,6 +628,16 @@ def geometry_fingerprint(scene: FruitingSystemScene) -> dict:
     fp["stem_tip_pos"] = _pos(scene.stem_bodies[-1]) if scene.stem_bodies else None
     fp["apple_pos"] = _pos(scene.apple_body) if scene.apple_body is not None else None
 
+    return fp
+
+
+def geometry_fingerprint_coupled(scene: CoupledCableScene) -> dict:
+    """Like :func:`geometry_fingerprint` plus gripper-proxy body index and position."""
+    fp = geometry_fingerprint(scene)
+    body_q = scene.state_0.body_q.to("cpu").numpy()
+    p = body_q[scene.gripper_proxy_body]
+    fp["gripper_proxy_body"] = scene.gripper_proxy_body
+    fp["gripper_proxy_pos"] = (round(float(p[0]), 5), round(float(p[1]), 5), round(float(p[2]), 5))
     return fp
 
 
@@ -533,26 +728,20 @@ def _apply_all_chain_collision_filters(
 
 
 
-def _build_scene(
+def _new_fruiting_builder() -> newton.ModelBuilder:
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 0.8
+    return builder
+
+
+def _build_fruiting_chain_into_builder(
+    builder: newton.ModelBuilder,
     params: FruitingSystemParams,
     base_pos: tuple[float, float, float],
-    device: str,
-    *,
-    enable_self_collisions: bool = True,
-) -> FruitingSystemScene:
-    """Build a Newton ModelBuilder scene from sampled params.
-
-    Skips any rod segment whose :class:`RodParams` field on ``params`` is ``None``,
-    and skips the apple when ``apple_radius`` or ``apple_density`` is ``None``.
-    At least one rod segment must be present.
-
-    Args:
-        params: Sampled topology and rod/apple parameters.
-        base_pos: World-space anchor for the first rod segment base.
-        device: Warp device string passed to :meth:`~newton.ModelBuilder.finalize`.
-        enable_self_collisions: When ``False``, register shape collision filter pairs between
-            every pair of distinct chain bodies (see :func:`_apply_all_chain_collision_filters`).
-    """
+) -> _FruitingChainArtifacts:
+    """Populate rod chain + apple on ``builder`` (no articulation / finalize yet)."""
     if not any((params.primary, params.secondary, params.spur, params.stem)):
         raise ValueError(
             "At least one rod segment (primary, secondary, spur, or stem) must be non-None."
@@ -560,11 +749,6 @@ def _build_scene(
 
     cable_joint_indices: list[int] = []
     fruiting_fixed_joints: list[tuple[int, str]] = []
-
-    builder = newton.ModelBuilder()
-    builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
-    builder.default_shape_cfg.mu = 0.8
 
     origin = wp.vec3(*base_pos)
 
@@ -643,14 +827,16 @@ def _build_scene(
     assert last_name is not None
     tip_seg_len = prev_rod.length / prev_rod.num_segments
 
+    stem_tip_pt = prev_points[-1]
+    stem_base_pt = prev_points[-2]
+    last_seg_dir = wp.normalize(stem_tip_pt - stem_base_pt)
+    proxy_placement_origin = stem_tip_pt
+    proxy_placement_dir = last_seg_dir
+
     apple_body: int | None = None
     if params.apple_radius is not None and params.apple_density is not None:
-        stem_tip_pt = prev_points[-1]
-        stem_base_pt = prev_points[-2]
-        last_seg_dir = wp.normalize(stem_tip_pt - stem_base_pt)
-        # COM sits one radius past the stem tip along the segment so the stem-side
-        # sphere pole (joint anchor) meets the capsule tip.
         apple_pos = stem_tip_pt + last_seg_dir * params.apple_radius
+        proxy_placement_origin = apple_pos
         apple_mass = (4.0 / 3.0) * math.pi * params.apple_radius**3 * params.apple_density
         apple_quat = wp.quat_identity()
         apple_body = builder.add_link(
@@ -658,8 +844,6 @@ def _build_scene(
             mass=apple_mass,
             label="apple",
         )
-        # Do not add sphere volume mass again: default ShapeConfig density (~1000)
-        # would double-count vs explicit apple_mass on add_link.
         apple_shape_cfg = builder.default_shape_cfg.copy()
         apple_shape_cfg.density = 0.0
         builder.add_shape_sphere(
@@ -679,10 +863,6 @@ def _build_scene(
         all_joints.append(j_st2apple)
         fruiting_fixed_joints.append((j_st2apple, f"joint_{last_name}_apple"))
 
-    # add_articulation requires joints in monotonically increasing index order.
-    all_joints = sorted(all_joints)
-    builder.add_articulation(all_joints)
-
     chain_bodies: list[int] = (
         seg_bodies["primary"]
         + seg_bodies["secondary"]
@@ -691,21 +871,143 @@ def _build_scene(
     )
     if apple_body is not None:
         chain_bodies.append(apple_body)
+    
+    return _FruitingChainArtifacts(
+        cable_joint_indices=cable_joint_indices,
+        fruiting_fixed_joints=fruiting_fixed_joints,
+        seg_bodies=seg_bodies,
+        apple_body=apple_body,
+        all_joints=all_joints,
+        chain_bodies=chain_bodies,
+        proxy_placement_origin=proxy_placement_origin,
+        proxy_placement_dir=proxy_placement_dir,
+    )
+
+
+def _finalize_fruiting_builder(
+    builder: newton.ModelBuilder,
+    artifacts: _FruitingChainArtifacts,
+    *,
+    device: str,
+    enable_self_collisions: bool,
+) -> newton.Model:
+    all_joints = sorted(artifacts.all_joints)
+    builder.add_articulation(all_joints)
     if not enable_self_collisions:
-        _apply_all_chain_collision_filters(builder, chain_bodies)
+        _apply_all_chain_collision_filters(builder, artifacts.chain_bodies)
     builder.add_ground_plane()
     builder.color()
-
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, -9.81))
+    return model
 
-    fruiting_fixed_joints.sort(key=lambda p: p[0])
 
+def _add_gripper_proxy(
+    builder: newton.ModelBuilder,
+    artifacts: _FruitingChainArtifacts,
+    config: GripperProxyConfig,
+    *,
+    apple_radius: float | None,
+) -> tuple[int, int | None, tuple[float, float, float] | None]:
+    """Add gripper proxy link, shape, and joint(s).
+
+    Returns ``(body_id, apple_fixed_joint, proxy_offset_in_apple_frame)``.
+
+    Default: ``add_joint_free`` so the proxy is a dynamic body whose pose/velocity are
+    overwritten each MuJoCo substep by ``sync_proxy_state`` (not integrated from cable
+    gravity alone). With ``fix_to_apple``, a FIXED joint welds the proxy to the apple
+    at the exterior pole (same placement as the free proxy, via ``parent_xform`` /
+    ``child_xform``). The apple and proxy use ``inv_mass == 0`` so VBD does not integrate
+    them; staggered coupling teleports their poses from the robot TCP each substep while
+    the stem supplies the harvested wrench.
+    """
+    hx, hy, hz = config.box_half_extents
+    clearance = max(hx, hy, hz)
+
+    if apple_radius is not None:
+        proxy_pos = artifacts.proxy_placement_origin + artifacts.proxy_placement_dir * (
+            apple_radius + clearance
+        )
+    elif config.fix_to_apple:
+        if artifacts.apple_body is None:
+            raise ValueError("fix_to_apple requires an apple body in the scene")
+        proxy_pos = artifacts.proxy_placement_origin
+    else:
+        proxy_pos = artifacts.proxy_placement_origin + artifacts.proxy_placement_dir * clearance
+  
+    proxy_body = builder.add_link(
+        xform=wp.transform(proxy_pos, wp.quat_identity()),
+        mass=config.mass,
+        label=config.label,
+    )
+    proxy_shape_cfg = builder.default_shape_cfg.copy()
+    proxy_shape_cfg.density = 0.0
+    builder.add_shape_box(
+        body=proxy_body,
+        hx=hx,
+        hy=hy,
+        hz=hz,
+        cfg=proxy_shape_cfg,
+    )
+
+    apple_fixed_joint: int | None = None
+    proxy_offset_in_apple_frame: tuple[float, float, float] | None = None
+    if config.fix_to_apple:
+        assert artifacts.apple_body is not None
+        if apple_radius is not None:
+            d = artifacts.proxy_placement_dir
+            surface_on_apple = d * apple_radius
+            proxy_face_toward_apple = d * (-clearance)
+            parent_xform = wp.transform(surface_on_apple, wp.quat_identity())
+            child_xform = wp.transform(proxy_face_toward_apple, wp.quat_identity())
+            off = d * (apple_radius + clearance)
+            proxy_offset_in_apple_frame = (float(off[0]), float(off[1]), float(off[2]))
+        else:
+            parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+            child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        apple_fixed_joint = builder.add_joint_fixed(
+            parent=artifacts.apple_body,
+            child=proxy_body,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+            label="joint_apple_gripper_proxy",
+        )
+        artifacts.all_joints.append(apple_fixed_joint)
+        artifacts.fruiting_fixed_joints.append(
+            (apple_fixed_joint, "joint_apple_gripper_proxy")
+        )
+        _pin_body_vbd_prescribed(builder, artifacts.apple_body)
+        _pin_body_vbd_prescribed(builder, proxy_body)
+    else:
+        j_free = builder.add_joint_free(parent=-1, child=proxy_body)
+        artifacts.all_joints.append(j_free)
+
+    return proxy_body, apple_fixed_joint, proxy_offset_in_apple_frame
+
+
+def _scene_states_from_model(model: newton.Model) -> tuple[Any, Any, Any, newton.solvers.SolverVBD]:
     solver = make_fruiting_solver_vbd(model)
-
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
+    return state_0, state_1, control, solver
+
+
+def _build_scene(
+    params: FruitingSystemParams,
+    base_pos: tuple[float, float, float],
+    device: str,
+    *,
+    enable_self_collisions: bool = True,
+) -> FruitingSystemScene:
+    """Build a Newton ModelBuilder scene from sampled params."""
+    builder = _new_fruiting_builder()
+    artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
+    model = _finalize_fruiting_builder(
+        builder, artifacts, device=device, enable_self_collisions=enable_self_collisions
+    )
+    artifacts.fruiting_fixed_joints.sort(key=lambda p: p[0])
+    state_0, state_1, control, solver = _scene_states_from_model(model)
 
     return FruitingSystemScene(
         model=model,
@@ -714,13 +1016,56 @@ def _build_scene(
         control=control,
         solver=solver,
         params=params,
-        primary_bodies=seg_bodies["primary"],
-        secondary_bodies=seg_bodies["secondary"],
-        spur_bodies=seg_bodies["spur"],
-        stem_bodies=seg_bodies["stem"],
-        apple_body=apple_body,
-        fruiting_fixed_joints=tuple(fruiting_fixed_joints),
-        cable_joint_indices=tuple(cable_joint_indices),
+        primary_bodies=artifacts.seg_bodies["primary"],
+        secondary_bodies=artifacts.seg_bodies["secondary"],
+        spur_bodies=artifacts.seg_bodies["spur"],
+        stem_bodies=artifacts.seg_bodies["stem"],
+        apple_body=artifacts.apple_body,
+        fruiting_fixed_joints=tuple(artifacts.fruiting_fixed_joints),
+        cable_joint_indices=tuple(artifacts.cable_joint_indices),
+    )
+
+
+def _build_coupled_cable_scene(
+    params: FruitingSystemParams,
+    base_pos: tuple[float, float, float],
+    device: str,
+    *,
+    enable_self_collisions: bool,
+    gripper_proxy: GripperProxyConfig,
+) -> CoupledCableScene:
+    builder = _new_fruiting_builder()
+    artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
+    proxy_body, proxy_apple_joint, proxy_offset_in_apple = _add_gripper_proxy(
+        builder,
+        artifacts,
+        gripper_proxy,
+        apple_radius=params.apple_radius,
+    )
+    model = _finalize_fruiting_builder(
+        builder, artifacts, device=device, enable_self_collisions=enable_self_collisions
+    )
+    artifacts.fruiting_fixed_joints.sort(key=lambda p: p[0])
+    state_0, state_1, control, solver = _scene_states_from_model(model)
+
+    return CoupledCableScene(
+        model=model,
+        state_0=state_0,
+        state_1=state_1,
+        control=control,
+        solver=solver,
+        params=params,
+        primary_bodies=artifacts.seg_bodies["primary"],
+        secondary_bodies=artifacts.seg_bodies["secondary"],
+        spur_bodies=artifacts.seg_bodies["spur"],
+        stem_bodies=artifacts.seg_bodies["stem"],
+        apple_body=artifacts.apple_body,
+        fruiting_fixed_joints=tuple(artifacts.fruiting_fixed_joints),
+        cable_joint_indices=tuple(artifacts.cable_joint_indices),
+        gripper_proxy_body=proxy_body,
+        gripper_proxy_config=gripper_proxy,
+        gripper_proxy_apple_joint=proxy_apple_joint,
+        gripper_proxy_offset_in_apple_frame=proxy_offset_in_apple,
     )
 
 

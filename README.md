@@ -101,12 +101,70 @@ import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 
 **Structured force readout** (fixed-joint wrenches plus ``cable_joint_indices`` metadata; cable scalar forces follow ``example_apple_stem.py`` when needed): call ``measure_fruiting_forces`` from ``apple_pick_sim.fruiting_system`` with post-step ``body_q``, pre-step ``body_q_prev``, and ``dt`` after a ``SolverVBD`` substep.
 
+### M1 two-model coupling (placeholder or FR3 robot)
+
+Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via ``apple_pick_sim/coupled_fruiting.py``.
+
+- **Placeholder (default):** free-floating TCP box via ``build_coupled_fruiting_placeholder``; ``disable_contacts=True`` keeps the demo stable at moderate dt.
+- **FR3 + custom EE:** ``build_coupled_fruiting_fr3`` imports ``assets/testfr3_resolved.usda`` (Isaac **`testfr3`** EE/tcp + bundled ``assets/fr3/omniverse_fr3/fr3.usd``); see ``assets/fr3/README.md`` and ``docs/fr3-usd-import-implementation.md``.
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python -m unittest apple_pick_sim.tests.test_fr3_usd_import -v
+```
+
+Smoke (paths assume repo root + ``uv`` project ``newton/``, i.e. fixture path is relative to ``newton/``):
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python -c "
+from apple_pick_sim.fruiting_system import load_ranges
+from apple_pick_sim.coupled_fruiting import build_coupled_fruiting_placeholder
+ranges = load_ranges('../apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json')
+scene = build_coupled_fruiting_placeholder(ranges, seed=0)
+scene.coupled_substep(1e-4)
+print('coupled_substep_ok')
+"
+```
+
+Interactive **Newton viewer** (shows the **cable** scene: rods + apple + gripper proxy, which mirrors the coupling). Optional **`--mujoco-viewer`** opens MuJoCo’s passive viewer for the **TCP placeholder** rigid body (**second window**).
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --viewer null --num-frames 120
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --mujoco-viewer --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 0
+# Staggered coupling wrench debug (Plots panel in ViewerGL): lagged → MuJoCo vs fresh ← VBD harvest
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --debug-coupling-forces --seed 42
+# Bundled FR3 + custom EE (requires usd-core + assets/fr3/)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --robot fr3 --viewer null --num-frames 60
+# FR3 + coupled stack with keyboard TCP teleop (``--fr3-keyboard``, ``--viewer gl``, focus window)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --robot fr3 --fr3-keyboard
+```
+
+**FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — not W/S, those move the camera):
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py --viewer null --num-frames 120
+```
+
 ## Tests
 
 From the repository root:
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -v -p no:launch_testing
+```
+
+M1 coupling stability (longer-horizon; includes ``slow`` tests):
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupling_stability.py -q -p no:launch_testing
+```
+
+Headless **coupling verification** (applied vs harvested wrench, TCP–proxy pose drift; exit 1 on threshold breach):
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/verify_coupling.py \
+  --num-substeps 600 --max-force 5 --max-torque 1
 ```
 
 `PYTHONPATH` must include the repo root so `apple_pick_sim` imports resolve; `--directory newton` selects Newton’s `pyproject.toml` and virtual environment.

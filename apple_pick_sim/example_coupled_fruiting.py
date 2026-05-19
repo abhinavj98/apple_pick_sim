@@ -21,8 +21,9 @@ Options (Newton example parser + extras)::
 ``enable_self_collisions=False``.
 
 Pass ``--fr3-keyboard`` with ``--robot fr3`` and ``--viewer gl`` for TCP keyboard teleop: each frame
-IK writes ``robot_control.joint_target_pos`` / ``vel`` for ``SolverMuJoCo`` (same keys as
-``example_fr3_keyboard.py``).
+IK writes ``robot_control.joint_target_pos`` / ``vel`` before MuJoCo substeps (same keys as
+``example_fr3_keyboard.py``). **Verified interactively** with ``--only-mjc`` (MuJoCo + proxy sync only;
+default ``fix_to_apple=False``). Full coupled teleop (no ``--only-mjc``) is not yet confirmed in the viewer.
 """
 
 from __future__ import annotations
@@ -259,13 +260,13 @@ class ExampleCoupledFruiting:
         self.viewer.apply_forces(self.scene.cable.state_0)
 
     def simulate(self) -> None:
-        if self._ee_ctrl is not None:
-            self.scene.apply_fr3_ee_teleop(
-                self.frame_dt,
-                self._ee_ctrl,
-                viewer=self.viewer,
-            )
         for _ in range(self.sim_substeps):
+            if self._ee_ctrl is not None:
+                self.scene.apply_fr3_ee_teleop(
+                    self.frame_dt,
+                    self._ee_ctrl,
+                    viewer=self.viewer,
+                )
             if self._step_mode == "vbd":
                 self.scene.vbd_substep(
                     self.sim_dt,

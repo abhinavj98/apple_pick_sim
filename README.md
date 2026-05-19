@@ -103,10 +103,11 @@ import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 
 ### M1 two-model coupling (placeholder or FR3 robot)
 
-Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via ``apple_pick_sim/coupled_fruiting.py``.
+Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via ``apple_pick_sim/coupled_fruiting.py``. Gripper proxy defaults to **`fix_to_apple=False`** (velocity-delta harvest + proxy-only sync); pass ``GripperProxyConfig(fix_to_apple=True)`` in code for stem-harvest / apple co-teleport tests.
 
 - **Placeholder (default):** free-floating TCP box via ``build_coupled_fruiting_placeholder``; ``disable_contacts=True`` keeps the demo stable at moderate dt.
 - **FR3 + custom EE:** ``build_coupled_fruiting_fr3`` imports ``assets/testfr3_resolved.usda`` (Isaac **`testfr3`** EE/tcp + bundled ``assets/fr3/omniverse_fr3/fr3.usd``); see ``assets/fr3/README.md`` and ``docs/fr3-usd-import-implementation.md``.
+- **Step modes** on ``example_coupled_fruiting.py``: default = full coupled loop; ``--only-vbd`` = cable only; ``--only-mjc`` = MuJoCo robot + proxy sync (cable tree shown but not integrated by VBD each substep).
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python -m unittest apple_pick_sim.tests.test_fr3_usd_import -v
@@ -135,14 +136,23 @@ PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_cou
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --debug-coupling-forces --seed 42
 # Bundled FR3 + custom EE (requires usd-core + assets/fr3/)
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --robot fr3 --viewer null --num-frames 60
-# FR3 + coupled stack with keyboard TCP teleop (``--fr3-keyboard``, ``--viewer gl``, focus window)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --robot fr3 --fr3-keyboard
+# FR3 keyboard teleop — verified: MuJoCo-only stepping + proxy sync (default fix_to_apple=False)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py \
+  --robot fr3 --only-mjc --fr3-keyboard --viewer gl
+# Optional second window for the MuJoCo robot model
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py \
+  --robot fr3 --only-mjc --fr3-keyboard --mujoco-viewer --viewer gl
+# Full staggered coupling + keyboard (not yet verified interactively)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --robot fr3 --fr3-keyboard --viewer gl
 ```
 
-**FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — not W/S, those move the camera):
+**FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):
+
+- **Coupled fruiting + arm (verified):** use ``example_coupled_fruiting.py`` with ``--robot fr3 --only-mjc --fr3-keyboard`` (see above).
+- **Robot only (kinematic FK, no MuJoCo step):** ``example_fr3_keyboard.py`` — useful for IK/viewer smoke without the fruiting tree.
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py --viewer gl
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py --viewer null --num-frames 120
 ```
 

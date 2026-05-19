@@ -168,7 +168,7 @@ Substep N
 (5) harvest → proxy_forces  (for step N+1)
 ```
 
-### 4.2 Path A — Unified sync + stem harvest (`fix_to_apple=True`, default)
+### 4.2 Path A — Unified sync + stem harvest (`fix_to_apple=True`, opt-in)
 
 Used when the proxy is **FIXED** to the apple and both are **prescribed** (`inv_mass = 0`).
 
@@ -259,37 +259,52 @@ Kinematic overwrite of `body_q` without updating `SolverVBD.body_q_prev` makes V
 
 ---
 
-## 7. End-to-end call graph (typical run)
+## 7. Example step modes (`example_coupled_fruiting.py`)
+
+| CLI flag | `CoupledFruitingScene` | Per substep | Newton viewer shows |
+|----------|------------------------|-------------|---------------------|
+| *(none)* | `coupled_substep` | MuJoCo → sync → VBD → harvest | Cable tree + proxy (tracks TCP) |
+| `--only-vbd` | `vbd_substep` | VBD only | Cable tree (proxy not mirrored from robot) |
+| `--only-mjc` | `mujoco_substep` | MuJoCo → sync (no VBD, no harvest update) | Cable tree static except proxy pose from sync |
+
+**FR3 keyboard teleop** (`--robot fr3 --fr3-keyboard`): `apply_fr3_ee_teleop` runs once per **frame** (IK → `joint_target_*`), then substeps call `mujoco_substep` or `coupled_substep`. As of 2026-05-19, interactive arm motion is **verified** only with **`--only-mjc`** and default **`fix_to_apple=False`**; full coupled teleop is not yet confirmed in the viewer.
+
+---
+
+## 8. End-to-end call graph (typical run)
 
 ```
 example_coupled_fruiting.py
-  └── build_coupled_fruiting_placeholder()
+  └── build_coupled_fruiting_placeholder()  # or build_coupled_fruiting_fr3()
         ├── fruiting_system.generate_coupled_cable_scene()   # Model B
-        └── coupled_fruiting.build_placeholder_tcp_robot_model()  # Model A
-  └── each frame: CoupledFruitingScene.coupled_substep(dt)
+        └── robot model (placeholder TCP or FR3 USD)           # Model A
+  └── each frame: optional apply_fr3_ee_teleop(frame_dt)
+  └── each substep: coupled_substep(dt)  # or mujoco_substep / vbd_substep
         ├── _mujoco_and_sync_proxy()
         │     ├── proxy_coupling.launch_sync_proxy_*()
         │     └── proxy_coupling.align_proxy_body_q_prev_for_vbd()
-        ├── cable.model.collide + cable.solver.step()
-        └── proxy_coupling.harvest_*()
+        ├── [coupled only] cable.model.collide + cable.solver.step()
+        └── [coupled only] proxy_coupling.harvest_*()
 ```
 
 ---
 
-## 8. Tests and verification
+## 9. Tests and verification
 
 | Area | Tests | Command (repo root) |
 |------|-------|---------------------|
 | Sync / harvest kernels | `apple_pick_sim/tests/test_proxy_coupling.py` | `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_proxy_coupling.py -q -p no:launch_testing` |
-| Coupled placeholder loop | `apple_pick_sim/tests/test_coupled_fruiting.py` (if present) | See `README.md` / `docs/ROADMAP.md` |
+| Coupled / MJC-only loop | `apple_pick_sim/tests/test_coupled_fruiting_system.py` | See `README.md` / `docs/ROADMAP.md` |
+| FR3 teleop (headless) | `test_fr3_ee_velocity_controller.py`, `test_fr3_ee_teleop_drives_mujoco_joint_targets` | `pytest` paths in `docs/fr3-usd-import-implementation.md` |
 | P0 fixed-joint readouts | `apple_pick_sim/tests/test_wrench_equilibrium.py` | Documented in `docs/WRENCH_READOUT.md` |
-| Interactive smoke | `example_coupled_fruiting.py` | `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py` |
+| Interactive FR3 teleop | `example_coupled_fruiting.py --robot fr3 --only-mjc --fr3-keyboard` | See `README.md` |
 
 ---
 
-## 9. Related docs
+## 10. Related docs
 
 - `docs/ROADMAP.md` — [M1] objective, per-model table, coupling protocol, harvest options 1–3
+- `docs/fr3-usd-import-implementation.md` — FR3 USD import, keyboard teleop entry points
 - `docs/WRENCH_READOUT.md` — fixed-joint wrench semantics (stem harvest path)
 - `apple_pick_sim/fruiting_system.py` — module docstring (5-step overview)
 - `apple_pick_sim/coupled_fruiting.py` — module docstring (ASCII diagrams for both paths)

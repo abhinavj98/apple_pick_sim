@@ -223,12 +223,11 @@ class GripperProxyConfig:
     mass: float = 5.0
     box_half_extents: tuple[float, float, float] = (0.05, 0.05, 0.05)
     label: str = "gripper_proxy"
-    fix_to_apple: bool = False
+    fix_to_apple: bool = True
     """If ``True``, weld the proxy to the apple with a FIXED joint at the exterior pole.
 
-    Use with :func:`generate_coupled_cable_scene` and
-    :func:`~apple_pick_sim.coupled_fruiting.build_coupled_fruiting_placeholder` (default).
-    Pass ``GripperProxyConfig(fix_to_apple=False)`` for the velocity-delta / free-proxy harvest path.
+    Use with :func:`generate_coupled_cable_scene` and the coupled builders (default is ``False``).
+    Pass ``GripperProxyConfig(fix_to_apple=True)`` for stem-harvest / apple co-teleport regression tests.
     """
 
 

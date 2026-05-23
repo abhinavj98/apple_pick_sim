@@ -39,7 +39,7 @@
 Owner intent drives phase order (vision outcomes stay valid; **order** is explicit here):
 
 1. **Done — Outcome 1 ([P0]):** **Variational geometry** and **joint-level force readouts** shipped; refactor (collision/readout API, ``measure_fruiting_forces``, solver damping, docs) landed. Optional P0 stretch (1.a floating EE, force-rises-with-load, richer cable scalars) **deferred**. See `docs/VISION.md` *Procedural fruiting variance*; archive under [P0].
-2. **Now — Outcome 2 (manipulation stack, [M1]):** **Two-`Model` coupling shipped and accepted** — FR3 + custom EE, TCP velocity teleop, ghost gripper proxy tracking, **lagged wrench transfer** (apply → MuJoCo → sync → VBD → harvest) looks good in interactive and debug runs (default **`fix_to_apple=False`**). **Next:** **code refactor** aligned with **`docs/VISION.md`** (package layout, naming, GPU path) per **`refactor.md`**; then EE–apple **contact**, arm-side readouts, benchmarks. See [M1].
+2. **Now — Outcome 2 (manipulation stack, [M1]):** **Two-`Model` coupling shipped and accepted** — FR3 + custom EE, TCP velocity teleop, ghost gripper proxy tracking, **lagged wrench transfer** (apply → MuJoCo → sync → VBD → harvest) looks good in interactive and debug runs (default **`fix_to_apple=False`**). **Next:** **code refactor** aligned with **`docs/VISION.md`** (package layout, naming) per **`refactor.md`**; **Slice 2g** GPU path (profilers, device-resident coupling); then EE–apple **contact**, arm-side readouts, benchmarks. See [M1].
 3. **Later — Outcome 3 (learning):** **RL infrastructure** for an **exploration policy** (and downstream training hooks). Scope, stack, and reward/exploration design are **TBD** in this file until you promote specifics from discussion into milestones and “Current focus”.
 
 Later vision phases (real data, calibration, final pick policy) remain in milestones below; they are **not** active until the maintainer moves focus past arm integration and RL foundations.
@@ -63,9 +63,10 @@ Later vision phases (real data, calibration, final pick policy) remain in milest
 3. [x] **Slice 2 — FR3 robot loaded:** `assets/testfr3_resolved.usda`, bundled `assets/fr3/`, `fr3_robot.py`, `build_coupled_fruiting_fr3`, IK bootstrap + root placement, `test_fr3_usd_import.py`, FR3 coupled tests, `--robot fr3` on `example_coupled_fruiting.py`; see `docs/fr3-usd-import-implementation.md`.
 4. [x] **Slice 2c — Keyboard / TCP velocity control:** `Fr3EEVelocityController`, `apply_fr3_ee_teleop`, `--fr3-keyboard`. **Accepted:** `--only-mjc` and **full coupled** teleop with ghost proxy tracking (default **`fix_to_apple=False`**). CLI: `--fix-to-apple` / `--no-fix-to-apple`, `--fr3-direct-joints` (debug). `example_fr3_keyboard.py` = kinematic-FK smoke.
 5. [x] **Slice 2d — Coupled forces / transfer:** Staggered **apply → sync → harvest** and **`--debug-coupling-forces`** look good under teleop (`coupling_force_debug.py`, `verify_coupling.py`, stability tests). **Deferred post-refactor:** formal arm-side readouts API, EE–apple **contact** scenarios, `disable_contacts=False` tuning.
-6. [ ] **Slice 2f — Structural refactor (active):** Execute maintainer list in **`refactor.md`** (e.g. `fruiting_system/` package, `proxy_coupling` naming, GPU kernels, `coupled_fruiting` clarity). Preserve coupling semantics; keep pytest/README import paths stable unless the refactor slice says otherwise.
-7. [ ] **Slice 2e — Hardening (after / parallel to refactor):** docs/code map, long-horizon headless proofs, optimization, **`diagnostics/benchmark_coupling.py`** (or pytest `-m slow`).
-8. [ ] **Slice 3 — Commands + docs:** README and Agent execution notes once refactor entrypoints stabilize; verify per `.cursor/rules/readme-runtime-verification.mdc`.
+6. [ ] **Slice 2f — Structural refactor (active):** Execute maintainer list in **`refactor.md`** (e.g. `fruiting_system/` package, `proxy_coupling` naming, `coupled_fruiting` clarity). Preserve coupling semantics; keep pytest/README import paths stable unless the refactor slice says otherwise. **GPU kernel work** belongs in **Slice 2g**, not drive-by in 2f unless a refactor task explicitly requires a device kernel for correctness.
+7. [ ] **Slice 2g — GPU optimization:** Stand up **profilers** and a **repeatable before/after** workflow; profile the coupled hot path; **move as much of the substep loop to the GPU as practical** (Warp kernels, fewer host `.numpy()` / `.copy()` syncs, device-resident teleop/IK only where tests prove safe). Record baselines and wins (ms/substep, optional GPU timeline notes) in docs; extend **`diagnostics/benchmark_coupling.py`** (or pytest `-m slow`) as the regression harness.
+8. [x] **Slice 2e — Hardening:** hot-path GPU kernels (cached proxy IDs, device `body_q_prev` align, device `body_f` wrench), `benchmark_coupling.py`, `slow` tests, FR3 long-horizon test, `docs/slice-2e-hardening.md`. Further GPU work remains in **Slice 2g**.
+9. [ ] **Slice 3 — Commands + docs:** README and Agent execution notes once refactor entrypoints stabilize; verify per `.cursor/rules/readme-runtime-verification.mdc`.
 
 **Explicitly not in this milestone:** Full IK / trajectory control beyond teleop, soft multi-finger grasping, full `SensorContact` plumbing, rollout log schema (M2), calibration (M4), RL harness (M2). See [M1] *Explicitly not* for the full list.
 
@@ -196,7 +197,8 @@ See **`docs/mujoco-vbd-coupling-architecture.md`** for per-model ownership and t
 - [x] Slice 2c — TCP velocity teleop + ghost proxy tracking (`--fr3-keyboard`, `--only-mjc` and full coupled).
 - [x] Slice 2d — **Force transfer accepted** (lagged harvest, apply to `body_f`, sync, debug plots).
 - [ ] **Slice 2f — Structural refactor** — **`refactor.md`** (maintainer-owned backlog).
-- [ ] Slice 2e — Hardening: docs map, long-horizon proofs, benchmarks (after refactor slices land).
+- [ ] **Slice 2g — GPU optimization** — profilers, device-resident coupling path, measured wins (see checklist below).
+- [x] Slice 2e — Hardening: `docs/slice-2e-hardening.md`, device hot-path kernels, `benchmark_coupling.py`, FR3 long-horizon + `slow` pytest marker.
 - [ ] Slice 3 — README / Agent execution notes when refactor stabilizes entrypoints.
 
 **Known limitations (placeholder TCP and coupled FR3):**
@@ -210,21 +212,29 @@ See **`docs/mujoco-vbd-coupling-architecture.md`** for per-model ownership and t
 - **`--no-self-collision` / `--mujoco-viewer`** are not the primary instability drivers; they only change cable collisions or add a second viewer window.
 - **Smoke paths:** `--only-vbd` (cable only); `--robot fr3 --fr3-keyboard` (full coupled teleop); `--robot fr3 --only-mjc --fr3-keyboard` (robot + proxy sync only); `--debug-coupling-forces` for wrench plots.
 
-**Active work (Slice 2f):** structural refactor per **`refactor.md`** (maintainer updates task list). Slice **2e** hardening/benchmarks follow or run in parallel per maintainer ordering.
+**Active work (Slice 2f):** structural refactor per **`refactor.md`** (maintainer updates task list). **Slice 2g** (GPU) follows 2f; **Slice 2e** hardening/benchmark baselines follow or run in parallel per maintainer ordering.
 
 **Slice 2f — definition of done (checklist):**
 
 - [ ] **`refactor.md` tasks** implemented in agreed order; each slice keeps **`apple_pick_sim/tests/`** green and public imports stable (or documents a one-shot migration).
 - [ ] **Coupling semantics preserved:** same staggered apply → MuJoCo → sync → VBD → harvest; no behavior change unless a refactor slice explicitly targets physics/API with new tests.
-- [ ] **Naming / layout:** e.g. `fruiting_system/` package, clearer `proxy_coupling` kernel names, GPU-friendly sync path — as listed in **`refactor.md`**.
+- [ ] **Naming / layout:** e.g. `fruiting_system/` package, clearer `proxy_coupling` kernel names — as listed in **`refactor.md`**. (Device kernels and host-sync removal are **Slice 2g**.)
 
-**Slice 2e — definition of done (checklist):** *(hardening — after or parallel to 2f per maintainer)*
+**Slice 2g — definition of done (checklist):** *(GPU path — after 2f layout stabilizes; may start profiling in parallel)*
 
-- [ ] **Code map / reader docs:** architecture + FR3 docs reflect post-refactor module boundaries.
-- [ ] **Coupling error-free (headless):** long FR3 `coupled_substep` horizons; green proxy/stability tests on landed refactor.
-- [ ] **Controllers error-free (headless):** extend existing `test_fr3_*` coverage where gaps remain.
-- [ ] **Optimization:** profile documented; at least one measurable win on the coupled hot path (e.g. fewer host `.numpy()` syncs per substep, collide only when needed, IK once per frame not per substep if safe).
-- [ ] **Benchmarking:** repeatable harness reports ms/substep (and optional frames/s at default `sim_substeps`); baseline recorded in docs; run command in Agent execution notes.
+- [ ] **Profiler harness documented:** agreed stack for this repo (at minimum: **`diagnostics/benchmark_coupling.py`** on CUDA with `wp.synchronize()`; optional **Nsight Systems** / **Nsight Compute** or Warp timing markers for kernel-level attribution). Commands live in **Agent execution notes** and a short **`docs/gpu-coupling-optimization.md`** (or a dated subsection in `docs/mujoco-vbd-coupling-architecture.md`).
+- [ ] **Baseline captured on target GPU:** ms/substep (placeholder + FR3), default `sim_substeps`, warmup/bench substeps recorded in docs **before** optimization PRs land.
+- [ ] **Hot-path inventory:** list host↔device syncs and CPU fallbacks per substep (`coupled_fruiting.py`, `proxy_coupling.py`, `fr3_robot.py` placement/teleop, collision triggers); prioritize by profiler cost.
+- [ ] **GPU migration:** replace top-cost CPU paths with Warp kernels or device-resident arrays where Newton/Warp APIs allow; **no correctness regressions** — existing proxy/coupling/stability tests stay green; add tests when a kernel replaces logic that was only covered indirectly.
+- [ ] **Measured progress:** each optimization PR cites profiler/benchmark **before → after** (same machine/GPU/driver note in doc); at least one **≥10%** ms/substep win on the coupled hot path **or** documented blocker (e.g. MuJoCo solver host-bound).
+- [ ] **End-to-end device goal:** coupled substep runs with **minimal per-substep host reads** (debug/viewer paths may still `.numpy()`; pytest headless paths should not require full-state host copies unless asserting values).
+
+**Slice 2e — definition of done (checklist):** *(hardening — after 2f / 2g per maintainer)*
+
+- [x] **Code map / reader docs:** `docs/slice-2e-hardening.md`, `docs/mujoco-vbd-coupling-architecture.md` §5.2 (device align kernel).
+- [x] **Coupling error-free (headless):** `test_fr3_coupled_substep_long_horizon_finite` (`slow`); existing stability/proxy tests green.
+- [ ] **Controllers error-free (headless):** extend existing `test_fr3_*` coverage where gaps remain (deferred).
+- [x] **Benchmarking:** `diagnostics/benchmark_coupling.py`; baseline table in `docs/slice-2e-hardening.md`; commands below.
 
 Items the implementation must add on top of P0:
 
@@ -296,8 +306,9 @@ SolverMuJoCo(
 3. [x] **Slice 2c — TCP velocity teleop:** `--only-mjc` and full coupled accepted.
 4. [x] **Slice 2d — Coupled forces / transfer:** accepted (`2026-05-22`).
 5. [ ] **Slice 2f — Structural refactor:** **`refactor.md`** (maintainer-owned).
-6. [ ] **Slice 2e — Hardening / benchmarks:** per **Current focus** after refactor slices.
-7. [ ] **Slice 3 — Commands + docs:** post-refactor README + Agent execution notes.
+6. [ ] **Slice 2g — GPU optimization:** profilers + device-resident coupling; measured wins (see checklist above).
+7. [ ] **Slice 2e — Hardening / benchmarks:** per **Current focus** after 2f / 2g.
+8. [ ] **Slice 3 — Commands + docs:** post-refactor README + Agent execution notes.
 
 **Two-`Model` staggered coupling skeleton (authoritative reference):**
 
@@ -552,6 +563,7 @@ vbd_state_0, vbd_state_1 = vbd_state_1, vbd_state_0
 Unordered ideas. **Do not implement** unless promoted into a milestone and “Current focus”.
 
 - *(Promoted to Slice **2f** — see **`refactor.md`**; maintainer expands/refines the list.)*
+- *(Promoted to Slice **2g** — GPU profilers, device-resident coupling, benchmark baselines; not active until **Current focus** promotes it after 2f.)*
 - **Former end-to-end “thin slice” stubs** (rollout log schema v0, real-data adapter stub, calibration comparison stub, scripted policy placeholder): useful when **M2–M4** are promoted; not required to finish **P0** fruiting tests.
 - Fisher-information–shaped rewards or exploration bonuses (vision glossary) — after base RL loop exists (**M2**).
 - Additional manipulators or crops — only with explicit scope change (vision non-goals).
@@ -586,7 +598,8 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 - M1 FR3 controller unit tests: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_fr3_ee_velocity_controller.py -q -p no:launch_testing`
 - M1 coupled forces debug (Slice 2d): `example_coupled_fruiting.py --robot fr3 --debug-coupling-forces`; `test_coupling_force_debug.py`; `diagnostics/verify_coupling.py` for headless checks.
 - M1 coupled fruiting (FR3 integration): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupled_fruiting_system.py -k fr3 -q -p no:launch_testing`
-- M1 Slice 2e (correctness / perf — in progress): green full `apple_pick_sim/tests/` after WIP lands; add `diagnostics/benchmark_coupling.py` (or pytest `-m slow`); document baseline ms/substep here.
+- M1 Slice 2g (GPU — planned): CUDA device required; `diagnostics/benchmark_coupling.py --device cuda:0` for ms/substep baseline; optional Nsight on coupled example (document args in `docs/gpu-coupling-optimization.md` when slice lands).
+- M1 Slice 2e (hardening): `docs/slice-2e-hardening.md`; `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/benchmark_coupling.py --robot placeholder --warmup-substeps 30 --bench-substeps 300`; slow tests: `pytest ../apple_pick_sim/tests/ -m slow -q -p no:launch_testing`
 - M1 architecture doc: `docs/mujoco-vbd-coupling-architecture.md`
 - M1 refactor: read **`refactor.md`** and **Current focus** before structural edits; maintainer updates both when priorities change
 - M1 work: follow **Current focus** and [M1] *Next actions*; add `uv run` entry-points here as slices land
@@ -599,6 +612,6 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 
 **When unsupervised is expected:**
 
-- You may complete the **next unchecked slice** in “Current focus” using TDD and project rules — for **Slice 2f**, only tasks explicitly listed in the current **`refactor.md`**.
+- You may complete the **next unchecked slice** in “Current focus” using TDD and project rules — for **Slice 2f**, only tasks explicitly listed in the current **`refactor.md`**; for **Slice 2g**, profile before each optimization and keep **`apple_pick_sim/tests/`** green.
 - You may fix **small obvious blockers** uncovered by that slice (tests, imports, typos) if they are necessary for the slice to be correct.
 - You should **not** start a new milestone or backlog item without maintainer direction unless this file explicitly says otherwise.

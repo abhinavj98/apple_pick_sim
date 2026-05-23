@@ -24,6 +24,9 @@ class ProxyBodyRegistry:
 
     robot_to_proxy: tuple[tuple[int, int], ...]
     """Sorted ``(robot_body_id, proxy_body_id)`` pairs."""
+    _device_ids: dict[str, tuple[wp.array, wp.array]] = dataclasses.field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @classmethod
     def from_mapping(cls, mapping: dict[int, int]) -> ProxyBodyRegistry:
@@ -37,11 +40,23 @@ class ProxyBodyRegistry:
     def proxy_body_ids(self) -> tuple[int, ...]:
         return tuple(p for _, p in self.robot_to_proxy)
 
+    def ids_wp(self, device) -> tuple[wp.array, wp.array]:
+        """Return cached ``(robot_ids, proxy_ids)`` arrays for ``device`` (built once)."""
+        key = str(device)
+        cached = self._device_ids.get(key)
+        if cached is None:
+            cached = (
+                wp.array(self.robot_body_ids, dtype=int, device=device),
+                wp.array(self.proxy_body_ids, dtype=int, device=device),
+            )
+            self._device_ids[key] = cached
+        return cached
+
     def robot_ids_wp(self, device) -> wp.array:
-        return wp.array(self.robot_body_ids, dtype=int, device=device)
+        return self.ids_wp(device)[0]
 
     def proxy_ids_wp(self, device) -> wp.array:
-        return wp.array(self.proxy_body_ids, dtype=int, device=device)
+        return self.ids_wp(device)[1]
 
 
 @wp.kernel
@@ -277,7 +292,7 @@ def harvest_stem_joint_wrench(
         force_cap_N=force_cap_N,
         torque_cap_Nm=torque_cap_Nm,
     )
-    out_robot_wrenches.assign(wrenches.ravel())
+    out_robot_wrenches.assign(wrenches.reshape(-1, 6))
 
 
 def limit_stem_coupling_wrench(
@@ -307,6 +322,18 @@ def limit_stem_coupling_wrench(
     wrenches[tcp_body_index, 3:6] = tau.astype(np.float32)
 
 
+@wp.kernel
+def _align_body_q_prev_kernel(
+    body_ids: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
+):
+    """Copy ``body_q[bid]`` into ``body_q_prev[bid]`` for each listed body index."""
+    i = wp.tid()
+    bid = body_ids[i]
+    body_q_prev[bid] = body_q[bid]
+
+
 def align_proxy_body_q_prev_for_vbd(
     cable_scene,
     proxy_body_ids: tuple[int, ...] | wp.array,
@@ -317,20 +344,27 @@ def align_proxy_body_q_prev_for_vbd(
     ``body_q_prev`` at the pre-sync pose. VBD finalizes twist as ``(body_q - body_q_prev) / dt``,
     so a few microns of pose mismatch at ``dt ≈ 1/600`` s appears as O(10 m/s) and ~mg spurious
     harvest wrenches that grow each substep.
+
+    Uses a device kernel (indexed copy) instead of a full ``body_q`` / ``body_q_prev`` host roundtrip.
     """
     if not proxy_body_ids:
         return
-    ids = (
-        tuple(int(i) for i in proxy_body_ids.numpy().tolist())
-        if isinstance(proxy_body_ids, wp.array)
-        else tuple(int(i) for i in proxy_body_ids)
+    if isinstance(proxy_body_ids, wp.array):
+        ids_arr = proxy_body_ids
+    else:
+        dev = cable_scene.state_0.body_q.device
+        ids_arr = wp.array(tuple(int(i) for i in proxy_body_ids), dtype=int, device=dev)
+    dev = ids_arr.device
+    wp.launch(
+        _align_body_q_prev_kernel,
+        dim=ids_arr.shape[0],
+        inputs=[
+            ids_arr,
+            cable_scene.state_0.body_q,
+            cable_scene.solver.body_q_prev,
+        ],
+        device=dev,
     )
-    bq = cable_scene.state_0.body_q.numpy().reshape(-1, 7)
-    bqp = cable_scene.solver.body_q_prev.numpy().reshape(-1, 7).copy()
-    for pid in ids:
-        # Kinematic sync moved body_q but not body_q_prev → zero artificial Δq/dt at finalize.
-        bqp[pid] = bq[pid]
-    cable_scene.solver.body_q_prev.assign(bqp.ravel())
 
 
 @wp.kernel

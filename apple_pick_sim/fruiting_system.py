@@ -889,9 +889,16 @@ def _finalize_fruiting_builder(
     *,
     device: str,
     enable_self_collisions: bool,
+    gripper_proxy_joint: int | None = None,
 ) -> newton.Model:
+    """Finalize the cable model; keep world-root proxy FREE joints out of the tree articulation."""
     all_joints = sorted(artifacts.all_joints)
-    builder.add_articulation(all_joints)
+    if gripper_proxy_joint is not None:
+        chain_joints = [j for j in all_joints if j != gripper_proxy_joint]
+        builder.add_articulation(chain_joints)
+        builder.add_articulation([gripper_proxy_joint])
+    else:
+        builder.add_articulation(all_joints)
     if not enable_self_collisions:
         _apply_all_chain_collision_filters(builder, artifacts.chain_bodies)
     builder.add_ground_plane()
@@ -950,6 +957,7 @@ def _add_gripper_proxy(
     )
 
     apple_fixed_joint: int | None = None
+    proxy_free_joint: int | None = None
     proxy_offset_in_apple_frame: tuple[float, float, float] | None = None
     if config.fix_to_apple:
         assert artifacts.apple_body is not None
@@ -978,10 +986,10 @@ def _add_gripper_proxy(
         _pin_body_vbd_prescribed(builder, artifacts.apple_body)
         _pin_body_vbd_prescribed(builder, proxy_body)
     else:
-        j_free = builder.add_joint_free(parent=-1, child=proxy_body)
-        artifacts.all_joints.append(j_free)
+        proxy_free_joint = builder.add_joint_free(parent=-1, child=proxy_body)
+        artifacts.all_joints.append(proxy_free_joint)
 
-    return proxy_body, apple_fixed_joint, proxy_offset_in_apple_frame
+    return proxy_body, apple_fixed_joint, proxy_offset_in_apple_frame, proxy_free_joint
 
 
 def _scene_states_from_model(model: newton.Model) -> tuple[Any, Any, Any, newton.solvers.SolverVBD]:
@@ -990,6 +998,49 @@ def _scene_states_from_model(model: newton.Model) -> tuple[Any, Any, Any, newton
     state_1 = model.state()
     control = model.control()
     return state_0, state_1, control, solver
+
+
+def _align_coupled_scene_chain_from_reference(
+    coupled: CoupledCableScene,
+    *,
+    base_pos: tuple[float, float, float],
+    device: str,
+    enable_self_collisions: bool,
+) -> None:
+    """Match P0 chain ``body_q`` / ``joint_q`` on the coupled model (proxy DOFs unchanged).
+
+    A world-root FREE proxy in the same articulation as the fruiting tree skews Newton FK at
+    finalize; this copies the reference P0 kinematics for shared bodies before coupling.
+    """
+    from apple_pick_sim.proxy_coupling import align_proxy_body_q_prev_for_vbd
+
+    ref = _build_scene(
+        coupled.params,
+        base_pos,
+        device,
+        enable_self_collisions=enable_self_collisions,
+    )
+    n = ref.model.body_count
+    ref_bq = ref.state_0.body_q.numpy().reshape(-1, 7)
+    ref_bqd = ref.state_0.body_qd.numpy().reshape(-1, 6)
+    for state in (coupled.state_0, coupled.state_1):
+        bq = state.body_q.numpy().reshape(-1, 7).copy()
+        bqd = state.body_qd.numpy().reshape(-1, 6).copy()
+        bq[:n] = ref_bq[:n]
+        bqd[:n] = ref_bqd[:n]
+        state.body_q.assign(bq.ravel())
+        state.body_qd.assign(bqd.ravel())
+
+    jc = ref.model.joint_coord_count
+    jq = coupled.model.joint_q.numpy().copy()
+    jqd = coupled.model.joint_qd.numpy().copy()
+    jq[:jc] = ref.model.joint_q.numpy()[:jc]
+    jqd[:jc] = ref.model.joint_qd.numpy()[:jc]
+    coupled.model.joint_q.assign(jq)
+    coupled.model.joint_qd.assign(jqd)
+
+    # Do not run full-model eval_fk here: the world-root proxy articulation skews the tree.
+    align_proxy_body_q_prev_for_vbd(coupled, tuple(range(n)))
 
 
 def _build_scene(
@@ -1035,19 +1086,23 @@ def _build_coupled_cable_scene(
 ) -> CoupledCableScene:
     builder = _new_fruiting_builder()
     artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
-    proxy_body, proxy_apple_joint, proxy_offset_in_apple = _add_gripper_proxy(
+    proxy_body, proxy_apple_joint, proxy_offset_in_apple, proxy_free_joint = _add_gripper_proxy(
         builder,
         artifacts,
         gripper_proxy,
         apple_radius=params.apple_radius,
     )
     model = _finalize_fruiting_builder(
-        builder, artifacts, device=device, enable_self_collisions=enable_self_collisions
+        builder,
+        artifacts,
+        device=device,
+        enable_self_collisions=enable_self_collisions,
+        gripper_proxy_joint=proxy_free_joint,
     )
     artifacts.fruiting_fixed_joints.sort(key=lambda p: p[0])
     state_0, state_1, control, solver = _scene_states_from_model(model)
 
-    return CoupledCableScene(
+    scene = CoupledCableScene(
         model=model,
         state_0=state_0,
         state_1=state_1,
@@ -1066,6 +1121,13 @@ def _build_coupled_cable_scene(
         gripper_proxy_apple_joint=proxy_apple_joint,
         gripper_proxy_offset_in_apple_frame=proxy_offset_in_apple,
     )
+    _align_coupled_scene_chain_from_reference(
+        scene,
+        base_pos=base_pos,
+        device=device,
+        enable_self_collisions=enable_self_collisions,
+    )
+    return scene
 
 
 def _make_rod_geometry(

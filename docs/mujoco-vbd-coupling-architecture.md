@@ -117,7 +117,7 @@ After each MuJoCo substep, the TCP state on `robot_state_0` is the **kinematic a
 | Placeholder robot (until FR3 USD) | `build_placeholder_tcp_robot_model` |
 | Authoritative substep loop | `CoupledFruitingScene.coupled_substep` |
 | MuJoCo-only / VBD-only modes | `mujoco_substep`, `vbd_substep` |
-| Apply lagged wrench to robot | `_apply_spatial_wrench_to_body_f` |
+| Apply lagged wrench to robot | `_apply_tcp_spatial_wrench_kernel` via `_apply_spatial_wrench_to_body_f` (device) |
 | Choose sync + harvest path | `_mujoco_and_sync_proxy`, stem joint discovery `_find_stem_apple_joint` |
 | Initial TCP alignment | `bootstrap_tcp_joint_from_proxy` |
 
@@ -239,6 +239,8 @@ The same `coupling_forces_cache` used for `body_f` is passed into the kernel as 
 ### 5.2 `align_proxy_body_q_prev_for_vbd`
 
 Kinematic overwrite of `body_q` without updating `SolverVBD.body_q_prev` makes VBD infer a huge twist `(body_q - body_q_prev) / dt`. After sync, **`body_q_prev` on proxy (and apple when co-synced) is aligned** to post-sync `body_q`.
+
+**Implementation (Slice 2e):** `_align_body_q_prev_kernel` in `proxy_coupling.py` copies only the listed body indices on device (`wp.launch` over `body_ids`); no full `body_q` / `body_q_prev` host roundtrip. Tests: `test_align_proxy_body_q_prev_for_vbd_clears_finalize_spurious_velocity`, `test_align_proxy_body_q_prev_with_multiple_bodies` in `test_proxy_coupling.py`.
 
 ### 5.3 Bootstrap
 

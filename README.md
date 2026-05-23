@@ -175,6 +175,19 @@ M1 coupling stability (longer-horizon; includes ``slow`` tests):
 PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupling_stability.py -q -p no:launch_testing
 ```
 
+Optional slow tests only (500+ substep stability, FR3 long horizon):
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -m slow -q -p no:launch_testing
+```
+
+M1 coupling benchmark (ms/substep; see ``docs/slice-2e-hardening.md``):
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/benchmark_coupling.py \
+  --robot placeholder --warmup-substeps 30 --bench-substeps 300
+```
+
 Headless **coupling verification** (applied vs harvested wrench, TCP–proxy pose drift; exit 1 on threshold breach):
 
 ```bash

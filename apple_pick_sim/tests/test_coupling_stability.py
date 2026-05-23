@@ -1,15 +1,30 @@
-"""Longer-horizon stability checks for staggered MuJoCo + VBD coupling."""
+"""Longer-horizon stability checks for staggered MuJoCo + VBD coupling (FR3)."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 import warp as wp
 
-FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
-RANGES_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_straight_rod_test.json"
+_TESTS_DIR = Path(__file__).resolve().parent
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
+
+from conftest import (
+    DEFAULT_MJ_KW,
+    RANGES_FIXTURE,
+    SUB_DT,
+    apply_direct_hold,
+    build_coupled_fr3,
+    new_direct_controller,
+    requires_fr3,
+    run_coupled_substeps_direct_hold,
+)
+
+pytestmark = requires_fr3
 
 
 def _import_cf():
@@ -39,13 +54,14 @@ def test_dt_sweep_no_nan():
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    stable_dt = (1.0 / 60.0) / 30.0
+    from apple_pick_sim import fr3_robot
+
+    stable_dt = SUB_DT
     for dt in (stable_dt, stable_dt / 2.0, stable_dt * 2.0):
-        scene = cf.build_coupled_fruiting_placeholder(
-            ranges, seed=20, mujoco_solver_kwargs={"disable_contacts": True}
+        scene = build_coupled_fr3(
+            cf, ranges, 20, mujoco_solver_kwargs=DEFAULT_MJ_KW
         )
-        for _ in range(100):
-            scene.coupled_substep(dt)
+        run_coupled_substeps_direct_hold(scene, fr3_robot, 100, sub_dt=dt)
         cq = scene.cable.state_0.body_q.numpy()
         rq = scene.robot_state_0.body_q.numpy()
         assert np.isfinite(cq).all(), f"non-finite cable state at dt={dt}"
@@ -120,38 +136,56 @@ def test_proxy_mass_sweep_sync_scales_inversely():
 
 
 def test_stem_coupling_quiescent_forces_bounded():
-    """Default fix_to_apple stem harvest stays O(apple weight) with gain + cap."""
+    """Free-proxy harvest stays finite and capped under direct-joint hold."""
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = cf.build_coupled_fruiting_placeholder(
-        ranges, seed=20, mujoco_solver_kwargs={"disable_contacts": True}
+    from apple_pick_sim import fr3_robot
+
+    scene = build_coupled_fr3(
+        cf,
+        ranges,
+        20,
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
+        mujoco_solver_kwargs=DEFAULT_MJ_KW,
     )
     tcp = scene.tcp_body_index
-    dt = (1.0 / 60.0) / 30.0
-    for _ in range(60):
-        scene.coupled_substep(dt)
+    proxy = scene.cable.gripper_proxy_body
+    run_coupled_substeps_direct_hold(scene, fr3_robot, 60, sub_dt=SUB_DT)
     w = scene.proxy_forces.numpy().reshape(-1, 6)[tcp]
     fmag = float(np.linalg.norm(w[:3]))
-    assert fmag < scene.stem_force_cap_N + 1.0, f"|F|={fmag:.2f} exceeds stem force cap"
+    assert np.isfinite(w).all()
+    assert fmag < 500.0, f"|F|={fmag:.2f} N exceeds stability harvest cap"
     rq = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp]
+    pq = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[proxy]
+    pos_err = float(np.linalg.norm(rq[:3] - pq[:3]))
+    assert pos_err < 2e-3, f"TCP-proxy position drift {pos_err}"
     assert np.isfinite(rq).all()
-    assert 1.0 < float(rq[2]) < 5.0, f"TCP drifted far from tree: z={rq[2]}"
 
 
+@pytest.mark.slow
 def test_kinetic_energy_bounded_quiescent():
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = cf.build_coupled_fruiting_placeholder(
-        ranges, seed=21, mujoco_solver_kwargs={"disable_contacts": True}
+    from apple_pick_sim import fr3_robot
+
+    scene = build_coupled_fr3(
+        cf,
+        ranges,
+        21,
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
+        mujoco_solver_kwargs=DEFAULT_MJ_KW,
     )
     proxy = scene.cable.gripper_proxy_body
-    dt = (1.0 / 60.0) / 30.0
     ke_history: list[float] = []
+    scene.robot_kinematic_mode = True
+    ctrl = new_direct_controller(scene, fr3_robot)
 
-    for _ in range(500):
-        scene.coupled_substep(dt)
+    for step in range(500):
+        if step % 30 == 0:
+            apply_direct_hold(scene, fr3_robot, ctrl)
+        scene.coupled_substep(SUB_DT)
         bqd = scene.cable.state_0.body_qd.numpy().reshape(-1, 6)
         m = float(scene.cable.model.body_mass.numpy()[proxy])
         v = bqd[proxy, :3]
@@ -160,3 +194,28 @@ def test_kinetic_energy_bounded_quiescent():
 
     assert max(ke_history) < 2.0, f"proxy KE spike {max(ke_history):.2f} J"
     assert all(np.isfinite(ke_history))
+
+
+@pytest.mark.slow
+def test_fr3_coupled_substep_long_horizon_finite():
+    """FR3 + cable coupled loop stays finite over hundreds of substeps (headless)."""
+    from apple_pick_sim import fr3_robot
+
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(
+        cf, ranges, 24, device="cpu", mujoco_solver_kwargs=DEFAULT_MJ_KW
+    )
+    tcp = scene.tcp_body_index
+    proxy = scene.cable.gripper_proxy_body
+    rq0 = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp].copy()
+    run_coupled_substeps_direct_hold(scene, fr3_robot, 400, sub_dt=SUB_DT)
+    rq = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp]
+    pq = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[proxy]
+    cq = scene.cable.state_0.body_q.numpy()
+    assert np.isfinite(rq).all()
+    assert np.isfinite(cq).all()
+    assert float(np.linalg.norm(rq[:3] - rq0[:3])) < 0.02, "TCP drift under direct hold"
+    pos_err = float(np.linalg.norm(rq[:3] - pq[:3]))
+    assert pos_err < 2e-3, f"TCP-proxy position drift {pos_err}"

@@ -146,7 +146,12 @@ def _make_minimal_scene(apple_radius: float, apple_density: float, device: str =
         apple_radius=apple_radius,
         apple_density=apple_density,
     )
-    scene = fs._build_scene(params, base_pos=(0.0, 0.0, _BASE_Z), device=device)
+    scene = fs._build_scene(
+        params,
+        base_pos=(0.0, 0.0, _BASE_Z),
+        device=device,
+        enable_self_collisions=False,
+    )
     return scene
 
 
@@ -201,7 +206,12 @@ def _make_full_chain_scene(device: str = "cpu"):
         apple_radius=0.040,
         apple_density=850.0,
     )
-    scene = fs._build_scene(params, base_pos=(0.0, 0.0, _BASE_Z), device=device)
+    scene = fs._build_scene(
+        params,
+        base_pos=(0.0, 0.0, _BASE_Z),
+        device=device,
+        enable_self_collisions=False,
+    )
     return scene
 
 

@@ -121,6 +121,8 @@ class CoupledFruitingScene:
     proxy_forces: wp.array | None = None
     # Snapshot of proxy_forces at apply/sync; passed to sync_proxy_state kernel.
     coupling_forces_cache: wp.array | None = None
+    # Last contact buffer from ``vbd_substep`` / ``coupled_substep`` (viewer reuse).
+    last_vbd_contacts: Any | None = None
     force_debug: CouplingForceDebugRecorder | None = None
     # Joint index of the stem-to-apple FIXED joint; when set, stem-joint harvest
     # replaces velocity-delta harvest and the unified-sync kernel co-teleports the apple.
@@ -244,6 +246,7 @@ class CoupledFruitingScene:
             dt,
         )
         self.cable.state_0, self.cable.state_1 = self.cable.state_1, self.cable.state_0
+        self.last_vbd_contacts = vbd_contacts
         return vbd_contacts
 
     def _mujoco_and_sync_proxy(self, dt: float) -> None:
@@ -287,8 +290,7 @@ class CoupledFruitingScene:
             self.robot_state_0, self.robot_state_1 = self.robot_state_1, self.robot_state_0
 
         dev = self.robot_model.device
-        rid = self.proxy_registry.robot_ids_wp(dev)
-        pid = self.proxy_registry.proxy_ids_wp(dev)
+        rid, pid = self.proxy_registry.ids_wp(dev)
 
         # --- 3. Kinematic sync: robot TCP → cable proxy (and apple when fix_to_apple).
         # Two kernels share the same double-integration guard on proxy velocity.
@@ -432,17 +434,34 @@ def _find_stem_apple_joint(cable: CoupledCableScene) -> int | None:
     return None
 
 
+@wp.kernel
+def _apply_tcp_spatial_wrench_kernel(
+    body_f: wp.array(dtype=wp.spatial_vector),
+    tcp_index: int,
+    wrenches: wp.array(dtype=wp.spatial_vector),
+):
+    """Zero all ``body_f`` slots and write the lagged TCP wrench (device path)."""
+    i = wp.tid()
+    if i == tcp_index:
+        body_f[i] = wrenches[tcp_index]
+    else:
+        body_f[i] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
 def _apply_spatial_wrench_to_body_f(state: Any, tcp_body_index: int, wrenches_spatial: wp.array) -> None:
     """Write lagged coupling wrench into ``state.body_f[tcp]``; clear all other body_f slots.
 
     MuJoCo consumes ``body_f`` as external spatial force/torque (world frame, about COM).
     Must run after ``clear_forces()`` each substep; user EE wrenches would be added here too.
     """
-    w_flat = wrenches_spatial.numpy().reshape(-1, 6).astype(np.float32)
-    bf = state.body_f.numpy().reshape(-1, 6).astype(np.float32).copy()
-    bf[:] = 0.0
-    bf[tcp_body_index] = w_flat[tcp_body_index]
-    state.body_f.assign(bf.ravel())
+    n = int(state.body_f.shape[0])
+    dev = state.body_f.device
+    wp.launch(
+        _apply_tcp_spatial_wrench_kernel,
+        dim=n,
+        inputs=[state.body_f, int(tcp_body_index), wrenches_spatial],
+        device=dev,
+    )
 
 
 def bootstrap_tcp_joint_from_proxy(
@@ -612,7 +631,7 @@ def build_coupled_fruiting_placeholder(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    base_pos: tuple[float, float, float] = (0.0, 0.0, 0.5),
     device: str | None = None,
     omit: Any | None = None,
     enable_self_collisions: bool = True,
@@ -722,7 +741,6 @@ def build_coupled_fruiting_fr3(
         raise FileNotFoundError(
             "Bundled FR3 assets missing; see assets/fr3/README.md"
         )
-    print(f"Building FR3 robot model from USD: {usd_path}")
     if device is None:
         device = "cpu"
 

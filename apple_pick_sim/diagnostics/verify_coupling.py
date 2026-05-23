@@ -76,6 +76,7 @@ def run_verification(
     ok = True
 
     for step in range(num_substeps):
+        # Lagged wrench applied this substep; at step 0 cache is still zero-initialized.
         cache_before = read_tcp_wrench(scene.coupling_forces_cache, tcp)
         scene.coupled_substep(dt)
         harvest = read_tcp_wrench(scene.proxy_forces, tcp)

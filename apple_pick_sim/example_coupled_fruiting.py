@@ -370,10 +370,13 @@ class ExampleCoupledFruiting:
         self.sim_time += self.frame_dt
 
     def render(self) -> None:
-        self._viz_contacts = self.scene.cable.model.collide(
-            self.scene.cable.state_0,
-            collision_pipeline=self.scene.cable_collision_pipeline,
-        )
+        if self.scene.last_vbd_contacts is not None:
+            self._viz_contacts = self.scene.last_vbd_contacts
+        else:
+            self._viz_contacts = self.scene.cable.model.collide(
+                self.scene.cable.state_0,
+                collision_pipeline=self.scene.cable_collision_pipeline,
+            )
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.scene.cable.state_0)
         self.viewer.log_contacts(self._viz_contacts, self.scene.cable.state_0)

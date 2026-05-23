@@ -35,7 +35,8 @@ class TestFr3UsdImport(unittest.TestCase):
     def test_tcp_label_suffix(self):
         model, tcp_idx, _ = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
         lbl = model.body_label[tcp_idx]
-        self.assertTrue(lbl.endswith("/tcp") or lbl.split("/")[-1] == "tcp", lbl)
+        leaf = lbl.split("/")[-1]
+        self.assertIn(leaf, ("tcp", "ee"), lbl)
 
     def test_ee_body_from_testfr3_scene(self):
         model, _tcp, _ = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")

@@ -6,11 +6,20 @@ docs/ROADMAP.md (VBD wrench harvest option 3 when direct accumulators are not us
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 import warp as wp
+
+_tests_dir = str(Path(__file__).resolve().parent)
+if _tests_dir not in sys.path:
+    sys.path.insert(0, _tests_dir)
+
+from conftest import DEFAULT_MJ_KW, RANGES_FIXTURE, build_coupled_fr3, requires_fr3
+
+pytestmark = requires_fr3
 
 
 def _import_pc():
@@ -257,38 +266,60 @@ def test_harvest_velocity_delta_gravity_only_net_near_zero():
 
 
 def test_align_proxy_body_q_prev_for_vbd_clears_finalize_spurious_velocity():
-    """Stale body_q_prev must not make VBD finalize invent 2x gravity on the proxy."""
+    """Stale ``body_q_prev`` inflates post-step proxy twist; align removes the pose gap."""
     pc = _import_pc()
     fs = _import_fs()
-    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_placeholder"])
+    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_fr3"])
 
-    ranges = fs.load_ranges(
-        Path(__file__).resolve().parent.parent / "fixtures" / "fruiting_system_ranges_straight_rod_test.json"
-    )
-    scene = cf.build_coupled_fruiting_placeholder(
-        ranges,
-        seed=42,
-        device="cpu",
-        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
-        mujoco_solver_kwargs={"disable_contacts": True},
-    )
-    proxy = scene.cable.gripper_proxy_body
+    ranges = fs.load_ranges(RANGES_FIXTURE)
     dt = 1.0 / 600.0
 
-    scene._mujoco_and_sync_proxy(dt)
-    pc.align_proxy_body_q_prev_for_vbd(scene.cable, scene.proxy_registry.proxy_body_ids)
+    def _proxy_lin_speed_after_vbd_step(scene) -> float:
+        proxy = scene.cable.gripper_proxy_body
+        scene.cable.state_0.clear_forces()
+        scene.cable.solver.step(
+            scene.cable.state_0,
+            scene.cable.state_1,
+            scene.cable.control,
+            None,
+            dt,
+        )
+        lin = scene.cable.state_1.body_qd.numpy().reshape(-1, 6)[proxy, :3]
+        return float(np.linalg.norm(lin))
 
-    scene.cable.state_0.clear_forces()
-    scene.cable.solver.step(
-        scene.cable.state_0,
-        scene.cable.state_1,
-        scene.cable.control,
-        None,
-        dt,
+    scene_aligned = build_coupled_fr3(
+        cf,
+        ranges,
+        42,
+        device="cpu",
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
+        mujoco_solver_kwargs=DEFAULT_MJ_KW,
     )
-    qd = scene.cable.state_1.body_qd.numpy().reshape(-1, 6)[proxy, 2]
-    # One gravity step from synced v0≈0 (not 2× from stale body_q_prev).
-    assert abs(qd + 9.81 * dt) < 0.15 * 9.81 * dt, f"proxy vz after VBD={qd}, expected ≈ -g*dt"
+    scene_aligned._mujoco_and_sync_proxy(dt)
+    pc.align_proxy_body_q_prev_for_vbd(
+        scene_aligned.cable, scene_aligned.proxy_registry.proxy_body_ids
+    )
+    speed_aligned = _proxy_lin_speed_after_vbd_step(scene_aligned)
+
+    scene_mis = build_coupled_fr3(
+        cf,
+        ranges,
+        42,
+        device="cpu",
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
+        mujoco_solver_kwargs=DEFAULT_MJ_KW,
+    )
+    proxy = scene_mis.cable.gripper_proxy_body
+    scene_mis._mujoco_and_sync_proxy(dt)
+    bq = scene_mis.cable.state_0.body_q.numpy().reshape(-1, 7)
+    bqp = scene_mis.cable.solver.body_q_prev.numpy().reshape(-1, 7).copy()
+    bqp[proxy] = bq[proxy] + np.array([0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    scene_mis.cable.solver.body_q_prev.assign(bqp.ravel())
+    speed_misaligned = _proxy_lin_speed_after_vbd_step(scene_mis)
+
+    assert speed_misaligned > speed_aligned + 1.0, (
+        f"misaligned |v|={speed_misaligned:.3f} should exceed aligned |v|={speed_aligned:.3f}"
+    )
 
 
 def test_zero_robot_wrench_slots_helper():
@@ -506,17 +537,45 @@ def test_proxy_registry_from_mapping_sorts_pairs():
     assert reg.proxy_body_ids == (3, 12, 7)
 
 
+def test_proxy_registry_ids_wp_cached_per_device():
+    """ids_wp reuses the same wp.array objects across calls (no per-substep alloc)."""
+    pc = _import_pc()
+    reg = pc.ProxyBodyRegistry.from_mapping({0: 1})
+    rid_a, pid_a = reg.ids_wp("cpu")
+    rid_b, pid_b = reg.ids_wp("cpu")
+    assert rid_a is rid_b
+    assert pid_a is pid_b
+
+
+def test_coupled_substep_reuses_cached_proxy_ids():
+    """Two coupled substeps use the same cached robot/proxy id arrays."""
+    pc = _import_pc()
+    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_fr3"])
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(
+        cf, ranges, 12, device="cpu", mujoco_solver_kwargs=DEFAULT_MJ_KW
+    )
+    reg = scene.proxy_registry
+    dt = 1.0 / 600.0
+    rid0, pid0 = reg.ids_wp(scene.robot_model.device)
+    scene.coupled_substep(dt)
+    rid1, pid1 = reg.ids_wp(scene.robot_model.device)
+    scene.coupled_substep(dt)
+    rid2, pid2 = reg.ids_wp(scene.robot_model.device)
+    assert rid0 is rid1 is rid2
+    assert pid0 is pid1 is pid2
+
+
 def test_align_proxy_body_q_prev_with_multiple_bodies():
     """align_proxy_body_q_prev_for_vbd updates every listed proxy body slot."""
     pc = _import_pc()
     fs = _import_fs()
-    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_placeholder"])
+    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_fr3"])
 
-    ranges = fs.load_ranges(
-        Path(__file__).resolve().parent.parent / "fixtures" / "fruiting_system_ranges_straight_rod_test.json"
-    )
-    scene = cf.build_coupled_fruiting_placeholder(
-        ranges, seed=11, device="cpu", mujoco_solver_kwargs={"disable_contacts": True}
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(
+        cf, ranges, 11, device="cpu", mujoco_solver_kwargs=DEFAULT_MJ_KW
     )
     proxy = scene.cable.gripper_proxy_body
     apple = scene.cable.apple_body

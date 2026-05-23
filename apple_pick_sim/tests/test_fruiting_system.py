@@ -17,6 +17,8 @@ import numpy as np
 import pytest
 import warp as wp
 
+from apple_pick_sim.tests.conftest import NO_SELF_COLLISION_KW
+
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 RANGES_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_straight_rod_test.json"
 
@@ -155,7 +157,9 @@ def test_sample_params_omit_secondary_matches_json_null_secondary():
 def test_generate_scene_forwards_omit():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_scene(ranges, seed=3, omit=frozenset({"apple"}))
+    scene = fs.generate_scene(
+        ranges, seed=3, omit=frozenset({"apple"}), **NO_SELF_COLLISION_KW
+    )
     assert scene.apple_body is None
     assert scene.params.apple_radius is None
 
@@ -236,7 +240,7 @@ def test_params_within_bounds():
 def test_generate_scene_returns_scene():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_scene(ranges, seed=0)
+    scene = fs.generate_scene(ranges, seed=0, **NO_SELF_COLLISION_KW)
     assert scene is not None
     assert scene.model is not None
 
@@ -267,7 +271,7 @@ def test_body_count_matches_params():
     """Total body count should be sum of all segment bodies plus the apple body when present."""
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_scene(ranges, seed=7)
+    scene = fs.generate_scene(ranges, seed=7, **NO_SELF_COLLISION_KW)
     expected_body_count = (
         len(scene.primary_bodies)
         + len(scene.secondary_bodies)
@@ -284,7 +288,7 @@ def test_body_counts_in_range():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     for seed in range(5):
-        scene = fs.generate_scene(ranges, seed=seed)
+        scene = fs.generate_scene(ranges, seed=seed, **NO_SELF_COLLISION_KW)
         params = scene.params
         if params.primary is not None:
             assert len(scene.primary_bodies) == params.primary.num_segments
@@ -316,7 +320,7 @@ def test_apple_joint_anchor_offset_from_com_by_radius():
         )
 
     for seed in (0, 3, 7):
-        scene = fs.generate_scene(ranges, seed=seed)
+        scene = fs.generate_scene(ranges, seed=seed, **NO_SELF_COLLISION_KW)
         if scene.apple_body is None:
             continue
         labels = scene.model.joint_label
@@ -341,8 +345,12 @@ def test_apple_joint_anchor_offset_from_com_by_radius():
 def test_geometry_fingerprint_stable_same_seed():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    fp1 = fs.geometry_fingerprint(fs.generate_scene(ranges, seed=99))
-    fp2 = fs.geometry_fingerprint(fs.generate_scene(ranges, seed=99))
+    fp1 = fs.geometry_fingerprint(
+        fs.generate_scene(ranges, seed=99, **NO_SELF_COLLISION_KW)
+    )
+    fp2 = fs.geometry_fingerprint(
+        fs.generate_scene(ranges, seed=99, **NO_SELF_COLLISION_KW)
+    )
     assert fp1 == fp2, "Geometry fingerprint must be identical for the same seed"
 
 
@@ -350,7 +358,12 @@ def test_geometry_fingerprint_varies_across_seeds():
     """At least one fingerprint value must differ across three distinct seeds."""
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    fps = [fs.geometry_fingerprint(fs.generate_scene(ranges, seed=s)) for s in (0, 1, 2)]
+    fps = [
+        fs.geometry_fingerprint(
+            fs.generate_scene(ranges, seed=s, **NO_SELF_COLLISION_KW)
+        )
+        for s in (0, 1, 2)
+    ]
     # Not all fingerprints should be equal to each other
     assert not (fps[0] == fps[1] and fps[1] == fps[2]), (
         "All three seeds produced identical geometry fingerprints — variance not working"
@@ -362,7 +375,9 @@ def test_fingerprint_primary_stiffer_than_secondary():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     for seed in range(10):
-        fp = fs.geometry_fingerprint(fs.generate_scene(ranges, seed=seed))
+        fp = fs.geometry_fingerprint(
+            fs.generate_scene(ranges, seed=seed, **NO_SELF_COLLISION_KW)
+        )
         pb, sb = fp.get("primary_bend_stiffness"), fp.get("secondary_bend_stiffness")
         if pb is None or sb is None:
             continue
@@ -378,7 +393,7 @@ def test_short_rollout_no_crash():
     """A short SolverVBD rollout must complete without raising and produce finite transforms."""
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_scene(ranges, seed=3)
+    scene = fs.generate_scene(ranges, seed=3, **NO_SELF_COLLISION_KW)
     fs.run_rollout(scene, num_steps=5, sim_substeps=4)
     body_q = scene.state_0.body_q.to("cpu").numpy()
     assert np.isfinite(body_q).all(), "Non-finite body transforms after rollout"
@@ -389,7 +404,7 @@ def test_rollout_finite_primary_secondary_spur_stem_apple():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     for seed in range(12):
-        scene = fs.generate_scene(ranges, seed=seed)
+        scene = fs.generate_scene(ranges, seed=seed, **NO_SELF_COLLISION_KW)
         assert scene.stem_bodies, "fixture should include stem"
         assert scene.apple_body is not None, "fixture should include apple"
         fs.run_rollout(scene, num_steps=12, sim_substeps=6)
@@ -401,8 +416,8 @@ def test_rollout_deterministic():
     """Two scenes with the same seed must reach the same state after N rollout steps."""
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene_a = fs.generate_scene(ranges, seed=5)
-    scene_b = fs.generate_scene(ranges, seed=5)
+    scene_a = fs.generate_scene(ranges, seed=5, **NO_SELF_COLLISION_KW)
+    scene_b = fs.generate_scene(ranges, seed=5, **NO_SELF_COLLISION_KW)
     fs.run_rollout(scene_a, num_steps=10, sim_substeps=4)
     fs.run_rollout(scene_b, num_steps=10, sim_substeps=4)
     q_a = scene_a.state_0.body_q.to("cpu").numpy()
@@ -417,8 +432,12 @@ def test_run_rollout_with_example_collision_pipeline_matches_default():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 5
-    scene_a = fs.generate_scene(ranges, seed=seed, device="cpu")
-    scene_b = fs.generate_scene(ranges, seed=seed, device="cpu")
+    scene_a = fs.generate_scene(
+        ranges, seed=seed, device="cpu", **NO_SELF_COLLISION_KW
+    )
+    scene_b = fs.generate_scene(
+        ranges, seed=seed, device="cpu", **NO_SELF_COLLISION_KW
+    )
     pipe = fs.example_collision_pipeline(scene_b.model, args=None)
     fs.run_rollout(scene_a, num_steps=4, sim_substeps=6, fps=60.0)
     fs.run_rollout(
@@ -436,14 +455,14 @@ def test_run_rollout_with_example_collision_pipeline_matches_default():
 def test_fruiting_fixed_joints_matches_label_heuristic():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_scene(ranges, seed=3, device="cpu")
+    scene = fs.generate_scene(ranges, seed=3, device="cpu", **NO_SELF_COLLISION_KW)
     assert list(scene.fruiting_fixed_joints) == fs.iter_fixed_joint_indices(scene.model)
 
 
 def test_measure_fruiting_forces_returns_fixed_and_cable_indices():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_scene(ranges, seed=3, device="cpu")
+    scene = fs.generate_scene(ranges, seed=3, device="cpu", **NO_SELF_COLLISION_KW)
     sim_dt = (1.0 / 60.0) / 10.0
     scene.state_0.clear_forces()
     pipe = fs.example_collision_pipeline(scene.model, args=None)
@@ -470,7 +489,7 @@ def test_ranges_null_secondary_loads_and_scene_skips_secondary():
     params = fs.sample_params(ranges, seed=11)
     assert params.secondary is None
     assert params.primary is not None
-    scene = fs.generate_scene(ranges, seed=11)
+    scene = fs.generate_scene(ranges, seed=11, **NO_SELF_COLLISION_KW)
     assert scene.secondary_bodies == []
     assert len(scene.primary_bodies) == params.primary.num_segments
     assert len(scene.spur_bodies) == params.spur.num_segments
@@ -482,7 +501,7 @@ def test_ranges_null_apple_skips_apple_body():
     ranges["apple"] = None
     params = fs.sample_params(ranges, seed=2)
     assert params.apple_radius is None and params.apple_density is None
-    scene = fs.generate_scene(ranges, seed=2)
+    scene = fs.generate_scene(ranges, seed=2, **NO_SELF_COLLISION_KW)
     assert scene.apple_body is None
 
 
@@ -507,7 +526,7 @@ def test_manual_params_skips_primary():
 def test_iter_fixed_joint_indices_full_fixture():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_scene(ranges, seed=3, device="cpu")
+    scene = fs.generate_scene(ranges, seed=3, device="cpu", **NO_SELF_COLLISION_KW)
     pairs = fs.iter_fixed_joint_indices(scene.model)
     labels = [lab for _, lab in pairs]
     assert len(pairs) == 4
@@ -520,7 +539,13 @@ def test_iter_fixed_joint_indices_full_fixture():
 def test_iter_fixed_joint_indices_omit_apple():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_scene(ranges, seed=3, device="cpu", omit=frozenset({"apple"}))
+    scene = fs.generate_scene(
+        ranges,
+        seed=3,
+        device="cpu",
+        omit=frozenset({"apple"}),
+        **NO_SELF_COLLISION_KW,
+    )
     labels = [lab for _, lab in fs.iter_fixed_joint_indices(scene.model)]
     assert len(labels) == 3
     assert "joint_stem_apple" not in labels
@@ -529,7 +554,7 @@ def test_iter_fixed_joint_indices_omit_apple():
 def test_fixed_joint_wrenches_finite_after_substep():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_scene(ranges, seed=3, device="cpu")
+    scene = fs.generate_scene(ranges, seed=3, device="cpu", **NO_SELF_COLLISION_KW)
     sim_dt = (1.0 / 60.0) / 10.0
     scene.state_0.clear_forces()
     pipe = fs.example_collision_pipeline(scene.model, args=None)

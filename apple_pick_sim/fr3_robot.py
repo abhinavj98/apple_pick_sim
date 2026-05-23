@@ -42,21 +42,34 @@ def fr3_assets_available() -> bool:
 
 
 def resolve_tcp_body_index(model: newton.Model) -> int:
-    """Return the unique body index for the tool-center-point link ``tcp``."""
+    """Return the unique body index for the tcp link. Heuristic: find ``ee``, then see if a direct child ``tcp`` exists."""
     labels = list(model.body_label)
-    hits: list[int] = []
-    for needle in ("/tcp", "tcp"):
-        hits = [
-            i
-            for i, lbl in enumerate(labels)
-            if lbl.endswith(needle) or lbl.split("/")[-1] == needle
-        ]
-        if len(hits) == 1:
-            return hits[0]
-        if len(hits) > 1:
-            break
-    raise ValueError(f"ambiguous or missing tcp in body_label ({len(hits)} hits): {labels}")
 
+    # First, try to find "ee"
+    ee_hits = [
+        i
+        for i, lbl in enumerate(labels)
+        if lbl.endswith("/ee") or lbl.split("/")[-1] == "ee"
+    ]
+    if len(ee_hits) != 1:
+        raise ValueError(f"ambiguous or missing ee in body_label ({len(ee_hits)} hits): {labels}")
+    ee_index = ee_hits[0]
+    ee_label = labels[ee_index]
+
+    # Now, look for a "tcp" child: "<...>/ee/tcp" or like that
+    tcp_hits = [
+        i
+        for i, lbl in enumerate(labels)
+        if lbl.endswith("/tcp") or lbl.split("/")[-1] == "tcp"
+        if lbl.startswith(ee_label)
+    ]
+    if len(tcp_hits) == 1:
+        return tcp_hits[0]
+    elif len(tcp_hits) == 0:
+        # fall back to returning the ee index itself (if no tcp)
+        return ee_index
+    else:
+        raise ValueError(f"ambiguous tcp underneath ee in body_label ({len(tcp_hits)} hits): {labels}")
 
 def sync_robot_gravity_to_mujoco(robot_model: newton.Model, mj_solver: SolverMuJoCo) -> None:
     """Zero Model A gravity and push it into the embedded MuJoCo ``mj_model``.
@@ -238,6 +251,24 @@ def np_zeros_like_joint_qd(robot_model: newton.Model):
     return np.zeros(int(robot_model.joint_dof_count), dtype=np.float32)
 
 
+def sync_mujoco_visual_state(
+    mj_solver: SolverMuJoCo,
+    robot_model: newton.Model,
+    state: Any,
+) -> None:
+    """Push Newton ``joint_q`` into MuJoCo and run forward kinematics for the passive viewer.
+
+    ``_update_mjc_data`` alone updates ``mj_data.qpos`` but not body poses; ``mj_forward`` (CPU)
+    or ``mjw_data`` sync (GPU) is required before :meth:`~newton.solvers.SolverMuJoCo.render_mujoco_viewer`.
+    """
+    mj_solver._update_mjc_data(mj_solver.mj_data, robot_model, state)
+    if mj_solver.use_mujoco_cpu:
+        mj_solver._mujoco.mj_forward(mj_solver.mj_model, mj_solver.mj_data)
+    else:
+        with wp.ScopedDevice(robot_model.device):
+            mj_solver._update_mjc_data(mj_solver.mjw_data, robot_model, state)
+
+
 def init_mujoco_actuator_targets_from_model(
     robot_model: newton.Model,
     control: Any,
@@ -340,6 +371,34 @@ def integrate_tcp_target(
     else:
         rot_new = rot
     return wp.transform(pos_new, rot_new)
+
+
+# (key, action) — must stay in sync with :func:`read_keyboard_ee_velocity` axis pairs.
+FR3_KEYBOARD_BINDINGS: tuple[tuple[str, str], ...] = (
+    ("i", "translate TCP +world X"),
+    ("k", "translate TCP -world X"),
+    ("j", "translate TCP +world Y"),
+    ("l", "translate TCP -world Y"),
+    ("r", "translate TCP +world Z"),
+    ("f", "translate TCP -world Z"),
+    ("z", "rotate TCP +world Z"),
+    ("x", "rotate TCP -world Z"),
+    ("t", "rotate TCP +world Y"),
+    ("g", "rotate TCP -world Y"),
+    ("u", "rotate TCP +world X"),
+    ("o", "rotate TCP -world X"),
+)
+
+
+def print_fr3_keyboard_bindings(*, stream: Any | None = None) -> None:
+    """Print FR3 TCP teleop key map (``ViewerGL``; focus the simulation window)."""
+    import sys
+
+    out = sys.stdout if stream is None else stream
+    print("FR3 keyboard teleop — focus the viewer window:", file=out)
+    for key, action in FR3_KEYBOARD_BINDINGS:
+        print(f"  {key}: {action}", file=out)
+    print("  (W/A/S/D/Q/E move the camera, not the arm.)", file=out)
 
 
 def _keyboard_axis(viewer: _KeyViewer, neg_key: str, pos_key: str) -> float:
@@ -516,6 +575,24 @@ class Fr3EEVelocityController:
         self._push_target_to_ik()
         return velocity
 
+    def run_ik_teleop_frame(
+        self,
+        dt: float,
+        state: Any,
+        *,
+        velocity: EEVelocity | None = None,
+        viewer: _KeyViewer | None = None,
+        poll_events: bool = True,
+    ) -> EEVelocity:
+        """Integrate TCP target, optionally sync on idle, and solve IK from ``state``."""
+        velocity = self.advance_target(
+            dt, velocity=velocity, viewer=viewer, poll_events=poll_events
+        )
+        if velocity.is_zero():
+            self.sync_target_from_state(state)
+        self.solve_ik(state)
+        return velocity
+
     def solve_ik(self, state: Any | None = None) -> None:
         """Run the IK solver for the current target (may be CUDA-graph captured).
 
@@ -574,3 +651,26 @@ class Fr3EEVelocityController:
             frame_dt=frame_dt,
             command_velocity=command_velocity,
         )
+
+
+class Fr3EEDirectJointController(Fr3EEVelocityController):
+    """Testing controller: TCP velocity + IK, then **direct** ``joint_q`` write (kinematic arm).
+
+    Pair with :meth:`~apple_pick_sim.coupled_fruiting.CoupledFruitingScene.apply_fr3_ee_teleop_direct`
+    and ``robot_kinematic_mode=True`` so ``SolverMuJoCo`` does not re-integrate the arm between
+    substeps. Coupled VBD + proxy sync still run.
+    """
+
+    def apply_direct_joints(
+        self,
+        state: Any,
+        control: Any | None = None,
+        *,
+        mj_solver: SolverMuJoCo | None = None,
+    ) -> None:
+        """Write IK ``joint_q`` into model/state, zero ``joint_qd``, refresh FK and MuJoCo buffers."""
+        self.apply_to_model_and_state(state)
+        if control is not None:
+            init_mujoco_actuator_targets_from_model(self.robot_model, control)
+        if mj_solver is not None:
+            sync_mujoco_visual_state(mj_solver, self.robot_model, state)

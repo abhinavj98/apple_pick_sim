@@ -38,6 +38,7 @@ See [`assets/fr3/README.md`](../assets/fr3/README.md).
 | `example_fr3_keyboard.py` | No (FK + `joint_q` writeback only) | No | Unit tests + viewer smoke |
 | `example_coupled_fruiting.py --robot fr3 --only-mjc --fr3-keyboard` | Yes (`mujoco_substep` + proxy sync) | No integration per substep | **Manually verified** (2026-05-19); default **`fix_to_apple=False`** |
 | `example_coupled_fruiting.py --robot fr3 --fr3-keyboard` (full coupled) | Yes + VBD | Yes | **Not verified** interactively |
+| `example_coupled_fruiting.py --robot fr3 --fr3-direct-joints [--fr3-keyboard]` | Kinematic (no `mj_solver.step`) | Yes (if full coupled) | Testing: `Fr3EEDirectJointController` writes `joint_q`; tree still integrates |
 
 Keys (Newton **ViewerGL**, focus window): **I/K J/L R/F** world translate; **U/O T/G Z/X** rotate. **W/S** move the camera, not the arm.
 

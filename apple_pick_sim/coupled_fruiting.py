@@ -131,6 +131,8 @@ class CoupledFruitingScene:
     gravity_vec: wp.vec3 = dataclasses.field(default_factory=lambda: wp.vec3(0.0, 0.0, -9.81))
     use_mujoco_contacts: bool = False
     robot_disable_contacts: bool = True
+    # When True: skip MuJoCo arm integration and lagged wrench on TCP; pose from direct joint_q.
+    robot_kinematic_mode: bool = False
 
     def apply_fr3_ee_teleop(
         self,
@@ -155,12 +157,13 @@ class CoupledFruitingScene:
             raise ValueError(
                 "apply_fr3_ee_teleop requires robot model, state, control, and MuJoCo solver"
             )
-        velocity = controller.advance_target(
-            dt, velocity=velocity, viewer=viewer, poll_events=True
+        velocity = controller.run_ik_teleop_frame(
+            dt,
+            self.robot_state_0,
+            velocity=velocity,
+            viewer=viewer,
+            poll_events=True,
         )
-        if velocity.is_zero():
-            controller.sync_target_from_state(self.robot_state_0)
-        controller.solve_ik(self.robot_state_0)
         controller.apply_ik_to_mujoco_control(
             self.robot_state_0,
             self.robot_control,
@@ -174,16 +177,57 @@ class CoupledFruitingScene:
         )
         return velocity
 
+    def apply_fr3_ee_teleop_direct(
+        self,
+        dt: float,
+        controller: fr3_robot.Fr3EEDirectJointController,
+        *,
+        viewer: fr3_robot._KeyViewer | None = None,
+        velocity: fr3_robot.EEVelocity | None = None,
+    ) -> fr3_robot.EEVelocity:
+        """TCP teleop via IK, then **write ``joint_q``** (testing / kinematic arm in coupled runs).
+
+        Use with ``robot_kinematic_mode=True`` so substeps skip ``mj_solver.step`` and do not
+        apply lagged coupling wrenches to the arm. Cable VBD + proxy sync still run each substep.
+        Call once per **frame** (``frame_dt``).
+        """
+        if (
+            self.robot_model is None
+            or self.robot_state_0 is None
+            or self.robot_control is None
+            or self.mj_solver is None
+        ):
+            raise ValueError(
+                "apply_fr3_ee_teleop_direct requires robot model, state, control, and MuJoCo solver"
+            )
+        velocity = controller.run_ik_teleop_frame(
+            dt,
+            self.robot_state_0,
+            velocity=velocity,
+            viewer=viewer,
+            poll_events=True,
+        )
+        controller.apply_direct_joints(
+            self.robot_state_0,
+            self.robot_control,
+            mj_solver=self.mj_solver,
+        )
+        self.robot_state_1.joint_q.assign(self.robot_state_0.joint_q)
+        self.robot_state_1.joint_qd.assign(self.robot_state_0.joint_qd)
+        return velocity
+
     def vbd_substep(
         self,
         dt: float,
         *,
         after_cable_clear_forces: Callable[[], None] | None = None,
-    ) -> None:
+    ) -> Any:
         """Advance the cable ``SolverVBD`` model only (no MuJoCo / proxy sync).
 
         Cable-only mode (``vbd_only=True``): no force exchange with the robot; the gripper
         proxy is integrated purely by VBD (pose not mirrored from MuJoCo).
+
+        Returns the contact buffer from ``collide`` (for harvest in ``coupled_substep``).
         """
         self.cable.state_0.clear_forces()
         if after_cable_clear_forces is not None:
@@ -200,6 +244,7 @@ class CoupledFruitingScene:
             dt,
         )
         self.cable.state_0, self.cable.state_1 = self.cable.state_1, self.cable.state_0
+        return vbd_contacts
 
     def _mujoco_and_sync_proxy(self, dt: float) -> None:
         """MuJoCo robot step + ``sync_proxy_state`` onto the cable gripper proxy.
@@ -207,27 +252,39 @@ class CoupledFruitingScene:
         Coupling steps 1–3 of the staggered protocol (see module docstring):
         apply lagged wrench → integrate robot → mirror pose/vel onto VBD proxy.
         """
-        # --- 1. MuJoCo ← VBD (lagged): external wrench from prior harvest ---
+        # --- 1–2. Model A: dynamic MuJoCo step, or kinematic FK hold (direct-joint teleop).
         self.robot_state_0.clear_forces()
-        self.coupling_forces_cache.assign(self.proxy_forces)
-        if self.force_debug is not None:
-            self.force_debug.record_applied_from_scene(self)
-        _apply_spatial_wrench_to_body_f(
-            self.robot_state_0, self.tcp_body_index, self.coupling_forces_cache
-        )
+        if self.robot_kinematic_mode:
+            self.coupling_forces_cache.zero_()
+            newton.eval_fk(
+                self.robot_model,
+                self.robot_model.joint_q,
+                self.robot_model.joint_qd,
+                self.robot_state_0,
+            )
+            if self.mj_solver is not None:
+                fr3_robot.sync_mujoco_visual_state(
+                    self.mj_solver, self.robot_model, self.robot_state_0
+                )
+        else:
+            self.coupling_forces_cache.assign(self.proxy_forces)
+            if self.force_debug is not None:
+                self.force_debug.record_applied_from_scene(self)
+            _apply_spatial_wrench_to_body_f(
+                self.robot_state_0, self.tcp_body_index, self.coupling_forces_cache
+            )
 
-        if not self.use_mujoco_contacts and not self.robot_disable_contacts:
-            self.robot_model.collide(self.robot_state_0, self.mj_contacts)
+            if not self.use_mujoco_contacts and not self.robot_disable_contacts:
+                self.robot_model.collide(self.robot_state_0, self.mj_contacts)
 
-        # --- 2. Advance Model A (robot) ---
-        self.mj_solver.step(
-            self.robot_state_0,
-            self.robot_state_1,
-            self.robot_control,
-            self.mj_contacts,
-            dt,
-        )
-        self.robot_state_0, self.robot_state_1 = self.robot_state_1, self.robot_state_0
+            self.mj_solver.step(
+                self.robot_state_0,
+                self.robot_state_1,
+                self.robot_control,
+                self.mj_contacts,
+                dt,
+            )
+            self.robot_state_0, self.robot_state_1 = self.robot_state_1, self.robot_state_0
 
         dev = self.robot_model.device
         rid = self.proxy_registry.robot_ids_wp(dev)
@@ -317,27 +374,13 @@ class CoupledFruitingScene:
                 "coupled_substep requires mujoco_only=False; use mujoco_substep for robot-only stepping"
             )
 
-        self._mujoco_and_sync_proxy(dt)
+        self.mujoco_substep(dt)
         # Snapshot proxy velocity for velocity-delta harvest (free-proxy path only).
         use_stem_harvest = self.stem_apple_joint_index is not None
         qd_synced = None if use_stem_harvest else wp.clone(self.cable.state_0.body_qd)
 
         # --- 4. Advance Model B (cable + apple + proxy contacts/joints) ---
-        self.cable.state_0.clear_forces()
-        if after_cable_clear_forces is not None:
-            after_cable_clear_forces()
-        vbd_contacts = self.cable.model.collide(
-            self.cable.state_0,
-            collision_pipeline=self.cable_collision_pipeline,
-        )
-        self.cable.solver.step(
-            self.cable.state_0,
-            self.cable.state_1,
-            self.cable.control,
-            vbd_contacts,
-            dt,
-        )
-        self.cable.state_0, self.cable.state_1 = self.cable.state_1, self.cable.state_0
+        vbd_contacts = self.vbd_substep(dt, after_cable_clear_forces=after_cable_clear_forces)
 
         # --- 5. Harvest: stem joint tension (unified-sync path) or velocity delta (free-proxy) ---
         if use_stem_harvest:
@@ -464,13 +507,15 @@ def _assemble_coupled_robot_scene(
     stem_coupling_gain: float,
     stem_force_cap_N: float | None,
     stem_torque_cap_Nm: float | None,
+    init_mujoco_actuator_targets: bool = False,
 ) -> CoupledFruitingScene:
     robot_state_0 = robot_model.state()
     robot_state_1 = robot_model.state()
     robot_control = robot_model.control()
 
     bootstrap_fn(cable, robot_model, tcp_body, robot_state_0)
-    fr3_robot.init_mujoco_actuator_targets_from_model(robot_model, robot_control)
+    if init_mujoco_actuator_targets:
+        fr3_robot.init_mujoco_actuator_targets_from_model(robot_model, robot_control)
     robot_state_1.joint_q.assign(robot_model.joint_q)
     robot_state_1.joint_qd.assign(robot_model.joint_qd)
     newton.eval_fk(robot_model, robot_model.joint_q, robot_model.joint_qd, robot_state_1)
@@ -567,7 +612,7 @@ def build_coupled_fruiting_placeholder(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.0, 0.0, 3.0),
+    base_pos: tuple[float, float, float] = (0.0, 0.0, 0.0),
     device: str | None = None,
     omit: Any | None = None,
     enable_self_collisions: bool = True,
@@ -655,7 +700,7 @@ def build_coupled_fruiting_fr3(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.0, 0.0, 3.0),
+    base_pos: tuple[float, float, float] = (0.0, 0.0, 0.5),
     device: str | None = None,
     omit: Any | None = None,
     enable_self_collisions: bool = True,
@@ -677,6 +722,7 @@ def build_coupled_fruiting_fr3(
         raise FileNotFoundError(
             "Bundled FR3 assets missing; see assets/fr3/README.md"
         )
+    print(f"Building FR3 robot model from USD: {usd_path}")
     if device is None:
         device = "cpu"
 
@@ -754,4 +800,5 @@ def build_coupled_fruiting_fr3(
         stem_coupling_gain=stem_coupling_gain,
         stem_force_cap_N=stem_force_cap_N,
         stem_torque_cap_Nm=stem_torque_cap_Nm,
+        init_mujoco_actuator_targets=True,
     )

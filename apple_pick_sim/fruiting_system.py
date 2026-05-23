@@ -223,11 +223,11 @@ class GripperProxyConfig:
     mass: float = 5.0
     box_half_extents: tuple[float, float, float] = (0.05, 0.05, 0.05)
     label: str = "gripper_proxy"
-    fix_to_apple: bool = True
+    fix_to_apple: bool = False
     """If ``True``, weld the proxy to the apple with a FIXED joint at the exterior pole.
 
-    Use with :func:`generate_coupled_cable_scene` and the coupled builders (default is ``False``).
-    Pass ``GripperProxyConfig(fix_to_apple=True)`` for stem-harvest / apple co-teleport regression tests.
+    Default ``False``: velocity-delta harvest + proxy-only sync. Set ``True`` for stem-harvest /
+    apple co-teleport (see ``example_coupled_fruiting.py --fix-to-apple``).
     """
 
 
@@ -545,7 +545,7 @@ def generate_coupled_cable_scene(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.0, 0.0, 3.0),
+    base_pos: tuple[float, float, float] = (0.0, 0.0, 0.5),
     device: str | None = None,
     omit: Collection[str] | None = None,
     enable_self_collisions: bool = True,

@@ -144,6 +144,11 @@ PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_cou
   --robot fr3 --only-mjc --fr3-keyboard --mujoco-viewer --viewer gl
 # Full staggered coupling + keyboard (not yet verified interactively)
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --robot fr3 --fr3-keyboard --viewer gl
+# Stem-harvest path: weld proxy to apple (default is --no-fix-to-apple / velocity-delta)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --fix-to-apple --seed 42
+# FR3 testing: direct joint_q write + kinematic arm (coupled VBD + proxy sync still run)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py \
+  --robot fr3 --fr3-direct-joints --fr3-keyboard --viewer gl
 ```
 
 **FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):

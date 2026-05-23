@@ -819,3 +819,80 @@ def test_post_nudge_settles():
     bq1 = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, :3]
     drift = float(np.linalg.norm(bq1 - bq0))
     assert drift < 0.08, f"TCP drifted {drift} m after idle settle"
+
+
+def test_example_coupled_fruiting_fix_to_apple_parser_default():
+    from apple_pick_sim import example_coupled_fruiting as ex
+
+    args = ex._make_parser().parse_args([])
+    assert ex._fix_to_apple_from_args(args) is False
+    assert ex._gripper_proxy_from_args(args, robot_kind="placeholder").fix_to_apple is False
+
+
+def test_example_coupled_fruiting_fix_to_apple_parser_enabled():
+    from apple_pick_sim import example_coupled_fruiting as ex
+
+    args = ex._make_parser().parse_args(["--fix-to-apple"])
+    assert ex._fix_to_apple_from_args(args) is True
+    assert ex._gripper_proxy_from_args(args, robot_kind="fr3").fix_to_apple is True
+
+
+def test_example_coupled_fruiting_fix_to_apple_parser_disabled_explicit():
+    from apple_pick_sim import example_coupled_fruiting as ex
+
+    args = ex._make_parser().parse_args(["--no-fix-to-apple"])
+    assert ex._fix_to_apple_from_args(args) is False
+
+
+def test_gripper_proxy_config_default_fix_to_apple_false():
+    fs = _import_fs()
+    assert fs.GripperProxyConfig().fix_to_apple is False
+
+
+@pytest.mark.skipif(
+    not _fr3_assets_available(),
+    reason="Requires bundled assets/fr3 and usd-core",
+)
+def test_fr3_direct_teleop_kinematic_substep_preserves_joint_q():
+    import numpy as np
+
+    from apple_pick_sim import fr3_robot
+
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = cf.build_coupled_fruiting_fr3(
+        ranges,
+        seed=7,
+        mujoco_only=True,
+        mujoco_solver_kwargs={"disable_contacts": True},
+    )
+    scene.robot_kinematic_mode = True
+    ctrl = fr3_robot.Fr3EEDirectJointController(scene.robot_model, scene.tcp_body_index)
+    ctrl.sync_target_from_state(scene.robot_state_0)
+    frame_dt = 1.0 / 60.0
+    sub_dt = frame_dt / 30.0
+
+    scene.apply_fr3_ee_teleop_direct(
+        frame_dt,
+        ctrl,
+        velocity=fr3_robot.EEVelocity(linear=(0.25, 0.0, 0.0)),
+    )
+    q_after_teleop = scene.robot_state_0.joint_q.numpy().copy()
+
+    for _ in range(30):
+        scene.mujoco_substep(sub_dt)
+
+    q_after_substeps = scene.robot_state_0.joint_q.numpy()
+    np.testing.assert_allclose(q_after_substeps, q_after_teleop, rtol=0, atol=1e-5)
+
+
+@pytest.mark.skipif(
+    not _fr3_assets_available(),
+    reason="Requires bundled assets/fr3 and usd-core",
+)
+def test_example_fr3_direct_joints_parser():
+    from apple_pick_sim import example_coupled_fruiting as ex
+
+    args = ex._make_parser().parse_args(["--robot", "fr3", "--fr3-direct-joints"])
+    assert args.fr3_direct_joints is True

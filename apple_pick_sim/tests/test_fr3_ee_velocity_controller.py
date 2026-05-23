@@ -228,5 +228,52 @@ class TestFr3EEVelocityController(unittest.TestCase):
         assert np.isfinite(ctrl.joint_q.numpy()).all()
 
 
+@unittest.skipUnless(_usd_available(), "Requires usd-core and bundled assets/fr3")
+class TestFr3EEDirectJointController(unittest.TestCase):
+    def test_apply_direct_joints_zeros_velocity(self):
+        import numpy as np
+        import newton
+
+        model, tcp_idx, mj_solver = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        state = model.state()
+        control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        ctrl = fr3_robot.Fr3EEDirectJointController(model, tcp_idx)
+        ctrl.sync_target_from_state(state)
+        ctrl.run_ik_teleop_frame(
+            1.0 / 60.0,
+            state,
+            velocity=fr3_robot.EEVelocity(linear=(0.1, 0.0, 0.0)),
+        )
+        ctrl.apply_direct_joints(state, control, mj_solver=mj_solver)
+        qd = state.joint_qd.numpy().reshape(-1)
+        np.testing.assert_allclose(qd, 0.0, atol=1e-6)
+        np.testing.assert_allclose(
+            control.joint_target_pos.numpy().reshape(-1),
+            state.joint_q.numpy().reshape(-1),
+            rtol=0,
+            atol=1e-5,
+        )
+
+    def test_sync_mujoco_visual_state_updates_body_pose(self):
+        import newton
+
+        model, tcp_idx, mj_solver = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        ctrl = fr3_robot.Fr3EEDirectJointController(model, tcp_idx)
+        ctrl.sync_target_from_state(state)
+        x_before = float(mj_solver.mj_data.xpos.reshape(-1, 3)[tcp_idx, 0])
+
+        ctrl.run_ik_teleop_frame(
+            1.0 / 60.0,
+            state,
+            velocity=fr3_robot.EEVelocity(linear=(0.15, 0.0, 0.0)),
+        )
+        ctrl.apply_direct_joints(state, mj_solver=mj_solver)
+        x_after = float(mj_solver.mj_data.xpos.reshape(-1, 3)[tcp_idx, 0])
+        self.assertNotAlmostEqual(x_before, x_after, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()

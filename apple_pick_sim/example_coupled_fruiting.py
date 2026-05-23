@@ -20,6 +20,12 @@ Options (Newton example parser + extras)::
 ``--no-self-collision`` matches :func:`~apple_pick_sim.fruiting_system.generate_coupled_cable_scene` /
 ``enable_self_collisions=False``.
 
+``--fix-to-apple`` / ``--no-fix-to-apple`` select stem-harvest + apple co-teleport vs the default
+velocity-delta harvest (proxy-only sync).
+
+Pass ``--fr3-direct-joints`` with ``--robot fr3`` (and ``--fr3-keyboard`` for teleop) to write IK
+``joint_q`` directly and skip MuJoCo arm dynamics (testing / kinematic coupled runs).
+
 Pass ``--fr3-keyboard`` with ``--robot fr3`` and ``--viewer gl`` for TCP keyboard teleop: each frame
 IK writes ``robot_control.joint_target_pos`` / ``vel`` before MuJoCo substeps (same keys as
 ``example_fr3_keyboard.py``). **Verified interactively** with ``--only-mjc`` (MuJoCo + proxy sync only;
@@ -45,11 +51,36 @@ from apple_pick_sim.coupled_fruiting import (
     build_coupled_fruiting_fr3,
     build_coupled_fruiting_placeholder,
 )
-from apple_pick_sim.fruiting_system import geometry_fingerprint, load_ranges
+from apple_pick_sim.fruiting_system import (
+    GripperProxyConfig,
+    geometry_fingerprint,
+    load_ranges,
+)
 
 
 def _default_ranges_path() -> Path:
     return Path(__file__).resolve().parent / "fixtures" / "fruiting_system_ranges_example_variance.json"
+
+
+def _fix_to_apple_from_args(args: argparse.Namespace | None) -> bool:
+    """Return whether the gripper proxy is welded to the apple (stem-harvest path)."""
+    return bool(getattr(args, "fix_to_apple", False)) if args else False
+
+
+def _gripper_proxy_from_args(
+    args: argparse.Namespace | None,
+    *,
+    robot_kind: str,
+) -> GripperProxyConfig:
+    """Build :class:`GripperProxyConfig` from CLI ``--fix-to-apple`` / ``--no-fix-to-apple``."""
+    fix = _fix_to_apple_from_args(args)
+    if robot_kind == "fr3":
+        return GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+            fix_to_apple=fix,
+        )
+    return GripperProxyConfig(fix_to_apple=fix)
 
 
 def _resolve_step_mode(args: argparse.Namespace | None) -> str:
@@ -131,6 +162,24 @@ def _make_parser() -> argparse.ArgumentParser:
             "focus the window — I/K J/L R/F translate, U/O T/G Z/X rotate)."
         ),
     )
+    parser.add_argument(
+        "--fix-to-apple",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Weld gripper proxy to apple (stem-harvest + co-teleport apple with TCP). "
+            "Default: off (velocity-delta harvest, proxy-only sync)."
+        ),
+    )
+    parser.add_argument(
+        "--fr3-direct-joints",
+        action="store_true",
+        help=(
+            "FR3 testing mode: IK writes joint_q directly (kinematic arm). Requires "
+            "--robot fr3. Use with --fr3-keyboard for teleop; skips MuJoCo arm integration "
+            "and lagged TCP wrenches while cable VBD + proxy sync still run."
+        ),
+    )
     return parser
 
 
@@ -176,6 +225,12 @@ class ExampleCoupledFruiting:
             getattr(self.args, "no_self_collision", False) if self.args else False
         )
 
+        fix_to_apple = _fix_to_apple_from_args(args)
+        print(
+            f"Gripper proxy fix_to_apple={fix_to_apple} "
+            f"({'stem-harvest' if fix_to_apple else 'velocity-delta'} coupling)."
+        )
+
         build_fn = (
             build_coupled_fruiting_fr3
             if robot_kind == "fr3"
@@ -186,6 +241,7 @@ class ExampleCoupledFruiting:
             first_seed,
             device=str(wp.get_device()),
             enable_self_collisions=enable_self,
+            gripper_proxy=_gripper_proxy_from_args(args, robot_kind=robot_kind),
             vbd_only=(self._step_mode == "vbd"),
             mujoco_only=(self._step_mode == "mjc"),
         )
@@ -226,47 +282,73 @@ class ExampleCoupledFruiting:
             print("Suppressing --mujoco-viewer (no DISPLAY/WAYLAND_DISPLAY).")
             self._mujoco_viewer = False
 
-        self._ee_ctrl: fr3_robot.Fr3EEVelocityController | None = None
+        direct_joints = bool(getattr(args, "fr3_direct_joints", False)) if args else False
+        if direct_joints and robot_kind != "fr3":
+            raise SystemExit("--fr3-direct-joints requires --robot fr3.")
+        if direct_joints and self._step_mode == "vbd":
+            raise SystemExit("--fr3-direct-joints requires a robot step mode (not --only-vbd).")
+        if direct_joints and has_robot:
+            self.scene.robot_kinematic_mode = True
+            print(
+                "FR3 direct-joint mode: kinematic arm (no MuJoCo integration, no lagged TCP wrench)."
+            )
+
+        self._ee_ctrl: (
+            fr3_robot.Fr3EEVelocityController | fr3_robot.Fr3EEDirectJointController | None
+        ) = None
+        self._fr3_direct_joints = direct_joints
         enable_kb = bool(getattr(args, "fr3_keyboard", False)) if args else False
         kb_ok = hasattr(self.viewer, "is_key_down")
-        if (
-            enable_kb
-            and robot_kind == "fr3"
-            and self._step_mode != "vbd"
-            and has_robot
-            and kb_ok
-        ):
-            self._ee_ctrl = fr3_robot.Fr3EEVelocityController(
-                self.scene.robot_model,
-                self.scene.tcp_body_index,
-                linear_speed=0.15,
-                angular_speed=0.8,
-                ik_iterations=24,
+        want_fr3_ctrl = (enable_kb or direct_joints) and robot_kind == "fr3"
+        if want_fr3_ctrl and self._step_mode != "vbd" and has_robot:
+            ctrl_cls = (
+                fr3_robot.Fr3EEDirectJointController
+                if direct_joints
+                else fr3_robot.Fr3EEVelocityController
             )
-            self._ee_ctrl.sync_target_from_state(self.scene.robot_state_0)
-            print(
-                "FR3 keyboard teleop (focus this window): I/K J/L R/F translate, "
-                "U/O T/G Z/X rotate (not W/S — camera)."
-            )
+            if enable_kb and not kb_ok:
+                print(
+                    "FR3 keyboard teleop unavailable: use --viewer gl (not viser/null).",
+                    file=sys.stderr,
+                )
+            else:
+                self._ee_ctrl = ctrl_cls(
+                    self.scene.robot_model,
+                    self.scene.tcp_body_index,
+                    linear_speed=0.15,
+                    angular_speed=0.8,
+                    ik_iterations=24,
+                )
+                self._ee_ctrl.sync_target_from_state(self.scene.robot_state_0)
+                if enable_kb:
+                    fr3_robot.print_fr3_keyboard_bindings()
+                elif direct_joints:
+                    print(
+                        "FR3 direct-joint controller ready (no keyboard; pass velocity in tests).",
+                        file=sys.stderr,
+                    )
         elif enable_kb and robot_kind != "fr3":
             print("Warning: --fr3-keyboard requires --robot fr3.", file=sys.stderr)
-        elif enable_kb and has_robot and self._step_mode != "vbd" and not kb_ok:
-            print(
-                "FR3 keyboard teleop unavailable: use --viewer gl (not viser/null).",
-                file=sys.stderr,
-            )
 
     def _pick_forces(self) -> None:
         self.viewer.apply_forces(self.scene.cable.state_0)
 
     def simulate(self) -> None:
-        for _ in range(self.sim_substeps):
-            if self._ee_ctrl is not None:
+        # FR3 teleop: advance target + solve IK once per frame (not per substep).
+        if self._ee_ctrl is not None:
+            if self._fr3_direct_joints:
+                self.scene.apply_fr3_ee_teleop_direct(
+                    self.frame_dt,
+                    self._ee_ctrl,
+                    viewer=self.viewer,
+                )
+            else:
                 self.scene.apply_fr3_ee_teleop(
                     self.frame_dt,
                     self._ee_ctrl,
                     viewer=self.viewer,
                 )
+        for _ in range(self.sim_substeps):
             if self._step_mode == "vbd":
                 self.scene.vbd_substep(
                     self.sim_dt,
@@ -297,6 +379,12 @@ class ExampleCoupledFruiting:
         self.viewer.log_contacts(self._viz_contacts, self.scene.cable.state_0)
         self.viewer.end_frame()
         if self._mujoco_viewer:
+            if self.scene.robot_kinematic_mode and self.scene.robot_model is not None:
+                fr3_robot.sync_mujoco_visual_state(
+                    self.scene.mj_solver,
+                    self.scene.robot_model,
+                    self.scene.robot_state_0,
+                )
             self.scene.mj_solver.render_mujoco_viewer()
 
     def cleanup(self) -> None:

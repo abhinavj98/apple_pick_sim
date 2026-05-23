@@ -436,7 +436,7 @@ class ExampleAppleStem:
         joint_X_c = self.model.joint_X_c.to("cpu").numpy()
         def get_anchor_xforms(joint_idx):
             jp = joint_X_p[joint_idx]
-            X_bp_j = wp.transform(wp.vec3(float(jp[0]), float(jp[1]), float(jp[2])), wp.quat(float(jp[3]), float(p[4]), float(jp[5]), float(jp[6])))
+            X_bp_j = wp.transform(wp.vec3(float(jp[0]), float(jp[1]), float(jp[2])), wp.quat(float(jp[3]), float(jp[4]), float(jp[5]), float(jp[6])))
             jc = joint_X_c[joint_idx]
             X_bc_j = wp.transform(wp.vec3(float(jc[0]), float(jc[1]), float(jc[2])), wp.quat(float(jc[3]), float(jc[4]), float(jc[5]), float(jc[6])))
             return X_bp_j, X_bc_j

@@ -20,8 +20,10 @@ from apple_pick_sim.coupled_fruiting import (
     build_coupled_fruiting_fr3,
     build_coupled_fruiting_placeholder,
 )
-from apple_pick_sim import fr3_robot
-from apple_pick_sim.fruiting_system import load_ranges
+from apple_pick_sim.fruiting_system import GripperProxyConfig, load_ranges
+from apple_pick_sim.robot import fr3_robot
+from apple_pick_sim.sim_device import resolve_sim_device
+from apple_pick_sim.sim_mujoco_device import resolve_mujoco_use_cpu
 
 
 def _default_ranges_path() -> Path:
@@ -42,16 +44,30 @@ def _build_scene(
     ranges: dict,
     seed: int,
     device: str,
+    *,
+    fix_to_apple: bool,
+    mujoco_use_cpu: bool,
 ):
-    mj_kw = {"disable_contacts": True}
+    mj_kw: dict = {"disable_contacts": True, "use_mujoco_cpu": mujoco_use_cpu}
+    gripper = GripperProxyConfig(fix_to_apple=fix_to_apple)
     if robot == "fr3":
         if not fr3_robot.fr3_assets_available():
             raise SystemExit("FR3 assets missing; see assets/fr3/README.md")
         return build_coupled_fruiting_fr3(
-            ranges, seed, device=device, mujoco_solver_kwargs=mj_kw
+            ranges,
+            seed,
+            device=device,
+            gripper_proxy=gripper,
+            mujoco_solver_kwargs=mj_kw,
+            mujoco_use_cpu=mujoco_use_cpu,
         )
     return build_coupled_fruiting_placeholder(
-        ranges, seed, device=device, mujoco_solver_kwargs=mj_kw
+        ranges,
+        seed,
+        device=device,
+        gripper_proxy=gripper,
+        mujoco_solver_kwargs=mj_kw,
+        mujoco_use_cpu=mujoco_use_cpu,
     )
 
 
@@ -63,10 +79,19 @@ def run_benchmark(
     warmup_substeps: int,
     bench_substeps: int,
     sim_substeps_per_frame: int,
+    fix_to_apple: bool,
+    mujoco_use_cpu: bool,
 ) -> dict[str, float]:
     wp.init()
     ranges = load_ranges(_default_ranges_path())
-    scene = _build_scene(robot, ranges, seed, device)
+    scene = _build_scene(
+        robot,
+        ranges,
+        seed,
+        device,
+        fix_to_apple=fix_to_apple,
+        mujoco_use_cpu=mujoco_use_cpu,
+    )
     dt = (1.0 / 60.0) / sim_substeps_per_frame
 
     for _ in range(warmup_substeps):
@@ -102,7 +127,11 @@ def main(argv: list[str] | None = None) -> int:
         default="placeholder",
         help="Robot model to build (default: placeholder).",
     )
-    parser.add_argument("--device", default="cpu", help="Warp device (default: cpu).")
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Warp device (default: cuda:0 when CUDA is available, else cpu).",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--warmup-substeps", type=int, default=30)
     parser.add_argument("--bench-substeps", type=int, default=300)
@@ -112,18 +141,45 @@ def main(argv: list[str] | None = None) -> int:
         default=30,
         help="Substeps per frame for derived frame timing (default: 30).",
     )
+    parser.add_argument(
+        "--fix-to-apple",
+        action="store_true",
+        help="Weld gripper proxy to apple (stem-harvest coupling path).",
+    )
+    parser.add_argument(
+        "--mujoco-cpu",
+        action="store_true",
+        help="Force MuJoCo CPU solver (required for --device cpu).",
+    )
+    parser.add_argument(
+        "--mujoco-gpu",
+        action="store_true",
+        help="Use MuJoCo Warp on CUDA (requires --device cuda:0).",
+    )
     args = parser.parse_args(argv)
+    device = resolve_sim_device(args.device)
+    if args.mujoco_cpu and args.mujoco_gpu:
+        raise SystemExit("--mujoco-cpu and --mujoco-gpu are mutually exclusive")
+    mujoco_override = True if args.mujoco_cpu else (False if args.mujoco_gpu else None)
+    mujoco_use_cpu = resolve_mujoco_use_cpu(device, mujoco_override)
 
     stats = run_benchmark(
         robot=args.robot,
-        device=args.device,
+        device=device,
         seed=args.seed,
         warmup_substeps=args.warmup_substeps,
         bench_substeps=args.bench_substeps,
         sim_substeps_per_frame=args.sim_substeps,
+        fix_to_apple=args.fix_to_apple,
+        mujoco_use_cpu=mujoco_use_cpu,
     )
 
-    print(f"robot={args.robot} device={args.device} seed={args.seed}")
+    harvest = "stem" if args.fix_to_apple else "velocity-delta"
+    mj_backend = "cpu" if mujoco_use_cpu else "warp"
+    print(
+        f"robot={args.robot} device={device} seed={args.seed} "
+        f"mujoco={mj_backend} harvest={harvest}"
+    )
     print(f"warmup={args.warmup_substeps} bench={args.bench_substeps} dt={stats['dt']:.6f} s")
     print(f"ms/substep: {stats['ms_per_substep']:.4f}")
     print(f"substeps/s: {stats['substeps_per_s']:.2f}")

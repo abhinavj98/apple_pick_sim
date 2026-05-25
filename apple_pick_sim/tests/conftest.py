@@ -23,7 +23,7 @@ SIM_SUB_DT = SUB_DT  # example_coupled_fruiting default substep
 
 def fr3_assets_available() -> bool:
     try:
-        from apple_pick_sim import fr3_robot
+        from apple_pick_sim.robot import fr3_robot
 
         return fr3_robot.fr3_assets_available()
     except Exception:

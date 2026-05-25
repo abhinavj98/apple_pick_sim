@@ -1,6 +1,6 @@
 """M1 Slice 2b: FR3 + coupled cable VBD staggered loop.
 
-Force and stability tests use :class:`~apple_pick_sim.fr3_robot.Fr3EEDirectJointController`
+Force and stability tests use :class:`~apple_pick_sim.robot.fr3_robot.Fr3EEDirectJointController`
 with ``robot_kinematic_mode=True`` for accurate TCP pose without actuator drift.
 """
 
@@ -57,6 +57,21 @@ def _warp_init():
     import warp as wp
 
     wp.init()
+
+
+def test_qd_synced_buffer_reused_across_substeps():
+    """Pooled ``qd_synced`` is allocated once and reused (no per-substep ``wp.clone``)."""
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(cf, ranges, 8, mujoco_solver_kwargs=DEFAULT_MJ_KW)
+    assert scene.qd_synced is not None
+    buf_id = id(scene.qd_synced)
+    dt = SUB_DT
+    scene.coupled_substep(dt)
+    assert id(scene.qd_synced) == buf_id
+    scene.coupled_substep(dt)
+    assert id(scene.qd_synced) == buf_id
 
 
 def test_build_coupled_default_includes_robot():
@@ -154,7 +169,7 @@ def test_robot_state_matches_model_after_bootstrap():
 
 
 def test_mujoco_substep_proxy_does_not_teleport_on_first_step():
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -197,7 +212,7 @@ def test_mujoco_substep_syncs_proxy_to_robot():
 
 
 def test_coupled_substeps_remain_finite():
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -230,7 +245,7 @@ def test_coupled_substep_after_cable_clear_forces_hook_runs_once_per_substep():
 
 def test_coupled_harvest_forces_stay_small_without_external_load():
     """Velocity-delta harvest stays finite/capped when the arm is held via direct joints."""
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -357,7 +372,7 @@ def test_coupled_substep_lag_one_step():
 
 
 def test_tcp_pose_matches_proxy_each_coupled_substep():
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -384,7 +399,7 @@ def test_tcp_pose_matches_proxy_each_coupled_substep():
 
 
 def test_coupled_long_horizon_harvest_bounded():
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -510,7 +525,7 @@ def test_sync_teleports_apple_with_proxy_when_fix_to_apple():
     apple_before = cable.state_0.body_q.numpy().reshape(-1, 7)[apple, :3].copy()
     proxy_before = cable.state_0.body_q.numpy().reshape(-1, 7)[proxy, :3].copy()
 
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     ctrl = new_direct_controller(scene, fr3_robot)
     apply_direct_hold(
@@ -541,7 +556,7 @@ def test_sync_teleports_apple_with_proxy_when_fix_to_apple():
 
 def test_stem_harvest_replaces_velocity_delta_when_fix_to_apple():
     """With fix_to_apple=True the proxy_forces slot is populated by the stem joint."""
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -574,7 +589,7 @@ def test_stem_harvest_replaces_velocity_delta_when_fix_to_apple():
 
 
 def test_coupled_fix_to_apple_harvests_nonzero_when_robot_pushed():
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -663,7 +678,7 @@ def test_coupling_gravity_vec_matches_cable_model():
 
 
 def test_fr3_idle_teleop_zeros_joint_target_vel():
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -689,7 +704,7 @@ def test_fr3_idle_teleop_zeros_joint_target_vel():
 def test_fr3_ee_teleop_drives_mujoco_joint_targets():
     import warp as wp
 
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -715,7 +730,7 @@ def test_fr3_ee_teleop_drives_mujoco_joint_targets():
 
 
 def test_idle_teleop_joint_error_bounded():
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -747,7 +762,7 @@ def test_idle_teleop_joint_error_bounded():
 def test_post_nudge_settles():
     import warp as wp
 
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -787,7 +802,7 @@ def test_post_nudge_settles():
 
 
 def test_example_coupled_fruiting_fix_to_apple_parser_default():
-    from apple_pick_sim import example_coupled_fruiting as ex
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
 
     args = ex._make_parser().parse_args([])
     assert ex._fix_to_apple_from_args(args) is False
@@ -795,7 +810,7 @@ def test_example_coupled_fruiting_fix_to_apple_parser_default():
 
 
 def test_example_coupled_fruiting_fix_to_apple_parser_enabled():
-    from apple_pick_sim import example_coupled_fruiting as ex
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
 
     args = ex._make_parser().parse_args(["--fix-to-apple"])
     assert ex._fix_to_apple_from_args(args) is True
@@ -803,7 +818,7 @@ def test_example_coupled_fruiting_fix_to_apple_parser_enabled():
 
 
 def test_example_coupled_fruiting_fix_to_apple_parser_disabled_explicit():
-    from apple_pick_sim import example_coupled_fruiting as ex
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
 
     args = ex._make_parser().parse_args(["--no-fix-to-apple"])
     assert ex._fix_to_apple_from_args(args) is False
@@ -817,7 +832,7 @@ def test_gripper_proxy_config_default_fix_to_apple_false():
 def test_fr3_direct_teleop_kinematic_substep_preserves_joint_q():
     import numpy as np
 
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
@@ -847,7 +862,7 @@ def test_fr3_direct_teleop_kinematic_substep_preserves_joint_q():
 
 
 def test_example_fr3_direct_joints_parser():
-    from apple_pick_sim import example_coupled_fruiting as ex
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
 
     args = ex._make_parser().parse_args(["--robot", "fr3", "--fr3-direct-joints"])
     assert args.fr3_direct_joints is True

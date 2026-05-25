@@ -23,7 +23,7 @@ This project standardizes on **[uv](https://docs.astral.sh/uv/)** for Python dep
 - Project-local scripts under `apple_pick_sim/` are run with uv against that environment, for example from the repo root:
 
 ```bash
-uv run --directory newton python ../apple_pick_sim/example_apple_stem.py
+uv run --directory newton python ../apple_pick_sim/examples/example_apple_stem.py
 ```
 
 When proposing commands in chat or in CI snippets, default to **uv-first** forms like the above.
@@ -32,11 +32,11 @@ When proposing commands in chat or in CI snippets, default to **uv-first** forms
 
 ```bash
 # ❌ BAD — bypasses the locked uv environment
-python apple_pick_sim/example_apple_stem.py
+python apple_pick_sim/examples/example_apple_stem.py
 pip install numpy
 
 # ✅ GOOD — uses the Newton project’s lockfile and interpreter
-uv run --directory newton python ../apple_pick_sim/example_apple_stem.py
+uv run --directory newton python ../apple_pick_sim/examples/example_apple_stem.py
 ```
 
 If documentation elsewhere shows `python`/`pip`, prefer updating examples to uv when editing those files.

@@ -20,11 +20,11 @@ substep. Collision detection uses :func:`~apple_pick_sim.fruiting_system.example
 
 Run from the repository root (see README)::
 
-    uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py
+    uv run --directory newton python ../apple_pick_sim/examples/example_fruiting_system.py
 
 Optional arguments (Newton example parser + extras)::
 
-    uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py \\
+    uv run --directory newton python ../apple_pick_sim/examples/example_fruiting_system.py \\
         --json ../apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 123
 
     ``--no-self-collision`` sets ``enable_self_collisions=False``: collision filter pairs are
@@ -46,7 +46,6 @@ import newton
 import newton.examples
 import warp as wp
 
-from apple_pick_sim.cuda_graph import can_capture_graph, capture_substep_loop
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.fruiting_system import (
     FixedJointWrenchRecord,
@@ -60,7 +59,11 @@ from apple_pick_sim.fruiting_system import (
 
 
 def _default_ranges_path() -> Path:
-    return Path(__file__).resolve().parent / "fixtures" / "fruiting_system_ranges_example_variance.json"
+    return (
+        Path(__file__).resolve().parent.parent
+        / "fixtures"
+        / "fruiting_system_ranges_example_variance.json"
+    )
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -84,16 +87,6 @@ def _make_parser() -> argparse.ArgumentParser:
         "--no-self-collision",
         action="store_true",
         help="Filter collisions between all chain bodies (primary→apple); ground unchanged.",
-    )
-    parser.add_argument(
-        "--cuda-graph",
-        action="store_true",
-        help="Capture substeps in a CUDA graph (CUDA only; skips viewer pick forces during capture).",
-    )
-    parser.add_argument(
-        "--no-cuda-graph",
-        action="store_true",
-        help="Disable CUDA graph capture even on CUDA devices.",
     )
     return parser
 
@@ -124,7 +117,6 @@ class ExampleFruitingSystem:
 
         self._scene: FruitingSystemScene | None = None
         self.graph = None
-        self._graph_capture_mode = False
         self.collision_pipeline = None
         self.contacts = None
         self._fixed_joint_wrenches: list[FixedJointWrenchRecord] = []
@@ -179,34 +171,19 @@ class ExampleFruitingSystem:
         return seed
 
     def capture(self) -> None:
-        use_graph = bool(
-            getattr(self.args, "cuda_graph", False)
-            and not getattr(self.args, "no_cuda_graph", False)
-            and can_capture_graph(self.model.device)
-        )
-        if not use_graph:
-            self.graph = None
-            return
-        self._graph_capture_mode = True
-        try:
-            self.graph = capture_substep_loop(
-                lambda: self.simulate(),
-                device=self.model.device,
-            )
-        finally:
-            self._graph_capture_mode = False
-        if self.graph is None:
-            print("CUDA graph capture unavailable; using per-substep Python loop.")
+        # Wrench readout uses host-visible body_q each substep; skip CUDA graph capture.
+        self.graph = None
 
     def simulate(self) -> None:
-        for _ in range(self.sim_substeps):
+        last = self.sim_substeps - 1
+        for i in range(self.sim_substeps):
             self.state_0.clear_forces()
-            if not self._graph_capture_mode:
-                self.viewer.apply_forces(self.state_0)
+            self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(
-                self.state_0, collision_pipeline=self.collision_pipeline
-            )
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
+            if i == last:
+                q_prev = self.state_0.body_q.numpy().copy()
 
             self.solver.step(
                 self.state_0,
@@ -218,29 +195,24 @@ class ExampleFruitingSystem:
 
             self.state_0, self.state_1 = self.state_1, self.state_0
 
-        if not self._graph_capture_mode:
-            self._refresh_fixed_joint_wrenches()
-
-    def _refresh_fixed_joint_wrenches(self) -> None:
-        joint_pairs = (
-            list(self._scene.fruiting_fixed_joints) if self._scene is not None else None
-        )
-        self._fixed_joint_wrenches = fixed_joint_wrenches_child_com_vbd(
-            self.model,
-            self.solver,
-            body_q=self.state_0.body_q.numpy(),
-            body_q_prev=self.solver.body_q_prev.numpy(),
-            dt=self.sim_dt,
-            control=self.control,
-            joint_pairs=joint_pairs,
-        )
+            if i == last:
+                joint_pairs = (
+                    list(self._scene.fruiting_fixed_joints) if self._scene is not None else None
+                )
+                self._fixed_joint_wrenches = fixed_joint_wrenches_child_com_vbd(
+                    self.model,
+                    self.solver,
+                    body_q=self.state_0.body_q.numpy(),
+                    body_q_prev=q_prev,
+                    dt=self.sim_dt,
+                    control=self.control,
+                    joint_pairs=joint_pairs,
+                )
 
     def step(self, warmup: bool = False) -> None:
         del warmup  # unused; kept for API symmetry with example_apple_stem
         if self.graph:
             wp.capture_launch(self.graph)
-            if not warmup:
-                self._refresh_fixed_joint_wrenches()
         else:
             self.simulate()
         self.sim_time += self.frame_dt

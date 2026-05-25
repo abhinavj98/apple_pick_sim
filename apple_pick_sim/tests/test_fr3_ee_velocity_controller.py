@@ -6,7 +6,7 @@ import unittest
 
 import warp as wp
 
-from apple_pick_sim import fr3_robot
+from apple_pick_sim.robot import fr3_robot
 
 
 class _MockViewer:
@@ -259,6 +259,30 @@ class TestFr3EEDirectJointController(unittest.TestCase):
         import newton
 
         model, tcp_idx, mj_solver = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        ctrl = fr3_robot.Fr3EEDirectJointController(model, tcp_idx)
+        ctrl.sync_target_from_state(state)
+        x_before = float(mj_solver.mj_data.xpos.reshape(-1, 3)[tcp_idx, 0])
+
+        ctrl.run_ik_teleop_frame(
+            1.0 / 60.0,
+            state,
+            velocity=fr3_robot.EEVelocity(linear=(0.15, 0.0, 0.0)),
+        )
+        ctrl.apply_direct_joints(state, mj_solver=mj_solver)
+        x_after = float(mj_solver.mj_data.xpos.reshape(-1, 3)[tcp_idx, 0])
+        self.assertNotAlmostEqual(x_before, x_after, places=3)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "requires CUDA for mujoco-warp kinematics")
+    def test_sync_mujoco_visual_state_updates_body_pose_mujoco_warp(self):
+        import newton
+
+        model, tcp_idx, mj_solver = fr3_robot.build_fr3_robot_model_from_usd(
+            device="cuda:0",
+            mujoco_solver_kwargs={"use_mujoco_cpu": False},
+        )
+        self.assertFalse(mj_solver.use_mujoco_cpu)
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         ctrl = fr3_robot.Fr3EEDirectJointController(model, tcp_idx)

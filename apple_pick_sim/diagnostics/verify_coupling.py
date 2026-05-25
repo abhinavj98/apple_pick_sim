@@ -22,6 +22,7 @@ import warp as wp
 from apple_pick_sim.coupling_force_debug import read_tcp_wrench, wrench_magnitudes
 from apple_pick_sim.coupled_fruiting import build_coupled_fruiting_placeholder
 from apple_pick_sim.fruiting_system import load_ranges
+from apple_pick_sim.sim_device import resolve_sim_device
 
 
 def _quat_angle_error_rad(q_a: np.ndarray, q_b: np.ndarray) -> float:
@@ -66,7 +67,7 @@ def run_verification(
     scene = build_coupled_fruiting_placeholder(
         ranges,
         seed=seed,
-        device="cpu",
+        device=resolve_sim_device(None),
         mujoco_solver_kwargs={"disable_contacts": True},
     )
     tcp = scene.tcp_body_index

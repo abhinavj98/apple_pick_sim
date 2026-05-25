@@ -1,11 +1,8 @@
 """M1 proxy coupling: mirror robot state onto VBD proxies and harvest reaction wrenches.
 
 Implements the **staggered two-Model coupling** helpers from ``docs/ROADMAP.md``
-([M1]): ``sync_proxy_state`` (pose/velocity mirror with double-integration guard) and
-``harvest_proxy_wrenches_velocity_delta`` for **option 3** in the roadmap —
-reconstruct net proxy wrench from the velocity jump across a VBD sub-step (no
-``newton/`` API changes; direct read of VBD internal accumulators stays a future
-optimization).
+([M1]): ``mirror_robot_tcp_to_proxy_kernel`` (pose/velocity mirror with
+double-integration guard) and velocity-delta harvest for **option 3** in the roadmap.
 
 Spatial vectors are **world frame**, linear first / angular second [N, N·m].
 """
@@ -59,8 +56,28 @@ class ProxyBodyRegistry:
         return self.ids_wp(device)[1]
 
 
+@wp.func
+def _corrected_proxy_twist_from_robot(
+    qd_robot: wp.spatial_vector,
+    proxy_force: wp.spatial_vector,
+    body_inv_mass: float,
+    body_inv_inertia: wp.mat33,
+    body_rot: wp.quat,
+    gravity: wp.vec3,
+    dt: float,
+) -> wp.spatial_vector:
+    """Proxy twist after subtracting lagged coupling impulse and gravity pre-step."""
+    inv_m = body_inv_mass
+    delta_v_coupling = dt * inv_m * wp.spatial_top(proxy_force)
+    tau_b = body_inv_inertia * wp.quat_rotate_inv(body_rot, wp.spatial_bottom(proxy_force))
+    delta_w_coupling = dt * wp.quat_rotate(body_rot, tau_b)
+    v = wp.spatial_top(qd_robot) - delta_v_coupling - gravity * dt
+    w = wp.spatial_bottom(qd_robot) - delta_w_coupling
+    return wp.spatial_vector(v, w)
+
+
 @wp.kernel
-def sync_proxy_state(
+def mirror_robot_tcp_to_proxy_kernel(
     robot_ids: wp.array(dtype=int),
     proxy_ids: wp.array(dtype=int),
     src_body_q: wp.array(dtype=wp.transform),
@@ -75,38 +92,27 @@ def sync_proxy_state(
 ):
     """Copy robot pose/vel to proxy bodies; remove lagged coupling + gravity from linear vel.
 
-    Mirrors ``docs/ROADMAP.md`` coupling step 3 but fixes the linear gravity term to
-    subtract ``gravity * dt`` (not ``inv_mass * gravity``).
+    Model A → proxy on Model B. Mirrors ``docs/ROADMAP.md`` coupling step 3.
     """
     i = wp.tid()
-    rid = robot_ids[i]  # robot Model body (e.g. TCP)
-    pid = proxy_ids[i]  # matching gripper proxy on cable Model
+    rid = robot_ids[i]
+    pid = proxy_ids[i]
 
-    # Kinematic lock: proxy pose follows robot (VBD will integrate from here).
     dst_body_q[pid] = src_body_q[rid]
-    qd = src_body_qd[rid]
-
-    # Lagged wrench harvested after the previous VBD substep; MuJoCo already applied it.
-    f = proxy_forces[rid]
-    inv_m = body_inv_mass[pid]
-    # Linear impulse F*dt on proxy mass → Δv; subtract so VBD does not double-count coupling.
-    delta_v_coupling = dt * inv_m * wp.spatial_top(f)
-
     r = wp.transform_get_rotation(dst_body_q[pid])
-    # τ in body frame, I⁻¹, back to world: angular Δω from lagged torque over dt.
-    tau_b = body_inv_inertia[pid] * wp.quat_rotate_inv(r, wp.spatial_bottom(f))
-    delta_w_coupling = dt * wp.quat_rotate(r, tau_b)
-
-    # World-frame twist for VBD: robot vel minus coupling undo; linear also pre-removes g*dt
-    # (cable-model gravity; VBD applies gravity again during its step / harvest bookkeeping).
-    v = wp.spatial_top(qd) - delta_v_coupling - gravity * dt
-    w = wp.spatial_bottom(qd) - delta_w_coupling
-
-    dst_body_qd[pid] = wp.spatial_vector(v, w)
+    dst_body_qd[pid] = _corrected_proxy_twist_from_robot(
+        src_body_qd[rid],
+        proxy_forces[rid],
+        body_inv_mass[pid],
+        body_inv_inertia[pid],
+        r,
+        gravity,
+        dt,
+    )
 
 
 @wp.kernel
-def harvest_proxy_wrenches_velocity_delta_kernel(
+def compute_proxy_reaction_wrench_kernel(
     robot_ids: wp.array(dtype=int),
     proxy_ids: wp.array(dtype=int),
     body_mass: wp.array(dtype=float),
@@ -120,7 +126,7 @@ def harvest_proxy_wrenches_velocity_delta_kernel(
 ):
     """Net spatial wrench on proxy (world frame, about COM) implied by the VBD velocity jump."""
     i = wp.tid()
-    rid = robot_ids[i]  # robot slot (MuJoCo applies out_wrench[rid] next substep)
+    rid = robot_ids[i]
     pid = proxy_ids[i]
 
     m = body_mass[pid]
@@ -128,18 +134,15 @@ def harvest_proxy_wrenches_velocity_delta_kernel(
         out_wrench[rid] = wp.spatial_vector()
         return
 
-    # Pre/post VBD twist on proxy; qd_synced is the velocity set by sync_proxy_state.
     v0 = wp.spatial_top(qd_synced[pid])
     w0 = wp.spatial_bottom(qd_synced[pid])
     v1 = wp.spatial_top(qd_post[pid])
     w1 = wp.spatial_bottom(qd_post[pid])
 
-    # F ≈ m*Δv/dt minus weight: pairs with sync's gravity*dt pre-removal (ROADMAP option 3).
     f_lin = m * (v1 - v0) / dt - m * gravity
 
     r = wp.transform_get_rotation(body_q_post[pid])
     domega = (w1 - w0) / dt
-    # Net torque about COM: τ_world = R * (I_body * R⁻¹ * dω/dt).
     tau = wp.quat_rotate(r, body_inertia[pid] * wp.quat_rotate_inv(r, domega))
 
     out_wrench[rid] = wp.spatial_vector(f_lin, tau)
@@ -165,7 +168,7 @@ def zero_robot_wrench_slots(wrenches: wp.array, robot_body_indices: wp.array) ->
     )
 
 
-def launch_harvest_proxy_wrenches_velocity_delta(
+def launch_compute_proxy_reaction_wrench(
     *,
     robot_ids: wp.array,
     proxy_ids: wp.array,
@@ -182,7 +185,7 @@ def launch_harvest_proxy_wrenches_velocity_delta(
     dev = device if device is not None else str(out_robot_wrenches.device)
     zero_robot_wrench_slots(out_robot_wrenches, robot_ids)
     wp.launch(
-        harvest_proxy_wrenches_velocity_delta_kernel,
+        compute_proxy_reaction_wrench_kernel,
         dim=robot_ids.shape[0],
         inputs=[
             robot_ids,
@@ -216,8 +219,8 @@ def harvest_proxy_wrenches(
 
     Returns ``out_robot_wrenches`` (indexed by **robot** body id).
     """
-    del vbd_solver, vbd_contacts  # unused until direct-accumulator readout lands
-    launch_harvest_proxy_wrenches_velocity_delta(
+    del vbd_solver, vbd_contacts
+    launch_compute_proxy_reaction_wrench(
         robot_ids=registry.robot_ids_wp(out_robot_wrenches.device),
         proxy_ids=registry.proxy_ids_wp(out_robot_wrenches.device),
         model=model,
@@ -231,7 +234,80 @@ def harvest_proxy_wrenches(
     return out_robot_wrenches
 
 
-def harvest_stem_joint_wrench(
+@wp.kernel
+def _zero_all_wrenches_kernel(wrenches: wp.array(dtype=wp.spatial_vector)):
+    wrenches[wp.tid()] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+@wp.kernel
+def _limit_and_write_tcp_stem_wrench_kernel(
+    wrenches: wp.array(dtype=wp.spatial_vector),
+    tcp_index: int,
+    force_raw: wp.array(dtype=wp.vec3),
+    torque_raw: wp.array(dtype=wp.vec3),
+    coupling_gain: float,
+    force_cap_N: float,
+    torque_cap_Nm: float,
+    use_force_cap: int,
+    use_torque_cap: int,
+):
+    """Under-relax and clamp stem harvest; write spatial wrench at ``tcp_index``."""
+    f = force_raw[0] * coupling_gain
+    tau = torque_raw[0] * coupling_gain
+    if use_force_cap != 0 and force_cap_N > 0.0:
+        fn = wp.length(f)
+        if fn > force_cap_N:
+            f = f * (force_cap_N / fn)
+    if use_torque_cap != 0 and torque_cap_Nm > 0.0:
+        tn = wp.length(tau)
+        if tn > torque_cap_Nm:
+            tau = tau * (torque_cap_Nm / tn)
+    wrenches[tcp_index] = wp.spatial_vector(f[0], f[1], f[2], tau[0], tau[1], tau[2])
+
+
+def _harvest_stem_tension_for_tcp_cpu(
+    *,
+    cable_model,
+    cable_solver,
+    body_q_post: wp.array,
+    body_q_prev: wp.array,
+    dt: float,
+    stem_apple_joint_index: int,
+    tcp_body_index: int,
+    out_robot_wrenches: wp.array,
+    coupling_gain: float,
+    force_cap_N: float | None,
+    torque_cap_Nm: float | None,
+) -> None:
+    from apple_pick_sim.vbd_fixed_joint_wrenches import fixed_joint_wrenches_child_com_vbd
+
+    records = fixed_joint_wrenches_child_com_vbd(
+        cable_model,
+        cable_solver,
+        body_q=body_q_post,
+        body_q_prev=body_q_prev,
+        dt=dt,
+        joint_pairs=[(stem_apple_joint_index, "_stem_apple")],
+    )
+
+    n = out_robot_wrenches.shape[0]
+    wrenches = out_robot_wrenches.numpy().reshape(n, 6)
+    wrenches[:] = 0.0
+    if records:
+        rec = records[0]
+        wrenches[tcp_body_index, :3] = rec.force_world
+        wrenches[tcp_body_index, 3:6] = rec.torque_at_child_com_world
+    limit_stem_coupling_wrench(
+        wrenches,
+        tcp_body_index,
+        coupling_gain=coupling_gain,
+        force_cap_N=force_cap_N,
+        torque_cap_Nm=torque_cap_Nm,
+    )
+    out_robot_wrenches.assign(wrenches.reshape(-1, 6))
+
+
+def harvest_stem_tension_for_tcp(
     *,
     cable_model,
     cable_solver,
@@ -248,51 +324,41 @@ def harvest_stem_joint_wrench(
     """Write the stem-apple FIXED joint constraint wrench into ``out_robot_wrenches[tcp]``.
 
     Replaces velocity-delta harvest when the proxy and apple are co-teleported
-    (``fix_to_apple=True``).  The stem joint force is the mechanical tension the tree
-    exerts on the apple — equal in magnitude and direction to the load the apple+stem
-    system imposes on the robot TCP through the rigid grasp.
-
-    The wrench is evaluated at the **apple COM** (child body of the stem-apple joint)
-    in the world frame.  Torque transport to the exact TCP COM is a future refinement.
-
-    Args:
-        cable_model: Finalized Newton ``Model`` for the cable scene.
-        cable_solver: ``SolverVBD`` that produced the post-step state.
-        body_q_post: Post-VBD body transforms (``cable.state_0.body_q`` after swap).
-        body_q_prev: Pre-VBD body transforms (``cable.state_1.body_q`` after swap).
-        dt: Substep size [s].
-        stem_apple_joint_index: Index of the stem-to-apple FIXED joint.
-        tcp_body_index: Robot body index where the result is written.
-        out_robot_wrenches: Per-robot-body spatial wrench array (indexed by robot body id).
+    (``fix_to_apple=True``). Runs gather + limit on device (no full-buffer host sync).
     """
-    from apple_pick_sim.vbd_fixed_joint_wrenches import fixed_joint_wrenches_child_com_vbd
+    from apple_pick_sim.vbd_fixed_joint_wrenches import gather_joint_wrench_child_com_device
 
-    # VBD constraint impulse on stem→apple FIXED joint (child = apple COM, world frame).
-    records = fixed_joint_wrenches_child_com_vbd(
+    dev = out_robot_wrenches.device
+    n = int(out_robot_wrenches.shape[0])
+    wp.launch(_zero_all_wrenches_kernel, dim=n, inputs=[out_robot_wrenches], device=dev)
+
+    out_f, out_t = gather_joint_wrench_child_com_device(
         cable_model,
         cable_solver,
         body_q=body_q_post,
         body_q_prev=body_q_prev,
+        joint_indices=[stem_apple_joint_index],
         dt=dt,
-        joint_pairs=[(stem_apple_joint_index, "_stem_apple")],
+        control=cable_model.control(clone_variables=False),
     )
-
-    n = out_robot_wrenches.shape[0]
-    wrenches = out_robot_wrenches.numpy().reshape(n, 6)
-    wrenches[:] = 0.0  # only TCP slot is filled; other robot bodies stay zero this substep
-    if records:
-        rec = records[0]
-        # Tree tension on apple ≈ load on TCP through rigid grasp (applied lagged next substep).
-        wrenches[tcp_body_index, :3] = rec.force_world
-        wrenches[tcp_body_index, 3:6] = rec.torque_at_child_com_world
-    limit_stem_coupling_wrench(
-        wrenches,
-        tcp_body_index,
-        coupling_gain=coupling_gain,
-        force_cap_N=force_cap_N,
-        torque_cap_Nm=torque_cap_Nm,
+    f_cap = float(force_cap_N) if force_cap_N is not None else 0.0
+    t_cap = float(torque_cap_Nm) if torque_cap_Nm is not None else 0.0
+    wp.launch(
+        _limit_and_write_tcp_stem_wrench_kernel,
+        dim=1,
+        inputs=[
+            out_robot_wrenches,
+            int(tcp_body_index),
+            out_f,
+            out_t,
+            float(coupling_gain),
+            f_cap,
+            t_cap,
+            1 if force_cap_N is not None and force_cap_N > 0.0 else 0,
+            1 if torque_cap_Nm is not None and torque_cap_Nm > 0.0 else 0,
+        ],
+        device=dev,
     )
-    out_robot_wrenches.assign(wrenches.reshape(-1, 6))
 
 
 def limit_stem_coupling_wrench(
@@ -307,13 +373,12 @@ def limit_stem_coupling_wrench(
     import numpy as np
 
     w = wrenches[tcp_body_index]
-    # coupling_gain < 1 softens one-substep-lag explicit feedback; caps bound spike forces.
     f = np.asarray(w[:3], dtype=np.float64) * float(coupling_gain)
     tau = np.asarray(w[3:6], dtype=np.float64) * float(coupling_gain)
     if force_cap_N is not None and force_cap_N > 0.0:
         fn = float(np.linalg.norm(f))
         if fn > force_cap_N:
-            f = f * (force_cap_N / fn)  # direction preserved, magnitude clipped
+            f = f * (force_cap_N / fn)
     if torque_cap_Nm is not None and torque_cap_Nm > 0.0:
         tn = float(np.linalg.norm(tau))
         if tn > torque_cap_Nm:
@@ -338,15 +403,7 @@ def align_proxy_body_q_prev_for_vbd(
     cable_scene,
     proxy_body_ids: tuple[int, ...] | wp.array,
 ) -> None:
-    """Align ``SolverVBD.body_q_prev`` with ``state.body_q`` on proxy bodies after kinematic sync.
-
-    ``sync_proxy_state`` overwrites ``body_q`` / ``body_qd`` but leaves the solver's internal
-    ``body_q_prev`` at the pre-sync pose. VBD finalizes twist as ``(body_q - body_q_prev) / dt``,
-    so a few microns of pose mismatch at ``dt ≈ 1/600`` s appears as O(10 m/s) and ~mg spurious
-    harvest wrenches that grow each substep.
-
-    Uses a device kernel (indexed copy) instead of a full ``body_q`` / ``body_q_prev`` host roundtrip.
-    """
+    """Align ``SolverVBD.body_q_prev`` with ``state.body_q`` on proxy bodies after kinematic sync."""
     if not proxy_body_ids:
         return
     if isinstance(proxy_body_ids, wp.array):
@@ -368,7 +425,7 @@ def align_proxy_body_q_prev_for_vbd(
 
 
 @wp.kernel
-def sync_proxy_and_apple_state(
+def mirror_robot_tcp_to_proxy_and_apple_kernel(
     robot_ids: wp.array(dtype=int),
     proxy_ids: wp.array(dtype=int),
     src_body_q: wp.array(dtype=wp.transform),
@@ -383,49 +440,34 @@ def sync_proxy_and_apple_state(
     apple_body_id: int,
     proxy_offset_in_apple: wp.vec3,
 ):
-    """Teleport proxy (with double-integration correction) and apple from robot TCP.
-
-    The apple transform is derived from the TCP pose by reversing the fixed grasp
-    offset: ``apple_pos = tcp_pos - R_tcp * proxy_offset_in_apple``, keeping the
-    apple orientation identical to the TCP orientation.  Both bodies receive the
-    same corrected velocity so the VBD FIXED joint between them sees zero violation.
-
-    When ``apple_body_id < 0`` the apple teleport is skipped (fallback to free-proxy
-    behaviour).  This kernel replaces :func:`sync_proxy_state` when
-    ``fix_to_apple=True``.
-    """
+    """Teleport proxy (with double-integration correction) and apple from robot TCP."""
     i = wp.tid()
-    rid = robot_ids[i]  # robot TCP
-    pid = proxy_ids[i]  # gripper proxy on cable Model
+    rid = robot_ids[i]
+    pid = proxy_ids[i]
 
     tcp_q = src_body_q[rid]
     tcp_rot = wp.transform_get_rotation(tcp_q)
     tcp_pos = wp.transform_get_translation(tcp_q)
 
-    # --- proxy: kinematic lock + double-integration guard (see sync_proxy_state) ---
     dst_body_q[pid] = tcp_q
-    qd = src_body_qd[rid]
+    qd_corr = _corrected_proxy_twist_from_robot(
+        src_body_qd[rid],
+        proxy_forces[rid],
+        body_inv_mass[pid],
+        body_inv_inertia[pid],
+        tcp_rot,
+        gravity,
+        dt,
+    )
+    dst_body_qd[pid] = qd_corr
 
-    f = proxy_forces[rid]  # lagged harvest; MuJoCo already integrated this on the robot
-    inv_m = body_inv_mass[pid]
-    delta_v_coupling = dt * inv_m * wp.spatial_top(f)
-
-    tau_b = body_inv_inertia[pid] * wp.quat_rotate_inv(tcp_rot, wp.spatial_bottom(f))
-    delta_w_coupling = dt * wp.quat_rotate(tcp_rot, tau_b)
-
-    v_corr = wp.spatial_top(qd) - delta_v_coupling - gravity * dt
-    w_corr = wp.spatial_bottom(qd) - delta_w_coupling
-    dst_body_qd[pid] = wp.spatial_vector(v_corr, w_corr)
-
-    # --- apple: rigid grasp offset from builder; same v_corr/w_corr keeps FIXED joint consistent ---
     if apple_body_id >= 0:
-        # proxy_offset_in_apple: vector from apple COM to proxy in apple/body frame.
         apple_pos = tcp_pos - wp.quat_rotate(tcp_rot, proxy_offset_in_apple)
         dst_body_q[apple_body_id] = wp.transform(apple_pos, tcp_rot)
-        dst_body_qd[apple_body_id] = wp.spatial_vector(v_corr, w_corr)
+        dst_body_qd[apple_body_id] = qd_corr
 
 
-def launch_sync_proxy_and_apple_state(
+def launch_mirror_robot_to_proxy_and_apple(
     *,
     robot_ids: wp.array,
     proxy_ids: wp.array,
@@ -443,7 +485,7 @@ def launch_sync_proxy_and_apple_state(
 ) -> None:
     """Teleport proxy + apple; ``body_inv_mass`` / ``body_inv_inertia`` from ``cable_model``."""
     wp.launch(
-        sync_proxy_and_apple_state,
+        mirror_robot_tcp_to_proxy_and_apple_kernel,
         dim=robot_ids.shape[0],
         inputs=[
             robot_ids,
@@ -464,7 +506,7 @@ def launch_sync_proxy_and_apple_state(
     )
 
 
-def launch_sync_proxy_state(
+def launch_mirror_robot_to_proxy(
     *,
     robot_ids: wp.array,
     proxy_ids: wp.array,
@@ -480,7 +522,7 @@ def launch_sync_proxy_state(
 ) -> None:
     """Convenience wrapper: ``body_inv_mass`` / ``body_inv_inertia`` from ``cable_model``."""
     wp.launch(
-        sync_proxy_state,
+        mirror_robot_tcp_to_proxy_kernel,
         dim=robot_ids.shape[0],
         inputs=[
             robot_ids,

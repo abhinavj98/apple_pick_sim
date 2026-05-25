@@ -40,7 +40,7 @@ def _import_fs():
 
 
 def _import_pc():
-    import apple_pick_sim.proxy_coupling as pc
+    import apple_pick_sim.coupled_fruiting.proxy_coupling as pc
 
     return pc
 
@@ -54,7 +54,7 @@ def test_dt_sweep_no_nan():
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     stable_dt = SUB_DT
     for dt in (stable_dt, stable_dt / 2.0, stable_dt * 2.0):
@@ -106,7 +106,7 @@ def test_proxy_mass_sweep_sync_scales_inversely():
         pf.assign(pf_np.ravel())
 
         wp.launch(
-            pc.sync_proxy_state,
+            pc.mirror_robot_tcp_to_proxy_kernel,
             dim=1,
             inputs=[
                 ids,
@@ -140,7 +140,7 @@ def test_stem_coupling_quiescent_forces_bounded():
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     scene = build_coupled_fr3(
         cf,
@@ -168,7 +168,7 @@ def test_kinetic_energy_bounded_quiescent():
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     scene = build_coupled_fr3(
         cf,
@@ -197,9 +197,33 @@ def test_kinetic_energy_bounded_quiescent():
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA not available")
+def test_fr3_coupled_substep_mujoco_gpu_finite():
+    """Long horizon with MuJoCo Warp on CUDA (opt-in GPU backend)."""
+    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_fr3"])
+    fs = __import__("apple_pick_sim.fruiting_system", fromlist=["load_ranges"])
+    fr3_robot = __import__("apple_pick_sim.robot", fromlist=["fr3_robot"]).fr3_robot
+    from conftest import RANGES_FIXTURE, build_coupled_fr3, run_coupled_substeps_direct_hold
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(
+        cf,
+        ranges,
+        99,
+        device="cuda:0",
+        mujoco_use_cpu=False,
+        mujoco_solver_kwargs={"disable_contacts": True},
+    )
+    assert scene.mj_solver.use_mujoco_cpu is False
+    run_coupled_substeps_direct_hold(scene, fr3_robot, 80, sub_dt=SUB_DT)
+    rq = scene.robot_state_0.body_q.numpy().reshape(-1, 7)
+    assert np.isfinite(rq).all()
+
+
+@pytest.mark.slow
 def test_fr3_coupled_substep_long_horizon_finite():
     """FR3 + cable coupled loop stays finite over hundreds of substeps (headless)."""
-    from apple_pick_sim import fr3_robot
+    from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()

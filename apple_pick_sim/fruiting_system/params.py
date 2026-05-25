@@ -1,0 +1,379 @@
+"""Fruiting-system parameters, sampling, and range validation."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import math
+from collections.abc import Collection
+from pathlib import Path
+
+import numpy as np
+
+@dataclasses.dataclass
+class RodParams:
+    """Sampled parameters for a single rod segment in the fruiting chain."""
+
+    num_segments: int
+    length: float
+    radius: float
+    bend_stiffness: float
+    bend_damping: float
+    stretch_stiffness: float
+    density: float
+    direction: tuple[float, float, float]  # unit vector in world space
+
+
+@dataclasses.dataclass
+class FruitingSystemParams:
+    """All sampled parameters for a single fruiting-system instance.
+
+    ``None`` on a rod field or on apple scalars means that piece is disabled
+    (not built). At least one rod segment must be enabled.
+
+    To turn off segments from code while keeping RNG and downstream directions
+    consistent with JSON ``null``, use :func:`sample_params` ``omit=...`` rather
+    than setting rod fields to ``None`` after a full sample (the latter can
+    leave spur/stem directions wrong if an *intermediate* rod is removed).
+    """
+
+    primary: RodParams | None
+    secondary: RodParams | None
+    spur: RodParams | None
+    stem: RodParams | None
+    apple_radius: float | None
+    apple_density: float | None
+
+@dataclasses.dataclass(frozen=True)
+class GripperProxyConfig:
+    """Gripper proxy rigid body added on the cable ``Model`` for M1 coupling.
+
+    The proxy is the VBD-side stand-in for the robot TCP: its pose tracks the MuJoCo
+    body each substep, and contact/joint reactions on the proxy are harvested as wrenches
+    fed back into ``robot_state.body_f`` on the next substep (see module docstring).
+    Mass and box half-extents should match the robot TCP link built in
+    ``coupled_fruiting.build_placeholder_tcp_robot_model`` so velocity-delta harvest
+    uses consistent inertia.
+    """
+
+    mass: float = 5.0
+    box_half_extents: tuple[float, float, float] = (0.05, 0.05, 0.05)
+    label: str = "gripper_proxy"
+    fix_to_apple: bool = False
+    """If ``True``, weld the proxy to the apple with a FIXED joint at the exterior pole.
+
+    Default ``False``: velocity-delta harvest + proxy-only sync. Set ``True`` for stem-harvest /
+    apple co-teleport (see ``example_coupled_fruiting.py --fix-to-apple``).
+    """
+
+def load_ranges(path: str | Path) -> dict:
+    """Load a fruiting-system range JSON file.
+
+    Args:
+        path: Path to the JSON range file.
+
+    Returns:
+        Dict with keys ``primary``, ``secondary``, ``spur``, ``stem``, ``apple``.
+        A rod or ``apple`` entry may be JSON ``null`` (``None`` in Python) to omit that
+        piece from sampling and scene construction (at least one rod must remain).
+    """
+    with open(path) as f:
+        data = json.load(f)
+    _validate_ranges(data)
+    return data
+
+
+def _coerce_omit(omit: Collection[str] | None) -> frozenset[str]:
+    """Validate ``omit`` keys for :func:`sample_params` / :func:`generate_scene`."""
+    if omit is None:
+        return frozenset()
+    allowed = frozenset({"primary", "secondary", "spur", "stem", "apple"})
+    o = frozenset(omit)
+    extra = o - allowed
+    if extra:
+        raise ValueError(
+            f"omit contains unknown keys: {sorted(extra)}. "
+            f"Allowed: {', '.join(sorted(allowed))}"
+        )
+    return o
+
+
+def sample_params(
+    ranges: dict,
+    seed: int,
+    *,
+    omit: Collection[str] | None = None,
+) -> FruitingSystemParams:
+    """Sample fruiting-system parameters from ``ranges`` deterministically via ``seed``.
+
+    Skips sampling for any rod segment (or apple) whose range entry is ``None``.
+    Names in ``omit`` (e.g. ``{"secondary", "apple"}``) force that piece off even
+    when the range entry is present—useful for toggling topology from code without
+    editing JSON. Omission is applied **during** sampling so ``parent_dir`` for
+    spur/stem matches omitting intermediate rods (same as setting that range to
+    ``null``).
+
+    When both **primary** and **secondary** are enabled, enforces
+    ``primary.bend_stiffness >= secondary.bend_stiffness``.
+
+    Args:
+        ranges: Range dict as returned by :func:`load_ranges`.
+        seed: Integer seed for the RNG.
+        omit: Optional set of segment names to force to ``None`` in the result.
+
+    Returns:
+        A :class:`FruitingSystemParams` instance.
+
+    Raises:
+        ValueError: If ``omit`` contains unknown keys, or no rod segment remains enabled.
+    """
+    rng = np.random.default_rng(seed)
+    omit_set = _coerce_omit(omit)
+
+    def _s(seg_ranges: dict, key: str) -> float:
+        return float(rng.uniform(seg_ranges[key]["min"], seg_ranges[key]["max"]))
+
+    def _si(seg_ranges: dict, key: str) -> int:
+        return int(rng.integers(seg_ranges[key]["min"], seg_ranges[key]["max"] + 1))
+
+    # Parent direction for lateral segments: last built rod, or +X when primary is off.
+    parent_dir: tuple[float, float, float] = (1.0, 0.0, 0.0)
+
+    primary: RodParams | None = None
+    pr = ranges.get("primary")
+    if pr is not None and "primary" not in omit_set:
+        primary_az = _s(pr, "azimuth_deg")
+        primary_el = _s(pr, "elevation_deg")
+        primary_dir = _direction_from_angles(primary_az, primary_el)
+        primary_bend = _s(pr, "bend_stiffness")
+        primary = RodParams(
+            num_segments=max(2, _si(pr, "num_segments")),
+            length=_s(pr, "length"),
+            radius=_s(pr, "radius"),
+            bend_stiffness=primary_bend,
+            bend_damping=_s(pr, "bend_damping"),
+            stretch_stiffness=_s(pr, "stretch_stiffness"),
+            density=_s(pr, "density"),
+            direction=primary_dir,
+        )
+        parent_dir = primary.direction
+
+    secondary: RodParams | None = None
+    sr = ranges.get("secondary")
+    if sr is not None and "secondary" not in omit_set:
+        if primary is not None:
+            secondary_bend_max = min(sr["bend_stiffness"]["max"], primary.bend_stiffness)
+            secondary_bend_min = min(sr["bend_stiffness"]["min"], secondary_bend_max)
+            secondary_bend = float(rng.uniform(secondary_bend_min, secondary_bend_max))
+        else:
+            secondary_bend = float(
+                rng.uniform(sr["bend_stiffness"]["min"], sr["bend_stiffness"]["max"])
+            )
+        secondary_el_delta = _s(sr, "elevation_delta_deg")
+        secondary_lat_delta = _s(sr, "lateral_delta_deg")
+        secondary_dir = _deflect_direction(parent_dir, secondary_el_delta, secondary_lat_delta)
+        secondary = RodParams(
+            num_segments=max(2, _si(sr, "num_segments")),
+            length=_s(sr, "length"),
+            radius=_s(sr, "radius"),
+            bend_stiffness=secondary_bend,
+            bend_damping=_s(sr, "bend_damping"),
+            stretch_stiffness=_s(sr, "stretch_stiffness"),
+            density=_s(sr, "density"),
+            direction=secondary_dir,
+        )
+        parent_dir = secondary.direction
+
+    spur: RodParams | None = None
+    spr = ranges.get("spur")
+    if spr is not None and "spur" not in omit_set:
+        spur_el_delta = _s(spr, "elevation_delta_deg")
+        spur_lat_delta = _s(spr, "lateral_delta_deg")
+        spur_dir = _deflect_direction(parent_dir, spur_el_delta, spur_lat_delta)
+        spur = RodParams(
+            num_segments=max(2, _si(spr, "num_segments")),
+            length=_s(spr, "length"),
+            radius=_s(spr, "radius"),
+            bend_stiffness=_s(spr, "bend_stiffness"),
+            bend_damping=_s(spr, "bend_damping"),
+            stretch_stiffness=_s(spr, "stretch_stiffness"),
+            density=_s(spr, "density"),
+            direction=spur_dir,
+        )
+        parent_dir = spur.direction
+
+    stem: RodParams | None = None
+    stem_r = ranges.get("stem")
+    if stem_r is not None and "stem" not in omit_set:
+        stem_el_delta = _s(stem_r, "elevation_delta_deg")
+        stem_lat_delta = _s(stem_r, "lateral_delta_deg")
+        stem_dir = _deflect_direction(parent_dir, stem_el_delta, stem_lat_delta)
+        stem = RodParams(
+            num_segments=max(2, _si(stem_r, "num_segments")),
+            length=_s(stem_r, "length"),
+            radius=_s(stem_r, "radius"),
+            bend_stiffness=_s(stem_r, "bend_stiffness"),
+            bend_damping=_s(stem_r, "bend_damping"),
+            stretch_stiffness=_s(stem_r, "stretch_stiffness"),
+            density=_s(stem_r, "density"),
+            direction=stem_dir,
+        )
+
+    apple_radius: float | None = None
+    apple_density: float | None = None
+    ar = ranges.get("apple")
+    if ar is not None and "apple" not in omit_set:
+        apple_radius = _s(ar, "radius")
+        apple_density = _s(ar, "density")
+
+    if not any((primary, secondary, spur, stem)):
+        raise ValueError(
+            "At least one rod segment must be enabled (check ranges and omit)."
+        )
+
+    return FruitingSystemParams(
+        primary=primary,
+        secondary=secondary,
+        spur=spur,
+        stem=stem,
+        apple_radius=apple_radius,
+        apple_density=apple_density,
+    )
+
+
+def params_fingerprint(params: FruitingSystemParams) -> dict:
+    """Return a dict of scalar summaries from sampled params (no Newton model needed).
+
+    This is cheaper than building the full scene and useful for quick determinism checks.
+    Fields for disabled segments are ``None``.
+    """
+    p, s, sp, st = params.primary, params.secondary, params.spur, params.stem
+    return {
+        "primary_num_segments": None if p is None else p.num_segments,
+        "primary_length": None if p is None else round(p.length, 9),
+        "primary_radius": None if p is None else round(p.radius, 9),
+        "primary_bend_stiffness": None if p is None else round(p.bend_stiffness, 6),
+        "secondary_num_segments": None if s is None else s.num_segments,
+        "secondary_length": None if s is None else round(s.length, 9),
+        "secondary_radius": None if s is None else round(s.radius, 9),
+        "secondary_bend_stiffness": None if s is None else round(s.bend_stiffness, 6),
+        "spur_num_segments": None if sp is None else sp.num_segments,
+        "spur_length": None if sp is None else round(sp.length, 9),
+        "stem_num_segments": None if st is None else st.num_segments,
+        "stem_length": None if st is None else round(st.length, 9),
+        "apple_radius": None if params.apple_radius is None else round(params.apple_radius, 9),
+        "apple_density": None if params.apple_density is None else round(params.apple_density, 6),
+        "primary_dir_x": None if p is None else round(p.direction[0], 6),
+        "secondary_dir_x": None if s is None else round(s.direction[0], 6),
+        "spur_dir_z": None if sp is None else round(sp.direction[2], 6),
+        "stem_dir_z": None if st is None else round(st.direction[2], 6),
+    }
+
+def _direction_from_angles(azimuth_deg: float, elevation_deg: float) -> tuple[float, float, float]:
+    """Convert azimuth + elevation angles (degrees) to a unit direction vector."""
+    az = math.radians(azimuth_deg)
+    el = math.radians(elevation_deg)
+    cos_el = math.cos(el)
+    return (cos_el * math.cos(az), cos_el * math.sin(az), math.sin(el))
+
+
+def _deflect_direction(
+    parent_dir: tuple[float, float, float],
+    elevation_delta_deg: float,
+    lateral_delta_deg: float,
+) -> tuple[float, float, float]:
+    """Deflect a parent direction by elevation and lateral angle deltas.
+
+    The parent direction's azimuth is shifted by ``lateral_delta_deg`` and
+    its elevation is increased by ``elevation_delta_deg``, clamped to [-90, 90] deg.
+    """
+    dx, dy, dz = float(parent_dir[0]), float(parent_dir[1]), float(parent_dir[2])
+    az = math.atan2(dy, dx) + math.radians(lateral_delta_deg)
+    el_parent = math.asin(max(-1.0, min(1.0, dz)))
+    el_new = el_parent + math.radians(elevation_delta_deg)
+    el_new = max(-math.pi / 2.0, min(math.pi / 2.0, el_new))
+    cos_el = math.cos(el_new)
+    return (cos_el * math.cos(az), cos_el * math.sin(az), math.sin(el_new))
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+
+def _validate_ranges(data: dict) -> None:
+    """Raise ValueError if the range dict is missing required keys or has invalid bounds."""
+    required_segments = ("primary", "secondary", "spur", "stem", "apple")
+    for seg in required_segments:
+        if seg not in data:
+            raise ValueError(f"Missing segment '{seg}' in range file")
+
+    rod_required = (
+        "num_segments",
+        "length",
+        "radius",
+        "bend_stiffness",
+        "bend_damping",
+        "stretch_stiffness",
+        "density",
+    )
+    for seg in ("primary", "secondary", "spur", "stem"):
+        seg_data = data[seg]
+        if seg_data is None:
+            continue
+        if not isinstance(seg_data, dict):
+            raise ValueError(f"Segment '{seg}' must be a JSON object or null")
+        for key in rod_required:
+            if key not in seg_data:
+                raise ValueError(f"Missing key '{key}' in segment '{seg}'")
+            rng = seg_data[key]
+            if "min" not in rng or "max" not in rng:
+                raise ValueError(f"Range {seg}.{key} must have 'min' and 'max'")
+            if rng["min"] > rng["max"]:
+                raise ValueError(
+                    f"Range {seg}.{key}: min ({rng['min']}) > max ({rng['max']})"
+                )
+
+        if seg == "primary":
+            for key in ("azimuth_deg", "elevation_deg"):
+                if key not in seg_data:
+                    raise ValueError(f"Missing key '{key}' in segment 'primary'")
+                rng = seg_data[key]
+                if "min" not in rng or "max" not in rng:
+                    raise ValueError(f"Range primary.{key} must have 'min' and 'max'")
+                if rng["min"] > rng["max"]:
+                    raise ValueError(
+                        f"Range primary.{key}: min ({rng['min']}) > max ({rng['max']})"
+                    )
+        else:
+            for key in ("elevation_delta_deg", "lateral_delta_deg"):
+                if key not in seg_data:
+                    raise ValueError(f"Missing key '{key}' in segment '{seg}'")
+                rng = seg_data[key]
+                if "min" not in rng or "max" not in rng:
+                    raise ValueError(f"Range {seg}.{key} must have 'min' and 'max'")
+                if rng["min"] > rng["max"]:
+                    raise ValueError(
+                        f"Range {seg}.{key}: min ({rng['min']}) > max ({rng['max']})"
+                    )
+
+    apple = data["apple"]
+    if apple is not None:
+        if not isinstance(apple, dict):
+            raise ValueError("Segment 'apple' must be a JSON object or null")
+        for key in ("radius", "density"):
+            if key not in apple:
+                raise ValueError(f"Missing key '{key}' in apple")
+            rng = apple[key]
+            if "min" not in rng or "max" not in rng:
+                raise ValueError(f"Range apple.{key} must have 'min' and 'max'")
+            if rng["min"] > rng["max"]:
+                raise ValueError(
+                    f"Range apple.{key}: min ({rng['min']}) > max ({rng['max']})"
+                )
+
+    any_rod = any(data.get(s) is not None for s in ("primary", "secondary", "spur", "stem"))
+    if not any_rod:
+        raise ValueError(
+            "At least one rod segment (primary, secondary, spur, or stem) must be non-null in the range file"
+        )

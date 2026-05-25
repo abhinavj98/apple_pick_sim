@@ -11,11 +11,11 @@ Focus the Newton viewer window, then drive the tool center point (``tcp``) with:
 
 Run from the repository root::
 
-    PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py
+    PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_fr3_keyboard.py
 
 Headless smoke::
 
-    PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py --viewer null --num-frames 120
+    PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_fr3_keyboard.py --viewer null --num-frames 120
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import newton
 import newton.examples
 import warp as wp
 
-from apple_pick_sim import fr3_robot
+from apple_pick_sim.robot import fr3_robot
 
 
 class ExampleFr3Keyboard:
@@ -43,7 +43,7 @@ class ExampleFr3Keyboard:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
 
-        self.model, self.tcp_idx, _solver = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        self.model, self.tcp_idx, _solver = fr3_robot.build_fr3_robot_model_from_usd()
         self.state = self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 

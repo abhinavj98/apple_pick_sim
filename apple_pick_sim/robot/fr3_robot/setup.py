@@ -1,0 +1,217 @@
+"""FR3 USD import, body resolution, and MuJoCo setup."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import warp as wp
+
+import newton
+from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton.usd import SchemaResolverMjc, SchemaResolverNewton
+
+from apple_pick_sim.sim_device import resolve_sim_device
+from apple_pick_sim.robot.fr3_robot.paths import TESTFR3_SCENE_USD, fr3_assets_available
+
+def resolve_tcp_body_index(model: newton.Model) -> int:
+    """Return the unique body index for the tcp link. Heuristic: find ``ee``, then see if a direct child ``tcp`` exists."""
+    labels = list(model.body_label)
+
+    # First, try to find "ee"
+    ee_hits = [
+        i
+        for i, lbl in enumerate(labels)
+        if lbl.endswith("/ee") or lbl.split("/")[-1] == "ee"
+    ]
+    if len(ee_hits) != 1:
+        raise ValueError(f"ambiguous or missing ee in body_label ({len(ee_hits)} hits): {labels}")
+    ee_index = ee_hits[0]
+    ee_label = labels[ee_index]
+
+    # Now, look for a "tcp" child: "<...>/ee/tcp" or like that
+    tcp_hits = [
+        i
+        for i, lbl in enumerate(labels)
+        if lbl.endswith("/tcp") or lbl.split("/")[-1] == "tcp"
+        if lbl.startswith(ee_label)
+    ]
+    if len(tcp_hits) == 1:
+        return tcp_hits[0]
+    elif len(tcp_hits) == 0:
+        # fall back to returning the ee index itself (if no tcp)
+        return ee_index
+    else:
+        raise ValueError(f"ambiguous tcp underneath ee in body_label ({len(tcp_hits)} hits): {labels}")
+
+def sync_robot_gravity_to_mujoco(robot_model: newton.Model, mj_solver: SolverMuJoCo) -> None:
+    """Zero Model A gravity and push it into the embedded MuJoCo ``mj_model``.
+
+    Cable VBD (Model B) keeps its own ``cable.model.gravity`` and ``CoupledFruitingScene.gravity_vec``.
+    After ``set_gravity``, ``notify_model_changed`` is required so ``mj_model.opt.gravity`` updates.
+    """
+    robot_model.set_gravity((0.0, 0.0, 0.0))
+    mj_solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)
+
+
+def resolve_ee_body_index(model: newton.Model) -> int:
+    """Return the unique body index for the custom end-effector link ``ee``."""
+    labels = list(model.body_label)
+    for needle in ("/ee", "ee"):
+        hits = [
+            i
+            for i, lbl in enumerate(labels)
+            if lbl.endswith(needle) or lbl.split("/")[-1] == needle
+        ]
+        if len(hits) == 1:
+            return hits[0]
+    raise ValueError(f"ambiguous or missing ee in body_label: {labels}")
+
+
+def build_fr3_robot_model_from_usd(
+    *,
+    device: str | None = None,
+    usd_path: Path | str | None = None,
+    root_xform: wp.transform | None = None,
+    add_ground_plane: bool = True,
+    mujoco_solver_kwargs: dict[str, Any] | None = None,
+) -> tuple[newton.Model, int, SolverMuJoCo]:
+    """Build FR3 + Isaac-exported EE/tcp from USD for ``SolverMuJoCo``.
+
+    Default USD is [`assets/testfr3_resolved.usda`] (paired with [`assets/testfr3.usd`] in Omni).
+
+    **Fixed joints** from Isaac (including EE welds) are preserved --- pass
+    ``collapse_fixed_joints=False`` implicitly so ``ee`` / ``tcp`` rigid bodies remain.
+
+    To import a **patched binary** [`assets/testfr3.usd`] instead, rewrite its ``fr3``
+    payload reference to `./fr3/omniverse_fr3/fr3.usd` so it resolves offline (see
+    [`assets/fr3/README.md`]), fix EE joints like ``resolved`` if Newton reports a joint
+    cycle, then pass ``usd_path=``.
+
+    Returns ``(model, tcp_body_index, mj_solver)``.
+    """
+    if not fr3_assets_available():
+        raise FileNotFoundError(
+            f"Bundled FR3 scene or Omniverse subtree missing; see {TESTFR3_SCENE_USD} and assets/fr3/README.md"
+        )
+
+    device = resolve_sim_device(device)
+    path = Path(usd_path) if usd_path is not None else TESTFR3_SCENE_USD
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    SolverMuJoCo.register_custom_attributes(builder)
+
+    usd_kw: dict[str, Any] = {
+        "floating": False,
+        # EE / tcp are separate rigid bodies welded with FIXED joints --- must stay explicit.
+        "collapse_fixed_joints": False,
+        "enable_self_collisions": False,
+        "schema_resolvers": [SchemaResolverMjc(), SchemaResolverNewton()],
+    }
+    if root_xform is not None:
+        usd_kw["xform"] = root_xform
+        usd_kw["override_root_xform"] = True
+    builder.add_usd(str(path), **usd_kw)
+
+    if add_ground_plane:
+        builder.add_ground_plane()
+
+    model = builder.finalize(device=device)
+    # Model A: zero gravity for teleop/PD hold (cable VBD keeps -9.81 on its own model).
+    model.set_gravity((0.0, 0.0, 0.0))
+
+    tcp_idx = resolve_tcp_body_index(model)
+
+    mj_kw: dict[str, Any] = {
+        "solver": "newton",
+        "integrator": "implicitfast",
+        "cone": "elliptic",
+        "iterations": 20,
+        "ls_iterations": 10,
+        "ls_parallel": True,
+        "impratio": 1000.0,
+        "use_mujoco_contacts": False,
+        "use_mujoco_cpu": True,
+        "disable_contacts": False,
+    }
+    if mujoco_solver_kwargs:
+        mj_kw.update(mujoco_solver_kwargs)
+
+    solver = SolverMuJoCo(
+        model,
+        njmax=200,
+        nconmax=200,
+        **mj_kw,
+    )
+    return model, tcp_idx, solver
+
+
+def np_zeros_like_joint_qd(robot_model: newton.Model):
+    import numpy as np
+
+    return np.zeros(int(robot_model.joint_dof_count), dtype=np.float32)
+
+
+def sync_mujoco_visual_state(
+    mj_solver: SolverMuJoCo,
+    robot_model: newton.Model,
+    state: Any,
+) -> None:
+    """Push Newton ``joint_q`` into MuJoCo and run forward kinematics for the passive viewer.
+
+    ``_update_mjc_data`` alone updates ``qpos`` but not body poses; run ``mj_forward`` (CPU) or
+    ``mujoco_warp.kinematics`` (GPU) before :meth:`~newton.solvers.SolverMuJoCo.render_mujoco_viewer`.
+    """
+    mj_solver._update_mjc_data(mj_solver.mj_data, robot_model, state)
+    if mj_solver.use_mujoco_cpu:
+        mj_solver._mujoco.mj_forward(mj_solver.mj_model, mj_solver.mj_data)
+    else:
+        with wp.ScopedDevice(robot_model.device):
+            mj_solver._update_mjc_data(mj_solver.mjw_data, robot_model, state)
+            mj_solver._mujoco_warp.kinematics(mj_solver.mjw_model, mj_solver.mjw_data)
+            mj_solver._mujoco_warp.get_data_into(
+                mj_solver.mj_data, mj_solver.mj_model, mj_solver.mjw_data
+            )
+
+
+def init_mujoco_actuator_targets_from_model(
+    robot_model: newton.Model,
+    control: Any,
+) -> None:
+    """Align MuJoCo position actuators with the model's current ``joint_q`` (post-bootstrap)."""
+    control.joint_target_pos.assign(robot_model.joint_q.numpy())
+    control.joint_target_vel.assign(np_zeros_like_joint_qd(robot_model))
+
+
+def sync_mujoco_actuator_targets_from_joint_q(
+    robot_model: newton.Model,
+    state: Any,
+    control: Any,
+    target_joint_q: Any,
+    *,
+    frame_dt: float,
+    command_velocity: EEVelocity | None = None,
+) -> None:
+    """Write IK joint targets into ``control`` for ``SolverMuJoCo`` position actuators.
+
+    MuJoCo integrates the arm toward ``joint_target_pos`` each ``mj_solver.step``; do not
+    teleport ``state.joint_q`` when using this path.
+
+    When ``command_velocity`` is zero (keyboard idle), ``joint_target_vel`` is set to zero
+    so PD does not chase a perpetual ``(q_tgt - q_cur) / frame_dt`` feedforward.
+    """
+    import numpy as np
+
+    n_dof = int(robot_model.joint_dof_count)
+    q_tgt = np.asarray(target_joint_q, dtype=np.float32).reshape(-1)[:n_dof]
+    q_cur = state.joint_q.numpy().reshape(-1).astype(np.float32)[:n_dof]
+    if command_velocity is not None and command_velocity.is_zero():
+        qd_tgt = np.zeros(n_dof, dtype=np.float32)
+        if float(np.linalg.norm(q_tgt[:n_dof] - q_cur[:n_dof])) < 0.02:
+            q_tgt = q_cur.copy()
+    elif frame_dt > 1e-9:
+        qd_tgt = (q_tgt - q_cur) / float(frame_dt)
+    else:
+        qd_tgt = np.zeros(n_dof, dtype=np.float32)
+    control.joint_target_pos.assign(q_tgt)
+    control.joint_target_vel.assign(qd_tgt.astype(np.float32))

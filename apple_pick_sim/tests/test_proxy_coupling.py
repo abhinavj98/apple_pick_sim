@@ -23,7 +23,7 @@ pytestmark = requires_fr3
 
 
 def _import_pc():
-    import apple_pick_sim.proxy_coupling as pc
+    import apple_pick_sim.coupled_fruiting.proxy_coupling as pc
 
     return pc
 
@@ -82,7 +82,7 @@ def test_sync_proxy_state_copies_pose_no_forces_no_gravity():
     dt = 1.0e-3
 
     wp.launch(
-        pc.sync_proxy_state,
+        pc.mirror_robot_tcp_to_proxy_kernel,
         dim=1,
         inputs=[ids, pids, src_q, src_qd, dst_q, dst_qd, pf, inv_mass, inv_inertia, gravity, dt],
         device="cpu",
@@ -141,7 +141,7 @@ def test_sync_proxy_state_subtracts_coupling_and_gravity_linear():
     dt = 0.02
 
     wp.launch(
-        pc.sync_proxy_state,
+        pc.mirror_robot_tcp_to_proxy_kernel,
         dim=1,
         inputs=[ids, pids, src_q, src_qd, dst_q, dst_qd, pf, inv_mass, inv_inertia, gravity, dt],
         device="cpu",
@@ -199,7 +199,7 @@ def test_harvest_velocity_delta_matches_applied_force_plus_gravity():
     robot_ids = wp.array([0], dtype=int, device="cpu")
     proxy_ids = wp.array([0], dtype=int, device="cpu")
 
-    pc.launch_harvest_proxy_wrenches_velocity_delta(
+    pc.launch_compute_proxy_reaction_wrench(
         robot_ids=robot_ids,
         proxy_ids=proxy_ids,
         model=model,
@@ -248,7 +248,7 @@ def test_harvest_velocity_delta_gravity_only_net_near_zero():
     pid = wp.array([0], dtype=int, device="cpu")
     g = wp.vec3(0.0, 0.0, -9.81)
 
-    pc.launch_harvest_proxy_wrenches_velocity_delta(
+    pc.launch_compute_proxy_reaction_wrench(
         robot_ids=rid,
         proxy_ids=pid,
         model=model,
@@ -402,7 +402,7 @@ def test_sync_proxy_state_subtracts_coupling_with_rotated_body():
     gravity = wp.vec3(0.0, 0.0, -10.0)
 
     wp.launch(
-        pc.sync_proxy_state,
+        pc.mirror_robot_tcp_to_proxy_kernel,
         dim=1,
         inputs=[ids, pids, src_q, src_qd, dst_q, dst_qd, pf, inv_mass, inv_inertia, gravity, dt],
         device="cpu",
@@ -454,7 +454,7 @@ def test_harvest_velocity_delta_torque_only_recovers_torque():
     solver.step(s0, s1, ctrl, None, dt)
 
     out = wp.zeros(model.body_count, dtype=wp.spatial_vector, device="cpu")
-    pc.launch_harvest_proxy_wrenches_velocity_delta(
+    pc.launch_compute_proxy_reaction_wrench(
         robot_ids=wp.array([0], dtype=int, device="cpu"),
         proxy_ids=wp.array([0], dtype=int, device="cpu"),
         model=model,
@@ -512,7 +512,7 @@ def test_harvest_velocity_delta_with_rotated_body():
     solver.step(s0, s1, ctrl, None, dt)
 
     out = wp.zeros(model.body_count, dtype=wp.spatial_vector, device="cpu")
-    pc.launch_harvest_proxy_wrenches_velocity_delta(
+    pc.launch_compute_proxy_reaction_wrench(
         robot_ids=wp.array([0], dtype=int, device="cpu"),
         proxy_ids=wp.array([0], dtype=int, device="cpu"),
         model=model,
@@ -592,3 +592,60 @@ def test_align_proxy_body_q_prev_with_multiple_bodies():
     bqp_after = scene.cable.solver.body_q_prev.numpy().reshape(-1, 7)
     np.testing.assert_allclose(bqp_after[proxy], bq[proxy], rtol=1e-6, atol=1e-6)
     np.testing.assert_allclose(bqp_after[apple], bq[apple], rtol=1e-6, atol=1e-6)
+
+
+def test_stem_harvest_cpu_gpu_parity():
+    """Device stem harvest matches the legacy CPU path on the same post-step state."""
+    pc = _import_pc()
+    fs = _import_fs()
+    import apple_pick_sim.coupled_fruiting as cf
+
+    from conftest import run_coupled_substeps_direct_hold
+    from apple_pick_sim.robot import fr3_robot
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(
+        cf,
+        ranges,
+        13,
+        device="cpu",
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True),
+        mujoco_solver_kwargs=DEFAULT_MJ_KW,
+    )
+    assert scene.stem_apple_joint_index is not None
+    tcp = scene.tcp_body_index
+    dt = 1.0 / 600.0
+    run_coupled_substeps_direct_hold(scene, fr3_robot, 8, sub_dt=dt)
+
+    cable = scene.cable
+    out_gpu = wp.zeros(scene.robot_model.body_count, dtype=wp.spatial_vector, device="cpu")
+    out_cpu = wp.zeros_like(out_gpu)
+    pc.harvest_stem_tension_for_tcp(
+        cable_model=cable.model,
+        cable_solver=cable.solver,
+        body_q_post=cable.state_0.body_q,
+        body_q_prev=cable.state_1.body_q,
+        dt=dt,
+        stem_apple_joint_index=scene.stem_apple_joint_index,
+        tcp_body_index=tcp,
+        out_robot_wrenches=out_gpu,
+        coupling_gain=scene.stem_coupling_gain,
+        force_cap_N=scene.stem_force_cap_N,
+        torque_cap_Nm=scene.stem_torque_cap_Nm,
+    )
+    pc._harvest_stem_tension_for_tcp_cpu(
+        cable_model=cable.model,
+        cable_solver=cable.solver,
+        body_q_post=cable.state_0.body_q,
+        body_q_prev=cable.state_1.body_q,
+        dt=dt,
+        stem_apple_joint_index=scene.stem_apple_joint_index,
+        tcp_body_index=tcp,
+        out_robot_wrenches=out_cpu,
+        coupling_gain=scene.stem_coupling_gain,
+        force_cap_N=scene.stem_force_cap_N,
+        torque_cap_Nm=scene.stem_torque_cap_Nm,
+    )
+    w_gpu = out_gpu.numpy().reshape(-1, 6)[tcp]
+    w_cpu = out_cpu.numpy().reshape(-1, 6)[tcp]
+    np.testing.assert_allclose(w_gpu, w_cpu, rtol=0.02, atol=0.5)

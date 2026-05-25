@@ -1,5 +1,7 @@
 # Test migration report
 
+**Related:** Slice **2f** package layout and gate commands — `docs/slice-2f-structural-refactor.md`.
+
 ## `apple_pick_sim/tests/test_coupling_stability.py`
 
 **Date:** 2026-05-22

@@ -10,7 +10,7 @@ alwaysApply: true
 - **Purpose**: Robotic apple-picking simulation built on the [Newton](https://github.com/newton-physics/newton) physics engine.
 - **Layout**:
   - `newton/` — git **submodule** (upstream Newton). Treat as vendored: avoid drive-by edits unless the task is explicitly to patch Newton or sync with upstream.
-  - `apple_pick_sim/` — project-local simulation scripts (e.g. `example_apple_stem.py`). Prefer new simulation logic here.
+  - `apple_pick_sim/` — project-local simulation code; runnable examples under `apple_pick_sim/examples/`. Prefer new simulation logic here.
 
 ## Environment and runs
 
@@ -18,7 +18,7 @@ alwaysApply: true
 - Example run from the **repository root** (matches README):
 
 ```bash
-uv run --directory newton python ../apple_pick_sim/example_apple_stem.py
+uv run --directory newton python ../apple_pick_sim/examples/example_apple_stem.py
 ```
 
 - If clones are missing Newton: `git submodule update --init --recursive`.

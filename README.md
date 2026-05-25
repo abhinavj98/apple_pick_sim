@@ -35,7 +35,7 @@ All `uv run` commands below assume the **repository root** as the current workin
 ### `example_apple_stem.py`
 
 ```bash
-uv run --directory newton python ../apple_pick_sim/example_apple_stem.py
+uv run --directory newton python ../apple_pick_sim/examples/example_apple_stem.py
 ```
 
 This runs the apple simulation with three branch stiffness presets. The terminal prints forces and torques on the stem. To apply forces on the apple, use right-click and drag on the apple in the viewer.
@@ -50,13 +50,13 @@ Uses the same Newton viewer pattern as the stem example.
 The script imports the `apple_pick_sim` package, so set `PYTHONPATH` to the repository root:
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_fruiting_system.py
 ```
 
 Useful options (see also the script docstring):
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py \
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_fruiting_system.py \
   --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 123
 ```
 
@@ -64,13 +64,13 @@ PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fru
 
 Pass **`--no-self-collision`** to set `enable_self_collisions=False`, which registers **shape collision filter pairs between every pair of distinct chain bodies** (primary through apple), so the tree does not self-collide; **ground contact is unchanged**. Use this if you need a more stable run without intra-chain contacts.
 
-From Python, call `ExampleFruitingSystem.regenerate()` (optional seed) to rebuild while keeping the viewer. See `apple_pick_sim/example_fruiting_system.py`.
+From Python, call `ExampleFruitingSystem.regenerate()` (optional seed) to rebuild while keeping the viewer. See `apple_pick_sim/examples/example_fruiting_system.py`.
 
 ## P0 variational fruiting (JSON + seed)
 
 Range fixtures live under `apple_pick_sim/fixtures/`: **`fruiting_system_ranges_example_variance.json`**
 (wide angles; default for the viewer example) and **`fruiting_system_ranges_straight_rod_test.json`**
-(nearly −Z chain; default for tests). The generator is `apple_pick_sim/fruiting_system.py` (module docstring describes the API).
+(nearly −Z chain; default for tests). The generator is the **`apple_pick_sim/fruiting_system/`** package (`params.py`, `build.py`, `scene.py`, `coupled.py`; public API via `apple_pick_sim.fruiting_system`).
 
 **Geometry-only smoke check** (no viewer; paths assume `uv`’s working directory is `newton/`):
 
@@ -101,9 +101,11 @@ import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 
 **Structured force readout** (fixed-joint wrenches plus ``cable_joint_indices`` metadata; cable scalar forces follow ``example_apple_stem.py`` when needed): call ``measure_fruiting_forces`` from ``apple_pick_sim.fruiting_system`` with post-step ``body_q``, pre-step ``body_q_prev``, and ``dt`` after a ``SolverVBD`` substep.
 
+**Device:** Scene builders default to **`cuda:0`** when CUDA is available (`apple_pick_sim/sim_device.py`). Pass ``device="cpu"`` or set ``APPLE_PICK_SIM_DEVICE=cpu`` to force CPU. Interactive examples accept ``--device`` (e.g. ``--device cpu``).
+
 ### M1 two-model coupling (placeholder or FR3 robot)
 
-Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via ``apple_pick_sim/coupled_fruiting.py``. Gripper proxy defaults to **`fix_to_apple=False`** (velocity-delta harvest + proxy-only sync); pass ``GripperProxyConfig(fix_to_apple=True)`` in code for stem-harvest / apple co-teleport tests.
+Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via the **`apple_pick_sim/coupled_fruiting/`** package (``scene.py``, ``builders.py``, …; import ``apple_pick_sim.coupled_fruiting``). Gripper proxy defaults to **`fix_to_apple=False`** (velocity-delta harvest + proxy-only sync); pass ``GripperProxyConfig(fix_to_apple=True)`` in code for stem-harvest / apple co-teleport tests.
 
 - **Placeholder (default):** free-floating TCP box via ``build_coupled_fruiting_placeholder``; ``disable_contacts=True`` keeps the demo stable at moderate dt.
 - **FR3 + custom EE:** ``build_coupled_fruiting_fr3`` imports ``assets/testfr3_resolved.usda`` (Isaac **`testfr3`** EE/tcp + bundled ``assets/fr3/omniverse_fr3/fr3.usd``); see ``assets/fr3/README.md`` and ``docs/fr3-usd-import-implementation.md``.
@@ -129,25 +131,25 @@ print('coupled_substep_ok')
 Interactive **Newton viewer** (shows the **cable** scene: rods + apple + gripper proxy, which mirrors the coupling). Optional **`--mujoco-viewer`** opens MuJoCo’s passive viewer for the **TCP placeholder** rigid body (**second window**).
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --viewer null --num-frames 120
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --mujoco-viewer --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 0
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --viewer null --num-frames 120
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --mujoco-viewer --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 0
 # Staggered coupling wrench debug (Plots panel in ViewerGL): lagged → MuJoCo vs fresh ← VBD harvest
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --debug-coupling-forces --seed 42
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --debug-coupling-forces --seed 42
 # Bundled FR3 + custom EE (requires usd-core + assets/fr3/)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --robot fr3 --viewer null --num-frames 60
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --robot fr3 --viewer null --num-frames 60
 # FR3 keyboard teleop — verified: MuJoCo-only stepping + proxy sync (default fix_to_apple=False)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py \
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \
   --robot fr3 --only-mjc --fr3-keyboard --viewer gl
 # Optional second window for the MuJoCo robot model
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py \
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \
   --robot fr3 --only-mjc --fr3-keyboard --mujoco-viewer --viewer gl
 # Full staggered coupling + keyboard (not yet verified interactively)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --robot fr3 --fr3-keyboard --viewer gl
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --robot fr3 --fr3-keyboard --viewer gl
 # Stem-harvest path: weld proxy to apple (default is --no-fix-to-apple / velocity-delta)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --fix-to-apple --seed 42
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple --seed 42
 # FR3 testing: direct joint_q write + kinematic arm (coupled VBD + proxy sync still run)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py \
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \
   --robot fr3 --fr3-direct-joints --fr3-keyboard --viewer gl
 ```
 
@@ -157,8 +159,21 @@ PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_cou
 - **Robot only (kinematic FK, no MuJoCo step):** ``example_fr3_keyboard.py`` — useful for IK/viewer smoke without the fruiting tree.
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py --viewer gl
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py --viewer null --num-frames 120
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_fr3_keyboard.py --viewer gl
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_fr3_keyboard.py --viewer null --num-frames 120
+```
+
+### Slice 2f refactor validation
+
+After changes to the fruiting or coupled packages (see ``docs/slice-2f-structural-refactor.md``):
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
+  ../apple_pick_sim/tests/test_fruiting_system.py \
+  ../apple_pick_sim/tests/test_coupled_cable_scene.py \
+  ../apple_pick_sim/tests/test_coupled_fruiting_system.py \
+  ../apple_pick_sim/tests/test_coupling_stability.py \
+  ../apple_pick_sim/tests/test_proxy_coupling.py -q -p no:launch_testing
 ```
 
 ## Tests
@@ -181,11 +196,21 @@ Optional slow tests only (500+ substep stability, FR3 long horizon):
 PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -m slow -q -p no:launch_testing
 ```
 
-M1 coupling benchmark (ms/substep; see ``docs/slice-2e-hardening.md``):
+M1 coupling benchmark (ms/substep; see ``docs/gpu-coupling-optimization.md``):
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/benchmark_coupling.py \
-  --robot placeholder --warmup-substeps 30 --bench-substeps 300
+  --robot placeholder --device cuda:0 --mujoco-gpu --warmup-substeps 30 --bench-substeps 300
+# CPU MuJoCo baseline:
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/benchmark_coupling.py \
+  --robot placeholder --device cpu --mujoco-cpu --warmup-substeps 30 --bench-substeps 300
+```
+
+Headless CUDA graph (coupled example):
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \
+  --viewer null --cuda-graph --num-frames 200
 ```
 
 Headless **coupling verification** (applied vs harvested wrench, TCP–proxy pose drift; exit 1 on threshold breach):

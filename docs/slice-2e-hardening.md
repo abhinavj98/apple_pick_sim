@@ -13,7 +13,7 @@ Slice 2e removes per-substep host roundtrips on the staggered coupling hot path 
 | Device TCP wrench apply | `coupled_fruiting._apply_tcp_spatial_wrench_kernel` | Zero all `body_f`, write lagged wrench at TCP on device |
 | Viewer contacts reuse | `CoupledFruitingScene.last_vbd_contacts` | `example_coupled_fruiting.render()` skips extra `collide()` when substeps ran |
 
-Stem-harvest (`harvest_stem_joint_wrench`) still uses a host path via `fixed_joint_wrenches_child_com_vbd` until Newton exposes device readout.
+Stem-harvest on device: see **Slice 2g** in `docs/gpu-coupling-optimization.md` (`gather_joint_wrench_child_com_device` + Warp limit kernel).
 
 ## Tests
 

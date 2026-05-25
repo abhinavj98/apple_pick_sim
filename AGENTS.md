@@ -14,7 +14,7 @@ If **vision**, **roadmap**, and **code** disagree, **stop** and report the confl
 
 | Path | Role |
 |------|------|
-| `apple_pick_sim/` | Project-local simulation and scripts (prefer new work here). |
+| `apple_pick_sim/` | Project-local simulation code; runnable examples in `examples/`. |
 | `newton/` | Upstream Newton **git submodule**; treat as vendored unless the task is explicitly to patch or sync it. |
 | `docs/` | Project vision and roadmap (this repo’s planning docs, not `newton/docs/`). |
 

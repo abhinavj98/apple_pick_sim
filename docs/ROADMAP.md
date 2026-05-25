@@ -17,7 +17,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-05-22 (**[M1] active** — **staggered coupling + force transfer accepted** (teleop, proxy sync, harvest → MuJoCo); **next:** **structural refactor** per maintainer-owned **`refactor.md`** and updated slices below. Maintainer will revise **Current focus** / **`refactor.md`** before large agent refactors. **[P0] Done**.) |
+| **Last updated** | 2026-05-25 (**[M1] active** — **Slice 2f** + layout cleanup: `fruiting_system/`, `coupled_fruiting/` (incl. `proxy_coupling.py`), `robot/fr3_robot/`, `examples/`. **Next:** **`refactor.md`** / **Slice 2g** GPU. **[P0] Done**.) |
 | **Owner** | Abhinav |
 | **Vision** | See `docs/VISION.md` |
 
@@ -54,17 +54,17 @@ Later vision phases (real data, calibration, final pick policy) remain in milest
 
 **Maintainer workflow:** Abhinav updates **`refactor.md`** (what to change) and this file’s **Next up** / slices (order and done-ness); agents then implement in small PRs with TDD.
 
-**Build on (do not reimplement):** `apple_pick_sim/fruiting_system.py` — `generate_scene`, **`generate_coupled_cable_scene`**, `run_rollout`, `measure_fruiting_forces`, `vbd_fixed_joint_wrenches.py`; `apple_pick_sim/proxy_coupling.py` for staggered sync/harvest; **`apple_pick_sim/coupled_fruiting.py`** + **`apple_pick_sim/fr3_robot.py`** for the MuJoCo+VBD loop and FR3 import (`build_coupled_fruiting_fr3`, `assets/testfr3_resolved.usda`). Architecture reference: **`docs/mujoco-vbd-coupling-architecture.md`**, **`docs/fr3-usd-import-implementation.md`**. Newton patterns: `newton/newton/examples/ik/example_ik_franka.py`, `newton/newton/examples/cloth/example_cloth_franka.py` (adjacent, not the M1 recipe), and the **two-`Model` staggered coupling skeleton** at the bottom of [M1].
+**Build on (do not reimplement):** `apple_pick_sim/fruiting_system/` — `generate_scene`, **`generate_coupled_cable_scene`**, `run_rollout`, `measure_fruiting_forces` (import via `apple_pick_sim.fruiting_system`); `apple_pick_sim/vbd_fixed_joint_wrenches.py`; **`apple_pick_sim/coupled_fruiting/`** (`proxy_coupling.py`: `launch_mirror_robot_to_proxy`, `harvest_proxy_wrenches`, …) + **`apple_pick_sim/robot/fr3_robot/`** for the MuJoCo+VBD loop and FR3 import (`build_coupled_fruiting_fr3`, `assets/testfr3_resolved.usda`). Viewer/scripts: **`apple_pick_sim/examples/`**. Refactor map: **`docs/slice-2f-structural-refactor.md`**, **`refactor.md`**. Architecture: **`docs/mujoco-vbd-coupling-architecture.md`**, **`docs/fr3-usd-import-implementation.md`**. Newton patterns: `newton/newton/examples/ik/example_ik_franka.py`, `newton/newton/examples/cloth/example_cloth_franka.py` (adjacent, not the M1 recipe), and the **two-`Model` staggered coupling skeleton** at the bottom of [M1].
 
 **Next up (ordered — mirrors [M1] Next actions):**
 
-1. [x] **Slice 1 — Proxy primitives:** `sync_proxy_state` + `harvest_proxy_wrenches` (velocity-delta option 3) in `apple_pick_sim/proxy_coupling.py`; unit tests in `apple_pick_sim/tests/test_proxy_coupling.py`.
+1. [x] **Slice 1 — Proxy primitives:** `sync_proxy_state` + `harvest_proxy_wrenches` (velocity-delta option 3) in `apple_pick_sim/coupled_fruiting/proxy_coupling.py`; unit tests in `apple_pick_sim/tests/test_proxy_coupling.py`.
 2. [x] **Slice 2a–b (placeholder + stem harvest):** `generate_coupled_cable_scene`, **`build_coupled_fruiting_placeholder`**, unified-sync + stem-harvest path; tests `test_coupled_cable_scene.py`, `test_coupled_fruiting_system.py`, `test_coupling_stability.py`, `test_proxy_coupling.py`.
-3. [x] **Slice 2 — FR3 robot loaded:** `assets/testfr3_resolved.usda`, bundled `assets/fr3/`, `fr3_robot.py`, `build_coupled_fruiting_fr3`, IK bootstrap + root placement, `test_fr3_usd_import.py`, FR3 coupled tests, `--robot fr3` on `example_coupled_fruiting.py`; see `docs/fr3-usd-import-implementation.md`.
+3. [x] **Slice 2 — FR3 robot loaded:** `assets/testfr3_resolved.usda`, bundled `assets/fr3/`, `robot/fr3_robot/`, `build_coupled_fruiting_fr3`, IK bootstrap + root placement, `test_fr3_usd_import.py`, FR3 coupled tests, `--robot fr3` on `examples/example_coupled_fruiting.py`; see `docs/fr3-usd-import-implementation.md`.
 4. [x] **Slice 2c — Keyboard / TCP velocity control:** `Fr3EEVelocityController`, `apply_fr3_ee_teleop`, `--fr3-keyboard`. **Accepted:** `--only-mjc` and **full coupled** teleop with ghost proxy tracking (default **`fix_to_apple=False`**). CLI: `--fix-to-apple` / `--no-fix-to-apple`, `--fr3-direct-joints` (debug). `example_fr3_keyboard.py` = kinematic-FK smoke.
 5. [x] **Slice 2d — Coupled forces / transfer:** Staggered **apply → sync → harvest** and **`--debug-coupling-forces`** look good under teleop (`coupling_force_debug.py`, `verify_coupling.py`, stability tests). **Deferred post-refactor:** formal arm-side readouts API, EE–apple **contact** scenarios, `disable_contacts=False` tuning.
-6. [ ] **Slice 2f — Structural refactor (active):** Execute maintainer list in **`refactor.md`** (e.g. `fruiting_system/` package, `proxy_coupling` naming, `coupled_fruiting` clarity). Preserve coupling semantics; keep pytest/README import paths stable unless the refactor slice says otherwise. **GPU kernel work** belongs in **Slice 2g**, not drive-by in 2f unless a refactor task explicitly requires a device kernel for correctness.
-7. [ ] **Slice 2g — GPU optimization:** Stand up **profilers** and a **repeatable before/after** workflow; profile the coupled hot path; **move as much of the substep loop to the GPU as practical** (Warp kernels, fewer host `.numpy()` / `.copy()` syncs, device-resident teleop/IK only where tests prove safe). Record baselines and wins (ms/substep, optional GPU timeline notes) in docs; extend **`diagnostics/benchmark_coupling.py`** (or pytest `-m slow`) as the regression harness.
+6. [x] **Slice 2f — Structural refactor:** 2f-A `fruiting_system/`, 2f-B `coupled_fruiting/`, 2f-C `proxy_coupling` under `coupled_fruiting/`, 2f-D `robot/fr3_robot/`, layout cleanup (`examples/`, shims removed) — see **`docs/slice-2f-structural-refactor.md`**. **Remaining:** maintainer list in **`refactor.md`** (2f-E notes). **GPU kernel work** belongs in **Slice 2g**.
+7. [x] **Slice 2g — GPU optimization:** `docs/gpu-coupling-optimization.md`; pooled `qd_synced`; device stem harvest; `mujoco_use_cpu` opt-in; `--cuda-graph` on examples; extended **`diagnostics/benchmark_coupling.py`**.
 8. [x] **Slice 2e — Hardening:** hot-path GPU kernels (cached proxy IDs, device `body_q_prev` align, device `body_f` wrench), `benchmark_coupling.py`, `slow` tests, FR3 long-horizon test, `docs/slice-2e-hardening.md`. Further GPU work remains in **Slice 2g**.
 9. [ ] **Slice 3 — Commands + docs:** README and Agent execution notes once refactor entrypoints stabilize; verify per `.cursor/rules/readme-runtime-verification.mdc`.
 
@@ -72,7 +72,7 @@ Later vision phases (real data, calibration, final pick policy) remain in milest
 
 **Blockers (if any):** **Refactor task list** — wait for maintainer updates to **`refactor.md`** and **Next up** above before starting non-trivial structural changes. **Placeholder-only** coupled instability remains a comparison baseline — use **`--robot fr3`**.
 
-**Last completed slice:** [M1] Slice **2d** — **coupling + force transfer accepted** (`2026-05-22`). Prior: Slice **2c** teleop (`2026-05-19`, `3f24330`); Slice 2 FR3 load (`2026-05-18`).
+**Last completed slice:** [M1] Slice **2f** (partial) — **`fruiting_system/`**, **`coupled_fruiting/`**, proxy renames (`2026-05-25`). Prior: Slice **2d** coupling accepted (`2026-05-22`); Slice **2c** teleop (`2026-05-19`).
 
 ---
 
@@ -218,7 +218,8 @@ See **`docs/mujoco-vbd-coupling-architecture.md`** for per-model ownership and t
 
 - [ ] **`refactor.md` tasks** implemented in agreed order; each slice keeps **`apple_pick_sim/tests/`** green and public imports stable (or documents a one-shot migration).
 - [ ] **Coupling semantics preserved:** same staggered apply → MuJoCo → sync → VBD → harvest; no behavior change unless a refactor slice explicitly targets physics/API with new tests.
-- [ ] **Naming / layout:** e.g. `fruiting_system/` package, clearer `proxy_coupling` kernel names — as listed in **`refactor.md`**. (Device kernels and host-sync removal are **Slice 2g**.)
+- [x] **Naming / layout:** `fruiting_system/` package, `coupled_fruiting/` package, `proxy_coupling` mirror/harvest kernel names — see **`docs/slice-2f-structural-refactor.md`**. (Host-sync removal is **Slice 2g**.)
+- [ ] **Remaining 2f tasks** in **`refactor.md`** (2f-E and maintainer edits).
 
 **Slice 2g — definition of done (checklist):** *(GPU path — after 2f layout stabilizes; may start profiling in parallel)*
 
@@ -575,13 +576,13 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 
 **Repository layout (this project):**
 
-- Simulation / project code: `apple_pick_sim/` (e.g. `fruiting_system.py`, `vbd_fixed_joint_wrenches.py` — wraps `SolverVBD.gather_joint_wrench_child_com` from `newton/`)
+- Simulation / project code: `apple_pick_sim/` (e.g. `fruiting_system/`, `coupled_fruiting/` incl. `proxy_coupling.py`, `examples/`, `vbd_fixed_joint_wrenches.py` — wraps `SolverVBD.gather_joint_wrench_child_com` from `newton/`)
 - Physics engine (submodule, vendored): `newton/` — avoid drive-by edits; see `.cursor/rules/apple-pick-sim.mdc`
 
 **How to validate changes:**
 
 - Install / sync: `cd newton && uv sync --extra examples`
-- Run example sim (smoke): from repo root, `uv run --directory newton python ../apple_pick_sim/example_apple_stem.py`
+- Run example sim (smoke): from repo root, `uv run --directory newton python ../apple_pick_sim/examples/example_apple_stem.py`
 - Tests (Newton / shared env): `uv run --directory newton python -m newton.tests` (narrow with path/file when iterating, e.g. `uv run --directory newton python -m newton.tests -k test_cable`)
 - P0 fruiting-system tests: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -v -p no:launch_testing` (from repo root; `PYTHONPATH` ensures `apple_pick_sim` is importable; `--directory newton` sets the uv project but cwd becomes `newton/`)
 - P0 wrench equilibrium (physics sanity): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_wrench_equilibrium.py -q -p no:launch_testing`
@@ -590,17 +591,18 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 - M1 proxy coupling (Slice 1): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_proxy_coupling.py -q -p no:launch_testing`
 - M1 coupling stability (longer-horizon): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupling_stability.py -q -p no:launch_testing`
 - M1 coupling verification CLI: `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/verify_coupling.py --num-substeps 600 --max-force 5 --max-torque 1`
-- P0 fruiting viewer (smoke / ad hoc): `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fruiting_system.py` (see README for flags)
-- M1 coupled viewer (placeholder default, `fix_to_apple=False`): `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py` (`--viewer null --num-frames …`; `--only-vbd` for cable-only).
+- P0 fruiting viewer (smoke / ad hoc): `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_fruiting_system.py` (see README for flags)
+- M1 coupled viewer (placeholder default, `fix_to_apple=False`): `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py` (`--viewer null --num-frames …`; `--only-vbd` for cable-only).
 - M1 FR3 loaded (Slice 2): `PYTHONPATH=$(pwd) uv run --directory newton python -m unittest apple_pick_sim.tests.test_fr3_usd_import -v`; `test_coupled_fruiting_system.py::test_fr3_*`; see `docs/fr3-usd-import-implementation.md`.
 - M1 FR3 teleop (Slice 2c): `example_coupled_fruiting.py --robot fr3 --only-mjc --fr3-keyboard --viewer gl` (**verified**); full coupled: `--robot fr3 --fr3-keyboard --viewer gl` (ghost proxy; acceptance pending). Default `fix_to_apple=False`. WIP: `--fr3-direct-joints` with `--fr3-keyboard`.
-- M1 FR3 keyboard (kinematic only): `example_fr3_keyboard.py --viewer gl`.
+- M1 FR3 keyboard (kinematic only): `examples/example_fr3_keyboard.py --viewer gl`.
 - M1 FR3 controller unit tests: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_fr3_ee_velocity_controller.py -q -p no:launch_testing`
 - M1 coupled forces debug (Slice 2d): `example_coupled_fruiting.py --robot fr3 --debug-coupling-forces`; `test_coupling_force_debug.py`; `diagnostics/verify_coupling.py` for headless checks.
 - M1 coupled fruiting (FR3 integration): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupled_fruiting_system.py -k fr3 -q -p no:launch_testing`
-- M1 Slice 2g (GPU — planned): CUDA device required; `diagnostics/benchmark_coupling.py --device cuda:0` for ms/substep baseline; optional Nsight on coupled example (document args in `docs/gpu-coupling-optimization.md` when slice lands).
+- M1 Slice 2g (GPU): `docs/gpu-coupling-optimization.md`; `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/benchmark_coupling.py --device cuda:0 --mujoco-gpu --warmup-substeps 30 --bench-substeps 300`; examples: `--cuda-graph` with `--viewer null` on coupled/fruiting scripts.
 - M1 Slice 2e (hardening): `docs/slice-2e-hardening.md`; `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/benchmark_coupling.py --robot placeholder --warmup-substeps 30 --bench-substeps 300`; slow tests: `pytest ../apple_pick_sim/tests/ -m slow -q -p no:launch_testing`
 - M1 architecture doc: `docs/mujoco-vbd-coupling-architecture.md`
+- M1 Slice 2f (structural refactor gates): `docs/slice-2f-structural-refactor.md` — fruiting: `pytest ../apple_pick_sim/tests/test_fruiting_system.py ../apple_pick_sim/tests/test_coupled_cable_scene.py -q`; coupled: `pytest ../apple_pick_sim/tests/test_coupled_fruiting_system.py ../apple_pick_sim/tests/test_coupling_stability.py -q`; proxy: `pytest ../apple_pick_sim/tests/test_proxy_coupling.py -q` (all with `PYTHONPATH=$(pwd) uv run --directory newton … -p no:launch_testing`)
 - M1 refactor: read **`refactor.md`** and **Current focus** before structural edits; maintainer updates both when priorities change
 - M1 work: follow **Current focus** and [M1] *Next actions*; add `uv run` entry-points here as slices land
 

@@ -201,7 +201,7 @@ interpret while preserving seed-to-seed variation in lengths and stiffness.
 
 **Rigid joint damping:** ``apple_pick_sim.fruiting_system.make_fruiting_solver_vbd``
 applies small ``rigid_joint_linear_kd`` / ``rigid_joint_angular_kd`` (constant
-``FRUITING_VBD_RIGID_JOINT_KD`` in ``fruiting_system.py``) so inter-segment FIXED
+``FRUITING_VBD_RIGID_JOINT_KD`` in ``fruiting_system/build.py`` via ``make_fruiting_solver_vbd``) so inter-segment FIXED
 joints settle; the viewer, headless rollouts, and ``test_wrench_equilibrium.py``
 share this solver configuration.
 

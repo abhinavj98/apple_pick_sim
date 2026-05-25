@@ -7,7 +7,7 @@ cable step. Plot via :meth:`CouplingForceDebugRecorder.log_to_viewer` (Newton
 
 With a quiescent placeholder TCP, both traces should stay near **zero** (not ~mg
 growing each substep). Large |F| usually means ``body_q_prev`` was not aligned after
-``sync_proxy_state`` (see :func:`~apple_pick_sim.proxy_coupling.align_proxy_body_q_prev_for_vbd`)
+``sync_proxy_state`` (see :func:`~apple_pick_sim.coupled_fruiting.proxy_coupling.align_proxy_body_q_prev_for_vbd`)
 or the proxy is contact-pinned while the robot moves.
 """
 

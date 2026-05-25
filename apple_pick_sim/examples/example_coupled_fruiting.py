@@ -10,11 +10,11 @@ Pick/drag applies forces to the **cable** state (right-click drag), routed after
 
 Run from the repository root (see README for ``PYTHONPATH``)::
 
-    PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py
+    PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py
 
 Options (Newton example parser + extras)::
 
-    PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py \\
+    PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \\
       --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 42 --only-vbd
 
 ``--no-self-collision`` matches :func:`~apple_pick_sim.fruiting_system.generate_coupled_cable_scene` /
@@ -44,7 +44,6 @@ import newton
 import newton.examples
 import warp as wp
 
-from apple_pick_sim.cuda_graph import can_capture_graph, capture_substep_loop
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.coupling_force_debug import CouplingForceDebugRecorder
 from apple_pick_sim.robot import fr3_robot
@@ -61,7 +60,11 @@ from apple_pick_sim.fruiting_system import (
 
 
 def _default_ranges_path() -> Path:
-    return Path(__file__).resolve().parent / "fixtures" / "fruiting_system_ranges_example_variance.json"
+    return (
+        Path(__file__).resolve().parent.parent
+        / "fixtures"
+        / "fruiting_system_ranges_example_variance.json"
+    )
 
 
 def _fix_to_apple_from_args(args: argparse.Namespace | None) -> bool:
@@ -180,14 +183,6 @@ def _make_parser() -> argparse.ArgumentParser:
             "FR3 testing mode: IK writes joint_q directly (kinematic arm). Requires "
             "--robot fr3. Use with --fr3-keyboard for teleop; skips MuJoCo arm integration "
             "and lagged TCP wrenches while cable VBD + proxy sync still run."
-        ),
-    )
-    parser.add_argument(
-        "--cuda-graph",
-        action="store_true",
-        help=(
-            "Capture substeps in a CUDA graph (CUDA, headless-friendly: use with "
-            "--viewer null; no teleop, debug plots, or fix-to-apple)."
         ),
     )
     return parser
@@ -342,93 +337,43 @@ class ExampleCoupledFruiting:
         elif enable_kb and robot_kind != "fr3":
             print("Warning: --fr3-keyboard requires --robot fr3.", file=sys.stderr)
 
-        self.graph = None
-        self._graph_capture_mode = False
-        self.capture()
-
-    def _cuda_graph_allowed(self) -> bool:
-        if not bool(getattr(self.args, "cuda_graph", False)):
-            return False
-        if self._force_debug is not None:
-            return False
-        if _fix_to_apple_from_args(self.args):
-            return False
-        if self._ee_ctrl is not None and bool(getattr(self.args, "fr3_keyboard", False)):
-            return False
-        dev = self.scene.cable.model.device
-        return can_capture_graph(dev)
-
-    def capture(self) -> None:
-        if not self._cuda_graph_allowed():
-            self.graph = None
-            return
-        self._graph_capture_mode = True
-        try:
-            self.graph = capture_substep_loop(
-                self._run_substeps,
-                device=self.scene.cable.model.device,
-            )
-        finally:
-            self._graph_capture_mode = False
-        if self.graph is None:
-            print("CUDA graph capture unavailable; using per-substep Python loop.")
-
     def _pick_forces(self) -> None:
         self.viewer.apply_forces(self.scene.cable.state_0)
 
-    def _run_substeps(self) -> None:
-        pick = None if self._graph_capture_mode else self._pick_forces
+    def simulate(self) -> None:
+        # FR3 teleop: advance target + solve IK once per frame (not per substep).
+        if self._ee_ctrl is not None:
+            if self._fr3_direct_joints:
+                self.scene.apply_fr3_ee_teleop_direct(
+                    self.frame_dt,
+                    self._ee_ctrl,
+                    viewer=self.viewer,
+                )
+            else:
+                self.scene.apply_fr3_ee_teleop(
+                    self.frame_dt,
+                    self._ee_ctrl,
+                    viewer=self.viewer,
+                )
         for _ in range(self.sim_substeps):
             if self._step_mode == "vbd":
                 self.scene.vbd_substep(
                     self.sim_dt,
-                    after_cable_clear_forces=pick,
+                    after_cable_clear_forces=self._pick_forces,
                 )
             elif self._step_mode == "mjc":
                 self.scene.mujoco_substep(self.sim_dt)
             else:
                 self.scene.coupled_substep(
                     self.sim_dt,
-                    after_cable_clear_forces=pick,
+                    after_cable_clear_forces=self._pick_forces,
                 )
-                if self._force_debug is not None and not self._graph_capture_mode:
+                if self._force_debug is not None:
                     self._force_debug.log_to_viewer(self.viewer)
-
-    def simulate(self) -> None:
-        if self._ee_ctrl is not None:
-            if self._fr3_direct_joints:
-                self.scene.apply_fr3_ee_teleop_direct(
-                    self.frame_dt,
-                    self._ee_ctrl,
-                    viewer=self.viewer,
-                )
-            else:
-                self.scene.apply_fr3_ee_teleop(
-                    self.frame_dt,
-                    self._ee_ctrl,
-                    viewer=self.viewer,
-                )
-        self._run_substeps()
 
     def step(self, warmup: bool = False) -> None:
         del warmup
-        if self._ee_ctrl is not None:
-            if self._fr3_direct_joints:
-                self.scene.apply_fr3_ee_teleop_direct(
-                    self.frame_dt,
-                    self._ee_ctrl,
-                    viewer=self.viewer,
-                )
-            else:
-                self.scene.apply_fr3_ee_teleop(
-                    self.frame_dt,
-                    self._ee_ctrl,
-                    viewer=self.viewer,
-                )
-        if self.graph:
-            wp.capture_launch(self.graph)
-        else:
-            self._run_substeps()
+        self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self) -> None:
@@ -443,13 +388,12 @@ class ExampleCoupledFruiting:
         self.viewer.log_state(self.scene.cable.state_0)
         self.viewer.log_contacts(self._viz_contacts, self.scene.cable.state_0)
         self.viewer.end_frame()
-        if self._mujoco_viewer:
-            if self.scene.robot_kinematic_mode and self.scene.robot_model is not None:
-                fr3_robot.sync_mujoco_visual_state(
-                    self.scene.mj_solver,
-                    self.scene.robot_model,
-                    self.scene.robot_state_0,
-                )
+        if self._mujoco_viewer and self.scene.robot_model is not None:
+            fr3_robot.sync_mujoco_visual_state(
+                self.scene.mj_solver,
+                self.scene.robot_model,
+                self.scene.robot_state_0,
+            )
             self.scene.mj_solver.render_mujoco_viewer()
 
     def cleanup(self) -> None:

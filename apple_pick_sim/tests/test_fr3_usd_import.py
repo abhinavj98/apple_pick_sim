@@ -8,7 +8,7 @@ from pathlib import Path
 import newton
 from newton.solvers import SolverMuJoCo
 
-from apple_pick_sim import fr3_robot
+from apple_pick_sim.robot import fr3_robot
 
 
 def _usd_available() -> bool:

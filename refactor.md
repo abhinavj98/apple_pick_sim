@@ -1,6 +1,6 @@
 # Refactor backlog (maintainer-owned)
 
-**Last updated:** 2026-05-22  
+**Last updated:** 2026-05-25  
 **ROADMAP mapping:** [M1] **Slice 2f** = this file (structure, naming, import stability). **Slice 2g** = GPU / host-sync removal (separate checklist below; do not mix into 2f PRs unless a kernel is required for correctness).
 
 **Read before large PRs:** `docs/ROADMAP.md` (Current focus), `docs/mujoco-vbd-coupling-architecture.md`, `docs/fr3-usd-import-implementation.md`, `AGENTS.md`.
@@ -13,12 +13,13 @@
 
 The M1 **two-Model staggered coupling** stack is **shipped and accepted** (Slice 2d, 2026-05-22). Physics semantics must not change during 2f unless a slice adds explicit tests.
 
-| Module | ~lines | Role |
-|--------|--------|------|
-| `apple_pick_sim/fruiting_system.py` | ~1315 | P0 cable tree generator + `generate_coupled_cable_scene`, `CoupledCableScene`, params/sampling, `run_rollout`, `measure_fruiting_forces` |
-| `apple_pick_sim/proxy_coupling.py` | ~500 | Warp kernels: robot→proxy sync, VBD→robot harvest (velocity-delta + stem path helpers), `ProxyBodyRegistry`, `align_proxy_body_q_prev_for_vbd` |
-| `apple_pick_sim/coupled_fruiting.py` | ~824 | `CoupledFruitingScene`, `coupled_substep`, builders (`build_coupled_fruiting_placeholder` / `_fr3`), bootstrap, MuJoCo defaults |
-| `apple_pick_sim/fr3_robot.py` | ~677 | USD import, IK bootstrap, teleop controllers, keyboard helpers |
+| Module | Role |
+|--------|------|
+| `apple_pick_sim/fruiting_system/` | P0 cable tree + M1 coupled cable (`params`, `build`, `scene`, `coupled`); import `apple_pick_sim.fruiting_system` |
+| `apple_pick_sim/coupled_fruiting/proxy_coupling.py` | Warp kernels: `launch_mirror_robot_to_proxy*`, `harvest_proxy_wrenches`, `harvest_stem_tension_for_tcp`, `align_proxy_body_q_prev_for_vbd` |
+| `apple_pick_sim/coupled_fruiting/` | `CoupledFruitingScene`, builders, bootstrap, apply wrench; import `apple_pick_sim.coupled_fruiting` |
+| `apple_pick_sim/robot/fr3_robot/` | USD import, IK bootstrap, teleop controllers |
+| `apple_pick_sim/examples/` | Runnable viewer scripts |
 | `apple_pick_sim/vbd_fixed_joint_wrenches.py` | ~98 | P0 + stem-harvest wrapper around `SolverVBD.gather_joint_wrench_child_com` |
 | `assets/testfr3_resolved.usda` + `assets/fr3/` | — | FR3 scene + Omniverse subtree (`fr3_robot.TESTFR3_SCENE_USD`) |
 
@@ -30,7 +31,9 @@ The M1 **two-Model staggered coupling** stack is **shipped and accepted** (Slice
 4. VBD step on **Model B** (`cable.model`)
 5. **Harvest** for *next* substep → `proxy_forces` (velocity-delta **or** stem joint wrench)
 
-Implemented in `CoupledFruitingScene.coupled_substep` (`coupled_fruiting.py`); kernels in `proxy_coupling.py`.
+Implemented in `CoupledFruitingScene.coupled_substep` (`coupled_fruiting/scene.py`); kernels in `proxy_coupling.py`.
+
+**Status (2026-05-25):** 2f-A, 2f-B, 2f-C, 2f-D landed — validation commands in `docs/slice-2f-structural-refactor.md`.
 
 ### What this refactor is for
 
@@ -136,7 +139,7 @@ Optional: `diagnostics/benchmark_coupling.py --device cuda:0` (2g baselines).
 
 Each subsection below is a **separate PR** unless maintainer says otherwise. **Do not start 2f-B until 2f-A’s gate is green**, and so on (see [Validation gate](#validation-gate-run-before-the-next-module)).
 
-### 2f-A — `fruiting_system/` package
+### 2f-A — `fruiting_system/` package ✅ (2026-05-25)
 
 **Goal:** Split `fruiting_system.py` (~1315 lines) without breaking:
 
@@ -167,15 +170,17 @@ apple_pick_sim/fruiting_system/
 
 - Keep **`vbd_fixed_joint_wrenches.py`** at `apple_pick_sim/` (shared by P0 and stem harvest); `scene.py` / `fruiting_system/__init__.py` re-export as today.
 - M1 staggered protocol prose in `fruiting_system.py` (lines ~32–62) can move to `coupled.py` or stay as a short pointer to `docs/mujoco-vbd-coupling-architecture.md`.
-- `fruiting_system.py` becomes a thin shim: `from apple_pick_sim.fruiting_system import *` or explicit re-exports (deprecation comment optional).
+- ~~`fruiting_system.py` shim~~ — removed; package `__init__.py` is the public surface.
 
-**Tests:** `test_fruiting_system.py`, `test_coupled_cable_scene.py`.
+**Tests:** `test_fruiting_system.py`, `test_coupled_cable_scene.py` (green).
+
+**Verify:** `docs/slice-2f-structural-refactor.md` § How to verify (2f-A).
 
 **Gate before next slice:** both green → then start 2f-B (or 2f-C if doing `proxy_coupling` before coupled split per maintainer order).
 
 ---
 
-### 2f-B — `coupled_fruiting/` package
+### 2f-B — `coupled_fruiting/` package ✅ (2026-05-25)
 
 **Goal:** `coupled_fruiting.py` (~824 lines) = orchestration only.
 
@@ -197,16 +202,17 @@ apple_pick_sim/coupled_fruiting/
 
 - `stem_apple_joint_index` is already resolved in `_assemble_coupled_robot_scene` via `_find_stem_apple_joint` — ensure it is **never** re-scanned per substep (today it uses `joint_child.numpy()` once at build).
 - Do **not** import `fr3_robot` from `fruiting_system/`; only `coupled_fruiting` and examples depend on robot builders.
-- Top-level `coupled_fruiting.py` shim preserves README import:
-  `from apple_pick_sim.coupled_fruiting import build_coupled_fruiting_placeholder`.
+- ~~Top-level `coupled_fruiting.py` shim~~ — removed; package `__init__.py` preserves README import.
 
-**Tests:** `test_coupled_fruiting_system.py`, `test_coupling_stability.py`, `verify_coupling.py`, `benchmark_coupling.py`.
+**Tests:** `test_coupled_fruiting_system.py`, `test_coupling_stability.py` (green).
+
+**Verify:** `docs/slice-2f-structural-refactor.md` § How to verify (2f-B).
 
 **Gate before next slice:** coupled + stability + `verify_coupling.py` green → then start next module (e.g. 2f-D FR3, or 2f-A if order differs).
 
 ---
 
-### 2f-C — `proxy_coupling` naming and deduplication
+### 2f-C — `proxy_coupling` naming and deduplication ✅ (renames, 2026-05-25)
 
 **Goal:** Names reflect **direction**; reduce duplicated warp logic between the two sync kernels.
 
@@ -328,9 +334,9 @@ These must keep working through 2f (shim or `__init__.py` re-export):
 | Consumer | Imports |
 |----------|---------|
 | `README.md` | `fruiting_system.load_ranges`, `generate_scene`, `geometry_fingerprint`, `coupled_fruiting.build_coupled_fruiting_placeholder` |
-| `example_fruiting_system.py` | `fruiting_system.*` |
-| `example_coupled_fruiting.py` | `coupled_fruiting.*`, `fruiting_system.*`, `fr3_robot.*` |
-| `example_fr3_keyboard.py` | `fr3_robot.*` |
+| `examples/example_fruiting_system.py` | `fruiting_system.*` |
+| `examples/example_coupled_fruiting.py` | `coupled_fruiting.*`, `fruiting_system.*`, `robot.fr3_robot.*` |
+| `examples/example_fr3_keyboard.py` | `robot.fr3_robot.*` |
 | Tests | `import apple_pick_sim.fruiting_system as fs`, `proxy_coupling as pc`, `fr3_robot`, `coupled_fruiting` |
 
 ---
@@ -339,11 +345,11 @@ These must keep working through 2f (shim or `__init__.py` re-export):
 
 *(Maintainer: move items here when slices merge.)*
 
-- [ ] 2f-A `fruiting_system/` package
-- [ ] 2f-B `coupled_fruiting/` package
-- [ ] 2f-C `proxy_coupling` naming + sync dedup
-- [ ] 2f-D `robot/fr3_robot/` package (+ optional assets move)
-- [ ] 2f-E docs sync
+- [x] 2f-A `fruiting_system/` package
+- [x] 2f-B `coupled_fruiting/` package
+- [x] 2f-C `proxy_coupling` naming + sync dedup
+- [x] 2f-D `robot/fr3_robot/` package (+ optional assets move)
+- [x] 2f-E docs sync
 - [ ] 2g GPU stem harvest + device defaults + benchmark baselines
 
 ---
@@ -352,5 +358,5 @@ These must keep working through 2f (shim or `__init__.py` re-export):
 
 1. Final coupling symbol names — table in 2f-C is a proposal; confirm before wide rename.
 2. Asset location: keep `assets/` at repo root vs `robot/fr3_robot/assets/` only.
-3. Whether `apple_pick_sim/fr3_robot.py` stays forever as shim or deprecate in Slice 3.
+3. ~~Whether `apple_pick_sim/fr3_robot.py` stays forever as shim~~ — **removed**; use `from apple_pick_sim.robot import fr3_robot`.
 4. Priority: 2f-A vs 2f-B first (either order works if shims are in place).

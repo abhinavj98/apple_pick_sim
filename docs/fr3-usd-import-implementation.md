@@ -22,10 +22,11 @@ See [`assets/fr3/README.md`](../assets/fr3/README.md).
 
 | Module | Role |
 |--------|------|
-| [`apple_pick_sim/fr3_robot.py`](../apple_pick_sim/fr3_robot.py) | `build_fr3_robot_model_from_usd`, `resolve_tcp_body_index`, IK bootstrap, `Fr3EEVelocityController` |
-| [`apple_pick_sim/example_fr3_keyboard.py`](../apple_pick_sim/example_fr3_keyboard.py) | Standalone FR3 keyboard TCP teleop |
-| [`apple_pick_sim/example_coupled_fruiting.py`](../apple_pick_sim/example_coupled_fruiting.py) | ``--robot fr3 --fr3-keyboard``: per-frame IK → ``apply_fr3_ee_teleop`` → ``mujoco_substep`` or ``coupled_substep`` |
-| [`apple_pick_sim/coupled_fruiting.py`](../apple_pick_sim/coupled_fruiting.py) | `build_coupled_fruiting_fr3`, `apply_fr3_ee_teleop`, root placement + bootstrap |
+| [`apple_pick_sim/robot/fr3_robot/`](../apple_pick_sim/robot/fr3_robot/) | `build_fr3_robot_model_from_usd`, `resolve_tcp_body_index`, IK bootstrap, teleop controllers |
+| [`apple_pick_sim/robot/fr3_robot/`](../apple_pick_sim/robot/fr3_robot/) | Canonical FR3 API (`from apple_pick_sim.robot import fr3_robot`) |
+| [`apple_pick_sim/examples/example_fr3_keyboard.py`](../apple_pick_sim/examples/example_fr3_keyboard.py) | Standalone FR3 keyboard TCP teleop |
+| [`apple_pick_sim/examples/example_coupled_fruiting.py`](../apple_pick_sim/examples/example_coupled_fruiting.py) | ``--robot fr3 --fr3-keyboard``: per-frame IK → ``apply_fr3_ee_teleop`` → ``mujoco_substep`` or ``coupled_substep`` |
+| [`apple_pick_sim/coupled_fruiting/`](../apple_pick_sim/coupled_fruiting/) | `build_coupled_fruiting_fr3` (`builders.py`), bootstrap, `CoupledFruitingScene` (`scene.py`) |
 
 **TCP vs EE:** coupling, `body_f`, and `proxy_registry` use the **`tcp`** link (`/fr3/ee/tcp`). **`ee`** is the parent link with EE collision geometry.
 
@@ -62,13 +63,13 @@ PYTHONPATH=$(pwd) uv run --directory newton pytest \
   ../apple_pick_sim/tests/test_coupled_fruiting_system.py::test_fr3_tcp_pose_matches_proxy_after_bootstrap \
   ../apple_pick_sim/tests/test_coupled_fruiting_system.py::test_fr3_coupled_substep_finite_state -q
 
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py --robot fr3 --viewer null --num-frames 30
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --robot fr3 --viewer null --num-frames 30
 
 # Interactive FR3 teleop (MuJoCo-only; see table above)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_coupled_fruiting.py \
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \
   --robot fr3 --only-mjc --fr3-keyboard --viewer gl
 
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/example_fr3_keyboard.py --viewer null --num-frames 60
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_fr3_keyboard.py --viewer null --num-frames 60
 ```
 
 Placeholder remains default on the coupled example; FR3 tests skip without `usd-core` or bundled assets.

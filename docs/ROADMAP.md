@@ -17,7 +17,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last updated** | 2026-05-25 (**[M1] active** — **Slice 2f** + layout cleanup: `fruiting_system/`, `coupled_fruiting/` (incl. `proxy_coupling.py`), `robot/fr3_robot/`, `examples/`. **Next:** **`refactor.md`** / **Slice 2g** GPU. **[P0] Done**.) |
+| **Last updated** | 2026-05-25 (**[M1] Done**; **[M2] active** — **Gymnasium** env first, then FIM / [ASID](https://openreview.net/forum?id=jNR6s6OSBT). **[P0] Done**.) |
 | **Owner** | Abhinav |
 | **Vision** | See `docs/VISION.md` |
 
@@ -39,46 +39,47 @@
 Owner intent drives phase order (vision outcomes stay valid; **order** is explicit here):
 
 1. **Done — Outcome 1 ([P0]):** **Variational geometry** and **joint-level force readouts** shipped; refactor (collision/readout API, ``measure_fruiting_forces``, solver damping, docs) landed. Optional P0 stretch (1.a floating EE, force-rises-with-load, richer cable scalars) **deferred**. See `docs/VISION.md` *Procedural fruiting variance*; archive under [P0].
-2. **Now — Outcome 2 (manipulation stack, [M1]):** **Two-`Model` coupling shipped and accepted** — FR3 + custom EE, TCP velocity teleop, ghost gripper proxy tracking, **lagged wrench transfer** (apply → MuJoCo → sync → VBD → harvest) looks good in interactive and debug runs (default **`fix_to_apple=False`**). **Next:** **code refactor** aligned with **`docs/VISION.md`** (package layout, naming) per **`refactor.md`**; **Slice 2g** GPU path (profilers, device-resident coupling); then EE–apple **contact**, arm-side readouts, benchmarks. See [M1].
-3. **Later — Outcome 3 (learning):** **RL infrastructure** for an **exploration policy** (and downstream training hooks). Scope, stack, and reward/exploration design are **TBD** in this file until you promote specifics from discussion into milestones and “Current focus”.
+2. **Done — Outcome 2 (manipulation stack, [M1]):** Two-`Model` **`SolverMuJoCo` + `SolverVBD`** coupling, FR3 + TCP teleop, proxy wrench exchange, structural layout (`fruiting_system/`, `coupled_fruiting/`, GPU hot path). Maintainer exit 2026-05-25; deferred stretch (EE–apple contact scenarios, formal arm readouts API) documented under [M1]. See [M1].
+3. **Now — Outcome 3 (learning, [M2]):** **[Gymnasium](https://gymnasium.farama.org/introduction/basic_usage/)** env over the [M1] coupled sim (**first deliverable**), then **Fisher-information** exploration per [ASID](https://openreview.net/forum?id=jNR6s6OSBT). **Dict** observations for multiple sensors; **parity tests** so canonical rollouts match **direct** `apple_pick_sim` stepping (existing M1 tests stay on the direct path). **Design constraint for M3:** log \(\theta\) and reserve **gradient / sensitivity hooks** on sim parameters even before tuning lands.
+4. **Next — Outcome 5 (sim tuning, [M3]):** **Simulation parameter identification / calibration** using trajectories from \(\pi_{\mathrm{exp}}\) (and later real logs in [M4]); update \(\theta\) with documented metrics and Newton-side sensitivities where available.
 
-Later vision phases (real data, calibration, final pick policy) remain in milestones below; they are **not** active until the maintainer moves focus past arm integration and RL foundations.
+Later vision phases (real-data collection [M4], final pick policy [M5]) follow once M2–M3 contracts exist.
 
 ---
 
 ## Current focus
 
-**Active milestone:** [M1] — **FR3 manipulation stack** (two-`Model` **`SolverMuJoCo` + `SolverVBD`** coupling).
+**Active milestone:** [M2] — **RL infrastructure & Fisher-information exploration** (Gymnasium + ASID).
 
-**In one sentence, the goal right now:** **Full steam ahead on refactor** — coupling behavior is **good enough to freeze**; reshape `apple_pick_sim/` for the long-term vision using **`refactor.md`** (maintainer expands the task list). **Do not** start open-ended structural work until **`refactor.md`** and the **Next up** list here reflect the maintainer’s latest priorities.
+**In one sentence, the goal right now:** Ship a **[Gymnasium](https://gymnasium.farama.org/introduction/basic_usage/)** `Env` with **`Dict` observations** (placeholder/dummy for now) and **keyboard-command actions** that drive the FR3 via the direct-joint controller — with **parity validation** against direct `CoupledFruitingScene` stepping — then add **Fisher-information** exploration ([ASID](https://openreview.net/forum?id=jNR6s6OSBT)) on top of that contract.
 
-**Maintainer workflow:** Abhinav updates **`refactor.md`** (what to change) and this file’s **Next up** / slices (order and done-ness); agents then implement in small PRs with TDD.
+**Build on (do not reimplement):** [M1] stack — `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_fr3`, `Fr3EEVelocityController` / `EEVelocity`, `measure_fruiting_forces`, `sample_params` / `params_fingerprint`. Architecture: **`docs/mujoco-vbd-coupling-architecture.md`**. **RL API:** [Gymnasium basic usage](https://gymnasium.farama.org/introduction/basic_usage/) (`reset` → `step` until `terminated` \| `truncated`). **Later (ASID):** [WEIRDLabUW/asid](https://github.com/WEIRDLabUW/asid) for FIM objective patterns.
 
-**Build on (do not reimplement):** `apple_pick_sim/fruiting_system/` — `generate_scene`, **`generate_coupled_cable_scene`**, `run_rollout`, `measure_fruiting_forces` (import via `apple_pick_sim.fruiting_system`); `apple_pick_sim/vbd_fixed_joint_wrenches.py`; **`apple_pick_sim/coupled_fruiting/`** (`proxy_coupling.py`: `launch_mirror_robot_to_proxy`, `harvest_proxy_wrenches`, …) + **`apple_pick_sim/robot/fr3_robot/`** for the MuJoCo+VBD loop and FR3 import (`build_coupled_fruiting_fr3`, `assets/testfr3_resolved.usda`). Viewer/scripts: **`apple_pick_sim/examples/`**. Refactor map: **`docs/slice-2f-structural-refactor.md`**, **`refactor.md`**. Architecture: **`docs/mujoco-vbd-coupling-architecture.md`**, **`docs/fr3-usd-import-implementation.md`**. Newton patterns: `newton/newton/examples/ik/example_ik_franka.py`, `newton/newton/examples/cloth/example_cloth_franka.py` (adjacent, not the M1 recipe), and the **two-`Model` staggered coupling skeleton** at the bottom of [M1].
+**Next up (ordered — [M2]):**
 
-**Next up (ordered — mirrors [M1] Next actions):**
+    1. [ ] **M2.1 — Gymnasium environment (first):** Separate package (e.g. `apple_pick_gym/`) implementing `gymnasium.Env` using **public `apple_pick_sim` APIs only** — no coupling physics in the Gym package. Headless default (`render_mode=None`). Optional thin `apple_pick_sim` runtime facade (build / step / observe); **no `gymnasium` import** inside `apple_pick_sim/`.
+    2. [ ] **M2.1a — Minimal observation contract (placeholder):** assume “no observations yet” by using a `Dict` observation space with a dummy field (e.g. `{"dummy": Box(shape=(1,), dtype=float32)}`), returning zeros for now. The observation schema must still be versioned so adding sensors later (TCP pose, joints, fruiting wrenches, …) is an additive change.
+    3. [ ] **M2.1b — Keyboard-command action contract (direct drive):** actions are **keyboard-style commands** (no viewer, no polling). Start with a simple single-command-per-step interface:
+       - `action_space = Discrete(13)` mapping to FR3 TCP velocity axes: `{+X,-X,+Y,-Y,+Z,-Z,+rotX,-rotX,+rotY,-rotY,+rotZ,-rotZ,noop}`.
+       - Map each action to an `EEVelocity` using the existing FR3 keyboard speed constants, then use `Fr3EEDirectJointController` + `CoupledFruitingScene.apply_fr3_ee_teleop_direct` (with `robot_kinematic_mode=True`) to apply it.
+       - Later in M2.0/M2.1d (after parity): extend to MultiDiscrete/MultiBinary for simultaneous keys if needed.
+    4. [ ] **M2.1c — Parity validation:** For canonical scenarios (fixed `seed`, ranges fixture, action schedule, substep count), assert **direct** sim stepping matches **Gym** `reset`/`step` on agreed metrics (poses, joint q, wrench norms, `params_fingerprint`). **All existing `apple_pick_sim/tests/` remain direct-path regressions and must stay green**; new tests prove the adapter does not drift (not “re-run every M1 test through `gym.make`”).
+    5. [ ] **M2.1d — Gym contract smoke:** `gymnasium.utils.env_checker.check_env` (short horizon, CPU); skip FR3 when assets missing (same spirit as `requires_fr3`).
+6. [ ] **M2.0 — Interface ADR:** Lock the action/step timing contract (control frame vs. `SUBSTEPS_PER_FRAME` substeps, action mapping to `EEVelocity` and `apply_fr3_ee_teleop_direct`), then document the \(\theta\) vector and the sensor list expansion plan — feeds M2.2 FIM.
+7. [ ] **M2.2 — FIM / exploration objective:** ASID-style Fisher information (or \(\mathrm{tr}(\mathrm{I}^{-1})\) proxy) from sim rollouts; \(\theta\) randomized per episode.
+8. [ ] **M2.3 — Train \(\pi_{\mathrm{exp}}\):** Minimal RL loop on registered env id; training smoke (fixed seed, few steps).
 
-1. [x] **Slice 1 — Proxy primitives:** `sync_proxy_state` + `harvest_proxy_wrenches` (velocity-delta option 3) in `apple_pick_sim/coupled_fruiting/proxy_coupling.py`; unit tests in `apple_pick_sim/tests/test_proxy_coupling.py`.
-2. [x] **Slice 2a–b (placeholder + stem harvest):** `generate_coupled_cable_scene`, **`build_coupled_fruiting_placeholder`**, unified-sync + stem-harvest path; tests `test_coupled_cable_scene.py`, `test_coupled_fruiting_system.py`, `test_coupling_stability.py`, `test_proxy_coupling.py`.
-3. [x] **Slice 2 — FR3 robot loaded:** `assets/testfr3_resolved.usda`, bundled `assets/fr3/`, `robot/fr3_robot/`, `build_coupled_fruiting_fr3`, IK bootstrap + root placement, `test_fr3_usd_import.py`, FR3 coupled tests, `--robot fr3` on `examples/example_coupled_fruiting.py`; see `docs/fr3-usd-import-implementation.md`.
-4. [x] **Slice 2c — Keyboard / TCP velocity control:** `Fr3EEVelocityController`, `apply_fr3_ee_teleop`, `--fr3-keyboard`. **Accepted:** `--only-mjc` and **full coupled** teleop with ghost proxy tracking (default **`fix_to_apple=False`**). CLI: `--fix-to-apple` / `--no-fix-to-apple`, `--fr3-direct-joints` (debug). `example_fr3_keyboard.py` = kinematic-FK smoke.
-5. [x] **Slice 2d — Coupled forces / transfer:** Staggered **apply → sync → harvest** and **`--debug-coupling-forces`** look good under teleop (`coupling_force_debug.py`, `verify_coupling.py`, stability tests). **Deferred post-refactor:** formal arm-side readouts API, EE–apple **contact** scenarios, `disable_contacts=False` tuning.
-6. [x] **Slice 2f — Structural refactor:** 2f-A `fruiting_system/`, 2f-B `coupled_fruiting/`, 2f-C `proxy_coupling` under `coupled_fruiting/`, 2f-D `robot/fr3_robot/`, layout cleanup (`examples/`, shims removed) — see **`docs/slice-2f-structural-refactor.md`**. **Remaining:** maintainer list in **`refactor.md`** (2f-E notes). **GPU kernel work** belongs in **Slice 2g**.
-7. [x] **Slice 2g — GPU optimization:** `docs/gpu-coupling-optimization.md`; pooled `qd_synced`; device stem harvest; `mujoco_use_cpu` opt-in; `--cuda-graph` on examples; extended **`diagnostics/benchmark_coupling.py`**.
-8. [x] **Slice 2e — Hardening:** hot-path GPU kernels (cached proxy IDs, device `body_q_prev` align, device `body_f` wrench), `benchmark_coupling.py`, `slow` tests, FR3 long-horizon test, `docs/slice-2e-hardening.md`. Further GPU work remains in **Slice 2g**.
-9. [ ] **Slice 3 — Commands + docs:** README and Agent execution notes once refactor entrypoints stabilize; verify per `.cursor/rules/readme-runtime-verification.mdc`.
+**Explicitly not in M2:** Full sim-parameter optimizer ([M3]); real-robot deployment ([M4]); final pick policy ([M5]). **Do not** require Gym to execute existing M1 unit tests — require **behavioral parity** on canonical rollouts instead.
 
-**Explicitly not in this milestone:** Full IK / trajectory control beyond teleop, soft multi-finger grasping, full `SensorContact` plumbing, rollout log schema (M2), calibration (M4), RL harness (M2). See [M1] *Explicitly not* for the full list.
+**Blockers (if any):** None for M2.1 skeleton; **M2.0** ADR can land in parallel with M2.1a once dict keys are fixed.
 
-**Blockers (if any):** **Refactor task list** — wait for maintainer updates to **`refactor.md`** and **Next up** above before starting non-trivial structural changes. **Placeholder-only** coupled instability remains a comparison baseline — use **`--robot fr3`**.
-
-**Last completed slice:** [M1] Slice **2f** (partial) — **`fruiting_system/`**, **`coupled_fruiting/`**, proxy renames (`2026-05-25`). Prior: Slice **2d** coupling accepted (`2026-05-22`); Slice **2c** teleop (`2026-05-19`).
+**Last completed milestone:** [M1] — maintainer exit **2026-05-25** (coupling, FR3 teleop, refactor layout, GPU hot path, hardening docs).
 
 ---
 
 ## Milestones
 
-Phases below follow **Sequencing** at the top: **[P0] Done** → **[M1] active** (FR3 + custom EE + coupled contact) → RL (details TBD) → later vision phases.
+Phases below follow **Sequencing** at the top: **[P0] Done** → **[M1] Done** → **[M2] active** (Gymnasium env + FIM / ASID) → **[M3]** (sim tuning) → **[M4]** (real data) → **[M5]** (final policy).
 
 ### [P0] — Variational fruiting system generation & force telemetry
 
@@ -140,7 +141,7 @@ Phases below follow **Sequencing** at the top: **[P0] Done** → **[M1] active**
 
 ### [M1] — FR3 manipulation stack (two-`Model` coupling)
 
-- **Status:** In progress (active since 2026-05-15; **[P0] Done** — reuse `fruiting_system` / wrench readouts; do not duplicate P0 DoD here)
+- **Status:** Done (exited 2026-05-25; maintainer sign-off; **[P0] Done** — reuse `fruiting_system` / wrench readouts; do not duplicate P0 DoD here)
 - **Links:** Reference patterns: `newton/newton/examples/cloth/example_cloth_franka.py` (Featherstone+VBD coupling on one `Model` — *adjacent* but **not** the M1 recipe, see below), `newton/newton/examples/ik/example_ik_franka.py` (FR3 URDF import + TCP body), `newton/newton/tests/test_body_force.py` (external wrench API), and the **"two-`Model` staggered coupling skeleton"** at the bottom of this section (authoritative pattern for M1).
 - **Vision:** Outcome 2 (*Manipulation stack*). MuJoCo enters as **`SolverMuJoCo` inside Newton** — there is **no separate MuJoCo runtime** in this milestone.
 
@@ -196,10 +197,10 @@ See **`docs/mujoco-vbd-coupling-architecture.md`** for per-model ownership and t
 - [x] Slice 2 — FR3 load (`testfr3_resolved.usda`, `build_coupled_fruiting_fr3`); `docs/fr3-usd-import-implementation.md`.
 - [x] Slice 2c — TCP velocity teleop + ghost proxy tracking (`--fr3-keyboard`, `--only-mjc` and full coupled).
 - [x] Slice 2d — **Force transfer accepted** (lagged harvest, apply to `body_f`, sync, debug plots).
-- [ ] **Slice 2f — Structural refactor** — **`refactor.md`** (maintainer-owned backlog).
-- [ ] **Slice 2g — GPU optimization** — profilers, device-resident coupling path, measured wins (see checklist below).
+- [x] **Slice 2f — Structural refactor** — `fruiting_system/`, `coupled_fruiting/`, `robot/fr3_robot/`; see **`docs/slice-2f-structural-refactor.md`**. Residual items in **`refactor.md`** are non-blocking.
+- [x] **Slice 2g — GPU optimization** — `docs/gpu-coupling-optimization.md`, device hot path, `benchmark_coupling.py`.
 - [x] Slice 2e — Hardening: `docs/slice-2e-hardening.md`, device hot-path kernels, `benchmark_coupling.py`, FR3 long-horizon + `slow` pytest marker.
-- [ ] Slice 3 — README / Agent execution notes when refactor stabilizes entrypoints.
+- [ ] Slice 3 — README / Agent execution notes polish (optional; not a gate for M2).
 
 **Known limitations (placeholder TCP and coupled FR3):**
 
@@ -212,7 +213,7 @@ See **`docs/mujoco-vbd-coupling-architecture.md`** for per-model ownership and t
 - **`--no-self-collision` / `--mujoco-viewer`** are not the primary instability drivers; they only change cable collisions or add a second viewer window.
 - **Smoke paths:** `--only-vbd` (cable only); `--robot fr3 --fr3-keyboard` (full coupled teleop); `--robot fr3 --only-mjc --fr3-keyboard` (robot + proxy sync only); `--debug-coupling-forces` for wrench plots.
 
-**Active work (Slice 2f):** structural refactor per **`refactor.md`** (maintainer updates task list). **Slice 2g** (GPU) follows 2f; **Slice 2e** hardening/benchmark baselines follow or run in parallel per maintainer ordering.
+**Exit note (2026-05-25):** Coupled FR3 + proxy coupling accepted for learning stack; EE–apple **contact** scenarios and formal **arm readouts API** deferred (not required for [M2] env wrapper).
 
 **Slice 2f — definition of done (checklist):**
 
@@ -269,7 +270,7 @@ SolverMuJoCo(
 
 **End-effector wrench input:** per substep, write the desired EE wrench (6-vec `[fx, fy, fz, tx, ty, tz]`, world frame at body CoM) into `robot_state_0.body_f[ee_body_index]` *before* step 1 of the coupling protocol; the MuJoCo solver consumes it, and the cable side sees only the resulting motion + reaction force via the proxy. Wrenches must be re-applied each substep because solvers clear forces (`test_body_force.py`).
 
-**Force readout:** **[P0]** supplies **fixed-joint** wrenches via **`SolverVBD.gather_joint_wrench_child_com`** (`vbd_fixed_joint_wrenches.py`) and cable-joint **penalty** proxies where that convention holds. **M1 adds** **robot-side** readouts: document how to recover **joint torques**, **link wrenches**, or **`body_f`**-consistent totals on **`robot_model`** after each coupled substep so **forces on the arm** from apple interaction are **measured** alongside VBD-side reactions. Document penalty vs. gather semantics for [M4] calibration.
+**Force readout:** **[P0]** supplies **fixed-joint** wrenches via **`SolverVBD.gather_joint_wrench_child_com`** (`vbd_fixed_joint_wrenches.py`) and cable-joint **penalty** proxies where that convention holds. **M1 adds** **robot-side** readouts: document how to recover **joint torques**, **link wrenches**, or **`body_f`**-consistent totals on **`robot_model`** after each coupled substep so **forces on the arm** from apple interaction are **measured** alongside VBD-side reactions. Document penalty vs. gather semantics for [M3] calibration.
 
 **Attachment / interaction matrix:**
 
@@ -306,10 +307,12 @@ SolverMuJoCo(
 2. [x] **Slice 2 — FR3 robot loaded:** `testfr3_resolved.usda`, `build_coupled_fruiting_fr3`, placement + bootstrap tests; `--robot fr3` on coupled example.
 3. [x] **Slice 2c — TCP velocity teleop:** `--only-mjc` and full coupled accepted.
 4. [x] **Slice 2d — Coupled forces / transfer:** accepted (`2026-05-22`).
-5. [ ] **Slice 2f — Structural refactor:** **`refactor.md`** (maintainer-owned).
-6. [ ] **Slice 2g — GPU optimization:** profilers + device-resident coupling; measured wins (see checklist above).
-7. [ ] **Slice 2e — Hardening / benchmarks:** per **Current focus** after 2f / 2g.
-8. [ ] **Slice 3 — Commands + docs:** post-refactor README + Agent execution notes.
+5. [x] **Slice 2f — Structural refactor** (2026-05-25).
+6. [x] **Slice 2g — GPU optimization** (2026-05-25).
+7. [x] **Slice 2e — Hardening / benchmarks** (2026-05-25).
+8. [ ] **Slice 3 — Commands + docs** (optional polish).
+
+**Next actions:** *(none — milestone complete; work continues under [M2])*
 
 **Two-`Model` staggered coupling skeleton (authoritative reference):**
 
@@ -454,26 +457,57 @@ vbd_state_0, vbd_state_1 = vbd_state_1, vbd_state_0
 
 ---
 
-### [M2] — RL infrastructure & exploration policy *(planning deferred)*
+### [M2] — RL infrastructure & Fisher-information exploration (Gymnasium + ASID)
 
-- **Status:** Planned — **detailed scope TBD** (owner will expand milestones and “Current focus” when ready).
-- **Links:** N/A
-- **Vision:** Outcome 3 (*Learning infrastructure*); exploration/reward design may target informative trajectories (e.g. Fisher information, per vision glossary).
+- **Status:** In progress (active since 2026-05-25)
+- **Links:** [Gymnasium — basic usage](https://gymnasium.farama.org/introduction/basic_usage/) · [ASID (ICLR 2024 oral)](https://openreview.net/forum?id=jNR6s6OSBT) · [arXiv:2404.12308](https://arxiv.org/abs/2404.12308) · [project page](https://weirdlabuw.github.io/asid/) · [reference code (FIM objective)](https://github.com/WEIRDLabUW/asid)
+- **Vision:** Outcome 3 (*Learning infrastructure*); Fisher information as in `docs/VISION.md` glossary.
 
-**Objective:** Training/eval harness tied to the simulator; support learning an **exploration policy** (and later task policies) with stable observation/action contracts. Exact RL stack, env wrapper, and exploration objectives remain to be specified.
+**Objective:** Phase **1** — **[Gymnasium](https://gymnasium.farama.org/introduction/basic_usage/)** environment over the **[M1]** coupled simulator: `reset(seed, options)` → `step(action)` with a **`Dict` observation space** (placeholder/dummy for now; no sensors yet), separate from physics code. Phase **2** — **exploration policy** \(\pi_{\mathrm{exp}}\) and **Fisher information** infrastructure per ASID step (1). **Validation:** canonical rollouts via **direct** `apple_pick_sim` APIs must **match** the same schedule via **`Env.step`** (parity tests); **existing `apple_pick_sim/tests/`** continue to exercise the sim **directly** and must remain green. **Write M2 so [M3] can consume gradients:** `info` logs \(\theta\) / `params_fingerprint`; reserve sensitivity hooks — no full Newton autodiff required in M2.1.
 
-**Definition of done (checklist):** *(to be filled when planning lands)*
+**Architecture (M2.1):**
 
-- [ ] Train/eval entrypoints documented.
-- [ ] Sim rollouts use a **versioned** observation/action contract (extend rather than rewrite ad hoc when M1 exists).
+| Layer | Location | Role |
+|-------|----------|------|
+| Physics / coupling | `apple_pick_sim/` (unchanged) | `CoupledFruitingScene`, builders, controllers, `measure_fruiting_forces` |
+| Optional runtime facade | `apple_pick_sim/` (small, no Gym import) | `reset` / `step` / `get_obs` / `apply_action` — numpy boundary |
+| Gymnasium `Env` | `apple_pick_gym/` (planned) | `Dict` obs (placeholder allowed), `Discrete(13)` key-command actions in M2.1 (extend later); `register` id e.g. `ApplePickCoupled-v0`; `gymnasium` optional extra on Newton env |
+
+**Default control contract (unless M2.0 ADR changes it):**
+- In **M2.1**: action is a **single keyboard-style command** (`Discrete(13)` mapping to \(\pm X,\pm Y,\pm Z,\pm \mathrm{rotX},\pm \mathrm{rotY},\pm \mathrm{rotZ},noop\)) → `EEVelocity`, applied via `Fr3EEDirectJointController` + `CoupledFruitingScene.apply_fr3_ee_teleop_direct` with `robot_kinematic_mode=True`.
+- One Gym **step** = one control frame = `SUBSTEPS_PER_FRAME` × `coupled_substep(SUB_DT)` (same timing as `apple_pick_sim/tests/conftest.py`).
+- After parity + ADR, may extend to MultiDiscrete (simultaneous keys) and/or switch to continuous `Box(6)` twist actions for learned controllers.
+
+**ASID mapping (apple-pick context):**
+
+| ASID stage | This repo (target milestone) |
+|------------|------------------------------|
+| (0) Sim RL API (Gymnasium + parity) | **[M2]** M2.1 |
+| (1) Train \(\pi_{\mathrm{exp}}\) maximizing Fisher info in sim | **[M2]** M2.2–M2.3 |
+| (2) Deploy \(\pi_{\mathrm{exp}}\) in real, collect trajectories | **[M4]** (after M2 sim contract) |
+| (3) System ID — refine sim parameters \(\theta\) | **[M3]** |
+| (4–5) Task policy in updated sim → real | **[M5]** (+ vision Outcome 6) |
+
+**Definition of done (checklist):**
+
+- [ ] **Gymnasium env (M2.1):** `gymnasium.Env` with `Dict` observation space (dummy/placeholder allowed initially); documented action space (at least `Discrete(13)` for key commands in M2.1); `reset` / `step` / `close`; headless CI path; physics only via `apple_pick_sim` public API.
+- [ ] **Parity tests (M2.1b):** direct `coupled_substep` path vs Gym `step` agree on fixed scenarios; **all existing `apple_pick_sim/tests/` green** on direct path.
+- [ ] **`check_env` (M2.1c):** passes on agreed env id (short horizon).
+- [ ] **M2.0 documented:** sensor keys, action scaling, substep count, \(\theta\) vector, FIM plan (M2.2).
+- [ ] **FIM infrastructure (M2.2):** compute or approximate \(\mathrm{I}(\theta, \pi_{\mathrm{exp}})\) (or ASID \(\mathrm{tr}(\mathrm{I}^{-1})\) proxy) from rollouts.
+- [ ] **\(\pi_{\mathrm{exp}}\) training (M2.3):** documented `uv run` entrypoints; smoke test on registered env.
+- [ ] **M3 hooks (design):** rollouts + `info` expose \(\theta\); documented sensitivity path for [M3].
 
 **Constraints / notes for implementers:**
 
-- Prefer headless/deterministic configurations where practical.
+- **[Gymnasium](https://gymnasium.farama.org/introduction/basic_usage/)** is the RL env API: use `terminated` and `truncated` separately; optional `TimeLimit` wrapper for max episode length; `render_mode=None` for pytest.
+- **Do not** move coupling logic into the Gym package; **do not** replace M1 tests with Gym-only runs — add **parity** tests instead.
+- TDD: parity + `check_env` before FIM; FIM toy-\(\theta\) tests before full coupled training.
+- Prefer **headless/deterministic** rollouts (`poll_events=False` on controllers); no viewer in CI.
+- RL **library** choice is **M2.3** — env must stay framework-agnostic; \(\theta\) layout must not depend on a specific trainer tensor format.
+- Optional `apple_pick_sim` runtime module is allowed; **`import gymnasium` only in `apple_pick_gym/`**.
 
-**Next actions (ordered, small slices):**
-
-- [ ] Defer choosing RL stack and env wrapper until this milestone is promoted with concrete exit criteria.
+**Next actions (ordered, small slices):** see **Current focus** (M2.1 → M2.1d, then M2.0 in parallel, then M2.2 → M2.3).
 
 **Completed (archive as you go):**
 
@@ -481,17 +515,47 @@ vbd_state_0, vbd_state_1 = vbd_state_1, vbd_state_0
 
 ---
 
-### [M3] — Real-world data collection & format alignment
+### [M3] — Simulation parameter tuning (system identification)
 
-- **Status:** Planned
-- **Links:** N/A
-- **Vision:** Outcome 4.
+- **Status:** Planned (after [M2] env + FIM infra; **design for gradients in M2**)
+- **Links:** ASID stage (3); vision Outcome 5 (*Calibration loop*)
+- **Vision:** Outcome 5 — update sim parameters so sim–real (or sim–target) error drops on held-out data.
 
-**Objective:** Collect trajectories under the same policy and sensing assumptions as simulation; formalize formats and ingestion.
+**Objective:** **Tune simulation parameters** \(\theta\) using trajectories from \(\pi_{\mathrm{exp}}\) (sim-first; then real logs from [M4]). Fit \(\theta\) so the coupled fruiting + FR3 sim matches observed poses, wrenches, contact events, or other agreed metrics. **Use gradient information where Newton/Warp allow**; otherwise document finite-difference or black-box search with the same \(\theta\) vector defined in [M2]. This is the engineering home for “simulation tuning” — not the exploration-policy trainer in [M2].
 
 **Definition of done (checklist):**
 
-- [ ] Collection protocol documented; real logs validate against shared schema/versioning.
+- [ ] \(\theta\) update loop documented (optimizer, metrics, held-out eval).
+- [ ] Quantitative **before/after** on held-out trajectories (sim replay or [M4] real segment).
+- [ ] Sensitivity path documented: autodiff, adjoint, or FD — tied to [M2] hooks.
+
+**Constraints / notes for implementers:**
+
+- **Prefer gradients** from Newton-based sim when milestones allow; M2 must not paint M3 into a corner (log \(\theta\), avoid hard-coding non-identifiable combos).
+- Start with **sim-only** identification (known \(\theta^\*\), recover from noisy obs) before real data.
+
+**Next actions (ordered, small slices):**
+
+- [ ] Stub `identify_theta` API + test on 2–3 parameter toy once [M2] rollout schema exists.
+- [ ] Wire fruiting `sample_params` / builder fields into \(\theta\) with clear bounds.
+
+**Completed (archive as you go):**
+
+- [ ] *(none yet)*
+
+---
+
+### [M4] — Real-world data collection & format alignment
+
+- **Status:** Planned
+- **Links:** ASID stage (2); vision Outcome 4
+- **Vision:** Outcome 4.
+
+**Objective:** Collect trajectories under the same \(\pi_{\mathrm{exp}}\) (or matched sensing) as simulation; formalize formats and ingestion for [M3] tuning.
+
+**Definition of done (checklist):**
+
+- [ ] Collection protocol documented; real logs validate against [M2] schema/versioning.
 
 **Constraints / notes for implementers:**
 
@@ -499,33 +563,7 @@ vbd_state_0, vbd_state_1 = vbd_state_1, vbd_state_0
 
 **Next actions (ordered, small slices):**
 
-- [ ] Extend schema/fixtures once M2 rollout contracts exist.
-
-**Completed (archive as you go):**
-
-- [ ] *(none yet)*
-
----
-
-### [M4] — Calibration loop (sim ↔ real)
-
-- **Status:** Planned
-- **Links:** N/A
-- **Vision:** Outcome 5 + success criterion *parameter updates improve fit*.
-
-**Objective:** Use real observations with simulator sensitivity to update parameters; show error reduction on held-out segments.
-
-**Definition of done (checklist):**
-
-- [ ] Chosen metric(s) documented; quantitative before/after on held-out real segment (or agreed proxy dataset).
-
-**Constraints / notes for implementers:**
-
-- Prefer gradients or documented sensitivity hooks from Newton-based sim where milestones allow.
-
-**Next actions (ordered, small slices):**
-
-- [ ] Replace stubs with optimization or systematic search per chosen metric once M3 data path is stable.
+- [ ] Extend [M2] rollout schema for real-hardware fields once env contract is stable.
 
 **Completed (archive as you go):**
 
@@ -543,15 +581,15 @@ vbd_state_0, vbd_state_1 = vbd_state_1, vbd_state_0
 
 **Definition of done (checklist):**
 
-- [ ] Policy trained against M4-calibrated sim; eval criteria agreed with maintainer.
+- [ ] Policy trained against [M3]-calibrated sim; eval criteria agreed with maintainer.
 
 **Constraints / notes for implementers:**
 
-- Builds on M2 harness and prior milestone contracts; avoid one-off policy formats.
+- Builds on [M2] harness and [M3]-calibrated sim; avoid one-off policy formats.
 
 **Next actions (ordered, small slices):**
 
-- [ ] Defer until M2–M4 exit criteria support a clear task success definition.
+- [ ] Defer until [M2]–[M4] exit criteria support a clear task success definition.
 
 **Completed (archive as you go):**
 
@@ -566,7 +604,7 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 - *(Promoted to Slice **2f** — see **`refactor.md`**; maintainer expands/refines the list.)*
 - *(Promoted to Slice **2g** — GPU profilers, device-resident coupling, benchmark baselines; not active until **Current focus** promotes it after 2f.)*
 - **Former end-to-end “thin slice” stubs** (rollout log schema v0, real-data adapter stub, calibration comparison stub, scripted policy placeholder): useful when **M2–M4** are promoted; not required to finish **P0** fruiting tests.
-- Fisher-information–shaped rewards or exploration bonuses (vision glossary) — after base RL loop exists (**M2**).
+- *(Promoted to [M2] — Fisher-information / ASID exploration objective.)*
 - Additional manipulators or crops — only with explicit scope change (vision non-goals).
 - **Triangle mesh export or import** (OBJ/STL, render/FEM meshes) alongside or instead of capsule primitives — promote only if a milestone needs it; P0 stays **`ModelBuilder`** primitives per `example_apple_stem.py`.
 
@@ -577,6 +615,7 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 **Repository layout (this project):**
 
 - Simulation / project code: `apple_pick_sim/` (e.g. `fruiting_system/`, `coupled_fruiting/` incl. `proxy_coupling.py`, `examples/`, `vbd_fixed_joint_wrenches.py` — wraps `SolverVBD.gather_joint_wrench_child_com` from `newton/`)
+- RL / Gymnasium adapter (M2): `apple_pick_gym/` (planned) — `gymnasium.Env` only; depends on `apple_pick_sim`, not vice versa
 - Physics engine (submodule, vendored): `newton/` — avoid drive-by edits; see `.cursor/rules/apple-pick-sim.mdc`
 
 **How to validate changes:**
@@ -605,6 +644,8 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 - M1 Slice 2f (structural refactor gates): `docs/slice-2f-structural-refactor.md` — fruiting: `pytest ../apple_pick_sim/tests/test_fruiting_system.py ../apple_pick_sim/tests/test_coupled_cable_scene.py -q`; coupled: `pytest ../apple_pick_sim/tests/test_coupled_fruiting_system.py ../apple_pick_sim/tests/test_coupling_stability.py -q`; proxy: `pytest ../apple_pick_sim/tests/test_proxy_coupling.py -q` (all with `PYTHONPATH=$(pwd) uv run --directory newton … -p no:launch_testing`)
 - M1 refactor: read **`refactor.md`** and **Current focus** before structural edits; maintainer updates both when priorities change
 - M1 work: follow **Current focus** and [M1] *Next actions*; add `uv run` entry-points here as slices land
+- M2 Gymnasium (when `apple_pick_gym/` exists): install `gymnasium` in Newton env (optional extra TBD); parity + contract tests: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_gym/tests/ -q -p no:launch_testing` (from repo root)
+- M2 regression gate: **always** run M1 direct-path suite before merging M2 slices: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -q -p no:launch_testing`
 
 **Stop and ask the maintainer when:**
 
@@ -614,6 +655,6 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 
 **When unsupervised is expected:**
 
-- You may complete the **next unchecked slice** in “Current focus” using TDD and project rules — for **Slice 2f**, only tasks explicitly listed in the current **`refactor.md`**; for **Slice 2g**, profile before each optimization and keep **`apple_pick_sim/tests/`** green.
+- You may complete the **next unchecked slice** in “Current focus” using TDD and project rules — for **[M2]**, land **M2.1** (Gymnasium env + parity) before FIM / training unless the maintainer reorders; keep **`apple_pick_sim/tests/`** green on every PR; add **`apple_pick_gym/tests/`** parity + `check_env` with M2.1.
 - You may fix **small obvious blockers** uncovered by that slice (tests, imports, typos) if they are necessary for the slice to be correct.
 - You should **not** start a new milestone or backlog item without maintainer direction unless this file explicitly says otherwise.

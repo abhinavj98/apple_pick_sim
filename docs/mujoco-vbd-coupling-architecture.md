@@ -168,9 +168,9 @@ Substep N
 (5) harvest → proxy_forces  (for step N+1)
 ```
 
-### 4.2 Path A — Unified sync + stem harvest (`fix_to_apple=True`, opt-in)
+### 4.2 Path A — Stem harvest at TCP (default when an apple exists)
 
-Used when the proxy is **FIXED** to the apple and both are **prescribed** (`inv_mass = 0`).
+Used whenever the cable scene has an **apple** (`stem_apple_joint_index` set). With **`fix_to_apple=True`**, the proxy is **FIXED** to the apple and both are **prescribed** (`inv_mass = 0`; **`body_mass` retained** for readouts and constraint semantics).
 
 ```mermaid
 sequenceDiagram
@@ -191,11 +191,14 @@ sequenceDiagram
 
 - **Sync:** Proxy and apple share TCP-corrected velocity; apple position reverses `proxy_offset_in_apple`.
 - **Harvest:** `harvest_stem_tension_for_tcp` reads the **stem–apple FIXED** constraint via `fixed_joint_wrenches_child_com_vbd` (not velocity delta on the proxy).
-- **Feedback tuning:** `stem_coupling_gain`, `stem_force_cap_N`, `stem_torque_cap_Nm` under-relax and clamp explicit lagged feedback.
+- **Explicit apple weight (default on):** When `stem_harvest_explicit_apple_weight=True`, adds **`-m_apple · gravity`** and **\((p_{\mathrm{apple}} - p_{\mathrm{tcp}}) \times F_{\mathrm{add}}\)** before gain/caps (`explicit_load.py`). Prescribed apples (`inv_mass == 0`) do not integrate gravity; this restores quasi-static weight and moment at the flange.
+- **Feedback tuning:** `stem_coupling_gain` defaults to **1.0** (full stem reaction at TCP). Optional `stem_force_cap_N`, `stem_torque_cap_Nm` clamp lagged feedback. Use `stem_coupling_gain < 1` only when under-relaxing unstable teleop.
 
-**Intent:** VBD only stretches the **stem**; grasp is a rigid kinematic chain from TCP → proxy → apple; tree load on the arm is the **stem tension** at the apple.
+**Intent:** Tree load on the arm is **stem gather + optional explicit apple support**; disable explicit load with `CoupledFruitingScene.stem_harvest_explicit_apple_weight = False` to compare raw joint reactions only.
 
-### 4.3 Path B — Free proxy + velocity-delta harvest (`fix_to_apple=False`)
+### 4.3 Path B — Free proxy sync + velocity-delta harvest (no apple only)
+
+**Fallback** when there is **no apple** (`stem_apple_joint_index is None`). Fruiting scenes with an apple use Path A (§4.2) even when `fix_to_apple=False` (proxy-only sync, dynamic apple on stem).
 
 ```mermaid
 sequenceDiagram

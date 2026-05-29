@@ -109,7 +109,7 @@ def generate_coupled_cable_scene(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.0, 0.0, 0.5),
+    base_pos: tuple[float, float, float] = (0.5, 0.5, 0.5),
     device: str | None = None,
     omit: Collection[str] | None = None,
     enable_self_collisions: bool = True,

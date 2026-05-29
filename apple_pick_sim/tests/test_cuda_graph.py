@@ -73,6 +73,47 @@ def test_coupled_fruiting_cuda_graph_smoke():
 
 
 @pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA not available")
+def test_coupled_cuda_graph_welded_explicit_stem_harvest_finite():
+    """Captured loop with ``fix_to_apple`` + default explicit load stays finite at TCP."""
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    from conftest import DEFAULT_MJ_KW, RANGES_FIXTURE, build_coupled_fr3, fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(
+        cf,
+        ranges,
+        21,
+        device="cuda:0",
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True),
+        mujoco_solver_kwargs=DEFAULT_MJ_KW,
+        mujoco_use_cpu=False,
+    )
+    assert scene.stem_apple_joint_index is not None
+    assert scene.apple_mass_kg > 0.0
+    assert scene.stem_harvest_explicit_apple_weight is True
+    dt = (1.0 / 60.0) / 30
+
+    def _frame():
+        for _ in range(3):
+            scene.coupled_substep(dt)
+
+    graph = capture_substep_loop(_frame, device="cuda:0", warmup=2)
+    assert graph is not None
+    for _ in range(4):
+        wp.capture_launch(graph)
+    wp.synchronize()
+    tcp = scene.tcp_body_index
+    w = scene.proxy_forces.numpy().reshape(-1, 6)[tcp]
+    assert bool(np.isfinite(w).all())
+    assert float(np.linalg.norm(w[:3])) < 5000.0
+
+
+@pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA not available")
 def test_example_coupled_fruiting_graph_flag():
     import newton.viewer
 

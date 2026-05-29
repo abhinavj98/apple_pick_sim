@@ -80,7 +80,7 @@ def generate_coupled_cable_scene(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.0, 0.0, 0.5),
+    base_pos: tuple[float, float, float] = (0.5, 0.5, 0.5),
     device: str | None = None,
     omit: Collection[str] | None = None,
     enable_self_collisions: bool = True,
@@ -199,6 +199,11 @@ def _build_coupled_cable_scene(
         enable_self_collisions=enable_self_collisions,
         gripper_proxy_joint=proxy_free_joint,
     )
+    if gripper_proxy.fix_to_apple:
+        from apple_pick_sim.fruiting_system.build import prescribe_body_vbd_on_model
+
+        assert artifacts.apple_body is not None
+        prescribe_body_vbd_on_model(model, artifacts.apple_body, proxy_body)
     artifacts.fruiting_fixed_joints.sort(key=lambda p: p[0])
     state_0, state_1, control, solver = _scene_states_from_model(model)
 

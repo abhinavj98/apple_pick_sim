@@ -1,4 +1,4 @@
-"""CoupledFruitingScene and staggered substep orchestration."""
+"""Mega plant (N VBD instances) + one FR3 MuJoCo arm (fd_ghost coupling)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import dataclasses
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -13,46 +14,72 @@ import newton
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.coupled_fruiting.apply_wrench import _apply_spatial_wrench_to_body_f
 from apple_pick_sim.coupling_force_debug import CouplingForceDebugRecorder
-from apple_pick_sim.fruiting_system import CoupledCableScene
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+    ProxyBodyRegistry,
     align_proxy_body_q_prev_for_vbd,
     harvest_proxy_wrenches,
     harvest_stem_tension_for_tcp,
-    launch_mirror_robot_to_proxy,
-    launch_mirror_robot_to_proxy_and_apple,
+    launch_mirror_robot_to_proxy_offset,
 )
+from apple_pick_sim.coupled_fruiting.scene import (
+    DEFAULT_STEM_COUPLING_GAIN,
+    DEFAULT_STEM_FORCE_CAP_N,
+    DEFAULT_STEM_TORQUE_CAP_NM,
+)
+from apple_pick_sim.fruiting_system.mega import MegaCoupledCableScene
 
-DEFAULT_STEM_COUPLING_GAIN: float = 1.0
-DEFAULT_STEM_FORCE_CAP_N: float = 80.0
-DEFAULT_STEM_TORQUE_CAP_NM: float = 20.0
 
-DEFAULT_MUJOCO_SOLVER_KWARGS: dict[str, Any] = {
-    "solver": "newton",
-    "integrator": "implicitfast",
-    "cone": "elliptic",
-    "iterations": 20,
-    "ls_iterations": 10,
-    "ls_parallel": True,
-    "impratio": 1000.0,
-    "use_mujoco_contacts": False,
-    "use_mujoco_cpu": True,
-    "disable_contacts": True,
-}
+def _co_teleport_apples_from_proxies(mega: MegaCoupledCableScene) -> None:
+    """After ghost proxy sync, align welded apples to grasp offset (``fix_to_apple``)."""
+    bq = mega.state_0.body_q.numpy().reshape(-1, 7).copy()
+    bqd = mega.state_0.body_qd.numpy().reshape(-1, 6).copy()
+    for inst in mega.instances:
+        if inst.apple_body is None or inst.gripper_proxy_offset_in_apple_frame is None:
+            continue
+        proxy = inst.gripper_proxy_body
+        apple = inst.apple_body
+        off = np.asarray(inst.gripper_proxy_offset_in_apple_frame, dtype=np.float32).reshape(3)
+        proxy_q = bq[proxy]
+        p = proxy_q[:3].astype(np.float64)
+        q = wp.quat(float(proxy_q[3]), float(proxy_q[4]), float(proxy_q[5]), float(proxy_q[6]))
+        apple_pos = p - np.asarray(wp.quat_rotate(q, wp.vec3(*off)), dtype=np.float64)
+        bq[apple, :3] = apple_pos.astype(np.float32)
+        bq[apple, 3:7] = proxy_q[3:7]
+        bqd[apple] = bqd[proxy]
+    mega.state_0.body_q.assign(bq.ravel())
+    mega.state_0.body_qd.assign(bqd.ravel())
 
-DEFAULT_FR3_MUJOCO_SOLVER_KWARGS: dict[str, Any] = {
-    **DEFAULT_MUJOCO_SOLVER_KWARGS,
-    "disable_contacts": False,
-}
+
+def mega_ghost_position_offsets_wp(
+    mega: MegaCoupledCableScene,
+    *,
+    nominal_index: int = 0,
+    device: str | None = None,
+) -> wp.array:
+    """Per-instance world offset vs nominal base (for fd_ghost proxy mirroring)."""
+    nom = mega.instance(nominal_index).base_pos
+    dev = device if device is not None else str(mega.model.device)
+    offsets = [
+        wp.vec3(
+            inst.base_pos[0] - nom[0],
+            inst.base_pos[1] - nom[1],
+            inst.base_pos[2] - nom[2],
+        )
+        for inst in mega.instances
+    ]
+    return wp.array(offsets, dtype=wp.vec3, device=dev)
 
 
 @dataclasses.dataclass
-class CoupledFruitingScene:
-    """Cable ``SolverVBD`` scene plus optional MuJoCo robot model and coupling buffers."""
+class MegaCoupledFruitingScene:
+    """One FR3 + mega VBD plant: ghost-sync all proxies, harvest nominal column only."""
 
-    cable: CoupledCableScene
+    cable: MegaCoupledCableScene
     cable_collision_pipeline: Any
-    vbd_only: bool = False
-    mujoco_only: bool = False
+    ghost_registry: ProxyBodyRegistry
+    harvest_registry: ProxyBodyRegistry
+    position_offsets_wp: wp.array
+    nominal_index: int = 0
     robot_model: newton.Model | None = None
     tcp_body_index: int = -1
     mj_solver: newton.solvers.SolverMuJoCo | None = None
@@ -60,62 +87,21 @@ class CoupledFruitingScene:
     robot_state_1: Any | None = None
     robot_control: Any | None = None
     mj_contacts: Any | None = None
-    proxy_registry: Any | None = None
     proxy_forces: wp.array | None = None
     coupling_forces_cache: wp.array | None = None
     last_vbd_contacts: Any | None = None
     force_debug: CouplingForceDebugRecorder | None = None
+    gravity_vec: wp.vec3 = dataclasses.field(default_factory=lambda: wp.vec3(0.0, 0.0, -9.81))
+    use_mujoco_contacts: bool = False
+    robot_disable_contacts: bool = True
+    robot_kinematic_mode: bool = True
+    qd_synced: wp.array | None = None
     stem_apple_joint_index: int | None = None
     stem_coupling_gain: float = DEFAULT_STEM_COUPLING_GAIN
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM
     stem_harvest_explicit_apple_weight: bool = True
-    """Add ``-m_apple * gravity`` to stem harvest (prescribed apple, ``inv_mass == 0``)."""
     apple_mass_kg: float = 0.0
-    """Cached ``body_mass[apple]`` at build; avoids host sync during CUDA graph capture."""
-    gravity_vec: wp.vec3 = dataclasses.field(default_factory=lambda: wp.vec3(0.0, 0.0, -9.81))
-    use_mujoco_contacts: bool = False
-    robot_disable_contacts: bool = True
-    robot_kinematic_mode: bool = False
-    qd_synced: wp.array | None = None
-    """Pooled copy of cable ``body_qd`` before VBD (velocity-delta harvest)."""
-
-    def apply_fr3_ee_teleop(
-        self,
-        dt: float,
-        controller: fr3_robot.Fr3EEVelocityController,
-        *,
-        viewer: fr3_robot._KeyViewer | None = None,
-        velocity: fr3_robot.EEVelocity | None = None,
-    ) -> fr3_robot.EEVelocity:
-        if (
-            self.robot_model is None
-            or self.robot_state_0 is None
-            or self.robot_control is None
-            or self.mj_solver is None
-        ):
-            raise ValueError(
-                "apply_fr3_ee_teleop requires robot model, state, control, and MuJoCo solver"
-            )
-        velocity = controller.run_ik_teleop_frame(
-            dt,
-            self.robot_state_0,
-            velocity=velocity,
-            viewer=viewer,
-            poll_events=True,
-        )
-        controller.apply_ik_to_mujoco_control(
-            self.robot_state_0,
-            self.robot_control,
-            frame_dt=dt,
-            command_velocity=velocity,
-        )
-        self.robot_state_1.joint_q.assign(self.robot_state_0.joint_q)
-        self.robot_state_1.joint_qd.assign(self.robot_state_0.joint_qd)
-        self.mj_solver._update_mjc_data(
-            self.mj_solver.mj_data, self.robot_model, self.robot_state_0
-        )
-        return velocity
 
     def apply_fr3_ee_teleop_direct(
         self,
@@ -195,10 +181,8 @@ class CoupledFruitingScene:
             _apply_spatial_wrench_to_body_f(
                 self.robot_state_0, self.tcp_body_index, self.coupling_forces_cache
             )
-
             if not self.use_mujoco_contacts and not self.robot_disable_contacts:
                 self.robot_model.collide(self.robot_state_0, self.mj_contacts)
-
             self.mj_solver.step(
                 self.robot_state_0,
                 self.robot_state_1,
@@ -209,57 +193,36 @@ class CoupledFruitingScene:
             self.robot_state_0, self.robot_state_1 = self.robot_state_1, self.robot_state_0
 
         dev = self.robot_model.device
-        rid, pid = self.proxy_registry.ids_wp(dev)
-
+        rid, pid = self.ghost_registry.ids_wp(dev)
         cable = self.cable
-        use_apple_sync = (
-            cable.apple_body is not None
-            and cable.gripper_proxy_apple_joint is not None
-            and cable.gripper_proxy_offset_in_apple_frame is not None
+        launch_mirror_robot_to_proxy_offset(
+            robot_ids=rid,
+            proxy_ids=pid,
+            position_offsets=self.position_offsets_wp,
+            src_body_q=self.robot_state_0.body_q,
+            src_body_qd=self.robot_state_0.body_qd,
+            dst_body_q=cable.state_0.body_q,
+            dst_body_qd=cable.state_0.body_qd,
+            proxy_forces=self.coupling_forces_cache,
+            cable_model=cable.model,
+            gravity=self.gravity_vec,
+            dt=dt,
+            device=str(dev),
         )
-        if use_apple_sync:
-            launch_mirror_robot_to_proxy_and_apple(
-                robot_ids=rid,
-                proxy_ids=pid,
-                src_body_q=self.robot_state_0.body_q,
-                src_body_qd=self.robot_state_0.body_qd,
-                dst_body_q=cable.state_0.body_q,
-                dst_body_qd=cable.state_0.body_qd,
-                proxy_forces=self.coupling_forces_cache,
-                cable_model=cable.model,
-                gravity=self.gravity_vec,
-                dt=dt,
-                apple_body_id=cable.apple_body,
-                proxy_offset_in_apple=wp.vec3(*cable.gripper_proxy_offset_in_apple_frame),
-                device=str(dev),
-            )
-        else:
-            launch_mirror_robot_to_proxy(
-                robot_ids=rid,
-                proxy_ids=pid,
-                src_body_q=self.robot_state_0.body_q,
-                src_body_qd=self.robot_state_0.body_qd,
-                dst_body_q=cable.state_0.body_q,
-                dst_body_qd=cable.state_0.body_qd,
-                proxy_forces=self.coupling_forces_cache,
-                cable_model=cable.model,
-                gravity=self.gravity_vec,
-                dt=dt,
-                device=str(dev),
-            )
-        align_bodies = self.proxy_registry.proxy_body_ids
-        if cable.gripper_proxy_apple_joint is not None and cable.apple_body is not None:
-            align_bodies = (*align_bodies, cable.apple_body)
-        align_proxy_body_q_prev_for_vbd(cable, align_bodies)
+        align_bodies = list(cable.all_gripper_proxy_body_ids())
+        if cable.gripper_proxy_config.fix_to_apple:
+            _co_teleport_apples_from_proxies(cable)
+            for inst in cable.instances:
+                if inst.apple_body is not None:
+                    align_bodies.append(inst.apple_body)
+        align_proxy_body_q_prev_for_vbd(cable, tuple(align_bodies))
 
         if self.use_mujoco_contacts:
             self.mj_solver.update_contacts(self.mj_contacts, self.robot_state_0)
 
     def mujoco_substep(self, dt: float) -> None:
-        if self.vbd_only or self.robot_model is None:
-            raise ValueError(
-                "mujoco_substep requires a built robot model; pass vbd_only=False to the builder"
-            )
+        if self.robot_model is None:
+            raise ValueError("mujoco_substep requires a built robot model")
         self._mujoco_and_sync_proxy(dt)
 
     def coupled_substep(
@@ -268,25 +231,17 @@ class CoupledFruitingScene:
         *,
         after_cable_clear_forces: Callable[[], None] | None = None,
     ) -> None:
-        if self.vbd_only:
-            raise ValueError(
-                "coupled_substep requires vbd_only=False; use vbd_substep for cable-only stepping"
-            )
-        if self.mujoco_only:
-            raise ValueError(
-                "coupled_substep requires mujoco_only=False; use mujoco_substep for robot-only stepping"
-            )
-
         self.mujoco_substep(dt)
         use_stem_harvest = self.stem_apple_joint_index is not None
         if not use_stem_harvest:
             if self.qd_synced is None:
-                raise ValueError("qd_synced buffer missing; build coupled scene via builders")
+                raise ValueError("qd_synced buffer missing; build via build_mega_coupled_fruiting_fr3")
             wp.copy(self.qd_synced, self.cable.state_0.body_qd)
-
         vbd_contacts = self.vbd_substep(dt, after_cable_clear_forces=after_cable_clear_forces)
-
         if use_stem_harvest:
+            inst = self.cable.instance(self.nominal_index)
+            apple_bid = inst.apple_body if inst.apple_body is not None else -1
+            grasp_off = inst.gripper_proxy_offset_in_apple_frame
             harvest_stem_tension_for_tcp(
                 cable_model=self.cable.model,
                 cable_solver=self.cable.solver,
@@ -300,11 +255,11 @@ class CoupledFruitingScene:
                 force_cap_N=self.stem_force_cap_N,
                 torque_cap_Nm=self.stem_torque_cap_Nm,
                 explicit_apple_weight=self.stem_harvest_explicit_apple_weight,
-                apple_body_index=self.cable.apple_body,
+                apple_body_index=apple_bid,
                 apple_mass_kg=self.apple_mass_kg,
                 gravity=self.gravity_vec,
                 robot_body_q=self.robot_state_0.body_q,
-                grasp_offset_in_apple_frame=self.cable.gripper_proxy_offset_in_apple_frame,
+                grasp_offset_in_apple_frame=grasp_off,
             )
         else:
             harvest_proxy_wrenches(
@@ -312,7 +267,7 @@ class CoupledFruitingScene:
                 self.cable.state_0,
                 vbd_contacts,
                 dt,
-                registry=self.proxy_registry,
+                registry=self.harvest_registry,
                 model=self.cable.model,
                 qd_synced=self.qd_synced,
                 gravity=self.gravity_vec,

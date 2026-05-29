@@ -132,6 +132,42 @@ class TestSyncMujocoActuatorTargets(unittest.TestCase):
         )
         np.testing.assert_allclose(control.joint_target_vel._data, [3.6, 0.0, 0.0], rtol=1e-5)
 
+    def test_idle_command_snaps_target_pos_when_near_current_q(self):
+        import numpy as np
+
+        class _State:
+            joint_q = type("A", (), {})()
+
+        class _Control:
+            def __init__(self) -> None:
+                self.joint_target_pos = _Arr()
+                self.joint_target_vel = _Arr()
+
+        class _Arr:
+            def __init__(self) -> None:
+                self._data = np.zeros(3, dtype=np.float32)
+
+            def assign(self, x) -> None:
+                self._data = np.asarray(x, dtype=np.float32).reshape(-1)
+
+        class _Model:
+            joint_dof_count = 3
+
+        state = _State()
+        q_cur = np.array([0.01, 0.1, 0.0], dtype=np.float32)
+        state.joint_q.numpy = lambda: q_cur
+        control = _Control()
+        fr3_robot.sync_mujoco_actuator_targets_from_joint_q(
+            _Model(),
+            state,
+            control,
+            target_joint_q=np.array([0.02, 0.1, 0.0], dtype=np.float32),
+            frame_dt=1.0 / 60.0,
+            command_velocity=fr3_robot.EEVelocity(),
+        )
+        np.testing.assert_allclose(control.joint_target_pos._data, q_cur, atol=1e-6)
+        np.testing.assert_allclose(control.joint_target_vel._data, 0.0, atol=1e-6)
+
 
 class TestKeyboardVelocity(unittest.TestCase):
     def test_read_keyboard_world_linear(self):
@@ -149,6 +185,59 @@ class TestKeyboardVelocity(unittest.TestCase):
         v = fr3_robot.read_keyboard_ee_velocity(None, linear_speed=0.2, angular_speed=0.5)
         self.assertEqual(v.linear, (0.0, 0.0, 0.0))
         self.assertEqual(v.angular, (0.0, 0.0, 0.0))
+
+    def test_opposite_keys_cancel_on_each_axis(self):
+        """World-frame ± pairs must not saturate to double speed when both keys are held."""
+        for neg, pos, component in (
+            ("k", "i", 0),
+            ("l", "j", 1),
+            ("f", "r", 2),
+            ("x", "z", 0),
+            ("g", "t", 1),
+            ("o", "u", 2),
+        ):
+            with self.subTest(keys=(neg, pos)):
+                v = fr3_robot.read_keyboard_ee_velocity(
+                    _MockViewer({neg, pos}),
+                    linear_speed=0.2,
+                    angular_speed=1.0,
+                    poll_events=False,
+                )
+                self.assertAlmostEqual(v.linear[component], 0.0, places=9)
+                self.assertAlmostEqual(v.angular[component], 0.0, places=9)
+
+    def test_diagonal_keys_sum_world_components(self):
+        v = fr3_robot.read_keyboard_ee_velocity(
+            _MockViewer({"i", "j", "z"}),
+            linear_speed=0.2,
+            angular_speed=1.0,
+            poll_events=False,
+        )
+        self.assertEqual(v.linear, (0.2, 0.2, 0.0))
+        self.assertEqual(v.angular, (1.0, 0.0, 0.0))
+
+    def test_keyboard_bindings_match_read_velocity_axes(self):
+        """FR3_KEYBOARD_BINDINGS keys must stay aligned with read_keyboard_ee_velocity."""
+        speed = 0.25
+        cases = (
+            ("i", (+speed, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ("k", (-speed, 0.0, 0.0), (0.0, 0.0, 0.0)),
+            ("r", (0.0, 0.0, +speed), (0.0, 0.0, 0.0)),
+            ("z", (0.0, 0.0, 0.0), (+1.0, 0.0, 0.0)),
+            ("u", (0.0, 0.0, 0.0), (0.0, 0.0, +1.0)),
+        )
+        binding_keys = {k for k, _ in fr3_robot.FR3_KEYBOARD_BINDINGS}
+        for key, expected_lin, expected_ang in cases:
+            with self.subTest(key=key):
+                self.assertIn(key, binding_keys)
+                v = fr3_robot.read_keyboard_ee_velocity(
+                    _MockViewer({key}),
+                    linear_speed=speed,
+                    angular_speed=1.0,
+                    poll_events=False,
+                )
+                self.assertEqual(v.linear, expected_lin)
+                self.assertEqual(v.angular, expected_ang)
 
 
 def _usd_available() -> bool:
@@ -199,6 +288,34 @@ class TestFr3EEVelocityController(unittest.TestCase):
             sim_q.reshape(-1),
             rtol=0,
             atol=1e-6,
+        )
+
+    def test_run_ik_teleop_frame_idle_resyncs_tcp_target_to_state(self):
+        """Zero twist must re-anchor the integrated target to simulated FK (no drift on idle)."""
+        import numpy as np
+        import newton
+
+        model, tcp_idx, _ = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        ctrl = fr3_robot.Fr3EEVelocityController(model, tcp_idx)
+        ctrl.sync_target_from_state(state)
+
+        ctrl.target_tf = fr3_robot.integrate_tcp_target(
+            ctrl.target_tf,
+            linear_vel=wp.vec3(0.5, 0.0, 0.0),
+            angular_vel=wp.vec3(0.0, 0.0, 0.0),
+            dt=1.0,
+        )
+        ctrl.run_ik_teleop_frame(1.0 / 60.0, state, velocity=fr3_robot.EEVelocity())
+
+        bq = state.body_q.numpy().reshape(-1, 7)[tcp_idx]
+        target = wp.transform_get_translation(ctrl.target_tf)
+        np.testing.assert_allclose(
+            [float(target[0]), float(target[1]), float(target[2])],
+            bq[:3],
+            rtol=0,
+            atol=1e-4,
         )
 
     def test_solve_ik_accepts_state_and_seeds(self):

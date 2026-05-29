@@ -49,6 +49,37 @@ class _ScalarViewer:
         self.logged.append((name, float(value)))
 
 
+def test_record_from_scene_without_buffers_is_noop():
+    cfd = _import_debug()
+    rec = cfd.CouplingForceDebugRecorder()
+
+    class _Scene:
+        coupling_forces_cache = None
+        proxy_forces = None
+        tcp_body_index = 0
+
+    rec.record_applied_from_scene(_Scene())
+    rec.record_harvested_from_scene(_Scene())
+    np.testing.assert_allclose(rec.applied_wrench, 0.0)
+    np.testing.assert_allclose(rec.harvested_wrench, 0.0)
+
+
+def test_read_tcp_wrench_accepts_wp_array():
+    import warp as wp
+
+    cfd = _import_debug()
+    wrenches = wp.array(
+        np.zeros((2, 6), dtype=np.float32),
+        dtype=wp.spatial_vectorf,
+        device="cpu",
+    )
+    host = wrenches.numpy()
+    host[1] = [0.0, 3.0, 4.0, 0.0, 0.0, 0.0]
+    wrenches.assign(host)
+    w = cfd.read_tcp_wrench(wrenches, tcp_body_index=1)
+    np.testing.assert_allclose(w[:3], [0.0, 3.0, 4.0])
+
+
 def test_log_to_viewer_emits_both_force_series():
     cfd = _import_debug()
     rec = cfd.CouplingForceDebugRecorder()

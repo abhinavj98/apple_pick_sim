@@ -40,6 +40,7 @@ import secrets
 import sys
 from pathlib import Path
 
+import dataclasses
 import newton
 import newton.examples
 import warp as wp
@@ -51,6 +52,8 @@ from apple_pick_sim.coupled_fruiting import (
     CoupledFruitingScene,
     build_coupled_fruiting_fr3,
     build_coupled_fruiting_placeholder,
+    seed_fix_to_apple_from_settled,
+    settle_vbd_substeps,
 )
 from apple_pick_sim.fruiting_system import (
     GripperProxyConfig,
@@ -150,6 +153,38 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--tcp-force-arrow",
+        action="store_true",
+        help=(
+            "Draw harvested TCP force as a yellow world-frame arrow at the robot TCP "
+            "(requires --viewer gl or viser; use --tcp-force-scale to tune length)."
+        ),
+    )
+    parser.add_argument(
+        "--tcp-force-scale",
+        type=float,
+        default=0.02,
+        help="Arrow length per newton [m/N] for --tcp-force-arrow (default 0.02 → 50 N ≈ 1 m).",
+    )
+    parser.add_argument(
+        "--tcp-force-arrow-gain",
+        type=float,
+        default=1.0,
+        help="Dimensionless multiplier on --tcp-force-scale (default 1).",
+    )
+    parser.add_argument(
+        "--tcp-force-min-length",
+        type=float,
+        default=0.08,
+        help="Minimum arrow length [m] when force is above threshold (default 0.08).",
+    )
+    parser.add_argument(
+        "--tcp-force-max-length",
+        type=float,
+        default=1.5,
+        help="Maximum arrow length [m]; 0 disables cap (default 1.5).",
+    )
+    parser.add_argument(
         "--robot",
         type=str,
         choices=("placeholder", "fr3"),
@@ -243,17 +278,62 @@ class ExampleCoupledFruiting:
             if robot_kind == "fr3"
             else build_coupled_fruiting_placeholder
         )
-        self.scene: CoupledFruitingScene = build_fn(
-            self.ranges,
-            first_seed,
-            device=sim_device,
-            enable_self_collisions=enable_self,
-            gripper_proxy=_gripper_proxy_from_args(args, robot_kind=robot_kind),
-            vbd_only=(self._step_mode == "vbd"),
-            mujoco_only=(self._step_mode == "mjc"),
-        )
+        gripper = _gripper_proxy_from_args(args, robot_kind=robot_kind)
+        if fix_to_apple and self._step_mode != "vbd":
+            # Quiet start: settle with free apple dynamics, then rebuild welded and seed.
+            settled = build_fn(
+                self.ranges,
+                first_seed,
+                device=sim_device,
+                enable_self_collisions=enable_self,
+                gripper_proxy=dataclasses.replace(gripper, fix_to_apple=False),
+                vbd_only=False,
+                mujoco_only=False,
+            )
+            settle_vbd_substeps(settled, substeps=1800, dt=self.sim_dt)
+            self.scene = build_fn(
+                self.ranges,
+                first_seed,
+                device=sim_device,
+                enable_self_collisions=enable_self,
+                gripper_proxy=dataclasses.replace(gripper, fix_to_apple=True),
+                vbd_only=(self._step_mode == "vbd"),
+                mujoco_only=(self._step_mode == "mjc"),
+            )
+            seed_fix_to_apple_from_settled(
+                welded_scene=self.scene,
+                settled_scene=settled,
+                quiet_apple_proxy=True,
+            )
+        else:
+            self.scene: CoupledFruitingScene = build_fn(
+                self.ranges,
+                first_seed,
+                device=sim_device,
+                enable_self_collisions=enable_self,
+                gripper_proxy=gripper,
+                vbd_only=(self._step_mode == "vbd"),
+                mujoco_only=(self._step_mode == "mjc"),
+            )
 
         self._force_debug: CouplingForceDebugRecorder | None = None
+        self._tcp_force_arrow = bool(getattr(args, "tcp_force_arrow", False))
+        tcp_force_scale = float(getattr(args, "tcp_force_scale", 0.02))
+        tcp_force_gain = float(getattr(args, "tcp_force_arrow_gain", 1.0))
+        tcp_force_min_len = float(getattr(args, "tcp_force_min_length", 0.08))
+        tcp_force_max_len = float(getattr(args, "tcp_force_max_length", 1.5))
+        if tcp_force_scale <= 0.0:
+            raise ValueError("--tcp-force-scale must be positive")
+        if tcp_force_gain <= 0.0:
+            raise ValueError("--tcp-force-arrow-gain must be positive")
+        if tcp_force_min_len < 0.0:
+            raise ValueError("--tcp-force-min-length must be >= 0")
+        if tcp_force_max_len < 0.0:
+            raise ValueError("--tcp-force-max-length must be >= 0")
+        self._tcp_force_scale = tcp_force_scale
+        self._tcp_force_gain = tcp_force_gain
+        self._tcp_force_min_length = tcp_force_min_len
+        self._tcp_force_max_length = tcp_force_max_len
         if (
             self._step_mode == "coupled"
             and bool(getattr(args, "debug_coupling_forces", False))
@@ -265,6 +345,19 @@ class ExampleCoupledFruiting:
                     "Coupling force debug: open the Plots panel (ViewerGL) for "
                     "MuJoCo-applied vs VBD-harvested wrenches."
                 )
+        if self._tcp_force_arrow and self._step_mode != "coupled":
+            print("Note: --tcp-force-arrow needs full coupled stepping (omit --only-vbd / --only-mjc).")
+        elif self._tcp_force_arrow and graphical:
+            cap = (
+                f"{self._tcp_force_max_length:.2f} m max"
+                if self._tcp_force_max_length > 0.0
+                else "no max"
+            )
+            print(
+                "TCP force arrow: yellow at robot TCP; "
+                f"scale={self._tcp_force_scale:.4f} m/N × gain {self._tcp_force_gain:g}, "
+                f"min {self._tcp_force_min_length:.2f} m, {cap}."
+            )
 
         fp = geometry_fingerprint(self.scene.cable)
         apos = fp.get("apple_pos")
@@ -387,6 +480,17 @@ class ExampleCoupledFruiting:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.scene.cable.state_0)
         self.viewer.log_contacts(self._viz_contacts, self.scene.cable.state_0)
+        if self._tcp_force_arrow and self._step_mode == "coupled":
+            from apple_pick_sim.tcp_force_viz import log_coupled_scene_tcp_force
+
+            log_coupled_scene_tcp_force(
+                self.viewer,
+                self.scene,
+                scale_per_newton=self._tcp_force_scale,
+                gain=self._tcp_force_gain,
+                min_length=self._tcp_force_min_length,
+                max_length=self._tcp_force_max_length,
+            )
         self.viewer.end_frame()
         if self._mujoco_viewer and self.scene.robot_model is not None:
             fr3_robot.sync_mujoco_visual_state(

@@ -6,7 +6,8 @@ Read these **before** substantial implementation work. They apply to automated a
 
 1. **`docs/VISION.md`** — Intent, scope, non-goals, success criteria, ambiguity defaults.
 2. **`docs/ROADMAP.md`** — Current focus, milestones, ordered next slices, validation commands, when to stop and ask.
-3. **`.cursor/rules/`** — Persistent project rules (environment, TDD, tooling, Newton layout). Obey them unless the maintainer overrides them for a specific task.
+3. **Post-grasp VIC (when relevant):** **`docs/variable-impedance-teleop.md`** — dynamic arm, total TCP wrench, FD modes for \(\pi_{\mathrm{exp}}\).
+4. **`.cursor/rules/`** — Persistent project rules (environment, TDD, tooling, Newton layout). Obey them unless the maintainer overrides them for a specific task.
 
 If **vision**, **roadmap**, and **code** disagree, **stop** and report the conflict instead of silently choosing a direction.
 
@@ -21,6 +22,10 @@ If **vision**, **roadmap**, and **code** disagree, **stop** and report the confl
 ## Setup and runs
 
 See **`README.md`** for clone/submodule steps and example commands. Prefer **`uv`** for installs and execution, as described in `.cursor/rules/uv-package-manager.mdc`.
+
+## Parallel feature work (worktrees)
+
+For isolated feature or fix work, agents should follow `.cursor/rules/worktree-feature-dev.mdc`: create or reuse a sibling worktree (`../apple_pick_sim-<slug>`), run submodule + `uv sync` there, and ask you to open that folder in a **new Cursor window**. A `sessionStart` hook (`.cursor/hooks/worktree-reminder.sh`) reinforces this when the workspace is on `main`/`master`.
 
 ## Execution expectations
 

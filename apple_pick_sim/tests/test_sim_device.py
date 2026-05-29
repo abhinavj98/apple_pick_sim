@@ -29,3 +29,15 @@ def test_env_override(monkeypatch: pytest.MonkeyPatch):
     assert default_sim_device() == "cpu"
     monkeypatch.delenv("APPLE_PICK_SIM_DEVICE", raising=False)
     assert resolve_sim_device(None) == ("cuda:0" if wp.is_cuda_available() else "cpu")
+
+
+def test_resolve_sim_device_explicit_wins_over_env(monkeypatch: pytest.MonkeyPatch):
+    """Builders pass ``device=`` explicitly; env override must not replace it."""
+    monkeypatch.setenv("APPLE_PICK_SIM_DEVICE", "cpu")
+    assert resolve_sim_device("cuda:0") == "cuda:0"
+    assert resolve_sim_device("cpu") == "cpu"
+
+
+def test_default_sim_device_honors_any_env_string(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("APPLE_PICK_SIM_DEVICE", "cuda:1")
+    assert default_sim_device() == "cuda:1"

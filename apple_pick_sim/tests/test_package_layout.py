@@ -23,6 +23,8 @@ def test_proxy_coupling_imports_from_coupled_fruiting():
 
     assert hasattr(pc, "ProxyBodyRegistry")
     assert hasattr(pc, "launch_mirror_robot_to_proxy")
+    assert hasattr(pc, "launch_mirror_robot_to_proxy_offset")
+    assert hasattr(pc.ProxyBodyRegistry, "from_repeated_robot")
 
 
 def test_no_top_level_fr3_robot_shim_file():
@@ -44,3 +46,26 @@ def test_examples_coupled_fruiting_importable():
     from apple_pick_sim.examples import example_coupled_fruiting as ex
 
     assert hasattr(ex, "_make_parser")
+
+
+def test_coupled_fruiting_public_build_api():
+    from apple_pick_sim import coupled_fruiting as cf
+
+    assert callable(cf.build_coupled_fruiting_fr3)
+    assert callable(cf.build_mega_coupled_fruiting_fr3)
+    assert callable(cf.settle_vbd_substeps)
+
+
+def test_sim_device_module_exports():
+    from apple_pick_sim import sim_device as sd
+
+    assert callable(sd.default_sim_device)
+    assert callable(sd.resolve_sim_device)
+
+
+def test_gym_package_separate_from_sim():
+    spec = importlib.util.find_spec("apple_pick_gym")
+    assert spec is not None
+    spec_sim = importlib.util.find_spec("apple_pick_sim")
+    assert spec_sim is not None
+    assert spec.origin != spec_sim.origin

@@ -131,6 +131,7 @@ class Fr3EEVelocityController:
         velocity: EEVelocity | None = None,
         viewer: _KeyViewer | None = None,
         poll_events: bool = True,
+        lock_angular: bool = False,
     ) -> EEVelocity:
         """Integrate the TCP target twist on the host (safe to call outside a CUDA graph capture)."""
         if velocity is None:
@@ -140,6 +141,8 @@ class Fr3EEVelocityController:
                 angular_speed=self.angular_speed,
                 poll_events=poll_events,
             )
+        if lock_angular:
+            velocity = EEVelocity(linear=velocity.linear, angular=(0.0, 0.0, 0.0))
         self.target_tf = integrate_tcp_target(
             self.target_tf,
             linear_vel=velocity.linear_vec,
@@ -157,13 +160,23 @@ class Fr3EEVelocityController:
         velocity: EEVelocity | None = None,
         viewer: _KeyViewer | None = None,
         poll_events: bool = True,
+        lock_angular: bool = False,
+        after_advance: Any | None = None,
     ) -> EEVelocity:
         """Integrate TCP target, optionally sync on idle, and solve IK from ``state``."""
         velocity = self.advance_target(
-            dt, velocity=velocity, viewer=viewer, poll_events=poll_events
+            dt,
+            velocity=velocity,
+            viewer=viewer,
+            poll_events=poll_events,
+            lock_angular=lock_angular,
         )
+        if after_advance is not None:
+            after_advance()
         if velocity.is_zero():
             self.sync_target_from_state(state)
+            if after_advance is not None:
+                after_advance()
         self.solve_ik(state)
         return velocity
 

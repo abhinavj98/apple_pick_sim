@@ -32,6 +32,7 @@ class _EnvConfig:
     enable_self_collisions: bool
     mujoco_solver_kwargs: dict[str, Any]
     fix_to_apple: bool
+    fix_to_apple_warmup_substeps: int
 
 
 class ApplePickCoupledEnv(gym.Env):
@@ -50,6 +51,7 @@ class ApplePickCoupledEnv(gym.Env):
         max_episode_steps: int = 240,
         enable_self_collisions: bool = False,
         fix_to_apple: bool = False,
+        fix_to_apple_warmup_substeps: int = 1800,
         mujoco_solver_kwargs: dict[str, Any] | None = None,
     ) -> None:
         if render_mode not in (None, "none"):
@@ -60,6 +62,7 @@ class ApplePickCoupledEnv(gym.Env):
             enable_self_collisions=bool(enable_self_collisions),
             mujoco_solver_kwargs=dict(mujoco_solver_kwargs or {"disable_contacts": True}),
             fix_to_apple=bool(fix_to_apple),
+            fix_to_apple_warmup_substeps=int(fix_to_apple_warmup_substeps),
         )
 
         # M2.1a placeholder observation: Dict with dummy values + schema versioning.
@@ -197,19 +200,58 @@ class ApplePickCoupledEnv(gym.Env):
 
         # Deterministic build from seed; default to 0 if unspecified.
         scene_seed = int(0 if seed is None else seed)
-        ranges = fs.load_ranges(self._fixture_ranges_path())
+        ranges_path = options.get("ranges_path")
+        if ranges_path is not None:
+            ranges = fs.load_ranges(Path(ranges_path))
+        else:
+            ranges = fs.load_ranges(self._fixture_ranges_path())
 
-        self._scene = cf.build_coupled_fruiting_fr3(
-            ranges,
-            scene_seed,
-            enable_self_collisions=self._cfg.enable_self_collisions,
-            mujoco_solver_kwargs=self._cfg.mujoco_solver_kwargs,
-            gripper_proxy=fs.GripperProxyConfig(
-                mass=fr3_robot.EE_MASS_KG,
-                box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
-                fix_to_apple=self._cfg.fix_to_apple,
-            ),
-        )
+        if self._cfg.fix_to_apple and self._cfg.fix_to_apple_warmup_substeps > 0:
+            # Settle freely (fix_to_apple=False), then rebuild with weld and seed the welded
+            # scene from the settled configuration to minimize initial transient loads.
+            settled = cf.build_coupled_fruiting_fr3(
+                ranges,
+                scene_seed,
+                enable_self_collisions=self._cfg.enable_self_collisions,
+                mujoco_solver_kwargs=self._cfg.mujoco_solver_kwargs,
+                gripper_proxy=fs.GripperProxyConfig(
+                    mass=fr3_robot.EE_MASS_KG,
+                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+                    fix_to_apple=False,
+                ),
+            )
+            _frame_dt, _substeps_per_frame, sub_dt = self._timing_constants()
+            cf.settle_vbd_substeps(
+                settled, substeps=self._cfg.fix_to_apple_warmup_substeps, dt=sub_dt
+            )
+            self._scene = cf.build_coupled_fruiting_fr3(
+                ranges,
+                scene_seed,
+                enable_self_collisions=self._cfg.enable_self_collisions,
+                mujoco_solver_kwargs=self._cfg.mujoco_solver_kwargs,
+                gripper_proxy=fs.GripperProxyConfig(
+                    mass=fr3_robot.EE_MASS_KG,
+                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+                    fix_to_apple=True,
+                ),
+            )
+            cf.seed_fix_to_apple_from_settled(
+                welded_scene=self._scene,
+                settled_scene=settled,
+                quiet_apple_proxy=True,
+            )
+        else:
+            self._scene = cf.build_coupled_fruiting_fr3(
+                ranges,
+                scene_seed,
+                enable_self_collisions=self._cfg.enable_self_collisions,
+                mujoco_solver_kwargs=self._cfg.mujoco_solver_kwargs,
+                gripper_proxy=fs.GripperProxyConfig(
+                    mass=fr3_robot.EE_MASS_KG,
+                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+                    fix_to_apple=self._cfg.fix_to_apple,
+                ),
+            )
 
         # Kinematic robot mode for stable, deterministic direct-joint control.
         self._scene.robot_kinematic_mode = True

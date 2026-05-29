@@ -48,6 +48,28 @@ class TestFr3UsdImport(unittest.TestCase):
         _model, _tcp, solver = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
         self.assertIsInstance(solver, SolverMuJoCo)
 
+    def test_joint_coord_and_dof_counts_positive(self):
+        model, _tcp, _ = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        n_coord = int(model.joint_coord_count)
+        n_dof = int(model.joint_dof_count)
+        self.assertGreaterEqual(n_coord, n_dof)
+        self.assertGreater(n_dof, 6)
+
+    def test_tcp_body_mass_is_positive_finite(self):
+        import numpy as np
+
+        model, tcp_idx, _ = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        m = float(model.body_mass.numpy()[tcp_idx])
+        self.assertTrue(np.isfinite(m) and m > 0.0)
+
+    def test_sync_robot_gravity_zeros_mujoco_opt_gravity(self):
+        import numpy as np
+
+        model, _tcp, solver = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        fr3_robot.sync_robot_gravity_to_mujoco(model, solver)
+        g = solver.mj_model.opt.gravity
+        np.testing.assert_allclose(np.asarray(g).reshape(3), 0.0, atol=1e-9)
+
 
 if __name__ == "__main__":
     unittest.main()

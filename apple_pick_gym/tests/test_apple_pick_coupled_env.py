@@ -177,7 +177,7 @@ def test_env_parity_against_direct_coupled_sim():
         mujoco_solver_kwargs=mujoco_solver_kwargs,
         enable_self_collisions=False,
     )
-    env.reset(seed=seed)
+    env.reset(seed=seed, options={"ranges_path": str(RANGES_FIXTURE)})
 
     # Deterministic action schedule (includes noop and several axes).
     action_schedule = [12, 0, 0, 2, 10, 12, 4, 6]
@@ -217,16 +217,100 @@ def test_env_parity_against_direct_coupled_sim():
             atol=1e-4,
         )
 
+    # ``info`` reflects state *after* this step; compare to a fresh scene readout, not pre-step metrics.
     _, _, _, _, info = env.step(12)
-    np.testing.assert_allclose(info["end_effector_wrench"], m_gym.tcp_wrench, rtol=1e-5, atol=1e-4)
-    for key in m_gym.fruiting_link_forces:
+    m_gym_after = _extract_metrics(got, SUB_DT)
+    np.testing.assert_allclose(info["end_effector_wrench"], m_gym_after.tcp_wrench, rtol=1e-5, atol=1e-4)
+    for key in m_gym_after.fruiting_link_forces:
         np.testing.assert_allclose(
             info["fruiting_link_forces"][key]["force_world"],
-            m_gym.fruiting_link_forces[key]["force_world"],
+            m_gym_after.fruiting_link_forces[key]["force_world"],
             rtol=1e-5,
             atol=1e-4,
         )
 
+    env.close()
+
+
+def test_action_to_velocity_matches_fr3_keyboard_world_frame():
+    """Discrete actions must use the same world-frame axes and speeds as keyboard teleop."""
+    from apple_pick_gym.envs import ApplePickCoupledEnv
+    from apple_pick_sim.robot import fr3_robot
+
+    env = ApplePickCoupledEnv()
+    lin = 0.2
+    ang = 1.0
+
+    # Gym action 0:+X must match keyboard ``i`` at default linear_speed.
+    assert env._action_to_velocity(0) == fr3_robot.EEVelocity(linear=(+lin, 0.0, 0.0))
+    assert env._action_to_velocity(4) == fr3_robot.read_keyboard_ee_velocity(
+        type("_V", (), {"is_key_down": lambda _s, k: k == "r"})(),
+        linear_speed=lin,
+        angular_speed=ang,
+        poll_events=False,
+    )
+    assert env._action_to_velocity(12) == fr3_robot.EEVelocity()
+    assert env._action_to_velocity(10) == fr3_robot.EEVelocity(angular=(0.0, 0.0, +ang))
+
+
+@gymnasium_available
+def test_reset_same_seed_same_params_fingerprint():
+    import gymnasium as gym
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    env = gym.make("ApplePickCoupled-v0", render_mode=None, max_episode_steps=2)
+    _, info_a = env.reset(seed=7)
+    _, info_b = env.reset(seed=7)
+    assert info_a["params_fingerprint"] == info_b["params_fingerprint"]
+    env.close()
+
+
+@gymnasium_available
+def test_step_before_reset_raises():
+    import gymnasium as gym
+    from gymnasium.error import ResetNeeded
+    from apple_pick_gym.envs import ApplePickCoupledEnv
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    raw = ApplePickCoupledEnv(max_episode_steps=2)
+    with pytest.raises(RuntimeError, match="reset"):
+        raw.step(0)
+
+    wrapped = gym.make("ApplePickCoupled-v0", render_mode=None, max_episode_steps=2)
+    with pytest.raises(ResetNeeded, match="reset"):
+        wrapped.step(0)
+    wrapped.close()
+
+
+@gymnasium_available
+def test_invalid_action_rejected():
+    from apple_pick_gym.envs import ApplePickCoupledEnv
+
+    env = ApplePickCoupledEnv()
+    with pytest.raises(ValueError, match="Invalid action"):
+        env._action_to_velocity(13)
+
+
+@gymnasium_available
+def test_truncation_after_max_episode_steps():
+    import gymnasium as gym
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    env = gym.make("ApplePickCoupled-v0", render_mode=None, max_episode_steps=2)
+    env.reset(seed=0)
+    _, _, _, truncated, _ = env.step(12)
+    assert truncated is False
+    _, _, _, truncated, _ = env.step(12)
+    assert truncated is True
     env.close()
 
 

@@ -136,6 +136,8 @@ PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/ex
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --mujoco-viewer --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 0
 # Staggered coupling wrench debug (Plots panel in ViewerGL): lagged → MuJoCo vs fresh ← VBD harvest
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --debug-coupling-forces --seed 42
+# TCP force as a yellow arrow at the robot TCP (scale: --tcp-force-scale, --tcp-force-arrow-gain, min/max length)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --viewer gl --tcp-force-arrow --seed 42
 # Bundled FR3 + custom EE (requires usd-core + assets/fr3/)
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --robot fr3 --viewer null --num-frames 60
 # FR3 keyboard teleop — verified: MuJoCo-only stepping + proxy sync (default fix_to_apple=False)
@@ -151,6 +153,11 @@ PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/ex
 # FR3 testing: direct joint_q write + kinematic arm (coupled VBD + proxy sync still run)
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \
   --robot fr3 --fr3-direct-joints --fr3-keyboard --viewer gl
+# Post-grasp variable-impedance teleop (design spec; not yet in examples): docs/variable-impedance-teleop.md
+# Mega plant (N FD columns) + one FR3, fd_ghost offset sync (see docs/mega-coupled-cable-implementation.md)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_mega_coupled_keyboard.py --viewer gl
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_mega_coupled_keyboard.py --viewer gl --tcp-force-arrow
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_mega_coupled_keyboard.py --viewer null --num-frames 1
 ```
 
 **FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):

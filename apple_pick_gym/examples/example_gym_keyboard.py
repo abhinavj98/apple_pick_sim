@@ -89,6 +89,12 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Weld the proxy to the apple so the apple co-teleports with robot motion.",
     )
     p.add_argument(
+        "--fix-to-apple-warmup-substeps",
+        type=int,
+        default=1800,
+        help="VBD substeps to settle before welding (fix_to_apple only; ~1s at 60fps/30).",
+    )
+    p.add_argument(
         "--mujoco-viewer",
         action="store_true",
         help="Open MuJoCo passive viewer to render the FR3 arm (requires a GUI session).",
@@ -145,6 +151,7 @@ def main() -> None:
         max_episode_steps=int(args.max_steps),
         enable_self_collisions=False,
         fix_to_apple=bool(getattr(args, "fix_to_apple", False)),
+        fix_to_apple_warmup_substeps=int(getattr(args, "fix_to_apple_warmup_substeps", 1800)),
         mujoco_solver_kwargs={"disable_contacts": True},
     )
     env.reset(seed=int(args.seed))

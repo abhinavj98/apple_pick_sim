@@ -21,6 +21,7 @@ from apple_pick_sim.tests.conftest import NO_SELF_COLLISION_KW
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 RANGES_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_straight_rod_test.json"
+VARIANCE_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_example_variance.json"
 
 
 # ---------------------------------------------------------------------------
@@ -574,3 +575,151 @@ def test_fixed_joint_wrenches_finite_after_substep():
     for w in wrenches:
         assert np.isfinite(w.force_world).all()
         assert np.isfinite(w.torque_at_child_com_world).all()
+
+
+def test_perturb_rod_stiffness_rejects_disabled_segment():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    p = fs.sample_params(ranges, seed=0, omit=frozenset({"secondary"}))
+    assert p.secondary is None
+    with pytest.raises(ValueError, match="disabled"):
+        fs.perturb_rod_stiffness(p, "secondary", bend_delta=1.0)
+
+
+def test_perturb_rod_stiffness_rejects_nonpositive_result():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    p = fs.sample_params(ranges, seed=0)
+    with pytest.raises(ValueError, match="positive"):
+        fs.perturb_rod_stiffness(p, "stem", bend_delta=-1.0e9)
+
+
+def test_set_rod_bend_stiffness_sets_absolute_value():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    p = fs.sample_params(ranges, seed=0)
+    target = 123.45
+    out = fs.set_rod_bend_stiffness(p, "primary", target)
+    assert out.primary is not None
+    assert out.primary.bend_stiffness == pytest.approx(target)
+    assert p.primary.bend_stiffness != pytest.approx(target)
+    assert out.secondary == p.secondary
+
+
+def test_set_rod_bend_stiffness_rejects_nonpositive():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    p = fs.sample_params(ranges, seed=0)
+    with pytest.raises(ValueError, match="positive"):
+        fs.set_rod_bend_stiffness(p, "primary", 0.0)
+
+
+def test_fd_stiffness_param_columns_nominal_first_and_epsilon_guard():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    nominal = fs.sample_params(ranges, seed=5)
+    with pytest.raises(ValueError, match="epsilon"):
+        fs.fd_stiffness_param_columns(nominal, 0.0)
+    cols = fs.fd_stiffness_param_columns(nominal, 0.02)
+    segs = fs.enabled_rod_segments(nominal)
+    assert len(cols) == 1 + len(segs)
+    assert cols[0].primary.bend_stiffness == nominal.primary.bend_stiffness
+    for col, seg in zip(cols[1:], segs, strict=True):
+        rod_nom = getattr(nominal, seg)
+        rod_col = getattr(col, seg)
+        assert rod_col.bend_stiffness == pytest.approx(rod_nom.bend_stiffness + 0.02)
+        assert rod_col.stretch_stiffness == rod_nom.stretch_stiffness
+
+
+def test_variance_fixture_loads_and_samples_in_bounds():
+    """Wide example-variance JSON is valid and produces in-range params."""
+    fs = _import_module()
+    assert VARIANCE_FIXTURE.exists()
+    ranges = fs.load_ranges(VARIANCE_FIXTURE)
+    for seg in ("primary", "secondary", "spur", "stem", "apple"):
+        assert seg in ranges
+    params = fs.sample_params(ranges, seed=17)
+    assert params.primary is not None and params.secondary is not None
+    for seg_name in ("primary", "secondary", "spur", "stem"):
+        seg_params = getattr(params, seg_name)
+        seg_ranges = ranges[seg_name]
+        for attr in ("length", "radius", "bend_stiffness", "bend_damping", "density"):
+            v = getattr(seg_params, attr)
+            lo = seg_ranges[attr]["min"]
+            hi = seg_ranges[attr]["max"]
+            assert lo <= v <= hi, f"{seg_name}.{attr}={v} not in [{lo}, {hi}]"
+    assert params.apple_radius is not None
+    assert (
+        ranges["apple"]["radius"]["min"]
+        <= params.apple_radius
+        <= ranges["apple"]["radius"]["max"]
+    )
+
+
+def test_fix_to_apple_requires_apple_body():
+    """Welded proxy build must fail when the fruiting tree has no apple."""
+    fs = _import_module()
+    ranges = dict(fs.load_ranges(RANGES_FIXTURE))
+    ranges["apple"] = None
+    with pytest.raises(ValueError, match="fix_to_apple requires an apple"):
+        fs.generate_coupled_cable_scene(
+            ranges,
+            seed=0,
+            gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True),
+            **NO_SELF_COLLISION_KW,
+        )
+
+
+def test_stem_apple_fixed_joint_child_is_apple_proxy_joint_is_not():
+    """Stem→apple and proxy→apple joints are distinct; only stem attaches to the apple body."""
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=4,
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True),
+        **NO_SELF_COLLISION_KW,
+    )
+    assert scene.apple_body is not None
+    assert scene.gripper_proxy_apple_joint is not None
+    jchild = scene.model.joint_child.numpy()
+    assert int(jchild[scene.gripper_proxy_apple_joint]) == scene.gripper_proxy_body
+    from apple_pick_sim.coupled_fruiting.stem import _find_stem_apple_joint
+
+    stem_j = _find_stem_apple_joint(scene)
+    assert stem_j is not None
+    assert stem_j != scene.gripper_proxy_apple_joint
+    assert int(jchild[stem_j]) == scene.apple_body
+
+
+def test_measure_fruiting_forces_state1_matches_solver_body_q_prev():
+    """Harvest convention: ``body_q_prev`` for wrenches is ``state_1.body_q`` (here == ``solver.body_q_prev``)."""
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_coupled_cable_scene(ranges, seed=3, device="cpu", **NO_SELF_COLLISION_KW)
+    sim_dt = (1.0 / 60.0) / 10.0
+    scene.state_0.clear_forces()
+    pipe = fs.example_collision_pipeline(scene.model, args=None)
+    contacts = scene.model.collide(scene.state_0, collision_pipeline=pipe)
+    scene.solver.step(scene.state_0, scene.state_1, scene.control, contacts, sim_dt)
+    scene.state_0, scene.state_1 = scene.state_1, scene.state_0
+
+    bq1 = scene.state_1.body_q.numpy().reshape(-1, 7)
+    bqp = scene.solver.body_q_prev.numpy().reshape(-1, 7)
+    np.testing.assert_allclose(
+        bq1,
+        bqp,
+        rtol=0.0,
+        atol=0.0,
+        err_msg="state_1.body_q must match solver.body_q_prev for wrench gather",
+    )
+    out = fs.measure_fruiting_forces(
+        scene, scene.state_0.body_q, scene.state_1.body_q, dt=sim_dt
+    )
+    out_bqp = fs.measure_fruiting_forces(
+        scene, scene.state_0.body_q, scene.solver.body_q_prev, dt=sim_dt
+    )
+    assert len(out["fixed_joints"]) == len(scene.fruiting_fixed_joints)
+    f0 = out["fixed_joints"][0].force_world
+    f1 = out_bqp["fixed_joints"][0].force_world
+    np.testing.assert_allclose(f0, f1, rtol=0.0, atol=0.0)

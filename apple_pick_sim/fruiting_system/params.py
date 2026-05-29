@@ -44,6 +44,16 @@ class FruitingSystemParams:
     apple_radius: float | None
     apple_density: float | None
 
+
+def analytic_apple_mass_kg(params: FruitingSystemParams) -> float | None:
+    """Solid-sphere mass from sampled ``apple_radius`` and ``apple_density`` [kg]."""
+    if params.apple_radius is None or params.apple_density is None:
+        return None
+    r = float(params.apple_radius)
+    rho = float(params.apple_density)
+    return (4.0 / 3.0) * math.pi * r**3 * rho
+
+
 @dataclasses.dataclass(frozen=True)
 class GripperProxyConfig:
     """Gripper proxy rigid body added on the cable ``Model`` for M1 coupling.
@@ -241,6 +251,125 @@ def sample_params(
     )
 
 
+def copy_fruiting_params(params: FruitingSystemParams) -> FruitingSystemParams:
+    """Deep-copy sampled params (geometry and stiffness scalars)."""
+    def _rod(r: RodParams | None) -> RodParams | None:
+        return None if r is None else dataclasses.replace(r)
+
+    return FruitingSystemParams(
+        primary=_rod(params.primary),
+        secondary=_rod(params.secondary),
+        spur=_rod(params.spur),
+        stem=_rod(params.stem),
+        apple_radius=params.apple_radius,
+        apple_density=params.apple_density,
+    )
+
+
+def perturb_rod_stiffness(
+    params: FruitingSystemParams,
+    segment: str,
+    *,
+    bend_delta: float = 0.0,
+    stretch_delta: float = 0.0,
+) -> FruitingSystemParams:
+    """Return a copy with stiffness deltas on one rod segment (geometry unchanged).
+
+    Args:
+        params: Nominal fruiting parameters.
+        segment: One of ``primary``, ``secondary``, ``spur``, ``stem``.
+        bend_delta: Added to ``bend_stiffness`` (must stay positive).
+        stretch_delta: Added to ``stretch_stiffness`` (must stay positive).
+
+    Raises:
+        ValueError: If the segment is disabled or the result would be non-positive.
+    """
+    if segment not in ("primary", "secondary", "spur", "stem"):
+        raise ValueError(f"Unknown segment {segment!r}")
+    out = copy_fruiting_params(params)
+    rod = getattr(out, segment)
+    if rod is None:
+        raise ValueError(f"Segment {segment!r} is disabled in params")
+    new_bend = rod.bend_stiffness + bend_delta
+    new_stretch = rod.stretch_stiffness + stretch_delta
+    if new_bend <= 0.0 or new_stretch <= 0.0:
+        raise ValueError(
+            f"Stiffness perturbation on {segment!r} must keep bend and stretch positive "
+            f"(got bend={new_bend}, stretch={new_stretch})"
+        )
+    setattr(
+        out,
+        segment,
+        dataclasses.replace(
+            rod,
+            bend_stiffness=new_bend,
+            stretch_stiffness=new_stretch,
+        ),
+    )
+    # if (
+    #     out.primary is not None
+    #     and out.secondary is not None
+    #     and out.primary.bend_stiffness < out.secondary.bend_stiffness
+    # ):
+    #     raise ValueError(
+    #         "primary.bend_stiffness must be >= secondary.bend_stiffness after perturbation"
+    #     )
+    return out
+
+
+def set_rod_bend_stiffness(
+    params: FruitingSystemParams,
+    segment: str,
+    bend_stiffness: float,
+) -> FruitingSystemParams:
+    """Return a copy with absolute ``bend_stiffness`` on one rod segment."""
+    if bend_stiffness <= 0.0:
+        raise ValueError("bend_stiffness must be positive")
+    if segment not in ("primary", "secondary", "spur", "stem"):
+        raise ValueError(f"Unknown segment {segment!r}")
+    out = copy_fruiting_params(params)
+    rod = getattr(out, segment)
+    if rod is None:
+        raise ValueError(f"Segment {segment!r} is disabled in params")
+    setattr(
+        out,
+        segment,
+        dataclasses.replace(rod, bend_stiffness=bend_stiffness),
+    )
+    return out
+
+
+def enabled_rod_segments(params: FruitingSystemParams) -> tuple[str, ...]:
+    """Rod segment names present in ``params``."""
+    return tuple(
+        name
+        for name in ("primary", "secondary", "spur", "stem")
+        if getattr(params, name) is not None
+    )
+
+
+def fd_stiffness_param_columns(
+    nominal: FruitingSystemParams,
+    epsilon: float,
+    *,
+    segments: Collection[str] | None = None,
+) -> list[FruitingSystemParams]:
+    """Finite-difference column params: ``[θ₀, θ₀+ε e₁, …]`` on bend stiffness only.
+
+    Geometry (length, directions, segment counts) matches ``nominal``; only
+    ``bend_stiffness`` / ``stretch_stiffness`` are unchanged except for the perturbed column.
+    """
+    if epsilon <= 0.0:
+        raise ValueError("epsilon must be positive")
+    segs = tuple(segments) if segments is not None else enabled_rod_segments(nominal)
+    cols = [copy_fruiting_params(nominal)]
+    for seg in segs:
+        cols.append(
+            perturb_rod_stiffness(nominal, seg, bend_delta=epsilon, stretch_delta=0.0)
+        )
+    return cols
+
+
 def params_fingerprint(params: FruitingSystemParams) -> dict:
     """Return a dict of scalar summaries from sampled params (no Newton model needed).
 
@@ -259,8 +388,10 @@ def params_fingerprint(params: FruitingSystemParams) -> dict:
         "secondary_bend_stiffness": None if s is None else round(s.bend_stiffness, 6),
         "spur_num_segments": None if sp is None else sp.num_segments,
         "spur_length": None if sp is None else round(sp.length, 9),
+        "spur_bend_stiffness": None if sp is None else round(sp.bend_stiffness, 6),
         "stem_num_segments": None if st is None else st.num_segments,
         "stem_length": None if st is None else round(st.length, 9),
+        "stem_bend_stiffness": None if st is None else round(st.bend_stiffness, 6),
         "apple_radius": None if params.apple_radius is None else round(params.apple_radius, 9),
         "apple_density": None if params.apple_density is None else round(params.apple_density, 6),
         "primary_dir_x": None if p is None else round(p.direction[0], 6),

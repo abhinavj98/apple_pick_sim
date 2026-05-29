@@ -6,6 +6,7 @@ import dataclasses
 import math
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -19,16 +20,34 @@ from apple_pick_sim.fruiting_system.params import (
 FRUITING_VBD_RIGID_JOINT_KD = 5.0e-4
 
 
-def _pin_body_vbd_prescribed(builder: newton.ModelBuilder, body_id: int) -> None:
-    """Make a body non-integrated by VBD (``inv_mass == 0``) while staying articulation-valid.
+def _prescribe_body_vbd_integration(builder: newton.ModelBuilder, body_id: int) -> None:
+    """Disable VBD integration for a body (``inv_mass == 0``) while keeping ``body_mass``.
 
     Pose/velocity are overwritten each MuJoCo substep by staggered coupling sync.
     ``BodyFlags.KINEMATIC`` is not set because Newton only allows kinematic bodies on
     world-root joints; the apple remains a dynamic-flag child of the stem.
     """
-    builder.body_mass[body_id] = 0.0
     builder.body_inv_mass[body_id] = 0.0
     builder.body_inv_inertia[body_id] = wp.mat33(0.0)
+
+
+def _pin_body_vbd_prescribed(builder: newton.ModelBuilder, body_id: int) -> None:
+    """Alias for :func:`_prescribe_body_vbd_integration` (legacy name)."""
+    _prescribe_body_vbd_integration(builder, body_id)
+
+
+def prescribe_body_vbd_on_model(model: newton.Model, *body_ids: int) -> None:
+    """Apply post-finalize VBD prescription (``finalize`` recomputes ``inv_mass`` from mass)."""
+    if not body_ids:
+        return
+    inv = model.body_inv_mass.numpy().copy()
+    inert = model.body_inv_inertia.numpy().copy()
+    zero33 = np.zeros((3, 3), dtype=np.float32)
+    for bid in body_ids:
+        inv[int(bid)] = 0.0
+        inert[int(bid)] = zero33
+    model.body_inv_mass.assign(inv)
+    model.body_inv_inertia.assign(inert)
 
 @dataclasses.dataclass
 class _FruitingChainArtifacts:
@@ -212,6 +231,50 @@ def _build_fruiting_chain_into_builder(
     )
 
 
+def _apply_collision_filters_between_chain_groups(
+    builder: newton.ModelBuilder,
+    chain_a: list[int],
+    chain_b: list[int],
+) -> None:
+    """Disable collisions between every body in ``chain_a`` and every body in ``chain_b``."""
+    for body1 in chain_a:
+        for body2 in chain_b:
+            for shape1 in builder.body_shapes.get(body1, []):
+                for shape2 in builder.body_shapes.get(body2, []):
+                    builder.add_shape_collision_filter_pair(shape1, shape2)
+
+
+def _finalize_fruiting_builder_joints(
+    builder: newton.ModelBuilder,
+    *,
+    all_joints: list[int],
+    chain_bodies: list[int],
+    device: str,
+    enable_self_collisions: bool,
+    gripper_proxy_joints: tuple[int, ...] = (),
+    extra_chain_groups_for_filters: tuple[list[int], ...] = (),
+) -> newton.Model:
+    """Finalize a cable ``Model``; FREE proxy joints live in separate articulations."""
+    joint_list = sorted(all_joints)
+    proxy_set = set(gripper_proxy_joints)
+    if proxy_set:
+        chain_joints = [j for j in joint_list if j not in proxy_set]
+        builder.add_articulation(chain_joints)
+        for pj in gripper_proxy_joints:
+            builder.add_articulation([pj])
+    else:
+        builder.add_articulation(joint_list)
+    if not enable_self_collisions:
+        _apply_all_chain_collision_filters(builder, chain_bodies)
+    for other in extra_chain_groups_for_filters:
+        _apply_collision_filters_between_chain_groups(builder, chain_bodies, other)
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+    return model
+
+
 def _finalize_fruiting_builder(
     builder: newton.ModelBuilder,
     artifacts: _FruitingChainArtifacts,
@@ -221,20 +284,15 @@ def _finalize_fruiting_builder(
     gripper_proxy_joint: int | None = None,
 ) -> newton.Model:
     """Finalize the cable model; keep world-root proxy FREE joints out of the tree articulation."""
-    all_joints = sorted(artifacts.all_joints)
-    if gripper_proxy_joint is not None:
-        chain_joints = [j for j in all_joints if j != gripper_proxy_joint]
-        builder.add_articulation(chain_joints)
-        builder.add_articulation([gripper_proxy_joint])
-    else:
-        builder.add_articulation(all_joints)
-    if not enable_self_collisions:
-        _apply_all_chain_collision_filters(builder, artifacts.chain_bodies)
-    builder.add_ground_plane()
-    builder.color()
-    model = builder.finalize(device=device)
-    model.set_gravity((0.0, 0.0, -9.81))
-    return model
+    proxy_joints = (gripper_proxy_joint,) if gripper_proxy_joint is not None else ()
+    return _finalize_fruiting_builder_joints(
+        builder,
+        all_joints=artifacts.all_joints,
+        chain_bodies=artifacts.chain_bodies,
+        device=device,
+        enable_self_collisions=enable_self_collisions,
+        gripper_proxy_joints=proxy_joints,
+    )
 def _add_gripper_proxy(
     builder: newton.ModelBuilder,
     artifacts: _FruitingChainArtifacts,
@@ -310,8 +368,8 @@ def _add_gripper_proxy(
         artifacts.fruiting_fixed_joints.append(
             (apple_fixed_joint, "joint_apple_gripper_proxy")
         )
-        _pin_body_vbd_prescribed(builder, artifacts.apple_body)
-        _pin_body_vbd_prescribed(builder, proxy_body)
+        _prescribe_body_vbd_integration(builder, artifacts.apple_body)
+        _prescribe_body_vbd_integration(builder, proxy_body)
     else:
         proxy_free_joint = builder.add_joint_free(parent=-1, child=proxy_body)
         artifacts.all_joints.append(proxy_free_joint)

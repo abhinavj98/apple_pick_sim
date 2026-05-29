@@ -4,7 +4,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last reviewed** | 2026-05-13 |
+| **Last reviewed** | 2026-05-28 |
 | **Owner** | Abhinav |
 | **Related** | `./ROADMAP.md` |
 
@@ -45,7 +45,7 @@ Build an apple-picking simulator whose parameters are grounded in and refined ag
 - Newton-based dynamics for plant and fruit where the project already relies on Newton; project-local orchestration and scenarios under `apple_pick_sim/`.
 - Procedural or data-driven variation of fruiting-system assets from structured inputs.
 - Integration paths for arm simulation and control (e.g. MuJoCo + Franka FR3) that match documented milestones.
-- RL training harnesses, logging, and evaluation hooks tied to the simulator.
+- RL training harnesses, logging, and evaluation hooks tied to the simulator (Gymnasium adapter `apple_pick_gym/` — see `docs/ROADMAP.md` [M2]).
 - Real-data collection protocols and file formats that pair with simulation and calibration.
 
 ## Out of scope (non-goals)

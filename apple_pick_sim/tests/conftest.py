@@ -9,8 +9,8 @@ import pytest
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 RANGES_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_straight_rod_test.json"
 
-# Coupled cable scenes use a lower tree base than standalone P0 scenes.
-COUPLED_BASE_POS = (0.0, 0.0, 0.5)
+# Coupled cable scenes: default rod base near the FR3 at world origin (xy offset 0.5 m).
+COUPLED_BASE_POS = (0.5, 0.5, 0.5)
 NO_SELF_COLLISION_KW = {"enable_self_collisions": False}
 COUPLED_SCENE_KW = {**NO_SELF_COLLISION_KW, "base_pos": COUPLED_BASE_POS}
 DEFAULT_MJ_KW = {"disable_contacts": True}

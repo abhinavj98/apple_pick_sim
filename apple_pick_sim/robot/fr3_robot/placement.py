@@ -38,10 +38,9 @@ def bootstrap_tcp_ik_from_proxy(
 
     proxy_body = cable_scene.gripper_proxy_body
     bq = cable_scene.state_0.body_q.numpy().reshape(-1, 7)[proxy_body]
-    target_tf = wp.transform(
-        wp.vec3(float(bq[0]), float(bq[1]), float(bq[2])),
-        wp.quat(float(bq[3]), float(bq[4]), float(bq[5]), float(bq[6])),
-    )
+    target_pos = wp.vec3(float(bq[0]), float(bq[1]), float(bq[2]))
+    target_rot = wp.quat(float(bq[3]), float(bq[4]), float(bq[5]), float(bq[6]))
+    target_tf = wp.transform(target_pos, target_rot)
     target_pos = wp.transform_get_translation(target_tf)
     target_rot = wp.transform_get_rotation(target_tf)
     dev = robot_model.device

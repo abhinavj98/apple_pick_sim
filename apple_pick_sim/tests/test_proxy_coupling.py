@@ -529,6 +529,80 @@ def test_harvest_velocity_delta_with_rotated_body():
     np.testing.assert_allclose(w[2], 0.0, atol=35.0)
 
 
+def test_proxy_registry_from_repeated_robot_pairs_order():
+    pc = _import_pc()
+    reg = pc.ProxyBodyRegistry.from_repeated_robot(7, (10, 20, 30))
+    assert reg.robot_to_proxy == ((7, 10), (7, 20), (7, 30))
+    assert reg.robot_body_ids == (7, 7, 7)
+    assert reg.proxy_body_ids == (10, 20, 30)
+
+
+def test_mirror_robot_tcp_to_proxy_offset_kernel():
+    """Ghost fd: each proxy gets TCP pose translated by its per-pair offset."""
+    pc = _import_pc()
+    n = 4
+    rid = 0
+    proxy_a, proxy_b = 1, 2
+
+    robot_ids = wp.array([rid, rid], dtype=int, device="cpu")
+    proxy_ids = wp.array([proxy_a, proxy_b], dtype=int, device="cpu")
+    offsets = wp.array(
+        [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 1.5, 0.0)],
+        dtype=wp.vec3,
+        device="cpu",
+    )
+
+    src_q = wp.zeros(n, dtype=wp.transform, device="cpu")
+    dst_q = wp.zeros(n, dtype=wp.transform, device="cpu")
+    src_qd = wp.zeros(n, dtype=wp.spatial_vector, device="cpu")
+    dst_qd = wp.zeros(n, dtype=wp.spatial_vector, device="cpu")
+    pf = wp.zeros(n, dtype=wp.spatial_vector, device="cpu")
+    inv_mass = wp.zeros(n, dtype=float, device="cpu")
+    inv_mass.assign(np.asarray([1.0, 1.25, 1.25, 1.0], dtype=np.float32))
+    id33 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    inv_inertia = wp.array([id33] * n, dtype=wp.mat33, device="cpu")
+
+    tcp_pos = (1.0, 2.0, 3.0)
+    src_np = np.zeros((n, 7), dtype=np.float32)
+    src_np[rid, :3] = tcp_pos
+    src_np[rid, 6] = 1.0
+    src_q.assign(src_np.ravel())
+
+    gravity = wp.vec3(0.0)
+    dt = 1.0e-3
+
+    wp.launch(
+        pc.mirror_robot_tcp_to_proxy_offset_kernel,
+        dim=2,
+        inputs=[
+            robot_ids,
+            proxy_ids,
+            offsets,
+            src_q,
+            src_qd,
+            dst_q,
+            dst_qd,
+            pf,
+            inv_mass,
+            inv_inertia,
+            gravity,
+            dt,
+        ],
+        device="cpu",
+    )
+
+    dst_np = dst_q.numpy().reshape(-1, 7)
+    np.testing.assert_allclose(dst_np[proxy_a, :3], tcp_pos, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        dst_np[proxy_b, :3],
+        (tcp_pos[0], tcp_pos[1] + 1.5, tcp_pos[2]),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(dst_np[proxy_a, 3:7], src_np[rid, 3:7], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(dst_np[proxy_b, 3:7], src_np[rid, 3:7], rtol=1e-5, atol=1e-5)
+
+
 def test_proxy_registry_from_mapping_sorts_pairs():
     pc = _import_pc()
     reg = pc.ProxyBodyRegistry.from_mapping({5: 12, 1: 3, 9: 7})
@@ -620,7 +694,7 @@ def test_stem_harvest_cpu_gpu_parity():
     cable = scene.cable
     out_gpu = wp.zeros(scene.robot_model.body_count, dtype=wp.spatial_vector, device="cpu")
     out_cpu = wp.zeros_like(out_gpu)
-    pc.harvest_stem_tension_for_tcp(
+    harvest_kw = dict(
         cable_model=cable.model,
         cable_solver=cable.solver,
         body_q_post=cable.state_0.body_q,
@@ -628,24 +702,35 @@ def test_stem_harvest_cpu_gpu_parity():
         dt=dt,
         stem_apple_joint_index=scene.stem_apple_joint_index,
         tcp_body_index=tcp,
-        out_robot_wrenches=out_gpu,
         coupling_gain=scene.stem_coupling_gain,
         force_cap_N=scene.stem_force_cap_N,
         torque_cap_Nm=scene.stem_torque_cap_Nm,
+        explicit_apple_weight=scene.stem_harvest_explicit_apple_weight,
+        apple_body_index=cable.apple_body,
+        apple_mass_kg=scene.apple_mass_kg,
+        gravity=scene.gravity_vec,
+        robot_body_q=scene.robot_state_0.body_q,
+        grasp_offset_in_apple_frame=cable.gripper_proxy_offset_in_apple_frame,
     )
-    pc._harvest_stem_tension_for_tcp_cpu(
-        cable_model=cable.model,
-        cable_solver=cable.solver,
-        body_q_post=cable.state_0.body_q,
-        body_q_prev=cable.state_1.body_q,
-        dt=dt,
-        stem_apple_joint_index=scene.stem_apple_joint_index,
-        tcp_body_index=tcp,
-        out_robot_wrenches=out_cpu,
-        coupling_gain=scene.stem_coupling_gain,
-        force_cap_N=scene.stem_force_cap_N,
-        torque_cap_Nm=scene.stem_torque_cap_Nm,
-    )
+    pc.harvest_stem_tension_for_tcp(**harvest_kw, out_robot_wrenches=out_gpu)
+    pc._harvest_stem_tension_for_tcp_cpu(**harvest_kw, out_robot_wrenches=out_cpu)
     w_gpu = out_gpu.numpy().reshape(-1, 6)[tcp]
     w_cpu = out_cpu.numpy().reshape(-1, 6)[tcp]
     np.testing.assert_allclose(w_gpu, w_cpu, rtol=0.02, atol=0.5)
+
+
+def test_stem_limit_kernel_launch_input_count_regression():
+    """Guard CUDA-graph stem harvest launch arity (see ``harvest_stem_tension_for_tcp``)."""
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "coupled_fruiting" / "proxy_coupling.py"
+    text = path.read_text()
+    marker = "wp.launch(\n        _limit_and_write_tcp_stem_wrench_kernel,"
+    assert marker in text
+    block = text.split(marker, 1)[1].split("device=dev", 1)[0]
+    # One entry per line in the ``inputs=[`` list (16 args as of explicit-load CUDA path).
+    input_lines = [ln.strip() for ln in block.split("inputs=[", 1)[1].split("],", 1)[0].splitlines()]
+    input_lines = [ln for ln in input_lines if ln and not ln.startswith("#")]
+    assert len(input_lines) == 17, (
+        f"expected 17 launch inputs for stem limit kernel, got {len(input_lines)}: {input_lines}"
+    )

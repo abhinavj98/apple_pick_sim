@@ -177,6 +177,68 @@ def test_fix_to_apple_proxy_on_apple_surface_not_at_com():
     assert dist <= r * 3.0
 
 
+def _stem_direction_world(scene) -> np.ndarray:
+    """Unit vector from distal stem segment base toward tip (apple pole)."""
+    stem = scene.stem_bodies
+    assert len(stem) >= 2
+    body_q = scene.state_0.body_q.to("cpu").numpy()
+    tip = body_q[stem[-1], :3]
+    base = body_q[stem[-2], :3]
+    d = tip - base
+    return d / np.linalg.norm(d)
+
+
+def test_fix_to_apple_weld_direction_is_stem_pole():
+    """Welded grasp stays on the stem-side exterior pole."""
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    cfg = fs.GripperProxyConfig(fix_to_apple=True)
+    scene = fs.generate_coupled_cable_scene(ranges, seed=3, gripper_proxy=cfg, **COUPLED_SCENE_KW)
+    stem = _stem_direction_world(scene)
+    body_q = scene.state_0.body_q.to("cpu").numpy()
+    apple_pos = body_q[scene.apple_body, :3]
+    proxy_pos = body_q[scene.gripper_proxy_body, :3]
+    weld_dir = (proxy_pos - apple_pos) / np.linalg.norm(proxy_pos - apple_pos)
+    assert float(np.dot(weld_dir, stem)) > 0.99
+
+
+def test_free_and_welded_proxy_share_stem_pole():
+    """Free and welded builds place the proxy on the same stem pole."""
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    free = fs.generate_coupled_cable_scene(
+        ranges, seed=7, gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False), **COUPLED_SCENE_KW
+    )
+    welded = fs.generate_coupled_cable_scene(
+        ranges, seed=7, gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True), **COUPLED_SCENE_KW
+    )
+    bq_free = free.state_0.body_q.to("cpu").numpy()
+    bq_weld = welded.state_0.body_q.to("cpu").numpy()
+    free_dir = bq_free[free.gripper_proxy_body, :3] - bq_free[free.apple_body, :3]
+    weld_dir = bq_weld[welded.gripper_proxy_body, :3] - bq_weld[welded.apple_body, :3]
+    free_dir /= np.linalg.norm(free_dir)
+    weld_dir /= np.linalg.norm(weld_dir)
+    assert float(np.dot(free_dir, weld_dir)) > 0.99
+
+
+def test_free_proxy_remains_stem_aligned():
+    """Non-welded proxy stays on the stem pole (unchanged placement)."""
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=3,
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
+        **COUPLED_SCENE_KW,
+    )
+    body_q = scene.state_0.body_q.to("cpu").numpy()
+    apple_pos = body_q[scene.apple_body, :3]
+    proxy_pos = body_q[scene.gripper_proxy_body, :3]
+    grasp_dir = (proxy_pos - apple_pos) / np.linalg.norm(proxy_pos - apple_pos)
+    stem = _stem_direction_world(scene)
+    assert float(np.dot(grasp_dir, stem)) > 0.99
+
+
 def test_coupled_short_vbd_rollout_finite():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
@@ -184,6 +246,28 @@ def test_coupled_short_vbd_rollout_finite():
     fs.run_rollout(scene, num_steps=3, sim_substeps=4)
     body_q = scene.state_0.body_q.to("cpu").numpy()
     assert np.isfinite(body_q).all()
+
+
+def test_coupled_geometry_fingerprint_includes_proxy_fields():
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_coupled_cable_scene(ranges, seed=6, **COUPLED_SCENE_KW)
+    fp = fs.geometry_fingerprint_coupled(scene)
+    assert "gripper_proxy_body" in fp
+    assert "gripper_proxy_pos" in fp
+    assert fp["gripper_proxy_body"] == scene.gripper_proxy_body
+    p0_fp = fs.geometry_fingerprint(
+        fs.generate_scene(ranges, seed=6, **COUPLED_SCENE_KW)
+    )
+    assert "gripper_proxy_pos" not in p0_fp
+
+
+def test_params_fingerprint_stable_across_coupled_rebuild():
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    a = fs.generate_coupled_cable_scene(ranges, seed=21, **COUPLED_SCENE_KW)
+    b = fs.generate_coupled_cable_scene(ranges, seed=21, **COUPLED_SCENE_KW)
+    assert fs.params_fingerprint(a.params) == fs.params_fingerprint(b.params)
 
 
 def test_measure_fruiting_forces_works_on_coupled_scene():

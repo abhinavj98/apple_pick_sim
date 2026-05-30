@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Worktree-first feature development
 
-Before **any production code change** (not read-only Q&A, reviews, or docs the user explicitly wants on the current branch):
+Before **any major production code change** (not read-only Q&A, reviews, or docs the user explicitly wants on the current branch) ask user if they want to create a new worktree. If they say yes, proceed:
 
 1. **Check branch** — if on `main` or `master`, do not edit tracked files here.
 2. **Reuse or create a worktree**:

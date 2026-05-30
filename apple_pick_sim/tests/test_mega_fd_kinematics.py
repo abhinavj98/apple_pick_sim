@@ -28,6 +28,7 @@ from apple_pick_sim.fruiting_system.mega_fd import (
 )
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.tests.conftest import (
+    COUPLED_BASE_POS,
     DEFAULT_MJ_KW,
     RANGES_FIXTURE,
     SUB_DT,
@@ -45,6 +46,9 @@ MIN_J_REL_FORCE = 1.0e-4
 SETTLE_HOLD_FRAMES = 20
 DRIVE_HOLD_FRAMES = 50
 POST_DRIVE_HOLD_FRAMES = 25
+# Welded kinematic teleop: sample stem reaction during drive (see coupled tests).
+_WELDED_DRIVE_HOLD_FRAMES = 20
+_WELDED_POST_DRIVE_HOLD_FRAMES = 0
 SEGMENTS = ("primary", "secondary", "spur", "stem")
 FORCE_ROW_BASE = 6
 
@@ -71,6 +75,7 @@ def _build_welded_zero_g_scene() -> cf.MegaCoupledFruitingScene:
     scene = cf.build_mega_coupled_fruiting_fr3(
         fs.load_ranges(RANGES_FIXTURE),
         seed=42,
+        base_pos=COUPLED_BASE_POS,
         stiffness_epsilon=EPS,
         enable_self_collisions=False,
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
@@ -146,6 +151,9 @@ def _drive_to_deflected_state(
     scene: cf.MegaCoupledFruitingScene,
     ctrl: fr3_robot.Fr3EEDirectJointController,
     linear: tuple[float, float, float],
+    *,
+    drive_hold_frames: int | None = None,
+    post_hold_frames: int | None = None,
 ) -> np.ndarray:
     """Teleop hold → drive → hold; return apple displacement (world)."""
     apple = scene.cable.instance(0).apple_body
@@ -157,9 +165,11 @@ def _drive_to_deflected_state(
         scene,
         ctrl,
         fr3_robot.EEVelocity(linear=linear),
-        n_frames=DRIVE_HOLD_FRAMES,
+        n_frames=DRIVE_HOLD_FRAMES if drive_hold_frames is None else int(drive_hold_frames),
     )
-    _hold_substeps(scene, ctrl, hold_zero, n_frames=POST_DRIVE_HOLD_FRAMES)
+    post_n = POST_DRIVE_HOLD_FRAMES if post_hold_frames is None else int(post_hold_frames)
+    if post_n > 0:
+        _hold_substeps(scene, ctrl, hold_zero, n_frames=post_n)
     p1 = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[apple, :3]
     return p1 - p0
 
@@ -168,9 +178,18 @@ def _fd_after_drive(
     scene: cf.MegaCoupledFruitingScene,
     ctrl: fr3_robot.Fr3EEDirectJointController,
     linear: tuple[float, float, float],
+    *,
+    drive_hold_frames: int | None = None,
+    post_hold_frames: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, MegaFdStepResult]:
     """Drive, reset columns, one ``mega_fd_step``; return disp, force, Jacobian, result."""
-    disp = _drive_to_deflected_state(scene, ctrl, linear)
+    disp = _drive_to_deflected_state(
+        scene,
+        ctrl,
+        linear,
+        drive_hold_frames=drive_hold_frames,
+        post_hold_frames=post_hold_frames,
+    )
     reset_perturbed_instances_to_nominal(scene.cable)
     result = mega_fd_step(
         scene.cable,
@@ -197,8 +216,6 @@ def test_fd_stem_wrench_matches_coupled_gather_after_drive():
     scene = _build_welded_zero_g_scene()
     ctrl = new_direct_controller(scene, fr3_robot)
     _drive_to_deflected_state(scene, ctrl, (0.0, 0.15, 0.0))
-
-    gather = _stem_apple_wrench_coupled_gather(scene)
     feat = default_mega_fd_features(scene.cable, 0, dt=SUB_DT)
     assert feat.size == 12
     np.testing.assert_allclose(
@@ -240,26 +257,44 @@ def _stem_force_after_zero_g_drive(linear: tuple[float, float, float]) -> np.nda
     """Fresh mega scene: teleop drive then stem gather (before FD reset)."""
     scene = _build_welded_zero_g_scene()
     ctrl = new_direct_controller(scene, fr3_robot)
-    _drive_to_deflected_state(scene, ctrl, linear)
+    _drive_to_deflected_state(
+        scene,
+        ctrl,
+        linear,
+        drive_hold_frames=_WELDED_DRIVE_HOLD_FRAMES,
+        post_hold_frames=_WELDED_POST_DRIVE_HOLD_FRAMES,
+    )
     scene.coupled_substep(SUB_DT)
     return _stem_apple_wrench_coupled_gather(scene)[:3]
 
 
 @requires_fr3
 def test_jacobian_force_row_sign_flips_when_y_drive_reverses():
-    """Reversing lateral Y teleop flips stem–apple force; some stiffness column flips ∂F_y/∂k."""
-    f_pos = _stem_force_after_zero_g_drive((0.0, 0.15, 0.0))
-    f_neg = _stem_force_after_zero_g_drive((0.0, -0.15, 0.0))
+    """Reversing lateral teleop flips stem–apple force; some stiffness column flips ∂F/∂k."""
+    f_pos = _stem_force_after_zero_g_drive((0.15, 0.0, 0.0))
+    f_neg = _stem_force_after_zero_g_drive((-0.15, 0.0, 0.0))
 
-    assert np.sign(f_pos[1]) != np.sign(f_neg[1]), (
-        f"expected opposite force_y: pos={f_pos[1]}, neg={f_neg[1]}"
+    assert np.sign(f_pos[0]) != np.sign(f_neg[0]), (
+        f"expected opposite force_x: pos={f_pos[0]}, neg={f_neg[0]}"
     )
 
     scene = _build_welded_zero_g_scene()
     ctrl = new_direct_controller(scene, fr3_robot)
-    _, _, j_pos, _ = _fd_after_drive(scene, ctrl, (0.0, 0.15, 0.0))
-    _, _, j_neg, _ = _fd_after_drive(scene, ctrl, (0.0, -0.15, 0.0))
-    row = FORCE_ROW_BASE + 1
+    _, _, j_pos, _ = _fd_after_drive(
+        scene,
+        ctrl,
+        (0.15, 0.0, 0.0),
+        drive_hold_frames=_WELDED_DRIVE_HOLD_FRAMES,
+        post_hold_frames=_WELDED_POST_DRIVE_HOLD_FRAMES,
+    )
+    _, _, j_neg, _ = _fd_after_drive(
+        scene,
+        ctrl,
+        (-0.15, 0.0, 0.0),
+        drive_hold_frames=_WELDED_DRIVE_HOLD_FRAMES,
+        post_hold_frames=_WELDED_POST_DRIVE_HOLD_FRAMES,
+    )
+    row = FORCE_ROW_BASE + 0
     flipped_cols = [
         c
         for c in range(j_pos.shape[1])

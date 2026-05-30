@@ -268,7 +268,7 @@ def _finalize_fruiting_builder_joints(
         _apply_all_chain_collision_filters(builder, chain_bodies)
     for other in extra_chain_groups_for_filters:
         _apply_collision_filters_between_chain_groups(builder, chain_bodies, other)
-    builder.add_ground_plane()
+    # builder.add_ground_plane()
     builder.color()
     model = builder.finalize(device=device)
     model.set_gravity((0.0, 0.0, -9.81))

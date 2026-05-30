@@ -16,10 +16,12 @@ from apple_pick_sim.coupling_force_debug import CouplingForceDebugRecorder
 from apple_pick_sim.fruiting_system import CoupledCableScene
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
+    copy_cable_body_q_between_states,
     harvest_proxy_wrenches,
     harvest_stem_tension_for_tcp,
     launch_mirror_robot_to_proxy,
     launch_mirror_robot_to_proxy_and_apple,
+    sync_solver_body_q_prev_from_state,
 )
 
 DEFAULT_STEM_COUPLING_GAIN: float = 1.0
@@ -247,10 +249,22 @@ class CoupledFruitingScene:
                 dt=dt,
                 device=str(dev),
             )
-        align_bodies = self.proxy_registry.proxy_body_ids
-        if cable.gripper_proxy_apple_joint is not None and cable.apple_body is not None:
-            align_bodies = (*align_bodies, cable.apple_body)
-        align_proxy_body_q_prev_for_vbd(cable, align_bodies)
+        if use_apple_sync:
+            prescribed = (
+                int(cable.gripper_proxy_body),
+                int(cable.apple_body),
+            )
+            # Match state_1 to the teleported prescribed bodies so VBD does not
+            # infer a spurious apple/proxy velocity before the stem constraint solve.
+            copy_cable_body_q_between_states(
+                cable,
+                src_state=cable.state_0,
+                dst_state=cable.state_1,
+                body_ids=prescribed,
+            )
+            sync_solver_body_q_prev_from_state(cable, cable.state_1.body_q)
+        else:
+            align_proxy_body_q_prev_for_vbd(cable, self.proxy_registry.proxy_body_ids)
 
         if self.use_mujoco_contacts:
             self.mj_solver.update_contacts(self.mj_contacts, self.robot_state_0)

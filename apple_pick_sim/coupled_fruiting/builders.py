@@ -129,7 +129,7 @@ def build_placeholder_tcp_robot_model(
 ) -> tuple[newton.Model, int, newton.solvers.SolverMuJoCo]:
     hx, hy, hz = gripper_cfg.box_half_extents
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
-    builder.add_ground_plane()
+    # builder.add_ground_plane()
 
     tcp_body = builder.add_link(
         mass=gripper_cfg.mass,
@@ -311,9 +311,13 @@ def build_coupled_fruiting_fr3(
         mj_kw.update(mujoco_solver_kwargs)
     mj_kw["use_mujoco_cpu"] = use_mujoco_cpu
 
+    proxy_bq = cable.state_0.body_q.numpy().reshape(-1, 7)[cable.gripper_proxy_body]
+    root_xform = fr3_robot.placement_xform_for_proxy(proxy_bq)
+
     robot_model, tcp_body, mj_solver = fr3_robot.build_fr3_robot_model_from_usd(
         device=device,
         usd_path=usd_path,
+        root_xform=root_xform,
         mujoco_solver_kwargs=mj_kw,
     )
 
@@ -354,7 +358,7 @@ def build_mega_coupled_fruiting_fr3(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.5, 0.5, 1.5),
+    base_pos: tuple[float, float, float] = (0., 0.2, 0.3),
     instance_spacing: tuple[float, float, float] = (0.0, 1.5, 0.0),
     stiffness_epsilon: float | None = 0.02,
     params_list: Sequence[FruitingSystemParams] | None = None,
@@ -422,9 +426,14 @@ def build_mega_coupled_fruiting_fr3(
         mj_kw.update(mujoco_solver_kwargs)
     mj_kw["use_mujoco_cpu"] = use_mujoco_cpu
 
+    nom_cable = cable.as_single_instance_coupled(nominal_index)
+    proxy_bq = nom_cable.state_0.body_q.numpy().reshape(-1, 7)[nom_cable.gripper_proxy_body]
+    root_xform = fr3_robot.placement_xform_for_proxy(proxy_bq)
+
     robot_model, tcp_body, mj_solver = fr3_robot.build_fr3_robot_model_from_usd(
         device=device,
         usd_path=usd_path,
+        root_xform=root_xform,
         mujoco_solver_kwargs=mj_kw,
     )
 
@@ -432,7 +441,6 @@ def build_mega_coupled_fruiting_fr3(
     robot_state_1 = robot_model.state()
     robot_control = robot_model.control()
 
-    nom_cable = cable.as_single_instance_coupled(nominal_index)
     bootstrap_articulated_tcp_from_proxy(
         nom_cable,
         robot_model,

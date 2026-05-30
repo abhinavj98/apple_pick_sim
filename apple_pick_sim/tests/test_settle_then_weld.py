@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 
-from apple_pick_sim.tests.conftest import FRAME_DT, RANGES_FIXTURE, SUB_DT, fr3_assets_available
+from apple_pick_sim.tests.conftest import FRAME_DT, RANGES_FIXTURE, SUB_DT, COUPLED_BASE_POS, fr3_assets_available
 
 
 pytestmark = pytest.mark.skipif(
@@ -26,6 +26,7 @@ def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
     settled = cf.build_coupled_fruiting_fr3(
         ranges,
         seed,
+        base_pos=COUPLED_BASE_POS,
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
         gripper_proxy=fs.GripperProxyConfig(
@@ -40,6 +41,7 @@ def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
     welded = cf.build_coupled_fruiting_fr3(
         ranges,
         seed,
+        base_pos=COUPLED_BASE_POS,
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
         gripper_proxy=fs.GripperProxyConfig(
@@ -89,6 +91,7 @@ def test_seed_quiet_zeros_apple_and_proxy_twists():
     settled = cf.build_coupled_fruiting_fr3(
         ranges,
         1,
+        base_pos=COUPLED_BASE_POS,
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
         gripper_proxy=fs.GripperProxyConfig(
@@ -101,6 +104,7 @@ def test_seed_quiet_zeros_apple_and_proxy_twists():
     welded = cf.build_coupled_fruiting_fr3(
         ranges,
         1,
+        base_pos=COUPLED_BASE_POS,
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
         gripper_proxy=fs.GripperProxyConfig(
@@ -129,6 +133,7 @@ def test_seed_aligns_body_q_prev_for_apple_and_proxy():
     settled = cf.build_coupled_fruiting_fr3(
         ranges,
         2,
+        base_pos=COUPLED_BASE_POS,
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
         gripper_proxy=fs.GripperProxyConfig(
@@ -141,6 +146,7 @@ def test_seed_aligns_body_q_prev_for_apple_and_proxy():
     welded = cf.build_coupled_fruiting_fr3(
         ranges,
         2,
+        base_pos=COUPLED_BASE_POS,
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
         gripper_proxy=fs.GripperProxyConfig(
@@ -170,6 +176,7 @@ def test_seed_rebootstrap_clears_proxy_forces():
     settled = cf.build_coupled_fruiting_fr3(
         ranges,
         3,
+        base_pos=COUPLED_BASE_POS,
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
         gripper_proxy=fs.GripperProxyConfig(
@@ -182,6 +189,7 @@ def test_seed_rebootstrap_clears_proxy_forces():
     welded = cf.build_coupled_fruiting_fr3(
         ranges,
         3,
+        base_pos=COUPLED_BASE_POS,
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
         gripper_proxy=fs.GripperProxyConfig(
@@ -197,4 +205,84 @@ def test_seed_rebootstrap_clears_proxy_forces():
     )
     assert bool(np.allclose(welded.proxy_forces.numpy(), 0.0, atol=1e-9))
     assert bool(np.allclose(welded.coupling_forces_cache.numpy(), 0.0, atol=1e-9))
+
+
+def test_mega_settle_then_weld_rebootstrap_tcp_reaches_nominal_proxy():
+    """Mega fd_ghost: settle VBD, seed welded plant, rebootstrap FR3 at settled proxy."""
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+    from apple_pick_sim.robot import fr3_robot
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    seed = 0
+    build_kw = dict(
+        base_pos=COUPLED_BASE_POS,
+        stiffness_epsilon=0.1,
+        enable_self_collisions=False,
+        mujoco_solver_kwargs={"disable_contacts": True},
+    )
+    gripper_free = fs.GripperProxyConfig(
+        mass=fr3_robot.EE_MASS_KG,
+        box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+        fix_to_apple=False,
+    )
+    gripper_weld = fs.GripperProxyConfig(
+        mass=fr3_robot.EE_MASS_KG,
+        box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+        fix_to_apple=True,
+    )
+
+    settled = cf.build_mega_coupled_fruiting_fr3(
+        ranges, seed, gripper_proxy=gripper_free, **build_kw
+    )
+    cf.settle_vbd_substeps(settled, substeps=600, dt=SUB_DT)
+
+    welded = cf.build_mega_coupled_fruiting_fr3(
+        ranges, seed, gripper_proxy=gripper_weld, **build_kw
+    )
+    cf.seed_mega_fix_to_apple_from_settled(
+        welded_scene=welded, settled_scene=settled, quiet_apple_proxy=True
+    )
+
+    inst = welded.cable.instance(welded.nominal_index)
+    apple = inst.apple_body
+    proxy = inst.gripper_proxy_body
+    assert apple is not None and inst.gripper_proxy_offset_in_apple_frame is not None
+
+    settled_bq = settled.cable.state_0.body_q.numpy().reshape(-1, 7)
+    bq = welded.cable.state_0.body_q.numpy().reshape(-1, 7)
+    np.testing.assert_allclose(bq[apple], settled_bq[apple], rtol=1e-5, atol=1e-5)
+
+    tcp = welded.tcp_body_index
+    proxy_pos = bq[proxy, :3]
+    tcp_pos = welded.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, :3]
+    assert float(np.linalg.norm(tcp_pos - proxy_pos)) < 0.15
+
+
+def test_mega_settle_then_weld_raises_when_nominal_out_of_workspace():
+    """Default mega ``base_pos`` places the nominal proxy outside origin-fixed FR3 reach."""
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+    from apple_pick_sim.robot import fr3_robot
+    from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    build_kw = dict(
+        stiffness_epsilon=0.1,
+        enable_self_collisions=False,
+        mujoco_solver_kwargs={"disable_contacts": True},
+    )
+    gripper_weld = fs.GripperProxyConfig(
+        mass=fr3_robot.EE_MASS_KG,
+        box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+        fix_to_apple=True,
+    )
+    with pytest.raises(IKBootstrapConvergenceError, match="position error"):
+        cf.build_mega_coupled_fruiting_fr3(
+            ranges,
+            0,
+            base_pos=(0.0, 0.9, 0.5),
+            gripper_proxy=gripper_weld,
+            **build_kw,
+        )
 

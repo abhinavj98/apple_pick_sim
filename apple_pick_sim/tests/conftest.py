@@ -9,8 +9,8 @@ import pytest
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 RANGES_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_straight_rod_test.json"
 
-# Coupled cable scenes: default rod base near the FR3 at world origin (xy offset 0.5 m).
-COUPLED_BASE_POS = (0.5, 0.5, 0.5)
+# Coupled cable scenes: nominal proxy within FR3 reach from robot base at world origin.
+COUPLED_BASE_POS = (0.2, 0.2, 0.5)
 NO_SELF_COLLISION_KW = {"enable_self_collisions": False}
 COUPLED_SCENE_KW = {**NO_SELF_COLLISION_KW, "base_pos": COUPLED_BASE_POS}
 DEFAULT_MJ_KW = {"disable_contacts": True}
@@ -46,6 +46,7 @@ def pytest_configure(config) -> None:
 def build_coupled_fr3(cf, ranges, seed: int, **kwargs):
     """Build FR3 coupled scene with intra-chain self-collision disabled by default."""
     kwargs.setdefault("enable_self_collisions", False)
+    kwargs.setdefault("base_pos", COUPLED_BASE_POS)
     return cf.build_coupled_fruiting_fr3(ranges, seed, **kwargs)
 
 

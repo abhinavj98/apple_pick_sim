@@ -248,6 +248,16 @@ def _usd_available() -> bool:
     return fr3_robot.fr3_assets_available()
 
 
+def _warmup_ik_consistent_state(ctrl, state) -> None:
+    """One sync + IK + apply so ``state.joint_q`` matches FK used for teleop targets."""
+    import newton
+
+    ctrl.sync_target_from_state(state)
+    ctrl.solve_ik(state)
+    ctrl.apply_to_model_and_state(state)
+    newton.eval_fk(ctrl.robot_model, state.joint_q, state.joint_qd, state)
+
+
 @unittest.skipUnless(_usd_available(), "Requires usd-core and bundled assets/fr3")
 class TestFr3EEVelocityController(unittest.TestCase):
     def test_step_updates_joint_q(self):
@@ -289,6 +299,63 @@ class TestFr3EEVelocityController(unittest.TestCase):
             rtol=0,
             atol=1e-6,
         )
+
+    def test_run_ik_teleop_frame_syncs_target_before_every_frame(self):
+        """Each teleop frame re-anchors the target to FK before integrating velocity."""
+        import numpy as np
+        import newton
+
+        model, tcp_idx, _ = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        ctrl = fr3_robot.Fr3EEVelocityController(model, tcp_idx)
+        ctrl.sync_target_from_state(state)
+
+        ctrl.target_tf = fr3_robot.integrate_tcp_target(
+            ctrl.target_tf,
+            linear_vel=wp.vec3(0.5, 0.0, 0.0),
+            angular_vel=wp.vec3(0.0, 0.0, 0.0),
+            dt=1.0,
+        )
+        ctrl.run_ik_teleop_frame(1.0 / 60.0, state, velocity=fr3_robot.EEVelocity())
+
+        bq = state.body_q.numpy().reshape(-1, 7)[tcp_idx]
+        target = wp.transform_get_translation(ctrl.target_tf)
+        np.testing.assert_allclose(
+            [float(target[0]), float(target[1]), float(target[2])],
+            bq[:3],
+            rtol=0,
+            atol=1e-4,
+        )
+
+    def test_run_ik_teleop_frame_reachable_velocity_passes(self):
+        import newton
+
+        model, tcp_idx, _ = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        ctrl = fr3_robot.Fr3EEVelocityController(model, tcp_idx)
+        _warmup_ik_consistent_state(ctrl, state)
+        ctrl.run_ik_teleop_frame(
+            1.0 / 60.0,
+            state,
+            velocity=fr3_robot.EEVelocity(linear=(0.05, 0.0, 0.0)),
+        )
+
+    def test_run_ik_teleop_frame_unreachable_velocity_raises(self):
+        import newton
+
+        model, tcp_idx, _ = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        ctrl = fr3_robot.Fr3EEVelocityController(model, tcp_idx)
+        _warmup_ik_consistent_state(ctrl, state)
+        with self.assertRaises(fr3_robot.IKTeleopConvergenceError):
+            ctrl.run_ik_teleop_frame(
+                1.0 / 60.0,
+                state,
+                velocity=fr3_robot.EEVelocity(linear=(50.0, 0.0, 0.0)),
+            )
 
     def test_run_ik_teleop_frame_idle_resyncs_tcp_target_to_state(self):
         """Zero twist must re-anchor the integrated target to simulated FK (no drift on idle)."""
@@ -356,7 +423,7 @@ class TestFr3EEDirectJointController(unittest.TestCase):
         control = model.control()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         ctrl = fr3_robot.Fr3EEDirectJointController(model, tcp_idx)
-        ctrl.sync_target_from_state(state)
+        _warmup_ik_consistent_state(ctrl, state)
         ctrl.run_ik_teleop_frame(
             1.0 / 60.0,
             state,
@@ -379,7 +446,7 @@ class TestFr3EEDirectJointController(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         ctrl = fr3_robot.Fr3EEDirectJointController(model, tcp_idx)
-        ctrl.sync_target_from_state(state)
+        _warmup_ik_consistent_state(ctrl, state)
         x_before = float(mj_solver.mj_data.xpos.reshape(-1, 3)[tcp_idx, 0])
 
         ctrl.run_ik_teleop_frame(
@@ -403,7 +470,7 @@ class TestFr3EEDirectJointController(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         ctrl = fr3_robot.Fr3EEDirectJointController(model, tcp_idx)
-        ctrl.sync_target_from_state(state)
+        _warmup_ik_consistent_state(ctrl, state)
         x_before = float(mj_solver.mj_data.xpos.reshape(-1, 3)[tcp_idx, 0])
 
         ctrl.run_ik_teleop_frame(

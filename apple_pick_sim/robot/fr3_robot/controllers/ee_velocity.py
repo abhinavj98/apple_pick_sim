@@ -17,6 +17,12 @@ from apple_pick_sim.robot.fr3_robot.controllers.keyboard import (
     read_keyboard_ee_velocity,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import integrate_tcp_target
+from apple_pick_sim.robot.fr3_robot.placement import (
+    IK_TELEOP_POS_TOL_M,
+    IK_TELEOP_ROT_TOL_RAD,
+    raise_if_ik_teleop_not_converged,
+    tcp_ik_target_pose_errors,
+)
 from apple_pick_sim.robot.fr3_robot.setup import (
     init_mujoco_actuator_targets_from_model,
     sync_mujoco_actuator_targets_from_joint_q,
@@ -90,12 +96,18 @@ class Fr3EEVelocityController:
         angular_speed: float = 1.0,
         ik_iterations: int = 24,
         joint_limit_weight: float = 10.0,
+        ik_pos_tol_m: float = IK_TELEOP_POS_TOL_M,
+        ik_rot_tol_rad: float = IK_TELEOP_ROT_TOL_RAD,
+        print_ik_teleop_error_each_step: bool = False,
     ) -> None:
         self.robot_model = robot_model
         self.tcp_body_index = tcp_body_index
         self.linear_speed = linear_speed
         self.angular_speed = angular_speed
         self.ik_iterations = ik_iterations
+        self.ik_pos_tol_m = ik_pos_tol_m
+        self.ik_rot_tol_rad = ik_rot_tol_rad
+        self.print_ik_teleop_error_each_step = print_ik_teleop_error_each_step
         self.target_tf = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
         self._pos_obj, self._rot_obj, self.joint_q, self._ik_solver = _make_tcp_ik_solver(
             robot_model,
@@ -163,7 +175,8 @@ class Fr3EEVelocityController:
         lock_angular: bool = False,
         after_advance: Any | None = None,
     ) -> EEVelocity:
-        """Integrate TCP target, optionally sync on idle, and solve IK from ``state``."""
+        """Re-anchor to FK, integrate one velocity step, solve IK, and verify tolerance."""
+        self.sync_target_from_state(state)
         velocity = self.advance_target(
             dt,
             velocity=velocity,
@@ -173,12 +186,62 @@ class Fr3EEVelocityController:
         )
         if after_advance is not None:
             after_advance()
-        if velocity.is_zero():
-            self.sync_target_from_state(state)
-            if after_advance is not None:
-                after_advance()
         self.solve_ik(state)
+        pos_err: float | None = None
+        rot_err: float | None = None
+        if self.print_ik_teleop_error_each_step or not velocity.is_zero():
+            pos_err, rot_err = self.measure_ik_target_error(state)
+        if self.print_ik_teleop_error_each_step and pos_err is not None and rot_err is not None:
+            self._print_ik_teleop_error(pos_err, rot_err, velocity=velocity)
+        if not velocity.is_zero() and pos_err is not None and rot_err is not None:
+            self._raise_if_ik_not_converged(pos_err, rot_err)
         return velocity
+
+    def measure_ik_target_error(self, state: Any) -> tuple[float, float]:
+        """Return TCP position [m] and orientation [rad] error vs the integrated IK target."""
+        return tcp_ik_target_pose_errors(
+            self.robot_model,
+            state,
+            tcp_body_index=self.tcp_body_index,
+            target_tf=self.target_tf,
+            joint_q=self.joint_q.numpy().reshape(-1),
+        )
+
+    def _print_ik_teleop_error(
+        self,
+        pos_err_m: float,
+        rot_err_rad: float,
+        *,
+        velocity: EEVelocity,
+    ) -> None:
+        pos_ok = pos_err_m < self.ik_pos_tol_m
+        rot_ok = rot_err_rad < self.ik_rot_tol_rad
+        status = "OK" if pos_ok and rot_ok else "FAIL"
+        cmd = "hold"
+        if not velocity.is_zero():
+            lin = velocity.linear
+            ang = velocity.angular
+            cmd = (
+                f"v=({lin[0]:+.3f},{lin[1]:+.3f},{lin[2]:+.3f}) "
+                f"w=({ang[0]:+.3f},{ang[1]:+.3f},{ang[2]:+.3f})"
+            )
+        print(
+            f"IK teleop [{status}] {cmd} "
+            f"pos_err={pos_err_m * 1000.0:.2f} mm (tol {self.ik_pos_tol_m * 1000.0:.2f}) "
+            f"rot_err={rot_err_rad:.4f} rad (tol {self.ik_rot_tol_rad:.4f})",
+            flush=True,
+        )
+
+    def _raise_if_ik_not_converged(self, pos_err_m: float, rot_err_rad: float) -> None:
+        """Raise :class:`~apple_pick_sim.robot.fr3_robot.placement.IKTeleopConvergenceError` on miss."""
+        target_pos = wp.transform_get_translation(self.target_tf)
+        raise_if_ik_teleop_not_converged(
+            pos_err_m,
+            rot_err_rad,
+            pos_tol_m=self.ik_pos_tol_m,
+            rot_tol_rad=self.ik_rot_tol_rad,
+            target_pos=(float(target_pos[0]), float(target_pos[1]), float(target_pos[2])),
+        )
 
     def solve_ik(self, state: Any | None = None) -> None:
         """Run the IK solver for the current target (may be CUDA-graph captured).

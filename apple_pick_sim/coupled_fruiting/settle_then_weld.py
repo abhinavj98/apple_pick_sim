@@ -214,16 +214,14 @@ def rebootstrap_robot_from_cable_proxy(
     _run_bootstrap(int(ik_iterations))
 
     # IK can converge to a poor local minimum after a large settle displacement.
-    # Retry once from the first solution with a larger iteration budget.
+    # Retry once with a larger iteration budget (raises if still out of tolerance).
     if _tcp_proxy_gap_m() > 0.15:
         _run_bootstrap(max(int(ik_iterations) * 2, 192))
 
-    if scene.robot_control is not None:
-        fr3_robot.init_mujoco_actuator_targets_from_model(
-            scene.robot_model, scene.robot_control
-        )
+    fr3_robot.init_mujoco_actuator_targets_from_model(
+        scene.robot_model, scene.robot_control
+    )
     if scene.proxy_forces is not None:
         scene.proxy_forces.zero_()
     if scene.coupling_forces_cache is not None:
         scene.coupling_forces_cache.zero_()
-

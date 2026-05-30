@@ -68,8 +68,7 @@ class ExampleFr3Keyboard:
 
     def step(self) -> None:
         # Host-side input + target integration (must not run inside CUDA graph capture).
-        self.ee_ctrl.advance_target(self.frame_dt, viewer=self.viewer)
-        self.ee_ctrl.solve_ik()
+        self.ee_ctrl.run_ik_teleop_frame(self.frame_dt, self.state, viewer=self.viewer)
         self.ee_ctrl.apply_to_model_and_state(self.state)
         self.sim_time += self.frame_dt
 

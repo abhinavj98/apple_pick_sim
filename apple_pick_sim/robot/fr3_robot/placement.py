@@ -17,14 +17,48 @@ from apple_pick_sim.robot.fr3_robot.setup import np_zeros_like_joint_qd
 IK_BOOTSTRAP_POS_TOL_M = 0.25
 IK_BOOTSTRAP_ROT_TOL_RAD = 0.15
 
+# Per-frame teleop: IK solution vs integrated TCP target (after one velocity step from FK).
+IK_TELEOP_POS_TOL_M = 0.001
+IK_TELEOP_ROT_TOL_RAD = 0.001
+
 
 class IKBootstrapConvergenceWarning(UserWarning):
     """FR3 TCP IK bootstrap missed position/orientation tolerance vs gripper proxy."""
 
 
+class IKBootstrapConvergenceError(RuntimeError):
+    """FR3 TCP IK bootstrap missed position/orientation tolerance vs the gripper proxy."""
+
+
+class IKTeleopConvergenceError(RuntimeError):
+    """FR3 TCP IK teleop missed position/orientation tolerance vs the integrated target."""
+
+
 def enable_ik_bootstrap_warnings_for_examples() -> None:
     """Show :class:`IKBootstrapConvergenceWarning` on every occurrence (CLI / examples)."""
     warnings.simplefilter("always", IKBootstrapConvergenceWarning)
+
+
+def pose_errors_q7_vs_q7(q7_a: np.ndarray, q7_b: np.ndarray) -> tuple[float, float]:
+    """Return position error [m] and orientation error [rad] between two ``body_q`` rows."""
+    a = np.asarray(q7_a, dtype=np.float64).reshape(7)
+    b = np.asarray(q7_b, dtype=np.float64).reshape(7)
+    pos_err = float(np.linalg.norm(a[:3] - b[:3]))
+    qa = a[3:7] / (np.linalg.norm(a[3:7]) + 1e-12)
+    qb = b[3:7] / (np.linalg.norm(b[3:7]) + 1e-12)
+    rot_err = 2.0 * float(np.arccos(np.clip(abs(float(np.dot(qa, qb))), -1.0, 1.0)))
+    return pos_err, rot_err
+
+
+def pose_errors_q7_vs_target(q7: np.ndarray, target_tf: wp.transform) -> tuple[float, float]:
+    """Return TCP position/orientation error [m, rad] vs a world-frame target transform."""
+    pos = wp.transform_get_translation(target_tf)
+    rot = wp.transform_get_rotation(target_tf)
+    target_q7 = np.array(
+        [float(pos[0]), float(pos[1]), float(pos[2]), float(rot[0]), float(rot[1]), float(rot[2]), float(rot[3])],
+        dtype=np.float64,
+    )
+    return pose_errors_q7_vs_q7(q7, target_q7)
 
 
 def tcp_proxy_pose_errors(
@@ -35,13 +69,67 @@ def tcp_proxy_pose_errors(
     proxy_body_index: int,
 ) -> tuple[float, float]:
     """Return TCP position error [m] and orientation error [rad] vs the proxy."""
-    rq = robot_body_q.reshape(-1, 7)[tcp_body_index].astype(np.float64)
-    pq = proxy_body_q.reshape(-1, 7)[proxy_body_index].astype(np.float64)
-    pos_err = float(np.linalg.norm(rq[:3] - pq[:3]))
-    qa = rq[3:7] / (np.linalg.norm(rq[3:7]) + 1e-12)
-    qb = pq[3:7] / (np.linalg.norm(pq[3:7]) + 1e-12)
-    rot_err = 2.0 * float(np.arccos(np.clip(abs(float(np.dot(qa, qb))), -1.0, 1.0)))
+    rq = robot_body_q.reshape(-1, 7)[tcp_body_index]
+    pq = proxy_body_q.reshape(-1, 7)[proxy_body_index]
+    return pose_errors_q7_vs_q7(rq, pq)
+
+
+def tcp_ik_target_pose_errors(
+    robot_model: newton.Model,
+    state: Any,
+    *,
+    tcp_body_index: int,
+    target_tf: wp.transform,
+    joint_q: Any,
+) -> tuple[float, float]:
+    """FK ``joint_q`` and compare TCP pose to ``target_tf``. Restores ``state`` afterward."""
+    jq_saved = state.joint_q.numpy().copy()
+    jqd_saved = state.joint_qd.numpy().copy()
+    jqd_zero = np_zeros_like_joint_qd(robot_model)
+    jq = np.asarray(joint_q, dtype=robot_model.joint_q.dtype).reshape(-1)
+    state.joint_q.assign(jq)
+    state.joint_qd.assign(jqd_zero)
+    newton.eval_fk(robot_model, state.joint_q, state.joint_qd, state)
+    pos_err, rot_err = pose_errors_q7_vs_target(
+        state.body_q.numpy().reshape(-1, 7)[tcp_body_index],
+        target_tf,
+    )
+    state.joint_q.assign(jq_saved)
+    state.joint_qd.assign(jqd_saved)
+    newton.eval_fk(robot_model, state.joint_q, state.joint_qd, state)
     return pos_err, rot_err
+
+
+def raise_if_ik_teleop_not_converged(
+    pos_err_m: float,
+    rot_err_rad: float,
+    *,
+    pos_tol_m: float = IK_TELEOP_POS_TOL_M,
+    rot_tol_rad: float = IK_TELEOP_ROT_TOL_RAD,
+    target_pos: tuple[float, float, float] | None = None,
+) -> None:
+    """Raise :class:`IKTeleopConvergenceError` when TCP IK teleop misses tolerance."""
+    pos_ok = pos_err_m < pos_tol_m
+    rot_ok = rot_err_rad < rot_tol_rad
+    if pos_ok and rot_ok:
+        return
+
+    parts: list[str] = []
+    if not pos_ok:
+        parts.append(f"position error {pos_err_m:.4f} m (tol {pos_tol_m:.4f} m)")
+    if not rot_ok:
+        parts.append(f"orientation error {rot_err_rad:.4f} rad (tol {rot_tol_rad:.4f} rad)")
+    target_note = ""
+    if target_pos is not None:
+        target_note = (
+            f"; target position ({target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f})"
+        )
+    raise IKTeleopConvergenceError(
+        "FR3 TCP IK teleop did not converge: "
+        + ", ".join(parts)
+        + target_note
+        + ". Command may be unreachable (workspace, joint limits, or singularity)."
+    )
 
 
 def warn_if_ik_bootstrap_not_converged(
@@ -79,6 +167,39 @@ def warn_if_ik_bootstrap_not_converged(
     return False
 
 
+def raise_if_ik_bootstrap_not_converged(
+    pos_err_m: float,
+    rot_err_rad: float,
+    *,
+    pos_tol_m: float = IK_BOOTSTRAP_POS_TOL_M,
+    rot_tol_rad: float = IK_BOOTSTRAP_ROT_TOL_RAD,
+    target_pos: tuple[float, float, float] | None = None,
+) -> None:
+    """Raise :class:`IKBootstrapConvergenceError` when TCP IK bootstrap misses tolerance."""
+    pos_ok = pos_err_m < pos_tol_m
+    rot_ok = rot_err_rad < rot_tol_rad
+    if pos_ok and rot_ok:
+        return
+
+    parts: list[str] = []
+    if not pos_ok:
+        parts.append(f"position error {pos_err_m:.4f} m (tol {pos_tol_m:.4f} m)")
+    if not rot_ok:
+        parts.append(f"orientation error {rot_err_rad:.4f} rad (tol {rot_tol_rad:.4f} rad)")
+    target_note = ""
+    if target_pos is not None:
+        target_note = (
+            f"; target proxy position ({target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f})"
+        )
+    raise IKBootstrapConvergenceError(
+        "FR3 TCP IK bootstrap did not converge: "
+        + ", ".join(parts)
+        + target_note
+        + ". Robot base is fixed at the origin; adjust cable base_pos / layout or "
+        "ik_bootstrap_iterations so the proxy lies in the arm workspace."
+    )
+
+
 def warn_ik_bootstrap_for_fr3_scene(scene: Any) -> bool:
     """Re-check nominal-column TCP vs proxy after build; warn if IK bootstrap missed tolerance."""
     robot_model = getattr(scene, "robot_model", None)
@@ -109,16 +230,13 @@ def warn_ik_bootstrap_for_fr3_scene(scene: Any) -> bool:
 
 
 def placement_xform_for_proxy(
-    proxy_body_q7: Any,
+    proxy_body_q7: Any = None,
     *,
     vertical_reach_m: float = 0.85,
 ) -> wp.transform:
-    """World transform to park the FR3 root so ``tcp`` can reach a high gripper proxy."""
-    import numpy as np
-
-    p = np.asarray(proxy_body_q7, dtype=np.float64).reshape(7)
-    base_z = max(0.0, float(p[2]) - vertical_reach_m)
-    return wp.transform(wp.vec3(float(p[0]), float(p[1]), base_z), wp.quat_identity())
+    """World transform for the FR3 root (fixed at origin; proxy pose is not used)."""
+    del proxy_body_q7, vertical_reach_m
+    return wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
 
 def bootstrap_tcp_ik_from_proxy(
@@ -128,6 +246,7 @@ def bootstrap_tcp_ik_from_proxy(
     robot_state_0: Any,
     *,
     ik_iterations: int = 48,
+    raise_on_failure: bool = True,
 ) -> None:
     """Place the arm so ``tcp`` matches the cable gripper proxy pose (position + orientation)."""
     import newton.ik as ik
@@ -186,10 +305,10 @@ def bootstrap_tcp_ik_from_proxy(
         tcp_body_index=tcp_body_index,
         proxy_body_index=proxy_body,
     )
-    warn_if_ik_bootstrap_not_converged(
-        pos_err,
-        rot_err,
-        target_pos=(float(target_pos[0]), float(target_pos[1]), float(target_pos[2])),
-    )
+    target_xyz = (float(target_pos[0]), float(target_pos[1]), float(target_pos[2]))
+    if raise_on_failure:
+        raise_if_ik_bootstrap_not_converged(pos_err, rot_err, target_pos=target_xyz)
+    else:
+        warn_if_ik_bootstrap_not_converged(pos_err, rot_err, target_pos=target_xyz)
 
 

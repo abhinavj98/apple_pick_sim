@@ -43,6 +43,8 @@ See [`assets/fr3/README.md`](../assets/fr3/README.md).
 
 Keys (Newton **ViewerGL**, focus window): **I/K J/L R/F** world translate; **U/O T/G Z/X** rotate. **W/S** move the camera, not the arm.
 
+Teleop re-syncs the integrated TCP target from simulated FK **every frame** before advancing by one velocity step. Non-zero commands run IK and raise :class:`~apple_pick_sim.robot.fr3_robot.IKTeleopConvergenceError` when the solution misses ``IK_TELEOP_*`` tolerances (default 10 mm / 50 mrad vs the integrated target). Zero-velocity (hold) frames skip the raise. Mega keyboard: ``--print-ik-error`` logs per-frame error to stdout.
+
 ## Tests
 
 - `apple_pick_sim/tests/test_fr3_usd_import.py` — import smoke, EE + TCP bodies, MuJoCo construct

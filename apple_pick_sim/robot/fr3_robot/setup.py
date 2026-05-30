@@ -74,7 +74,7 @@ def build_fr3_robot_model_from_usd(
     device: str | None = None,
     usd_path: Path | str | None = None,
     root_xform: wp.transform | None = None,
-    add_ground_plane: bool = True,
+    add_ground_plane: bool = False,
     mujoco_solver_kwargs: dict[str, Any] | None = None,
 ) -> tuple[newton.Model, int, SolverMuJoCo]:
     """Build FR3 + Isaac-exported EE/tcp from USD for ``SolverMuJoCo``.

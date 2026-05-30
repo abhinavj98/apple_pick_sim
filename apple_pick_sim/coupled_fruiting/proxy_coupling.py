@@ -545,6 +545,20 @@ def limit_stem_coupling_wrench(
 
 
 @wp.kernel
+def _copy_body_state_kernel(
+    body_ids: wp.array(dtype=int),
+    src_body_q: wp.array(dtype=wp.transform),
+    src_body_qd: wp.array(dtype=wp.spatial_vector),
+    dst_body_q: wp.array(dtype=wp.transform),
+    dst_body_qd: wp.array(dtype=wp.spatial_vector),
+):
+    i = wp.tid()
+    bid = body_ids[i]
+    dst_body_q[bid] = src_body_q[bid]
+    dst_body_qd[bid] = src_body_qd[bid]
+
+
+@wp.kernel
 def _align_body_q_prev_kernel(
     body_ids: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
@@ -560,22 +574,63 @@ def align_proxy_body_q_prev_for_vbd(
     cable_scene,
     proxy_body_ids: tuple[int, ...] | wp.array,
 ) -> None:
-    """Align ``SolverVBD.body_q_prev`` with ``state.body_q`` on proxy bodies after kinematic sync."""
-    if not proxy_body_ids:
-        return
-    if isinstance(proxy_body_ids, wp.array):
-        ids_arr = proxy_body_ids
+    """Align ``SolverVBD.body_q_prev`` with ``state_0.body_q`` on listed bodies after kinematic sync."""
+    sync_solver_body_q_prev_from_state(
+        cable_scene,
+        cable_scene.state_0.body_q,
+        proxy_body_ids,
+    )
+
+
+def sync_solver_body_q_prev_from_state(
+    cable_scene,
+    body_q_source,
+    body_ids: tuple[int, ...] | wp.array | None = None,
+) -> None:
+    """Copy ``body_q_source[bid]`` into ``solver.body_q_prev[bid]`` for AVBD pre-step consistency."""
+    if body_ids is None:
+        body_ids = tuple(range(int(cable_scene.model.body_count)))
+    if isinstance(body_ids, wp.array):
+        ids_arr = body_ids
     else:
+        if not body_ids:
+            return
         dev = cable_scene.state_0.body_q.device
-        ids_arr = wp.array(tuple(int(i) for i in proxy_body_ids), dtype=int, device=dev)
+        ids_arr = wp.array(tuple(int(i) for i in body_ids), dtype=int, device=dev)
     dev = ids_arr.device
     wp.launch(
         _align_body_q_prev_kernel,
         dim=ids_arr.shape[0],
         inputs=[
             ids_arr,
-            cable_scene.state_0.body_q,
+            body_q_source,
             cable_scene.solver.body_q_prev,
+        ],
+        device=dev,
+    )
+
+
+def copy_cable_body_q_between_states(
+    cable_scene,
+    *,
+    src_state,
+    dst_state,
+    body_ids: tuple[int, ...],
+) -> None:
+    """Copy ``body_q`` / ``body_qd`` for listed bodies between cable states (device-side)."""
+    if not body_ids:
+        return
+    dev = cable_scene.state_0.body_q.device
+    ids_arr = wp.array(tuple(int(i) for i in body_ids), dtype=int, device=dev)
+    wp.launch(
+        _copy_body_state_kernel,
+        dim=ids_arr.shape[0],
+        inputs=[
+            ids_arr,
+            src_state.body_q,
+            src_state.body_qd,
+            dst_state.body_q,
+            dst_state.body_qd,
         ],
         device=dev,
     )

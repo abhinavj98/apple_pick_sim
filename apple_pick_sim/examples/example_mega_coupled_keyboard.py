@@ -146,6 +146,11 @@ def _make_parser() -> argparse.ArgumentParser:
         help="VBD substeps to settle before welding (fix_to_apple only).",
     )
     p.add_argument(
+        "--print-ik-error",
+        action="store_true",
+        help="Print TCP IK position/orientation error vs target every teleop frame.",
+    )
+    p.add_argument(
         "--mujoco-viewer",
         action="store_true",
         help="Open MuJoCo passive viewer for the FR3 arm.",
@@ -396,7 +401,9 @@ def main() -> None:
         )
 
     controller = fr3_robot.Fr3EEDirectJointController(
-        scene.robot_model, scene.tcp_body_index
+        scene.robot_model,
+        scene.tcp_body_index,
+        print_ik_teleop_error_each_step=bool(getattr(args, "print_ik_error", False)),
     )
     controller.sync_target_from_state(scene.robot_state_0)
 

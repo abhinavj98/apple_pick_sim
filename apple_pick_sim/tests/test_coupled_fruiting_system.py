@@ -33,8 +33,10 @@ from conftest import (
     run_mujoco_substeps_direct_hold,
 )
 
-# FR3 IK bootstrap residual on the straight-rod fixture (see seed sweep in tests).
-_FR3_BOOTSTRAP_POS_TOL_M = 0.25
+from apple_pick_sim.robot.fr3_robot.placement import (
+    IK_BOOTSTRAP_POS_TOL_M,
+    IK_BOOTSTRAP_ROT_TOL_RAD,
+)
 # Quiescent stem-harvest TCP load under direct-joint hold (aligned with coupling_stability).
 _QUIESCENT_HARVEST_F_CAP_N = 500.0
 _GRAVITY_MS2 = 9.81
@@ -162,10 +164,10 @@ def test_tcp_pose_matches_proxy_after_bootstrap():
     rq = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp]
     pq = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[proxy]
     pos_err = float(np.linalg.norm(rq[:3] - pq[:3]))
-    assert pos_err < _FR3_BOOTSTRAP_POS_TOL_M, (
+    assert pos_err < IK_BOOTSTRAP_POS_TOL_M, (
         f"TCP/proxy position mismatch after IK bootstrap: {pos_err} m"
     )
-    assert _quat_angle_error_rad(rq, pq) < 0.15
+    assert _quat_angle_error_rad(rq, pq) < IK_BOOTSTRAP_ROT_TOL_RAD
 
 
 def test_robot_state_matches_model_after_bootstrap():

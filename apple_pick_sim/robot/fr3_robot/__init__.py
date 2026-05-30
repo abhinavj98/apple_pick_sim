@@ -22,8 +22,11 @@ from apple_pick_sim.robot.fr3_robot.paths import (
     fr3_assets_available,
 )
 from apple_pick_sim.robot.fr3_robot.placement import (
+    IKBootstrapConvergenceWarning,
     bootstrap_tcp_ik_from_proxy,
+    enable_ik_bootstrap_warnings_for_examples,
     placement_xform_for_proxy,
+    warn_ik_bootstrap_for_fr3_scene,
 )
 from apple_pick_sim.robot.fr3_robot.setup import (
     build_fr3_robot_model_from_usd,
@@ -47,13 +50,16 @@ __all__ = [
     "OMNIVERSE_FR3_USD",
     "TESTFR3_SCENE_USD",
     "_KeyViewer",
+    "IKBootstrapConvergenceWarning",
     "bootstrap_tcp_ik_from_proxy",
+    "enable_ik_bootstrap_warnings_for_examples",
     "build_fr3_robot_model_from_usd",
     "fr3_assets_available",
     "init_mujoco_actuator_targets_from_model",
     "integrate_tcp_target",
     "np_zeros_like_joint_qd",
     "placement_xform_for_proxy",
+    "warn_ik_bootstrap_for_fr3_scene",
     "poll_viewer_events",
     "print_fr3_keyboard_bindings",
     "read_keyboard_ee_velocity",

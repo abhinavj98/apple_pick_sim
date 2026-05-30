@@ -251,6 +251,8 @@ class ExampleCoupledFruiting:
         sim_device = resolve_sim_device(getattr(args, "device", None) if args else None)
         print(f"Warp device: {sim_device}")
         robot_kind = getattr(args, "robot", "placeholder") if args else "placeholder"
+        if robot_kind == "fr3":
+            fr3_robot.enable_ik_bootstrap_warnings_for_examples()
         if robot_kind == "fr3" and not fr3_robot.fr3_assets_available():
             raise SystemExit(
                 "FR3 assets not found under assets/fr3/; see assets/fr3/README.md"

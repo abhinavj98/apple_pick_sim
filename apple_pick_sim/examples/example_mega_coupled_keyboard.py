@@ -345,6 +345,8 @@ def main() -> None:
     import apple_pick_sim.fruiting_system as fs
     from apple_pick_sim.robot import fr3_robot
     from apple_pick_sim.sim_device import resolve_sim_device
+
+    fr3_robot.enable_ik_bootstrap_warnings_for_examples()
     from apple_pick_sim.tests.conftest import SUBSTEPS_PER_FRAME, SUB_DT
 
     sim_device = resolve_sim_device(getattr(args, "device", None))

@@ -310,15 +310,13 @@ def _limit_and_write_tcp_stem_wrench_kernel(
     use_grasp_offset: int,
 ):
     """Under-relax and clamp stem harvest; write spatial wrench at ``tcp_index``."""
-    f = force_raw[0]
-    tau = torque_raw[0]
-    if use_explicit_apple_weight != 0 and apple_mass_kg > 0.0:
-        g = gravity
-        f_add = wp.vec3(
-            -apple_mass_kg * g[0],
-            -apple_mass_kg * g[1],
-            -apple_mass_kg * g[2],
-        )
+    f_stem_at_com = force_raw[0]
+    tau_stem_at_com = torque_raw[0]
+    
+    f_total_tcp = f_stem_at_com
+    tau_total_tcp = tau_stem_at_com
+    
+    if apple_body_index >= 0:
         tcp_xf = robot_body_q[tcp_index]
         p_tcp = wp.transform_get_translation(tcp_xf)
         if use_grasp_offset != 0:
@@ -326,20 +324,37 @@ def _limit_and_write_tcp_stem_wrench_kernel(
             p_apple = p_tcp - wp.quat_rotate(r_tcp, grasp_offset)
         else:
             p_apple = wp.transform_get_translation(cable_body_q[apple_body_index])
-        r_arm = p_apple - p_tcp
-        f = f + f_add
-        tau = tau + wp.cross(r_arm, f_add)
-    f = f * coupling_gain
-    tau = tau * coupling_gain
+        
+        r_tcp_to_apple_com = p_apple - p_tcp
+        
+        # Transfer the stem force from the apple COM to the TCP
+        
+        if use_explicit_apple_weight != 0 and apple_mass_kg > 0.0:
+            g = gravity
+            f_apple_weight = wp.vec3(
+                -apple_mass_kg * g[0],
+                -apple_mass_kg * g[1],
+                -apple_mass_kg * g[2],
+            )
+            f_total_tcp = f_total_tcp + f_apple_weight
+        tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_total_tcp)
+            
+    f_total_tcp = f_total_tcp * coupling_gain
+    tau_total_tcp = tau_total_tcp * coupling_gain
+    
     if use_force_cap != 0 and force_cap_N > 0.0:
-        fn = wp.length(f)
+        fn = wp.length(f_total_tcp)
         if fn > force_cap_N:
-            f = f * (force_cap_N / fn)
+            f_total_tcp = f_total_tcp * (force_cap_N / fn)
     if use_torque_cap != 0 and torque_cap_Nm > 0.0:
-        tn = wp.length(tau)
+        tn = wp.length(tau_total_tcp)
         if tn > torque_cap_Nm:
-            tau = tau * (torque_cap_Nm / tn)
-    wrenches[tcp_index] = wp.spatial_vector(f[0], f[1], f[2], tau[0], tau[1], tau[2])
+            tau_total_tcp = tau_total_tcp * (torque_cap_Nm / tn)
+            
+    wrenches[tcp_index] = wp.spatial_vector(
+        f_total_tcp[0], f_total_tcp[1], f_total_tcp[2], 
+        tau_total_tcp[0], tau_total_tcp[1], tau_total_tcp[2]
+    )
 
 
 def _harvest_stem_tension_for_tcp_cpu(
@@ -382,29 +397,50 @@ def _harvest_stem_tension_for_tcp_cpu(
     wrenches[:] = 0.0
     if records:
         rec = records[0]
-        f = np.asarray(rec.force_world, dtype=np.float64)
-        tau = np.asarray(rec.torque_at_child_com_world, dtype=np.float64)
-        if explicit_apple_weight and robot_body_q is not None and apple_body_index is not None:
-            g = gravity if gravity is not None else wp.vec3(0.0, 0.0, -9.81)
-            m = (
-                float(apple_mass_kg)
-                if apple_mass_kg is not None
-                else apple_mass_kg_from_model(cable_model, apple_body_index)
+        f_stem_at_com = np.asarray(rec.force_world, dtype=np.float64)
+        tau_stem_at_com = np.asarray(rec.torque_at_child_com_world, dtype=np.float64)
+        
+        f_total_tcp = f_stem_at_com.copy()
+        tau_total_tcp = tau_stem_at_com.copy()
+        
+        if robot_body_q is not None and apple_body_index is not None:
+            # Transfer the stem force from the apple COM to the TCP
+            from apple_pick_sim.coupled_fruiting.explicit_load import (
+                apple_com_from_tcp_grasp_offset,
+                body_com_position_world,
+                body_orientation_world,
             )
-            if m > 0.0:
-                f_add, tau_add = explicit_apple_wrench_for_stem_harvest(
-                    mass_kg=m,
-                    gravity=g,
-                    robot_body_q=robot_body_q,
-                    cable_body_q=body_q_post,
-                    tcp_body_index=tcp_body_index,
-                    apple_body_index=apple_body_index,
-                    grasp_offset_in_apple_frame=grasp_offset_in_apple_frame,
+            
+            p_tcp = body_com_position_world(robot_body_q, tcp_body_index)
+            if grasp_offset_in_apple_frame is not None:
+                tcp_rot = body_orientation_world(robot_body_q, tcp_body_index)
+                p_apple = apple_com_from_tcp_grasp_offset(
+                    p_tcp, tcp_rot, grasp_offset_in_apple_frame
                 )
-                f = f + f_add
-                tau = tau + tau_add
-        wrenches[tcp_body_index, :3] = f.astype(np.float32)
-        wrenches[tcp_body_index, 3:6] = tau.astype(np.float32)
+            else:
+                p_apple = body_com_position_world(body_q_post, apple_body_index)
+                
+            r_tcp_to_apple_com = p_apple - p_tcp
+            tau_total_tcp = tau_total_tcp + np.cross(r_tcp_to_apple_com, f_stem_at_com)
+            
+            if explicit_apple_weight:
+                g = gravity if gravity is not None else wp.vec3(0.0, 0.0, -9.81)
+                m = (
+                    float(apple_mass_kg)
+                    if apple_mass_kg is not None
+                    else apple_mass_kg_from_model(cable_model, apple_body_index)
+                )
+                if m > 0.0:
+                    from apple_pick_sim.coupled_fruiting.explicit_load import (
+                        apple_explicit_wrench_about_tcp,
+                    )
+                    f_apple_weight, tau_apple_weight_at_tcp = apple_explicit_wrench_about_tcp(
+                        m, g, p_tcp, apple_pos_world=p_apple
+                    )
+                    f_total_tcp = f_total_tcp + f_apple_weight
+                    tau_total_tcp = tau_total_tcp + tau_apple_weight_at_tcp
+        wrenches[tcp_body_index, :3] = f_total_tcp.astype(np.float32)
+        wrenches[tcp_body_index, 3:6] = tau_total_tcp.astype(np.float32)
     limit_stem_coupling_wrench(
         wrenches,
         tcp_body_index,

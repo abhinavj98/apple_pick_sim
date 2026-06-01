@@ -84,13 +84,60 @@ def test_load_ranges_min_max_ordering():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     for seg_name, seg in ranges.items():
-        if seg is None or not isinstance(seg, dict):
+        if seg_name == "args" or seg is None or not isinstance(seg, dict):
             continue
         for key, val in seg.items():
             if isinstance(val, dict) and "min" in val and "max" in val:
                 assert val["min"] <= val["max"], (
                     f"Range {seg_name}.{key}: min ({val['min']}) > max ({val['max']})"
                 )
+
+
+def test_fixture_args_in_straight_rod_fixture():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    args = fs.parse_fixture_args(ranges)
+    assert args.fruiting_base_pos == (0.2, 0.2, 0.5)
+    assert args.robot_base_pos == (0.0, 0.0, 0.0)
+
+
+def test_fixture_args_null_robot_base_in_variance_fixture():
+    fs = _import_module()
+    ranges = fs.load_ranges(VARIANCE_FIXTURE)
+    args = fs.parse_fixture_args(ranges)
+    assert args.fruiting_base_pos == (0.5, 0.5, 0.5)
+    assert args.robot_base_pos is None
+
+
+def test_resolve_fruiting_base_pos_prefers_override():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    assert fs.resolve_fruiting_base_pos(ranges, (9.0, 9.0, 9.0)) == (0.2, 0.2, 0.5)
+    assert fs.resolve_fruiting_base_pos(
+        ranges, (9.0, 9.0, 9.0), override=(1.0, 2.0, 3.0)
+    ) == (1.0, 2.0, 3.0)
+
+
+def test_resolve_fruiting_base_pos_falls_back_to_default():
+    fs = _import_module()
+    ranges = {"primary": fs.load_ranges(RANGES_FIXTURE)["primary"]}
+    assert fs.resolve_fruiting_base_pos(ranges, (0.5, 0.5, 0.5)) == (0.5, 0.5, 0.5)
+
+
+def test_invalid_fixture_args_rejected():
+    fs = _import_module()
+    import copy
+    import json
+    import tempfile
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        bad_ranges = copy.deepcopy(ranges)
+        bad_ranges["args"] = {"fruiting_base_pos": [0.0, 0.0]}
+        json.dump(bad_ranges, f)
+        path = f.name
+    with pytest.raises(ValueError, match="fruiting_base_pos"):
+        fs.load_ranges(path)
 
 
 # ---------------------------------------------------------------------------
@@ -693,7 +740,7 @@ def test_stem_apple_fixed_joint_child_is_apple_proxy_joint_is_not():
 
 
 def test_measure_fruiting_forces_state1_matches_solver_body_q_prev():
-    """Harvest convention: ``body_q_prev`` for wrenches is ``state_1.body_q`` (here == ``solver.body_q_prev``)."""
+    """After swap, VBD ``solver.body_q_prev`` is end-of-step (``state_0.body_q``); wrenches use ``state_1.body_q`` as pre-step."""
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     scene = fs.generate_coupled_cable_scene(ranges, seed=3, device="cpu", **NO_SELF_COLLISION_KW)
@@ -704,14 +751,18 @@ def test_measure_fruiting_forces_state1_matches_solver_body_q_prev():
     scene.solver.step(scene.state_0, scene.state_1, scene.control, contacts, sim_dt)
     scene.state_0, scene.state_1 = scene.state_1, scene.state_0
 
+    bq0 = scene.state_0.body_q.numpy().reshape(-1, 7)
     bq1 = scene.state_1.body_q.numpy().reshape(-1, 7)
     bqp = scene.solver.body_q_prev.numpy().reshape(-1, 7)
     np.testing.assert_allclose(
-        bq1,
+        bq0,
         bqp,
         rtol=0.0,
         atol=0.0,
-        err_msg="state_1.body_q must match solver.body_q_prev for wrench gather",
+        err_msg="state_0.body_q must match solver.body_q_prev after step (end-of-step pose)",
+    )
+    assert not np.allclose(bq1, bqp, rtol=0.0, atol=0.0), (
+        "pre-step state_1.body_q must not be reused as solver.body_q_prev after step"
     )
     out = fs.measure_fruiting_forces(
         scene, scene.state_0.body_q, scene.state_1.body_q, dt=sim_dt

@@ -7,6 +7,8 @@ runtime. This module provides a robust two-build workflow:
 1) Build a free-apple scene (``fix_to_apple=False``) and run VBD substeps to settle.
 2) Build a welded scene (``fix_to_apple=True``) and seed its cable state from the
    settled configuration so the welded constraint starts near zero violation.
+3) Re-run FR3 IK bootstrap at the scene's fixed robot base (from fixture
+   ``robot_base_pos`` or builder placement). Raise if the settled proxy is unreachable.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ def _proxy_world_position_from_apple(
         float(offset_in_apple_frame[1]),
         float(offset_in_apple_frame[2]),
     )
+    print(f"Apple pos: {p}, Apple quat: {q}, Offset: {off}")
     return (p + np.asarray(wp.quat_rotate(q, off), dtype=np.float64)).astype(np.float32)
 
 
@@ -54,6 +57,68 @@ def settle_vbd_substeps(scene: Any, *, substeps: int, dt: float) -> None:
     h = float(dt)
     for _ in range(n):
         scene.vbd_substep(h)
+
+
+def _nominal_cable_view(scene: Any) -> Any:
+    cable = scene.cable
+    if hasattr(cable, "as_single_instance_coupled"):
+        idx = int(getattr(scene, "nominal_index", 0))
+        return cable.as_single_instance_coupled(idx)
+    return cable
+
+
+def _bootstrap_tcp_at_fixed_origin(
+    scene: Any,
+    *,
+    ik_iterations: int = 96,
+) -> None:
+    """Align TCP to the seeded cable proxy using the scene's fixed FR3 base placement."""
+    if scene.robot_model is None or scene.robot_state_0 is None or scene.mj_solver is None:
+        return
+
+    import newton
+
+    from apple_pick_sim.coupled_fruiting.bootstrap import bootstrap_articulated_tcp_from_proxy
+    from apple_pick_sim.robot import fr3_robot
+    from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
+
+    cable = _nominal_cable_view(scene)
+    root = np.asarray(getattr(scene, "fr3_root_world_pos", (0.0, 0.0, 0.0)), dtype=np.float64)
+    root_xyz = (float(root[0]), float(root[1]), float(root[2]))
+
+    try:
+        bootstrap_articulated_tcp_from_proxy(
+            cable,
+            scene.robot_model,
+            scene.tcp_body_index,
+            scene.robot_state_0,
+            ik_iterations=ik_iterations,
+            raise_on_failure=True,
+        )
+    except IKBootstrapConvergenceError as exc:
+        raise IKBootstrapConvergenceError(
+            "Settled gripper proxy is unreachable from the specified FR3 base at "
+            f"({root_xyz[0]:.3f}, {root_xyz[1]:.3f}, {root_xyz[2]:.3f}): {exc}"
+        ) from exc
+
+    scene.robot_state_1.joint_q.assign(scene.robot_model.joint_q)
+    scene.robot_state_1.joint_qd.assign(scene.robot_model.joint_qd)
+    newton.eval_fk(
+        scene.robot_model,
+        scene.robot_model.joint_q,
+        scene.robot_model.joint_qd,
+        scene.robot_state_1,
+    )
+    scene.mj_solver._update_mjc_data(
+        scene.mj_solver.mj_data, scene.robot_model, scene.robot_state_0
+    )
+    fr3_robot.init_mujoco_actuator_targets_from_model(
+        scene.robot_model, scene.robot_control
+    )
+    if scene.proxy_forces is not None:
+        scene.proxy_forces.zero_()
+    if scene.coupling_forces_cache is not None:
+        scene.coupling_forces_cache.zero_()
 
 
 def seed_fix_to_apple_from_settled(
@@ -90,10 +155,10 @@ def seed_fix_to_apple_from_settled(
     if apple is None or offset is None:
         return
 
-    off = np.asarray(offset, dtype=np.float32).reshape(3)
+    off = np.zeros(3, dtype=np.float32)
     bq_w = cable_w.state_0.body_q.numpy().reshape(-1, 7).copy()
     bqd_w = cable_w.state_0.body_qd.numpy().reshape(-1, 6).copy()
-
+    print(f"Offset: {off}, Apple: {bq_w[apple]}, Proxy: {bq_w[proxy]}")
     # Enforce proxy placement at the welded offset (apple-frame vector, world rotated).
     bq_w[proxy, :3] = _proxy_world_position_from_apple(bq_w[apple], off)
     bq_w[proxy, 3:] = bq_w[apple, 3:]
@@ -112,7 +177,7 @@ def seed_fix_to_apple_from_settled(
     body_count = int(cable_w.model.body_count)
     align_proxy_body_q_prev_for_vbd(cable_w, tuple(range(body_count)))
 
-    rebootstrap_robot_from_cable_proxy(welded_scene)
+    _bootstrap_tcp_at_fixed_origin(welded_scene)
 
 
 def seed_mega_fix_to_apple_from_settled(
@@ -159,69 +224,4 @@ def seed_mega_fix_to_apple_from_settled(
             align_ids.append(inst.apple_body)
     align_proxy_body_q_prev_for_vbd(cable_w, tuple(align_ids))
 
-    rebootstrap_robot_from_cable_proxy(welded_scene)
-
-
-def rebootstrap_robot_from_cable_proxy(
-    scene: Any,
-    *,
-    ik_iterations: int = 96,
-) -> None:
-    """Re-run FR3 IK bootstrap so the TCP matches the (post-seed) cable proxy pose."""
-    if scene.robot_model is None or scene.robot_state_0 is None or scene.mj_solver is None:
-        return
-
-    import newton
-
-    from apple_pick_sim.coupled_fruiting.bootstrap import bootstrap_articulated_tcp_from_proxy
-    from apple_pick_sim.robot import fr3_robot
-
-    def _cable_for_bootstrap():
-        cable = scene.cable
-        if hasattr(cable, "as_single_instance_coupled"):
-            idx = int(getattr(scene, "nominal_index", 0))
-            return cable.as_single_instance_coupled(idx)
-        return cable
-
-    def _run_bootstrap(iterations: int) -> None:
-        bootstrap_articulated_tcp_from_proxy(
-            _cable_for_bootstrap(),
-            scene.robot_model,
-            scene.tcp_body_index,
-            scene.robot_state_0,
-            ik_iterations=iterations,
-        )
-        scene.robot_state_1.joint_q.assign(scene.robot_model.joint_q)
-        scene.robot_state_1.joint_qd.assign(scene.robot_model.joint_qd)
-        newton.eval_fk(
-            scene.robot_model,
-            scene.robot_model.joint_q,
-            scene.robot_model.joint_qd,
-            scene.robot_state_1,
-        )
-        scene.mj_solver._update_mjc_data(
-            scene.mj_solver.mj_data, scene.robot_model, scene.robot_state_0
-        )
-
-    def _tcp_proxy_gap_m() -> float:
-        cable = _cable_for_bootstrap()
-        tcp = int(scene.tcp_body_index)
-        proxy = int(cable.gripper_proxy_body)
-        tcp_pos = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, :3]
-        proxy_pos = cable.state_0.body_q.numpy().reshape(-1, 7)[proxy, :3]
-        return float(np.linalg.norm(tcp_pos - proxy_pos))
-
-    _run_bootstrap(int(ik_iterations))
-
-    # IK can converge to a poor local minimum after a large settle displacement.
-    # Retry once with a larger iteration budget (raises if still out of tolerance).
-    if _tcp_proxy_gap_m() > 0.15:
-        _run_bootstrap(max(int(ik_iterations) * 2, 192))
-
-    fr3_robot.init_mujoco_actuator_targets_from_model(
-        scene.robot_model, scene.robot_control
-    )
-    if scene.proxy_forces is not None:
-        scene.proxy_forces.zero_()
-    if scene.coupling_forces_cache is not None:
-        scene.coupling_forces_cache.zero_()
+    _bootstrap_tcp_at_fixed_origin(welded_scene)

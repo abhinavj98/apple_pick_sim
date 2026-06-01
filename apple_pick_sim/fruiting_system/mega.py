@@ -23,6 +23,7 @@ from apple_pick_sim.fruiting_system.params import (
     GripperProxyConfig,
     fd_stiffness_param_columns,
     load_ranges,
+    resolve_fruiting_base_pos,
     sample_params,
 )
 
@@ -277,7 +278,7 @@ def generate_mega_coupled_cable_scene(
     params_list: Sequence[FruitingSystemParams] | None = None,
     *,
     stiffness_epsilon: float | None = None,
-    base_pos: tuple[float, float, float] = (0.5, 0.5, 1.5),
+    base_pos: tuple[float, float, float] | None = None,
     instance_spacing: tuple[float, float, float] = (0.0, 1.5, 0.0),
     device: str | None = None,
     omit: Collection[str] | None = None,
@@ -299,7 +300,7 @@ def generate_mega_coupled_cable_scene(
             params_list = [nominal]
     return MegaCoupledCableScene.build(
         params_list,
-        base_pos=base_pos,
+        base_pos=resolve_fruiting_base_pos(ranges, (0.5, 0.5, 1.5), override=base_pos),
         instance_spacing=instance_spacing,
         device=device,
         enable_self_collisions=enable_self_collisions,

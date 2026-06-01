@@ -26,7 +26,7 @@ N_SUBSTEPS_WELDED = 30
 WARMUP_WELDED = 300
 MAX_ITER = 15
 K0_SCALE_FREE = 0.95
-K0_SCALE_WELDED = 1.05
+K0_SCALE_WELDED = 0.95
 
 
 @pytest.fixture(scope="module", autouse=True)

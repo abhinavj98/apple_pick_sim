@@ -28,6 +28,7 @@ from apple_pick_sim.fruiting_system.mega_fd import (
 )
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
+    FixtureArgs,
     GripperProxyConfig,
     RodParams,
     analytic_apple_mass_kg,
@@ -36,7 +37,10 @@ from apple_pick_sim.fruiting_system.params import (
     fd_stiffness_param_columns,
     load_ranges,
     params_fingerprint,
+    parse_fixture_args,
     perturb_rod_stiffness,
+    resolve_fruiting_base_pos,
+    resolve_robot_base_pos,
     sample_params,
     set_rod_bend_stiffness,
 )
@@ -62,6 +66,7 @@ __all__ = [
     "FruitingInstanceLayout",
     "FruitingSystemParams",
     "FruitingSystemScene",
+    "FixtureArgs",
     "GripperProxyConfig",
     "MegaCoupledCableScene",
     "MegaFdStepResult",
@@ -94,7 +99,10 @@ __all__ = [
     "make_fruiting_solver_vbd",
     "measure_fruiting_forces",
     "params_fingerprint",
+    "parse_fixture_args",
     "perturb_rod_stiffness",
+    "resolve_fruiting_base_pos",
+    "resolve_robot_base_pos",
     "set_rod_bend_stiffness",
     "run_rollout",
     "sample_params",

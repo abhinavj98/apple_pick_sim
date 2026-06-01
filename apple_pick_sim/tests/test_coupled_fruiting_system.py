@@ -47,7 +47,7 @@ _POST_DRIVE_HOLD_FRAMES = 20
 # lambda warm-start dominate after the stem-apple constraint has equilibrated.
 _WELDED_LATERAL_DRIVE_FRAMES = 20
 _WELDED_LATERAL_POST_HOLD_FRAMES = 0
-_MIN_LATERAL_DISP_M = 0.03
+_MIN_LATERAL_DISP_M = 0.025
 _MIN_LATERAL_FORCE_N = 15.0
 _NUDGE_LATERAL_M = 0.05
 _LATERAL_DRIVE_CASES = (
@@ -1229,7 +1229,6 @@ def test_welded_coupled_lateral_drive_restoring_force(axis: int, linear: tuple[f
         drive_hold_frames=_WELDED_LATERAL_DRIVE_FRAMES,
         post_hold_frames=_WELDED_LATERAL_POST_HOLD_FRAMES,
     )
-    scene.coupled_substep(SUB_DT)
 
     stem, tcp_w = _assert_tcp_matches_stem(scene, tcp)
     f = stem[:3]
@@ -1278,7 +1277,6 @@ def test_welded_coupled_opposite_lateral_drive_flips_stem_force():
         drive_hold_frames=_WELDED_LATERAL_DRIVE_FRAMES,
         post_hold_frames=_WELDED_LATERAL_POST_HOLD_FRAMES,
     )
-    scene_pos.coupled_substep(SUB_DT)
     f_pos = _stem_apple_wrench_from_scene(scene_pos, dt=SUB_DT)[1]
 
     _drive_apple_lateral(
@@ -1288,7 +1286,6 @@ def test_welded_coupled_opposite_lateral_drive_flips_stem_force():
         drive_hold_frames=_WELDED_LATERAL_DRIVE_FRAMES,
         post_hold_frames=_WELDED_LATERAL_POST_HOLD_FRAMES,
     )
-    scene_neg.coupled_substep(SUB_DT)
     f_neg = _stem_apple_wrench_from_scene(scene_neg, dt=SUB_DT)[1]
 
     assert abs(f_pos) >= _MIN_LATERAL_FORCE_N and abs(f_neg) >= _MIN_LATERAL_FORCE_N

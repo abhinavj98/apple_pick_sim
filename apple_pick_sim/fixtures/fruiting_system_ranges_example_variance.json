@@ -1,5 +1,9 @@
 {
   "_comment": "Wide angular and stiffness ranges for example_fruiting_system.py (interactive viewer). Evolved from the former ad-hoc copy fixture; bend_damping added for the current JSON schema.",
+  "args": {
+    "fruiting_base_pos": [0.5, 0.5, 1.5],
+    "robot_base_pos": [0.0, 0.0, 1.4]
+  },
   "primary": {
     "num_segments": { "min": 3, "max": 6 },
     "length": { "min": 0.25, "max": 0.50 },

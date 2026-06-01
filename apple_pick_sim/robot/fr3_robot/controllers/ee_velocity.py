@@ -94,7 +94,7 @@ class Fr3EEVelocityController:
         *,
         linear_speed: float = 0.2,
         angular_speed: float = 1.0,
-        ik_iterations: int = 24,
+        ik_iterations: int = 48,
         joint_limit_weight: float = 10.0,
         ik_pos_tol_m: float = IK_TELEOP_POS_TOL_M,
         ik_rot_tol_rad: float = IK_TELEOP_ROT_TOL_RAD,

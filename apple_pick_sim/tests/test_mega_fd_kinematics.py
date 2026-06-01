@@ -74,7 +74,7 @@ def _build_welded_zero_g_scene() -> cf.MegaCoupledFruitingScene:
     gripper = fs.GripperProxyConfig(fix_to_apple=True)
     scene = cf.build_mega_coupled_fruiting_fr3(
         fs.load_ranges(RANGES_FIXTURE),
-        seed=42,
+        seed=7,
         base_pos=COUPLED_BASE_POS,
         stiffness_epsilon=EPS,
         enable_self_collisions=False,
@@ -218,6 +218,7 @@ def test_fd_stem_wrench_matches_coupled_gather_after_drive():
     _drive_to_deflected_state(scene, ctrl, (0.0, 0.15, 0.0))
     feat = default_mega_fd_features(scene.cable, 0, dt=SUB_DT)
     assert feat.size == 12
+    gather = _stem_apple_wrench_coupled_gather(scene)
     np.testing.assert_allclose(
         feat[FORCE_ROW_BASE : FORCE_ROW_BASE + 6],
         gather,

@@ -14,6 +14,7 @@ from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.coupled_fruiting.bootstrap import (
     bootstrap_articulated_tcp_from_proxy,
     bootstrap_tcp_joint_from_proxy,
+    mirror_tcp_to_welded_cable_after_bootstrap,
 )
 from apple_pick_sim.coupled_fruiting.scene import (
     DEFAULT_FR3_MUJOCO_SOLVER_KWARGS,
@@ -33,6 +34,8 @@ from apple_pick_sim.fruiting_system import (
     example_collision_pipeline,
     generate_coupled_cable_scene,
     generate_mega_coupled_cable_scene,
+    resolve_fruiting_base_pos,
+    resolve_robot_base_pos,
 )
 from apple_pick_sim.coupled_fruiting.mega_scene import (
     MegaCoupledFruitingScene,
@@ -46,6 +49,34 @@ def _cached_apple_mass_kg(cable: CoupledCableScene) -> float:
     if cable.apple_body is None:
         return 0.0
     return apple_mass_kg_from_model(cable.model, cable.apple_body)
+
+
+def _robot_root_xform(
+    ranges: dict,
+    proxy_body_q7: Any,
+    *,
+    robot_base_pos: tuple[float, float, float] | None = None,
+    anchor_robot_root_at_world_origin: bool = False,
+) -> wp.transform:
+    """World root transform for the FR3 USD import."""
+    resolved = resolve_robot_base_pos(ranges, override=robot_base_pos)
+    if resolved is not None:
+        return wp.transform(wp.vec3(*resolved), wp.quat_identity())
+    if anchor_robot_root_at_world_origin:
+        return wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    return fr3_robot.placement_xform_for_proxy(proxy_body_q7)
+
+
+def _fr3_root_world_pos(
+    ranges: dict,
+    proxy_body_q7: Any,
+    *,
+    robot_base_pos: tuple[float, float, float] | None = None,
+) -> tuple[float, float, float]:
+    resolved = resolve_robot_base_pos(ranges, override=robot_base_pos)
+    if resolved is not None:
+        return resolved
+    return fr3_robot.root_world_translation_for_proxy(proxy_body_q7)
 
 
 def _assemble_coupled_robot_scene(
@@ -65,12 +96,21 @@ def _assemble_coupled_robot_scene(
     stem_torque_cap_Nm: float | None,
     init_mujoco_actuator_targets: bool = False,
     qd_synced: wp.array | None = None,
+    mirror_welded_cable_after_bootstrap: bool = False,
 ) -> CoupledFruitingScene:
     robot_state_0 = robot_model.state()
     robot_state_1 = robot_model.state()
     robot_control = robot_model.control()
 
     bootstrap_fn(cable, robot_model, tcp_body, robot_state_0)
+    if mirror_welded_cable_after_bootstrap and cable.gripper_proxy_apple_joint is not None:
+        mirror_tcp_to_welded_cable_after_bootstrap(
+            cable,
+            robot_model,
+            tcp_body,
+            robot_state_0,
+            gravity=gravity_vec,
+        )
     if init_mujoco_actuator_targets:
         fr3_robot.init_mujoco_actuator_targets_from_model(robot_model, robot_control)
     robot_state_1.joint_q.assign(robot_model.joint_q)
@@ -162,7 +202,7 @@ def build_coupled_fruiting_placeholder(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.5, 0.5, 1.5),
+    base_pos: tuple[float, float, float] | None = None,
     device: str | None = None,
     omit: Any | None = None,
     enable_self_collisions: bool = True,
@@ -187,7 +227,7 @@ def build_coupled_fruiting_placeholder(
     cable = generate_coupled_cable_scene(
         ranges,
         seed,
-        base_pos=base_pos,
+        base_pos=resolve_fruiting_base_pos(ranges, (0.5, 0.5, 1.5), override=base_pos),
         device=device,
         omit=omit,
         enable_self_collisions=enable_self_collisions,
@@ -249,7 +289,7 @@ def build_coupled_fruiting_fr3(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.5, 0.5, 0.5),
+    base_pos: tuple[float, float, float] | None = None,
     device: str | None = None,
     omit: Any | None = None,
     enable_self_collisions: bool = True,
@@ -264,6 +304,7 @@ def build_coupled_fruiting_fr3(
     mujoco_only: bool = False,
     ik_bootstrap_iterations: int = 96,
     mujoco_use_cpu: bool | None = None,
+    robot_base_pos: tuple[float, float, float] | None = None,
 ) -> CoupledFruitingScene:
     if vbd_only and mujoco_only:
         raise ValueError("vbd_only and mujoco_only are mutually exclusive")
@@ -283,7 +324,7 @@ def build_coupled_fruiting_fr3(
     cable = generate_coupled_cable_scene(
         ranges,
         seed,
-        base_pos=base_pos,
+        base_pos=resolve_fruiting_base_pos(ranges, (0.5, 0.5, 0.5), override=base_pos),
         device=device,
         omit=omit,
         enable_self_collisions=enable_self_collisions,
@@ -312,7 +353,11 @@ def build_coupled_fruiting_fr3(
     mj_kw["use_mujoco_cpu"] = use_mujoco_cpu
 
     proxy_bq = cable.state_0.body_q.numpy().reshape(-1, 7)[cable.gripper_proxy_body]
-    root_xform = fr3_robot.placement_xform_for_proxy(proxy_bq)
+    root_xform = _robot_root_xform(
+        ranges,
+        proxy_bq,
+        robot_base_pos=robot_base_pos,
+    )
 
     robot_model, tcp_body, mj_solver = fr3_robot.build_fr3_robot_model_from_usd(
         device=device,
@@ -335,7 +380,7 @@ def build_coupled_fruiting_fr3(
             ik_iterations=ik_bootstrap_iterations,
         )
 
-    return _assemble_coupled_robot_scene(
+    scene = _assemble_coupled_robot_scene(
         cable,
         device=device,
         pipe=pipe,
@@ -351,14 +396,21 @@ def build_coupled_fruiting_fr3(
         stem_torque_cap_Nm=stem_torque_cap_Nm,
         init_mujoco_actuator_targets=True,
         qd_synced=wp.empty_like(cable.state_0.body_qd),
+        mirror_welded_cable_after_bootstrap=mujoco_only,
     )
+    scene.fr3_root_world_pos = _fr3_root_world_pos(
+        ranges,
+        proxy_bq,
+        robot_base_pos=robot_base_pos,
+    )
+    return scene
 
 
 def build_mega_coupled_fruiting_fr3(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0., 0.2, 0.3),
+    base_pos: tuple[float, float, float] | None = None,
     instance_spacing: tuple[float, float, float] = (0.0, 1.5, 0.0),
     stiffness_epsilon: float | None = 0.02,
     params_list: Sequence[FruitingSystemParams] | None = None,
@@ -371,11 +423,13 @@ def build_mega_coupled_fruiting_fr3(
     mujoco_solver_kwargs: dict[str, Any] | None = None,
     usd_path: str | Path | None = None,
     ik_bootstrap_iterations: int = 96,
+    anchor_robot_root_at_world_origin: bool = False,
     mujoco_use_cpu: bool | None = None,
     robot_kinematic_mode: bool = True,
     stem_coupling_gain: float = DEFAULT_STEM_COUPLING_GAIN,
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N,
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM,
+    robot_base_pos: tuple[float, float, float] | None = None,
 ) -> MegaCoupledFruitingScene:
     """One FR3 + mega VBD plant (fd_ghost: offset mirror all proxies, harvest nominal only)."""
     if not fr3_robot.fr3_assets_available():
@@ -392,7 +446,7 @@ def build_mega_coupled_fruiting_fr3(
         )
 
     mega_kw: dict[str, Any] = dict(
-        base_pos=base_pos,
+        base_pos=resolve_fruiting_base_pos(ranges, (0.0, 0.2, 1.0), override=base_pos),
         instance_spacing=instance_spacing,
         device=device,
         enable_self_collisions=enable_self_collisions,
@@ -428,7 +482,12 @@ def build_mega_coupled_fruiting_fr3(
 
     nom_cable = cable.as_single_instance_coupled(nominal_index)
     proxy_bq = nom_cable.state_0.body_q.numpy().reshape(-1, 7)[nom_cable.gripper_proxy_body]
-    root_xform = fr3_robot.placement_xform_for_proxy(proxy_bq)
+    root_xform = _robot_root_xform(
+        ranges,
+        proxy_bq,
+        robot_base_pos=robot_base_pos,
+        anchor_robot_root_at_world_origin=anchor_robot_root_at_world_origin,
+    )
 
     robot_model, tcp_body, mj_solver = fr3_robot.build_fr3_robot_model_from_usd(
         device=device,
@@ -477,7 +536,7 @@ def build_mega_coupled_fruiting_fr3(
         _find_stem_apple_joint(nom_cable) if nom_cable.apple_body is not None else None
     )
 
-    return MegaCoupledFruitingScene(
+    scene = MegaCoupledFruitingScene(
         cable=cable,
         cable_collision_pipeline=pipe,
         ghost_registry=ghost_registry,
@@ -504,3 +563,9 @@ def build_mega_coupled_fruiting_fr3(
         stem_torque_cap_Nm=stem_torque_cap_Nm,
         apple_mass_kg=_cached_apple_mass_kg(nom_cable),
     )
+    scene.fr3_root_world_pos = _fr3_root_world_pos(
+        ranges,
+        proxy_bq,
+        robot_base_pos=robot_base_pos,
+    )
+    return scene

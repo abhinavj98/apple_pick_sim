@@ -21,6 +21,7 @@ from apple_pick_sim.fruiting_system.params import (
     RodParams,
     load_ranges,
     params_fingerprint,
+    resolve_fruiting_base_pos,
     sample_params,
 )
 from apple_pick_sim.vbd_fixed_joint_wrenches import (
@@ -72,7 +73,7 @@ def generate_scene(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.0, 0.0, 3.0),
+    base_pos: tuple[float, float, float] | None = None,
     device: str | None = None,
     omit: Collection[str] | None = None,
     enable_self_collisions: bool = True,
@@ -99,7 +100,7 @@ def generate_scene(
     params = sample_params(ranges, seed, omit=omit)
     return _build_scene(
         params,
-        base_pos=base_pos,
+        base_pos=resolve_fruiting_base_pos(ranges, (0.0, 0.0, 3.0), override=base_pos),
         device=device,
         enable_self_collisions=enable_self_collisions,
     )
@@ -109,7 +110,7 @@ def generate_coupled_cable_scene(
     ranges: dict,
     seed: int,
     *,
-    base_pos: tuple[float, float, float] = (0.5, 0.5, 0.5),
+    base_pos: tuple[float, float, float] | None = None,
     device: str | None = None,
     omit: Collection[str] | None = None,
     enable_self_collisions: bool = True,
@@ -147,7 +148,7 @@ def generate_coupled_cable_scene(
     proxy_cfg = gripper_proxy if gripper_proxy is not None else GripperProxyConfig()
     return _build_coupled_cable_scene(
         params,
-        base_pos=base_pos,
+        base_pos=resolve_fruiting_base_pos(ranges, (0.5, 0.5, 0.5), override=base_pos),
         device=device,
         enable_self_collisions=enable_self_collisions,
         gripper_proxy=proxy_cfg,

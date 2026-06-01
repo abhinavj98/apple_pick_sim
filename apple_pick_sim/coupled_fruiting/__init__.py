@@ -23,7 +23,6 @@ from apple_pick_sim.coupled_fruiting.scene import (
     CoupledFruitingScene,
 )
 from apple_pick_sim.coupled_fruiting.settle_then_weld import (
-    rebootstrap_robot_from_cable_proxy,
     seed_fix_to_apple_from_settled,
     seed_mega_fix_to_apple_from_settled,
     settle_vbd_substeps,
@@ -44,7 +43,6 @@ __all__ = [
     "build_mega_coupled_fruiting_fr3",
     "MegaCoupledFruitingScene",
     "build_placeholder_tcp_robot_model",
-    "rebootstrap_robot_from_cable_proxy",
     "seed_fix_to_apple_from_settled",
     "seed_mega_fix_to_apple_from_settled",
     "settle_vbd_substeps",

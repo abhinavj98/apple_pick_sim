@@ -30,6 +30,7 @@ from apple_pick_sim.robot.fr3_robot.placement import (
     bootstrap_tcp_ik_from_proxy,
     enable_ik_bootstrap_warnings_for_examples,
     placement_xform_for_proxy,
+    root_world_translation_for_proxy,
     raise_if_ik_bootstrap_not_converged,
     warn_ik_bootstrap_for_fr3_scene,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "integrate_tcp_target",
     "np_zeros_like_joint_qd",
     "placement_xform_for_proxy",
+    "root_world_translation_for_proxy",
     "raise_if_ik_bootstrap_not_converged",
     "warn_ik_bootstrap_for_fr3_scene",
     "poll_viewer_events",

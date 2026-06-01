@@ -674,9 +674,14 @@ def mirror_robot_tcp_to_proxy_and_apple_kernel(
     dst_body_qd[pid] = qd_corr
 
     if apple_body_id >= 0:
-        apple_pos = tcp_pos - wp.quat_rotate(tcp_rot, proxy_offset_in_apple)
+        r_proxy_to_apple = -wp.quat_rotate(tcp_rot, proxy_offset_in_apple)
+        apple_pos = tcp_pos + r_proxy_to_apple
         dst_body_q[apple_body_id] = wp.transform(apple_pos, tcp_rot)
-        dst_body_qd[apple_body_id] = qd_corr
+        
+        v_proxy = wp.spatial_top(qd_corr)
+        w_proxy = wp.spatial_bottom(qd_corr)
+        v_apple = v_proxy + wp.cross(w_proxy, r_proxy_to_apple)
+        dst_body_qd[apple_body_id] = wp.spatial_vector(v_apple, w_proxy)
 
 
 def launch_mirror_robot_to_proxy_and_apple(

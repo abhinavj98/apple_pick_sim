@@ -5,30 +5,45 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-
-from apple_pick_sim.tests.conftest import FRAME_DT, RANGES_FIXTURE, SUB_DT, COUPLED_BASE_POS, fr3_assets_available
+from apple_pick_sim.robot import fr3_robot
+from apple_pick_sim.robot.fr3_robot.placement import (
+    IK_BOOTSTRAP_POS_TOL_M,
+    IKBootstrapConvergenceError,
+)
+from apple_pick_sim.tests.conftest import (
+    COUPLED_BASE_POS,
+    COUPLED_ROBOT_BASE_POS,
+    FRAME_DT,
+    RANGES_FIXTURE,
+    SUB_DT,
+    fr3_assets_available,
+)
 
 
 pytestmark = pytest.mark.skipif(
     not fr3_assets_available(), reason="Requires bundled assets/fr3 and usd-core"
 )
 
+_BUILD_KW = dict(
+    base_pos=COUPLED_BASE_POS,
+    robot_base_pos=COUPLED_ROBOT_BASE_POS,
+    enable_self_collisions=False,
+    mujoco_solver_kwargs={"disable_contacts": True},
+)
+
 
 def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
-    from apple_pick_sim.robot import fr3_robot
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 0
 
-    # --- Settle with a free apple (fix_to_apple=False) ---
     settled = cf.build_coupled_fruiting_fr3(
         ranges,
         seed,
-        base_pos=COUPLED_BASE_POS,
-        enable_self_collisions=False,
-        mujoco_solver_kwargs={"disable_contacts": True},
+        vbd_only=True,
+        **_BUILD_KW,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
@@ -37,13 +52,10 @@ def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
     )
     cf.settle_vbd_substeps(settled, substeps=40, dt=SUB_DT)
 
-    # --- Build welded scene and seed from settled ---
     welded = cf.build_coupled_fruiting_fr3(
         ranges,
         seed,
-        base_pos=COUPLED_BASE_POS,
-        enable_self_collisions=False,
-        mujoco_solver_kwargs={"disable_contacts": True},
+        **_BUILD_KW,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
@@ -66,13 +78,12 @@ def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
     tcp = welded.tcp_body_index
     proxy_pos = bq[proxy, :3]
     tcp_pos = welded.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, :3]
-    assert float(np.linalg.norm(tcp_pos - proxy_pos)) < 0.15
+    assert float(np.linalg.norm(tcp_pos - proxy_pos)) < IK_BOOTSTRAP_POS_TOL_M
 
     welded.robot_kinematic_mode = True
     ctrl = fr3_robot.Fr3EEDirectJointController(welded.robot_model, welded.tcp_body_index)
     ctrl.sync_target_from_state(welded.robot_state_0)
 
-    # One noop frame: apply no motion, then step once to harvest stem tension.
     welded.apply_fr3_ee_teleop_direct(FRAME_DT, ctrl, velocity=fr3_robot.EEVelocity())
     welded.coupled_substep(SUB_DT)
 
@@ -85,15 +96,13 @@ def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
 def test_seed_quiet_zeros_apple_and_proxy_twists():
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
-    from apple_pick_sim.robot import fr3_robot
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
     settled = cf.build_coupled_fruiting_fr3(
         ranges,
         1,
-        base_pos=COUPLED_BASE_POS,
-        enable_self_collisions=False,
-        mujoco_solver_kwargs={"disable_contacts": True},
+        vbd_only=True,
+        **_BUILD_KW,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
@@ -104,9 +113,7 @@ def test_seed_quiet_zeros_apple_and_proxy_twists():
     welded = cf.build_coupled_fruiting_fr3(
         ranges,
         1,
-        base_pos=COUPLED_BASE_POS,
-        enable_self_collisions=False,
-        mujoco_solver_kwargs={"disable_contacts": True},
+        **_BUILD_KW,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
@@ -127,15 +134,13 @@ def test_seed_quiet_zeros_apple_and_proxy_twists():
 def test_seed_aligns_body_q_prev_for_apple_and_proxy():
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
-    from apple_pick_sim.robot import fr3_robot
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
     settled = cf.build_coupled_fruiting_fr3(
         ranges,
         2,
-        base_pos=COUPLED_BASE_POS,
-        enable_self_collisions=False,
-        mujoco_solver_kwargs={"disable_contacts": True},
+        vbd_only=True,
+        **_BUILD_KW,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
@@ -146,9 +151,7 @@ def test_seed_aligns_body_q_prev_for_apple_and_proxy():
     welded = cf.build_coupled_fruiting_fr3(
         ranges,
         2,
-        base_pos=COUPLED_BASE_POS,
-        enable_self_collisions=False,
-        mujoco_solver_kwargs={"disable_contacts": True},
+        **_BUILD_KW,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
@@ -167,18 +170,16 @@ def test_seed_aligns_body_q_prev_for_apple_and_proxy():
     np.testing.assert_allclose(bqp[proxy], bq[proxy], rtol=1e-6, atol=1e-6)
 
 
-def test_seed_rebootstrap_clears_proxy_forces():
+def test_seed_bootstrap_clears_proxy_forces():
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
-    from apple_pick_sim.robot import fr3_robot
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
     settled = cf.build_coupled_fruiting_fr3(
         ranges,
         3,
-        base_pos=COUPLED_BASE_POS,
-        enable_self_collisions=False,
-        mujoco_solver_kwargs={"disable_contacts": True},
+        vbd_only=True,
+        **_BUILD_KW,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
@@ -189,9 +190,7 @@ def test_seed_rebootstrap_clears_proxy_forces():
     welded = cf.build_coupled_fruiting_fr3(
         ranges,
         3,
-        base_pos=COUPLED_BASE_POS,
-        enable_self_collisions=False,
-        mujoco_solver_kwargs={"disable_contacts": True},
+        **_BUILD_KW,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
@@ -207,16 +206,16 @@ def test_seed_rebootstrap_clears_proxy_forces():
     assert bool(np.allclose(welded.coupling_forces_cache.numpy(), 0.0, atol=1e-9))
 
 
-def test_mega_settle_then_weld_rebootstrap_tcp_reaches_nominal_proxy():
-    """Mega fd_ghost: settle VBD, seed welded plant, rebootstrap FR3 at settled proxy."""
+def test_mega_settle_then_weld_tcp_reaches_nominal_proxy_after_seed():
+    """Mega fd_ghost: settle VBD, seed welded plant, strict IK at fixed robot base."""
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
-    from apple_pick_sim.robot import fr3_robot
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 0
     build_kw = dict(
         base_pos=COUPLED_BASE_POS,
+        robot_base_pos=COUPLED_ROBOT_BASE_POS,
         stiffness_epsilon=0.1,
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
@@ -256,33 +255,61 @@ def test_mega_settle_then_weld_rebootstrap_tcp_reaches_nominal_proxy():
     tcp = welded.tcp_body_index
     proxy_pos = bq[proxy, :3]
     tcp_pos = welded.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, :3]
-    assert float(np.linalg.norm(tcp_pos - proxy_pos)) < 0.15
+    assert float(np.linalg.norm(tcp_pos - proxy_pos)) < IK_BOOTSTRAP_POS_TOL_M
 
 
-def test_mega_settle_then_weld_raises_when_nominal_out_of_workspace():
-    """Default mega ``base_pos`` places the nominal proxy outside origin-fixed FR3 reach."""
+def test_seed_raises_when_settled_proxy_unreachable_from_specified_origin():
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
-    from apple_pick_sim.robot import fr3_robot
-    from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    build_kw = dict(
-        stiffness_epsilon=0.1,
+    settled = cf.build_coupled_fruiting_fr3(
+        ranges,
+        0,
+        vbd_only=True,
+        base_pos=(0.0, 5.0, 0.5),
         enable_self_collisions=False,
         mujoco_solver_kwargs={"disable_contacts": True},
+        gripper_proxy=fs.GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+            fix_to_apple=False,
+        ),
     )
-    gripper_weld = fs.GripperProxyConfig(
-        mass=fr3_robot.EE_MASS_KG,
-        box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
-        fix_to_apple=True,
+    cf.settle_vbd_substeps(settled, substeps=40, dt=SUB_DT)
+
+    welded = cf.build_coupled_fruiting_fr3(
+        ranges,
+        0,
+        **_BUILD_KW,
+        gripper_proxy=fs.GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+            fix_to_apple=True,
+        ),
     )
-    with pytest.raises(IKBootstrapConvergenceError, match="position error"):
-        cf.build_mega_coupled_fruiting_fr3(
-            ranges,
-            0,
-            base_pos=(0.0, 0.9, 0.5),
-            gripper_proxy=gripper_weld,
-            **build_kw,
+    with pytest.raises(IKBootstrapConvergenceError, match="unreachable from the specified FR3 base"):
+        cf.seed_fix_to_apple_from_settled(
+            welded_scene=welded, settled_scene=settled, quiet_apple_proxy=True
         )
 
+
+def test_build_raises_when_proxy_unreachable_from_specified_robot_base():
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    with pytest.raises(IKBootstrapConvergenceError, match="did not converge"):
+        cf.build_coupled_fruiting_fr3(
+            ranges,
+            0,
+            base_pos=(0.0, 5.0, 0.5),
+            robot_base_pos=(0.0, 0.0, 0.0),
+            enable_self_collisions=False,
+            mujoco_solver_kwargs={"disable_contacts": True},
+            gripper_proxy=fs.GripperProxyConfig(
+                mass=fr3_robot.EE_MASS_KG,
+                box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+                fix_to_apple=True,
+            ),
+        )

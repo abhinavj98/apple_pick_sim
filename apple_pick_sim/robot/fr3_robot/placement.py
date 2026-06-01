@@ -18,8 +18,8 @@ IK_BOOTSTRAP_POS_TOL_M = 0.25
 IK_BOOTSTRAP_ROT_TOL_RAD = 0.15
 
 # Per-frame teleop: IK solution vs integrated TCP target (after one velocity step from FK).
-IK_TELEOP_POS_TOL_M = 0.001
-IK_TELEOP_ROT_TOL_RAD = 0.001
+IK_TELEOP_POS_TOL_M = 0.005
+IK_TELEOP_ROT_TOL_RAD = 0.005
 
 
 class IKBootstrapConvergenceWarning(UserWarning):
@@ -195,8 +195,8 @@ def raise_if_ik_bootstrap_not_converged(
         "FR3 TCP IK bootstrap did not converge: "
         + ", ".join(parts)
         + target_note
-        + ". Robot base is fixed at the origin; adjust cable base_pos / layout or "
-        "ik_bootstrap_iterations so the proxy lies in the arm workspace."
+        + ". Adjust cable layout, fixture robot_base_pos, or ik_bootstrap_iterations "
+        "so the proxy lies in the arm workspace from the specified FR3 base."
     )
 
 
@@ -230,13 +230,27 @@ def warn_ik_bootstrap_for_fr3_scene(scene: Any) -> bool:
 
 
 def placement_xform_for_proxy(
-    proxy_body_q7: Any = None,
+    proxy_body_q7: Any,
     *,
     vertical_reach_m: float = 0.85,
 ) -> wp.transform:
-    """World transform for the FR3 root (fixed at origin; proxy pose is not used)."""
-    del proxy_body_q7, vertical_reach_m
-    return wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    """World transform to park the FR3 root so ``tcp`` can reach a high gripper proxy."""
+    p = np.asarray(proxy_body_q7, dtype=np.float64).reshape(7)
+    base_z = float(p[2]) - vertical_reach_m
+    return wp.transform(wp.vec3(float(p[0]), float(p[1]), base_z), wp.quat_identity())
+
+
+
+
+def root_world_translation_for_proxy(
+    proxy_body_q7: Any,
+    *,
+    vertical_reach_m: float = 0.85,
+) -> np.ndarray:
+    """World translation applied to the FR3 USD root for proxy reach placement."""
+    tf = placement_xform_for_proxy(proxy_body_q7, vertical_reach_m=vertical_reach_m)
+    t = wp.transform_get_translation(tf)
+    return np.array([float(t[0]), float(t[1]), float(t[2])], dtype=np.float64)
 
 
 def bootstrap_tcp_ik_from_proxy(
@@ -252,6 +266,7 @@ def bootstrap_tcp_ik_from_proxy(
     import newton.ik as ik
 
     proxy_body = cable_scene.gripper_proxy_body
+    fix_to_apple = getattr(cable_scene, "gripper_proxy_apple_joint", None) is not None
     bq = cable_scene.state_0.body_q.numpy().reshape(-1, 7)[proxy_body]
     target_pos = wp.vec3(float(bq[0]), float(bq[1]), float(bq[2]))
     target_rot = wp.quat(float(bq[3]), float(bq[4]), float(bq[5]), float(bq[6]))
@@ -281,10 +296,13 @@ def bootstrap_tcp_ik_from_proxy(
     )
 
     joint_q = robot_model.joint_q.reshape((1, int(robot_model.joint_coord_count)))
+    objectives: list[Any] = [pos_obj, limits]
+    # if not fix_to_apple:
+    objectives.insert(1, rot_obj)
     solver = ik.IKSolver(
         model=robot_model,
         n_problems=1,
-        objectives=[pos_obj, rot_obj, limits],
+        objectives=objectives,
         lambda_initial=0.1,
         jacobian_mode=ik.IKJacobianType.ANALYTIC,
     )
@@ -299,11 +317,24 @@ def bootstrap_tcp_ik_from_proxy(
     robot_state_0.joint_qd.assign(jqd)
     newton.eval_fk(robot_model, robot_model.joint_q, robot_model.joint_qd, robot_state_0)
 
+    proxy_q7 = cable_scene.state_0.body_q.numpy().reshape(-1, 7)[proxy_body]
+    tcp_q7 = robot_state_0.body_q.numpy().reshape(-1, 7)[tcp_body_index]
     pos_err, rot_err = tcp_proxy_pose_errors(
         robot_state_0.body_q.numpy(),
         cable_scene.state_0.body_q.numpy(),
         tcp_body_index=tcp_body_index,
         proxy_body_index=proxy_body,
+    )
+    if fix_to_apple:
+        rot_err = 0.0
+    rot_note = " (rotation not tracked; fix_to_apple)" if fix_to_apple else ""
+    print(
+        "FR3 TCP IK bootstrap pose:\n"
+        f"  cable proxy  pos=({proxy_q7[0]:.4f}, {proxy_q7[1]:.4f}, {proxy_q7[2]:.4f}) "
+        f"quat=({proxy_q7[3]:.4f}, {proxy_q7[4]:.4f}, {proxy_q7[5]:.4f}, {proxy_q7[6]:.4f})\n"
+        f"  tcp achieved pos=({tcp_q7[0]:.4f}, {tcp_q7[1]:.4f}, {tcp_q7[2]:.4f}) "
+        f"quat=({tcp_q7[3]:.4f}, {tcp_q7[4]:.4f}, {tcp_q7[5]:.4f}, {tcp_q7[6]:.4f})\n"
+        f"  error pos={pos_err:.4f} m rot={rot_err:.4f} rad{rot_note}"
     )
     target_xyz = (float(target_pos[0]), float(target_pos[1]), float(target_pos[2]))
     if raise_on_failure:

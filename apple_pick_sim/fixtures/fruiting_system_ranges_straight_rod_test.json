@@ -1,51 +1,169 @@
 {
-  "_comment": "Straight-rod / nearly vertical chain for unit tests (wrench equilibrium, fruiting_system). Primary along world −Z (elevation −90°); child segments use ±0.5° deflection deltas.",
+  "_comment": "Straight-rod / nearly vertical chain for unit tests (wrench equilibrium, fruiting_system). Primary along world \u2212Z (elevation \u221290\u00b0); child segments use \u00b10.5\u00b0 deflection deltas.",
+  "args": {
+    "fruiting_base_pos": [0.0, 0.2, 1.5],
+    "robot_base_pos": [0.0, 0.0, 1.0]
+  },
   "primary": {
-    "num_segments": { "min": 3, "max": 5 },
-    "length": { "min": 0.1, "max": 0.2 },
-    "radius": { "min": 0.010, "max": 0.020 },
-    "bend_stiffness": { "min": 200.0, "max": 400.0 },
-    "bend_damping": { "min": 0.08, "max": 0.14 },
-    "stretch_stiffness": { "min": 4.0e6, "max": 9.0e6 },
-    "density": { "min": 220.0, "max": 360.0 },
-    "azimuth_deg": { "min": 90.0, "max": 90.0 },
-    "elevation_deg": { "min": -0.0, "max": -0.0 }
+    "num_segments": {
+      "min": 3,
+      "max": 5
+    },
+    "length": {
+      "min": 0.1,
+      "max": 0.2
+    },
+    "radius": {
+      "min": 0.01,
+      "max": 0.02
+    },
+    "bend_stiffness": {
+      "min": 200.0,
+      "max": 400.0
+    },
+    "bend_damping": {
+      "min": 0.08,
+      "max": 0.14
+    },
+    "stretch_stiffness": {
+      "min": 4000000.0,
+      "max": 9000000.0
+    },
+    "density": {
+      "min": 220.0,
+      "max": 360.0
+    },
+    "azimuth_deg": {
+      "min": 0.0,
+      "max": 0.0
+    },
+    "elevation_deg": {
+      "min": 0.0,
+      "max": 0.0
+    }
   },
   "secondary": {
-    "num_segments": { "min": 3, "max": 5 },
-    "length": { "min": 0.05, "max": 0.1 },
-    "radius": { "min": 0.008, "max": 0.016 },
-    "bend_stiffness": { "min": 40.0, "max": 120.0 },
-    "bend_damping": { "min": 0.10, "max": 0.16 },
-    "stretch_stiffness": { "min": 1.5e6, "max": 4.0e6 },
-    "density": { "min": 200.0, "max": 340.0 },
-    "elevation_delta_deg": { "min": -0.5, "max": 0.5 },
-    "lateral_delta_deg": { "min": -0.5, "max": 0.5 }
+    "num_segments": {
+      "min": 3,
+      "max": 5
+    },
+    "length": {
+      "min": 0.05,
+      "max": 0.1
+    },
+    "radius": {
+      "min": 0.008,
+      "max": 0.016
+    },
+    "bend_stiffness": {
+      "min": 40.0,
+      "max": 120.0
+    },
+    "bend_damping": {
+      "min": 0.1,
+      "max": 0.16
+    },
+    "stretch_stiffness": {
+      "min": 1500000.0,
+      "max": 4000000.0
+    },
+    "density": {
+      "min": 200.0,
+      "max": 340.0
+    },
+    "elevation_delta_deg": {
+      "min": -0.5,
+      "max": 0.5
+    },
+    "lateral_delta_deg": {
+      "min": -0.5,
+      "max": 0.5
+    }
   },
   "spur": {
-    "num_segments": { "min": 2, "max": 4 },
-    "length": { "min": 0.03, "max": 0.06 },
-    "radius": { "min": 0.006, "max": 0.014 },
-    "bend_stiffness": { "min": 60.0, "max": 140.0 },
-    "bend_damping": { "min": 0.09, "max": 0.15 },
-    "stretch_stiffness": { "min": 2.0e6, "max": 5.5e6 },
-    "density": { "min": 200.0, "max": 340.0 },
-    "elevation_delta_deg": { "min": -0.5, "max": 0.5 },
-    "lateral_delta_deg": { "min": -0.5, "max": 0.5 }
+    "num_segments": {
+      "min": 2,
+      "max": 4
+    },
+    "length": {
+      "min": 0.03,
+      "max": 0.06
+    },
+    "radius": {
+      "min": 0.006,
+      "max": 0.014
+    },
+    "bend_stiffness": {
+      "min": 60.0,
+      "max": 140.0
+    },
+    "bend_damping": {
+      "min": 0.09,
+      "max": 0.15
+    },
+    "stretch_stiffness": {
+      "min": 2000000.0,
+      "max": 5500000.0
+    },
+    "density": {
+      "min": 200.0,
+      "max": 340.0
+    },
+    "elevation_delta_deg": {
+      "min": -0.5,
+      "max": 0.5
+    },
+    "lateral_delta_deg": {
+      "min": -0.5,
+      "max": 0.5
+    }
   },
   "stem": {
-    "num_segments": { "min": 3, "max": 6 },
-    "length": { "min": 0.10, "max": 0.16 },
-    "radius": { "min": 0.002, "max": 0.006 },
-    "bend_stiffness": { "min": 0.8, "max": 2.5 },
-    "bend_damping": { "min": 0.05, "max": 0.10 },
-    "stretch_stiffness": { "min": 2.5e6, "max": 6.0e6 },
-    "density": { "min": 200.0, "max": 340.0 },
-    "elevation_delta_deg": { "min": -0.5, "max": 0.5 },
-    "lateral_delta_deg": { "min": -0.5, "max": 0.5 }
+    "num_segments": {
+      "min": 3,
+      "max": 6
+    },
+    "length": {
+      "min": 0.1,
+      "max": 0.16
+    },
+    "radius": {
+      "min": 0.002,
+      "max": 0.006
+    },
+    "bend_stiffness": {
+      "min": 0.8,
+      "max": 2.5
+    },
+    "bend_damping": {
+      "min": 0.05,
+      "max": 0.1
+    },
+    "stretch_stiffness": {
+      "min": 2500000.0,
+      "max": 6000000.0
+    },
+    "density": {
+      "min": 200.0,
+      "max": 340.0
+    },
+    "elevation_delta_deg": {
+      "min": -0.5,
+      "max": 0.5
+    },
+    "lateral_delta_deg": {
+      "min": -0.5,
+      "max": 0.5
+    }
   },
   "apple": {
-    "radius": { "min": 0.038, "max": 0.070 },
-    "density": { "min": 750.0, "max": 950.0 }
+    "radius": {
+      "min": 0.038,
+      "max": 0.07
+    },
+    "density": {
+      "min": 750.0,
+      "max": 950.0
+    }
   }
 }

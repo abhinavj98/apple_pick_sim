@@ -254,8 +254,8 @@ class CoupledFruitingScene:
                 int(cable.gripper_proxy_body),
                 int(cable.apple_body),
             )
-            # Match state_1 to the teleported prescribed bodies so VBD does not
-            # infer a spurious apple/proxy velocity before the stem constraint solve.
+            # Keep state_1 and body_q_prev aligned with the teleported apple/proxy so
+            # VBD does not infer spurious velocity on prescribed bodies.
             copy_cable_body_q_between_states(
                 cable,
                 src_state=cable.state_0,

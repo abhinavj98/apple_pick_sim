@@ -212,6 +212,7 @@ class ApplePickCoupledEnv(gym.Env):
             settled = cf.build_coupled_fruiting_fr3(
                 ranges,
                 scene_seed,
+                vbd_only=True,
                 enable_self_collisions=self._cfg.enable_self_collisions,
                 mujoco_solver_kwargs=self._cfg.mujoco_solver_kwargs,
                 gripper_proxy=fs.GripperProxyConfig(

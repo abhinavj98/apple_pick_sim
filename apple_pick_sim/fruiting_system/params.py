@@ -76,6 +76,65 @@ class GripperProxyConfig:
     apple co-teleport (see ``example_coupled_fruiting.py --fix-to-apple``).
     """
 
+@dataclasses.dataclass(frozen=True)
+class FixtureArgs:
+    """Scene placement from a ranges JSON ``args`` block."""
+
+    fruiting_base_pos: tuple[float, float, float] | None = None
+    robot_base_pos: tuple[float, float, float] | None = None
+
+
+def _coerce_xyz_triplet(raw: object, *, field: str) -> tuple[float, float, float]:
+    if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+        raise ValueError(f"args.{field} must be [x, y, z]")
+    return (float(raw[0]), float(raw[1]), float(raw[2]))
+
+
+def parse_fixture_args(ranges: dict) -> FixtureArgs:
+    """Return placement args from ``ranges['args']``, or empty defaults when absent."""
+    block = ranges.get("args")
+    if block is None:
+        return FixtureArgs()
+    if not isinstance(block, dict):
+        raise ValueError("args must be a JSON object")
+    fruiting = block.get("fruiting_base_pos")
+    robot = block.get("robot_base_pos")
+    return FixtureArgs(
+        fruiting_base_pos=None if fruiting is None else _coerce_xyz_triplet(
+            fruiting, field="fruiting_base_pos"
+        ),
+        robot_base_pos=None if robot is None else _coerce_xyz_triplet(
+            robot, field="robot_base_pos"
+        ),
+    )
+
+
+def resolve_fruiting_base_pos(
+    ranges: dict,
+    default: tuple[float, float, float],
+    *,
+    override: tuple[float, float, float] | None = None,
+) -> tuple[float, float, float]:
+    """Resolve fruiting chain base position: explicit override, JSON ``args``, then ``default``."""
+    if override is not None:
+        return override
+    args = parse_fixture_args(ranges)
+    if args.fruiting_base_pos is not None:
+        return args.fruiting_base_pos
+    return default
+
+
+def resolve_robot_base_pos(
+    ranges: dict,
+    *,
+    override: tuple[float, float, float] | None = None,
+) -> tuple[float, float, float] | None:
+    """Resolve FR3 root translation: explicit override, JSON ``args``, else ``None`` (auto placement)."""
+    if override is not None:
+        return override
+    return parse_fixture_args(ranges).robot_base_pos
+
+
 def load_ranges(path: str | Path) -> dict:
     """Load a fruiting-system range JSON file.
 
@@ -83,7 +142,8 @@ def load_ranges(path: str | Path) -> dict:
         path: Path to the JSON range file.
 
     Returns:
-        Dict with keys ``primary``, ``secondary``, ``spur``, ``stem``, ``apple``.
+        Dict with keys ``primary``, ``secondary``, ``spur``, ``stem``, ``apple``, and
+        optionally ``args`` (``fruiting_base_pos`` / ``robot_base_pos`` as ``[x, y, z]``).
         A rod or ``apple`` entry may be JSON ``null`` (``None`` in Python) to omit that
         piece from sampling and scene construction (at least one rod must remain).
     """
@@ -508,3 +568,16 @@ def _validate_ranges(data: dict) -> None:
         raise ValueError(
             "At least one rod segment (primary, secondary, spur, or stem) must be non-null in the range file"
         )
+
+    args = data.get("args")
+    if args is None:
+        return
+    if not isinstance(args, dict):
+        raise ValueError("args must be a JSON object")
+    for key in ("fruiting_base_pos", "robot_base_pos"):
+        if key not in args:
+            continue
+        val = args[key]
+        if val is None:
+            continue
+        _coerce_xyz_triplet(val, field=key)

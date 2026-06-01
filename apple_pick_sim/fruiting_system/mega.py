@@ -47,7 +47,7 @@ class FruitingInstanceLayout:
     """All joints for this instance (sorted), including proxy / fixed joints."""
     gripper_proxy_body: int
     gripper_proxy_apple_joint: int | None
-    gripper_proxy_offset_in_apple_frame: tuple[float, float, float] | None
+    gripper_proxy_offset_in_apple_frame: tuple[float, float, float, float, float, float, float] | None
 
 
 @dataclasses.dataclass

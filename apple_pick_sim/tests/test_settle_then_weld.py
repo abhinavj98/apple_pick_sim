@@ -72,7 +72,7 @@ def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
     bq = cable.state_0.body_q.numpy().reshape(-1, 7)
     np.testing.assert_allclose(bq[apple], settled_bq[apple], rtol=1e-5, atol=1e-6)
     gap = float(np.linalg.norm(bq[proxy, :3] - bq[apple, :3]))
-    expected = float(np.linalg.norm(cable.gripper_proxy_offset_in_apple_frame))
+    expected = float(np.linalg.norm(cable.gripper_proxy_offset_in_apple_frame[:3]))
     np.testing.assert_allclose(gap, expected, rtol=0.02, atol=1e-3)
 
     tcp = welded.tcp_body_index

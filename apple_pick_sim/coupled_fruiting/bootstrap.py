@@ -100,7 +100,10 @@ def mirror_tcp_to_welded_cable_after_bootstrap(
         gravity=gravity,
         dt=float(dt),
         apple_body_id=cable_scene.apple_body,
-        proxy_offset_in_apple=wp.vec3(*offset),
+        proxy_offset_in_apple=wp.transform(
+            wp.vec3(*offset[:3]),
+            wp.quat(*offset[3:]),
+        ),
         device=dev,
     )
     align_proxy_body_q_prev_for_vbd(

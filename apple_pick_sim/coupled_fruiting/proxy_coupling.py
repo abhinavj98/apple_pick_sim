@@ -375,7 +375,7 @@ def _harvest_stem_tension_for_tcp_cpu(
     apple_mass_kg: float | None = None,
     gravity: wp.vec3 | None = None,
     robot_body_q: wp.array | None = None,
-    grasp_offset_in_apple_frame: tuple[float, float, float] | None = None,
+    grasp_offset_in_apple_frame: tuple | None = None,
 ) -> None:
     from apple_pick_sim.coupled_fruiting.explicit_load import (
         apple_mass_kg_from_model,
@@ -469,7 +469,7 @@ def harvest_stem_tension_for_tcp(
     apple_mass_kg: float | None = None,
     gravity: wp.vec3 | None = None,
     robot_body_q: wp.array | None = None,
-    grasp_offset_in_apple_frame: tuple[float, float, float] | None = None,
+    grasp_offset_in_apple_frame: tuple | None = None,
 ) -> None:
     """Write the stem-apple FIXED joint constraint wrench into ``out_robot_wrenches[tcp]``.
 
@@ -686,7 +686,7 @@ def mirror_robot_tcp_to_proxy_and_apple_kernel(
     gravity: wp.vec3,
     dt: float,
     apple_body_id: int,
-    proxy_offset_in_apple: wp.vec3,
+    proxy_offset_in_apple: wp.transform,
 ):
     """Teleport proxy (with double-integration correction) and apple from robot TCP."""
     i = wp.tid()
@@ -710,13 +710,18 @@ def mirror_robot_tcp_to_proxy_and_apple_kernel(
     dst_body_qd[pid] = qd_corr
 
     if apple_body_id >= 0:
-        r_proxy_to_apple = -wp.quat_rotate(tcp_rot, proxy_offset_in_apple)
-        apple_pos = tcp_pos + r_proxy_to_apple
-        dst_body_q[apple_body_id] = wp.transform(apple_pos, tcp_rot)
-        
+        # X_apple = X_tcp * X_offset^{-1}
+        tcp_tf = wp.transform(tcp_pos, tcp_rot)
+        apple_tf = wp.transform_multiply(tcp_tf, wp.transform_inverse(proxy_offset_in_apple))
+        dst_body_q[apple_body_id] = apple_tf
+
+        # Lever arm for velocity: vector from proxy to apple in local frame, rotated to world
+        r_proxy_to_apple_local = wp.transform_get_translation(wp.transform_inverse(proxy_offset_in_apple))
+        r_proxy_to_apple_world = wp.quat_rotate(tcp_rot, r_proxy_to_apple_local)
+
         v_proxy = wp.spatial_top(qd_corr)
         w_proxy = wp.spatial_bottom(qd_corr)
-        v_apple = v_proxy + wp.cross(w_proxy, r_proxy_to_apple)
+        v_apple = v_proxy + wp.cross(w_proxy, r_proxy_to_apple_world)
         dst_body_qd[apple_body_id] = wp.spatial_vector(v_apple, w_proxy)
 
 
@@ -733,7 +738,7 @@ def launch_mirror_robot_to_proxy_and_apple(
     gravity: wp.vec3,
     dt: float,
     apple_body_id: int,
-    proxy_offset_in_apple: wp.vec3,
+    proxy_offset_in_apple: wp.transform,
     device=None,
 ) -> None:
     """Teleport proxy + apple; ``body_inv_mass`` / ``body_inv_inertia`` from ``cable_model``."""

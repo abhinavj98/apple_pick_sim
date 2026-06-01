@@ -232,7 +232,10 @@ class CoupledFruitingScene:
                 gravity=self.gravity_vec,
                 dt=dt,
                 apple_body_id=cable.apple_body,
-                proxy_offset_in_apple=wp.vec3(*cable.gripper_proxy_offset_in_apple_frame),
+                proxy_offset_in_apple=wp.transform(
+                    wp.vec3(*cable.gripper_proxy_offset_in_apple_frame[:3]),
+                    wp.quat(*cable.gripper_proxy_offset_in_apple_frame[3:]),
+                ),
                 device=str(dev),
             )
         else:

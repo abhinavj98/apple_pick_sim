@@ -38,14 +38,32 @@ def _co_teleport_apples_from_proxies(mega: MegaCoupledCableScene) -> None:
             continue
         proxy = inst.gripper_proxy_body
         apple = inst.apple_body
-        off = np.asarray(inst.gripper_proxy_offset_in_apple_frame, dtype=np.float32).reshape(3)
+        off = inst.gripper_proxy_offset_in_apple_frame
         proxy_q = bq[proxy]
-        p = proxy_q[:3].astype(np.float64)
-        q = wp.quat(float(proxy_q[3]), float(proxy_q[4]), float(proxy_q[5]), float(proxy_q[6]))
-        apple_pos = p - np.asarray(wp.quat_rotate(q, wp.vec3(*off)), dtype=np.float64)
-        bq[apple, :3] = apple_pos.astype(np.float32)
-        bq[apple, 3:7] = proxy_q[3:7]
-        bqd[apple] = bqd[proxy]
+        # Reconstruct transforms
+        proxy_tf = wp.transform(
+            wp.vec3(float(proxy_q[0]), float(proxy_q[1]), float(proxy_q[2])),
+            wp.quat(float(proxy_q[3]), float(proxy_q[4]), float(proxy_q[5]), float(proxy_q[6])),
+        )
+        offset_tf = wp.transform(
+            wp.vec3(float(off[0]), float(off[1]), float(off[2])),
+            wp.quat(float(off[3]), float(off[4]), float(off[5]), float(off[6])),
+        )
+        # X_apple = X_proxy * X_offset^{-1}
+        apple_tf = wp.transform_multiply(proxy_tf, wp.transform_inverse(offset_tf))
+        apple_pos = wp.transform_get_translation(apple_tf)
+        apple_rot = wp.transform_get_rotation(apple_tf)
+        bq[apple, :3] = np.array([apple_pos[0], apple_pos[1], apple_pos[2]], dtype=np.float32)
+        bq[apple, 3:7] = np.array([apple_rot[0], apple_rot[1], apple_rot[2], apple_rot[3]], dtype=np.float32)
+        # Rigid connection: angular velocity is the same, linear velocity needs lever arm
+        proxy_rot = wp.quat(float(proxy_q[3]), float(proxy_q[4]), float(proxy_q[5]), float(proxy_q[6]))
+        r_local = wp.transform_get_translation(wp.transform_inverse(offset_tf))
+        r_world = wp.quat_rotate(proxy_rot, r_local)
+        w_proxy = bqd[proxy, 3:6]
+        v_proxy = bqd[proxy, 0:3]
+        r_world_np = np.array([r_world[0], r_world[1], r_world[2]], dtype=np.float32)
+        bqd[apple, 0:3] = v_proxy + np.cross(w_proxy, r_world_np)
+        bqd[apple, 3:6] = w_proxy
     mega.state_0.body_q.assign(bq.ravel())
     mega.state_0.body_qd.assign(bqd.ravel())
 

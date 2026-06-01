@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import random
 from typing import Any
 
 import numpy as np
@@ -299,7 +300,7 @@ def _add_gripper_proxy(
     config: GripperProxyConfig,
     *,
     apple_radius: float | None,
-) -> tuple[int, int | None, tuple[float, float, float] | None]:
+) -> tuple[int, int | None, tuple[float, float, float, float, float, float, float] | None]:
     """Add gripper proxy link, shape, and joint(s).
 
     Returns ``(body_id, apple_fixed_joint, proxy_offset_in_apple_frame)``.
@@ -343,17 +344,51 @@ def _add_gripper_proxy(
 
     apple_fixed_joint: int | None = None
     proxy_free_joint: int | None = None
-    proxy_offset_in_apple_frame: tuple[float, float, float] | None = None
+    proxy_offset_in_apple_frame: tuple[float, float, float, float, float, float, float] | None = None
     if config.fix_to_apple:
         assert artifacts.apple_body is not None
         if apple_radius is not None:
-            d = artifacts.proxy_placement_dir
-            surface_on_apple = d * apple_radius
-            proxy_face_toward_apple = d * (-clearance)
-            parent_xform = wp.transform(surface_on_apple, wp.quat_identity())
-            child_xform = wp.transform(proxy_face_toward_apple, wp.quat_identity())
-            off = d * (apple_radius + clearance)
-            proxy_offset_in_apple_frame = (float(off[0]), float(off[1]), float(off[2]))
+            # 1. Random approach direction (proxy Z-axis will point along this toward apple center)
+            theta = random.uniform(0.0, 2 * math.pi)
+            phi = math.acos(random.uniform(-1.0, 1.0))
+            approach_dir = wp.vec3(
+                math.sin(phi) * math.cos(theta),
+                math.sin(phi) * math.sin(theta),
+                math.cos(phi),
+            )
+
+            # 2. Position offset: proxy sits on the surface, opposite the approach vector
+            off = approach_dir * -(apple_radius + clearance)
+
+            # 3. Construct look-at rotation (proxy local Z → approach_dir)
+            z_axis = approach_dir
+            up = wp.vec3(0.0, 0.0, 1.0)
+            if abs(wp.dot(z_axis, up)) > 0.99:
+                up = wp.vec3(1.0, 0.0, 0.0)
+            x_axis = wp.normalize(wp.cross(up, z_axis))
+            y_axis = wp.cross(z_axis, x_axis)
+            R = wp.mat33(
+                x_axis[0], y_axis[0], z_axis[0],
+                x_axis[1], y_axis[1], z_axis[1],
+                x_axis[2], y_axis[2], z_axis[2],
+            )
+            base_rot = wp.quat_from_matrix(R)
+
+            # Optional: randomize roll around the approach axis
+            roll_angle = random.uniform(0.0, 2 * math.pi)
+            roll_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), roll_angle)
+            final_rot = wp.mul(base_rot, roll_rot)
+
+
+            # 4. Full rigid pose: parent anchor in apple frame, child at identity
+            parent_xform = wp.transform(off, final_rot)
+            child_xform = wp.transform_identity()
+
+            # 5. Export 7D transform (pos_x, pos_y, pos_z, qi, qj, qk, qw)
+            proxy_offset_in_apple_frame = (
+                float(off[0]), float(off[1]), float(off[2]),
+                float(final_rot[0]), float(final_rot[1]), float(final_rot[2]), float(final_rot[3]),
+            )
         else:
             parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
             child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())

@@ -572,7 +572,7 @@ def test_sync_teleports_apple_with_proxy_when_fix_to_apple():
                                err_msg="apple and proxy must move by the same distance")
 
     # The distance between proxy and apple must equal |offset| (rigid grasp maintained).
-    offset = np.linalg.norm(cable.gripper_proxy_offset_in_apple_frame)
+    offset = np.linalg.norm(cable.gripper_proxy_offset_in_apple_frame[:3])
     gap = np.linalg.norm(bq[proxy, :3] - bq[apple, :3])
     np.testing.assert_allclose(gap, offset, rtol=1e-3, atol=1e-3,
                                err_msg="proxy-apple separation must equal grasp offset")
@@ -669,7 +669,7 @@ def _scene_nominal_apple_body(scene) -> int | None:
     return None
 
 
-def _scene_grasp_offset_in_apple_frame(scene) -> tuple[float, float, float] | None:
+def _scene_grasp_offset_in_apple_frame(scene) -> tuple | None:
     """Nominal-instance grasp offset (1×1 cable or mega nominal column)."""
     cable = scene.cable
     off = getattr(cable, "gripper_proxy_offset_in_apple_frame", None)

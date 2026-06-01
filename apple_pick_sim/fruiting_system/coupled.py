@@ -65,7 +65,7 @@ class CoupledCableScene:
     gripper_proxy_config: GripperProxyConfig
     gripper_proxy_apple_joint: int | None = None
     """Apple-body-frame vector from apple COM to proxy COM when ``gripper_proxy_apple_joint`` is set."""
-    gripper_proxy_offset_in_apple_frame: tuple[float, float, float] | None = None
+    gripper_proxy_offset_in_apple_frame: tuple[float, float, float, float, float, float, float] | None = None
 
     def proxy_registry(self, robot_body_id: int):
         """Map robot TCP body id → cable ``gripper_proxy_body`` for staggered wrench I/O.

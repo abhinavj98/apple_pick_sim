@@ -60,20 +60,20 @@ def body_orientation_world(body_q: Any, body_index: int) -> wp.quat:
 def apple_com_from_tcp_grasp_offset(
     tcp_pos_world: np.ndarray,
     tcp_orientation_world: wp.quat,
-    grasp_offset_in_apple_frame: tuple[float, float, float] | np.ndarray,
+    grasp_offset_in_apple_frame: tuple | np.ndarray,
 ) -> np.ndarray:
     """Apple COM in world frame from TCP pose and apple-frame grasp offset.
 
     Matches ``mirror_robot_tcp_to_proxy_and_apple_kernel`` /
     ``_co_teleport_apples_from_proxies``:
 
-    ``p_apple = p_tcp - R(tcp) * offset``,
+    ``p_apple = p_tcp - R(tcp) * offset_pos``,
 
-    where ``offset`` is the vector from apple COM toward the grasp/proxy point in the
-    apple body frame (``gripper_proxy_offset_in_apple_frame``).
+    where ``offset_pos`` is the position part (first 3 elements) of the
+    ``gripper_proxy_offset_in_apple_frame`` (3D or 7D).
     """
     p_tcp = np.asarray(tcp_pos_world, dtype=np.float64).reshape(3)
-    off = np.asarray(grasp_offset_in_apple_frame, dtype=np.float64).reshape(3)
+    off = np.asarray(grasp_offset_in_apple_frame[:3], dtype=np.float64).reshape(3)
     delta = np.asarray(
         wp.quat_rotate(
             tcp_orientation_world,
@@ -90,7 +90,7 @@ def apple_explicit_wrench_about_tcp(
     tcp_pos_world: np.ndarray,
     apple_pos_world: np.ndarray | None = None,
     *,
-    grasp_offset_in_apple_frame: tuple[float, float, float] | np.ndarray | None = None,
+    grasp_offset_in_apple_frame: tuple | np.ndarray | None = None,
     tcp_orientation_world: wp.quat | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Explicit apple-weight wrench reported about the TCP origin (world frame).
@@ -128,7 +128,7 @@ def explicit_apple_wrench_for_stem_harvest(
     cable_body_q: Any,
     tcp_body_index: int,
     apple_body_index: int,
-    grasp_offset_in_apple_frame: tuple[float, float, float] | np.ndarray | None = None,
+    grasp_offset_in_apple_frame: tuple | np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Support force and TCP moment for stem harvest (world frame, about TCP)."""
     p_tcp = body_com_position_world(robot_body_q, tcp_body_index)

@@ -21,25 +21,30 @@ import warp as wp
 from apple_pick_sim.coupled_fruiting.proxy_coupling import align_proxy_body_q_prev_for_vbd
 
 
-def _proxy_world_position_from_apple(
+def _proxy_world_pose_from_apple(
     apple_body_q7: np.ndarray,
-    offset_in_apple_frame: np.ndarray,
-) -> np.ndarray:
-    """World-frame proxy COM from apple pose and apple-frame grasp offset."""
-    p = apple_body_q7[:3].astype(np.float64)
-    q = wp.quat(
-        float(apple_body_q7[3]),
-        float(apple_body_q7[4]),
-        float(apple_body_q7[5]),
-        float(apple_body_q7[6]),
+    offset_7d: tuple | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """World-frame proxy (position, quaternion) from apple pose and 7D grasp offset.
+
+    Returns ``(pos_f32[3], quat_f32[4])``.
+    """
+    apple_tf = wp.transform(
+        wp.vec3(float(apple_body_q7[0]), float(apple_body_q7[1]), float(apple_body_q7[2])),
+        wp.quat(float(apple_body_q7[3]), float(apple_body_q7[4]), float(apple_body_q7[5]), float(apple_body_q7[6])),
     )
-    off = wp.vec3(
-        float(offset_in_apple_frame[0]),
-        float(offset_in_apple_frame[1]),
-        float(offset_in_apple_frame[2]),
+    offset_tf = wp.transform(
+        wp.vec3(float(offset_7d[0]), float(offset_7d[1]), float(offset_7d[2])),
+        wp.quat(float(offset_7d[3]), float(offset_7d[4]), float(offset_7d[5]), float(offset_7d[6])),
     )
-    print(f"Apple pos: {p}, Apple quat: {q}, Offset: {off}")
-    return (p + np.asarray(wp.quat_rotate(q, off), dtype=np.float64)).astype(np.float32)
+    # X_proxy = X_apple * X_offset
+    proxy_tf = wp.transform_multiply(apple_tf, offset_tf)
+    proxy_pos = wp.transform_get_translation(proxy_tf)
+    proxy_rot = wp.transform_get_rotation(proxy_tf)
+    pos = np.array([proxy_pos[0], proxy_pos[1], proxy_pos[2]], dtype=np.float32)
+    quat = np.array([proxy_rot[0], proxy_rot[1], proxy_rot[2], proxy_rot[3]], dtype=np.float32)
+    print(f"Apple pos: {apple_body_q7[:3]}, Apple quat: {apple_body_q7[3:]}, Offset: {offset_7d[:3]}")
+    return pos, quat
 
 
 def settle_vbd_substeps(scene: Any, *, substeps: int, dt: float) -> None:
@@ -159,9 +164,10 @@ def seed_fix_to_apple_from_settled(
     bq_w = cable_w.state_0.body_q.numpy().reshape(-1, 7).copy()
     bqd_w = cable_w.state_0.body_qd.numpy().reshape(-1, 6).copy()
     print(f"Offset: {off}, Apple: {bq_w[apple]}, Proxy: {bq_w[proxy]}")
-    # Enforce proxy placement at the welded offset (apple-frame vector, world rotated).
-    bq_w[proxy, :3] = _proxy_world_position_from_apple(bq_w[apple], off)
-    bq_w[proxy, 3:] = bq_w[apple, 3:]
+    # Enforce proxy placement at the welded offset (7D transform from apple frame).
+    proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq_w[apple], offset)
+    bq_w[proxy, :3] = proxy_pos
+    bq_w[proxy, 3:] = proxy_quat
 
     if quiet_apple_proxy:
         bqd_w[apple] = 0.0
@@ -207,9 +213,9 @@ def seed_mega_fix_to_apple_from_settled(
         offset = inst.gripper_proxy_offset_in_apple_frame
         if apple is None or offset is None:
             continue
-        off = np.asarray(offset, dtype=np.float32).reshape(3)
-        bq_w[proxy, :3] = _proxy_world_position_from_apple(bq_w[apple], off)
-        bq_w[proxy, 3:] = bq_w[apple, 3:]
+        proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq_w[apple], offset)
+        bq_w[proxy, :3] = proxy_pos
+        bq_w[proxy, 3:] = proxy_quat
         if quiet_apple_proxy:
             bqd_w[apple] = 0.0
             bqd_w[proxy] = 0.0

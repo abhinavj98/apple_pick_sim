@@ -67,21 +67,26 @@ def apple_com_from_tcp_grasp_offset(
     Matches ``mirror_robot_tcp_to_proxy_and_apple_kernel`` /
     ``_co_teleport_apples_from_proxies``:
 
-    ``p_apple = p_tcp - R(tcp) * offset_pos``,
-
-    where ``offset_pos`` is the position part (first 3 elements) of the
-    ``gripper_proxy_offset_in_apple_frame`` (3D or 7D).
+    ``X_apple = X_tcp * X_offset^{-1}``
     """
     p_tcp = np.asarray(tcp_pos_world, dtype=np.float64).reshape(3)
-    off = np.asarray(grasp_offset_in_apple_frame[:3], dtype=np.float64).reshape(3)
-    delta = np.asarray(
-        wp.quat_rotate(
-            tcp_orientation_world,
-            wp.vec3(float(off[0]), float(off[1]), float(off[2])),
-        ),
-        dtype=np.float64,
+    go = grasp_offset_in_apple_frame
+    if len(go) == 7:
+        offset_tf = wp.transform(
+            wp.vec3(float(go[0]), float(go[1]), float(go[2])),
+            wp.quat(float(go[3]), float(go[4]), float(go[5]), float(go[6])),
+        )
+    else:
+        offset_tf = wp.transform(
+            wp.vec3(float(go[0]), float(go[1]), float(go[2])), wp.quat_identity()
+        )
+    tcp_tf = wp.transform(
+        wp.vec3(float(p_tcp[0]), float(p_tcp[1]), float(p_tcp[2])),
+        tcp_orientation_world,
     )
-    return (p_tcp - delta).astype(np.float64)
+    apple_tf = wp.transform_multiply(tcp_tf, wp.transform_inverse(offset_tf))
+    apple_pos = wp.transform_get_translation(apple_tf)
+    return np.array([apple_pos[0], apple_pos[1], apple_pos[2]], dtype=np.float64)
 
 
 def apple_explicit_wrench_about_tcp(

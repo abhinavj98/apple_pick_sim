@@ -306,7 +306,7 @@ def _limit_and_write_tcp_stem_wrench_kernel(
     robot_body_q: wp.array(dtype=wp.transform),
     cable_body_q: wp.array(dtype=wp.transform),
     apple_body_index: int,
-    grasp_offset: wp.vec3,
+    grasp_offset: wp.transform,
     use_grasp_offset: int,
 ):
     """Under-relax and clamp stem harvest; write spatial wrench at ``tcp_index``."""
@@ -320,8 +320,8 @@ def _limit_and_write_tcp_stem_wrench_kernel(
         tcp_xf = robot_body_q[tcp_index]
         p_tcp = wp.transform_get_translation(tcp_xf)
         if use_grasp_offset != 0:
-            r_tcp = wp.transform_get_rotation(tcp_xf)
-            p_apple = p_tcp - wp.quat_rotate(r_tcp, grasp_offset)
+            apple_xf = wp.transform_multiply(tcp_xf, wp.transform_inverse(grasp_offset))
+            p_apple = wp.transform_get_translation(apple_xf)
         else:
             p_apple = wp.transform_get_translation(cable_body_q[apple_body_index])
         
@@ -504,7 +504,7 @@ def harvest_stem_tension_for_tcp(
     use_explicit = 0
     m_apple = 0.0
     apple_bid = -1
-    grasp_off = wp.vec3(0.0, 0.0, 0.0)
+    grasp_off = wp.transform_identity()
     use_grasp_offset = 0
     robot_bq = body_q_post
     if (
@@ -524,7 +524,16 @@ def harvest_stem_tension_for_tcp(
             robot_bq = robot_body_q
             if grasp_offset_in_apple_frame is not None:
                 go = grasp_offset_in_apple_frame
-                grasp_off = wp.vec3(float(go[0]), float(go[1]), float(go[2]))
+                if len(go) == 7:
+                    grasp_off = wp.transform(
+                        wp.vec3(float(go[0]), float(go[1]), float(go[2])),
+                        wp.quat(float(go[3]), float(go[4]), float(go[5]), float(go[6])),
+                    )
+                else:
+                    grasp_off = wp.transform(
+                        wp.vec3(float(go[0]), float(go[1]), float(go[2])),
+                        wp.quat_identity(),
+                    )
                 use_grasp_offset = 1
     f_cap = float(force_cap_N) if force_cap_N is not None else 0.0
     t_cap = float(torque_cap_Nm) if torque_cap_Nm is not None else 0.0

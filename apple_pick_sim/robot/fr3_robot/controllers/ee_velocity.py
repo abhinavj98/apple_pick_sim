@@ -8,7 +8,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.solvers import SolverMuJoCo
 
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import (
     EEVelocity,
@@ -28,17 +27,6 @@ from apple_pick_sim.robot.fr3_robot.setup import (
     sync_mujoco_actuator_targets_from_joint_q,
     sync_mujoco_visual_state,
 )
-
-def _quat_mul(a: wp.quat, b: wp.quat) -> wp.quat:
-    """Hamilton product ``a * b`` (warp quats are ``x, y, z, w``)."""
-    ax, ay, az, aw = float(a[0]), float(a[1]), float(a[2]), float(a[3])
-    bx, by, bz, bw = float(b[0]), float(b[1]), float(b[2]), float(b[3])
-    return wp.quat(
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
-    )
 
 def _quat_to_ik_vec4(q: wp.quat) -> wp.vec4:
     return wp.vec4(q[0], q[1], q[2], q[3])

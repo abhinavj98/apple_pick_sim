@@ -88,11 +88,11 @@ class CouplingForceDebugRecorder:
         def _log(label: str, value: float) -> None:
             log(label, value, smoothing=smoothing)
 
-        _log("Coupling → MuJoCo |F| [N]", self.applied_force_mag)
-        _log("Coupling → MuJoCo |τ| [N·m]", self.applied_torque_mag)
-        _log("Coupling ← VBD harvest |F| [N]", self.harvested_force_mag)
-        _log("Coupling ← VBD harvest |τ| [N·m]", self.harvested_torque_mag)
+        _log("TCP Force (Applied to MuJoCo) |F| [N]", self.applied_force_mag)
+        _log("TCP Torque (Applied to MuJoCo) |τ| [N·m]", self.applied_torque_mag)
+        _log("TCP Force (VBD harvest) |F| [N]", self.harvested_force_mag)
+        _log("TCP Torque (VBD harvest) |τ| [N·m]", self.harvested_torque_mag)
 
         for axis, idx in zip("xyz", range(3), strict=True):
-            _log(f"Coupling → MuJoCo F{axis} [N]", float(self.applied_wrench[idx]))
-            _log(f"Coupling ← VBD harvest F{axis} [N]", float(self.harvested_wrench[idx]))
+            _log(f"TCP F{axis} (Applied to MuJoCo) [N]", float(self.applied_wrench[idx]))
+            _log(f"TCP F{axis} (VBD harvest) [N]", float(self.harvested_wrench[idx]))

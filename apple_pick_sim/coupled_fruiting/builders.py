@@ -227,7 +227,7 @@ def build_coupled_fruiting_placeholder(
     cable = generate_coupled_cable_scene(
         ranges,
         seed,
-        base_pos=resolve_fruiting_base_pos(ranges, (0.5, 0.5, 1.5), override=base_pos),
+        base_pos=resolve_fruiting_base_pos(ranges, (0.0, 0.2, 1.0), override=base_pos),
         device=device,
         omit=omit,
         enable_self_collisions=enable_self_collisions,
@@ -324,7 +324,7 @@ def build_coupled_fruiting_fr3(
     cable = generate_coupled_cable_scene(
         ranges,
         seed,
-        base_pos=resolve_fruiting_base_pos(ranges, (0.5, 0.5, 0.5), override=base_pos),
+        base_pos=resolve_fruiting_base_pos(ranges, (0.0, 0.2, 1.0), override=base_pos),
         device=device,
         omit=omit,
         enable_self_collisions=enable_self_collisions,

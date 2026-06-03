@@ -71,12 +71,12 @@ FR3_KEYBOARD_BINDINGS: tuple[tuple[str, str], ...] = (
     ("l", "translate TCP -world Y"),
     ("r", "translate TCP +world Z"),
     ("f", "translate TCP -world Z"),
-    ("z", "rotate TCP +world Z"),
-    ("x", "rotate TCP -world Z"),
+    ("z", "rotate TCP +world X"),
+    ("x", "rotate TCP -world X"),
     ("t", "rotate TCP +world Y"),
     ("g", "rotate TCP -world Y"),
-    ("u", "rotate TCP +world X"),
-    ("o", "rotate TCP -world X"),
+    ("u", "rotate TCP +world Z"),
+    ("o", "rotate TCP -world Z"),
 )
 
 

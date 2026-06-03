@@ -116,6 +116,12 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--hz",
+        type=float,
+        default=30.0,
+        help="Target frame rate [Hz] (default: 30.0).",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -230,10 +236,10 @@ class ExampleCoupledFruiting:
         self.viewer = viewer
         self.args = args
 
-        self.fps = 60
+        self.fps = float(getattr(args, "hz", 30.0)) if args else 30.0
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 30
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.sim_dt = (1.0 / 60.0) / self.sim_substeps
         self.sim_time = 0.0
 
         json_path = getattr(args, "json", None) if args else None
@@ -417,9 +423,9 @@ class ExampleCoupledFruiting:
                 self._ee_ctrl = ctrl_cls(
                     self.scene.robot_model,
                     self.scene.tcp_body_index,
-                    linear_speed=0.15,
-                    angular_speed=0.8,
-                    ik_iterations=24,
+                    linear_speed=1.0,
+                    angular_speed=5.0,
+                    ik_iterations=48,
                 )
                 self._ee_ctrl.sync_target_from_state(self.scene.robot_state_0)
                 if enable_kb:
@@ -539,6 +545,8 @@ if __name__ == "__main__":
         while viewer.is_running():
             example.step()
             example.render()
+            import time
+            time.sleep(max(0.0, example.frame_dt))
     finally:
         example.cleanup()
 

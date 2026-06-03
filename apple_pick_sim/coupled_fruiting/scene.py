@@ -25,8 +25,8 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
 )
 
 DEFAULT_STEM_COUPLING_GAIN: float = 1.0
-DEFAULT_STEM_FORCE_CAP_N: float = 80.0
-DEFAULT_STEM_TORQUE_CAP_NM: float = 20.0
+DEFAULT_STEM_FORCE_CAP_N: float = 1000.0
+DEFAULT_STEM_TORQUE_CAP_NM: float = 1000.0
 
 DEFAULT_MUJOCO_SOLVER_KWARGS: dict[str, Any] = {
     "solver": "newton",
@@ -37,7 +37,7 @@ DEFAULT_MUJOCO_SOLVER_KWARGS: dict[str, Any] = {
     "ls_parallel": True,
     "impratio": 1000.0,
     "use_mujoco_contacts": False,
-    "use_mujoco_cpu": True,
+    "use_mujoco_cpu": False,
     "disable_contacts": True,
 }
 

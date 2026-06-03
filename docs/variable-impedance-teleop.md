@@ -92,7 +92,7 @@ Typical post-grasp VIC: teleop advances `target_tf`; \(\mathbf{w}_{\mathrm{appli
 |----------------|-----------------|
 | Lagged plant wrench | `proxy_coupling.harvest_stem_tension_for_tcp`, `explicit_load.explicit_apple_wrench_for_stem_harvest` |
 | Apply total wrench | `apply_wrench._apply_spatial_wrench_to_body_f` |
-| Dynamic substep gate | `scene.py` / `mega_scene.py` → `_mujoco_and_sync_proxy` |
+| Dynamic substep gate | `scene.py` → `_mujoco_robot_substep_prefix` / `_sync_*_proxy_after_mujoco` |
 | TCP target + IK | `robot/fr3_robot/controllers/ee_velocity.py` |
 | VIC wrench (new) | `robot/fr3_robot/controllers/ee_impedance.py` (planned) |
 | Settle → weld | `coupled_fruiting/settle_then_weld.py` |

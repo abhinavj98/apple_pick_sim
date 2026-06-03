@@ -48,7 +48,7 @@ def bootstrap_articulated_tcp_from_proxy(
     tcp_body_index: int,
     robot_state_0: Any,
     *,
-    ik_iterations: int = 48,
+    ik_iterations: int = 400,
     raise_on_failure: bool = True,
 ) -> None:
     """IK placement for FR3: match ``tcp`` to the cable gripper proxy."""

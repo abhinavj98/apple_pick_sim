@@ -22,14 +22,14 @@ Stiffness helpers live in `apple_pick_sim/fruiting_system/params.py`: `copy_frui
 
 Plant-only build lives in `fruiting_system/mega.py`. **Coupled fd_ghost** (one FR3, offset ghost-sync to all proxies, nominal-only harvest) is in `coupled_fruiting/` — see below.
 
-## Mega coupled FR3 (`coupled_fruiting/mega_scene.py`)
+## Mega coupled FR3 (`coupled_fruiting/scene.py`)
 
 **Not on the M2 critical path** (subprocess FID remains default); interactive prototype for batched FD columns.
 
 One `SolverMuJoCo` FR3 + one mega `SolverVBD` model. Per `coupled_substep`:
 
 1. Kinematic FR3 teleop (`robot_kinematic_mode=True` by default).
-2. `launch_mirror_robot_to_proxy_offset` — `p_proxy_k = p_tcp + (base_pos_k - base_pos_0)` for every column; same TCP orientation.
+2. `launch_mirror_robot_to_proxy_offset` — `p_proxy_k = p_tcp + (base_pos_k - base_pos_0)` for every column; same TCP orientation. When `fix_to_apple=True`, `launch_mirror_robot_to_proxy_offset_and_apple` co-teleports welded apples on the GPU (no host sync).
 3. Shared VBD substep on all instances.
 4. `harvest_stem_tension_for_tcp` on the nominal column when an apple exists (`stem_apple_joint_index`); else velocity-delta on `harvest_registry` (no apple).
 
@@ -39,6 +39,8 @@ One `SolverMuJoCo` FR3 + one mega `SolverVBD` model. Per `coupled_substep`:
 | `MegaCoupledFruitingScene` | `coupled_substep`, `apply_fr3_ee_teleop_direct` |
 | `ProxyBodyRegistry.from_repeated_robot` | 1 TCP → N proxies |
 | `launch_mirror_robot_to_proxy_offset` | Offset-aware ghost sync |
+| `launch_mirror_robot_to_proxy_offset_and_apple` | Offset ghost sync + welded apple co-teleport (device) |
+| `mega_welded_co_teleport_arrays_wp` | Per-instance apple ids and grasp offsets at build time |
 
 Keyboard demo: `apple_pick_sim/examples/example_mega_coupled_keyboard.py` (multi-column: sync → `--fd-substeps` × `coupled_substep` → Jacobian/FIM → reset; `--fd-print-interval` / `--fd-fim`; `--fix-to-apple` / `--fix-to-apple-warmup-substeps` for settle-then-weld via `seed_mega_fix_to_apple_from_settled`).
 
@@ -74,16 +76,16 @@ Optional per-step FIM: pass `sigma_inv` to `mega_fd_step`; computes `J.T @ sigma
 | `apple_pick_sim/fruiting_system/mega_fd.py` | `mega_fd_step`, `copy_mega_instance_state`, `mega_vbd_substep`, `MegaFdStepResult` |
 | `apple_pick_sim/fruiting_system/build.py` | `_build_fruiting_chain_into_builder`, collision filter helpers |
 | `apple_pick_sim/fruiting_system/params.py` | FD column params, `params_fingerprint` (includes spur/stem bend) |
-| `apple_pick_sim/coupled_fruiting/mega_scene.py` | `MegaCoupledFruitingScene`, `mega_ghost_position_offsets_wp` |
+| `apple_pick_sim/coupled_fruiting/scene.py` | `CoupledFruitingScene`, `MegaCoupledFruitingScene`, `mega_ghost_position_offsets_wp` |
 | `apple_pick_sim/coupled_fruiting/builders.py` | `build_mega_coupled_fruiting_fr3` |
-| `apple_pick_sim/coupled_fruiting/proxy_coupling.py` | `mirror_robot_tcp_to_proxy_offset_kernel`, `from_repeated_robot` |
+| `apple_pick_sim/coupled_fruiting/proxy_coupling.py` | `mirror_robot_tcp_to_proxy_offset_and_apple_kernel`, `mirror_robot_tcp_to_proxy_offset_kernel`, `from_repeated_robot` |
 
 ## Tests
 
 - `apple_pick_sim/tests/test_mega_coupled_cable_scene.py` — FD column count, body-count scaling, distinct fingerprints, spatial offset, short VBD rollout finiteness.
 - `apple_pick_sim/tests/test_mega_fd.py` — offset copy, per-step reset, multi-step drift, Jacobian vs sequential gold (per column and full mega), FIM (`test_fim_equals_jt_sigma_inv_j`, `test_fim_scales_linearly_with_sigma_inv`, identity / no-`sigma_inv` smoke).
 - `apple_pick_sim/tests/test_mega_coupled_fruiting.py` — `test_build_two_instance_mega_coupled_finite`, `test_ghost_mirror_offsets`, `test_nominal_harvest_only`, `test_mega_instance0_parity_vs_1x1`.
-- `apple_pick_sim/tests/test_proxy_coupling.py` — `test_mirror_robot_tcp_to_proxy_offset_kernel`, `test_proxy_registry_from_repeated_robot_pairs_order`.
+- `apple_pick_sim/tests/test_proxy_coupling.py` — `test_mirror_robot_tcp_to_proxy_offset_kernel`, `test_mirror_robot_tcp_to_proxy_offset_and_apple_kernel`, `test_proxy_registry_from_repeated_robot_pairs_order`.
 - `apple_pick_sim/tests/test_mega_fd_kinematics.py` — welded zero-g stem wrench vs gather, lateral restoring force, FD Jacobian sign/column checks.
 - `apple_pick_sim/tests/test_coupled_fruiting_system.py` — `test_coupled_fr3_tcp_fz_matches_apple_weight_*` (full FR3 coupled TCP ≈ m·g), `test_coupled_stem_vertical_force_matches_apple_weight` (VBD-only m·g), `test_free_proxy_lateral_stem_restoring_force`.
 - `apple_pick_sim/tests/test_mega_coupled_fruiting.py` — `test_mega_coupled_tcp_fz_matches_apple_weight_at_hold`.

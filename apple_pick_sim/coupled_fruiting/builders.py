@@ -23,7 +23,10 @@ from apple_pick_sim.coupled_fruiting.scene import (
     DEFAULT_STEM_FORCE_CAP_N,
     DEFAULT_STEM_TORQUE_CAP_NM,
     CoupledFruitingScene,
+    MegaCoupledFruitingScene,
+    mega_ghost_position_offsets_wp,
 )
+from apple_pick_sim.coupled_fruiting.explicit_load import apple_mass_kg_from_model
 from apple_pick_sim.coupled_fruiting.stem import _find_stem_apple_joint
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.sim_mujoco_device import resolve_mujoco_use_cpu
@@ -37,12 +40,10 @@ from apple_pick_sim.fruiting_system import (
     resolve_fruiting_base_pos,
     resolve_robot_base_pos,
 )
-from apple_pick_sim.coupled_fruiting.mega_scene import (
-    MegaCoupledFruitingScene,
-    mega_ghost_position_offsets_wp,
+from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+    ProxyBodyRegistry,
+    mega_welded_co_teleport_arrays_wp,
 )
-from apple_pick_sim.coupled_fruiting.explicit_load import apple_mass_kg_from_model
-from apple_pick_sim.coupled_fruiting.proxy_coupling import ProxyBodyRegistry
 
 
 def _cached_apple_mass_kg(cable: CoupledCableScene) -> float:
@@ -302,7 +303,7 @@ def build_coupled_fruiting_fr3(
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM,
     vbd_only: bool = False,
     mujoco_only: bool = False,
-    ik_bootstrap_iterations: int = 96,
+    ik_bootstrap_iterations: int = 50,
     mujoco_use_cpu: bool | None = None,
     robot_base_pos: tuple[float, float, float] | None = None,
 ) -> CoupledFruitingScene:
@@ -535,6 +536,11 @@ def build_mega_coupled_fruiting_fr3(
     stem_joint = (
         _find_stem_apple_joint(nom_cable) if nom_cable.apple_body is not None else None
     )
+    welded_co_teleport = (
+        mega_welded_co_teleport_arrays_wp(cable, device=device)
+        if gripper_proxy.fix_to_apple
+        else None
+    )
 
     scene = MegaCoupledFruitingScene(
         cable=cable,
@@ -543,6 +549,7 @@ def build_mega_coupled_fruiting_fr3(
         harvest_registry=harvest_registry,
         position_offsets_wp=position_offsets_wp,
         nominal_index=nominal_index,
+        welded_co_teleport_arrays=welded_co_teleport,
         robot_model=robot_model,
         tcp_body_index=tcp_body,
         mj_solver=mj_solver,

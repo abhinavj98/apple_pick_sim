@@ -162,6 +162,56 @@ def mirror_robot_tcp_to_proxy_offset_kernel(
 
 
 @wp.kernel
+def mirror_robot_tcp_to_proxy_offset_and_apple_kernel(
+    robot_ids: wp.array(dtype=int),
+    proxy_ids: wp.array(dtype=int),
+    position_offsets: wp.array(dtype=wp.vec3),
+    apple_body_ids: wp.array(dtype=int),
+    proxy_offset_in_apple: wp.array(dtype=wp.transform),
+    src_body_q: wp.array(dtype=wp.transform),
+    src_body_qd: wp.array(dtype=wp.spatial_vector),
+    dst_body_q: wp.array(dtype=wp.transform),
+    dst_body_qd: wp.array(dtype=wp.spatial_vector),
+    proxy_forces: wp.array(dtype=wp.spatial_vector),
+    body_inv_mass: wp.array(dtype=float),
+    body_inv_inertia: wp.array(dtype=wp.mat33),
+    gravity: wp.vec3,
+    dt: float,
+):
+    """Offset ghost mirror plus optional apple co-teleport from each proxy pose."""
+    i = wp.tid()
+    rid = robot_ids[i]
+    pid = proxy_ids[i]
+    delta = position_offsets[i]
+
+    tcp_q = src_body_q[rid]
+    tcp_rot = wp.transform_get_rotation(tcp_q)
+    tcp_pos = wp.transform_get_translation(tcp_q)
+    proxy_pos = tcp_pos + delta
+
+    qd_corr = _corrected_proxy_twist_from_robot(
+        src_body_qd[rid],
+        proxy_forces[rid],
+        body_inv_mass[pid],
+        body_inv_inertia[pid],
+        tcp_rot,
+        gravity,
+        dt,
+    )
+    dst_body_q[pid] = wp.transform(proxy_pos, tcp_rot)
+    dst_body_qd[pid] = qd_corr
+
+    aid = apple_body_ids[i]
+    if aid >= 0:
+        proxy_tf = wp.transform(proxy_pos, tcp_rot)
+        apple_tf = wp.transform_multiply(
+            proxy_tf, wp.transform_inverse(proxy_offset_in_apple[i])
+        )
+        dst_body_q[aid] = apple_tf
+        dst_body_qd[aid] = qd_corr
+
+
+@wp.kernel
 def compute_proxy_reaction_wrench_kernel(
     robot_ids: wp.array(dtype=int),
     proxy_ids: wp.array(dtype=int),
@@ -842,4 +892,73 @@ def launch_mirror_robot_to_proxy_offset(
             dt,
         ],
         device=device if device is not None else cable_model.device,
+    )
+
+
+def launch_mirror_robot_to_proxy_offset_and_apple(
+    *,
+    robot_ids: wp.array,
+    proxy_ids: wp.array,
+    position_offsets: wp.array,
+    apple_body_ids: wp.array,
+    proxy_offset_in_apple: wp.array,
+    src_body_q,
+    src_body_qd,
+    dst_body_q,
+    dst_body_qd,
+    proxy_forces,
+    cable_model,
+    gravity: wp.vec3,
+    dt: float,
+    device=None,
+) -> None:
+    """Ghost mega sync with welded apple co-teleport (offset mirror + apple per row)."""
+    wp.launch(
+        mirror_robot_tcp_to_proxy_offset_and_apple_kernel,
+        dim=robot_ids.shape[0],
+        inputs=[
+            robot_ids,
+            proxy_ids,
+            position_offsets,
+            apple_body_ids,
+            proxy_offset_in_apple,
+            src_body_q,
+            src_body_qd,
+            dst_body_q,
+            dst_body_qd,
+            proxy_forces,
+            cable_model.body_inv_mass,
+            cable_model.body_inv_inertia,
+            gravity,
+            dt,
+        ],
+        device=device if device is not None else cable_model.device,
+    )
+
+
+def mega_welded_co_teleport_arrays_wp(
+    mega: Any,
+    *,
+    device: str | None = None,
+) -> tuple[wp.array, wp.array]:
+    """Per-instance apple body ids (-1 if none) and grasp offsets for combined ghost sync."""
+    dev = device if device is not None else str(mega.model.device)
+    apple_ids: list[int] = []
+    offsets: list[wp.transform] = []
+    for inst in mega.instances:
+        if inst.apple_body is None or inst.gripper_proxy_offset_in_apple_frame is None:
+            apple_ids.append(-1)
+            offsets.append(wp.transform())
+            continue
+        apple_ids.append(int(inst.apple_body))
+        off = inst.gripper_proxy_offset_in_apple_frame
+        offsets.append(
+            wp.transform(
+                wp.vec3(float(off[0]), float(off[1]), float(off[2])),
+                wp.quat(float(off[3]), float(off[4]), float(off[5]), float(off[6])),
+            )
+        )
+    return (
+        wp.array(apple_ids, dtype=int, device=dev),
+        wp.array(offsets, dtype=wp.transform, device=dev),
     )

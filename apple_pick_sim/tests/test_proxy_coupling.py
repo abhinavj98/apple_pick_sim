@@ -603,6 +603,117 @@ def test_mirror_robot_tcp_to_proxy_offset_kernel():
     np.testing.assert_allclose(dst_np[proxy_b, 3:7], src_np[rid, 3:7], rtol=1e-5, atol=1e-5)
 
 
+def test_mirror_robot_tcp_to_proxy_offset_and_apple_kernel():
+    """Ghost fd + fix_to_apple: offset proxy mirror and apple co-teleport on device."""
+    pc = _import_pc()
+    n = 5
+    rid = 0
+    proxy_a, proxy_b = 1, 2
+    apple_a, apple_b = 3, 4
+
+    robot_ids = wp.array([rid, rid], dtype=int, device="cpu")
+    proxy_ids = wp.array([proxy_a, proxy_b], dtype=int, device="cpu")
+    offsets = wp.array(
+        [wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 1.5, 0.0)],
+        dtype=wp.vec3,
+        device="cpu",
+    )
+    apple_body_ids = wp.array([apple_a, -1], dtype=int, device="cpu")
+    grasp_off = (0.0, 0.0, -0.08, 0.0, 0.0, 0.0, 1.0)
+    proxy_offsets = wp.array(
+        [
+            wp.transform(wp.vec3(*grasp_off[:3]), wp.quat(*grasp_off[3:])),
+            wp.transform(),
+        ],
+        dtype=wp.transform,
+        device="cpu",
+    )
+
+    src_q = wp.zeros(n, dtype=wp.transform, device="cpu")
+    dst_q = wp.zeros(n, dtype=wp.transform, device="cpu")
+    src_qd = wp.zeros(n, dtype=wp.spatial_vector, device="cpu")
+    dst_qd = wp.zeros(n, dtype=wp.spatial_vector, device="cpu")
+    pf = wp.zeros(n, dtype=wp.spatial_vector, device="cpu")
+    inv_mass = wp.zeros(n, dtype=float, device="cpu")
+    inv_mass.assign(np.asarray([1.0, 1.25, 1.25, 0.0, 0.0], dtype=np.float32))
+    id33 = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+    inv_inertia = wp.array([id33] * n, dtype=wp.mat33, device="cpu")
+
+    tcp_pos = (1.0, 2.0, 3.0)
+    src_np = np.zeros((n, 7), dtype=np.float32)
+    src_np[rid, :3] = tcp_pos
+    src_np[rid, 6] = 1.0
+    src_q.assign(src_np.ravel())
+    src_qd_np = np.zeros((n, 6), dtype=np.float32)
+    src_qd_np[rid] = [0.05, 0.0, 0.0, 0.0, 0.2, 0.0]
+    src_qd.assign(src_qd_np.ravel())
+
+    sentinel = 99.0
+    dst_np_before = np.full((n, 7), sentinel, dtype=np.float32)
+    dst_np_before[apple_b, 6] = 1.0
+    dst_q.assign(dst_np_before.ravel())
+
+    gravity = wp.vec3(0.0)
+    dt = 1.0e-3
+
+    pc.launch_mirror_robot_to_proxy_offset_and_apple(
+        robot_ids=robot_ids,
+        proxy_ids=proxy_ids,
+        position_offsets=offsets,
+        apple_body_ids=apple_body_ids,
+        proxy_offset_in_apple=proxy_offsets,
+        src_body_q=src_q,
+        src_body_qd=src_qd,
+        dst_body_q=dst_q,
+        dst_body_qd=dst_qd,
+        proxy_forces=pf,
+        cable_model=_FakeCableModel(inv_mass, inv_inertia),
+        gravity=gravity,
+        dt=dt,
+        device="cpu",
+    )
+
+    dst_np = dst_q.numpy().reshape(-1, 7)
+    dst_qd_np = dst_qd.numpy().reshape(-1, 6)
+
+    np.testing.assert_allclose(dst_np[proxy_a, :3], tcp_pos, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        dst_np[proxy_b, :3],
+        (tcp_pos[0], tcp_pos[1] + 1.5, tcp_pos[2]),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+    proxy_tf = wp.transform(wp.vec3(*dst_np[proxy_a, :3]), wp.quat(*dst_np[proxy_a, 3:7]))
+    off_tf = wp.transform(wp.vec3(*grasp_off[:3]), wp.quat(*grasp_off[3:]))
+    apple_tf = wp.transform_multiply(proxy_tf, wp.transform_inverse(off_tf))
+    apple_pos_ref = wp.transform_get_translation(apple_tf)
+    apple_rot_ref = wp.transform_get_rotation(apple_tf)
+    np.testing.assert_allclose(
+        dst_np[apple_a, :3],
+        [apple_pos_ref[0], apple_pos_ref[1], apple_pos_ref[2]],
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        dst_np[apple_a, 3:7],
+        [apple_rot_ref[0], apple_rot_ref[1], apple_rot_ref[2], apple_rot_ref[3]],
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(dst_qd_np[apple_a], dst_qd_np[proxy_a], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(dst_np[apple_b, :3], sentinel, rtol=0.0, atol=0.0)
+
+
+class _FakeCableModel:
+    """Minimal model stub for isolated kernel launch tests."""
+
+    def __init__(self, body_inv_mass, body_inv_inertia):
+        self.body_inv_mass = body_inv_mass
+        self.body_inv_inertia = body_inv_inertia
+        self.device = "cpu"
+
+
 def test_proxy_registry_from_mapping_sorts_pairs():
     pc = _import_pc()
     reg = pc.ProxyBodyRegistry.from_mapping({5: 12, 1: 3, 9: 7})

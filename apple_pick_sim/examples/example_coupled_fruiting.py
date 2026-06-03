@@ -272,7 +272,7 @@ class ExampleCoupledFruiting:
             print("MuJoCo robot + proxy sync only (--only-mjc); Newton viewer shows cable model.")
 
         enable_self = not (
-            getattr(self.args, "no_self_collision", False) if self.args else False
+            getattr(self.args, "no_self_collision", True) if self.args else True
         )
 
         fix_to_apple = _fix_to_apple_from_args(args)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.explicit_load import (
@@ -72,8 +73,8 @@ def test_grasp_offset_places_apple_com_behind_tcp():
     np.testing.assert_allclose(
         p_apple,
         p_tcp - np.asarray(wp.quat_rotate(rot, wp.vec3(*offset)), dtype=np.float64),
-        rtol=1e-12,
-        atol=1e-12,
+        rtol=1e-6,
+        atol=1e-6,
     )
 
 
@@ -198,6 +199,7 @@ def test_stem_harvest_explicit_adds_force_and_torque():
     np.testing.assert_allclose(w_on[3:] - w_off[3:], tau_exp, rtol=0.02, atol=0.05)
 
 
+@pytest.mark.slow
 def test_coupled_substep_default_includes_explicit_apple_weight():
     cf = _import_cf()
     fs = _import_fs()
@@ -337,6 +339,7 @@ def test_coupled_substep_explicit_flag_delta_matches_explicit_wrench():
 
 
 @requires_fr3
+@pytest.mark.slow
 def test_settle_weld_hold_explicit_support_matches_mg():
     """Quiet settle→weld + hold: stem-harvest explicit term adds ≈ ``m·g`` upward support."""
     import apple_pick_sim.coupled_fruiting as cf

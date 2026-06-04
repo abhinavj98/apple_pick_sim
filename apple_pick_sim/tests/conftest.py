@@ -13,10 +13,14 @@ RANGES_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_straight_rod_test.json"
 COUPLED_BASE_POS = (0.2, 0.2, 0.5)
 # Matches ``placement_xform_for_proxy`` for a proxy near ``COUPLED_BASE_POS`` (z ≈ 0.5).
 COUPLED_ROBOT_BASE_POS = (0.2, 0.2, -0.35)
+# Explicit for readability; matches API default (enable_self_collisions=False).
 NO_SELF_COLLISION_KW = {"enable_self_collisions": False}
-COUPLED_SCENE_KW = {
+COUPLED_VBD_SCENE_KW = {
     **NO_SELF_COLLISION_KW,
     "base_pos": COUPLED_BASE_POS,
+}
+COUPLED_SCENE_KW = {
+    **COUPLED_VBD_SCENE_KW,
     "robot_base_pos": COUPLED_ROBOT_BASE_POS,
 }
 DEFAULT_MJ_KW = {"disable_contacts": True}
@@ -50,8 +54,10 @@ def pytest_configure(config) -> None:
 
 
 def build_coupled_fr3(cf, ranges, seed: int, **kwargs):
-    """Build FR3 coupled scene with intra-chain self-collision disabled by default."""
+    """Build FR3 coupled scene; intra-chain self-collision off unless overridden."""
     kwargs.setdefault("enable_self_collisions", False)
+    kwargs.setdefault("base_pos", COUPLED_BASE_POS)
+    kwargs.setdefault("robot_base_pos", COUPLED_ROBOT_BASE_POS)
     return cf.build_coupled_fruiting_fr3(ranges, seed, **kwargs)
 
 

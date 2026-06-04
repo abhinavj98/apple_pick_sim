@@ -28,7 +28,7 @@ from apple_pick_sim.fruiting_system.mega_fd import (
 )
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.tests.conftest import (
-    COUPLED_BASE_POS,
+    COUPLED_SCENE_KW,
     DEFAULT_MJ_KW,
     RANGES_FIXTURE,
     SUB_DT,
@@ -75,14 +75,13 @@ def _build_welded_zero_g_scene() -> cf.MegaCoupledFruitingScene:
     scene = cf.build_mega_coupled_fruiting_fr3(
         fs.load_ranges(RANGES_FIXTURE),
         seed=7,
-        base_pos=COUPLED_BASE_POS,
         stiffness_epsilon=EPS,
-        enable_self_collisions=False,
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
         gripper_proxy=gripper,
         stem_coupling_gain=1.0,
         stem_force_cap_N=None,
         stem_torque_cap_Nm=None,
+        **COUPLED_SCENE_KW,
     )
     _zero_gravity(scene)
     scene.robot_kinematic_mode = True
@@ -210,6 +209,7 @@ def test_cable_model_has_zero_gravity_when_configured():
     np.testing.assert_allclose(g_model, 0.0, atol=0.0)
 
 
+@pytest.mark.slow
 @requires_fr3
 def test_fd_stem_wrench_matches_coupled_gather_after_drive():
     """Feature wrench block uses the same gather convention as stem harvest."""
@@ -228,6 +228,7 @@ def test_fd_stem_wrench_matches_coupled_gather_after_drive():
     )
 
 
+@pytest.mark.slow
 @requires_fr3
 @pytest.mark.parametrize("axis,linear", LATERAL_DRIVE_CASES)
 def test_welded_restoring_force_and_fd_jacobian(axis: int, linear: tuple[float, float, float]):
@@ -241,6 +242,9 @@ def test_welded_restoring_force_and_fd_jacobian(axis: int, linear: tuple[float, 
     )
     assert abs(force[axis]) >= MIN_FORCE, (
         f"stem–apple force too small along axis {axis}: {force[axis]}"
+    )
+    assert np.sign(force[axis]) == -np.sign(disp[axis]), (
+        f"restoring force: disp[{axis}]={disp[axis]:.4f}, F[{axis}]={force[axis]:.2f}"
     )
 
     row = FORCE_ROW_BASE + axis
@@ -269,6 +273,7 @@ def _stem_force_after_zero_g_drive(linear: tuple[float, float, float]) -> np.nda
     return _stem_apple_wrench_coupled_gather(scene)[:3]
 
 
+@pytest.mark.slow
 @requires_fr3
 def test_jacobian_force_row_sign_flips_when_y_drive_reverses():
     """Reversing lateral teleop flips stem–apple force; some stiffness column flips ∂F/∂k."""
@@ -309,6 +314,7 @@ def test_jacobian_force_row_sign_flips_when_y_drive_reverses():
     )
 
 
+@pytest.mark.slow
 @requires_fr3
 def test_extract_mega_fd_jacobian_matches_forward_difference():
     """``extract_mega_fd_jacobian`` matches explicit (y_i - y_0) / ε on current state."""
@@ -324,6 +330,7 @@ def test_extract_mega_fd_jacobian_matches_forward_difference():
     _assert_jacobian_matches_features(extracted, EPS)
 
 
+@pytest.mark.slow
 @requires_fr3
 def test_welded_features_include_stem_apple_wrench():
     """Feature vector is 12-D (apple, proxy, wrench) when welded."""

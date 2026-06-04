@@ -97,22 +97,22 @@ def test_fixture_args_in_straight_rod_fixture():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     args = fs.parse_fixture_args(ranges)
-    assert args.fruiting_base_pos == (0.2, 0.2, 0.5)
-    assert args.robot_base_pos == (0.0, 0.0, 0.0)
+    assert args.fruiting_base_pos == (0.0, 0.2, 1.3)
+    assert args.robot_base_pos == (0.0, 0.0, 1.0)
 
 
 def test_fixture_args_null_robot_base_in_variance_fixture():
     fs = _import_module()
     ranges = fs.load_ranges(VARIANCE_FIXTURE)
     args = fs.parse_fixture_args(ranges)
-    assert args.fruiting_base_pos == (0.5, 0.5, 0.5)
-    assert args.robot_base_pos is None
+    assert args.fruiting_base_pos == (0.0, 0.2, 1.2)
+    assert args.robot_base_pos == (0.0, 0.0, 1.0)
 
 
 def test_resolve_fruiting_base_pos_prefers_override():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    assert fs.resolve_fruiting_base_pos(ranges, (9.0, 9.0, 9.0)) == (0.2, 0.2, 0.5)
+    assert fs.resolve_fruiting_base_pos(ranges, (9.0, 9.0, 9.0)) == (0.0, 0.2, 1.3)
     assert fs.resolve_fruiting_base_pos(
         ranges, (9.0, 9.0, 9.0), override=(1.0, 2.0, 3.0)
     ) == (1.0, 2.0, 3.0)
@@ -293,13 +293,24 @@ def test_generate_scene_returns_scene():
     assert scene.model is not None
 
 
+def test_generate_scene_self_collision_off_by_default():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene_default = fs.generate_scene(ranges, seed=0)
+    scene_off = fs.generate_scene(ranges, seed=0, enable_self_collisions=False)
+    assert (
+        scene_default.model.shape_collision_filter_pairs
+        == scene_off.model.shape_collision_filter_pairs
+    )
+
+
 def test_generate_scene_disable_self_collision_superset_of_joint_default_filters():
     """enable_self_collisions=False adds intra-chain filter pairs (see _apply_all_chain_collision_filters)."""
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 0
     scene_on = fs.generate_scene(ranges, seed=seed, enable_self_collisions=True)
-    scene_off = fs.generate_scene(ranges, seed=seed, enable_self_collisions=False)
+    scene_off = fs.generate_scene(ranges, seed=seed)
     pairs_on = scene_on.model.shape_collision_filter_pairs
     pairs_off = scene_off.model.shape_collision_filter_pairs
     assert pairs_on <= pairs_off

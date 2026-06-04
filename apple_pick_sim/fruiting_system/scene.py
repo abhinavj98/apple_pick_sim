@@ -76,7 +76,7 @@ def generate_scene(
     base_pos: tuple[float, float, float] | None = None,
     device: str | None = None,
     omit: Collection[str] | None = None,
-    enable_self_collisions: bool = True,
+    enable_self_collisions: bool = False,
 ) -> FruitingSystemScene:
     """Generate a Newton scene for a fruiting system from ``ranges`` and ``seed``.
 
@@ -87,10 +87,10 @@ def generate_scene(
         device: Warp device string (e.g. ``"cpu"``, ``"cuda:0"``). Defaults to
             :func:`~apple_pick_sim.sim_device.default_sim_device` (``cuda:0`` when CUDA is available).
         omit: Forwarded to :func:`sample_params` to force segments off without editing JSON.
-        enable_self_collisions: If ``False``, register shape collision filter pairs between
-            every pair of distinct chain bodies (primary through apple), so the articulation
-            does not self-collide; ground contact is unchanged. If ``True`` (default), only
-            Newton joint parent/child filters apply, so non-adjacent chain links may collide.
+        enable_self_collisions: If ``False`` (default), register shape collision filter pairs
+            between every pair of distinct chain bodies (primary through apple), so the
+            articulation does not self-collide; ground contact is unchanged. If ``True``,
+            only Newton joint parent/child filters apply, so non-adjacent chain links may collide.
 
     Returns:
         A :class:`FruitingSystemScene` ready to simulate.
@@ -113,7 +113,7 @@ def generate_coupled_cable_scene(
     base_pos: tuple[float, float, float] | None = None,
     device: str | None = None,
     omit: Collection[str] | None = None,
-    enable_self_collisions: bool = True,
+    enable_self_collisions: bool = False,
     gripper_proxy: GripperProxyConfig | None = None,
 ) -> CoupledCableScene:
     """Build the VBD cable ``Model``: P0 fruiting tree + collision-equipped gripper proxy.
@@ -275,7 +275,7 @@ def _build_scene(
     base_pos: tuple[float, float, float],
     device: str,
     *,
-    enable_self_collisions: bool = True,
+    enable_self_collisions: bool = False,
 ) -> FruitingSystemScene:
     """Build a Newton ModelBuilder scene from sampled params."""
     builder = _new_fruiting_builder()

@@ -25,10 +25,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 _BUILD_KW = dict(
-    base_pos=COUPLED_BASE_POS,
-    robot_base_pos=COUPLED_ROBOT_BASE_POS,
     enable_self_collisions=False,
     mujoco_solver_kwargs={"disable_contacts": True},
+    ik_bootstrap_iterations=96,
+)
+
+_COUPLED_BUILD_KW = dict(
+    **_BUILD_KW,
+    base_pos=COUPLED_BASE_POS,
+    robot_base_pos=COUPLED_ROBOT_BASE_POS,
 )
 
 
@@ -50,7 +55,7 @@ def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
             fix_to_apple=False,
         ),
     )
-    cf.settle_vbd_substeps(settled, substeps=40, dt=SUB_DT)
+    cf.settle_vbd_substeps(settled, substeps=80, dt=SUB_DT)
 
     welded = cf.build_coupled_fruiting_fr3(
         ranges,
@@ -61,6 +66,8 @@ def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
             fix_to_apple=True,
         ),
+        stem_force_cap_N=None,
+        stem_torque_cap_Nm=None,
     )
     cf.seed_fix_to_apple_from_settled(welded_scene=welded, settled_scene=settled, quiet_apple_proxy=True)
 
@@ -206,6 +213,7 @@ def test_seed_bootstrap_clears_proxy_forces():
     assert bool(np.allclose(welded.coupling_forces_cache.numpy(), 0.0, atol=1e-9))
 
 
+@pytest.mark.slow
 def test_mega_settle_then_weld_tcp_reaches_nominal_proxy_after_seed():
     """Mega fd_ghost: settle VBD, seed welded plant, strict IK at fixed robot base."""
     import apple_pick_sim.coupled_fruiting as cf

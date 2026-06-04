@@ -17,7 +17,7 @@ _tests_dir = str(Path(__file__).resolve().parent)
 if _tests_dir not in sys.path:
     sys.path.insert(0, _tests_dir)
 
-from conftest import DEFAULT_MJ_KW, RANGES_FIXTURE, build_coupled_fr3, requires_fr3
+from conftest import DEFAULT_MJ_KW, RANGES_FIXTURE, SUB_DT, build_coupled_fr3, requires_fr3
 
 pytestmark = requires_fr3
 
@@ -272,7 +272,7 @@ def test_align_proxy_body_q_prev_for_vbd_clears_finalize_spurious_velocity():
     cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_fr3"])
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    dt = 1.0 / 600.0
+    dt = SUB_DT
 
     def _proxy_lin_speed_after_vbd_step(scene) -> float:
         proxy = scene.cable.gripper_proxy_body
@@ -742,7 +742,7 @@ def test_coupled_substep_reuses_cached_proxy_ids():
         cf, ranges, 12, device="cpu", mujoco_solver_kwargs=DEFAULT_MJ_KW
     )
     reg = scene.proxy_registry
-    dt = 1.0 / 600.0
+    dt = SUB_DT
     rid0, pid0 = reg.ids_wp(scene.robot_model.device)
     scene.coupled_substep(dt)
     rid1, pid1 = reg.ids_wp(scene.robot_model.device)
@@ -799,7 +799,7 @@ def test_stem_harvest_cpu_gpu_parity():
     )
     assert scene.stem_apple_joint_index is not None
     tcp = scene.tcp_body_index
-    dt = 1.0 / 600.0
+    dt = SUB_DT
     run_coupled_substeps_direct_hold(scene, fr3_robot, 8, sub_dt=dt)
 
     cable = scene.cable

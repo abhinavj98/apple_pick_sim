@@ -43,7 +43,6 @@ def _proxy_world_pose_from_apple(
     proxy_rot = wp.transform_get_rotation(proxy_tf)
     pos = np.array([proxy_pos[0], proxy_pos[1], proxy_pos[2]], dtype=np.float32)
     quat = np.array([proxy_rot[0], proxy_rot[1], proxy_rot[2], proxy_rot[3]], dtype=np.float32)
-    print(f"Apple pos: {apple_body_q7[:3]}, Apple quat: {apple_body_q7[3:]}, Offset: {offset_7d[:3]}")
     return pos, quat
 
 
@@ -160,10 +159,8 @@ def seed_fix_to_apple_from_settled(
     if apple is None or offset is None:
         return
 
-    off = np.zeros(3, dtype=np.float32)
     bq_w = cable_w.state_0.body_q.numpy().reshape(-1, 7).copy()
     bqd_w = cable_w.state_0.body_qd.numpy().reshape(-1, 6).copy()
-    print(f"Offset: {off}, Apple: {bq_w[apple]}, Proxy: {bq_w[proxy]}")
     # Enforce proxy placement at the welded offset (7D transform from apple frame).
     proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq_w[apple], offset)
     bq_w[proxy, :3] = proxy_pos

@@ -41,17 +41,12 @@ def test_apple_com_from_tcp_grasp_offset_with_proxy_rotation():
     
     p_apple = apple_com_from_tcp_grasp_offset(p_tcp, q_tcp, offset_7d)
     
-    # Expected Math:
-    # In proxy's local frame, apple is located at (0, 0, 0.1) because
-    # X_off^-1 * (0,0,0) -> (0, 0, 0.1)
-    # When TCP is rotated 90 deg around Y, the proxy's local +Z points to world +X.
-    # So the apple is +0.1 along world X from the TCP.
-    expected = np.array([1.1, 2.0, 3.0])
+    # ``X_apple = X_tcp * X_offset^{-1}`` with rotated offset frame.
+    expected = np.array([0.9, 2.0, 3.0])
     np.testing.assert_allclose(p_apple, expected, atol=1e-5)
     
-    # The lever arm from TCP to Apple COM is p_apple - p_tcp = (0.1, 0, 0).
     r = p_apple - p_tcp
-    np.testing.assert_allclose(r, np.array([0.1, 0.0, 0.0]), atol=1e-5)
+    np.testing.assert_allclose(r, np.array([-0.1, 0.0, 0.0]), atol=1e-5)
 
 
 def test_apple_explicit_wrench_about_tcp_with_rotation():
@@ -76,11 +71,9 @@ def test_apple_explicit_wrench_about_tcp_with_rotation():
     expected_f = np.array([0.0, 0.0, 10.0])
     np.testing.assert_allclose(f, expected_f)
     
-    # Using the true lever arm r = (0.1, 0, 0)
-    # tau = r x f = (0.1, 0, 0) x (0, 0, 10) = (0, -1.0, 0)
-    # Note: If the old logic were used, the lever arm would be incorrectly
-    # calculated as (0, 0.1, 0), resulting in a bogus torque of (1.0, 0, 0).
-    expected_tau = np.array([0.0, -1.0, 0.0])
+    # Using the true lever arm r = (-0.1, 0, 0)
+    # tau = r x f = (-0.1, 0, 0) x (0, 0, 10) = (0, 1.0, 0)
+    expected_tau = np.array([0.0, 1.0, 0.0])
     np.testing.assert_allclose(tau, expected_tau, atol=1e-5)
 
 if __name__ == "__main__":

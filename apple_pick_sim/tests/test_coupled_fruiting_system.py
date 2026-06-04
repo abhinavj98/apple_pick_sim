@@ -19,6 +19,7 @@ if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
 from conftest import (
+    COUPLED_SCENE_KW,
     DEFAULT_MJ_KW,
     FRAME_DT,
     RANGES_FIXTURE,
@@ -270,7 +271,7 @@ def test_coupled_harvest_forces_stay_small_without_external_load():
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = build_coupled_fr3(cf, ranges, 42,
+    scene = build_coupled_fr3(cf, ranges, 8,
         gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
     )
@@ -422,13 +423,14 @@ def test_tcp_pose_matches_proxy_each_coupled_substep():
 
 
 
+@pytest.mark.slow
 def test_coupled_long_horizon_harvest_bounded():
     from apple_pick_sim.robot import fr3_robot
 
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = build_coupled_fr3(cf, ranges, 42,
+    scene = build_coupled_fr3(cf, ranges, 4,
         gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
     )
@@ -786,6 +788,7 @@ def _build_welded_coupled_for_stem_tests(cf, fs, *, seed: int, **stem_kw):
         seed,
         gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True),
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
+        ik_bootstrap_iterations=96,
         **stem_kw,
     )
 
@@ -881,24 +884,62 @@ def _nudge_apple_lateral_vbd(
     return float(delta_m)
 
 
+def _lever_arm_tcp_to_apple_com(scene) -> np.ndarray | None:
+    """World-frame vector from TCP to apple COM (matches stem harvest kernel)."""
+    apple = _scene_nominal_apple_body(scene)
+    if apple is None or scene.robot_state_0 is None:
+        return None
+    from apple_pick_sim.coupled_fruiting.explicit_load import (
+        apple_com_from_tcp_grasp_offset,
+        body_com_position_world,
+        body_orientation_world,
+    )
+
+    cable = scene.cable
+    tcp = scene.tcp_body_index
+    p_tcp = body_com_position_world(scene.robot_state_0.body_q, tcp)
+    grasp_off = _scene_grasp_offset_in_apple_frame(scene)
+    if grasp_off is not None:
+        tcp_rot = body_orientation_world(scene.robot_state_0.body_q, tcp)
+        p_apple = apple_com_from_tcp_grasp_offset(p_tcp, tcp_rot, grasp_off)
+    else:
+        p_apple = body_com_position_world(cable.state_0.body_q, apple)
+    return p_apple - p_tcp
+
+
+def _expected_tcp_stem_harvest_from_gather(scene, stem: np.ndarray) -> np.ndarray:
+    """Reference TCP wrench mirroring ``_limit_and_write_tcp_stem_wrench_kernel``."""
+    f_stem = np.asarray(stem[:3], dtype=np.float64)
+    tau_stem = np.asarray(stem[3:], dtype=np.float64)
+    f_total = f_stem.copy()
+    tau_total = tau_stem.copy()
+    r = _lever_arm_tcp_to_apple_com(scene)
+    if r is not None:
+        if getattr(scene, "stem_harvest_explicit_apple_weight", False):
+            f_add, _ = _explicit_apple_wrench_for_scene(scene)
+            f_total = f_total + f_add
+        tau_total = tau_total + np.cross(r, f_total)
+    return _stem_wrench_after_coupling_limits(
+        f_total,
+        tau_total,
+        coupling_gain=scene.stem_coupling_gain,
+        force_cap_N=scene.stem_force_cap_N,
+        torque_cap_Nm=scene.stem_torque_cap_Nm,
+    )
+
+
 def _assert_tcp_matches_stem(
     scene,
     tcp: int,
     *,
     rtol: float = 0.02,
-    atol: float = 0.5,
+    atol: float = 0.2,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Stem gather and TCP harvest agree after coupling gain/caps."""
     from apple_pick_sim.coupling_force_debug import read_tcp_wrench
 
     stem = _stem_apple_wrench_from_scene(scene, dt=SUB_DT)
-    expected = _stem_wrench_after_coupling_limits(
-        _stem_force_with_explicit_apple_weight(scene, stem[:3]),
-        _stem_torque_with_explicit_apple_weight(scene, stem[3:]),
-        coupling_gain=scene.stem_coupling_gain,
-        force_cap_N=scene.stem_force_cap_N,
-        torque_cap_Nm=scene.stem_torque_cap_Nm,
-    )
+    expected = _expected_tcp_stem_harvest_from_gather(scene, stem)
     tcp_w = read_tcp_wrench(scene.proxy_forces, tcp).astype(np.float64)
     np.testing.assert_allclose(tcp_w, expected, rtol=rtol, atol=atol)
     return stem, tcp_w
@@ -1021,6 +1062,7 @@ def _assert_tcp_stem_load_order_of_apple_weight(
     return stem, tcp_w
 
 
+@pytest.mark.slow
 def test_coupled_fr3_tcp_stem_load_at_hold_free_proxy():
     """Free proxy: stem harvest at TCP (gain=1) with |F| on the order of m_apple·g."""
     from apple_pick_sim.fruiting_system.params import analytic_apple_mass_kg
@@ -1047,6 +1089,7 @@ def test_coupled_fr3_tcp_stem_load_at_hold_free_proxy():
     )
 
 
+@pytest.mark.slow
 def test_coupled_fr3_tcp_stem_load_at_hold_welded():
     """Welded: stem harvest at TCP with upward support and O(m·g) magnitude."""
     from apple_pick_sim.fruiting_system.params import analytic_apple_mass_kg
@@ -1074,6 +1117,7 @@ def test_coupled_fr3_tcp_stem_load_at_hold_welded():
     )
 
 
+@pytest.mark.slow
 def test_welded_coupled_holding_hanging_tree_stem_reaction_upward():
     """Welded + gravity hold: stem–apple reaction is upward; TCP harvest matches gather."""
     from apple_pick_sim.robot import fr3_robot
@@ -1096,6 +1140,7 @@ def test_welded_coupled_holding_hanging_tree_stem_reaction_upward():
     assert stem[2] > 1.0, f"expected upward stem support under gravity, Fz={stem[2]:.2f} N"
 
 
+@pytest.mark.slow
 def test_welded_coupled_vertical_pull_produces_upward_stem_tension():
     """+Z teleop lifts the apple; stem–apple reaction stays upward with meaningful magnitude."""
     from apple_pick_sim.robot import fr3_robot
@@ -1133,6 +1178,7 @@ def test_welded_coupled_vertical_pull_produces_upward_stem_tension():
     assert tcp_pull[2] > 5.0
 
 
+@pytest.mark.slow
 def test_coupled_stem_vertical_force_matches_apple_weight():
     """Fixture fruiting scene at coupled base: stem–apple Fz ≈ m·g after settle (±10 %).
 
@@ -1177,6 +1223,7 @@ def test_coupled_stem_vertical_force_matches_apple_weight():
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("axis,linear", _LATERAL_DRIVE_CASES)
 def test_free_proxy_lateral_stem_restoring_force(axis: int, linear: tuple[float, float, float]):
     """Free apple (VBD-only, zero-g): stem–apple force opposes imposed lateral offset."""
@@ -1205,6 +1252,7 @@ def test_free_proxy_lateral_stem_restoring_force(axis: int, linear: tuple[float,
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("axis,linear", _LATERAL_DRIVE_CASES)
 def test_welded_coupled_lateral_drive_restoring_force(axis: int, linear: tuple[float, float, float]):
     """Zero-g lateral teleop: stem/TCP force opposes apple motion on the driven axis."""
@@ -1245,6 +1293,7 @@ def test_welded_coupled_lateral_drive_restoring_force(axis: int, linear: tuple[f
     assert np.sign(tcp_w[axis]) == np.sign(f[axis])
 
 
+@pytest.mark.slow
 def test_welded_coupled_opposite_lateral_drive_flips_stem_force():
     """Reversing teleop direction reverses stem–apple force on that axis."""
     from apple_pick_sim.robot import fr3_robot

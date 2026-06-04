@@ -19,15 +19,15 @@ from apple_pick_sim.robot.fr3_robot.placement import (
 )
 
 
-def test_placement_xform_for_proxy_is_origin():
+def test_placement_xform_for_proxy_offsets_xy_and_lowers_z_by_reach():
     import warp as wp
 
     proxy_q7 = [1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]
     tf = placement_xform_for_proxy(proxy_q7, vertical_reach_m=0.85)
     pos = wp.transform_get_translation(tf)
-    assert float(pos[0]) == 0.0
-    assert float(pos[1]) == 0.0
-    assert float(pos[2]) == 0.0
+    assert float(pos[0]) == pytest.approx(1.0)
+    assert float(pos[1]) == pytest.approx(2.0)
+    assert float(pos[2]) == pytest.approx(2.15)
 
 
 def test_tcp_proxy_pose_errors():

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from apple_pick_sim.tests.conftest import (
-    COUPLED_BASE_POS,
+    COUPLED_SCENE_KW,
     DEFAULT_MJ_KW,
     NO_SELF_COLLISION_KW,
     RANGES_FIXTURE,
@@ -42,12 +42,11 @@ def _build_mega(cf, **kwargs):
         RANGES_FIXTURE
     )
     kw = dict(
-        base_pos=COUPLED_BASE_POS,
         instance_spacing=INSTANCE_SPACING,
         stiffness_epsilon=STIFFNESS_EPS,
-        enable_self_collisions=False,
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
         device="cpu",
+        **COUPLED_SCENE_KW,
     )
     kw.update(kwargs)
     return cf.build_mega_coupled_fruiting_fr3(ranges, SEED, **kw)
@@ -72,6 +71,7 @@ def test_build_two_instance_mega_coupled_finite():
     assert np.all(np.isfinite(pf))
 
 
+@pytest.mark.slow
 def test_mega_coupled_tcp_stem_load_at_hold():
     """Nominal column: TCP stem harvest (gain=1) with |F| on the order of m_apple·g."""
     from apple_pick_sim.fruiting_system.params import analytic_apple_mass_kg
@@ -153,6 +153,7 @@ def test_ghost_mirror_offsets():
     np.testing.assert_allclose(p1 - p0, expected_delta, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.slow
 def test_nominal_stem_harvest_repeatable_without_teleop():
     """After settle + hold, consecutive stem harvests at TCP match (quasi-static)."""
     cf = _import_cf()
@@ -176,16 +177,27 @@ def test_nominal_stem_harvest_repeatable_without_teleop():
 
 
 def test_mega_instance0_parity_vs_1x1():
+    """Nominal mega column matches a 1×1 coupled scene at the same fixture layout."""
     cf = _import_cf()
     from apple_pick_sim.robot import fr3_robot
 
-    mega = _build_mega(cf)
     ranges = __import__("apple_pick_sim.fruiting_system", fromlist=["load_ranges"]).load_ranges(
         RANGES_FIXTURE
     )
-    single = build_coupled_fr3(
-        cf, ranges, SEED, device="cpu", mujoco_solver_kwargs=DEFAULT_MJ_KW
+    build_kw = dict(
+        enable_self_collisions=False,
+        mujoco_solver_kwargs=DEFAULT_MJ_KW,
+        device="cpu",
+        ik_bootstrap_iterations=96,
     )
+    mega = cf.build_mega_coupled_fruiting_fr3(
+        ranges,
+        SEED,
+        instance_spacing=INSTANCE_SPACING,
+        stiffness_epsilon=STIFFNESS_EPS,
+        **build_kw,
+    )
+    single = build_coupled_fr3(cf, ranges, SEED, **build_kw)
     single.robot_kinematic_mode = True
 
     ctrl_m = new_direct_controller(mega, fr3_robot)
@@ -207,4 +219,4 @@ def test_mega_instance0_parity_vs_1x1():
     single_proxy = single.cable.state_0.body_q.numpy().reshape(-1, 7)[
         single.cable.gripper_proxy_body, :3
     ]
-    np.testing.assert_allclose(mega_proxy, single_proxy, rtol=0.02, atol=0.05)
+    np.testing.assert_allclose(mega_proxy, single_proxy, rtol=0.02, atol=0.02)

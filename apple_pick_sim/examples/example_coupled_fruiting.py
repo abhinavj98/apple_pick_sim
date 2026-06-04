@@ -17,8 +17,8 @@ Options (Newton example parser + extras)::
     PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \\
       --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 42 --only-vbd
 
-``--no-self-collision`` matches :func:`~apple_pick_sim.fruiting_system.generate_coupled_cable_scene` /
-``enable_self_collisions=False``.
+Intra-chain self-collision is off by default; pass ``--self-collision`` to enable it.
+``--no-self-collision`` is a no-op kept for older command lines.
 
 ``--fix-to-apple`` / ``--no-fix-to-apple`` select stem-harvest + apple co-teleport vs the default
 velocity-delta harvest (proxy-only sync).
@@ -128,9 +128,14 @@ def _make_parser() -> argparse.ArgumentParser:
         help="RNG seed for the first scene. Omit for a random seed on each run.",
     )
     parser.add_argument(
+        "--self-collision",
+        action="store_true",
+        help="Allow non-adjacent chain body collisions on the cable scene.",
+    )
+    parser.add_argument(
         "--no-self-collision",
         action="store_true",
-        help="Disable intra-chain self collisions on the coupled cable scene (same as P0 viewer flag).",
+        help="Deprecated; self-collision is already disabled by default.",
     )
     parser.add_argument(
         "--only-vbd",
@@ -271,8 +276,8 @@ class ExampleCoupledFruiting:
         else:
             print("MuJoCo robot + proxy sync only (--only-mjc); Newton viewer shows cable model.")
 
-        enable_self = not (
-            getattr(self.args, "no_self_collision", True) if self.args else True
+        enable_self = bool(
+            getattr(self.args, "self_collision", False) if self.args else False
         )
 
         fix_to_apple = _fix_to_apple_from_args(args)

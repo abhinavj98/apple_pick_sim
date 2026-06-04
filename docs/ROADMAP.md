@@ -174,7 +174,7 @@ Phases below follow **Sequencing** at the top: **[P0] Done** → **[M1] Done** �
 **Exit before [M1] (process):**
 
 - **Refactor + alignment (code shipped)** — collision/readout API, `measure_fruiting_forces`, README / WRENCH / tests; exited to [M1] 2026-05-15.
-- **Manual verification** — *Deferred* (not a gate for [M1]); ad hoc: `example_fruiting_system.py` (seeds, `--no-self-collision`, **FJ** traces).
+- **Manual verification** — *Deferred* (not a gate for [M1]); ad hoc: `example_fruiting_system.py` (seeds, optional `--self-collision`, **FJ** traces).
 
 **Optional stretch (promote during refactor only if needed):**
 
@@ -278,7 +278,7 @@ See `**docs/mujoco-vbd-coupling-architecture.md`** for per-model ownership and t
 - **FR3 TCP velocity teleop + force transfer:** **Accepted** for M1 baseline (`--only-mjc` and full coupled, `--debug-coupling-forces` for wrench plots). Refactor must **preserve** staggered semantics unless explicitly changed with tests.
 - `**--fr3-direct-joints`:** kinematic `joint_q` writeback for arm debugging; not the primary teleop path. **Post-grasp VIC** requires `**robot_kinematic_mode=False`** and TCP `body_f` wrench sum — see `**docs/variable-impedance-teleop.md**` (builders/examples default kinematic).
 - `**test_coupling_stability.py**` asserts finiteness and cap compliance, **not** quiescent MuJoCo motion or small TCP velocities; passing tests does **not** imply a stable interactive demo.
-- `**--no-self-collision` / `--mujoco-viewer`** are not the primary instability drivers; they only change cable collisions or add a second viewer window.
+- **`--self-collision` / `--mujoco-viewer`** are not the primary instability drivers; the former opts into intra-chain cable contacts, the latter adds a second viewer window.
 - **Smoke paths:** `--only-vbd` (cable only); `--robot fr3 --fr3-keyboard` (full coupled teleop); `--robot fr3 --only-mjc --fr3-keyboard` (robot + proxy sync only); `--debug-coupling-forces` for wrench plots.
 
 **Exit note (2026-05-25):** Coupled FR3 + proxy coupling accepted for learning stack; EE–apple **contact** scenarios and formal **arm readouts API** deferred (not required for [M2] env wrapper).
@@ -726,6 +726,8 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 - Run example sim (smoke): from repo root, `uv run --directory newton python ../apple_pick_sim/examples/example_apple_stem.py`
 - Tests (Newton / shared env): `uv run --directory newton python -m newton.tests` (narrow with path/file when iterating, e.g. `uv run --directory newton python -m newton.tests -k test_cable`)
 - P0 fruiting-system tests: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -v -p no:launch_testing` (from repo root; `PYTHONPATH` ensures `apple_pick_sim` is importable; `--directory newton` sets the uv project but cwd becomes `newton/`)
+- **Fast default (excludes `@pytest.mark.slow` long-horizon / mega FD / settle tests):** `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -q -p no:launch_testing -m "not slow"`
+- **Slow-only gate:** `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -m slow -q -p no:launch_testing`
 - P0 wrench equilibrium (physics sanity): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_wrench_equilibrium.py -q -p no:launch_testing`
 - M1 coupled cable scene (Slice 2a): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupled_cable_scene.py -q -p no:launch_testing`
 - M1 coupled fruiting (Slice 2b placeholder loop): `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_coupled_fruiting_system.py -q -p no:launch_testing`

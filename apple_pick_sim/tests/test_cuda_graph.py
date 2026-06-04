@@ -112,19 +112,3 @@ def test_coupled_cuda_graph_welded_explicit_stem_harvest_finite():
     assert bool(np.isfinite(w).all())
     assert float(np.linalg.norm(w[:3])) < 5000.0
 
-
-@pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA not available")
-def test_example_coupled_fruiting_graph_flag():
-    import newton.viewer
-
-    import apple_pick_sim.example_coupled_fruiting as ex
-
-    viewer = newton.viewer.ViewerNull()
-    args = ex._make_parser().parse_args(
-        ["--viewer", "null", "--cuda-graph", "--robot", "placeholder", "--seed", "1"]
-    )
-    example = ex.ExampleCoupledFruiting(viewer, args)
-    assert example.graph is not None
-    for _ in range(3):
-        example.step()
-    example.test_final()

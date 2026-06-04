@@ -282,7 +282,7 @@ def generate_mega_coupled_cable_scene(
     instance_spacing: tuple[float, float, float] = (0.0, 1.5, 0.0),
     device: str | None = None,
     omit: Collection[str] | None = None,
-    enable_self_collisions: bool = True,
+    enable_self_collisions: bool = False,
     gripper_proxy: GripperProxyConfig | None = None,
 ) -> MegaCoupledCableScene:
     """Build a mega plant from explicit params and/or FD stiffness columns.

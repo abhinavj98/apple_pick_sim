@@ -73,6 +73,7 @@ def _run_recovery(fix_to_apple: bool):
     )
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("fix_to_apple", [False, True])
 def test_theta_recovery_loss_decreases(fix_to_apple: bool):
     result = _run_recovery(fix_to_apple)
@@ -80,12 +81,14 @@ def test_theta_recovery_loss_decreases(fix_to_apple: bool):
     assert min(result.loss_hist) < result.loss_hist[0]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("fix_to_apple", [False, True])
 def test_theta_recovery_converges_within_tolerance(fix_to_apple: bool):
     result = _run_recovery(fix_to_apple)
     assert result.rel_err <= 0.10
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("fix_to_apple", [False, True])
 def test_theta_recovery_brute_force_grid_agrees(fix_to_apple: bool):
     ranges, base_params = _sample_base_params()
@@ -129,6 +132,7 @@ def test_theta_recovery_brute_force_grid_agrees(fix_to_apple: bool):
     assert abs(result.k_final - k_grid_best) / k_star <= 0.15
 
 
+@pytest.mark.slow
 def test_theta_recovery_welded_jacobian_wrench_rows_nonzero():
     ranges, base_params = _sample_base_params()
     feature_cfg = _feature_cfg(True)

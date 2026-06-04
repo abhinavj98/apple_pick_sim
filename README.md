@@ -60,9 +60,9 @@ PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/ex
   --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 123
 ```
 
-**Collisions:** By default, `generate_scene(..., enable_self_collisions=True)` only relies on Newton’s joint **parent/child** collision filters (adjacent rod segments do not collide). **Non-adjacent** chain capsules can still collide with each other and with the apple; that is physically meaningful but can be stiff if segment length is small relative to capsule radius (next-but-one overlap) or if contacts fight cable constraints.
+**Collisions:** By default, `generate_scene(..., enable_self_collisions=False)` registers **shape collision filter pairs between every pair of distinct chain bodies** (primary through apple), so the tree does not self-collide; **ground contact is unchanged**. This is the default for tests, coupled builders, and Gym envs.
 
-Pass **`--no-self-collision`** to set `enable_self_collisions=False`, which registers **shape collision filter pairs between every pair of distinct chain bodies** (primary through apple), so the tree does not self-collide; **ground contact is unchanged**. Use this if you need a more stable run without intra-chain contacts.
+Pass **`enable_self_collisions=True`** (or **`--self-collision`** on the fruiting/coupled examples) to rely only on Newton’s joint **parent/child** filters so **non-adjacent** chain capsules may collide with each other and the apple.
 
 From Python, call `ExampleFruitingSystem.regenerate()` (optional seed) to rebuild while keeping the viewer. See `apple_pick_sim/examples/example_fruiting_system.py`.
 

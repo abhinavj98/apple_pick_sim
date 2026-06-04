@@ -84,7 +84,7 @@ def generate_coupled_cable_scene(
     base_pos: tuple[float, float, float] | None = None,
     device: str | None = None,
     omit: Collection[str] | None = None,
-    enable_self_collisions: bool = True,
+    enable_self_collisions: bool = False,
     gripper_proxy: GripperProxyConfig | None = None,
 ) -> CoupledCableScene:
     """Build the VBD cable ``Model``: P0 fruiting tree + collision-equipped gripper proxy.

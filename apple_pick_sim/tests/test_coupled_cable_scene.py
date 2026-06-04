@@ -13,7 +13,7 @@ import pytest
 
 from apple_pick_sim.tests.conftest import (
     COUPLED_BASE_POS,
-    COUPLED_SCENE_KW,
+    COUPLED_VBD_SCENE_KW,
     NO_SELF_COLLISION_KW,
     RANGES_FIXTURE,
 )
@@ -47,8 +47,8 @@ def test_coupled_scene_has_one_extra_body_vs_p0():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 7
-    p0 = fs.generate_scene(ranges, seed=seed, **COUPLED_SCENE_KW)
-    coupled = fs.generate_coupled_cable_scene(ranges, seed=seed, **COUPLED_SCENE_KW)
+    p0 = fs.generate_scene(ranges, seed=seed, **COUPLED_VBD_SCENE_KW)
+    coupled = fs.generate_coupled_cable_scene(ranges, seed=seed, **COUPLED_VBD_SCENE_KW)
     assert coupled.model.body_count == p0.model.body_count + 1
 
 
@@ -57,8 +57,8 @@ def test_coupled_fruiting_metadata_matches_p0_for_same_seed():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 11
-    p0 = fs.generate_scene(ranges, seed=seed, **COUPLED_SCENE_KW)
-    coupled = fs.generate_coupled_cable_scene(ranges, seed=seed, **COUPLED_SCENE_KW)
+    p0 = fs.generate_scene(ranges, seed=seed, **COUPLED_VBD_SCENE_KW)
+    coupled = fs.generate_coupled_cable_scene(ranges, seed=seed, **COUPLED_VBD_SCENE_KW)
 
     assert coupled.params == p0.params
     assert coupled.primary_bodies == p0.primary_bodies
@@ -73,7 +73,7 @@ def test_coupled_fruiting_metadata_matches_p0_for_same_seed():
         ranges,
         seed=seed,
         gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True),
-        **COUPLED_SCENE_KW,
+        **COUPLED_VBD_SCENE_KW,
     )
     assert len(coupled_welded.fruiting_fixed_joints) == len(p0.fruiting_fixed_joints) + 1
 
@@ -82,9 +82,9 @@ def test_coupled_geometry_fingerprint_matches_p0_apple_and_rod_counts():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 99
-    coupled = fs.generate_coupled_cable_scene(ranges, seed=seed, **COUPLED_SCENE_KW)
+    coupled = fs.generate_coupled_cable_scene(ranges, seed=seed, **COUPLED_VBD_SCENE_KW)
     fp_p0 = fs.geometry_fingerprint(
-        fs.generate_scene(ranges, seed=seed, **COUPLED_SCENE_KW)
+        fs.generate_scene(ranges, seed=seed, **COUPLED_VBD_SCENE_KW)
     )
     fp_coupled = fs.geometry_fingerprint_coupled(coupled)
     for key in (
@@ -102,15 +102,15 @@ def test_coupled_geometry_fingerprint_matches_p0_apple_and_rod_counts():
 def test_gripper_proxy_body_index_stable_across_rebuild():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    a = fs.generate_coupled_cable_scene(ranges, seed=3, **COUPLED_SCENE_KW)
-    b = fs.generate_coupled_cable_scene(ranges, seed=3, **COUPLED_SCENE_KW)
+    a = fs.generate_coupled_cable_scene(ranges, seed=3, **COUPLED_VBD_SCENE_KW)
+    b = fs.generate_coupled_cable_scene(ranges, seed=3, **COUPLED_VBD_SCENE_KW)
     assert a.gripper_proxy_body == b.gripper_proxy_body
 
 
 def test_gripper_proxy_near_apple_surface():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_coupled_cable_scene(ranges, seed=5, **COUPLED_SCENE_KW)
+    scene = fs.generate_coupled_cable_scene(ranges, seed=5, **COUPLED_VBD_SCENE_KW)
     assert scene.apple_body is not None
     assert scene.params.apple_radius is not None
 
@@ -129,7 +129,7 @@ def test_gripper_proxy_near_apple_surface():
 def test_gripper_proxy_has_collision_shape():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_coupled_cable_scene(ranges, seed=2, **COUPLED_SCENE_KW)
+    scene = fs.generate_coupled_cable_scene(ranges, seed=2, **COUPLED_VBD_SCENE_KW)
     shapes = scene.model.body_shapes.get(scene.gripper_proxy_body, [])
     assert len(shapes) >= 1
 
@@ -149,7 +149,7 @@ def test_fix_proxy_to_apple_adds_fixed_joint():
     ranges = fs.load_ranges(RANGES_FIXTURE)
     cfg = fs.GripperProxyConfig(fix_to_apple=True)
     scene = fs.generate_coupled_cable_scene(
-        ranges, seed=4, gripper_proxy=cfg, **COUPLED_SCENE_KW
+        ranges, seed=4, gripper_proxy=cfg, **COUPLED_VBD_SCENE_KW
     )
     assert scene.gripper_proxy_apple_joint is not None
     labels = [label for _, label in scene.fruiting_fixed_joints]
@@ -164,7 +164,7 @@ def test_fix_to_apple_proxy_on_apple_surface_not_at_com():
         ranges,
         seed=5,
         gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True),
-        **COUPLED_SCENE_KW,
+        **COUPLED_VBD_SCENE_KW,
     )
     assert scene.apple_body is not None
     assert scene.params.apple_radius is not None
@@ -193,7 +193,7 @@ def test_fix_to_apple_weld_direction_is_stem_pole():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     cfg = fs.GripperProxyConfig(fix_to_apple=True)
-    scene = fs.generate_coupled_cable_scene(ranges, seed=3, gripper_proxy=cfg, **COUPLED_SCENE_KW)
+    scene = fs.generate_coupled_cable_scene(ranges, seed=3, gripper_proxy=cfg, **COUPLED_VBD_SCENE_KW)
     stem = _stem_direction_world(scene)
     body_q = scene.state_0.body_q.to("cpu").numpy()
     apple_pos = body_q[scene.apple_body, :3]
@@ -207,10 +207,10 @@ def test_free_and_welded_proxy_share_stem_pole():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     free = fs.generate_coupled_cable_scene(
-        ranges, seed=7, gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False), **COUPLED_SCENE_KW
+        ranges, seed=7, gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False), **COUPLED_VBD_SCENE_KW
     )
     welded = fs.generate_coupled_cable_scene(
-        ranges, seed=7, gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True), **COUPLED_SCENE_KW
+        ranges, seed=7, gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True), **COUPLED_VBD_SCENE_KW
     )
     bq_free = free.state_0.body_q.to("cpu").numpy()
     bq_weld = welded.state_0.body_q.to("cpu").numpy()
@@ -229,7 +229,7 @@ def test_free_proxy_remains_stem_aligned():
         ranges,
         seed=3,
         gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
-        **COUPLED_SCENE_KW,
+        **COUPLED_VBD_SCENE_KW,
     )
     body_q = scene.state_0.body_q.to("cpu").numpy()
     apple_pos = body_q[scene.apple_body, :3]
@@ -242,7 +242,7 @@ def test_free_proxy_remains_stem_aligned():
 def test_coupled_short_vbd_rollout_finite():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_coupled_cable_scene(ranges, seed=8, **COUPLED_SCENE_KW)
+    scene = fs.generate_coupled_cable_scene(ranges, seed=8, **COUPLED_VBD_SCENE_KW)
     fs.run_rollout(scene, num_steps=3, sim_substeps=4)
     body_q = scene.state_0.body_q.to("cpu").numpy()
     assert np.isfinite(body_q).all()
@@ -251,13 +251,13 @@ def test_coupled_short_vbd_rollout_finite():
 def test_coupled_geometry_fingerprint_includes_proxy_fields():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = fs.generate_coupled_cable_scene(ranges, seed=6, **COUPLED_SCENE_KW)
+    scene = fs.generate_coupled_cable_scene(ranges, seed=6, **COUPLED_VBD_SCENE_KW)
     fp = fs.geometry_fingerprint_coupled(scene)
     assert "gripper_proxy_body" in fp
     assert "gripper_proxy_pos" in fp
     assert fp["gripper_proxy_body"] == scene.gripper_proxy_body
     p0_fp = fs.geometry_fingerprint(
-        fs.generate_scene(ranges, seed=6, **COUPLED_SCENE_KW)
+        fs.generate_scene(ranges, seed=6, **COUPLED_VBD_SCENE_KW)
     )
     assert "gripper_proxy_pos" not in p0_fp
 
@@ -265,8 +265,8 @@ def test_coupled_geometry_fingerprint_includes_proxy_fields():
 def test_params_fingerprint_stable_across_coupled_rebuild():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    a = fs.generate_coupled_cable_scene(ranges, seed=21, **COUPLED_SCENE_KW)
-    b = fs.generate_coupled_cable_scene(ranges, seed=21, **COUPLED_SCENE_KW)
+    a = fs.generate_coupled_cable_scene(ranges, seed=21, **COUPLED_VBD_SCENE_KW)
+    b = fs.generate_coupled_cable_scene(ranges, seed=21, **COUPLED_VBD_SCENE_KW)
     assert fs.params_fingerprint(a.params) == fs.params_fingerprint(b.params)
 
 
@@ -274,7 +274,7 @@ def test_measure_fruiting_forces_works_on_coupled_scene():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     scene = fs.generate_coupled_cable_scene(
-        ranges, seed=3, device="cpu", **COUPLED_SCENE_KW
+        ranges, seed=3, device="cpu", **COUPLED_VBD_SCENE_KW
     )
     fs.run_rollout(scene, num_steps=2, sim_substeps=5)
     q_prev = scene.state_1.body_q

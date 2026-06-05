@@ -17,8 +17,8 @@ Options (Newton example parser + extras)::
     PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \\
       --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 42 --only-vbd
 
-``--no-self-collision`` matches :func:`~apple_pick_sim.fruiting_system.generate_coupled_cable_scene` /
-``enable_self_collisions=False``.
+Intra-chain self collisions are **off** by default. Pass ``--enable-self-collision`` to set
+``enable_self_collisions=True`` on the coupled cable scene (same semantics as P0 when collisions are on).
 
 ``--fix-to-apple`` / ``--no-fix-to-apple`` select stem-harvest + apple co-teleport vs the default
 velocity-delta harvest (proxy-only sync).
@@ -26,10 +26,14 @@ velocity-delta harvest (proxy-only sync).
 Pass ``--fr3-direct-joints`` with ``--robot fr3`` (and ``--fr3-keyboard`` for teleop) to write IK
 ``joint_q`` directly and skip MuJoCo arm dynamics (testing / kinematic coupled runs).
 
-Pass ``--fr3-keyboard`` with ``--robot fr3`` and ``--viewer gl`` for TCP keyboard teleop: each frame
-IK writes ``robot_control.joint_target_pos`` / ``vel`` before MuJoCo substeps (same keys as
-``example_fr3_keyboard.py``). **Verified interactively** with ``--only-mjc`` (MuJoCo + proxy sync only;
-default ``fix_to_apple=False``). Full coupled teleop (no ``--only-mjc``) is not yet confirmed in the viewer.
+Pass ``--dynamic-arm`` with ``--robot fr3`` to integrate the arm under lagged plant wrenches via
+``SolverMuJoCo``. Add ``--vic`` for variable-impedance TCP wrench teleop (requires ``--dynamic-arm``;
+incompatible with ``--fr3-direct-joints``). With ``--vic``, joint position actuators are disabled and
+teleop only advances the TCP impedance target; compliance is from VIC + lagged stem harvest.
+
+Pass ``--fr3-keyboard`` with ``--robot fr3`` and ``--viewer gl`` for TCP keyboard teleop. Without
+``--vic``, each frame IK writes ``joint_target_pos`` / ``vel`` (joint PD). With ``--vic``, keyboard
+commands move ``target_tf`` and VIC applies TCP wrenches each substep.
 """
 
 from __future__ import annotations
@@ -73,6 +77,11 @@ def _default_ranges_path() -> Path:
 def _fix_to_apple_from_args(args: argparse.Namespace | None) -> bool:
     """Return whether the gripper proxy is welded to the apple (stem-harvest path)."""
     return bool(getattr(args, "fix_to_apple", False)) if args else False
+
+
+def _enable_self_collisions_from_args(args: argparse.Namespace | None) -> bool:
+    """Return whether intra-chain self collisions are enabled on the coupled cable scene."""
+    return bool(getattr(args, "enable_self_collision", False)) if args else False
 
 
 def _gripper_proxy_from_args(
@@ -128,9 +137,9 @@ def _make_parser() -> argparse.ArgumentParser:
         help="RNG seed for the first scene. Omit for a random seed on each run.",
     )
     parser.add_argument(
-        "--no-self-collision",
+        "--enable-self-collision",
         action="store_true",
-        help="Disable intra-chain self collisions on the coupled cable scene (same as P0 viewer flag).",
+        help="Enable intra-chain self collisions on the coupled cable scene (off by default).",
     )
     parser.add_argument(
         "--only-vbd",
@@ -226,6 +235,27 @@ def _make_parser() -> argparse.ArgumentParser:
             "and lagged TCP wrenches while cable VBD + proxy sync still run."
         ),
     )
+    parser.add_argument(
+        "--dynamic-arm",
+        action="store_true",
+        help=(
+            "Integrate the FR3 via MuJoCo dynamics (robot_kinematic_mode=False). Requires "
+            "--robot fr3; incompatible with --fr3-direct-joints."
+        ),
+    )
+    parser.add_argument(
+        "--vic",
+        action="store_true",
+        help=(
+            "Enable variable-impedance TCP wrench (implies --dynamic-arm). Uses "
+            "Fr3EEVelocityController + Fr3EEImpedanceController; incompatible with "
+            "--fr3-direct-joints."
+        ),
+    )
+    parser.add_argument("--vic-linear-k", type=float, default=800.0, help="VIC linear K [N/m].")
+    parser.add_argument("--vic-linear-d", type=float, default=80.0, help="VIC linear D [N·s/m].")
+    parser.add_argument("--vic-angular-k", type=float, default=40.0, help="VIC angular K [N·m/rad].")
+    parser.add_argument("--vic-angular-d", type=float, default=4.0, help="VIC angular D [N·m·s/rad].")
     return parser
 
 
@@ -271,9 +301,7 @@ class ExampleCoupledFruiting:
         else:
             print("MuJoCo robot + proxy sync only (--only-mjc); Newton viewer shows cable model.")
 
-        enable_self = not (
-            getattr(self.args, "no_self_collision", True) if self.args else True
-        )
+        enable_self = _enable_self_collisions_from_args(self.args)
 
         fix_to_apple = _fix_to_apple_from_args(args)
         print(
@@ -391,15 +419,45 @@ class ExampleCoupledFruiting:
             self._mujoco_viewer = False
 
         direct_joints = bool(getattr(args, "fr3_direct_joints", False)) if args else False
+        dynamic_arm = bool(getattr(args, "dynamic_arm", False)) if args else False
+        use_vic = bool(getattr(args, "vic", False)) if args else False
+        if use_vic:
+            dynamic_arm = True
+        if direct_joints and (dynamic_arm or use_vic):
+            raise SystemExit("--fr3-direct-joints is incompatible with --dynamic-arm / --vic.")
+        if (dynamic_arm or use_vic) and robot_kind != "fr3":
+            raise SystemExit("--dynamic-arm / --vic require --robot fr3.")
         if direct_joints and robot_kind != "fr3":
             raise SystemExit("--fr3-direct-joints requires --robot fr3.")
         if direct_joints and self._step_mode == "vbd":
             raise SystemExit("--fr3-direct-joints requires a robot step mode (not --only-vbd).")
+        if (dynamic_arm or use_vic) and self._step_mode == "vbd":
+            raise SystemExit("--dynamic-arm / --vic require a robot step mode (not --only-vbd).")
         if direct_joints and has_robot:
             self.scene.robot_kinematic_mode = True
             print(
                 "FR3 direct-joint mode: kinematic arm (no MuJoCo integration, no lagged TCP wrench)."
             )
+        elif dynamic_arm and has_robot:
+            self.scene.robot_kinematic_mode = False
+            fr3_robot.init_mujoco_actuator_targets_from_model(
+                self.scene.robot_model, self.scene.robot_control
+            )
+            print("FR3 dynamic-arm mode: MuJoCo integrates lagged plant wrenches on TCP body_f.")
+            if use_vic:
+                self.scene.vic_controller = fr3_robot.Fr3EEImpedanceController()
+                self.scene.vic_gains = fr3_robot.ImpedanceGains(
+                    linear_k=float(getattr(args, "vic_linear_k", 800.0)),
+                    linear_d=float(getattr(args, "vic_linear_d", 80.0)),
+                    angular_k=float(getattr(args, "vic_angular_k", 40.0)),
+                    angular_d=float(getattr(args, "vic_angular_d", 4.0)),
+                )
+                g = self.scene.vic_gains
+                print(
+                    f"VIC enabled (wrench-only, joint PD off): "
+                    f"K=({g.linear_k:g}, {g.angular_k:g}) "
+                    f"D=({g.linear_d:g}, {g.angular_d:g}) N/m, N·m/rad."
+                )
 
         self._ee_ctrl: (
             fr3_robot.Fr3EEVelocityController | fr3_robot.Fr3EEDirectJointController | None
@@ -407,7 +465,7 @@ class ExampleCoupledFruiting:
         self._fr3_direct_joints = direct_joints
         enable_kb = bool(getattr(args, "fr3_keyboard", False)) if args else False
         kb_ok = hasattr(self.viewer, "is_key_down")
-        want_fr3_ctrl = (enable_kb or direct_joints) and robot_kind == "fr3"
+        want_fr3_ctrl = (enable_kb or direct_joints or use_vic) and robot_kind == "fr3"
         if want_fr3_ctrl and self._step_mode != "vbd" and has_robot:
             ctrl_cls = (
                 fr3_robot.Fr3EEDirectJointController
@@ -437,6 +495,15 @@ class ExampleCoupledFruiting:
                     )
         elif enable_kb and robot_kind != "fr3":
             print("Warning: --fr3-keyboard requires --robot fr3.", file=sys.stderr)
+
+        if use_vic and has_robot and self._ee_ctrl is None:
+            tcp = self.scene.tcp_body_index
+            bq = self.scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp]
+            self.scene.vic_target_tf = wp.transform(
+                wp.vec3(float(bq[0]), float(bq[1]), float(bq[2])),
+                wp.quat(float(bq[3]), float(bq[4]), float(bq[5]), float(bq[6])),
+            )
+            self.scene.vic_target_twist = fr3_robot.EEVelocity()
 
     def _pick_forces(self) -> None:
         self.viewer.apply_forces(self.scene.cable.state_0)

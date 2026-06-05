@@ -27,10 +27,9 @@ Optional arguments (Newton example parser + extras)::
     uv run --directory newton python ../apple_pick_sim/examples/example_fruiting_system.py \\
         --json ../apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 123
 
-    ``--no-self-collision`` sets ``enable_self_collisions=False``: collision filter pairs are
-    registered between **every pair of distinct chain bodies** (no intra-chain contacts); ground
-    is unchanged. Default (flag omitted) keeps only joint parent/child filters, so non-adjacent
-    links may collide.
+    Intra-chain self collisions are **off** by default. Pass ``--enable-self-collision`` to keep
+    only joint parent/child filters (non-adjacent links may collide). With the flag omitted,
+    filter pairs are registered between **every pair of distinct chain bodies**; ground is unchanged.
 """
 
 from __future__ import annotations
@@ -66,6 +65,11 @@ def _default_ranges_path() -> Path:
     )
 
 
+def _enable_self_collisions_from_args(args: argparse.Namespace | None) -> bool:
+    """Return whether intra-chain self collisions are enabled on the fruiting scene."""
+    return bool(getattr(args, "enable_self_collision", False)) if args else False
+
+
 def _make_parser() -> argparse.ArgumentParser:
     parser = newton.examples.create_parser()
     parser.add_argument(
@@ -84,9 +88,9 @@ def _make_parser() -> argparse.ArgumentParser:
         help="RNG seed for the first scene. Omit for a random seed on each run.",
     )
     parser.add_argument(
-        "--no-self-collision",
+        "--enable-self-collision",
         action="store_true",
-        help="Filter collisions between all chain bodies (primary→apple); ground unchanged.",
+        help="Enable intra-chain self collisions (off by default; ground unchanged).",
     )
     return parser
 
@@ -137,9 +141,7 @@ class ExampleFruitingSystem:
         if seed is None:
             seed = secrets.randbelow(2**31 - 1)
         print(f"Regenerating fruiting system (seed={seed}) …")
-        enable_self = not (
-            getattr(self.args, "no_self_collision", False) if self.args else False
-        )
+        enable_self = _enable_self_collisions_from_args(self.args)
         self._scene = generate_scene(
             self.ranges,
             seed,

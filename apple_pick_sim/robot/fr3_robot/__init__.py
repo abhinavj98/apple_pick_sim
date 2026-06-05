@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import (
+    Fr3EEImpedanceController,
+    ImpedanceGains,
+)
 from apple_pick_sim.robot.fr3_robot.controllers.ee_direct_joint import Fr3EEDirectJointController
 from apple_pick_sim.robot.fr3_robot.controllers.ee_velocity import Fr3EEVelocityController
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import (
@@ -36,13 +40,17 @@ from apple_pick_sim.robot.fr3_robot.placement import (
 )
 from apple_pick_sim.robot.fr3_robot.setup import (
     build_fr3_robot_model_from_usd,
+    configure_vic_wrench_only_arm,
+    hold_mujoco_actuator_targets_at_state,
     init_mujoco_actuator_targets_from_model,
     np_zeros_like_joint_qd,
     resolve_ee_body_index,
     resolve_tcp_body_index,
+    scale_mujoco_joint_pd,
     sync_mujoco_actuator_targets_from_joint_q,
     sync_mujoco_visual_state,
     sync_robot_gravity_to_mujoco,
+    zero_mujoco_joint_pd,
 )
 
 __all__ = [
@@ -51,7 +59,9 @@ __all__ = [
     "EEVelocity",
     "FR3_KEYBOARD_BINDINGS",
     "Fr3EEDirectJointController",
+    "Fr3EEImpedanceController",
     "Fr3EEVelocityController",
+    "ImpedanceGains",
     "OMNIVERSE_FR3_SCHEMA",
     "OMNIVERSE_FR3_USD",
     "TESTFR3_SCENE_USD",
@@ -64,7 +74,9 @@ __all__ = [
     "bootstrap_tcp_ik_from_proxy",
     "enable_ik_bootstrap_warnings_for_examples",
     "build_fr3_robot_model_from_usd",
+    "configure_vic_wrench_only_arm",
     "fr3_assets_available",
+    "hold_mujoco_actuator_targets_at_state",
     "init_mujoco_actuator_targets_from_model",
     "integrate_tcp_target",
     "np_zeros_like_joint_qd",
@@ -77,7 +89,9 @@ __all__ = [
     "read_keyboard_ee_velocity",
     "resolve_ee_body_index",
     "resolve_tcp_body_index",
+    "scale_mujoco_joint_pd",
     "sync_mujoco_actuator_targets_from_joint_q",
+    "zero_mujoco_joint_pd",
     "sync_mujoco_visual_state",
     "sync_robot_gravity_to_mujoco",
 ]

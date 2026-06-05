@@ -2,7 +2,7 @@
 
 Design note for **grasped-apple pulling** with a **variable-impedance controller (VIC)** on the FR3, using the existing staggered **MuJoCo + VBD** coupling. Complements **`docs/mujoco-vbd-coupling-architecture.md`** (staggered loop) and **`docs/ROADMAP.md`** (M2 \(\pi_{\mathrm{exp}}\) / FD modes).
 
-**Status:** Spec + integration plan (not yet implemented in examples or Gym). M2.1 today uses **kinematic** direct-joint teleop only.
+**Status:** Implemented for physics + `example_coupled_fruiting.py` (`--dynamic-arm`, `--vic`). M2.1 Gym remains **kinematic** direct-joint teleop; see `docs/vic-implementation.md`.
 
 ---
 
@@ -82,21 +82,21 @@ If `apply_ik_to_mujoco_control` still sets `joint_target_pos` / `joint_target_ve
 | Wrench + **soft** PD | Closer to flange impedance; tune `joint_target_ke` / `joint_target_kd` |
 | **Wrench-only** | Hold `joint_target_pos ≈ joint_q`, teleop only moves `target_tf` for \(\mathbf{w}_{\mathrm{applied}}\) |
 
-Typical post-grasp VIC: teleop advances `target_tf`; \(\mathbf{w}_{\mathrm{applied}} = K\Delta\mathbf{x} + D\Delta\mathbf{v}\); moderate or low joint PD.
+Typical post-grasp VIC (this repo’s `--vic` default): teleop advances `target_tf` only; \(\mathbf{w}_{\mathrm{applied}} = K\Delta\mathbf{x} + D\Delta\mathbf{v}\); **joint PD off** (`joint_target_ke/kd = 0`, targets held at current `joint_q`).
 
 ---
 
-## Code map (planned)
+## Code map
 
 | Responsibility | Module / symbol |
 |----------------|-----------------|
 | Lagged plant wrench | `proxy_coupling.harvest_stem_tension_for_tcp`, `explicit_load.explicit_apple_wrench_for_stem_harvest` |
-| Apply total wrench | `apply_wrench._apply_spatial_wrench_to_body_f` |
-| Dynamic substep gate | `scene.py` → `_mujoco_robot_substep_prefix` / `_sync_*_proxy_after_mujoco` |
+| Apply total wrench | `apply_wrench._apply_spatial_wrench_to_body_f`, `_add_tcp_spatial_wrench_inplace` |
+| Dynamic substep gate | `scene.py` → `_mujoco_robot_substep_prefix`, `_apply_vic_to_coupling_cache` |
 | TCP target + IK | `robot/fr3_robot/controllers/ee_velocity.py` |
-| VIC wrench (new) | `robot/fr3_robot/controllers/ee_impedance.py` (planned) |
+| VIC wrench | `robot/fr3_robot/controllers/ee_impedance.py` — `Fr3EEImpedanceController` |
 | Settle → weld | `coupled_fruiting/settle_then_weld.py` |
-| Example entry | `examples/example_mega_coupled_keyboard.py` or `example_coupled_fruiting.py` with `--dynamic-arm` / `--vic` (planned) |
+| Example entry | `examples/example_coupled_fruiting.py` — `--dynamic-arm`, `--vic`, `--vic-*-k/d` |
 
 **Not** the home for arm VIC: `explicit_load.py` (quasi-static apple weight in **harvest** only).
 
@@ -115,16 +115,24 @@ See **`docs/ROADMAP.md`** — *Dual envs, FD modes, SKRL*.
 
 ---
 
-## Tests (planned)
+## Tests
 
 | Test | Intent |
 |------|--------|
-| `test_dynamic_tcp_wrench_moves_arm` | `robot_kinematic_mode=False`, inject known `body_f[tcp]`, assert TCP displacement |
-| `test_vic_stem_deflection_under_load` | `fix_to_apple=True`, teleop pull, finite deflection vs kinematic hold |
-| `test_harvest_excludes_applied_wrench` | `proxy_forces` after harvest unchanged by VIC term |
+| `test_ee_impedance.py` | Unit tests for K/D wrench law |
+| `test_dynamic_tcp_wrench_moves_arm` | Dynamic mode integrates lagged TCP wrench (velocity) |
+| `test_vic_stem_deflection_under_load` | Welded pull: VIC tracking error ≥ kinematic baseline |
+| `test_harvest_excludes_applied_wrench` | VIC adds to cache only, not `proxy_forces` |
 
-Run gate (when added):  
-`PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -k 'vic or dynamic_tcp' -q -p no:launch_testing`
+Run gate:
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
+  ../apple_pick_sim/tests/test_ee_impedance.py \
+  ../apple_pick_sim/tests/test_vic_dynamic.py -q -p no:launch_testing
+```
+
+See also `docs/vic-implementation.md`.
 
 ---
 
@@ -132,7 +140,7 @@ Run gate (when added):
 
 - One-substep **lag** on \(\mathbf{w}_{\mathrm{transferred}}\) is intentional (`docs/mujoco-vbd-coupling-architecture.md` §4.2).
 - High \(K\) + `stem_coupling_gain=1` + small `SUB_DT` can ring — use \(D\), `stem_force_cap_N` / `stem_torque_cap_Nm`, or `stem_coupling_gain < 1`.
-- No CI coverage yet for `robot_kinematic_mode=False`; add tests before relying on interactive demos.
+- Dynamic-mode regression: `test_vic_dynamic.py`, `test_ee_impedance.py` (see **Tests** above).
 
 ---
 

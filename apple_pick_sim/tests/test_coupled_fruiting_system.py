@@ -332,6 +332,26 @@ def test_apply_spatial_wrench_zeroes_non_tcp_bodies():
     np.testing.assert_allclose(bf[b1], w_np[b1], rtol=1e-6, atol=1e-6)
 
 
+def test_add_tcp_spatial_wrench_inplace_sums_at_tcp_only():
+    """In-place add at TCP index leaves other bodies unchanged."""
+    cf = _import_cf()
+
+    n = 3
+    wrenches = wp.zeros(n, dtype=wp.spatial_vector, device="cpu")
+    w_np = np.zeros((n, 6), dtype=np.float32)
+    w_np[0] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    w_np[2] = [2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    wrenches.assign(w_np.ravel())
+
+    delta = wp.spatial_vector(0.5, 0.0, 0.0, 0.0, 0.0, 0.0)
+    cf._add_tcp_spatial_wrench_inplace(wrenches, tcp_body_index=2, delta=delta)
+
+    out = wrenches.numpy().reshape(n, 6)
+    np.testing.assert_allclose(out[0], w_np[0], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(out[1], 0.0, atol=1e-7)
+    np.testing.assert_allclose(out[2], w_np[2] + [0.5, 0, 0, 0, 0, 0], rtol=1e-6, atol=1e-6)
+
+
 def test_coupling_forces_cache_is_value_snapshot():
     """assign copies proxy_forces; later proxy_forces edits must not change the cache."""
     cf = _import_cf()
@@ -1481,6 +1501,20 @@ def test_post_nudge_settles():
     bq1 = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, :3]
     drift = float(np.linalg.norm(bq1 - bq0))
     assert drift < 0.08, f"TCP drifted {drift} m after idle settle"
+
+
+def test_example_coupled_fruiting_enable_self_collision_parser_default():
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
+
+    args = ex._make_parser().parse_args([])
+    assert ex._enable_self_collisions_from_args(args) is False
+
+
+def test_example_coupled_fruiting_enable_self_collision_parser_enabled():
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
+
+    args = ex._make_parser().parse_args(["--enable-self-collision"])
+    assert ex._enable_self_collisions_from_args(args) is True
 
 
 def test_example_coupled_fruiting_fix_to_apple_parser_default():

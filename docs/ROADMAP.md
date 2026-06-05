@@ -135,7 +135,7 @@ Later vision phases (real-data collection [M4], final pick policy [M5]) follow o
 - **Scenario:** settle → `fix_to_apple` weld → teleop with **dynamic** arm (`robot_kinematic_mode=False`). Grasp = kinematic weld + co-teleport (not finger slip).
 - **Move accordingly:** \mathbf{w}*{\mathrm{total}} = \mathbf{w}*{\mathrm{transferred}} (lagged stem harvest + `explicit_load`) **+** \mathbf{w}_{\mathrm{applied}} (VIC) → TCP `body_f` → `mj_solver.step`. Harvest writes **plant-only** wrench to `proxy_forces` for the next lag step.
 - **FD:** variable-impedance exploration needs **input-fixed** FD (`**fd_mega_same_u`** or `**fd_replay**`), not `**fd_ghost**` alone. Kinematic M2.1 path: same u ≡ same x^{\mathrm{ee}} — `**fd_ghost**` suffices for early FIM smoke.
-- **Implementation (not done):** `ee_impedance.py`, wrench sum in `_mujoco_and_sync_proxy`, example/Gym flags; tests for dynamic TCP motion.
+- **Implementation (physics slice done):** `ee_impedance.py`, wrench sum in `_mujoco_robot_substep_prefix`, `example_coupled_fruiting.py --dynamic-arm --vic`; tests in `test_vic_dynamic.py`. **Gym VIC deferred** to M2.0 ADR.
 
 **Mega-model (deferred — backlog):** N instances in one `coupled_substep` remains a possible optimization; not on the critical path while subprocess + SKRL is sufficient.
 
@@ -174,7 +174,7 @@ Phases below follow **Sequencing** at the top: **[P0] Done** → **[M1] Done** �
 **Exit before [M1] (process):**
 
 - **Refactor + alignment (code shipped)** — collision/readout API, `measure_fruiting_forces`, README / WRENCH / tests; exited to [M1] 2026-05-15.
-- **Manual verification** — *Deferred* (not a gate for [M1]); ad hoc: `example_fruiting_system.py` (seeds, `--no-self-collision`, **FJ** traces).
+- **Manual verification** — *Deferred* (not a gate for [M1]); ad hoc: `example_fruiting_system.py` (seeds, `--enable-self-collision`, **FJ** traces).
 
 **Optional stretch (promote during refactor only if needed):**
 
@@ -278,7 +278,7 @@ See `**docs/mujoco-vbd-coupling-architecture.md`** for per-model ownership and t
 - **FR3 TCP velocity teleop + force transfer:** **Accepted** for M1 baseline (`--only-mjc` and full coupled, `--debug-coupling-forces` for wrench plots). Refactor must **preserve** staggered semantics unless explicitly changed with tests.
 - `**--fr3-direct-joints`:** kinematic `joint_q` writeback for arm debugging; not the primary teleop path. **Post-grasp VIC** requires `**robot_kinematic_mode=False`** and TCP `body_f` wrench sum — see `**docs/variable-impedance-teleop.md**` (builders/examples default kinematic).
 - `**test_coupling_stability.py**` asserts finiteness and cap compliance, **not** quiescent MuJoCo motion or small TCP velocities; passing tests does **not** imply a stable interactive demo.
-- `**--no-self-collision` / `--mujoco-viewer`** are not the primary instability drivers; they only change cable collisions or add a second viewer window.
+- `**--enable-self-collision` / `--mujoco-viewer`** are not the primary instability drivers; they only change cable collisions or add a second viewer window.
 - **Smoke paths:** `--only-vbd` (cable only); `--robot fr3 --fr3-keyboard` (full coupled teleop); `--robot fr3 --only-mjc --fr3-keyboard` (robot + proxy sync only); `--debug-coupling-forces` for wrench plots.
 
 **Exit note (2026-05-25):** Coupled FR3 + proxy coupling accepted for learning stack; EE–apple **contact** scenarios and formal **arm readouts API** deferred (not required for [M2] env wrapper).
@@ -743,7 +743,8 @@ Unordered ideas. **Do not implement** unless promoted into a milestone and “Cu
 - M1 Slice 2g (GPU): `docs/gpu-coupling-optimization.md`; `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/benchmark_coupling.py --device cuda:0 --mujoco-gpu --warmup-substeps 30 --bench-substeps 300`; examples: `--cuda-graph` with `--viewer null` on coupled/fruiting scripts.
 - M1 Slice 2e (hardening): `docs/slice-2e-hardening.md`; `PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/benchmark_coupling.py --robot placeholder --warmup-substeps 30 --bench-substeps 300`; slow tests: `pytest ../apple_pick_sim/tests/ -m slow -q -p no:launch_testing`
 - M1 architecture doc: `docs/mujoco-vbd-coupling-architecture.md`
-- Post-grasp VIC (spec, not yet in examples): `docs/variable-impedance-teleop.md`
+- Post-grasp VIC: `docs/variable-impedance-teleop.md`, `docs/vic-implementation.md`; example `--dynamic-arm --vic`
+- VIC pytest gate: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_ee_impedance.py ../apple_pick_sim/tests/test_vic_dynamic.py -q -p no:launch_testing`
 - M1 Slice 2f (structural refactor gates): `docs/slice-2f-structural-refactor.md` — fruiting: `pytest ../apple_pick_sim/tests/test_fruiting_system.py ../apple_pick_sim/tests/test_coupled_cable_scene.py -q`; coupled: `pytest ../apple_pick_sim/tests/test_coupled_fruiting_system.py ../apple_pick_sim/tests/test_coupling_stability.py -q`; proxy: `pytest ../apple_pick_sim/tests/test_proxy_coupling.py -q` (all with `PYTHONPATH=$(pwd) uv run --directory newton … -p no:launch_testing`)
 - M1 refactor: read `**refactor.md`** and **Current focus** before structural edits; maintainer updates both when priorities change
 - M1 work: follow **Current focus** and [M1] *Next actions*; add `uv run` entry-points here as slices land

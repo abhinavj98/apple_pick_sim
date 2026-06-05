@@ -11,7 +11,10 @@ import warp as wp
 import newton
 
 from apple_pick_sim.robot import fr3_robot
-from apple_pick_sim.coupled_fruiting.apply_wrench import _apply_spatial_wrench_to_body_f
+from apple_pick_sim.coupled_fruiting.apply_wrench import (
+    _apply_spatial_wrench_to_body_f,
+)
+from apple_pick_sim.coupled_fruiting.vic_wrench import apply_vic_to_coupling_cache
 from apple_pick_sim.coupling_force_debug import CouplingForceDebugRecorder
 from apple_pick_sim.fruiting_system import CoupledCableScene
 from apple_pick_sim.fruiting_system.mega import MegaCoupledCableScene
@@ -93,6 +96,7 @@ def _mujoco_robot_substep_prefix(scene: Any, dt: float) -> None:
             )
     else:
         scene.coupling_forces_cache.assign(scene.proxy_forces)
+        apply_vic_to_coupling_cache(scene)
         if scene.force_debug is not None:
             scene.force_debug.record_applied_from_scene(scene)
         _apply_spatial_wrench_to_body_f(
@@ -127,24 +131,49 @@ def _apply_fr3_ee_teleop_impl(
         raise ValueError(
             "apply_fr3_ee_teleop requires robot model, state, control, and MuJoCo solver"
         )
-    velocity = controller.run_ik_teleop_frame(
-        dt,
-        scene.robot_state_0,
-        velocity=velocity,
-        viewer=viewer,
-        poll_events=True,
-    )
-    controller.apply_ik_to_mujoco_control(
-        scene.robot_state_0,
-        scene.robot_control,
-        frame_dt=dt,
-        command_velocity=velocity,
-    )
+    if getattr(scene, "vic_controller", None) is not None:
+        if not getattr(scene, "vic_wrench_only_configured", False):
+            fr3_robot.configure_vic_wrench_only_arm(
+                scene.robot_model,
+                scene.robot_state_0,
+                scene.robot_control,
+                scene.mj_solver,
+            )
+            scene.vic_wrench_only_configured = True
+        velocity = controller.run_tcp_target_teleop_frame(
+            dt,
+            scene.robot_state_0,
+            velocity=velocity,
+            viewer=viewer,
+            poll_events=True,
+        )
+        fr3_robot.hold_mujoco_actuator_targets_at_state(
+            scene.robot_model,
+            scene.robot_state_0,
+            scene.robot_control,
+        )
+    else:
+        velocity = controller.run_ik_teleop_frame(
+            dt,
+            scene.robot_state_0,
+            velocity=velocity,
+            viewer=viewer,
+            poll_events=True,
+        )
+        controller.apply_ik_to_mujoco_control(
+            scene.robot_state_0,
+            scene.robot_control,
+            frame_dt=dt,
+            command_velocity=velocity,
+        )
     scene.robot_state_1.joint_q.assign(scene.robot_state_0.joint_q)
     scene.robot_state_1.joint_qd.assign(scene.robot_state_0.joint_qd)
     scene.mj_solver._update_mjc_data(
         scene.mj_solver.mj_data, scene.robot_model, scene.robot_state_0
     )
+    if getattr(scene, "vic_controller", None) is not None:
+        scene.vic_target_tf = controller.target_tf
+        scene.vic_target_twist = velocity
     return velocity
 
 
@@ -402,6 +431,11 @@ class CoupledFruitingScene:
     robot_kinematic_mode: bool = False
     qd_synced: wp.array | None = None
     """Pooled copy of cable ``body_qd`` before VBD (velocity-delta harvest)."""
+    vic_controller: fr3_robot.Fr3EEImpedanceController | None = None
+    vic_gains: fr3_robot.ImpedanceGains | None = None
+    vic_target_tf: wp.transform | None = None
+    vic_target_twist: fr3_robot.EEVelocity | None = None
+    vic_wrench_only_configured: bool = False
 
     def apply_fr3_ee_teleop(
         self,
@@ -514,6 +548,11 @@ class MegaCoupledFruitingScene:
     robot_disable_contacts: bool = True
     robot_kinematic_mode: bool = True
     qd_synced: wp.array | None = None
+    vic_controller: fr3_robot.Fr3EEImpedanceController | None = None
+    vic_gains: fr3_robot.ImpedanceGains | None = None
+    vic_target_tf: wp.transform | None = None
+    vic_target_twist: fr3_robot.EEVelocity | None = None
+    vic_wrench_only_configured: bool = False
     stem_apple_joint_index: int | None = None
     stem_coupling_gain: float = DEFAULT_STEM_COUPLING_GAIN
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N

@@ -326,7 +326,7 @@ class ExampleCoupledFruiting:
                 vbd_only=False,
                 mujoco_only=False,
             )
-            settle_vbd_substeps(settled, substeps=1800, dt=self.sim_dt)
+            settle_vbd_substeps(settled, substeps=3000, dt=self.sim_dt)
             self.scene = build_fn(
                 self.ranges,
                 first_seed,
@@ -539,8 +539,7 @@ class ExampleCoupledFruiting:
                 if self._force_debug is not None:
                     self._force_debug.log_to_viewer(self.viewer)
 
-    def step(self, warmup: bool = False) -> None:
-        del warmup
+    def step(self) -> None:
         self.simulate()
         self.sim_time += self.frame_dt
 
@@ -602,10 +601,6 @@ if __name__ == "__main__":
 
     if hasattr(viewer, "hide_loading_splash"):
         viewer.hide_loading_splash()
-
-    print("Warming up…")
-    for _ in range(20):
-        example.step(warmup=True)
 
     print("Starting simulation…")
     try:

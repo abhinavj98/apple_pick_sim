@@ -82,7 +82,7 @@ If `apply_ik_to_mujoco_control` still sets `joint_target_pos` / `joint_target_ve
 | Wrench + **soft** PD | Closer to flange impedance; tune `joint_target_ke` / `joint_target_kd` |
 | **Wrench-only** | Hold `joint_target_pos ≈ joint_q`, teleop only moves `target_tf` for \(\mathbf{w}_{\mathrm{applied}}\) |
 
-Typical post-grasp VIC (this repo’s `--vic` default): teleop advances `target_tf` only; \(\mathbf{w}_{\mathrm{applied}} = K\Delta\mathbf{x} + D\Delta\mathbf{v}\); **joint PD off** (`joint_target_ke/kd = 0`, targets held at current `joint_q`).
+Typical post-grasp VIC (this repo’s `--vic` default): teleop advances `target_tf` only; \(\mathbf{w}_{\mathrm{applied}} = K\Delta\mathbf{x} + D\Delta\mathbf{v}\) is mapped to **joint torques** (`joint_f`) via dynamically-consistent control; **joint PD off** (`joint_target_ke/kd = 0`, targets held at current `joint_q`). Plant loads stay on TCP `body_f`.
 
 ---
 
@@ -92,9 +92,10 @@ Typical post-grasp VIC (this repo’s `--vic` default): teleop advances `target_
 |----------------|-----------------|
 | Lagged plant wrench | `proxy_coupling.harvest_stem_tension_for_tcp`, `explicit_load.explicit_apple_wrench_for_stem_harvest` |
 | Apply total wrench | `apply_wrench._apply_spatial_wrench_to_body_f`, `_add_tcp_spatial_wrench_inplace` |
-| Dynamic substep gate | `scene.py` → `_mujoco_robot_substep_prefix`, `_apply_vic_to_coupling_cache` |
+| Dynamic substep gate | `scene.py` → `_mujoco_robot_substep_prefix`; `--vic` uses `vic_joint_torques.apply_vic_joint_torques_to_scene` |
 | TCP target + IK | `robot/fr3_robot/controllers/ee_velocity.py` |
-| VIC wrench | `robot/fr3_robot/controllers/ee_impedance.py` — `Fr3EEImpedanceController` |
+| VIC wrench law | `robot/fr3_robot/controllers/ee_impedance.py` — `Fr3EEImpedanceController` |
+| VIC → joint torques | `coupled_fruiting/vic_joint_torques.py` — `launch_apply_vic_joint_torques` |
 | Settle → weld | `coupled_fruiting/settle_then_weld.py` |
 | Example entry | `examples/example_coupled_fruiting.py` — `--dynamic-arm`, `--vic`, `--vic-*-k/d` |
 

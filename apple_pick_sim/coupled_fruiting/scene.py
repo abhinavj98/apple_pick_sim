@@ -14,6 +14,10 @@ from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.coupled_fruiting.apply_wrench import (
     _apply_spatial_wrench_to_body_f,
 )
+from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
+    allocate_vic_joint_torque_buffers,
+    apply_vic_joint_torques_to_scene,
+)
 from apple_pick_sim.coupled_fruiting.vic_wrench import apply_vic_to_coupling_cache
 from apple_pick_sim.coupling_force_debug import CouplingForceDebugRecorder
 from apple_pick_sim.fruiting_system import CoupledCableScene
@@ -96,7 +100,12 @@ def _mujoco_robot_substep_prefix(scene: Any, dt: float) -> None:
             )
     else:
         scene.coupling_forces_cache.assign(scene.proxy_forces)
-        apply_vic_to_coupling_cache(scene)
+        if getattr(scene, "vic_use_joint_torques", False):
+            if scene.robot_control.joint_f is not None:
+                scene.robot_control.joint_f.zero_()
+            apply_vic_joint_torques_to_scene(scene)
+        else:
+            apply_vic_to_coupling_cache(scene)
         if scene.force_debug is not None:
             scene.force_debug.record_applied_from_scene(scene)
         _apply_spatial_wrench_to_body_f(
@@ -132,7 +141,17 @@ def _apply_fr3_ee_teleop_impl(
             "apply_fr3_ee_teleop requires robot model, state, control, and MuJoCo solver"
         )
     if getattr(scene, "vic_controller", None) is not None:
-        if not getattr(scene, "vic_wrench_only_configured", False):
+        if getattr(scene, "vic_use_joint_torques", False):
+            if not getattr(scene, "vic_joint_torques_configured", False):
+                fr3_robot.configure_vic_joint_torques_arm(
+                    scene.robot_model,
+                    scene.robot_state_0,
+                    scene.robot_control,
+                    scene.mj_solver,
+                    scene=scene,
+                )
+                scene.vic_joint_torques_configured = True
+        elif not getattr(scene, "vic_wrench_only_configured", False):
             fr3_robot.configure_vic_wrench_only_arm(
                 scene.robot_model,
                 scene.robot_state_0,

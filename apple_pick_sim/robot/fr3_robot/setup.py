@@ -13,6 +13,7 @@ from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 from apple_pick_sim.sim_device import resolve_sim_device
+from apple_pick_sim.coupled_fruiting.vic_joint_torques import allocate_vic_joint_torque_buffers
 from apple_pick_sim.robot.fr3_robot.paths import TESTFR3_SCENE_USD, fr3_assets_available
 
 def resolve_tcp_body_index(model: newton.Model) -> int:
@@ -208,6 +209,41 @@ def hold_mujoco_actuator_targets_at_state(
     q_cur = state.joint_q.numpy().reshape(-1).astype(np.float32)[:n_dof]
     control.joint_target_pos.assign(q_cur)
     control.joint_target_vel.assign(np_zeros_like_joint_qd(robot_model))
+
+
+def configure_vic_joint_torques_arm(
+    robot_model: newton.Model,
+    state: Any,
+    control: Any,
+    mj_solver: SolverMuJoCo,
+    *,
+    scene: Any | None = None,
+    tcp_body_index: int | None = None,
+    kp_null: float = 10.0,
+    kd_null: float = 6.3246,
+    singularity_damping: float = 0.0,
+) -> None:
+    """One-shot setup for post-grasp VIC via ``control.joint_f`` (J^T Λ wrench mapping)."""
+    zero_mujoco_joint_pd(robot_model)
+    mj_solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+    hold_mujoco_actuator_targets_at_state(robot_model, state, control)
+    if control.joint_f is None:
+        n = int(robot_model.joint_dof_count)
+        control.joint_f = wp.zeros(n, dtype=float, device=robot_model.device)
+    if scene is not None:
+        tcp = (
+            int(tcp_body_index)
+            if tcp_body_index is not None
+            else int(getattr(scene, "tcp_body_index", resolve_tcp_body_index(robot_model)))
+        )
+        allocate_vic_joint_torque_buffers(
+            robot_model,
+            scene,
+            tcp_body_index=tcp,
+            kp_null=kp_null,
+            kd_null=kd_null,
+            singularity_damping=singularity_damping,
+        )
 
 
 def configure_vic_wrench_only_arm(

@@ -27,13 +27,16 @@ Pass ``--fr3-direct-joints`` with ``--robot fr3`` (and ``--fr3-keyboard`` for te
 ``joint_q`` directly and skip MuJoCo arm dynamics (testing / kinematic coupled runs).
 
 Pass ``--dynamic-arm`` with ``--robot fr3`` to integrate the arm under lagged plant wrenches via
-``SolverMuJoCo``. Add ``--vic`` for variable-impedance TCP wrench teleop (requires ``--dynamic-arm``;
-incompatible with ``--fr3-direct-joints``). With ``--vic``, joint position actuators are disabled and
-teleop only advances the TCP impedance target; compliance is from VIC + lagged stem harvest.
+``SolverMuJoCo``. Add ``--vic`` for variable-impedance teleop (requires ``--dynamic-arm``;
+incompatible with ``--fr3-direct-joints``). With ``--vic``, joint position actuators are disabled,
+teleop advances the TCP impedance target, and VIC maps the task wrench to ``joint_f`` via
+dynamically-consistent joint torques (plant loads stay on TCP ``body_f``). Tune impedance with
+``--vic-linear-k``, ``--vic-linear-d``, ``--vic-angular-k``, and ``--vic-angular-d`` (defaults
+800/80 N/m and 40/4 N·m/rad).
 
 Pass ``--fr3-keyboard`` with ``--robot fr3`` and ``--viewer gl`` for TCP keyboard teleop. Without
 ``--vic``, each frame IK writes ``joint_target_pos`` / ``vel`` (joint PD). With ``--vic``, keyboard
-commands move ``target_tf`` and VIC applies TCP wrenches each substep.
+commands move ``target_tf`` and VIC applies joint torques each substep.
 """
 
 from __future__ import annotations
@@ -247,7 +250,7 @@ def _make_parser() -> argparse.ArgumentParser:
         "--vic",
         action="store_true",
         help=(
-            "Enable variable-impedance TCP wrench (implies --dynamic-arm). Uses "
+            "Enable variable-impedance teleop via joint torques (implies --dynamic-arm). Uses "
             "Fr3EEVelocityController + Fr3EEImpedanceController; incompatible with "
             "--fr3-direct-joints."
         ),
@@ -323,8 +326,7 @@ class ExampleCoupledFruiting:
                 device=sim_device,
                 enable_self_collisions=enable_self,
                 gripper_proxy=dataclasses.replace(gripper, fix_to_apple=False),
-                vbd_only=False,
-                mujoco_only=False,
+                vbd_only=True,
             )
             settle_vbd_substeps(settled, substeps=3000, dt=self.sim_dt)
             self.scene = build_fn(
@@ -445,6 +447,7 @@ class ExampleCoupledFruiting:
             )
             print("FR3 dynamic-arm mode: MuJoCo integrates lagged plant wrenches on TCP body_f.")
             if use_vic:
+                self.scene.vic_use_joint_torques = True
                 self.scene.vic_controller = fr3_robot.Fr3EEImpedanceController()
                 self.scene.vic_gains = fr3_robot.ImpedanceGains(
                     linear_k=float(getattr(args, "vic_linear_k", 800.0)),
@@ -452,9 +455,17 @@ class ExampleCoupledFruiting:
                     angular_k=float(getattr(args, "vic_angular_k", 40.0)),
                     angular_d=float(getattr(args, "vic_angular_d", 4.0)),
                 )
+                fr3_robot.configure_vic_joint_torques_arm(
+                    self.scene.robot_model,
+                    self.scene.robot_state_0,
+                    self.scene.robot_control,
+                    self.scene.mj_solver,
+                    scene=self.scene,
+                )
+                self.scene.vic_joint_torques_configured = True
                 g = self.scene.vic_gains
                 print(
-                    f"VIC enabled (wrench-only, joint PD off): "
+                    f"VIC enabled (joint torques, joint PD off): "
                     f"K=({g.linear_k:g}, {g.angular_k:g}) "
                     f"D=({g.linear_d:g}, {g.angular_d:g}) N/m, N·m/rad."
                 )

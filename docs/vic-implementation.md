@@ -20,7 +20,7 @@ Impedance law (isotropic gains):
 
 Harvest remains **plant-only** — `proxy_forces` is never updated with \(\mathbf{w}_{\mathrm{applied}}\).
 
-**Wrench-only teleop (default with `--vic`):** `apply_fr3_ee_teleop` advances `target_tf` only (`run_tcp_target_teleop_frame`), zeros `joint_target_ke`/`kd`, and holds `joint_target_pos` at simulated `joint_q`. Joint PD does not compete with TCP wrenches.
+**Joint-torque teleop (default with `--vic`):** `apply_fr3_ee_teleop` advances `target_tf` only (`run_tcp_target_teleop_frame`), zeros `joint_target_ke`/`kd`, and holds `joint_target_pos` at simulated `joint_q`. VIC maps the impedance wrench to `control.joint_f` via dynamically-consistent joint torques (`vic_joint_torques.py`); plant/proxy loads remain on TCP `body_f`. See `docs/vic-joint-torques-implementation.md`.
 
 ## Code map
 
@@ -28,9 +28,9 @@ Harvest remains **plant-only** — `proxy_forces` is never updated with \(\mathb
 |-------|----------|
 | Impedance law | `apple_pick_sim/robot/fr3_robot/controllers/ee_impedance.py` — `Fr3EEImpedanceController`, `ImpedanceGains` |
 | Wrench sum at TCP | `apple_pick_sim/coupled_fruiting/apply_wrench.py` — `_add_tcp_spatial_wrench_inplace` |
-| Substep hook | `apple_pick_sim/coupled_fruiting/scene.py` — `_mujoco_robot_substep_prefix`; `coupled_fruiting/vic_wrench.py` — `apply_vic_to_coupling_cache` (GPU, no `body_q` sync) |
-| Scene fields | `CoupledFruitingScene.vic_controller`, `vic_gains`, `vic_target_tf`, `vic_target_twist` |
-| Wrench-only arm setup | `fr3_robot/setup.py` — `configure_vic_wrench_only_arm` (zeros PD + `notify_model_changed(JOINT_DOF_PROPERTIES)`), `zero_mujoco_joint_pd` |
+| Substep hook | `apple_pick_sim/coupled_fruiting/scene.py` — `_mujoco_robot_substep_prefix`; with `--vic`: `vic_joint_torques.apply_vic_joint_torques_to_scene`; wrench-only fallback: `vic_wrench.apply_vic_to_coupling_cache` |
+| Scene fields | `CoupledFruitingScene.vic_controller`, `vic_gains`, `vic_target_tf`, `vic_target_twist`, `vic_use_joint_torques` |
+| Joint-torque arm setup | `fr3_robot/setup.py` — `configure_vic_joint_torques_arm` (zeros PD, allocates J/H buffers, `joint_f`) |
 | Teleop target sync | `apply_fr3_ee_teleop` — VIC path: `run_tcp_target_teleop_frame` + hold joint targets |
 | Example CLI | `apple_pick_sim/examples/example_coupled_fruiting.py` — `--dynamic-arm`, `--vic`, `--vic-*-k/d` |
 

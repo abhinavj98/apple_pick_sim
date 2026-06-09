@@ -40,6 +40,7 @@ from apple_pick_sim.robot.fr3_robot.placement import (
 )
 from apple_pick_sim.robot.fr3_robot.setup import (
     build_fr3_robot_model_from_usd,
+    configure_vic_joint_torques_arm,
     configure_vic_wrench_only_arm,
     hold_mujoco_actuator_targets_at_state,
     init_mujoco_actuator_targets_from_model,
@@ -74,6 +75,7 @@ __all__ = [
     "bootstrap_tcp_ik_from_proxy",
     "enable_ik_bootstrap_warnings_for_examples",
     "build_fr3_robot_model_from_usd",
+    "configure_vic_joint_torques_arm",
     "configure_vic_wrench_only_arm",
     "fr3_assets_available",
     "hold_mujoco_actuator_targets_at_state",

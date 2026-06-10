@@ -161,21 +161,23 @@ def init_robot_mujoco_step_buffers(scene: Any) -> None:
 def _update_fr3_ee_teleop_impl(
     scene: Any,
     dt: float,
-    controller: fr3_robot.Fr3EEVelocityController | fr3_robot.Fr3EEImpedanceController,
+    controller: (
+        fr3_robot.Fr3EEVelocityController
+        | fr3_robot.Fr3EEImpedanceController
+        | fr3_robot.Fr3EEDirectJointController
+    ),
     *,
     viewer: fr3_robot._KeyViewer | None = None,
     velocity: fr3_robot.EEVelocity | None = None,
 ) -> fr3_robot.EEVelocity:
-    """FR3 EE teleop: VIC (wrench or joint torques) or IK path.
+    """FR3 EE teleop: delegate per-frame staging to ``controller.run_coupled_teleop_frame``.
 
-    When ``scene.vic_controller`` is set, configures VIC once (wrench-only or
-    joint-torque mode) and runs keyboard TCP-target teleop; otherwise falls
-    back to per-frame IK. Updates ``vic_target_tf`` / ``vic_target_twist`` for
-    the next MuJoCo substep.
+    When ``scene.vic_controller`` is set, stages ``vic_target_tf`` / ``vic_target_twist``
+    for the next MuJoCo substep. VIC arm setup (zero PD, buffers) must be done at scene
+    finalize, not here.
 
-    Called from :meth:`CoupledFruitingScene.update_fr3_ee_teleop`, which
-    ``example_coupled_fruiting.py`` and VIC tests invoke each viewer frame
-    (outside the inner ``coupled_substep`` loop).
+    Called from :meth:`CoupledFruitingScene.update_fr3_ee_teleop` and
+    :meth:`CoupledFruitingScene.update_fr3_ee_teleop_direct` once per viewer frame.
     """
     if (
         scene.robot_model is None
@@ -192,99 +194,17 @@ def _update_fr3_ee_teleop_impl(
                 "VIC teleop requires controller to be scene.vic_controller "
                 "(single Fr3EEImpedanceController for target integration and wrench law)"
             )
-        if getattr(scene, "vic_use_joint_torques", False):
-            if not getattr(scene, "vic_joint_torques_configured", False):
-                fr3_robot.configure_vic_joint_torques_arm(
-                    scene.robot_model,
-                    scene.robot_state_0,
-                    scene.robot_control,
-                    scene.mj_solver,
-                    scene=scene,
-                )
-                scene.vic_joint_torques_configured = True
-        elif not getattr(scene, "vic_wrench_only_configured", False):
-            fr3_robot.configure_vic_wrench_only_arm(
-                scene.robot_model,
-                scene.robot_state_0,
-                scene.robot_control,
-                scene.mj_solver,
-            )
-            scene.vic_wrench_only_configured = True
-        if hasattr(controller, "run_tcp_target_teleop_frame"):
-            velocity = controller.run_tcp_target_teleop_frame(
-                dt,
-                scene.robot_state_0,
-                velocity=velocity,
-                viewer=viewer,
-                poll_events=True,
-            )
-        else:
-            if velocity is None:
-                velocity = fr3_robot.EEVelocity()
-            controller.sync_target_from_state(scene.robot_state_0, scene.tcp_body_index)
-            controller.advance_target(velocity, dt)
-        fr3_robot.hold_mujoco_actuator_targets_at_state(
-            scene.robot_model,
-            scene.robot_state_0,
-            scene.robot_control,
-        )
-    else:
-        velocity = controller.run_ik_teleop_frame(
-            dt,
-            scene.robot_state_0,
-            velocity=velocity,
-            viewer=viewer,
-            poll_events=True,
-        )
-        controller.apply_ik_to_mujoco_control(
-            scene.robot_state_0,
-            scene.robot_control,
-            frame_dt=dt,
-            command_velocity=velocity,
-        )
+    velocity = controller.run_coupled_teleop_frame(
+        scene.robot_state_0,
+        scene.robot_control,
+        scene.mj_solver,
+        dt,
+        viewer=viewer,
+        velocity=velocity,
+    )
     if getattr(scene, "vic_controller", None) is not None:
         scene.vic_target_tf = controller.target_tf
         scene.vic_target_twist = velocity
-    return velocity
-
-
-def _update_fr3_ee_teleop_direct_impl(
-    scene: Any,
-    dt: float,
-    controller: fr3_robot.Fr3EEDirectJointController,
-    *,
-    viewer: fr3_robot._KeyViewer | None = None,
-    velocity: fr3_robot.EEVelocity | None = None,
-) -> fr3_robot.EEVelocity:
-    """FR3 direct-joint teleop: IK frame + joint commands (no VIC branch).
-
-    Maps keyboard EE velocity to joint targets via IK, then writes joint
-    positions directly to MuJoCo control (bypasses VIC and coupling wrench
-    composition). Useful for debugging arm kinematics without impedance.
-
-    Called from :meth:`CoupledFruitingScene.update_fr3_ee_teleop_direct`.
-    """
-    if (
-        scene.robot_model is None
-        or scene.robot_state_0 is None
-        or scene.robot_control is None
-        or scene.mj_solver is None
-    ):
-        raise ValueError(
-            "update_fr3_ee_teleop_direct requires robot model, state, control, and MuJoCo solver"
-        )
-    velocity = controller.run_ik_teleop_frame(
-        dt,
-        scene.robot_state_0,
-        velocity=velocity,
-        viewer=viewer,
-        poll_events=True,
-    )
-    controller.apply_direct_joints(
-        scene.robot_state_0,
-        scene.robot_control,
-        mj_solver=scene.mj_solver,
-    )
     return velocity
 
 
@@ -461,12 +381,13 @@ class CoupledFruitingScene:
     vic_gains: fr3_robot.ImpedanceGains | None = None
     vic_target_tf: wp.transform | None = None
     vic_target_twist: fr3_robot.EEVelocity | None = None
-    vic_wrench_only_configured: bool = False
 
     def update_fr3_ee_teleop(
         self,
         dt: float,
-        controller: fr3_robot.Fr3EEVelocityController | fr3_robot.Fr3EEImpedanceController,
+        controller: (
+            fr3_robot.Fr3EEVelocityController | fr3_robot.Fr3EEImpedanceController
+        ),
         *,
         viewer: fr3_robot._KeyViewer | None = None,
         velocity: fr3_robot.EEVelocity | None = None,
@@ -493,7 +414,7 @@ class CoupledFruitingScene:
         Alternative teleop mode when VIC is disabled; writes joint commands
         directly instead of composing an impedance wrench at the TCP.
         """
-        return _update_fr3_ee_teleop_direct_impl(
+        return _update_fr3_ee_teleop_impl(
             self, dt, controller, viewer=viewer, velocity=velocity
         )
 

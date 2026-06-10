@@ -24,10 +24,16 @@ Intra-chain self collisions are **off** by default. Pass ``--enable-self-collisi
 ``--fix-to-apple`` / ``--no-fix-to-apple`` select stem-harvest + apple co-teleport vs the default
 velocity-delta harvest (proxy-only sync).
 
-Pass ``--fr3-keyboard`` with ``--viewer gl`` for TCP keyboard teleop. Keyboard commands move the
-impedance target; VIC maps the task wrench to ``joint_f`` via dynamically-consistent joint torques
-(plant loads stay on TCP ``body_f``). Tune impedance with ``--vic-linear-k``, ``--vic-linear-d``,
-``--vic-angular-k``, and ``--vic-angular-d`` (defaults 800/80 N/m and 40/4 N·m/rad).
+Pass ``--fr3-keyboard`` with ``--viewer gl`` for TCP keyboard teleop.
+
+Select the FR3 teleop controller with ``--controller``:
+
+- ``vic`` (default) — variable-impedance teleop via joint torques (requires PyTorch).
+- ``ee`` — TCP velocity + IK with MuJoCo joint PD actuators.
+- ``direct`` — kinematic direct ``joint_q`` writes (testing / accurate pose hold).
+
+For ``vic``, tune impedance with ``--vic-linear-k``, ``--vic-linear-d``, ``--vic-angular-k``, and
+``--vic-angular-d`` (defaults 800/80 N/m and 40/4 N·m/rad).
 """
 
 from __future__ import annotations
@@ -105,6 +111,11 @@ def _resolve_step_mode(args: argparse.Namespace | None) -> str:
     if only_mjc:
         return "mjc"
     return "coupled"
+
+
+def _resolve_controller_mode(args: argparse.Namespace | None) -> str:
+    """Return ``"vic"``, ``"ee"``, or ``"direct"`` from CLI ``--controller``."""
+    return str(getattr(args, "controller", "vic") if args else "vic")
 
 
 def _resolve_robot_kind(args: argparse.Namespace | None) -> str:
@@ -212,6 +223,16 @@ def _make_parser() -> argparse.ArgumentParser:
         help=(
             "Robot model for Model A: bundled FR3+EE (default) or placeholder free TCP "
             "(assets/fr3; requires usd-core)."
+        ),
+    )
+    parser.add_argument(
+        "--controller",
+        type=str,
+        choices=("vic", "ee", "direct"),
+        default="vic",
+        help=(
+            "FR3 teleop controller: vic (default, joint-torque VIC), "
+            "ee (velocity IK + MuJoCo PD), or direct (kinematic joint_q writes)."
         ),
     )
     parser.add_argument(
@@ -417,9 +438,15 @@ class ExampleCoupledFruiting:
             print("Suppressing --mujoco-viewer (no DISPLAY/WAYLAND_DISPLAY).")
             self._mujoco_viewer = False
 
-        self._ee_ctrl: fr3_robot.Fr3EEImpedanceController | None = None
+        self._controller_mode = _resolve_controller_mode(args)
+        self._ee_ctrl: (
+            fr3_robot.Fr3EEImpedanceController
+            | fr3_robot.Fr3EEVelocityController
+            | fr3_robot.Fr3EEDirectJointController
+            | None
+        ) = None
         if robot_kind == "fr3" and has_robot and self._step_mode != "vbd":
-            self._ee_ctrl = self._configure_fr3_vic(args)
+            self._ee_ctrl = self._configure_fr3_controller(args, self._controller_mode)
 
         enable_kb = bool(getattr(args, "fr3_keyboard", False)) if args else False
         kb_ok = hasattr(self.viewer, "is_key_down")
@@ -433,6 +460,52 @@ class ExampleCoupledFruiting:
                 fr3_robot.print_fr3_keyboard_bindings()
         elif enable_kb and robot_kind != "fr3":
             print("Warning: --fr3-keyboard requires FR3 assets.", file=sys.stderr)
+
+    def _configure_fr3_controller(
+        self,
+        args: argparse.Namespace | None,
+        mode: str,
+    ) -> (
+        fr3_robot.Fr3EEImpedanceController
+        | fr3_robot.Fr3EEVelocityController
+        | fr3_robot.Fr3EEDirectJointController
+    ):
+        if mode == "vic":
+            return self._configure_fr3_vic(args)
+        if mode == "ee":
+            return self._configure_fr3_ee(args)
+        if mode == "direct":
+            return self._configure_fr3_direct(args)
+        raise ValueError(f"unknown controller mode: {mode!r}")
+
+    def _configure_fr3_ee(
+        self, args: argparse.Namespace | None
+    ) -> fr3_robot.Fr3EEVelocityController:
+        self.scene.robot_kinematic_mode = False
+        ee = fr3_robot.Fr3EEVelocityController(
+            self.scene.robot_model,
+            int(self.scene.tcp_body_index),
+            linear_speed=1.0,
+            angular_speed=5.0,
+        )
+        ee.sync_target_from_state(self.scene.robot_state_0)
+        print("FR3 ee controller: TCP velocity + IK with MuJoCo joint PD actuators.")
+        return ee
+
+    def _configure_fr3_direct(
+        self, args: argparse.Namespace | None
+    ) -> fr3_robot.Fr3EEDirectJointController:
+        del args
+        self.scene.robot_kinematic_mode = True
+        direct = fr3_robot.Fr3EEDirectJointController(
+            self.scene.robot_model,
+            int(self.scene.tcp_body_index),
+            linear_speed=1.0,
+            angular_speed=5.0,
+        )
+        direct.sync_target_from_state(self.scene.robot_state_0)
+        print("FR3 direct controller: kinematic joint_q writes (robot_kinematic_mode=True).")
+        return direct
 
     def _configure_fr3_vic(self, args: argparse.Namespace | None) -> fr3_robot.Fr3EEImpedanceController:
         from apple_pick_sim.coupled_fruiting import vic_joint_torques
@@ -480,11 +553,18 @@ class ExampleCoupledFruiting:
 
     def simulate(self) -> None:
         if self._ee_ctrl is not None:
-            self.scene.update_fr3_ee_teleop(
-                self.frame_dt,
-                self._ee_ctrl,
-                viewer=self.viewer,
-            )
+            if self._controller_mode == "direct":
+                self.scene.update_fr3_ee_teleop_direct(
+                    self.frame_dt,
+                    self._ee_ctrl,
+                    viewer=self.viewer,
+                )
+            else:
+                self.scene.update_fr3_ee_teleop(
+                    self.frame_dt,
+                    self._ee_ctrl,
+                    viewer=self.viewer,
+                )
         for _ in range(self.sim_substeps):
             if self._step_mode == "vbd":
                 self.scene.vbd_substep(

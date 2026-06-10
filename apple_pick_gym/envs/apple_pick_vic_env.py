@@ -88,6 +88,13 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
                 scene=self._scene,
             )
             self._scene.vic_joint_torques_configured = True
+        else:
+            fr3_robot.configure_vic_wrench_only_arm(
+                self._scene.robot_model,
+                self._scene.robot_state_0,
+                self._scene.robot_control,
+                self._scene.mj_solver,
+            )
 
         tcp = int(self._scene.tcp_body_index)
         self._controller.sync_target_from_state(self._scene.robot_state_0, tcp)

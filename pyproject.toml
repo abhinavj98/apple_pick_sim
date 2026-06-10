@@ -1,0 +1,37 @@
+[project]
+name = "apple-pick-sim"
+version = "0.1.0"
+description = "Robotic apple-picking simulation on Newton"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "newton[examples]",
+]
+
+[project.optional-dependencies]
+gym = [
+    "gymnasium>=1.0.0",
+]
+vic = [
+    "newton[torch-cu12]",
+]
+dev = [
+    "gymnasium>=1.0.0",
+    "pytest>=9.0.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["apple_pick_sim", "apple_pick_gym"]
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com/"
+explicit = true
+
+[tool.uv.sources]
+newton = { path = "newton", editable = true }
+warp-lang = { index = "nvidia" }

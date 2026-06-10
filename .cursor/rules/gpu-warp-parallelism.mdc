@@ -51,4 +51,4 @@ arr = np.where(mask, arr, other)  # then write back
 
 - New simulation kernels belong in **`apple_pick_sim/`** unless a Newton submodule change is explicitly required.
 - After GPU hot-path changes: update **`docs/gpu-coupling-optimization.md`** and cite before/after benchmark numbers when optimizing.
-- Verify: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -q -p no:launch_testing`
+- Verify: `uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/ -q`

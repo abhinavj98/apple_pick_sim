@@ -7,6 +7,7 @@ from typing import Any
 from newton.solvers import SolverMuJoCo
 
 from apple_pick_sim.robot.fr3_robot.controllers.ee_velocity import Fr3EEVelocityController
+from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity, _KeyViewer
 from apple_pick_sim.robot.fr3_robot.setup import (
     init_mujoco_actuator_targets_from_model,
     sync_mujoco_visual_state,
@@ -33,3 +34,24 @@ class Fr3EEDirectJointController(Fr3EEVelocityController):
             init_mujoco_actuator_targets_from_model(self.robot_model, control)
         if mj_solver is not None:
             sync_mujoco_visual_state(mj_solver, self.robot_model, state)
+
+    def run_coupled_teleop_frame(
+        self,
+        state: Any,
+        control: Any,
+        mj_solver: SolverMuJoCo,
+        dt: float,
+        *,
+        viewer: _KeyViewer | None = None,
+        velocity: EEVelocity | None = None,
+    ) -> EEVelocity:
+        """Per-frame coupled teleop: IK target integration and direct joint write."""
+        velocity = self.run_ik_teleop_frame(
+            dt,
+            state,
+            velocity=velocity,
+            viewer=viewer,
+            poll_events=True,
+        )
+        self.apply_direct_joints(state, control, mj_solver=mj_solver)
+        return velocity

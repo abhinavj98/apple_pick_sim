@@ -19,11 +19,11 @@ This project standardizes on **[uv](https://docs.astral.sh/uv/)** for Python dep
 
 ## This repository layout
 
-- The installable Python project and `pyproject.toml` live under **`newton/`** (git submodule). Sync there: `cd newton && uv sync …`.
-- Project-local scripts under `apple_pick_sim/` are run with uv against that environment, for example from the repo root:
+- The root **`pyproject.toml`** path-depends on **`newton/`** (git submodule). Sync from the repo root: `uv sync --extra gym --extra vic --extra dev`.
+- Project-local scripts run from the repo root, for example:
 
 ```bash
-uv run --directory newton python ../apple_pick_sim/examples/example_apple_stem.py
+uv run python apple_pick_sim/examples/example_apple_stem.py
 ```
 
 When proposing commands in chat or in CI snippets, default to **uv-first** forms like the above.
@@ -35,8 +35,8 @@ When proposing commands in chat or in CI snippets, default to **uv-first** forms
 python apple_pick_sim/examples/example_apple_stem.py
 pip install numpy
 
-# ✅ GOOD — uses the Newton project’s lockfile and interpreter
-uv run --directory newton python ../apple_pick_sim/examples/example_apple_stem.py
+# ✅ GOOD — uses the root lockfile and editable apple_pick_sim install
+uv run python apple_pick_sim/examples/example_apple_stem.py
 ```
 
 If documentation elsewhere shows `python`/`pip`, prefer updating examples to uv when editing those files.

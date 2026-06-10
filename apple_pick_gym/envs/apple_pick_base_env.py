@@ -14,7 +14,7 @@ try:
 except Exception as e:  # pragma: no cover
     raise ImportError(
         "apple_pick_gym requires gymnasium to be installed. "
-        "Install via the Newton uv environment (e.g. newton[dev])."
+        "Install from the repo root (e.g. uv sync --extra gym)."
     ) from e
 
 

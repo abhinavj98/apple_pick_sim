@@ -14,11 +14,11 @@ alwaysApply: true
 
 ## Environment and runs
 
-- Install/sync Newton deps from the submodule root, e.g. `cd newton && uv sync --extra examples`.
+- Install/sync from the **repository root**, e.g. `uv sync --extra gym --extra vic --extra dev` (path-depends on `newton/`).
 - Example run from the **repository root** (matches README):
 
 ```bash
-uv run --directory newton python ../apple_pick_sim/examples/example_apple_stem.py
+uv run python apple_pick_sim/examples/example_apple_stem.py
 ```
 
 - If clones are missing Newton: `git submodule update --init --recursive`.

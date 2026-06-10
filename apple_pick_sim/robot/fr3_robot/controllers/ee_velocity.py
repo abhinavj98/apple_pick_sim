@@ -310,3 +310,30 @@ class Fr3EEVelocityController:
             command_velocity=command_velocity,
         )
 
+    def run_coupled_teleop_frame(
+        self,
+        state: Any,
+        control: Any,
+        mj_solver: Any,
+        dt: float,
+        *,
+        viewer: _KeyViewer | None = None,
+        velocity: EEVelocity | None = None,
+    ) -> EEVelocity:
+        """Per-frame coupled teleop: IK target integration and MuJoCo PD actuator write."""
+        del mj_solver  # unused; protocol shared with direct-joint controller
+        velocity = self.run_ik_teleop_frame(
+            dt,
+            state,
+            velocity=velocity,
+            viewer=viewer,
+            poll_events=True,
+        )
+        self.apply_ik_to_mujoco_control(
+            state,
+            control,
+            frame_dt=dt,
+            command_velocity=velocity,
+        )
+        return velocity
+

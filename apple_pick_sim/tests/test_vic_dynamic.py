@@ -75,6 +75,12 @@ def _configure_vic_teleop(
     gains: ImpedanceGains | None = None,
 ) -> Fr3EEImpedanceController:
     """Attach a single impedance controller for teleop and substep wrench law."""
+    fr3_robot.configure_vic_wrench_only_arm(
+        scene.robot_model,
+        scene.robot_state_0,
+        scene.robot_control,
+        scene.mj_solver,
+    )
     ctrl = Fr3EEImpedanceController(tcp_body_index=int(scene.tcp_body_index))
     scene.vic_controller = ctrl
     scene.vic_gains = gains or ImpedanceGains(linear_k=800.0, linear_d=80.0)

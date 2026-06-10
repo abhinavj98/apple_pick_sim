@@ -145,6 +145,26 @@ class Fr3EEImpedanceController:
             lock_angular=lock_angular,
         )
 
+    def run_coupled_teleop_frame(
+        self,
+        state: Any,
+        control: Any,
+        mj_solver: Any,
+        dt: float,
+        *,
+        viewer: _KeyViewer | None = None,
+        velocity: EEVelocity | None = None,
+    ) -> EEVelocity:
+        """Per-frame coupled VIC teleop: TCP target integration only (PD gains zeroed at setup)."""
+        del control, mj_solver  # unused; VIC configure zeros joint PD
+        return self.run_tcp_target_teleop_frame(
+            dt,
+            state,
+            velocity=velocity,
+            viewer=viewer,
+            poll_events=True,
+        )
+
     def compute_applied_wrench(
         self,
         *,

@@ -102,20 +102,20 @@ Sim parameter identification from trajectories (FD / black-box, same path as M2)
 **How to validate changes:**
 
 ```bash
-# Install / sync
-cd newton && uv sync --extra examples --extra dev --extra torch-cu12 && cd ..
+# Install / sync (repo root; path-depends on newton/)
+uv sync --extra gym --extra vic --extra dev
 
 # Fast test gate (excludes @pytest.mark.slow)
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -q -p no:launch_testing -m "not slow"
+uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/ -q -m "not slow"
 
 # Gym env tests
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_gym/tests/ -q -p no:launch_testing
+uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/ -q
 
 # Coupled example smoke (headless)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --viewer null --num-frames 60
+uv run python apple_pick_sim/examples/example_coupled_fruiting.py --viewer null --num-frames 60
 
 # Coupling verification CLI
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/verify_coupling.py --num-substeps 600 --max-force 5 --max-torque 1
+uv run python apple_pick_sim/diagnostics/verify_coupling.py --num-substeps 600 --max-force 5 --max-torque 1
 ```
 
 **Stop and ask the maintainer when:**

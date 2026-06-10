@@ -240,6 +240,94 @@ def test_fr3_ee_teleop_direct_does_not_resync_robot_state_1():
     )
 
 
+def test_velocity_controller_run_coupled_teleop_frame():
+    import warp as wp
+
+    from apple_pick_sim.robot import fr3_robot
+
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(cf, ranges, 8, mujoco_only=True)
+    ctrl = fr3_robot.Fr3EEVelocityController(scene.robot_model, scene.tcp_body_index)
+    ctrl.sync_target_from_state(scene.robot_state_0)
+    x_tgt0 = float(wp.transform_get_translation(ctrl.target_tf)[0])
+    q_cur = scene.robot_state_0.joint_q.numpy().copy()
+
+    vel = ctrl.run_coupled_teleop_frame(
+        scene.robot_state_0,
+        scene.robot_control,
+        scene.mj_solver,
+        FRAME_DT,
+        velocity=fr3_robot.EEVelocity(linear=(0.2, 0.0, 0.0)),
+    )
+
+    x_tgt1 = float(wp.transform_get_translation(ctrl.target_tf)[0])
+    expected_dx = 0.2 * FRAME_DT
+    assert x_tgt1 > x_tgt0 + expected_dx * 0.9
+    q_tgt = scene.robot_control.joint_target_pos.numpy()
+    assert float(np.linalg.norm(q_tgt - q_cur)) > 1e-3
+    assert vel.linear == (0.2, 0.0, 0.0)
+
+
+def test_impedance_controller_run_coupled_teleop_frame():
+    import warp as wp
+
+    from apple_pick_sim.robot import fr3_robot
+
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(cf, ranges, 9, mujoco_only=True)
+    fr3_robot.configure_vic_wrench_only_arm(
+        scene.robot_model,
+        scene.robot_state_0,
+        scene.robot_control,
+        scene.mj_solver,
+    )
+    ctrl = fr3_robot.Fr3EEImpedanceController(tcp_body_index=int(scene.tcp_body_index))
+    ctrl.sync_target_from_state(scene.robot_state_0)
+    x_tgt0 = float(wp.transform_get_translation(ctrl.target_tf)[0])
+    q_tgt_before = scene.robot_control.joint_target_pos.numpy().copy()
+
+    vel = ctrl.run_coupled_teleop_frame(
+        scene.robot_state_0,
+        scene.robot_control,
+        scene.mj_solver,
+        FRAME_DT,
+        velocity=fr3_robot.EEVelocity(linear=(0.2, 0.0, 0.0)),
+    )
+
+    x_tgt1 = float(wp.transform_get_translation(ctrl.target_tf)[0])
+    expected_dx = 0.2 * FRAME_DT
+    assert x_tgt1 > x_tgt0 + expected_dx * 0.9
+    q_tgt_after = scene.robot_control.joint_target_pos.numpy()
+    np.testing.assert_allclose(q_tgt_after, q_tgt_before, rtol=1e-6, atol=1e-6)
+    assert vel.linear == (0.2, 0.0, 0.0)
+
+
+def test_direct_controller_run_coupled_teleop_frame():
+    from apple_pick_sim.robot import fr3_robot
+
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(cf, ranges, 10, mujoco_only=True)
+    ctrl = new_direct_controller(scene, fr3_robot)
+    q_before = scene.robot_state_0.joint_q.numpy().copy()
+
+    ctrl.run_coupled_teleop_frame(
+        scene.robot_state_0,
+        scene.robot_control,
+        scene.mj_solver,
+        FRAME_DT,
+        velocity=fr3_robot.EEVelocity(linear=(0.2, 0.0, 0.0)),
+    )
+
+    q_after = scene.robot_state_0.joint_q.numpy()
+    assert float(np.linalg.norm(q_after - q_before)) > 1e-3
+
+
 def test_mujoco_substep_proxy_does_not_teleport_on_first_step():
     from apple_pick_sim.robot import fr3_robot
 
@@ -1684,3 +1772,25 @@ def test_example_coupled_fruiting_default_robot_is_fr3():
     assert args.robot == "fr3"
     assert args.vic_linear_k == 800.0
     assert args.vic_angular_d == 4.0
+
+
+def test_example_coupled_fruiting_controller_parser_default():
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
+
+    args = ex._make_parser().parse_args([])
+    assert ex._resolve_controller_mode(args) == "vic"
+    assert args.controller == "vic"
+
+
+def test_example_coupled_fruiting_controller_parser_ee():
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
+
+    args = ex._make_parser().parse_args(["--controller", "ee"])
+    assert ex._resolve_controller_mode(args) == "ee"
+
+
+def test_example_coupled_fruiting_controller_parser_direct():
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
+
+    args = ex._make_parser().parse_args(["--controller", "direct"])
+    assert ex._resolve_controller_mode(args) == "direct"

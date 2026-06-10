@@ -12,6 +12,11 @@ from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
 
 @wp.func
 def _normalize_quat(q: wp.quat) -> wp.quat:
+    """Unit-normalize ``q``; return identity if length is near zero.
+
+    Warp helper for orientation error math. Used internally by
+    :func:`_orientation_error_axis_angle` and :func:`compute_vic_spatial_wrench`.
+    """
     n = wp.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
     if n < 1.0e-12:
         return wp.quat(0.0, 0.0, 0.0, 1.0)
@@ -21,11 +26,19 @@ def _normalize_quat(q: wp.quat) -> wp.quat:
 
 @wp.func
 def _quat_conj(q: wp.quat) -> wp.quat:
+    """Quaternion conjugate (inverse for unit quaternions).
+
+    Used by :func:`_orientation_error_axis_angle` to form ``q_des * q_act^{-1}``.
+    """
     return wp.quat(-q[0], -q[1], -q[2], q[3])
 
 
 @wp.func
 def _quat_mul(a: wp.quat, b: wp.quat) -> wp.quat:
+    """Hamilton product ``a * b`` (apply ``b`` then ``a`` in world frame).
+
+    Composes orientation errors in :func:`_orientation_error_axis_angle`.
+    """
     ax, ay, az, aw = a[0], a[1], a[2], a[3]
     bx, by, bz, bw = b[0], b[1], b[2], b[3]
     return wp.quat(
@@ -38,6 +51,11 @@ def _quat_mul(a: wp.quat, b: wp.quat) -> wp.quat:
 
 @wp.func
 def _orientation_error_axis_angle(q_des: wp.quat, q_act: wp.quat) -> wp.vec3:
+    """Orientation error as axis-angle vector in world frame (``q_des * q_act^{-1}``).
+
+    Angular position error for VIC: small-angle axis times angle [rad]. Fed into
+    the angular stiffness term of :func:`compute_vic_spatial_wrench`.
+    """
     qd = _normalize_quat(q_des)
     qa = _normalize_quat(q_act)
     q_err = _normalize_quat(_quat_mul(qd, _quat_conj(qa)))
@@ -93,6 +111,14 @@ def _add_vic_wrench_at_tcp_kernel(
     angular_k: float,
     angular_d: float,
 ):
+    """Add VIC spatial wrench delta to ``wrenches[tcp_index]`` (world frame, about COM).
+
+    Evaluates impedance wrench from device ``body_q`` / ``body_qd`` and accumulates
+    onto ``coupling_forces_cache``. Launched by
+    :func:`launch_apply_vic_to_coupling_cache`, which
+    :func:`~apple_pick_sim.coupled_fruiting.scene._mujoco_robot_substep_prefix`
+    calls each MuJoCo substep when VIC wrench mode is active (not joint-torque VIC).
+    """
     delta = compute_vic_spatial_wrench(
         body_q[tcp_index],
         body_qd[tcp_index],

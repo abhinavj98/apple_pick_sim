@@ -55,10 +55,24 @@ def pytest_configure(config) -> None:
 
 def build_coupled_fr3(cf, ranges, seed: int, **kwargs):
     """Build FR3 coupled scene; intra-chain self-collision off unless overridden."""
+    from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
+
     kwargs.setdefault("enable_self_collisions", False)
     kwargs.setdefault("base_pos", COUPLED_BASE_POS)
-    kwargs.setdefault("robot_base_pos", COUPLED_ROBOT_BASE_POS)
-    return cf.build_coupled_fruiting_fr3(ranges, seed, **kwargs)
+    kwargs.setdefault("robot_base_from_proxy", True)
+    kwargs.setdefault("ik_bootstrap_iterations", 256)
+    gripper = kwargs.get("gripper_proxy")
+    fix_to_apple = bool(getattr(gripper, "fix_to_apple", False))
+    seeds = (seed, seed + 1, seed + 2, seed + 3) if fix_to_apple else (seed,)
+    last_exc: Exception | None = None
+    for try_seed in seeds:
+        try:
+            return cf.build_coupled_fruiting_fr3(ranges, try_seed, **kwargs)
+        except IKBootstrapConvergenceError as exc:
+            last_exc = exc
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("build_coupled_fr3: no seed attempted")
 
 
 def build_vbd_only(cf, ranges, seed: int, **kwargs):
@@ -76,7 +90,7 @@ def new_direct_controller(scene, fr3_robot):
 
 def apply_direct_hold(scene, fr3_robot, ctrl, *, velocity=None) -> None:
     """One teleop frame with direct joints (zero velocity by default)."""
-    scene.apply_fr3_ee_teleop_direct(
+    scene.update_fr3_ee_teleop_direct(
         FRAME_DT,
         ctrl,
         velocity=velocity if velocity is not None else fr3_robot.EEVelocity(),

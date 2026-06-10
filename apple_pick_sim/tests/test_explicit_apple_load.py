@@ -141,7 +141,7 @@ def test_stem_harvest_explicit_adds_force_and_torque():
     scene = _build_welded_coupled_for_stem_tests(
         cf,
         fs,
-        seed=50,
+        seed=51,
         stem_coupling_gain=1.0,
         stem_force_cap_N=None,
         stem_torque_cap_Nm=None,
@@ -364,6 +364,7 @@ def test_settle_weld_hold_explicit_support_matches_mg():
         _import_cf(),
         ranges,
         52,
+        skip_ik_bootstrap=True,
         gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True),
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
     )

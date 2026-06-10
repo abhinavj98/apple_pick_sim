@@ -1,3 +1,8 @@
+"""Dead one-off script to split Warp kernels out of ``proxy_coupling.py``.
+
+Not imported by the package or runtime API. Kept for reference only.
+"""
+
 import re
 
 with open('proxy_coupling.py', 'r') as f:

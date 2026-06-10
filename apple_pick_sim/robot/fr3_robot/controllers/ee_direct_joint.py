@@ -15,7 +15,7 @@ from apple_pick_sim.robot.fr3_robot.setup import (
 class Fr3EEDirectJointController(Fr3EEVelocityController):
     """Testing controller: TCP velocity + IK, then **direct** ``joint_q`` write (kinematic arm).
 
-    Pair with :meth:`~apple_pick_sim.coupled_fruiting.CoupledFruitingScene.apply_fr3_ee_teleop_direct`
+    Pair with :meth:`~apple_pick_sim.coupled_fruiting.CoupledFruitingScene.update_fr3_ee_teleop_direct`
     and ``robot_kinematic_mode=True`` so ``SolverMuJoCo`` does not re-integrate the arm between
     substeps. Coupled VBD + proxy sync still run.
     """

@@ -22,13 +22,19 @@ The Newton submodule is cloned from [abhinavj98/newton](https://github.com/abhin
 
 ### 2. Install Newton
 
-From the repository root, sync the Newton submodule’s environment (examples extra matches the viewer and script dependencies used here):
+From the repository root, sync the Newton submodule’s environment. Use **`examples`** for viewers and scripts, **`dev`** for pytest/gymnasium, and **`torch-cu12`** for VIC joint-torque teleop in `example_coupled_fruiting.py`:
+
+```bash
+cd newton && uv sync --extra examples --extra dev --extra torch-cu12 && cd ..
+```
+
+Minimal install (P0 fruiting only, no gym/VIC):
 
 ```bash
 cd newton && uv sync --extra examples && cd ..
 ```
 
-All `uv run` commands below assume the **repository root** as the current working directory unless noted otherwise.
+All `uv run` commands below assume the **repository root** as the current working directory unless noted otherwise. Set **`PYTHONPATH=$(pwd)`** so `apple_pick_sim` and `apple_pick_gym` import from the repo root.
 
 ## Running the simulation
 
@@ -103,13 +109,14 @@ import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 
 **Device:** Scene builders default to **`cuda:0`** when CUDA is available (`apple_pick_sim/sim_device.py`). Pass ``device="cpu"`` or set ``APPLE_PICK_SIM_DEVICE=cpu`` to force CPU. Interactive examples accept ``--device`` (e.g. ``--device cpu``).
 
-### M1 two-model coupling (placeholder or FR3 robot)
+### M1 two-model coupling (FR3 + VBD cable)
 
 Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via the **`apple_pick_sim/coupled_fruiting/`** package (``scene.py``, ``builders.py``, …; import ``apple_pick_sim.coupled_fruiting``). Gripper proxy defaults to **`fix_to_apple=False`** (velocity-delta harvest + proxy-only sync); pass ``GripperProxyConfig(fix_to_apple=True)`` in code for stem-harvest / apple co-teleport tests.
 
-- **Placeholder (default):** free-floating TCP box via ``build_coupled_fruiting_placeholder``; ``disable_contacts=True`` keeps the demo stable at moderate dt.
-- **FR3 + custom EE:** ``build_coupled_fruiting_fr3`` imports ``assets/testfr3_resolved.usda`` (Isaac **`testfr3`** EE/tcp + bundled ``assets/fr3/omniverse_fr3/fr3.usd``); see ``assets/fr3/README.md`` and ``docs/fr3-usd-import-implementation.md``.
-- **Step modes** on ``example_coupled_fruiting.py``: default = full coupled loop; ``--only-vbd`` = cable only; ``--only-mjc`` = MuJoCo robot + proxy sync (cable tree shown but not integrated by VBD each substep).
+- **FR3 + custom EE (default):** ``build_coupled_fruiting_fr3`` imports ``assets/testfr3_resolved.usda`` (Isaac **`testfr3`** EE/tcp + bundled ``assets/fr3/omniverse_fr3/fr3.usd``); see ``assets/fr3/README.md``.
+- **Placeholder:** ``build_coupled_fruiting_placeholder`` — free-floating TCP box; use ``--robot placeholder`` if FR3 assets are missing.
+- **Control:** ``example_coupled_fruiting.py`` defaults to **FR3 + VIC joint-torque teleop** (dynamic arm, plant wrenches on TCP ``body_f``). Requires PyTorch: ``cd newton && uv sync --extra torch-cu12``. Tune with ``--vic-linear-k``, ``--vic-linear-d``, ``--vic-angular-k``, ``--vic-angular-d``.
+- **Step modes:** default = full coupled loop; ``--only-vbd`` = cable only; ``--only-mjc`` = MuJoCo robot + proxy sync.
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python -m unittest apple_pick_sim.tests.test_fr3_usd_import -v
@@ -138,31 +145,23 @@ PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/ex
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --debug-coupling-forces --seed 42
 # TCP force as a yellow arrow at the robot TCP (scale: --tcp-force-scale, --tcp-force-arrow-gain, min/max length)
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --viewer gl --tcp-force-arrow --seed 42
-# Bundled FR3 + custom EE (requires usd-core + assets/fr3/)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --robot fr3 --viewer null --num-frames 60
-# FR3 keyboard teleop — verified: MuJoCo-only stepping + proxy sync (default fix_to_apple=False)
+# Bundled FR3 + custom EE (default; requires usd-core + assets/fr3/)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --viewer null --num-frames 60
+# FR3 keyboard teleop (VIC joint torques; focus ViewerGL window)
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \
-  --robot fr3 --only-mjc --fr3-keyboard --viewer gl
+  --fr3-keyboard --viewer gl
 # Optional second window for the MuJoCo robot model
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \
-  --robot fr3 --only-mjc --fr3-keyboard --mujoco-viewer --viewer gl
-# Full staggered coupling + keyboard (not yet verified interactively)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --robot fr3 --fr3-keyboard --viewer gl
+  --fr3-keyboard --mujoco-viewer --viewer gl
 # Stem-harvest path: weld proxy to apple (default is --no-fix-to-apple / velocity-delta)
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple --seed 42
-# FR3 testing: direct joint_q write + kinematic arm (coupled VBD + proxy sync still run)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \
-  --robot fr3 --fr3-direct-joints --fr3-keyboard --viewer gl
-# Post-grasp variable-impedance teleop (design spec; not yet in examples): docs/variable-impedance-teleop.md
-# Mega plant (N FD columns) + one FR3, fd_ghost offset sync (see docs/mega-coupled-cable-implementation.md)
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_mega_coupled_keyboard.py --viewer gl
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_mega_coupled_keyboard.py --viewer gl --tcp-force-arrow
-PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_mega_coupled_keyboard.py --viewer null --num-frames 1
+# Placeholder TCP (no FR3 assets)
+PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py --robot placeholder --viewer null --num-frames 60
 ```
 
 **FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):
 
-- **Coupled fruiting + arm (verified):** use ``example_coupled_fruiting.py`` with ``--robot fr3 --only-mjc --fr3-keyboard`` (see above).
+- **Coupled fruiting + arm (default):** ``example_coupled_fruiting.py`` with ``--fr3-keyboard --viewer gl`` (VIC joint torques).
 - **Robot only (kinematic FK, no MuJoCo step):** ``example_fr3_keyboard.py`` — useful for IK/viewer smoke without the fruiting tree.
 
 ```bash
@@ -170,22 +169,35 @@ PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/ex
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_fr3_keyboard.py --viewer null --num-frames 120
 ```
 
-### Slice 2f refactor validation
+### Validation (fast test gate)
 
-After changes to the fruiting or coupled packages (see ``docs/slice-2f-structural-refactor.md``):
+After changes to fruiting, coupling, or gym code:
 
 ```bash
+# Fast sim tests (excludes @pytest.mark.slow)
 PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
-  ../apple_pick_sim/tests/test_fruiting_system.py \
-  ../apple_pick_sim/tests/test_coupled_cable_scene.py \
-  ../apple_pick_sim/tests/test_coupled_fruiting_system.py \
-  ../apple_pick_sim/tests/test_coupling_stability.py \
-  ../apple_pick_sim/tests/test_proxy_coupling.py -q -p no:launch_testing
+  ../apple_pick_sim/tests/ -q -p no:launch_testing -m "not slow"
+
+# Gym env tests
+PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
+  ../apple_pick_gym/tests/ -q -p no:launch_testing
+
+# Coupled example smoke (headless; requires torch-cu12 for default FR3+VIC path)
+PYTHONPATH=$(pwd) uv run --directory newton python \
+  ../apple_pick_sim/examples/example_coupled_fruiting.py --viewer null --num-frames 60
 ```
+
+GPU coupling inventory and benchmarks: `docs/gpu-coupling-optimization.md`, `docs/gpu-architecture-report.md`.
 
 ## Tests
 
-From the repository root:
+From the repository root (requires `uv sync --extra dev` in `newton/`):
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -q -p no:launch_testing -m "not slow"
+```
+
+Full suite including slow stability tests:
 
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -v -p no:launch_testing
@@ -225,6 +237,14 @@ Headless **coupling verification** (applied vs harvested wrench, TCP–proxy pos
 ```bash
 PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/diagnostics/verify_coupling.py \
   --num-substeps 600 --max-force 5 --max-torque 1
+```
+
+### Gymnasium environment (`ApplePickCoupled-v0`)
+
+Headless env over the coupled FR3 stack; `Discrete(13)` keyboard-style actions; real observations (woody part poses/forces, apple position, TCP wrench/velocity). See `apple_pick_gym/envs/apple_pick_coupled_env.py`.
+
+```bash
+PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_gym/tests/ -q -p no:launch_testing
 ```
 
 `PYTHONPATH` must include the repo root so `apple_pick_sim` imports resolve; `--directory newton` selects Newton’s `pyproject.toml` and virtual environment.

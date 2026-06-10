@@ -52,7 +52,6 @@ def test_coupled_fruiting_public_build_api():
     from apple_pick_sim import coupled_fruiting as cf
 
     assert callable(cf.build_coupled_fruiting_fr3)
-    assert callable(cf.build_mega_coupled_fruiting_fr3)
     assert callable(cf.settle_vbd_substeps)
 
 

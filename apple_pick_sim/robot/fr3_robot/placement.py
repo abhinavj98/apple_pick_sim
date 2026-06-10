@@ -21,6 +21,9 @@ IK_BOOTSTRAP_ROT_TOL_RAD = 0.05
 IK_TELEOP_POS_TOL_M = 0.005
 IK_TELEOP_ROT_TOL_RAD = 0.005
 
+# Deterministic ``joint_q`` recipes (fraction of joint-limit span) after the model default.
+_IK_BOOTSTRAP_JOINT_Q_SEED_FRACS = (0.5, 0.25, 0.75, 0.1, 0.9)
+
 
 class IKBootstrapConvergenceWarning(UserWarning):
     """FR3 TCP IK bootstrap missed position/orientation tolerance vs gripper proxy."""
@@ -242,6 +245,50 @@ def placement_xform_for_proxy(
 
 
 
+def ik_bootstrap_joint_q_candidates(
+    robot_model: newton.Model,
+    *,
+    max_seeds: int = 4,
+) -> list[np.ndarray]:
+    """Return deterministic initial ``joint_q`` configs for TCP IK bootstrap retries."""
+    if max_seeds < 1:
+        raise ValueError(f"max_seeds must be >= 1, got {max_seeds}")
+
+    jc = int(robot_model.joint_coord_count)
+    lower = robot_model.joint_limit_lower.numpy().reshape(-1)[:jc].astype(np.float64)
+    upper = robot_model.joint_limit_upper.numpy().reshape(-1)[:jc].astype(np.float64)
+    default = robot_model.joint_q.numpy().reshape(-1)[:jc].astype(np.float64)
+    span = upper - lower
+
+    recipes: list[np.ndarray] = [default.copy()]
+    recipes.extend(lower + frac * span for frac in _IK_BOOTSTRAP_JOINT_Q_SEED_FRACS)
+
+    out: list[np.ndarray] = []
+    for cand in recipes:
+        if len(out) >= max_seeds:
+            break
+        arr = np.asarray(cand, dtype=np.float64).reshape(-1)
+        if any(np.allclose(arr, prev, atol=1e-4, rtol=0.0) for prev in out):
+            continue
+        out.append(arr)
+    return out
+
+
+def _ik_bootstrap_within_tolerance(
+    pos_err: float,
+    rot_err: float,
+    *,
+    fix_to_apple: bool,
+) -> bool:
+    if fix_to_apple:
+        rot_err = 0.0
+    return pos_err < IK_BOOTSTRAP_POS_TOL_M and rot_err < IK_BOOTSTRAP_ROT_TOL_RAD
+
+
+def _ik_bootstrap_error_score(pos_err: float, rot_err: float) -> float:
+    return pos_err / IK_BOOTSTRAP_POS_TOL_M + rot_err / IK_BOOTSTRAP_ROT_TOL_RAD
+
+
 def root_world_translation_for_proxy(
     proxy_body_q7: Any,
     *,
@@ -260,9 +307,14 @@ def bootstrap_tcp_ik_from_proxy(
     robot_state_0: Any,
     *,
     ik_iterations: int = 48,
+    max_joint_q_seeds: int = 4,
     raise_on_failure: bool = True,
 ) -> None:
-    """Place the arm so ``tcp`` matches the cable gripper proxy pose (position + orientation)."""
+    """Place the arm so ``tcp`` matches the cable gripper proxy pose (position + orientation).
+
+    When the current ``joint_q`` does not converge, retries IK from deterministic alternate
+    initial configurations (limit midpoints and span fractions) and keeps the best result.
+    """
     import newton.ik as ik
 
     proxy_body = cable_scene.gripper_proxy_body
@@ -295,9 +347,8 @@ def bootstrap_tcp_ik_from_proxy(
         weight=10.0,
     )
 
-    joint_q = robot_model.joint_q.reshape((1, int(robot_model.joint_coord_count)))
+    joint_q_buf = robot_model.joint_q.reshape((1, int(robot_model.joint_coord_count)))
     objectives: list[Any] = [pos_obj, limits]
-    # if not fix_to_apple:
     objectives.insert(1, rot_obj)
     solver = ik.IKSolver(
         model=robot_model,
@@ -306,35 +357,71 @@ def bootstrap_tcp_ik_from_proxy(
         lambda_initial=0.1,
         jacobian_mode=ik.IKJacobianType.ANALYTIC,
     )
-    solver.step(joint_q, joint_q, iterations=ik_iterations)
 
-    jq = joint_q.numpy().reshape(-1).astype(robot_model.joint_q.dtype)
+    seeds = ik_bootstrap_joint_q_candidates(robot_model, max_seeds=max_joint_q_seeds)
+    best_jq: np.ndarray | None = None
+    best_pos_err = float("inf")
+    best_rot_err = float("inf")
+    best_score = float("inf")
+    best_seed_idx = 0
+    seeds_tried = 0
+
+    for seed_idx, seed_jq in enumerate(seeds):
+        seeds_tried = seed_idx + 1
+        seed_arr = seed_jq.reshape(1, -1).astype(robot_model.joint_q.dtype, copy=False)
+        joint_q_buf.assign(seed_arr)
+        solver.step(joint_q_buf, joint_q_buf, iterations=ik_iterations)
+
+        jq = joint_q_buf.numpy().reshape(-1).astype(robot_model.joint_q.dtype)
+        jqd = np_zeros_like_joint_qd(robot_model)
+        robot_model.joint_q.assign(jq)
+        robot_model.joint_qd.assign(jqd)
+        robot_state_0.joint_q.assign(jq)
+        robot_state_0.joint_qd.assign(jqd)
+        newton.eval_fk(robot_model, robot_model.joint_q, robot_model.joint_qd, robot_state_0)
+
+        pos_err, rot_err = tcp_proxy_pose_errors(
+            robot_state_0.body_q.numpy(),
+            cable_scene.state_0.body_q.numpy(),
+            tcp_body_index=tcp_body_index,
+            proxy_body_index=proxy_body,
+        )
+        rot_err_for_check = 0.0 if fix_to_apple else rot_err
+        score = _ik_bootstrap_error_score(pos_err, rot_err_for_check)
+        if score < best_score:
+            best_jq = jq.copy()
+            best_pos_err = pos_err
+            best_rot_err = rot_err
+            best_score = score
+            best_seed_idx = seed_idx
+        if _ik_bootstrap_within_tolerance(pos_err, rot_err, fix_to_apple=fix_to_apple):
+            break
+
+    assert best_jq is not None
     jqd = np_zeros_like_joint_qd(robot_model)
-
-    robot_model.joint_q.assign(jq)
+    robot_model.joint_q.assign(best_jq)
     robot_model.joint_qd.assign(jqd)
-    robot_state_0.joint_q.assign(jq)
+    robot_state_0.joint_q.assign(best_jq)
     robot_state_0.joint_qd.assign(jqd)
     newton.eval_fk(robot_model, robot_model.joint_q, robot_model.joint_qd, robot_state_0)
 
     proxy_q7 = cable_scene.state_0.body_q.numpy().reshape(-1, 7)[proxy_body]
     tcp_q7 = robot_state_0.body_q.numpy().reshape(-1, 7)[tcp_body_index]
-    pos_err, rot_err = tcp_proxy_pose_errors(
-        robot_state_0.body_q.numpy(),
-        cable_scene.state_0.body_q.numpy(),
-        tcp_body_index=tcp_body_index,
-        proxy_body_index=proxy_body,
-    )
+    pos_err = best_pos_err
+    rot_err = best_rot_err
     if fix_to_apple:
         rot_err = 0.0
     rot_note = " (rotation not tracked; fix_to_apple)" if fix_to_apple else ""
+    seed_note = ""
+    if seeds_tried > 1:
+        seed_note = f" (joint_q seed {best_seed_idx}, tried {seeds_tried}/{len(seeds)})"
     print(
         "FR3 TCP IK bootstrap pose:\n"
         f"  cable proxy  pos=({proxy_q7[0]:.4f}, {proxy_q7[1]:.4f}, {proxy_q7[2]:.4f}) "
         f"quat=({proxy_q7[3]:.4f}, {proxy_q7[4]:.4f}, {proxy_q7[5]:.4f}, {proxy_q7[6]:.4f})\n"
         f"  tcp achieved pos=({tcp_q7[0]:.4f}, {tcp_q7[1]:.4f}, {tcp_q7[2]:.4f}) "
         f"quat=({tcp_q7[3]:.4f}, {tcp_q7[4]:.4f}, {tcp_q7[5]:.4f}, {tcp_q7[6]:.4f})\n"
-        f"  error pos={pos_err:.4f} m rot={rot_err:.4f} rad{rot_note}"
+        f"  error pos={pos_err:.4f} m rot={rot_err:.4f} rad{rot_note}{seed_note}"
     )
     target_xyz = (float(target_pos[0]), float(target_pos[1]), float(target_pos[2]))
     if raise_on_failure:

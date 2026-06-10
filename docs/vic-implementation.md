@@ -20,7 +20,7 @@ Impedance law (isotropic gains):
 
 Harvest remains **plant-only** — `proxy_forces` is never updated with \(\mathbf{w}_{\mathrm{applied}}\).
 
-**Joint-torque teleop (default with `--vic`):** `apply_fr3_ee_teleop` advances `target_tf` only (`run_tcp_target_teleop_frame`), zeros `joint_target_ke`/`kd`, and holds `joint_target_pos` at simulated `joint_q`. VIC maps the impedance wrench to `control.joint_f` via dynamically-consistent joint torques (`vic_joint_torques.py`); plant/proxy loads remain on TCP `body_f`. See `docs/vic-joint-torques-implementation.md`.
+**Joint-torque teleop (default with `--vic`):** `update_fr3_ee_teleop` advances `target_tf` only (`run_tcp_target_teleop_frame`), zeros `joint_target_ke`/`kd`, and holds `joint_target_pos` at simulated `joint_q`. VIC maps the impedance wrench to `control.joint_f` via dynamically-consistent joint torques (`vic_joint_torques.py`); plant/proxy loads remain on TCP `body_f`. See `docs/vic-joint-torques-implementation.md`.
 
 ## Code map
 
@@ -31,7 +31,7 @@ Harvest remains **plant-only** — `proxy_forces` is never updated with \(\mathb
 | Substep hook | `apple_pick_sim/coupled_fruiting/scene.py` — `_mujoco_robot_substep_prefix`; with `--vic`: `vic_joint_torques.apply_vic_joint_torques_to_scene`; wrench-only fallback: `vic_wrench.apply_vic_to_coupling_cache` |
 | Scene fields | `CoupledFruitingScene.vic_controller`, `vic_gains`, `vic_target_tf`, `vic_target_twist`, `vic_use_joint_torques` |
 | Joint-torque arm setup | `fr3_robot/setup.py` — `configure_vic_joint_torques_arm` (zeros PD, allocates J/H buffers, `joint_f`) |
-| Teleop target sync | `apply_fr3_ee_teleop` — VIC path: `run_tcp_target_teleop_frame` + hold joint targets |
+| Teleop target sync | `Fr3EEImpedanceController` (same object as `scene.vic_controller`) via `update_fr3_ee_teleop` — `run_tcp_target_teleop_frame` + hold joint targets |
 | Example CLI | `apple_pick_sim/examples/example_coupled_fruiting.py` — `--dynamic-arm`, `--vic`, `--vic-*-k/d` |
 
 Design reference: `docs/variable-impedance-teleop.md`.

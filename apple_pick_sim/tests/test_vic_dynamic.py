@@ -69,6 +69,18 @@ def _build_mujoco_only_fr3():
     return scene
 
 
+def _configure_vic_teleop(
+    scene,
+    *,
+    gains: ImpedanceGains | None = None,
+) -> Fr3EEImpedanceController:
+    """Attach a single impedance controller for teleop and substep wrench law."""
+    ctrl = Fr3EEImpedanceController(tcp_body_index=int(scene.tcp_body_index))
+    scene.vic_controller = ctrl
+    scene.vic_gains = gains or ImpedanceGains(linear_k=800.0, linear_d=80.0)
+    return ctrl
+
+
 def _tcp_spatial_linear_xd(scene) -> float:
     tcp = scene.tcp_body_index
     return float(scene.robot_state_0.body_qd.numpy().reshape(-1, 6)[tcp, 0])
@@ -102,17 +114,33 @@ def test_dynamic_tcp_wrench_moves_arm():
     assert v_dynamic > v_kinematic * 50.0
 
 
+def test_vic_teleop_requires_same_controller_object():
+    scene = _build_mujoco_only_fr3()
+    scene.robot_kinematic_mode = False
+    vic = _configure_vic_teleop(scene)
+    wrong = fr3_robot.Fr3EEVelocityController(scene.robot_model, scene.tcp_body_index)
+    with pytest.raises(ValueError, match="vic_controller"):
+        scene.update_fr3_ee_teleop(
+            FRAME_DT,
+            wrong,
+            velocity=fr3_robot.EEVelocity(linear=(0.1, 0.0, 0.0)),
+        )
+    scene.update_fr3_ee_teleop(
+        FRAME_DT,
+        vic,
+        velocity=fr3_robot.EEVelocity(linear=(0.1, 0.0, 0.0)),
+    )
+
+
 def test_vic_teleop_integrates_tcp_motion():
     """VIC teleop must move the dynamic arm (requires MuJoCo PD sync after zeroing ke/kd)."""
     scene = _build_mujoco_only_fr3()
     scene.robot_kinematic_mode = False
-    scene.vic_controller = Fr3EEImpedanceController()
-    scene.vic_gains = ImpedanceGains(linear_k=800.0, linear_d=80.0)
-    ctrl = fr3_robot.Fr3EEVelocityController(scene.robot_model, scene.tcp_body_index)
+    ctrl = _configure_vic_teleop(scene, gains=ImpedanceGains(linear_k=800.0, linear_d=80.0))
     vel = fr3_robot.EEVelocity(linear=(0.5, 0.0, 0.0))
     x0 = _tcp_pos_x(scene)
     for _ in range(60):
-        scene.apply_fr3_ee_teleop(FRAME_DT, ctrl, velocity=vel)
+        scene.update_fr3_ee_teleop(FRAME_DT, ctrl, velocity=vel)
         for _ in range(SUBSTEPS_PER_FRAME):
             scene.mujoco_substep(SUB_DT)
     dx = _tcp_pos_x(scene) - x0
@@ -123,14 +151,12 @@ def test_vic_teleop_is_wrench_only_no_joint_pd():
     """With ``vic_controller`` attached, teleop advances TCP target but disables joint PD."""
     scene = _build_mujoco_only_fr3()
     scene.robot_kinematic_mode = False
-    scene.vic_controller = Fr3EEImpedanceController()
-    scene.vic_gains = ImpedanceGains(linear_k=100.0, linear_d=10.0)
-    ctrl = fr3_robot.Fr3EEVelocityController(scene.robot_model, scene.tcp_body_index)
+    ctrl = _configure_vic_teleop(scene, gains=ImpedanceGains(linear_k=100.0, linear_d=10.0))
     ctrl.sync_target_from_state(scene.robot_state_0)
     q_before = scene.robot_state_0.joint_q.numpy().reshape(-1).copy()
     x_tgt0 = float(wp.transform_get_translation(ctrl.target_tf)[0])
 
-    scene.apply_fr3_ee_teleop(
+    scene.update_fr3_ee_teleop(
         FRAME_DT,
         ctrl,
         velocity=fr3_robot.EEVelocity(linear=(0.2, 0.0, 0.0)),
@@ -157,9 +183,10 @@ def test_harvest_excludes_applied_wrench():
 
     scene = _build_mujoco_only_fr3()
     scene.robot_kinematic_mode = False
-    scene.vic_controller = Fr3EEImpedanceController()
-    scene.vic_gains = ImpedanceGains(linear_k=500.0, linear_d=50.0, angular_k=20.0, angular_d=2.0)
-    ctrl = fr3_robot.Fr3EEVelocityController(scene.robot_model, scene.tcp_body_index)
+    ctrl = _configure_vic_teleop(
+        scene,
+        gains=ImpedanceGains(linear_k=500.0, linear_d=50.0, angular_k=20.0, angular_d=2.0),
+    )
     ctrl.sync_target_from_state(scene.robot_state_0)
     pos = wp.transform_get_translation(ctrl.target_tf)
     ctrl.target_tf = wp.transform(
@@ -218,13 +245,14 @@ def _build_welded_scene(seed: int = 0):
         ranges,
         seed,
         **_BUILD_KW,
+        skip_ik_bootstrap=True,
         gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True, **gripper_kw),
     )
     cf.seed_fix_to_apple_from_settled(welded_scene=welded, settled_scene=settled, quiet_apple_proxy=True)
     return welded
 
 
-def _tcp_target_pos_error(scene, ctrl: fr3_robot.Fr3EEVelocityController) -> float:
+def _tcp_target_pos_error(scene, ctrl: Fr3EEImpedanceController) -> float:
     tcp = scene.tcp_body_index
     bq = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp]
     target = ctrl.target_tf
@@ -244,19 +272,20 @@ def test_vic_stem_deflection_under_load():
     kin.robot_kinematic_mode = True
     kin_ctrl = fr3_robot.Fr3EEDirectJointController(kin.robot_model, kin.tcp_body_index)
     kin_ctrl.sync_target_from_state(kin.robot_state_0)
-    kin.apply_fr3_ee_teleop_direct(FRAME_DT, kin_ctrl, velocity=vel)
+    kin.update_fr3_ee_teleop_direct(FRAME_DT, kin_ctrl, velocity=vel)
     for _ in range(SUBSTEPS_PER_FRAME * 8):
         kin.coupled_substep(SUB_DT)
     kin_err = _tcp_target_pos_error(kin, kin_ctrl)
 
     # Dynamic VIC path.
     welded.robot_kinematic_mode = False
-    welded.vic_controller = Fr3EEImpedanceController()
-    welded.vic_gains = ImpedanceGains(linear_k=400.0, linear_d=60.0, angular_k=30.0, angular_d=3.0)
-    vic_ctrl = fr3_robot.Fr3EEVelocityController(welded.robot_model, welded.tcp_body_index)
+    vic_ctrl = _configure_vic_teleop(
+        welded,
+        gains=ImpedanceGains(linear_k=400.0, linear_d=60.0, angular_k=30.0, angular_d=3.0),
+    )
     vic_ctrl.sync_target_from_state(welded.robot_state_0)
     fr3_robot.init_mujoco_actuator_targets_from_model(welded.robot_model, welded.robot_control)
-    welded.apply_fr3_ee_teleop(FRAME_DT, vic_ctrl, velocity=vel)
+    welded.update_fr3_ee_teleop(FRAME_DT, vic_ctrl, velocity=vel)
     for _ in range(SUBSTEPS_PER_FRAME * 8):
         welded.coupled_substep(SUB_DT)
     vic_err = _tcp_target_pos_error(welded, vic_ctrl)

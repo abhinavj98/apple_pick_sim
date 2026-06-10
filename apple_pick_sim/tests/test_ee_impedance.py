@@ -73,6 +73,36 @@ def test_vic_linear_force_proportional_to_position_error(
     assert abs(w[2]) < 1e-9
 
 
+def test_vic_sync_target_from_state():
+    vic = Fr3EEImpedanceController()
+
+    class _BodyQ:
+        @staticmethod
+        def numpy() -> np.ndarray:
+            return np.array([[0.5, 0.2, 1.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float64)
+
+    class _State:
+        body_q = _BodyQ()
+
+    vic.sync_target_from_state(_State(), tcp_body_index=0)
+    pos = wp.transform_get_translation(vic.target_tf)
+    assert float(pos[0]) == pytest.approx(0.5)
+    assert float(pos[1]) == pytest.approx(0.2)
+    assert float(pos[2]) == pytest.approx(1.0)
+
+
+def test_vic_advance_target_integrates_linear_velocity():
+    vic = Fr3EEImpedanceController()
+    vic.target_tf = _target_tf(pos=(0.0, 0.0, 0.0))
+    dt = 0.1
+    vel = EEVelocity(linear=(0.5, 0.0, 0.0))
+    vic.advance_target(vel, dt)
+    pos = wp.transform_get_translation(vic.target_tf)
+    assert float(pos[0]) == pytest.approx(0.05, rel=1e-6)
+    assert float(pos[1]) == pytest.approx(0.0, abs=1e-9)
+    assert float(pos[2]) == pytest.approx(0.0, abs=1e-9)
+
+
 def test_vic_damping_opposes_velocity(vic: Fr3EEImpedanceController, unit_gains: ImpedanceGains):
     target = _target_tf()
     tcp_q = _tcp_q7()

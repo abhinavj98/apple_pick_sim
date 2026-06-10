@@ -29,6 +29,12 @@ class ProxyBodyRegistry:
 
     @classmethod
     def from_mapping(cls, mapping: dict[int, int]) -> ProxyBodyRegistry:
+        """Build a registry from ``{robot_body_id: proxy_body_id}`` pairs.
+
+        Pairs are sorted by robot body id for deterministic kernel launch order.
+        Used when a single robot TCP maps to one cable gripper proxy (standard
+        ``build_coupled_fruiting_*`` scenes in :mod:`builders`).
+        """
         return cls(robot_to_proxy=tuple(sorted(mapping.items())))
 
     @classmethod
@@ -43,10 +49,20 @@ class ProxyBodyRegistry:
 
     @property
     def robot_body_ids(self) -> tuple[int, ...]:
+        """Ordered tuple of robot body IDs from ``robot_to_proxy``.
+
+        Index ``i`` aligns with :attr:`proxy_body_ids` ``[i]`` for kernel row ``i``.
+        Used by harvest and mirror launchers that need host-side id lists.
+        """
         return tuple(r for r, _ in self.robot_to_proxy)
 
     @property
     def proxy_body_ids(self) -> tuple[int, ...]:
+        """Ordered tuple of cable proxy body IDs from ``robot_to_proxy``.
+
+        Index ``i`` aligns with :attr:`robot_body_ids` ``[i]`` for kernel row ``i``.
+        Passed to :func:`align_proxy_body_q_prev_for_vbd` after kinematic TCP sync.
+        """
         return tuple(p for _, p in self.robot_to_proxy)
 
     def ids_wp(self, device) -> tuple[wp.array, wp.array]:
@@ -62,9 +78,19 @@ class ProxyBodyRegistry:
         return cached
 
     def robot_ids_wp(self, device) -> wp.array:
+        """Cached device array of robot body IDs (see :meth:`ids_wp`).
+
+        Fed to mirror/harvest kernels as the ``robot_ids`` argument and to
+        :func:`zero_robot_wrench_slots` before velocity-delta harvest.
+        """
         return self.ids_wp(device)[0]
 
     def proxy_ids_wp(self, device) -> wp.array:
+        """Cached device array of proxy body IDs (see :meth:`ids_wp`).
+
+        Fed to mirror/harvest kernels as the ``proxy_ids`` argument; indexes
+        into the cable ``Model`` ``body_q`` / ``body_qd`` buffers.
+        """
         return self.ids_wp(device)[1]
 
 
@@ -252,6 +278,13 @@ def compute_proxy_reaction_wrench_kernel(
 def _zero_wrench_slots_kernel(
     wrenches: wp.array(dtype=wp.spatial_vector), slot_indices: wp.array(dtype=int)
 ):
+    """Zero ``wrenches[slot_indices[tid]]`` in parallel.
+
+    Clears only robot-indexed harvest slots before writing fresh reaction
+    wrenches. Called from :func:`zero_robot_wrench_slots`, which
+    :func:`launch_compute_proxy_reaction_wrench` uses at the start of each
+    velocity-delta harvest substep.
+    """
     tid = wp.tid()
     idx = slot_indices[tid]
     wrenches[idx] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -336,6 +369,13 @@ def harvest_proxy_wrenches(
 
 @wp.kernel
 def _zero_all_wrenches_kernel(wrenches: wp.array(dtype=wp.spatial_vector)):
+    """Zero every wrench slot in ``wrenches`` (one thread per slot).
+
+    Unlike :func:`_zero_wrench_slots_kernel`, clears the full buffer. Launched
+    at the start of :func:`harvest_stem_tension_for_tcp` before stem
+    FIXED-joint gather when ``fix_to_apple`` uses stem harvest instead of
+    velocity-delta.
+    """
     wrenches[wp.tid()] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
@@ -376,9 +416,10 @@ def _limit_and_write_tcp_stem_wrench_kernel(
             p_apple = wp.transform_get_translation(cable_body_q[apple_body_index])
         
         r_tcp_to_apple_com = p_apple - p_tcp
-        
-        # Transfer the stem force from the apple COM to the TCP
-        
+
+        # Transfer stem force from apple COM to TCP (always; matches CPU harvest path).
+        tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_stem_at_com)
+
         if use_explicit_apple_weight != 0 and apple_mass_kg > 0.0:
             g = gravity
             f_apple_weight = wp.vec3(
@@ -387,7 +428,7 @@ def _limit_and_write_tcp_stem_wrench_kernel(
                 -apple_mass_kg * g[2],
             )
             f_total_tcp = f_total_tcp + f_apple_weight
-        tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_total_tcp)
+            tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_apple_weight)
             
     f_total_tcp = f_total_tcp * coupling_gain
     tau_total_tcp = tau_total_tcp * coupling_gain
@@ -427,6 +468,17 @@ def _harvest_stem_tension_for_tcp_cpu(
     robot_body_q: wp.array | None = None,
     grasp_offset_in_apple_frame: tuple | None = None,
 ) -> None:
+    """CPU fallback for stem harvest: NumPy gather, lever-arm transfer, gain/caps.
+
+    Mirrors :func:`harvest_stem_tension_for_tcp` on the host: gathers the
+    stem–apple FIXED joint wrench, transfers force from apple COM to TCP,
+    optionally adds explicit apple weight, then applies gain/caps via
+    :func:`limit_stem_coupling_wrench`.
+
+    Used by :mod:`tests.test_proxy_coupling` for CPU/GPU parity checks.
+    Production hot path (``coupled_substep`` with ``fix_to_apple``) uses the
+    device gather + :func:`_limit_and_write_tcp_stem_wrench_kernel` instead.
+    """
     from apple_pick_sim.coupled_fruiting.explicit_load import (
         apple_mass_kg_from_model,
         explicit_apple_wrench_for_stem_harvest,
@@ -557,34 +609,30 @@ def harvest_stem_tension_for_tcp(
     grasp_off = wp.transform_identity()
     use_grasp_offset = 0
     robot_bq = body_q_post
-    if (
-        explicit_apple_weight
-        and robot_body_q is not None
-        and apple_body_index is not None
-        and int(apple_body_index) >= 0
-    ):
-        m_apple = (
-            float(apple_mass_kg)
-            if apple_mass_kg is not None
-            else apple_mass_kg_from_model(cable_model, apple_body_index)
-        )
-        if m_apple > 0.0:
-            use_explicit = 1
-            apple_bid = int(apple_body_index)
-            robot_bq = robot_body_q
-            if grasp_offset_in_apple_frame is not None:
-                go = grasp_offset_in_apple_frame
-                if len(go) == 7:
-                    grasp_off = wp.transform(
-                        wp.vec3(float(go[0]), float(go[1]), float(go[2])),
-                        wp.quat(float(go[3]), float(go[4]), float(go[5]), float(go[6])),
-                    )
-                else:
-                    grasp_off = wp.transform(
-                        wp.vec3(float(go[0]), float(go[1]), float(go[2])),
-                        wp.quat_identity(),
-                    )
-                use_grasp_offset = 1
+    if robot_body_q is not None and apple_body_index is not None and int(apple_body_index) >= 0:
+        apple_bid = int(apple_body_index)
+        robot_bq = robot_body_q
+        if grasp_offset_in_apple_frame is not None:
+            go = grasp_offset_in_apple_frame
+            if len(go) == 7:
+                grasp_off = wp.transform(
+                    wp.vec3(float(go[0]), float(go[1]), float(go[2])),
+                    wp.quat(float(go[3]), float(go[4]), float(go[5]), float(go[6])),
+                )
+            else:
+                grasp_off = wp.transform(
+                    wp.vec3(float(go[0]), float(go[1]), float(go[2])),
+                    wp.quat_identity(),
+                )
+            use_grasp_offset = 1
+        if explicit_apple_weight:
+            m_apple = (
+                float(apple_mass_kg)
+                if apple_mass_kg is not None
+                else apple_mass_kg_from_model(cable_model, apple_body_index)
+            )
+            if m_apple > 0.0:
+                use_explicit = 1
     f_cap = float(force_cap_N) if force_cap_N is not None else 0.0
     t_cap = float(torque_cap_Nm) if torque_cap_Nm is not None else 0.0
     wp.launch(
@@ -647,6 +695,14 @@ def _copy_body_state_kernel(
     dst_body_q: wp.array(dtype=wp.transform),
     dst_body_qd: wp.array(dtype=wp.spatial_vector),
 ):
+    """Copy ``body_q`` / ``body_qd`` for each listed body ID from src to dst.
+
+    Device-side bulk copy without host round-trip. Called from
+    :func:`copy_cable_body_q_between_states`, which
+    :func:`~apple_pick_sim.coupled_fruiting.scene._sync_single_proxy_after_mujoco`
+    uses after ``fix_to_apple`` co-teleport to keep ``state_1`` aligned with
+    prescribed proxy/apple poses for AVBD ``body_q_prev``.
+    """
     i = wp.tid()
     bid = body_ids[i]
     dst_body_q[bid] = src_body_q[bid]

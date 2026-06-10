@@ -12,12 +12,13 @@ from apple_pick_sim.robot.fr3_robot.placement import (
     IK_BOOTSTRAP_ROT_TOL_RAD,
     IKBootstrapConvergenceError,
     IKBootstrapConvergenceWarning,
+    bootstrap_tcp_ik_from_proxy,
+    ik_bootstrap_joint_q_candidates,
     placement_xform_for_proxy,
     raise_if_ik_bootstrap_not_converged,
     tcp_proxy_pose_errors,
     warn_if_ik_bootstrap_not_converged,
 )
-
 
 def test_placement_xform_for_proxy_offsets_xy_and_lowers_z_by_reach():
     import warp as wp
@@ -89,3 +90,89 @@ def test_enable_ik_bootstrap_warnings_for_examples():
     enable_ik_bootstrap_warnings_for_examples()
     with pytest.warns(IKBootstrapConvergenceWarning):
         warn_if_ik_bootstrap_not_converged(IK_BOOTSTRAP_POS_TOL_M + 0.01, 0.0)
+
+
+def test_ik_bootstrap_joint_q_candidates_include_model_default_and_midpoint():
+    from apple_pick_sim.robot.fr3_robot.paths import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    from apple_pick_sim.robot.fr3_robot.setup import build_fr3_robot_model_from_usd
+
+    robot_model, _, _ = build_fr3_robot_model_from_usd(device="cpu")
+    jc = int(robot_model.joint_coord_count)
+    default = robot_model.joint_q.numpy().reshape(-1)[:jc]
+    lower = robot_model.joint_limit_lower.numpy().reshape(-1)[:jc]
+    upper = robot_model.joint_limit_upper.numpy().reshape(-1)[:jc]
+    midpoint = lower + 0.5 * (upper - lower)
+
+    seeds = ik_bootstrap_joint_q_candidates(robot_model, max_seeds=4)
+    assert len(seeds) == 4
+    assert np.allclose(seeds[0], default)
+    assert np.allclose(seeds[1], midpoint)
+    assert not np.allclose(seeds[0], seeds[1])
+
+
+def test_bootstrap_tcp_ik_retries_alternate_joint_q_when_first_seed_poor(capsys):
+    from pathlib import Path
+
+    from apple_pick_sim.robot.fr3_robot.paths import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges_fixture = (
+        Path(__file__).resolve().parent.parent / "fixtures" / "fruiting_system_ranges_straight_rod_test.json"
+    )
+    ranges = fs.load_ranges(ranges_fixture)
+    scene = cf.build_coupled_fruiting_fr3(
+        ranges,
+        7,
+        enable_self_collisions=False,
+        base_pos=(0.2, 0.2, 0.5),
+        robot_base_from_proxy=True,
+        ik_bootstrap_iterations=256,
+        skip_ik_bootstrap=True,
+        mujoco_solver_kwargs={"disable_contacts": True},
+    )
+    jc = int(scene.robot_model.joint_coord_count)
+    poor_seed = scene.robot_model.joint_limit_upper.numpy().reshape(-1)[:jc].astype(
+        scene.robot_model.joint_q.dtype
+    )
+    scene.robot_model.joint_q.assign(poor_seed)
+
+    with pytest.raises(IKBootstrapConvergenceError):
+        bootstrap_tcp_ik_from_proxy(
+            scene.cable,
+            scene.robot_model,
+            scene.tcp_body_index,
+            scene.robot_state_0,
+            ik_iterations=48,
+            max_joint_q_seeds=1,
+            raise_on_failure=True,
+        )
+
+    bootstrap_tcp_ik_from_proxy(
+        scene.cable,
+        scene.robot_model,
+        scene.tcp_body_index,
+        scene.robot_state_0,
+        ik_iterations=48,
+        max_joint_q_seeds=4,
+        raise_on_failure=True,
+    )
+    pos_err, rot_err = tcp_proxy_pose_errors(
+        scene.robot_state_0.body_q.numpy(),
+        scene.cable.state_0.body_q.numpy(),
+        tcp_body_index=scene.tcp_body_index,
+        proxy_body_index=scene.cable.gripper_proxy_body,
+    )
+    assert pos_err < IK_BOOTSTRAP_POS_TOL_M
+    assert rot_err < IK_BOOTSTRAP_ROT_TOL_RAD
+
+    out = capsys.readouterr().out
+    assert "joint_q seed" in out

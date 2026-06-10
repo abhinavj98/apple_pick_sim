@@ -408,28 +408,6 @@ def enabled_rod_segments(params: FruitingSystemParams) -> tuple[str, ...]:
     )
 
 
-def fd_stiffness_param_columns(
-    nominal: FruitingSystemParams,
-    epsilon: float,
-    *,
-    segments: Collection[str] | None = None,
-) -> list[FruitingSystemParams]:
-    """Finite-difference column params: ``[θ₀, θ₀+ε e₁, …]`` on bend stiffness only.
-
-    Geometry (length, directions, segment counts) matches ``nominal``; only
-    ``bend_stiffness`` / ``stretch_stiffness`` are unchanged except for the perturbed column.
-    """
-    if epsilon <= 0.0:
-        raise ValueError("epsilon must be positive")
-    segs = tuple(segments) if segments is not None else enabled_rod_segments(nominal)
-    cols = [copy_fruiting_params(nominal)]
-    for seg in segs:
-        cols.append(
-            perturb_rod_stiffness(nominal, seg, bend_delta=epsilon, stretch_delta=0.0)
-        )
-    return cols
-
-
 def params_fingerprint(params: FruitingSystemParams) -> dict:
     """Return a dict of scalar summaries from sampled params (no Newton model needed).
 

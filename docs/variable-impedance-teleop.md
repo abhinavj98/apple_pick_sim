@@ -65,7 +65,7 @@ Implementation hook: **`CoupledFruitingScene._mujoco_and_sync_proxy`** and **`Me
 | Setting | Kinematic (today’s mega keyboard / M2.1 Gym) | Dynamic (VIC) |
 |---------|-----------------------------------------------|-----------------|
 | `robot_kinematic_mode` | `True` (builders default) | **`False`** |
-| Teleop | `Fr3EEDirectJointController` + `apply_fr3_ee_teleop_direct` | `Fr3EEVelocityController` + `apply_fr3_ee_teleop` (+ VIC sum) |
+| Teleop | `Fr3EEDirectJointController` + `update_fr3_ee_teleop_direct` | `Fr3EEImpedanceController` (`scene.vic_controller`) + `update_fr3_ee_teleop` |
 | `body_f[tcp]` | Zeroed / ignored | **Active** |
 
 While `robot_kinematic_mode=True`, `coupling_forces_cache.zero_()` runs and the arm does not integrate stem load — fine for FD smoke and pose-exact ghost columns, **not** for VIC.
@@ -93,8 +93,8 @@ Typical post-grasp VIC (this repo’s `--vic` default): teleop advances `target_
 | Lagged plant wrench | `proxy_coupling.harvest_stem_tension_for_tcp`, `explicit_load.explicit_apple_wrench_for_stem_harvest` |
 | Apply total wrench | `apply_wrench._apply_spatial_wrench_to_body_f`, `_add_tcp_spatial_wrench_inplace` |
 | Dynamic substep gate | `scene.py` → `_mujoco_robot_substep_prefix`; `--vic` uses `vic_joint_torques.apply_vic_joint_torques_to_scene` |
-| TCP target + IK | `robot/fr3_robot/controllers/ee_velocity.py` |
-| VIC wrench law | `robot/fr3_robot/controllers/ee_impedance.py` — `Fr3EEImpedanceController` |
+| TCP target teleop + VIC wrench law | `robot/fr3_robot/controllers/ee_impedance.py` — `Fr3EEImpedanceController` |
+| IK teleop (kinematic mode) | `robot/fr3_robot/controllers/ee_velocity.py` — `Fr3EEVelocityController` |
 | VIC → joint torques | `coupled_fruiting/vic_joint_torques.py` — `launch_apply_vic_joint_torques` |
 | Settle → weld | `coupled_fruiting/settle_then_weld.py` |
 | Example entry | `examples/example_coupled_fruiting.py` — `--dynamic-arm`, `--vic`, `--vic-*-k/d` |

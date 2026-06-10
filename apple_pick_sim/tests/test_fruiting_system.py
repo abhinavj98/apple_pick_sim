@@ -105,7 +105,7 @@ def test_fixture_args_null_robot_base_in_variance_fixture():
     fs = _import_module()
     ranges = fs.load_ranges(VARIANCE_FIXTURE)
     args = fs.parse_fixture_args(ranges)
-    assert args.fruiting_base_pos == (0.0, 0.2, 1.2)
+    assert args.fruiting_base_pos == (0.0, 0.2, 1.5)
     assert args.robot_base_pos == (0.0, 0.0, 1.0)
 
 
@@ -670,23 +670,6 @@ def test_set_rod_bend_stiffness_rejects_nonpositive():
     p = fs.sample_params(ranges, seed=0)
     with pytest.raises(ValueError, match="positive"):
         fs.set_rod_bend_stiffness(p, "primary", 0.0)
-
-
-def test_fd_stiffness_param_columns_nominal_first_and_epsilon_guard():
-    fs = _import_module()
-    ranges = fs.load_ranges(RANGES_FIXTURE)
-    nominal = fs.sample_params(ranges, seed=5)
-    with pytest.raises(ValueError, match="epsilon"):
-        fs.fd_stiffness_param_columns(nominal, 0.0)
-    cols = fs.fd_stiffness_param_columns(nominal, 0.02)
-    segs = fs.enabled_rod_segments(nominal)
-    assert len(cols) == 1 + len(segs)
-    assert cols[0].primary.bend_stiffness == nominal.primary.bend_stiffness
-    for col, seg in zip(cols[1:], segs, strict=True):
-        rod_nom = getattr(nominal, seg)
-        rod_col = getattr(col, seg)
-        assert rod_col.bend_stiffness == pytest.approx(rod_nom.bend_stiffness + 0.02)
-        assert rod_col.stretch_stiffness == rod_nom.stretch_stiffness
 
 
 def test_variance_fixture_loads_and_samples_in_bounds():

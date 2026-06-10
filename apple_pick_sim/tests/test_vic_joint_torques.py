@@ -63,9 +63,10 @@ def _build_mujoco_only_fr3():
     return scene
 
 
-def _configure_joint_torque_vic(scene) -> None:
+def _configure_joint_torque_vic(scene) -> Fr3EEImpedanceController:
     scene.vic_use_joint_torques = True
-    scene.vic_controller = Fr3EEImpedanceController()
+    ctrl = Fr3EEImpedanceController(tcp_body_index=int(scene.tcp_body_index))
+    scene.vic_controller = ctrl
     scene.vic_gains = ImpedanceGains()
     fr3_robot.configure_vic_joint_torques_arm(
         scene.robot_model,
@@ -74,6 +75,7 @@ def _configure_joint_torque_vic(scene) -> None:
         scene.mj_solver,
         scene=scene,
     )
+    return ctrl
 
 
 def _eval_arm_kinematics(model, state):
@@ -291,15 +293,14 @@ def test_vic_joint_torques_moves_arm():
     pytest.importorskip("torch")
     scene = _build_mujoco_only_fr3()
     scene.robot_kinematic_mode = False
-    _configure_joint_torque_vic(scene)
+    ctrl = _configure_joint_torque_vic(scene)
     scene.vic_gains = ImpedanceGains(linear_k=800.0, linear_d=80.0)
-    ctrl = fr3_robot.Fr3EEVelocityController(scene.robot_model, scene.tcp_body_index)
     vel = fr3_robot.EEVelocity(linear=(0.5, 0.0, 0.0))
     tcp = scene.tcp_body_index
     x0 = float(scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, 0])
     max_dx = 0.0
     for _ in range(60):
-        scene.apply_fr3_ee_teleop(FRAME_DT, ctrl, velocity=vel)
+        scene.update_fr3_ee_teleop(FRAME_DT, ctrl, velocity=vel)
         for _ in range(SUBSTEPS_PER_FRAME):
             scene.mujoco_substep(SUB_DT)
         max_dx = max(

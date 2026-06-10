@@ -2,165 +2,94 @@
 
 This environment is a thin adapter over public `apple_pick_sim` APIs:
 - Build: `apple_pick_sim.coupled_fruiting.build_coupled_fruiting_fr3`
-- Control: `CoupledFruitingScene.apply_fr3_ee_teleop_direct` with `Fr3EEDirectJointController`
-- Step: `SUBSTEPS_PER_FRAME` × `CoupledFruitingScene.coupled_substep(SUB_DT)`
+- Control: `CoupledFruitingScene.update_fr3_ee_teleop_direct` with `Fr3EEDirectJointController`
+- Step: control_hz-derived substeps × `CoupledFruitingScene.coupled_substep(SUB_DT)`
+
+Observation space is re-declared on each ``reset()`` with the actual woody-part count ``N``
+from ``measure_fruiting_forces`` (topology can vary with sampled segment counts). ``N`` is
+also exposed in ``info["n_woody_parts"]``.
 
 No Gymnasium imports are allowed in `apple_pick_sim/`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import numpy as np
+from gymnasium import spaces
 
-try:
-    import gymnasium as gym
-    from gymnasium import spaces
-except Exception as e:  # pragma: no cover
-    raise ImportError(
-        "apple_pick_gym requires gymnasium to be installed. "
-        "Install via the Newton uv environment (e.g. newton[dev])."
-    ) from e
+from apple_pick_gym.envs.apple_pick_base_env import ApplePickBaseEnv
 
 
-@dataclass
-class _EnvConfig:
-    max_episode_steps: int
-    enable_self_collisions: bool
-    mujoco_solver_kwargs: dict[str, Any]
-    fix_to_apple: bool
-    fix_to_apple_warmup_substeps: int
-
-
-class ApplePickCoupledEnv(gym.Env):
+class ApplePickCoupledEnv(ApplePickBaseEnv):
     """Gymnasium env for the coupled FR3 + fruiting-system simulation (M2.1).
 
-    Observation contract is a placeholder `Dict` until sensors land; action contract is
-    a single keyboard-style command per step (Discrete(13)).
+    Observations (all ``float32``):
+
+    - ``woody_part_start_pos``: ``(N*3,)`` proximal joint-anchor positions [m]
+    - ``woody_part_end_pos``: ``(N*3,)`` distal child-body COM positions [m]
+    - ``woody_part_force``: ``(N*6,)`` fixed-joint wrenches ``[F(3), tau(3)]`` [N, N·m]
+    - ``apple_pos``: ``(3,)`` apple body world position [m]
+    - ``tcp_force``: ``(6,)`` harvested TCP coupling wrench [N, N·m]
+    - ``tcp_velocity``: ``(6,)`` TCP spatial velocity ``[v(3), omega(3)]`` [m/s, rad/s]
+
+    Action contract: single keyboard-style command per step (``Discrete(13)``).
     """
 
-    metadata = {"render_modes": [None], "render_fps": 60}
-
-    def __init__(
-        self,
-        *,
-        render_mode: str | None = None,
-        max_episode_steps: int = 240,
-        enable_self_collisions: bool = False,
-        fix_to_apple: bool = False,
-        fix_to_apple_warmup_substeps: int = 1800,
-        mujoco_solver_kwargs: dict[str, Any] | None = None,
-    ) -> None:
-        if render_mode not in (None, "none"):
-            raise ValueError("Only headless operation is supported in M2.1 (render_mode=None).")
-
-        self._cfg = _EnvConfig(
-            max_episode_steps=int(max_episode_steps),
-            enable_self_collisions=bool(enable_self_collisions),
-            mujoco_solver_kwargs=dict(mujoco_solver_kwargs or {"disable_contacts": True}),
-            fix_to_apple=bool(fix_to_apple),
-            fix_to_apple_warmup_substeps=int(fix_to_apple_warmup_substeps),
-        )
-
-        # M2.1a placeholder observation: Dict with dummy values + schema versioning.
-        self.observation_space = spaces.Dict(
+    @staticmethod
+    def _observation_space_for(n_woody: int) -> spaces.Dict:
+        return spaces.Dict(
             {
-                "dummy": spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32),
-                "schema_version": spaces.Discrete(2),
-            }
-        )
-
-        # M2.1b action contract: single keyboard-style command per step.
-        self.action_space = spaces.Discrete(13)
-
-        self._step_count = 0
-        self._scene = None
-        self._controller = None
-
-    # --- Helpers ---
-
-    def _fixture_ranges_path(self) -> Path:
-        # `apple_pick_sim` may be a namespace package in this repo layout (no `__file__`).
-        # Use importlib.resources to locate packaged fixture data robustly.
-        import importlib.resources as resources
-
-        return (
-            resources.files("apple_pick_sim")
-            / "fixtures"
-            / "fruiting_system_ranges_example_variance.json"
-        )
-
-    def _make_obs(self) -> dict[str, Any]:
-        return {"dummy": np.zeros((1,), dtype=np.float32), "schema_version": 1}
-
-    def _end_effector_wrench(self) -> np.ndarray:
-        from apple_pick_sim.coupling_force_debug import read_tcp_wrench
-
-        assert self._scene is not None and self._scene.proxy_forces is not None
-        return read_tcp_wrench(self._scene.proxy_forces, self._scene.tcp_body_index).astype(
-            np.float32
-        )
-
-    def _fruiting_link_forces(self, sub_dt: float) -> dict[str, dict[str, Any]]:
-        import apple_pick_sim.fruiting_system as fs
-
-        assert self._scene is not None
-        cable = self._scene.cable
-        measured = fs.measure_fruiting_forces(
-            cable,
-            cable.state_0.body_q,
-            cable.state_1.body_q,
-            dt=float(sub_dt),
-        )
-        out: dict[str, dict[str, Any]] = {}
-        for rec in measured["fixed_joints"]:
-            key = rec.label.removeprefix("joint_") or rec.label
-            out[key] = {
-                "joint_index": int(rec.joint_index),
-                "child_body": int(rec.child_body),
-                "force_world": np.asarray(rec.force_world, dtype=np.float32),
-                "torque_at_child_com_world": np.asarray(
-                    rec.torque_at_child_com_world, dtype=np.float32
+                "woody_part_start_pos": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(n_woody * 3,), dtype=np.float32
+                ),
+                "woody_part_end_pos": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(n_woody * 3,), dtype=np.float32
+                ),
+                "woody_part_force": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(n_woody * 6,), dtype=np.float32
+                ),
+                "apple_pos": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
+                "tcp_force": spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
+                "tcp_velocity": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32
                 ),
             }
-        return out
+        )
 
-    def _make_info(self) -> dict[str, Any]:
-        import apple_pick_sim.fruiting_system as fs
+    def _setup_action_space(self) -> None:
+        self.action_space = spaces.Discrete(13)
+        self.observation_space = self._observation_space_for(self._cfg.max_woody_parts)
 
-        assert self._scene is not None
+    def _setup_observation_space(self) -> None:
+        self.observation_space = self._observation_space_for(self._n_woody_parts)
+
+    def _make_obs(self) -> dict[str, Any]:
         _, _, sub_dt = self._timing_constants()
+        start_pos, end_pos = self._woody_start_end_pos()
         return {
-            "step_count": int(self._step_count),
-            "params_fingerprint": fs.params_fingerprint(self._scene.cable.params),
-            "end_effector_wrench": self._end_effector_wrench(),
-            "fruiting_link_forces": self._fruiting_link_forces(sub_dt),
+            "woody_part_start_pos": start_pos,
+            "woody_part_end_pos": end_pos,
+            "woody_part_force": self._woody_part_forces(sub_dt),
+            "apple_pos": self._apple_pos(),
+            "tcp_force": self._end_effector_wrench(),
+            "tcp_velocity": self._tcp_velocity(),
         }
 
-    def _timing_constants(self) -> tuple[float, int, float]:
-        # Keep the env contract aligned with existing direct-path tests.
-        from apple_pick_sim.tests.conftest import FRAME_DT, SUBSTEPS_PER_FRAME, SUB_DT
-
-        return float(FRAME_DT), int(SUBSTEPS_PER_FRAME), float(SUB_DT)
-
-    def _action_to_velocity(self, action: int):
+    def _action_to_command(self, action: int):
         from apple_pick_sim.robot import fr3_robot
 
         a = int(action)
         if a < 0 or a >= 13:
             raise ValueError(f"Invalid action {a}; expected 0..12")
 
-        # Keep the same magnitudes as the FR3 controller defaults (linear_speed=0.2, angular_speed=1.0).
         lin = 0.2
         ang = 1.0
 
         if a == 12:
             return fr3_robot.EEVelocity()
 
-        # 0:+X, 1:-X, 2:+Y, 3:-Y, 4:+Z, 5:-Z, 6:+rotX, 7:-rotX, 8:+rotY, 9:-rotY, 10:+rotZ, 11:-rotZ
         if a == 0:
             return fr3_robot.EEVelocity(linear=(+lin, 0.0, 0.0))
         if a == 1:
@@ -188,107 +117,14 @@ class ApplePickCoupledEnv(gym.Env):
 
         raise RuntimeError("Unreachable action mapping")
 
-    # --- Gymnasium API ---
+    def _action_to_velocity(self, action: int):
+        """Backward-compatible alias used by parity tests and keyboard examples."""
+        return self._action_to_command(action)
 
-    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
-        super().reset(seed=seed)
-        options = options or {}
+    def compute_reward(self, obs: dict[str, Any], info: dict[str, Any]) -> float:
+        del obs, info
+        return 0.0
 
-        import apple_pick_sim.coupled_fruiting as cf
-        import apple_pick_sim.fruiting_system as fs
-        from apple_pick_sim.robot import fr3_robot
-
-        # Deterministic build from seed; default to 0 if unspecified.
-        scene_seed = int(0 if seed is None else seed)
-        ranges_path = options.get("ranges_path")
-        if ranges_path is not None:
-            ranges = fs.load_ranges(Path(ranges_path))
-        else:
-            ranges = fs.load_ranges(self._fixture_ranges_path())
-
-        if self._cfg.fix_to_apple and self._cfg.fix_to_apple_warmup_substeps > 0:
-            # Settle freely (fix_to_apple=False), then rebuild with weld and seed the welded
-            # scene from the settled configuration to minimize initial transient loads.
-            settled = cf.build_coupled_fruiting_fr3(
-                ranges,
-                scene_seed,
-                vbd_only=True,
-                enable_self_collisions=self._cfg.enable_self_collisions,
-                mujoco_solver_kwargs=self._cfg.mujoco_solver_kwargs,
-                gripper_proxy=fs.GripperProxyConfig(
-                    mass=fr3_robot.EE_MASS_KG,
-                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
-                    fix_to_apple=False,
-                ),
-            )
-            _frame_dt, _substeps_per_frame, sub_dt = self._timing_constants()
-            cf.settle_vbd_substeps(
-                settled, substeps=self._cfg.fix_to_apple_warmup_substeps, dt=sub_dt
-            )
-            self._scene = cf.build_coupled_fruiting_fr3(
-                ranges,
-                scene_seed,
-                enable_self_collisions=self._cfg.enable_self_collisions,
-                mujoco_solver_kwargs=self._cfg.mujoco_solver_kwargs,
-                gripper_proxy=fs.GripperProxyConfig(
-                    mass=fr3_robot.EE_MASS_KG,
-                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
-                    fix_to_apple=True,
-                ),
-            )
-            cf.seed_fix_to_apple_from_settled(
-                welded_scene=self._scene,
-                settled_scene=settled,
-                quiet_apple_proxy=True,
-            )
-        else:
-            self._scene = cf.build_coupled_fruiting_fr3(
-                ranges,
-                scene_seed,
-                enable_self_collisions=self._cfg.enable_self_collisions,
-                mujoco_solver_kwargs=self._cfg.mujoco_solver_kwargs,
-                gripper_proxy=fs.GripperProxyConfig(
-                    mass=fr3_robot.EE_MASS_KG,
-                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
-                    fix_to_apple=self._cfg.fix_to_apple,
-                ),
-            )
-
-        # Kinematic robot mode for stable, deterministic direct-joint control.
-        self._scene.robot_kinematic_mode = True
-
-        self._controller = fr3_robot.Fr3EEDirectJointController(
-            self._scene.robot_model, self._scene.tcp_body_index
-        )
-        self._controller.sync_target_from_state(self._scene.robot_state_0)
-
-        self._step_count = 0
-        return self._make_obs(), self._make_info()
-
-    def step(self, action):
-        if self._scene is None or self._controller is None:
-            raise RuntimeError("Environment must be reset() before step().")
-
-        frame_dt, substeps_per_frame, sub_dt = self._timing_constants()
-        vel = self._action_to_velocity(int(action))
-
-        # Apply one teleop frame (updates desired IK target + writes joint_q directly).
-        self._scene.apply_fr3_ee_teleop_direct(frame_dt, self._controller, velocity=vel)
-
-        # Integrate coupled sim for one control frame.
-        for _ in range(substeps_per_frame):
-            self._scene.coupled_substep(sub_dt)
-
-        self._step_count += 1
-
-        obs = self._make_obs()
-        reward = 0.0
-        terminated = False
-        truncated = self._step_count >= self._cfg.max_episode_steps
-        info = self._make_info()
-        return obs, float(reward), bool(terminated), bool(truncated), info
-
-    def close(self) -> None:
-        self._scene = None
-        self._controller = None
-
+    def compute_terminated(self, obs: dict[str, Any], info: dict[str, Any]) -> bool:
+        del obs, info
+        return False

@@ -146,7 +146,7 @@ def main() -> None:
     import apple_pick_gym  # noqa: F401 (registers env)
 
     env = gym.make(
-        "ApplePickCoupled-v0",
+        "ApplePickVic-v0",
         render_mode=None,
         max_episode_steps=int(args.max_steps),
         enable_self_collisions=False,

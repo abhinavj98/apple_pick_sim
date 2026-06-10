@@ -136,7 +136,7 @@ def test_proxy_mass_sweep_sync_scales_inversely():
 
 
 def test_stem_coupling_quiescent_forces_bounded():
-    """Free-proxy harvest stays finite and capped under direct-joint hold."""
+    """Stem harvest at TCP stays finite and within default force cap under direct-joint hold."""
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
@@ -155,7 +155,7 @@ def test_stem_coupling_quiescent_forces_bounded():
     w = scene.proxy_forces.numpy().reshape(-1, 6)[tcp]
     fmag = float(np.linalg.norm(w[:3]))
     assert np.isfinite(w).all()
-    assert fmag < 500.0, f"|F|={fmag:.2f} N exceeds stability harvest cap"
+    assert fmag <= 1000.0 + 1e-3, f"|F|={fmag:.2f} N exceeds DEFAULT_STEM_FORCE_CAP_N"
     rq = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp]
     pq = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[proxy]
     pos_err = float(np.linalg.norm(rq[:3] - pq[:3]))

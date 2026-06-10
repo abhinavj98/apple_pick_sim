@@ -29,6 +29,14 @@ _TORCH_INSTALL_HINT = (
 
 
 def _require_torch():
+    """Lazy-import PyTorch; raise with install hint if the torch extra is missing.
+
+    VIC joint-torque mode needs PyTorch for 6×6 / 7×7 linear algebra on
+    ``wp.to_torch`` views. Called at the start of
+    :func:`compute_joint_torques_from_wrench_torch` and
+    :func:`launch_apply_vic_joint_torques`. Install via
+    ``uv sync --extra torch-cu12`` from ``newton/``.
+    """
     try:
         import torch
     except ImportError as exc:

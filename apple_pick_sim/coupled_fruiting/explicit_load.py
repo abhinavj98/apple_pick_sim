@@ -21,6 +21,13 @@ import warp as wp
 
 
 def _gravity_components(gravity: wp.vec3 | tuple[float, float, float]) -> tuple[float, float, float]:
+    """Normalize ``wp.vec3`` or a 3-tuple to ``(gx, gy, gz)`` floats.
+
+    Internal helper so public functions accept either Warp vectors (from scene
+    ``gravity_vec``) or plain tuples in tests. Used by
+    :func:`apple_support_force_world` and downstream stem-harvest explicit-weight
+    paths in :mod:`proxy_coupling` and :mod:`tests.test_explicit_apple_load`.
+    """
     if isinstance(gravity, wp.vec3):
         return float(gravity[0]), float(gravity[1]), float(gravity[2])
     gx, gy, gz = gravity

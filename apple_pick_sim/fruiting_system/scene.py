@@ -110,6 +110,7 @@ def generate_coupled_cable_scene(
     ranges: dict,
     seed: int,
     *,
+    params: FruitingSystemParams | None = None,
     base_pos: tuple[float, float, float] | None = None,
     device: str | None = None,
     omit: Collection[str] | None = None,
@@ -134,7 +135,9 @@ def generate_coupled_cable_scene(
         seed: Deterministic integer seed.
         base_pos: World-space position of the first rod segment's base (pinned).
         device: Warp device string. Defaults to :func:`~apple_pick_sim.sim_device.default_sim_device`.
-        omit: Forwarded to :func:`sample_params`.
+        params: Pre-sampled parameters; when ``None``, :func:`sample_params` runs from
+            ``(ranges, seed, omit)``.
+        omit: Forwarded to :func:`sample_params` when ``params`` is ``None``.
         enable_self_collisions: Same semantics as :func:`generate_scene` (proxy is excluded
             from intra-chain filter pairs so it can contact the apple).
         gripper_proxy: Proxy mass/shape/placement options; defaults to :class:`GripperProxyConfig`.
@@ -144,10 +147,10 @@ def generate_coupled_cable_scene(
     """
     device = resolve_sim_device(device)
 
-    params = sample_params(ranges, seed, omit=omit)
+    resolved_params = params if params is not None else sample_params(ranges, seed, omit=omit)
     proxy_cfg = gripper_proxy if gripper_proxy is not None else GripperProxyConfig()
     return _build_coupled_cable_scene(
-        params,
+        resolved_params,
         base_pos=resolve_fruiting_base_pos(ranges, (0.5, 0.5, 0.5), override=base_pos),
         device=device,
         enable_self_collisions=enable_self_collisions,

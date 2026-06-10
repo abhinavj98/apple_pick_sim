@@ -272,7 +272,7 @@ Kinematic overwrite of `body_q` without updating `SolverVBD.body_q_prev` makes V
 | `--only-vbd` | `vbd_substep` | VBD only | Cable tree (proxy not mirrored from robot) |
 | `--only-mjc` | `mujoco_substep` | MuJoCo → sync (no VBD, no harvest update) | Cable tree static except proxy pose from sync |
 
-**FR3 keyboard teleop** (`--robot fr3 --fr3-keyboard`): `apply_fr3_ee_teleop` runs once per **frame** (IK → `joint_target_*`), then substeps call `mujoco_substep` or `coupled_substep`. As of 2026-05-19, interactive arm motion is **verified** only with **`--only-mjc`** and default **`fix_to_apple=False`**; full coupled teleop is not yet confirmed in the viewer.
+**FR3 keyboard teleop** (`--robot fr3 --fr3-keyboard`): `update_fr3_ee_teleop` runs once per **frame** (IK → `joint_target_*`), then substeps call `mujoco_substep` or `coupled_substep`. As of 2026-05-19, interactive arm motion is **verified** only with **`--only-mjc`** and default **`fix_to_apple=False`**; full coupled teleop is not yet confirmed in the viewer.
 
 ---
 
@@ -283,7 +283,7 @@ examples/example_coupled_fruiting.py
   └── build_coupled_fruiting_placeholder()  # or build_coupled_fruiting_fr3()
         ├── fruiting_system.generate_coupled_cable_scene()   # Model B
         └── robot model (placeholder TCP or FR3 USD)           # Model A
-  └── each frame: optional apply_fr3_ee_teleop(frame_dt)
+  └── each frame: optional update_fr3_ee_teleop(frame_dt)
   └── each substep: coupled_substep(dt)  # or mujoco_substep / vbd_substep
         ├── _mujoco_and_sync_proxy()
         │     ├── proxy_coupling.launch_mirror_robot_to_proxy*()

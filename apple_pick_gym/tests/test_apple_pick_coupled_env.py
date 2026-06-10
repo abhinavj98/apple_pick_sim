@@ -75,26 +75,44 @@ def _extract_metrics(scene, sub_dt: float) -> _StepMetrics:
 
 
 @gymnasium_available
-def test_env_observation_contract_placeholder():
+def test_env_observation_contract():
     import gymnasium as gym
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
 
     env = gym.make("ApplePickCoupled-v0", render_mode=None, max_episode_steps=2)
     obs, info = env.reset(seed=0)
 
+    expected_keys = {
+        "woody_part_start_pos",
+        "woody_part_end_pos",
+        "woody_part_force",
+        "apple_pos",
+        "tcp_force",
+        "tcp_velocity",
+    }
     assert isinstance(obs, dict)
-    assert "dummy" in obs
-    assert "schema_version" in obs
+    assert set(obs.keys()) == expected_keys
     assert env.observation_space.contains(obs)
-    np.testing.assert_allclose(obs["dummy"], np.zeros((1,), dtype=np.float32), rtol=0, atol=0)
-    assert obs["schema_version"] == 1
+    assert obs["apple_pos"].shape == (3,)
+    assert obs["tcp_force"].shape == (6,)
+    assert obs["tcp_velocity"].shape == (6,)
+    n = int(info["n_woody_parts"])
+    assert n > 0
+    assert obs["woody_part_start_pos"].shape == (n * 3,)
+    assert obs["woody_part_end_pos"].shape == (n * 3,)
+    assert obs["woody_part_force"].shape == (n * 6,)
+    assert obs["apple_pos"].dtype == np.float32
     assert "params_fingerprint" in info
 
-    obs2, reward, terminated, truncated, info2 = env.step(12)  # noop: avoid random teleop IK edge cases
+    obs2, reward, terminated, truncated, info2 = env.step(12)
     assert env.observation_space.contains(obs2)
     assert isinstance(reward, float)
     assert terminated is False
     assert isinstance(truncated, (bool, np.bool_))
-    assert "params_fingerprint" in info2
+    assert info2["n_woody_parts"] == n
     assert "end_effector_wrench" in info2
     assert "fruiting_link_forces" in info2
 
@@ -126,11 +144,12 @@ def test_info_exposes_fruiting_link_and_ee_forces():
         assert entry["torque_at_child_com_world"].shape == (3,)
         assert entry["force_world"].dtype == np.float32
 
-    # Apple hangs under gravity: stem→apple joint holds upward force on the apple.
-    apple_key = next(k for k in links if k.endswith("_apple"))
-    assert float(links[apple_key]["force_world"][2]) > 0.0
-
     _, _, _, _, info2 = env.step(12)
+    links2 = info2["fruiting_link_forces"]
+    apple_key = next(k for k in links2 if k.endswith("_apple"))
+    stem_force = links2[apple_key]["force_world"]
+    assert float(np.linalg.norm(stem_force)) > 1.0
+
     assert info2["end_effector_wrench"].shape == (6,)
     assert len(info2["fruiting_link_forces"]) == len(links)
 
@@ -153,17 +172,18 @@ def test_env_parity_against_direct_coupled_sim():
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
     from apple_pick_sim.robot import fr3_robot
+    from apple_pick_sim.tests.conftest import RANGES_FIXTURE, build_coupled_fr3
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 13
     mujoco_solver_kwargs = {"disable_contacts": True}
 
     # --- Direct reference rollout ---
-    direct_scene = cf.build_coupled_fruiting_fr3(
+    direct_scene = build_coupled_fr3(
+        cf,
         ranges,
         seed,
         mujoco_solver_kwargs=mujoco_solver_kwargs,
-        enable_self_collisions=False,
     )
     direct_scene.robot_kinematic_mode = True
     direct_ctrl = fr3_robot.Fr3EEDirectJointController(direct_scene.robot_model, direct_scene.tcp_body_index)
@@ -185,7 +205,7 @@ def test_env_parity_against_direct_coupled_sim():
     for a in action_schedule:
         # Step direct scene using the env's mapping.
         vel = env.unwrapped._action_to_velocity(a)  # intentional: parity contract surface
-        direct_scene.apply_fr3_ee_teleop_direct(FRAME_DT, direct_ctrl, velocity=vel)
+        direct_scene.update_fr3_ee_teleop_direct(FRAME_DT, direct_ctrl, velocity=vel)
         for _ in range(SUBSTEPS_PER_FRAME):
             direct_scene.coupled_substep(SUB_DT)
 
@@ -311,6 +331,154 @@ def test_truncation_after_max_episode_steps():
     assert truncated is False
     _, _, _, truncated, _ = env.step(12)
     assert truncated is True
+    env.close()
+
+
+@gymnasium_available
+def test_apple_pick_base_env_is_abstract():
+    from apple_pick_gym.envs import ApplePickBaseEnv
+
+    with pytest.raises(TypeError):
+        ApplePickBaseEnv()
+
+
+@gymnasium_available
+def test_replay_env_observation_contract():
+    from apple_pick_gym.envs import ApplePickReplayEnv
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    env = ApplePickReplayEnv(max_episode_steps=2)
+    obs, info = env.reset(seed=0)
+
+    expected_keys = {"ft_wrist", "woody_start", "woody_end", "tcp_velocity"}
+    assert isinstance(obs, dict)
+    assert set(obs.keys()) == expected_keys
+    assert env.observation_space.contains(obs)
+    assert obs["ft_wrist"].shape == (6,)
+    assert obs["tcp_velocity"].shape == (6,)
+    n = int(info["n_woody_parts"])
+    assert n > 0
+    assert obs["woody_start"].shape == (n * 3,)
+    assert obs["woody_end"].shape == (n * 3,)
+
+    obs2, reward, terminated, truncated, _ = env.step(np.zeros((6,), dtype=np.float32))
+    assert env.observation_space.contains(obs2)
+    assert isinstance(reward, float)
+    assert terminated is False
+    assert isinstance(truncated, (bool, np.bool_))
+    env.close()
+
+
+@gymnasium_available
+def test_reset_params_injection_round_trip():
+    import apple_pick_sim.fruiting_system as fs
+    from apple_pick_gym.envs import ApplePickReplayEnv
+    from apple_pick_sim.tests.conftest import RANGES_FIXTURE, fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    seed = 11
+    params = fs.sample_params(ranges, seed)
+    params = fs.perturb_rod_stiffness(params, "stem", bend_delta=12.5)
+
+    env = ApplePickReplayEnv(max_episode_steps=2)
+    _, info = env.reset(
+        seed=seed,
+        options={"ranges_path": str(RANGES_FIXTURE), "params": params},
+    )
+    assert info["params_fingerprint"] == fs.params_fingerprint(params)
+    env.close()
+
+
+@gymnasium_available
+def test_vic_env_dynamic_arm_configured():
+    from apple_pick_gym.envs import ApplePickVicEnv
+    from apple_pick_sim.robot.fr3_robot import Fr3EEImpedanceController
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    env = ApplePickVicEnv(
+        max_episode_steps=2,
+        fix_to_apple=False,
+        fix_to_apple_warmup_substeps=0,
+    )
+    env.reset(seed=0)
+    unwrapped = env.unwrapped
+    assert unwrapped._scene.robot_kinematic_mode is False
+    assert isinstance(unwrapped._controller, Fr3EEImpedanceController)
+    assert unwrapped._scene.vic_controller is unwrapped._controller
+    assert unwrapped._scene.vic_use_joint_torques is True
+    env.close()
+
+
+@gymnasium_available
+def test_vic_env_observation_contract():
+    import gymnasium as gym
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    env = gym.make(
+        "ApplePickVic-v0",
+        render_mode=None,
+        max_episode_steps=2,
+        fix_to_apple=False,
+        fix_to_apple_warmup_substeps=0,
+    )
+    obs, info = env.reset(seed=0)
+
+    expected_keys = {
+        "woody_part_start_pos",
+        "woody_part_end_pos",
+        "woody_part_force",
+        "apple_pos",
+        "tcp_force",
+        "tcp_velocity",
+    }
+    assert isinstance(obs, dict)
+    assert set(obs.keys()) == expected_keys
+    assert env.observation_space.contains(obs)
+    assert env.action_space.n == 13
+
+    obs2, reward, terminated, truncated, _ = env.step(12)
+    assert env.observation_space.contains(obs2)
+    assert isinstance(reward, float)
+    assert terminated is False
+    assert isinstance(truncated, (bool, np.bool_))
+    env.close()
+
+
+@gymnasium_available
+def test_vic_env_tcp_moves_under_velocity_command():
+    from apple_pick_gym.envs import ApplePickVicEnv
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    env = ApplePickVicEnv(
+        max_episode_steps=60,
+        fix_to_apple=False,
+        fix_to_apple_warmup_substeps=0,
+    )
+    env.reset(seed=0)
+    scene = env.unwrapped._scene
+    tcp = int(scene.tcp_body_index)
+    x0 = float(scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, 0])
+
+    for _ in range(60):
+        env.step(0)  # Discrete(13): +X linear (0.2 m/s); VIC ramps slower than kinematic
+
+    x1 = float(scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, 0])
+    assert x1 - x0 > 0.05, f"expected VIC env to advance TCP +X, got dx={x1 - x0:.6f} m"
     env.close()
 
 

@@ -189,6 +189,57 @@ def test_robot_state_matches_model_after_bootstrap():
     assert len(scene.mj_solver.mj_data.qpos) >= int(scene.robot_model.joint_coord_count)
 
 
+def test_fr3_ee_teleop_does_not_resync_robot_state_1():
+    from apple_pick_sim.robot import fr3_robot
+
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(cf, ranges, 6, mujoco_only=True)
+    ctrl = fr3_robot.Fr3EEVelocityController(scene.robot_model, scene.tcp_body_index)
+    ctrl.sync_target_from_state(scene.robot_state_0)
+    sentinel = scene.robot_state_0.joint_q.numpy().copy() + 0.1
+    scene.robot_state_1.joint_q.assign(sentinel.astype(scene.robot_state_0.joint_q.dtype))
+
+    scene.update_fr3_ee_teleop(
+        FRAME_DT,
+        ctrl,
+        velocity=fr3_robot.EEVelocity(linear=(0.2, 0.0, 0.0)),
+    )
+
+    np.testing.assert_allclose(
+        scene.robot_state_1.joint_q.numpy(),
+        sentinel,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
+def test_fr3_ee_teleop_direct_does_not_resync_robot_state_1():
+    from apple_pick_sim.robot import fr3_robot
+
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(cf, ranges, 7, mujoco_only=True)
+    ctrl = new_direct_controller(scene, fr3_robot)
+    sentinel = scene.robot_state_0.joint_q.numpy().copy() + 0.1
+    scene.robot_state_1.joint_q.assign(sentinel.astype(scene.robot_state_0.joint_q.dtype))
+
+    scene.update_fr3_ee_teleop_direct(
+        FRAME_DT,
+        ctrl,
+        velocity=fr3_robot.EEVelocity(linear=(0.2, 0.0, 0.0)),
+    )
+
+    np.testing.assert_allclose(
+        scene.robot_state_1.joint_q.numpy(),
+        sentinel,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
 def test_mujoco_substep_proxy_does_not_teleport_on_first_step():
     from apple_pick_sim.robot import fr3_robot
 
@@ -681,7 +732,7 @@ def test_coupled_fix_to_apple_harvests_nonzero_when_robot_pushed():
 
 
 def _scene_nominal_apple_body(scene) -> int | None:
-    """Apple body index for stem harvest / explicit weight (1×1 or mega nominal column)."""
+    """Apple body index for stem harvest / explicit weight."""
     cable = scene.cable
     if getattr(cable, "apple_body", None) is not None:
         return int(cable.apple_body)
@@ -692,7 +743,7 @@ def _scene_nominal_apple_body(scene) -> int | None:
 
 
 def _scene_grasp_offset_in_apple_frame(scene) -> tuple | None:
-    """Nominal-instance grasp offset (1×1 cable or mega nominal column)."""
+    """Grasp offset in apple frame for stem harvest / explicit weight."""
     cable = scene.cable
     off = getattr(cable, "gripper_proxy_offset_in_apple_frame", None)
     if off is not None:
@@ -1443,7 +1494,7 @@ def test_fr3_idle_teleop_zeros_joint_target_vel():
     dt = 1.0 / 60.0
     for _ in range(5):
         scene.mujoco_substep(dt / 30.0)
-    scene.apply_fr3_ee_teleop(
+    scene.update_fr3_ee_teleop(
         dt,
         ctrl,
         velocity=fr3_robot.EEVelocity(),
@@ -1468,7 +1519,7 @@ def test_fr3_ee_teleop_drives_mujoco_joint_targets():
     x_tgt0 = float(wp.transform_get_translation(ctrl.target_tf)[0])
     q_cur = scene.robot_state_0.joint_q.numpy().copy()
 
-    scene.apply_fr3_ee_teleop(
+    scene.update_fr3_ee_teleop(
         0.05,
         ctrl,
         velocity=fr3_robot.EEVelocity(linear=(0.2, 0.0, 0.0)),
@@ -1495,7 +1546,7 @@ def test_idle_teleop_joint_error_bounded():
     frame_dt = 1.0 / 60.0
     sub_dt = frame_dt / 30.0
     for _ in range(40):
-        scene.apply_fr3_ee_teleop(
+        scene.update_fr3_ee_teleop(
             frame_dt,
             ctrl,
             velocity=fr3_robot.EEVelocity(),
@@ -1528,7 +1579,7 @@ def test_post_nudge_settles():
     frame_dt = 1.0 / 60.0
     sub_dt = frame_dt / 30.0
 
-    scene.apply_fr3_ee_teleop(
+    scene.update_fr3_ee_teleop(
         frame_dt,
         ctrl,
         velocity=fr3_robot.EEVelocity(linear=(0.2, 0.0, 0.0)),
@@ -1539,7 +1590,7 @@ def test_post_nudge_settles():
     bq0 = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp, :3].copy()
 
     for _ in range(90):
-        scene.apply_fr3_ee_teleop(
+        scene.update_fr3_ee_teleop(
             frame_dt,
             ctrl,
             velocity=fr3_robot.EEVelocity(),
@@ -1612,7 +1663,7 @@ def test_fr3_direct_teleop_kinematic_substep_preserves_joint_q():
     frame_dt = 1.0 / 60.0
     sub_dt = frame_dt / 30.0
 
-    scene.apply_fr3_ee_teleop_direct(
+    scene.update_fr3_ee_teleop_direct(
         frame_dt,
         ctrl,
         velocity=fr3_robot.EEVelocity(linear=(0.25, 0.0, 0.0)),
@@ -1626,8 +1677,10 @@ def test_fr3_direct_teleop_kinematic_substep_preserves_joint_q():
     np.testing.assert_allclose(q_after_substeps, q_after_teleop, rtol=0, atol=1e-5)
 
 
-def test_example_fr3_direct_joints_parser():
+def test_example_coupled_fruiting_default_robot_is_fr3():
     from apple_pick_sim.examples import example_coupled_fruiting as ex
 
-    args = ex._make_parser().parse_args(["--robot", "fr3", "--fr3-direct-joints"])
-    assert args.fr3_direct_joints is True
+    args = ex._make_parser().parse_args([])
+    assert args.robot == "fr3"
+    assert args.vic_linear_k == 800.0
+    assert args.vic_angular_d == 4.0

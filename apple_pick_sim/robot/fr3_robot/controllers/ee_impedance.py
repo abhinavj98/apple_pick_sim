@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import Any
 
 import numpy as np
 import warp as wp
 
-from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
+from apple_pick_sim.robot.fr3_robot.controllers.keyboard import (
+    EEVelocity,
+    _KeyViewer,
+    integrate_tcp_target,
+    read_keyboard_ee_velocity,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,7 +72,78 @@ def _orientation_error_axis_angle(q_des: np.ndarray, q_act: np.ndarray) -> np.nd
 
 
 class Fr3EEImpedanceController:
-    """Compute ``w_applied`` for post-grasp TCP impedance teleop."""
+    """Post-grasp TCP impedance teleop: target pose integration + applied wrench."""
+
+    def __init__(
+        self,
+        *,
+        tcp_body_index: int | None = None,
+        linear_speed: float = 0.2,
+        angular_speed: float = 1.0,
+    ) -> None:
+        self.tcp_body_index = tcp_body_index
+        self.linear_speed = linear_speed
+        self.angular_speed = angular_speed
+        self.target_tf: wp.transform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+    def sync_target_from_state(self, state: Any, tcp_body_index: int | None = None) -> None:
+        """Set the integrated TCP target to the current FK pose of ``tcp``."""
+        idx = tcp_body_index if tcp_body_index is not None else self.tcp_body_index
+        if idx is None:
+            raise ValueError("tcp_body_index required for sync_target_from_state")
+        bq = state.body_q.numpy().reshape(-1, 7)[idx]
+        self.target_tf = wp.transform(
+            wp.vec3(float(bq[0]), float(bq[1]), float(bq[2])),
+            wp.quat(float(bq[3]), float(bq[4]), float(bq[5]), float(bq[6])),
+        )
+
+    def advance_target(
+        self,
+        velocity: EEVelocity | None,
+        dt: float,
+        *,
+        viewer: _KeyViewer | None = None,
+        poll_events: bool = True,
+        lock_angular: bool = False,
+    ) -> EEVelocity:
+        """Integrate ``target_tf`` by one teleop frame using a constant world-frame twist."""
+        if velocity is None:
+            velocity = read_keyboard_ee_velocity(
+                viewer,
+                linear_speed=self.linear_speed,
+                angular_speed=self.angular_speed,
+                poll_events=poll_events,
+            )
+        if lock_angular:
+            velocity = EEVelocity(linear=velocity.linear, angular=(0.0, 0.0, 0.0))
+        self.target_tf = integrate_tcp_target(
+            self.target_tf,
+            linear_vel=velocity.linear_vec,
+            angular_vel=velocity.angular_vec,
+            dt=dt,
+        )
+        return velocity
+
+    def run_tcp_target_teleop_frame(
+        self,
+        dt: float,
+        state: Any,
+        *,
+        velocity: EEVelocity | None = None,
+        viewer: _KeyViewer | None = None,
+        poll_events: bool = True,
+        lock_angular: bool = False,
+        tcp_body_index: int | None = None,
+    ) -> EEVelocity:
+        """Re-anchor to FK and integrate TCP target only (no IK; for VIC teleop)."""
+        self.sync_target_from_state(state, tcp_body_index)
+        return self.advance_target(
+            velocity,
+            dt,
+            viewer=viewer,
+            poll_events=poll_events,
+            lock_angular=lock_angular,
+        )
 
     def compute_applied_wrench(
         self,

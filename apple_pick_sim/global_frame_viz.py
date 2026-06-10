@@ -7,8 +7,6 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from apple_pick_sim.fruiting_system.mega import MegaCoupledCableScene
-
 # RGB = XYZ (same convention as newton.examples.basic_viewer).
 _AXIS_COLORS = np.array(
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
@@ -76,58 +74,3 @@ def log_coordinate_frame(
         log_arrows(name, wp_starts, wp_ends, wp_colors, hidden=hidden)
     else:
         log_lines(name, wp_starts, wp_ends, wp_colors, hidden=hidden)
-
-
-def log_mega_global_frames(
-    viewer: Any,
-    mega: MegaCoupledCableScene,
-    *,
-    nominal_index: int = 0,
-    axis_length: float = 0.35,
-    show_world: bool = True,
-    show_instance_bases: bool = True,
-    show_nominal_bodies: bool = True,
-) -> None:
-    """World frame, per-column ``base_pos`` frames, and nominal apple/proxy body frames."""
-    device = _viewer_device(viewer, fallback=str(mega.model.device))
-
-    if show_world:
-        log_coordinate_frame(
-            viewer,
-            "/debug/world_frame",
-            (0.0, 0.0, 0.0),
-            length=axis_length,
-            device=device,
-        )
-
-    if show_instance_bases:
-        for inst in mega.instances:
-            log_coordinate_frame(
-                viewer,
-                f"/debug/instance_{inst.index}/base_frame",
-                inst.base_pos,
-                length=axis_length * 0.85,
-                device=device,
-            )
-
-    if not show_nominal_bodies:
-        return
-
-    inst = mega.instance(nominal_index)
-    bq = mega.state_0.body_q.numpy().reshape(-1, 7)
-    bodies: list[tuple[str, int]] = [("proxy", inst.gripper_proxy_body)]
-    if inst.apple_body is not None:
-        bodies.insert(0, ("apple", inst.apple_body))
-
-    for label, bid in bodies:
-        row = bq[bid]
-        origin = row[:3]
-        quat = row[3:7]
-        log_coordinate_frame(
-            viewer,
-            f"/debug/nominal/{label}_frame",
-            origin,
-            quat_wxyz=quat,
-            length=axis_length,
-            device=device,
-        )

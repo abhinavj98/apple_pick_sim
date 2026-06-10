@@ -19,6 +19,7 @@ import numpy as np
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.proxy_coupling import align_proxy_body_q_prev_for_vbd
+from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
 
 
 def _proxy_world_pose_from_apple(
@@ -64,6 +65,15 @@ def settle_vbd_substeps(scene: Any, *, substeps: int, dt: float) -> None:
 
 
 def _nominal_cable_view(scene: Any) -> Any:
+    """Return single-instance cable for mega layout, else the scene's full cable.
+
+    Mega / multi-instance scenes expose ``as_single_instance_coupled``; this
+    picks ``scene.nominal_index`` (default 0) so settle/seed logic operates on
+    one fruiting instance without iterating all ghosts.
+
+    Used by :func:`seed_fix_to_apple_from_settled` when copying settled poses
+    into the welded scene during ``fix_to_apple`` quiet-start initialization.
+    """
     cable = scene.cable
     if hasattr(cable, "as_single_instance_coupled"):
         idx = int(getattr(scene, "nominal_index", 0))
@@ -105,17 +115,7 @@ def _bootstrap_tcp_at_fixed_origin(
             f"({root_xyz[0]:.3f}, {root_xyz[1]:.3f}, {root_xyz[2]:.3f}): {exc}"
         ) from exc
 
-    scene.robot_state_1.joint_q.assign(scene.robot_model.joint_q)
-    scene.robot_state_1.joint_qd.assign(scene.robot_model.joint_qd)
-    newton.eval_fk(
-        scene.robot_model,
-        scene.robot_model.joint_q,
-        scene.robot_model.joint_qd,
-        scene.robot_state_1,
-    )
-    scene.mj_solver._update_mjc_data(
-        scene.mj_solver.mj_data, scene.robot_model, scene.robot_state_0
-    )
+    init_robot_mujoco_step_buffers(scene)
     fr3_robot.init_mujoco_actuator_targets_from_model(
         scene.robot_model, scene.robot_control
     )
@@ -180,51 +180,5 @@ def seed_fix_to_apple_from_settled(
     body_count = int(cable_w.model.body_count)
     align_proxy_body_q_prev_for_vbd(cable_w, tuple(range(body_count)))
 
-    _bootstrap_tcp_at_fixed_origin(welded_scene)
-
-
-def seed_mega_fix_to_apple_from_settled(
-    *,
-    welded_scene: Any,
-    settled_scene: Any,
-    quiet_apple_proxy: bool = True,
-) -> None:
-    """Seed welded mega plant from settled mega (``fix_to_apple`` two-build workflow)."""
-    cable_w = welded_scene.cable
-    cable_s = settled_scene.cable
-    if int(cable_w.model.body_count) != int(cable_s.model.body_count):
-        raise ValueError(
-            f"mega body_count mismatch: welded={cable_w.model.body_count} "
-            f"settled={cable_s.model.body_count}"
-        )
-
-    cable_w.state_0.body_q.assign(cable_s.state_0.body_q.numpy())
-    cable_w.state_0.body_qd.assign(cable_s.state_0.body_qd.numpy())
-
-    bq_w = cable_w.state_0.body_q.numpy().reshape(-1, 7).copy()
-    bqd_w = cable_w.state_0.body_qd.numpy().reshape(-1, 6).copy()
-
-    for inst in cable_w.instances:
-        apple = inst.apple_body
-        proxy = inst.gripper_proxy_body
-        offset = inst.gripper_proxy_offset_in_apple_frame
-        if apple is None or offset is None:
-            continue
-        proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq_w[apple], offset)
-        bq_w[proxy, :3] = proxy_pos
-        bq_w[proxy, 3:] = proxy_quat
-        if quiet_apple_proxy:
-            bqd_w[apple] = 0.0
-            bqd_w[proxy] = 0.0
-
-    cable_w.state_0.body_q.assign(bq_w.reshape(-1, 7))
-    cable_w.state_0.body_qd.assign(bqd_w.reshape(-1, 6))
-
-    align_ids: list[int] = []
-    for inst in cable_w.instances:
-        align_ids.append(inst.gripper_proxy_body)
-        if inst.apple_body is not None:
-            align_ids.append(inst.apple_body)
-    align_proxy_body_q_prev_for_vbd(cable_w, tuple(align_ids))
-
-    _bootstrap_tcp_at_fixed_origin(welded_scene)
+    wp.synchronize()
+    _bootstrap_tcp_at_fixed_origin(welded_scene, ik_iterations=256)

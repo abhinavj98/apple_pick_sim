@@ -1,0 +1,54 @@
+---
+description: GPU parallelism and NVIDIA Warp usage for simulation hot paths
+alwaysApply: true
+---
+
+# GPU parallelism and NVIDIA Warp
+
+This repo runs on **Newton**, which is built on [NVIDIA Warp](https://github.com/NVIDIA/warp). Prefer **device-resident, parallel** code on simulation hot paths; keep CPU/NumPy for setup, teleop, tests, and debug.
+
+## Default device
+
+- Use `apple_pick_sim.sim_device.resolve_sim_device()` / `default_sim_device()` — defaults to `cuda:0` when CUDA is available.
+- Override with `--device cpu` or `APPLE_PICK_SIM_DEVICE=cpu` for stability/debug.
+- Match array **device** and **dtype** to the Newton `Model`/`State` you touch (`wp.transform`, `wp.spatial_vector`, `wp.vec3`, etc.).
+
+## Use Warp when
+
+- Logic runs **every substep** or over **many bodies/particles/joints** (coupling, proxy mirror/harvest, wrench apply, limits, gathers).
+- Inputs/outputs already live on device as `wp.array` — extend with `@wp.kernel` + `wp.launch`, not Python loops.
+- You need Newton/Warp math: `wp.transform`, `wp.quat_to_axis_angle`, `wp.spatial_*`, etc. (see `ee_impedance.py`, `coupled_fruiting/proxy_coupling.py`, `coupled_fruiting/apply_wrench.py`).
+
+```python
+# ✅ GOOD — parallel kernel on solver device
+wp.launch(
+    my_kernel,
+    dim=n_bodies,
+    inputs=[state.body_q, state.body_qd, ...],
+    device=state.body_q.device,
+)
+
+# ❌ BAD — per-substep host round-trip in hot path
+arr = state.body_q.numpy()
+arr = np.where(mask, arr, other)  # then write back
+```
+
+## Avoid Warp / stay on CPU when
+
+- **One-off** setup, CLI/config, or frame-rate teleop/IK (not inner substep loop).
+- **Unit tests** that only need correctness on CPU (add separate CPU/GPU parity tests when a kernel replaces NumPy — see `test_proxy_coupling.py::test_stem_harvest_cpu_gpu_parity`).
+- **Debug recorders** and viewer readouts — `.numpy()` after the step is fine.
+- Logic is **scalar** with no batching benefit; a tiny `dim=1` kernel is not automatically better.
+
+## Hot-path hygiene
+
+- **Pool buffers**: reuse `wp.array` slots; prefer `wp.copy(dst, src)` over `wp.clone` each substep.
+- **No `.numpy()` inside** `coupled_substep`, captured CUDA graphs, or other per-substep loops.
+- **Benchmark**: call `wp.synchronize()` before/after timed CUDA loops (`diagnostics/benchmark_coupling.py`).
+- **Follow Newton patterns** in `newton/newton/` for kernel style (`enable_backward=False`, `record_tape=False` where appropriate). Do not invent Warp APIs — mirror existing usage.
+
+## Scope and docs
+
+- New simulation kernels belong in **`apple_pick_sim/`** unless a Newton submodule change is explicitly required.
+- After GPU hot-path changes: update **`docs/gpu-coupling-optimization.md`** and cite before/after benchmark numbers when optimizing.
+- Verify: `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -q -p no:launch_testing`

@@ -7,7 +7,7 @@ Read these **before** substantial implementation work. They apply to automated a
 1. **`docs/VISION.md`** — Intent, scope, non-goals, success criteria, ambiguity defaults.
 2. **`docs/ROADMAP.md`** — Current focus, milestones, ordered next slices, validation commands, when to stop and ask.
 3. **Post-grasp VIC (when relevant):** **`docs/variable-impedance-teleop.md`** — dynamic arm, total TCP wrench, FD modes for \(\pi_{\mathrm{exp}}\).
-4. **`.cursor/rules/`** — Persistent project rules (environment, TDD, tooling, Newton layout). Obey them unless the maintainer overrides them for a specific task.
+4. **`.cursor/rules/`** — Persistent project rules (environment, TDD, tooling, Newton layout, **GPU/Warp parallelism**). Obey them unless the maintainer overrides them for a specific task.
 
 If **vision**, **roadmap**, and **code** disagree, **stop** and report the conflict instead of silently choosing a direction.
 
@@ -29,6 +29,7 @@ For isolated feature or fix work, agents should follow `.cursor/rules/worktree-f
 
 ## Execution expectations
 
+- Keep simulation **hot paths on GPU** with **NVIDIA Warp** where appropriate; see `.cursor/rules/gpu-warp-parallelism.mdc` and `docs/gpu-coupling-optimization.md`.
 - Follow **TDD** (tests first) per `.cursor/rules/test-driven-development.mdc`.
 - Prefer completing the **next slice** in `docs/ROADMAP.md` under **Current focus**; do not expand scope into the backlog unless instructed.
 - After changes, run the **validation commands** listed in `docs/ROADMAP.md` (update that section if the canonical commands change).

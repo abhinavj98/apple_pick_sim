@@ -152,6 +152,26 @@ class Fr3EEVelocityController:
         self._push_target_to_ik()
         return velocity
 
+    def run_tcp_target_teleop_frame(
+        self,
+        dt: float,
+        state: Any,
+        *,
+        velocity: EEVelocity | None = None,
+        viewer: _KeyViewer | None = None,
+        poll_events: bool = True,
+        lock_angular: bool = False,
+    ) -> EEVelocity:
+        """Re-anchor to FK and integrate TCP target only (no IK; for VIC wrench-only teleop)."""
+        self.sync_target_from_state(state)
+        return self.advance_target(
+            dt,
+            velocity=velocity,
+            viewer=viewer,
+            poll_events=poll_events,
+            lock_angular=lock_angular,
+        )
+
     def run_ik_teleop_frame(
         self,
         dt: float,

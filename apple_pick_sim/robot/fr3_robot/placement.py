@@ -14,8 +14,8 @@ from apple_pick_sim.fruiting_system import CoupledCableScene
 from apple_pick_sim.robot.fr3_robot.setup import np_zeros_like_joint_qd
 
 # Post-bootstrap TCP vs gripper-proxy tolerances (straight-rod fixture seed sweep).
-IK_BOOTSTRAP_POS_TOL_M = 0.25
-IK_BOOTSTRAP_ROT_TOL_RAD = 0.15
+IK_BOOTSTRAP_POS_TOL_M = 0.05
+IK_BOOTSTRAP_ROT_TOL_RAD = 0.05
 
 # Per-frame teleop: IK solution vs integrated TCP target (after one velocity step from FK).
 IK_TELEOP_POS_TOL_M = 0.005
@@ -26,11 +26,11 @@ class IKBootstrapConvergenceWarning(UserWarning):
     """FR3 TCP IK bootstrap missed position/orientation tolerance vs gripper proxy."""
 
 
-class IKBootstrapConvergenceError(RuntimeError):
+class IKBootstrapConvergenceError(UserWarning):
     """FR3 TCP IK bootstrap missed position/orientation tolerance vs the gripper proxy."""
 
 
-class IKTeleopConvergenceError(RuntimeError):
+class IKTeleopConvergenceError(UserWarning):
     """FR3 TCP IK teleop missed position/orientation tolerance vs the integrated target."""
 
 

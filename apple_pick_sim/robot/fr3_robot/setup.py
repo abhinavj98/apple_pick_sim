@@ -13,6 +13,7 @@ from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 from apple_pick_sim.sim_device import resolve_sim_device
+from apple_pick_sim.coupled_fruiting.vic_joint_torques import allocate_vic_joint_torque_buffers
 from apple_pick_sim.robot.fr3_robot.paths import TESTFR3_SCENE_USD, fr3_assets_available
 
 def resolve_tcp_body_index(model: newton.Model) -> int:
@@ -181,6 +182,82 @@ def init_mujoco_actuator_targets_from_model(
     """Align MuJoCo position actuators with the model's current ``joint_q`` (post-bootstrap)."""
     control.joint_target_pos.assign(robot_model.joint_q.numpy())
     control.joint_target_vel.assign(np_zeros_like_joint_qd(robot_model))
+
+
+def zero_mujoco_joint_pd(robot_model: newton.Model) -> None:
+    """Disable MuJoCo position-actuator stiffness/damping (VIC wrench-only path)."""
+    n = int(robot_model.joint_dof_count)
+    robot_model.joint_target_ke.assign(np.zeros(n, dtype=np.float32))
+    robot_model.joint_target_kd.assign(np.zeros(n, dtype=np.float32))
+
+
+def scale_mujoco_joint_pd(robot_model: newton.Model, scale: float) -> None:
+    """Scale existing ``joint_target_ke`` / ``kd`` (e.g. tests that need weak joint holding)."""
+    ke = robot_model.joint_target_ke.numpy().astype(np.float32) * float(scale)
+    kd = robot_model.joint_target_kd.numpy().astype(np.float32) * float(scale)
+    robot_model.joint_target_ke.assign(ke)
+    robot_model.joint_target_kd.assign(kd)
+
+
+def hold_mujoco_actuator_targets_at_state(
+    robot_model: newton.Model,
+    state: Any,
+    control: Any,
+) -> None:
+    """Hold position actuators at the simulated ``joint_q`` with zero target velocity."""
+    n_dof = int(robot_model.joint_dof_count)
+    q_cur = state.joint_q.numpy().reshape(-1).astype(np.float32)[:n_dof]
+    control.joint_target_pos.assign(q_cur)
+    control.joint_target_vel.assign(np_zeros_like_joint_qd(robot_model))
+
+
+def configure_vic_joint_torques_arm(
+    robot_model: newton.Model,
+    state: Any,
+    control: Any,
+    mj_solver: SolverMuJoCo,
+    *,
+    scene: Any | None = None,
+    tcp_body_index: int | None = None,
+    kp_null: float = 10.0,
+    kd_null: float = 6.3246,
+    singularity_damping: float = 0.0,
+) -> None:
+    """One-shot setup for post-grasp VIC via ``control.joint_f`` (J^T Λ wrench mapping)."""
+    zero_mujoco_joint_pd(robot_model)
+    mj_solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+    hold_mujoco_actuator_targets_at_state(robot_model, state, control)
+    if control.joint_f is None:
+        n = int(robot_model.joint_dof_count)
+        control.joint_f = wp.zeros(n, dtype=float, device=robot_model.device)
+    if scene is not None:
+        tcp = (
+            int(tcp_body_index)
+            if tcp_body_index is not None
+            else int(getattr(scene, "tcp_body_index", resolve_tcp_body_index(robot_model)))
+        )
+        allocate_vic_joint_torque_buffers(
+            robot_model,
+            scene,
+            tcp_body_index=tcp,
+            kp_null=kp_null,
+            kd_null=kd_null,
+            singularity_damping=singularity_damping,
+        )
+
+
+def configure_vic_wrench_only_arm(
+    robot_model: newton.Model,
+    state: Any,
+    control: Any,
+    mj_solver: SolverMuJoCo,
+) -> None:
+    """One-shot setup for post-grasp VIC: no joint PD, actuator targets track current pose."""
+    zero_mujoco_joint_pd(robot_model)
+    # Push zeroed joint_target_ke/kd into the embedded MuJoCo model (otherwise ~3.4e6
+    # N/m position actuators still lock the arm and TCP wrenches cannot integrate).
+    mj_solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+    hold_mujoco_actuator_targets_at_state(robot_model, state, control)
 
 
 def sync_mujoco_actuator_targets_from_joint_q(

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from apple_pick_sim.coupled_fruiting.apply_wrench import _apply_spatial_wrench_to_body_f
+from apple_pick_sim.coupled_fruiting.apply_wrench import (
+    _add_tcp_spatial_wrench_inplace,
+    _apply_spatial_wrench_to_body_f,
+)
 from apple_pick_sim.coupled_fruiting.bootstrap import (
     bootstrap_articulated_tcp_from_proxy,
     bootstrap_tcp_joint_from_proxy,
@@ -36,6 +39,7 @@ __all__ = [
     "DEFAULT_STEM_COUPLING_GAIN",
     "DEFAULT_STEM_FORCE_CAP_N",
     "DEFAULT_STEM_TORQUE_CAP_NM",
+    "_add_tcp_spatial_wrench_inplace",
     "_apply_spatial_wrench_to_body_f",
     "bootstrap_articulated_tcp_from_proxy",
     "bootstrap_tcp_joint_from_proxy",

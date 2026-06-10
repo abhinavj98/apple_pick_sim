@@ -785,3 +785,17 @@ def test_measure_fruiting_forces_state1_matches_solver_body_q_prev():
     f0 = out["fixed_joints"][0].force_world
     f1 = out_bqp["fixed_joints"][0].force_world
     np.testing.assert_allclose(f0, f1, rtol=0.0, atol=0.0)
+
+
+def test_example_fruiting_system_enable_self_collision_parser_default():
+    from apple_pick_sim.examples import example_fruiting_system as ex
+
+    args = ex._make_parser().parse_args([])
+    assert ex._enable_self_collisions_from_args(args) is False
+
+
+def test_example_fruiting_system_enable_self_collision_parser_enabled():
+    from apple_pick_sim.examples import example_fruiting_system as ex
+
+    args = ex._make_parser().parse_args(["--enable-self-collision"])
+    assert ex._enable_self_collisions_from_args(args) is True

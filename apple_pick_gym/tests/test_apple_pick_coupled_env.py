@@ -107,6 +107,11 @@ def test_env_observation_contract():
     assert obs["apple_pos"].dtype == np.float32
     assert "params_fingerprint" in info
 
+    apple_key = next(k for k in info["fruiting_link_forces"] if k.endswith("_apple"))
+    apple_joint_idx = list(info["fruiting_link_forces"].keys()).index(apple_key)
+    apple_end = obs["woody_part_end_pos"][apple_joint_idx * 3 : (apple_joint_idx + 1) * 3]
+    assert not np.allclose(apple_end, obs["apple_pos"], atol=1e-5)
+
     obs2, reward, terminated, truncated, info2 = env.step(12)
     assert env.observation_space.contains(obs2)
     assert isinstance(reward, float)
@@ -419,6 +424,179 @@ def test_vic_env_dynamic_arm_configured():
 
 
 @gymnasium_available
+def test_vic_env_ft_wrist_is_lagged_plant_not_fresh_harvest():
+    from apple_pick_gym.envs import ApplePickVicEnv
+    from apple_pick_sim.coupling_force_debug import read_tcp_wrench
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    env = ApplePickVicEnv(
+        max_episode_steps=2,
+        fix_to_apple=False,
+        fix_to_apple_warmup_substeps=0,
+    )
+    obs, _ = env.reset(seed=0)
+    scene = env.unwrapped._scene
+    tcp = int(scene.tcp_body_index)
+    cache = read_tcp_wrench(scene.coupling_forces_cache, tcp).astype(np.float32)
+    np.testing.assert_allclose(obs["ft_wrist"], cache, rtol=1e-5, atol=1e-4)
+
+    obs2, *_ = env.step(0)  # +X motion so plant harvest can diverge from cache
+    cache2 = read_tcp_wrench(scene.coupling_forces_cache, tcp).astype(np.float32)
+    np.testing.assert_allclose(obs2["ft_wrist"], cache2, rtol=1e-5, atol=1e-4)
+    # F/T proxy is lagged applied plant load; tcp_force is the fresh VBD harvest.
+    assert obs2["ft_wrist"].shape == (6,)
+    assert obs2["tcp_force"].shape == (6,)
+    env.close()
+
+
+@gymnasium_available
+def test_vic_env_log_ft_wrist_arrow():
+    from newton.viewer import ViewerNull
+
+    from apple_pick_gym.envs import ApplePickVicEnv
+
+    class _ArrowProbe(ViewerNull):
+        def __init__(self):
+            super().__init__(num_frames=1)
+            self.arrow_calls: list[str] = []
+            self.line_calls: list[str] = []
+
+        def log_arrows(self, name, starts, ends, colors, hidden=False):
+            del starts, ends, colors, hidden
+            self.arrow_calls.append(name)
+
+        def log_lines(self, name, starts, ends, colors, hidden=False):
+            del starts, ends, colors, hidden
+            self.line_calls.append(name)
+
+    class _BodyQ:
+        @staticmethod
+        def numpy():
+            return np.array([[0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+
+    scene = type(
+        "Scene",
+        (),
+        {"tcp_body_index": 0, "robot_state_0": type("S", (), {"body_q": _BodyQ()})()},
+    )()
+    viewer = _ArrowProbe()
+    obs = {"ft_wrist": np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)}
+    ApplePickVicEnv.log_ft_wrist_arrow(viewer, obs, scene=scene)
+    assert viewer.arrow_calls == ["/gym/ft_wrist"]
+
+    viewer2 = _ArrowProbe()
+    ApplePickVicEnv.log_ft_wrist_arrow(viewer2, {"ft_wrist": np.zeros(6, np.float32)}, scene=scene)
+    assert viewer2.arrow_calls == []
+    assert viewer2.line_calls == ["/gym/ft_wrist"]
+
+
+@gymnasium_available
+def test_vic_env_log_junction_force_arrows():
+    from newton.viewer import ViewerNull
+
+    from apple_pick_gym.envs import ApplePickVicEnv
+
+    class _ArrowProbe(ViewerNull):
+        def __init__(self):
+            super().__init__(num_frames=1)
+            self.arrow_calls: list[str] = []
+            self.line_calls: list[str] = []
+
+        def log_arrows(self, name, starts, ends, colors, hidden=False):
+            del starts, ends, colors, hidden
+            self.arrow_calls.append(name)
+
+        def log_lines(self, name, starts, ends, colors, hidden=False):
+            del starts, ends, colors, hidden
+            self.line_calls.append(name)
+
+    class _Cable:
+        fruiting_fixed_joints = [(0, "joint_primary_secondary"), (1, "joint_stem_apple")]
+
+    scene = type("Scene", (), {"cable": _Cable()})()
+    viewer = _ArrowProbe()
+    obs = {
+        "woody_part_start_pos": np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        "woody_part_end_pos": np.array([0.0, 0.0, 0.1, 1.0, 0.0, 0.1], dtype=np.float32),
+        "woody_part_force": np.array(
+            [0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0],
+            dtype=np.float32,
+        ),
+    }
+    ApplePickVicEnv.log_junction_force_arrows(viewer, obs, scene=scene)
+    assert viewer.arrow_calls == [
+        "/gym/junction_forces/primary_secondary",
+        "/gym/junction_forces/stem_apple",
+    ]
+
+    viewer2 = _ArrowProbe()
+    ApplePickVicEnv.log_junction_force_arrows(
+        viewer2,
+        {
+            **obs,
+            "woody_part_force": np.zeros(12, dtype=np.float32),
+        },
+        scene=scene,
+    )
+    assert viewer2.arrow_calls == []
+    assert viewer2.line_calls == [
+        "/gym/junction_forces/primary_secondary",
+        "/gym/junction_forces/stem_apple",
+    ]
+
+
+@gymnasium_available
+def test_vic_env_log_woody_part_markers():
+    from newton.viewer import ViewerNull
+
+    from apple_pick_gym.envs import ApplePickVicEnv
+
+    class _LogPointsProbe(ViewerNull):
+        def __init__(self):
+            super().__init__(num_frames=1)
+            self.calls: list[tuple[str, int | None]] = []
+
+        def log_points(self, name, points, radii=None, colors=None, hidden=False):
+            self.calls.append((name, None if points is None else len(points)))
+
+    viewer = _LogPointsProbe()
+    obs = {
+        "woody_part_start_pos": np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+        "woody_part_end_pos": np.array([0.0, 0.0, 0.1, 1.0, 0.0, 0.1], dtype=np.float32),
+    }
+    ApplePickVicEnv.log_woody_part_markers(viewer, obs, radius=0.01)
+
+    assert viewer.calls == [("/gym/woody_parts", 2), ("/gym/primary_base", None)]
+
+    viewer3 = _LogPointsProbe()
+
+    class _BodyQ:
+        @staticmethod
+        def numpy():
+            return np.array([[1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+
+    class _Cable:
+        primary_bodies = [0]
+        state_0 = type("S", (), {"body_q": _BodyQ()})()
+
+    ApplePickVicEnv.log_woody_part_markers(viewer3, obs, scene=type("Scene", (), {"cable": _Cable()})())
+    assert viewer3.calls == [("/gym/woody_parts", 2), ("/gym/primary_base", 1)]
+
+    viewer2 = _LogPointsProbe()
+    ApplePickVicEnv.log_woody_part_markers(
+        viewer2,
+        {
+            "woody_part_start_pos": np.zeros(0, np.float32),
+            "woody_part_end_pos": np.zeros(0, np.float32),
+        },
+    )
+    assert viewer2.calls == [("/gym/woody_parts", None), ("/gym/primary_base", None)]
+
+
+@gymnasium_available
 def test_vic_env_observation_contract():
     import gymnasium as gym
     from apple_pick_sim.tests.conftest import fr3_assets_available
@@ -442,11 +620,13 @@ def test_vic_env_observation_contract():
         "apple_pos",
         "tcp_force",
         "tcp_velocity",
+        "ft_wrist",
     }
     assert isinstance(obs, dict)
     assert set(obs.keys()) == expected_keys
     assert env.observation_space.contains(obs)
     assert env.action_space.n == 13
+    assert obs["ft_wrist"].shape == (6,)
 
     obs2, reward, terminated, truncated, _ = env.step(12)
     assert env.observation_space.contains(obs2)

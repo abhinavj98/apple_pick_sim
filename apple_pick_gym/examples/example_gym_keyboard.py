@@ -144,6 +144,7 @@ def main() -> None:
 
     import gymnasium as gym
     import apple_pick_gym  # noqa: F401 (registers env)
+    from apple_pick_gym.envs import ApplePickVicEnv
 
     env = gym.make(
         "ApplePickVic-v0",
@@ -154,7 +155,7 @@ def main() -> None:
         fix_to_apple_warmup_substeps=int(getattr(args, "fix_to_apple_warmup_substeps", 1800)),
         mujoco_solver_kwargs={"disable_contacts": True},
     )
-    env.reset(seed=int(args.seed))
+    obs, _info = env.reset(seed=int(args.seed))
 
     scene = env.unwrapped._scene
     if scene is None:
@@ -175,7 +176,28 @@ def main() -> None:
     print("Terminal keyboard control (press 'q' to quit):")
     print("  i/k ±X, j/l ±Y, r/f ±Z, z/x ±rotX, t/g ±rotY, u/o ±rotZ, space noop")
 
+    def _render_frame(frame_obs: dict, frame_info: dict, t: float) -> None:
+        nonlocal scene
+        if scene.last_vbd_contacts is not None:
+            viz_contacts = scene.last_vbd_contacts
+        else:
+            viz_contacts = scene.cable.model.collide(
+                scene.cable.state_0,
+                collision_pipeline=scene.cable_collision_pipeline,
+            )
+
+        viewer.begin_frame(t)
+        viewer.log_state(scene.cable.state_0)
+        viewer.log_contacts(viz_contacts, scene.cable.state_0)
+        ApplePickVicEnv.log_woody_part_markers(viewer, frame_obs, scene=scene)
+        ApplePickVicEnv.log_junction_force_arrows(viewer, frame_obs, scene=scene)
+        ApplePickVicEnv.log_ft_wrist_arrow(viewer, frame_obs, scene=scene)
+        _maybe_log_forces(viewer, frame_info)
+        viewer.end_frame()
+
     try:
+        _render_frame(obs, _info, sim_time)
+
         with _raw_terminal_mode():
             for step in range(int(args.max_steps)):
                 if not viewer.is_running():
@@ -188,26 +210,14 @@ def main() -> None:
                 if action is None:
                     action = 12  # noop by default
 
-                _obs, _reward, _terminated, _truncated, info = env.step(action)
+                obs, _reward, _terminated, _truncated, info = env.step(action)
                 sim_time += dt
 
                 scene = env.unwrapped._scene
                 if scene is None:
                     break
 
-                if scene.last_vbd_contacts is not None:
-                    viz_contacts = scene.last_vbd_contacts
-                else:
-                    viz_contacts = scene.cable.model.collide(
-                        scene.cable.state_0,
-                        collision_pipeline=scene.cable_collision_pipeline,
-                    )
-
-                viewer.begin_frame(sim_time)
-                viewer.log_state(scene.cable.state_0)
-                viewer.log_contacts(viz_contacts, scene.cable.state_0)
-                _maybe_log_forces(viewer, info)
-                viewer.end_frame()
+                _render_frame(obs, info, sim_time)
 
                 if mujoco_viewer and scene.robot_model is not None:
                     from apple_pick_sim.robot import fr3_robot

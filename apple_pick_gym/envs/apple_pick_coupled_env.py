@@ -27,9 +27,10 @@ class ApplePickCoupledEnv(ApplePickBaseEnv):
 
     Observations (all ``float32``):
 
-    - ``woody_part_start_pos``: ``(N*3,)`` proximal joint-anchor positions [m]
-    - ``woody_part_end_pos``: ``(N*3,)`` distal child-body COM positions [m]
+    - ``woody_part_start_pos``: ``(N*3,)`` parent-side fixed-joint anchor positions [m]
+    - ``woody_part_end_pos``: ``(N*3,)`` child-side fixed-joint anchor positions [m]
     - ``woody_part_force``: ``(N*6,)`` fixed-joint wrenches ``[F(3), tau(3)]`` [N, N·m]
+      (index order matches :attr:`~apple_pick_gym.envs.apple_pick_base_env.ApplePickBaseEnv.junction_names`)
     - ``apple_pos``: ``(3,)`` apple body world position [m]
     - ``tcp_force``: ``(6,)`` harvested TCP coupling wrench [N, N·m]
     - ``tcp_velocity``: ``(6,)`` TCP spatial velocity ``[v(3), omega(3)]`` [m/s, rad/s]

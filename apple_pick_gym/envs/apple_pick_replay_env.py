@@ -16,8 +16,8 @@ class ApplePickReplayEnv(ApplePickBaseEnv):
     Observations (all ``float32``):
 
     - ``ft_wrist``: ``(6,)`` TCP coupling wrench ``[F(3), tau(3)]`` [N, N·m]
-    - ``woody_start``: ``(N*3,)`` proximal joint-anchor positions [m]
-    - ``woody_end``: ``(N*3,)`` distal child-body COM positions [m]
+    - ``woody_start``: ``(N*3,)`` parent-side fixed-joint anchor positions [m]
+    - ``woody_end``: ``(N*3,)`` child-side fixed-joint anchor positions [m]
     - ``tcp_velocity``: ``(6,)`` TCP spatial velocity ``[v(3), omega(3)]`` [m/s, rad/s]
 
     Action contract: continuous EE velocity command per step (``Box(6)``).

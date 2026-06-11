@@ -396,6 +396,80 @@ def test_apple_joint_anchor_offset_from_com_by_radius():
         assert abs(dist - R) < 5e-5, f"seed={seed}: |anchor−COM|={dist} expected {R}"
 
 
+def test_fixed_joint_anchors_world_rod_rod():
+    """Inter-rod fixed joints report tip/base anchors, not body COM."""
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_scene(ranges, seed=0, **NO_SELF_COLLISION_KW)
+
+    rod_rod = next(
+        (pair for pair in scene.fruiting_fixed_joints if pair[1].endswith("_apple") is False),
+        None,
+    )
+    assert rod_rod is not None
+    ji, _label = rod_rod
+    jparent = scene.model.joint_parent.numpy()
+    jchild = scene.model.joint_child.numpy()
+    parent = int(jparent[ji])
+    child = int(jchild[ji])
+    assert parent >= 0
+
+    parent_anchors, child_anchors = fs.fixed_joint_anchors_world(
+        scene.model,
+        scene.state_0.body_q,
+        scene.fruiting_fixed_joints,
+    )
+    idx = next(i for i, (j, _) in enumerate(scene.fruiting_fixed_joints) if j == ji)
+    anchor_p = parent_anchors[idx * 3 : (idx + 1) * 3]
+    anchor_c = child_anchors[idx * 3 : (idx + 1) * 3]
+    bq = scene.state_0.body_q.numpy().reshape(-1, 7)
+    com_p = bq[parent, :3]
+    com_c = bq[child, :3]
+
+    np.testing.assert_allclose(anchor_p, anchor_c, rtol=0.0, atol=1e-5)
+    assert float(np.linalg.norm(anchor_p - com_p)) > 1e-4
+    # Downstream rod base anchor is local (0,0,0), so child COM may coincide at the junction.
+
+
+def test_fixed_joint_anchors_world_apple_pole():
+    """Stem–apple child anchor is one apple radius from COM."""
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_scene(ranges, seed=3, **NO_SELF_COLLISION_KW)
+    if scene.apple_body is None:
+        pytest.skip("fixture produced no apple")
+
+    _, child_anchors = fs.fixed_joint_anchors_world(
+        scene.model,
+        scene.state_0.body_q,
+        scene.fruiting_fixed_joints,
+    )
+    apple_idx = next(
+        i for i, (_, lab) in enumerate(scene.fruiting_fixed_joints) if lab.endswith("_apple")
+    )
+    anchor_c = child_anchors[apple_idx * 3 : (apple_idx + 1) * 3]
+    com = scene.state_0.body_q.numpy()[scene.apple_body, :3]
+    dist = float(np.linalg.norm(anchor_c - com))
+    assert abs(dist - float(scene.params.apple_radius)) < 5e-5
+
+
+def test_fixed_joint_anchors_world_order():
+    """Anchor arrays follow ``fruiting_fixed_joints`` order."""
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_scene(ranges, seed=7, **NO_SELF_COLLISION_KW)
+    n = len(scene.fruiting_fixed_joints)
+    parent_anchors, child_anchors = fs.fixed_joint_anchors_world(
+        scene.model,
+        scene.state_0.body_q,
+        scene.fruiting_fixed_joints,
+    )
+    assert parent_anchors.shape == (n * 3,)
+    assert child_anchors.shape == (n * 3,)
+    assert parent_anchors.dtype == np.float32
+    assert child_anchors.dtype == np.float32
+
+
 # ---------------------------------------------------------------------------
 # Geometry fingerprint stability and variance
 # ---------------------------------------------------------------------------

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from typing import Any
+
+import numpy as np
+import warp as wp
 
 import newton
 
@@ -245,6 +248,60 @@ def run_rollout(
 def iter_fruiting_fixed_joint_indices(scene: FruitingSystemScene) -> list[tuple[int, str]]:
     """Return ``(joint_index, label)`` for FIXED joints recorded on this scene."""
     return list(scene.fruiting_fixed_joints)
+
+
+def _transform_from_body_q_row(row: np.ndarray) -> wp.transform:
+    return wp.transform(
+        wp.vec3(float(row[0]), float(row[1]), float(row[2])),
+        wp.quat(float(row[3]), float(row[4]), float(row[5]), float(row[6])),
+    )
+
+
+def fixed_joint_anchors_world(
+    model: newton.Model,
+    body_q: Any,
+    joint_pairs: Sequence[tuple[int, str]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """World-frame parent/child anchor positions for fixed joints.
+
+    Returns two flat ``(N*3,)`` ``float32`` arrays in ``joint_pairs`` order.
+    Parent-side anchors map to proximal obs; child-side anchors map to distal obs.
+    """
+    if hasattr(body_q, "numpy"):
+        bq_np = body_q.numpy().reshape(-1, 7)
+    else:
+        bq_np = np.asarray(body_q, dtype=np.float64).reshape(-1, 7)
+
+    jparent = model.joint_parent.numpy()
+    jchild = model.joint_child.numpy()
+    Xp = model.joint_X_p.numpy()
+    Xc = model.joint_X_c.numpy()
+
+    parent_anchors: list[np.ndarray] = []
+    child_anchors: list[np.ndarray] = []
+    for ji, _label in joint_pairs:
+        parent = int(jparent[ji])
+        child = int(jchild[ji])
+        X_bp = _transform_from_body_q_row(Xp[ji])
+        X_bc = _transform_from_body_q_row(Xc[ji])
+        if parent >= 0:
+            X_wp = wp.mul(_transform_from_body_q_row(bq_np[parent]), X_bp)
+        else:
+            X_wp = X_bp
+        X_wc = wp.mul(_transform_from_body_q_row(bq_np[child]), X_bc)
+        parent_anchors.append(
+            np.asarray(wp.transform_get_translation(X_wp), dtype=np.float32)
+        )
+        child_anchors.append(
+            np.asarray(wp.transform_get_translation(X_wc), dtype=np.float32)
+        )
+
+    if not parent_anchors:
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    return (
+        np.concatenate(parent_anchors, dtype=np.float32),
+        np.concatenate(child_anchors, dtype=np.float32),
+    )
 
 
 def measure_fruiting_forces(

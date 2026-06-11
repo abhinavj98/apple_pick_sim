@@ -35,6 +35,9 @@ class ApplePickBaseEnv(gym.Env, ABC):
     Concrete subclasses implement action/observation spaces, action decoding,
     reward, and termination. Scene build, timing, sensor helpers, and optional
     ``FruitingSystemParams`` injection live here.
+
+    After ``reset()``, :attr:`junction_names` and :meth:`junction_forces_dict` expose
+    per-junction branch wrenches keyed by labels such as ``"stem_apple"``.
     """
 
     metadata = {"render_modes": [None], "render_fps": 60}
@@ -179,29 +182,19 @@ class ApplePickBaseEnv(gym.Env, ABC):
         )["fixed_joints"]
 
     def _woody_start_end_pos(self) -> tuple[np.ndarray, np.ndarray]:
+        """World-frame fixed-joint anchors for each inter-segment FIXED joint.
+
+        Returns flat ``(N*3,)`` arrays: parent-side anchor xyz, then child-side anchor xyz,
+        in the same order as ``fruiting_fixed_joints`` / ``woody_part_force``.
+        """
+        import apple_pick_sim.fruiting_system as fs
+
         assert self._scene is not None
         cable = self._scene.cable
-        model = cable.model
-        bq = cable.state_0.body_q.numpy().reshape(-1, 7)
-        jparent = model.joint_parent.numpy()
-
-        starts: list[np.ndarray] = []
-        ends: list[np.ndarray] = []
-        for rec in self._measure_fixed_joints(self._timing_constants()[2]):
-            parent = int(jparent[rec.joint_index])
-            child = int(rec.child_body)
-            if parent >= 0:
-                start = bq[parent, :3]
-            else:
-                start = bq[child, :3]
-            starts.append(np.asarray(start, dtype=np.float32))
-            ends.append(np.asarray(bq[child, :3], dtype=np.float32))
-
-        if not starts:
-            return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
-        return (
-            np.concatenate(starts, dtype=np.float32),
-            np.concatenate(ends, dtype=np.float32),
+        return fs.fixed_joint_anchors_world(
+            cable.model,
+            cable.state_0.body_q,
+            cable.fruiting_fixed_joints,
         )
 
     def _woody_part_forces(self, sub_dt: float) -> np.ndarray:
@@ -213,6 +206,35 @@ class ApplePickBaseEnv(gym.Env, ABC):
             parts.append(np.asarray(rec.force_world, dtype=np.float32))
             parts.append(np.asarray(rec.torque_at_child_com_world, dtype=np.float32))
         return np.concatenate(parts, dtype=np.float32)
+
+    @property
+    def junction_names(self) -> list[str]:
+        """Ordered junction labels matching ``woody_part_force`` (post-``reset()``).
+
+        Each name is the ``fruiting_fixed_joints`` label with the ``joint_`` prefix
+        removed (e.g. ``"stem_apple"`` for the stem→apple junction). Index ``i``
+        in this list corresponds to ``woody_part_force[i*6:(i+1)*6]``.
+        """
+        if self._scene is None:
+            raise RuntimeError("Call reset() before accessing junction_names.")
+        return [
+            label.removeprefix("joint_")
+            for _, label in self._scene.cable.fruiting_fixed_joints
+        ]
+
+    def junction_forces_dict(self, obs: dict[str, Any]) -> dict[str, np.ndarray]:
+        """Map junction labels to 6-vectors ``[Fx, Fy, Fz, τx, τy, τz]`` from ``obs``.
+
+        Keys match :attr:`junction_names`. Values are ``float32`` arrays in world
+        frame (force on the child body, torque about child COM), same convention
+        as ``woody_part_force`` / ``info["fruiting_link_forces"]``.
+        """
+        names = self.junction_names
+        flat = np.asarray(obs["woody_part_force"], dtype=np.float32)
+        return {
+            name: flat[i * 6 : (i + 1) * 6]
+            for i, name in enumerate(names)
+        }
 
     def _apple_pos(self) -> np.ndarray:
         assert self._scene is not None

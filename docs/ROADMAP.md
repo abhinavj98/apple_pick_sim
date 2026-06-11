@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-06-09 (post-cleanup: mega/FID prototype removed; M2 active) |
+| **Last updated** | 2026-06-11 (M3 active: sys-id excitation trajectories) |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 
@@ -25,8 +25,8 @@
 
 1. **Done — [P0]:** Variational fruiting geometry, JSON fixtures, fixed-joint force readouts (`measure_fruiting_forces`), standalone viewer (`example_fruiting_system.py`).
 2. **Done — [M1]:** Two-`Model` `SolverMuJoCo` + `SolverVBD` staggered coupling, FR3 + gripper proxy, VIC joint-torque teleop (default in `example_coupled_fruiting.py`), settle-then-weld, explicit apple load. Architecture: `docs/mujoco-vbd-coupling-architecture.md`.
-3. **Now — [M2]:** Gymnasium RL infrastructure — `ApplePickCoupled-v0` with real observations; SKRL subprocess vectorization; FID env + Fisher-information exploration (subprocess workers, not a mega `Model`).
-4. **Next — [M3]:** Simulation parameter identification / calibration from rollouts (finite-difference path, no Newton autodiff through coupled stack).
+3. **Done (partial) — [M2]:** `ApplePickCoupled-v0` with real observations shipped (M2.1). Remaining RL/FID slices deferred to backlog.
+4. **Now — [M3]:** Simulation parameter identification — excitation trajectories, field replay, CEM + MMD calibration (`docs/system_identification.md`).
 
 Later: real-data collection [M4], final pick policy [M5].
 
@@ -34,21 +34,22 @@ Later: real-data collection [M4], final pick policy [M5].
 
 ## Current focus
 
-**Active milestone:** [M2] — RL infrastructure and Fisher-information exploration.
+**Active milestone:** [M3] — Simulation parameter identification (CEM + MMD).
 
-**Goal:** Ship a production-quality **1×1 coupled Gym env** (`ApplePickCoupled-v0`) with real sensor observations, then add **SKRL** parallel rollouts and an **FID env** for finite-difference probes over subprocess workers.
+**Goal:** Implement field excitation trajectories, replay them in sim with recorded EE velocity, and build the transition-feature + MMD pipeline for CEM calibration of fruiting-system parameters $\theta$.
+
+**Spec:** `docs/system_identification.md`
 
 **Build on (do not reimplement):**
 
 - [M1] stack: `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_fr3`, `measure_fruiting_forces`, `sample_params` / `params_fingerprint`, VIC joint torques (`docs/variable-impedance-teleop.md`, `docs/vic-implementation.md`).
-- [M2.1] shipped: `apple_pick_gym/` — `ApplePickCoupledEnv`, `Discrete(13)` actions, real `Dict` observations (woody part poses/forces, apple position, TCP wrench/velocity).
+- [M2.1] shipped: `apple_pick_gym/` — `ApplePickCoupledEnv`, real `Dict` observations (woody part poses/forces, apple position, TCP wrench/velocity); reuse θ packing / subprocess patterns when M3.2 lands.
 
 **Next up (ordered):**
 
-1. [ ] **M2.0 — Interface ADR:** `pack_theta` / `unpack_theta`, observation/action/`info` contracts, SKRL runner config.
-2. [ ] **M2.2a — `ApplePickFID-v0`:** FID env + subprocess FD modes (`fd_ghost`, `fd_mega_same_u` semantics via workers, not mega `ModelBuilder`).
-3. [ ] **M2.2c — SKRL integration:** minimal trainer + smoke (W subprocess envs).
-4. [ ] **M2.3 — Train π_exp:** SKRL + `ApplePickCoupled-v0`; FIM reward via FID env on schedule.
+1. [ ] **M3.0 — Sys-id excitation trajectories:** Implement §2.1–2.3 from `docs/system_identification.md` — Fibonacci hemisphere directions, quasi-static stepped mapping, translational **log chirps** ($A \propto 1/f$), torsional quasi-static + chirp; trajectory type + instantaneous $f(t)$ in logged state; wrench force-limit guard; §2.1 amplitude bounds feed 2.2/2.3. Deliver: trajectory generators + sim replay smoke (recorded $v_{ee}$ drives VBD).
+2. [ ] **M3.1 — Transition dataset + MMD:** Per-direction transition features $[s_t, \Delta s_t]$, z-score normalization, anisotropic RBF MMD objective.
+3. [ ] **M3.2 — CEM loop:** Sample $\theta$, subprocess rollouts, elite update; validate on held-out discrete-frequency trajectories.
 
 ---
 
@@ -64,27 +65,34 @@ MuJoCo + VBD coupling, FR3 import, proxy wrench exchange, GPU hot path, VIC tele
 
 Key docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md`, `docs/variable-impedance-teleop.md`, `docs/vic-implementation.md`, `docs/vic-joint-torques-implementation.md`, `docs/gpu-coupling-optimization.md`.
 
-### [M2] Active
+### [M2] Done (partial)
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
 | M2.1 | Done | `ApplePickCoupled-v0`, real observations, parity tests |
-| M2.0 | Next | Interface ADR (θ, y, FD protocol) |
-| M2.2a | Planned | `ApplePickFID-v0` |
-| M2.2c | Planned | SKRL subprocess smoke |
-| M2.3 | Planned | π_exp training smoke |
+| M2.0 | Deferred | Interface ADR (θ, y, FD protocol) — see backlog |
+| M2.2a | Deferred | `ApplePickFID-v0` — see backlog |
+| M2.2c | Deferred | SKRL subprocess smoke — see backlog |
+| M2.3 | Deferred | π_exp training smoke — see backlog |
 
-### [M3] Next
+### [M3] Active
 
-Sim parameter identification from trajectories (FD / black-box, same path as M2).
+Sim parameter identification from field trajectories: CEM + MMD over transition distributions (`docs/system_identification.md`). Reuses M2 θ packing and subprocess rollout patterns where applicable; **no** Newton autodiff through the coupled stack.
+
+| Slice | Status | Deliverable |
+| ----- | ------ | ----------- |
+| M3.0 | **Next** | Excitation trajectories (quasi-static, log chirp, torsional) + sim replay smoke |
+| M3.1 | Planned | MMD feature pipeline per direction |
+| M3.2 | Planned | CEM calibration + held-out validation |
 
 ---
 
 ## Backlog
 
+- **[M2] remaining:** M2.0 (interface ADR), M2.2a (`ApplePickFID-v0`), M2.2c (SKRL smoke), M2.3 (π_exp training) — resume after M3 or in parallel if maintainer directs.
 - Additional manipulators or crops — explicit scope change only.
 - Triangle mesh import/export — P0 stays capsule primitives.
-- Real-data pipeline [M4], final pick policy [M5] — after M2–M3 contracts exist.
+- Real-data pipeline [M4], final pick policy [M5] — after M3 contracts exist.
 
 ---
 
@@ -97,7 +105,7 @@ Sim parameter identification from trajectories (FD / black-box, same path as M2)
 | `apple_pick_sim/` | Simulation code (`fruiting_system/`, `coupled_fruiting/`, `examples/`, tests) |
 | `apple_pick_gym/` | Gymnasium adapter (`ApplePickCoupled-v0`); depends on `apple_pick_sim`, not vice versa |
 | `newton/` | Upstream physics submodule (vendored) |
-| `docs/` | Vision, roadmap, architecture, implementation notes |
+| `docs/` | Vision, roadmap, architecture, implementation notes (`system_identification.md` for M3) |
 
 **How to validate changes:**
 

@@ -5,7 +5,33 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from apple_pick_sim.tcp_force_viz import arrow_length_m, force_arrow_segment_arrays
+from apple_pick_sim.tcp_force_viz import (
+    arrow_length_m,
+    direction_arrow_segment_arrays,
+    force_arrow_segment_arrays,
+)
+
+
+def test_direction_arrow_segment_arrays_unit_direction_fixed_length():
+    starts, ends, colors = direction_arrow_segment_arrays(
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0),
+        length_m=0.4,
+    )
+    assert starts.shape == (1, 3)
+    assert ends.shape == (1, 3)
+    np.testing.assert_allclose(starts[0], [0.0, 0.0, 0.05])
+    np.testing.assert_allclose(ends[0], [0.0, 0.0, 0.45])
+    np.testing.assert_allclose(colors[0], [0.0, 1.0, 1.0])
+
+
+def test_direction_arrow_segment_arrays_below_threshold_returns_none():
+    out = direction_arrow_segment_arrays(
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        length_m=0.12,
+    )
+    assert out is None
 
 
 def test_force_arrow_segment_arrays_unit_force_default_scale():

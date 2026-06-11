@@ -26,8 +26,8 @@
       "max": 0.02
     },
     "bend_stiffness": {
-      "min": 200.0,
-      "max": 400.0
+      "min": 20.0,
+      "max": 40.0
     },
     "bend_damping": {
       "min": 0.08,
@@ -102,8 +102,8 @@
       "max": 0.014
     },
     "bend_stiffness": {
-      "min": 60.0,
-      "max": 140.0
+      "min": 6.0,
+      "max": 14.0
     },
     "bend_damping": {
       "min": 0.09,

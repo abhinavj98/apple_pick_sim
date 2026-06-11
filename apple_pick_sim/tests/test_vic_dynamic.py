@@ -82,6 +82,7 @@ def _configure_vic_teleop(
         scene.mj_solver,
     )
     ctrl = Fr3EEImpedanceController(tcp_body_index=int(scene.tcp_body_index))
+    ctrl.sync_target_from_state(scene.robot_state_0)
     scene.vic_controller = ctrl
     scene.vic_gains = gains or ImpedanceGains(linear_k=800.0, linear_d=80.0)
     return ctrl

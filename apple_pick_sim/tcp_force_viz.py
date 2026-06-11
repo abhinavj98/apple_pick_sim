@@ -11,6 +11,19 @@ from apple_pick_sim.coupling_force_debug import read_tcp_wrench
 
 # Distinct from RGB axis colors in ``global_frame_viz``.
 _FORCE_ARROW_COLOR = np.array([[1.0, 0.85, 0.1]], dtype=np.float32)
+# Cyan — movement / excitation direction (not reaction force).
+_MOVEMENT_DIRECTION_ARROW_COLOR = np.array([[0.0, 1.0, 1.0]], dtype=np.float32)
+
+
+def _clear_logged_arrow(viewer: Any, name: str, *, hidden: bool = False) -> None:
+    """Clear an arrow batch from whichever viewer backend channel holds it."""
+    log_arrows = getattr(viewer, "log_arrows", None)
+    if log_arrows is not None:
+        log_arrows(name, None, None, None, hidden=hidden)
+        return
+    log_lines = getattr(viewer, "log_lines", None)
+    if log_lines is not None:
+        log_lines(name, None, None, None, hidden=hidden)
 
 
 def _viewer_device(viewer: Any, *, fallback: str | None = None) -> str:
@@ -79,6 +92,69 @@ def force_arrow_segment_arrays(
     return starts, ends, _FORCE_ARROW_COLOR.copy()
 
 
+def direction_arrow_segment_arrays(
+    origin: tuple[float, float, float] | np.ndarray,
+    direction: tuple[float, float, float] | np.ndarray,
+    *,
+    length_m: float = 0.4,
+    direction_threshold: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """One segment from ``origin`` along unit ``direction`` with fixed length [m]."""
+    if length_m <= 0.0:
+        raise ValueError("length_m must be positive")
+    o = np.asarray(origin, dtype=np.float64).reshape(3)
+    d = np.asarray(direction, dtype=np.float64).reshape(3)
+    dmag = float(np.linalg.norm(d))
+    if dmag < direction_threshold:
+        return None
+    d_hat = d / dmag
+    # Start slightly ahead of the TCP so the arrow clears the gripper mesh.
+    start = o + d_hat * 0.05
+    tip = start + d_hat * length_m
+    starts = start.reshape(1, 3)
+    ends = tip.reshape(1, 3)
+    return starts, ends, _MOVEMENT_DIRECTION_ARROW_COLOR.copy()
+
+
+def log_direction_arrow(
+    viewer: Any,
+    name: str,
+    origin: tuple[float, float, float] | np.ndarray,
+    direction: tuple[float, float, float] | np.ndarray,
+    *,
+    length_m: float = 0.4,
+    direction_threshold: float = 1e-6,
+    device: str | None = None,
+    hidden: bool = False,
+) -> None:
+    """Draw a fixed-length arrow along ``direction`` from ``origin`` (world frame)."""
+    log_lines = getattr(viewer, "log_lines", None)
+    if log_lines is None:
+        return
+
+    segments = direction_arrow_segment_arrays(
+        origin,
+        direction,
+        length_m=length_m,
+        direction_threshold=direction_threshold,
+    )
+    dev = device if device is not None else _viewer_device(viewer)
+
+    if segments is None:
+        _clear_logged_arrow(viewer, name, hidden=hidden)
+        return
+
+    starts, ends, colors = segments
+    wp_starts = wp.array(starts, dtype=wp.vec3, device=dev)
+    wp_ends = wp.array(ends, dtype=wp.vec3, device=dev)
+    wp_colors = wp.array(colors, dtype=wp.vec3, device=dev)
+    log_arrows = getattr(viewer, "log_arrows", None)
+    if log_arrows is not None:
+        log_arrows(name, wp_starts, wp_ends, wp_colors, hidden=hidden)
+    else:
+        log_lines(name, wp_starts, wp_ends, wp_colors, hidden=hidden)
+
+
 def log_tcp_force_arrow(
     viewer: Any,
     name: str,
@@ -110,7 +186,7 @@ def log_tcp_force_arrow(
     dev = device if device is not None else _viewer_device(viewer)
 
     if segments is None:
-        log_lines(name, None, None, None, hidden=hidden)
+        _clear_logged_arrow(viewer, name, hidden=hidden)
         return
 
     starts, ends, colors = segments
@@ -145,9 +221,7 @@ def log_coupled_scene_tcp_force(
 ) -> None:
     """Harvested TCP wrench from ``scene.proxy_forces`` at the robot TCP pose."""
     if scene.proxy_forces is None:
-        log_lines = getattr(viewer, "log_lines", None)
-        if log_lines is not None:
-            log_lines(name, None, None, None, hidden=hidden)
+        _clear_logged_arrow(viewer, name, hidden=hidden)
         return
 
     wrench = read_tcp_wrench(scene.proxy_forces, scene.tcp_body_index)

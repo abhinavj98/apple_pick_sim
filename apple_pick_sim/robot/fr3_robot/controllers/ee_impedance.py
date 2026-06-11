@@ -135,8 +135,8 @@ class Fr3EEImpedanceController:
         lock_angular: bool = False,
         tcp_body_index: int | None = None,
     ) -> EEVelocity:
-        """Re-anchor to FK and integrate TCP target only (no IK; for VIC teleop)."""
-        self.sync_target_from_state(state, tcp_body_index)
+        """Integrate TCP target from previous setpoint (no IK; for VIC teleop)."""
+        del state, tcp_body_index  # setpoint is anchored only via sync_target_from_state
         return self.advance_target(
             velocity,
             dt,

@@ -489,8 +489,8 @@ def test_vic_env_log_ft_wrist_arrow():
 
     viewer2 = _ArrowProbe()
     ApplePickVicEnv.log_ft_wrist_arrow(viewer2, {"ft_wrist": np.zeros(6, np.float32)}, scene=scene)
-    assert viewer2.arrow_calls == []
-    assert viewer2.line_calls == ["/gym/ft_wrist"]
+    assert viewer2.arrow_calls == ["/gym/ft_wrist"]
+    assert viewer2.line_calls == []
 
 
 @gymnasium_available
@@ -541,11 +541,11 @@ def test_vic_env_log_junction_force_arrows():
         },
         scene=scene,
     )
-    assert viewer2.arrow_calls == []
-    assert viewer2.line_calls == [
+    assert viewer2.arrow_calls == [
         "/gym/junction_forces/primary_secondary",
         "/gym/junction_forces/stem_apple",
     ]
+    assert viewer2.line_calls == []
 
 
 @gymnasium_available

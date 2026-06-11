@@ -162,8 +162,8 @@ class Fr3EEVelocityController:
         poll_events: bool = True,
         lock_angular: bool = False,
     ) -> EEVelocity:
-        """Re-anchor to FK and integrate TCP target only (no IK; for VIC wrench-only teleop)."""
-        self.sync_target_from_state(state)
+        """Integrate TCP target from previous setpoint (no IK; for VIC wrench-only teleop)."""
+        del state  # setpoint is anchored only via sync_target_from_state
         return self.advance_target(
             dt,
             velocity=velocity,

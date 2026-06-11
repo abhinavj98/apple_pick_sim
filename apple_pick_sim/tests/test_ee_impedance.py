@@ -103,6 +103,46 @@ def test_vic_advance_target_integrates_linear_velocity():
     assert float(pos[2]) == pytest.approx(0.0, abs=1e-9)
 
 
+def test_run_coupled_teleop_frame_holds_setpoint_when_arm_sags():
+    """Zero command must not re-anchor the setpoint to a sagged actual pose."""
+    vic = Fr3EEImpedanceController(tcp_body_index=0)
+    anchor_pos = (0.5, 0.2, 1.0)
+    sagged_pos = (0.5, 0.2, 0.9)
+
+    class _BodyQ:
+        def __init__(self, pos: tuple[float, float, float]) -> None:
+            self._pos = pos
+
+        def numpy(self) -> np.ndarray:
+            return np.array(
+                [[*self._pos, 0.0, 0.0, 0.0, 1.0]],
+                dtype=np.float64,
+            )
+
+    class _State:
+        def __init__(self, pos: tuple[float, float, float]) -> None:
+            self.body_q = _BodyQ(pos)
+
+    vic.sync_target_from_state(_State(anchor_pos))
+    anchor = wp.transform_get_translation(vic.target_tf)
+
+    vic.run_coupled_teleop_frame(
+        _State(sagged_pos),
+        control=None,
+        mj_solver=None,
+        dt=1.0 / 15.0,
+        velocity=EEVelocity(),
+    )
+
+    pos = wp.transform_get_translation(vic.target_tf)
+    np.testing.assert_allclose(
+        [float(pos[0]), float(pos[1]), float(pos[2])],
+        [float(anchor[0]), float(anchor[1]), float(anchor[2])],
+        rtol=0,
+        atol=1e-9,
+    )
+
+
 def test_vic_damping_opposes_velocity(vic: Fr3EEImpedanceController, unit_gains: ImpedanceGains):
     target = _target_tf()
     tcp_q = _tcp_q7()

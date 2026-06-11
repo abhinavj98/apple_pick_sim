@@ -34,6 +34,10 @@ def _register_envs() -> None:
         id="ApplePickVic-v0",
         entry_point="apple_pick_gym.envs:ApplePickVicEnv",
     )
+    register(
+        id="ApplePickSysId-v0",
+        entry_point="apple_pick_gym.envs:ApplePickSysIdEnv",
+    )
 
 
 # Ensure envs are registered on import.

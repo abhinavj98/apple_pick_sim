@@ -88,6 +88,14 @@ class GripperProxyConfig:
     When ``robot_facing_weld=True``, validated to lie on the robot-facing hemisphere
     (dot ≥ 0 with apple→robot unit vector); raises ``ValueError`` otherwise.
     """
+    weld_reference_pos: tuple[float, float, float] | None = None
+    """Optional apple-center override for robot-facing hemisphere checks and weld offset.
+
+    Used by settle-then-weld workflows where the apple center moves before the welded
+    scene is built. When ``None``, the nominal build-time apple center is used.
+    """
+    weld_reference_quat: tuple[float, float, float, float] | None = None
+    """Apple orientation ``(x, y, z, w)`` paired with ``weld_reference_pos`` for apple-frame offset."""
 
 @dataclasses.dataclass(frozen=True)
 class FixtureArgs:

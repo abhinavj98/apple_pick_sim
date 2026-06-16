@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-06-11 (M3 active: sys-id excitation trajectories) |
+| **Last updated** | 2026-06-15 (M3 active: quasi-static directions + digital-twin fixtures) |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 
@@ -36,7 +36,7 @@ Later: real-data collection [M4], final pick policy [M5].
 
 **Active milestone:** [M3] — Simulation parameter identification (CEM + MMD).
 
-**Goal:** Implement field excitation trajectories, replay them in sim with recorded EE velocity, and build the transition-feature + MMD pipeline for CEM calibration of fruiting-system parameters $\theta$.
+**Goal:** Validate quasi-static excitation geometry against fixture ranges, ship digital-twin fixture catalog, then complete remaining excitation trajectories (§2.2–2.3), field replay, and the transition-feature + MMD pipeline for CEM calibration of fruiting-system parameters $\theta$.
 
 **Spec:** `docs/system_identification.md`
 
@@ -47,9 +47,11 @@ Later: real-data collection [M4], final pick policy [M5].
 
 **Next up (ordered):**
 
-1. [ ] **M3.0 — Sys-id excitation trajectories:** Implement §2.1–2.3 from `docs/system_identification.md` — Fibonacci hemisphere directions, quasi-static stepped mapping, translational **log chirps** ($A \propto 1/f$), torsional quasi-static + chirp; trajectory type + instantaneous $f(t)$ in logged state; wrench force-limit guard; §2.1 amplitude bounds feed 2.2/2.3. Deliver: trajectory generators + sim replay smoke (recorded $v_{ee}$ drives VBD).
-2. [ ] **M3.1 — Transition dataset + MMD:** Per-direction transition features $[s_t, \Delta s_t]$, z-score normalization, anisotropic RBF MMD objective.
-3. [ ] **M3.2 — CEM loop:** Sample $\theta$, subprocess rollouts, elite update; validate on held-out discrete-frequency trajectories.
+1. [x] **M3.0.1 — Quasi-static §2.1 trajectory + gym replay (shipped):** Fibonacci forward-hemisphere directions, stepped push–hold–return phase machine, `ApplePickSysId-v0`, `example_gym_sysid.py` smoke. Spec: `docs/system-id-quasi-static-implementation.md`, review: `docs/sysid-data-collection-review.md`.
+2. [ ] **M3.0.2 — Quasi-static directions + digital-twin fixtures (next):** Verify excitation directions are correct relative to stem attachment and fixture `fruiting_base_pos` / `robot_base_pos` (forward hemisphere toward apple, robot-facing weld framing, no sign/frame mix-ups); tune JSON **ranges** so geometry and stiffness bands match a physical digital-twin target; deliver a small **named fixture catalog** under `apple_pick_sim/fixtures/` (e.g. straight-rod test baseline + field-twin candidate) with documented base poses, range bounds, and per-fixture sys-id smoke (`example_gym_sysid.py` + pytest). Unblocks trustworthy §2.1 data capture and CEM rollouts.
+3. [ ] **M3.0.3 — Remaining excitation trajectories (§2.2–2.3):** Translational **log chirps** ($A \propto 1/f$), torsional quasi-static + chirp; trajectory type + instantaneous $f(t)$ in logged state; wrench force-limit guard; §2.1 amplitude bounds feed 2.2/2.3. Deliver: trajectory generators + sim replay smoke (recorded $v_{ee}$ drives VBD).
+4. [ ] **M3.1 — Transition dataset + MMD:** Per-direction transition features $[s_t, \Delta s_t]$, z-score normalization, anisotropic RBF MMD objective.
+5. [ ] **M3.2 — CEM loop:** Sample $\theta$, subprocess rollouts, elite update; validate on held-out discrete-frequency trajectories.
 
 ---
 
@@ -81,7 +83,9 @@ Sim parameter identification from field trajectories: CEM + MMD over transition 
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
-| M3.0 | **Next** | Excitation trajectories (quasi-static, log chirp, torsional) + sim replay smoke |
+| M3.0.1 | Done | §2.1 quasi-static trajectory + `ApplePickSysId-v0` gym replay |
+| M3.0.2 | **Next** | Direction convention validation + digital-twin fixture catalog (JSON ranges, base poses, smoke) |
+| M3.0.3 | Planned | §2.2–2.3 log chirp + torsional trajectories + sim replay smoke |
 | M3.1 | Planned | MMD feature pipeline per direction |
 | M3.2 | Planned | CEM calibration + held-out validation |
 
@@ -134,6 +138,11 @@ uv run --env-file pytest.env python -m pytest \
 uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --n-directions 1 --movement-per-step-m 0.02 --total-movement-m 0.10 \
   --move-speed-mps 0.2
+
+# M3.0.2 digital-twin fixture smoke (once catalog lands; pass --json to env/example)
+# uv run python apple_pick_gym/examples/example_gym_sysid.py \
+#   --json apple_pick_sim/fixtures/<digital_twin_fixture>.json \
+#   --n-directions 10 --movement-per-step-m 0.05 --total-movement-m 0.10
 ```
 
 **Stop and ask the maintainer when:**

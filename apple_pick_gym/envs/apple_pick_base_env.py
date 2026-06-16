@@ -73,6 +73,8 @@ class ApplePickBaseEnv(gym.Env, ABC):
         self._controller = None
         self._n_woody_parts = 0
         self._pending_weld_direction: tuple[float, float, float] | None = None
+        self._pending_weld_reference_pos: tuple[float, float, float] | None = None
+        self._pending_weld_reference_quat: tuple[float, float, float, float] | None = None
 
         self._setup_action_space()
 
@@ -337,6 +339,8 @@ class ApplePickBaseEnv(gym.Env, ABC):
                 gripper_proxy=self._make_gripper_proxy_config(fix_to_apple=True),
             )
             self._pending_weld_direction = None
+            self._pending_weld_reference_pos = None
+            self._pending_weld_reference_quat = None
             cf.seed_fix_to_apple_from_settled(
                 welded_scene=self._scene,
                 settled_scene=settled,
@@ -359,6 +363,8 @@ class ApplePickBaseEnv(gym.Env, ABC):
                 ),
             )
             self._pending_weld_direction = None
+            self._pending_weld_reference_pos = None
+            self._pending_weld_reference_quat = None
 
         self._finalize_scene()
 

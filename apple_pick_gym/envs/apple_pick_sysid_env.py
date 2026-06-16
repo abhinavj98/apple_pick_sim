@@ -175,6 +175,8 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
                 fix_to_apple=True,
                 robot_facing_weld=True,
                 weld_direction=self._pending_weld_direction,
+                weld_reference_pos=self._pending_weld_reference_pos,
+                weld_reference_quat=self._pending_weld_reference_quat,
             )
         return cfg
 
@@ -196,6 +198,8 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
     ) -> tuple[float, float, float] | None:
         if not self._robot_facing_weld:
             self._last_weld_direction = None
+            self._pending_weld_reference_pos = None
+            self._pending_weld_reference_quat = None
             return None
 
         from apple_pick_sim.system_id import sample_fibonacci_hemisphere
@@ -205,9 +209,24 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         apple_body = cable.apple_body
         if apple_body is None:
             self._last_weld_direction = None
+            self._pending_weld_reference_pos = None
+            self._pending_weld_reference_quat = None
             return None
 
-        apple_pos = cable.state_0.body_q.numpy().reshape(-1, 7)[int(apple_body), :3]
+        apple_q7 = probe_scene.cable.state_0.body_q.numpy().reshape(-1, 7)[int(apple_body)]
+        apple_pos = apple_q7[:3]
+        self._pending_weld_reference_pos = (
+            float(apple_pos[0]),
+            float(apple_pos[1]),
+            float(apple_pos[2]),
+        )
+        apple_quat = apple_q7[3:7]
+        self._pending_weld_reference_quat = (
+            float(apple_quat[0]),
+            float(apple_quat[1]),
+            float(apple_quat[2]),
+            float(apple_quat[3]),
+        )
         robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
         robot_dir = robot_vec / np.linalg.norm(robot_vec)
 

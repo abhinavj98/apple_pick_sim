@@ -303,6 +303,26 @@ def _approach_dir_from_robot_base(
     return wp.normalize(robot_vec)
 
 
+def _weld_apple_center(
+    config: GripperProxyConfig,
+    artifacts: _FruitingChainArtifacts,
+) -> wp.vec3:
+    """Apple center used for robot-facing weld validation and surface placement."""
+    if config.weld_reference_pos is not None:
+        return wp.vec3(*config.weld_reference_pos)
+    return artifacts.proxy_placement_origin
+
+
+def _approach_dir_in_apple_frame(
+    approach_world: wp.vec3,
+    apple_quat: wp.quat | None,
+) -> wp.vec3:
+    """Map a world-frame weld approach direction into the apple body frame."""
+    if apple_quat is None:
+        return wp.normalize(approach_world)
+    return wp.normalize(wp.quat_rotate_inv(apple_quat, approach_world))
+
+
 def _resolve_robot_facing_approach_dir(
     config: GripperProxyConfig,
     apple_pos: wp.vec3,
@@ -346,8 +366,16 @@ def _add_gripper_proxy(
         raise ValueError("robot_facing_weld requires fix_to_apple=True")
     if config.weld_direction is not None and not config.fix_to_apple:
         raise ValueError("weld_direction requires fix_to_apple=True")
+    if config.weld_reference_quat is not None and config.weld_reference_pos is None:
+        raise ValueError("weld_reference_quat requires weld_reference_pos")
 
     hx, hy, hz = config.box_half_extents
+    weld_apple_center = _weld_apple_center(config, artifacts)
+    weld_apple_quat = (
+        None
+        if config.weld_reference_quat is None
+        else wp.quat(*config.weld_reference_quat)
+    )
     clearance = max(hx, hy, hz)
     robot_facing_approach_dir: wp.vec3 | None = None
 
@@ -357,17 +385,15 @@ def _add_gripper_proxy(
                 raise ValueError("robot_facing_weld requires robot_base_pos")
             robot_facing_approach_dir = _resolve_robot_facing_approach_dir(
                 config,
-                artifacts.proxy_placement_origin,
+                weld_apple_center,
                 robot_base_pos,
             )
-            proxy_pos = artifacts.proxy_placement_origin + robot_facing_approach_dir * (
+            proxy_pos = weld_apple_center + robot_facing_approach_dir * (
                 apple_radius + clearance
             )
         elif config.fix_to_apple and config.weld_direction is not None:
             weld_dir = wp.normalize(wp.vec3(*config.weld_direction))
-            proxy_pos = artifacts.proxy_placement_origin + weld_dir * (
-                apple_radius + clearance
-            )
+            proxy_pos = weld_apple_center + weld_dir * (apple_radius + clearance)
         else:
             proxy_pos = artifacts.proxy_placement_origin + artifacts.proxy_placement_dir * (
                 apple_radius + clearance
@@ -417,13 +443,14 @@ def _add_gripper_proxy(
 
             # Position offset in apple frame: robot-facing weld uses the exterior pole
             # toward the robot; legacy random weld keeps the opposite convention.
+            approach_local = _approach_dir_in_apple_frame(approach_dir, weld_apple_quat)
             if config.robot_facing_weld or config.weld_direction is not None:
-                off = approach_dir * (apple_radius + clearance)
+                off = approach_local * (apple_radius + clearance)
             else:
-                off = approach_dir * -(apple_radius + clearance)
+                off = approach_local * -(apple_radius + clearance)
 
-            # Construct look-at rotation (proxy local Z → approach_dir)
-            z_axis = approach_dir
+            # Construct look-at rotation (proxy local Z → approach_local in apple frame)
+            z_axis = approach_local
             up = wp.vec3(0.0, 0.0, 1.0)
             if abs(wp.dot(z_axis, up)) > 0.99:
                 up = wp.vec3(1.0, 0.0, 0.0)

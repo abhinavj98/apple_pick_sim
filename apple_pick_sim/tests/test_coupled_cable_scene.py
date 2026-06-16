@@ -256,6 +256,73 @@ def test_weld_direction_replaces_pole():
     assert float(np.dot(weld_dir, robot_dir)) < 0.99
 
 
+def test_weld_reference_pos_accepts_settled_hemisphere_direction():
+    """Settled apple center override validates weld directions from post-settle pose."""
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    ref = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=2345,
+        gripper_proxy=fs.GripperProxyConfig(
+            fix_to_apple=True,
+            robot_facing_weld=True,
+        ),
+        robot_base_pos=COUPLED_ROBOT_BASE_POS,
+        **COUPLED_VBD_SCENE_KW,
+    )
+    nominal_apple = ref.state_0.body_q.to("cpu").numpy()[ref.apple_body, :3]
+    settled_apple = np.array([0.21797176, 0.33258533, 0.6142479], dtype=np.float64)
+    settled_quat = np.array([0.01010303, 0.832637, -0.09918664, -0.5447711], dtype=np.float64)
+
+    robot_dir_nom = (np.asarray(COUPLED_ROBOT_BASE_POS) - nominal_apple)
+    robot_dir_nom /= np.linalg.norm(robot_dir_nom)
+    robot_dir_set = (np.asarray(COUPLED_ROBOT_BASE_POS) - settled_apple)
+    robot_dir_set /= np.linalg.norm(robot_dir_set)
+
+    from apple_pick_sim.system_id import sample_fibonacci_hemisphere
+
+    weld = sample_fibonacci_hemisphere(10, robot_dir_set)[0]
+    assert float(np.dot(weld, robot_dir_set)) >= 0.0
+    assert float(np.dot(weld, robot_dir_nom)) < 0.0
+
+    with pytest.raises(ValueError, match="robot-facing hemisphere"):
+        fs.generate_coupled_cable_scene(
+            ranges,
+            seed=2345,
+            gripper_proxy=fs.GripperProxyConfig(
+                fix_to_apple=True,
+                robot_facing_weld=True,
+                weld_direction=(float(weld[0]), float(weld[1]), float(weld[2])),
+            ),
+            robot_base_pos=COUPLED_ROBOT_BASE_POS,
+            **COUPLED_VBD_SCENE_KW,
+        )
+
+    scene = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=2345,
+        gripper_proxy=fs.GripperProxyConfig(
+            fix_to_apple=True,
+            robot_facing_weld=True,
+            weld_direction=(float(weld[0]), float(weld[1]), float(weld[2])),
+            weld_reference_pos=(
+                float(settled_apple[0]),
+                float(settled_apple[1]),
+                float(settled_apple[2]),
+            ),
+            weld_reference_quat=(
+                float(settled_quat[0]),
+                float(settled_quat[1]),
+                float(settled_quat[2]),
+                float(settled_quat[3]),
+            ),
+        ),
+        robot_base_pos=COUPLED_ROBOT_BASE_POS,
+        **COUPLED_VBD_SCENE_KW,
+    )
+    assert scene.gripper_proxy_offset_in_apple_frame is not None
+
+
 def test_robot_facing_weld_requires_robot_base_pos():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)

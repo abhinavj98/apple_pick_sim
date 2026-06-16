@@ -27,6 +27,23 @@ gymnasium_available = pytest.mark.skipif(
 
 @gymnasium_available
 @pytest.mark.skipif(not fr3_assets_available(), reason="Requires bundled assets/fr3 and usd-core")
+def test_sysid_reset_with_warmup_substeps_does_not_fail_weld_validation():
+    """Weld direction must be chosen from nominal apple pose, not post-settle pose."""
+    from apple_pick_gym.envs import ApplePickSysIdEnv
+
+    env = ApplePickSysIdEnv(
+        max_episode_steps=2,
+        fix_to_apple=True,
+        fix_to_apple_warmup_substeps=1800,
+        n_weld_hemisphere_samples=10,
+    )
+    _, info = env.reset(seed=2345)
+    assert "weld_direction" in info
+    env.close()
+
+
+@gymnasium_available
+@pytest.mark.skipif(not fr3_assets_available(), reason="Requires bundled assets/fr3 and usd-core")
 def test_sysid_reset_reports_weld_direction():
     from apple_pick_gym.envs import ApplePickSysIdEnv
 

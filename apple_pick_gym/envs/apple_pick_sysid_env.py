@@ -62,6 +62,13 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         self._weld_reset_count = 0
         self._weld_direction_override: tuple[float, float, float] | None = None
         self._last_weld_direction: tuple[float, float, float] | None = None
+        self._grasp_robot_body_q: np.ndarray | None = None
+        self._grasp_robot_body_qd: np.ndarray | None = None
+        self._grasp_robot_joint_q: np.ndarray | None = None
+        self._grasp_robot_joint_qd: np.ndarray | None = None
+        self._grasp_cable_body_q: np.ndarray | None = None
+        self._grasp_cable_body_qd: np.ndarray | None = None
+        self._grasp_target_tf: Any | None = None
         self._excitation_context = ExcitationContext(
             type="quasi_static",
             f_inst=0.0,
@@ -103,9 +110,58 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             self._weld_direction_override = None
 
         obs, info = super().reset(seed=seed, options=options)
+        self.snapshot_grasp_pose()
         if self._last_weld_direction is not None:
             info["weld_direction"] = np.asarray(self._last_weld_direction, dtype=np.float32)
         return obs, info
+
+    def snapshot_grasp_pose(self) -> None:
+        """Save initial post-reset state for later :meth:`restore_grasp_pose`."""
+        if self._scene is None or self._controller is None:
+            raise RuntimeError("Environment must be reset() before snapshot_grasp_pose().")
+        scene = self._scene
+        self._grasp_robot_body_q = scene.robot_state_0.body_q.numpy().copy()
+        self._grasp_robot_body_qd = scene.robot_state_0.body_qd.numpy().copy()
+        self._grasp_robot_joint_q = scene.robot_state_0.joint_q.numpy().copy()
+        self._grasp_robot_joint_qd = scene.robot_state_0.joint_qd.numpy().copy()
+        self._grasp_cable_body_q = scene.cable.state_0.body_q.numpy().copy()
+        self._grasp_cable_body_qd = scene.cable.state_0.body_qd.numpy().copy()
+        self._grasp_target_tf = self._controller.target_tf
+
+    def restore_grasp_pose(self) -> None:
+        """Teleport state back to the snapshotted grasp pose."""
+        if self._scene is None or self._controller is None:
+            raise RuntimeError("Environment must be reset() before restore_grasp_pose().")
+        if self._grasp_robot_body_q is None:
+            raise RuntimeError("Call reset() or snapshot_grasp_pose() before restore_grasp_pose().")
+
+        from apple_pick_sim.coupled_fruiting.proxy_coupling import align_proxy_body_q_prev_for_vbd
+        from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
+        from apple_pick_sim.robot import fr3_robot
+
+        scene = self._scene
+        scene.robot_state_0.body_q.assign(self._grasp_robot_body_q)
+        scene.robot_state_0.body_qd.assign(self._grasp_robot_body_qd)
+        scene.robot_state_0.joint_q.assign(self._grasp_robot_joint_q)
+        scene.robot_state_0.joint_qd.assign(self._grasp_robot_joint_qd)
+        init_robot_mujoco_step_buffers(scene)
+
+        cable = scene.cable
+        cable.state_0.body_q.assign(self._grasp_cable_body_q)
+        cable.state_0.body_qd.assign(self._grasp_cable_body_qd)
+        cable.state_1.body_q.assign(self._grasp_cable_body_q)
+        cable.state_1.body_qd.assign(self._grasp_cable_body_qd)
+        align_proxy_body_q_prev_for_vbd(
+            cable, tuple(range(int(cable.model.body_count)))
+        )
+
+        self._controller.target_tf = self._grasp_target_tf
+        scene.vic_target_tf = self._grasp_target_tf
+        scene.vic_target_twist = fr3_robot.EEVelocity()
+        if scene.proxy_forces is not None:
+            scene.proxy_forces.zero_()
+        if scene.coupling_forces_cache is not None:
+            scene.coupling_forces_cache.zero_()
 
     def _make_gripper_proxy_config(self, *, fix_to_apple: bool):
         import apple_pick_sim.fruiting_system as fs

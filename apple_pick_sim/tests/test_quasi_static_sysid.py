@@ -68,6 +68,7 @@ def test_quasi_static_trajectory_phase_sequence():
         total_movement_m=0.10,
         hold_duration_s=0.1,
         control_hz=10.0,
+        skip_return=False,
     )
     traj = QuasiStaticTrajectory(directions, config)
 
@@ -88,6 +89,7 @@ def test_quasi_static_trajectory_returns_to_center():
         move_speed_mps=0.2,
         hold_duration_s=0.0,
         control_hz=60.0,
+        skip_return=False,
     )
     traj = QuasiStaticTrajectory(directions, config)
 
@@ -177,6 +179,7 @@ def test_quasi_static_trajectory_move_speed():
         move_speed_mps=0.2,
         hold_duration_s=0.0,
         control_hz=60.0,
+        skip_return=False,
     )
     directions = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
     traj = QuasiStaticTrajectory(directions, config)
@@ -197,6 +200,7 @@ def test_estimate_trajectory_frames():
         hold_duration_s=1.5,
         move_speed_mps=0.2,
         control_hz=60.0,
+        skip_return=False,
     )
     assert estimate_trajectory_frames(config, n_directions=2) == 2 * (
         2
@@ -205,6 +209,45 @@ def test_estimate_trajectory_frames():
             + int(math.ceil(1.5 * 60.0))
         )
         + max(1, int(math.ceil(0.10 / 0.2 * 60.0)))
+    )
+
+
+def test_skip_return_no_return_frames():
+    directions = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    config = QuasiStaticStepConfig(
+        movement_per_step_m=0.05,
+        total_movement_m=0.10,
+        hold_duration_s=0.1,
+        control_hz=10.0,
+        skip_return=True,
+    )
+    traj = QuasiStaticTrajectory(directions, config)
+    phases = [phase for phase, _ in _collect_trajectory(traj)]
+    assert "return" not in phases
+
+
+def test_skip_return_estimate_trajectory_frames():
+    config = QuasiStaticStepConfig(
+        movement_per_step_m=0.05,
+        total_movement_m=0.10,
+        hold_duration_s=1.5,
+        move_speed_mps=0.2,
+        control_hz=60.0,
+        skip_return=True,
+    )
+    with_return = QuasiStaticStepConfig(
+        movement_per_step_m=0.05,
+        total_movement_m=0.10,
+        hold_duration_s=1.5,
+        move_speed_mps=0.2,
+        control_hz=60.0,
+        skip_return=False,
+    )
+    return_frames = max(1, int(math.ceil(0.10 / 0.2 * 60.0)))
+    n_directions = 3
+    assert estimate_trajectory_frames(config, n_directions=n_directions) == (
+        estimate_trajectory_frames(with_return, n_directions=n_directions)
+        - return_frames * n_directions
     )
 
 

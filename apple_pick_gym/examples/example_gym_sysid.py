@@ -86,6 +86,7 @@ def _trajectory_config_from_args(args: argparse.Namespace):
         total_movement_m=float(args.total_movement_m),
         move_speed_mps=float(args.move_speed_mps),
         hold_duration_s=float(args.hold_duration_s),
+        skip_return=bool(args.skip_return),
     )
 
 
@@ -142,6 +143,12 @@ def _make_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.2,
         help="Linear speed during move/return bursts [m/s] (default 0.2).",
+    )
+    p.add_argument(
+        "--skip-return",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Teleport to grasp pose between directions instead of physical return (default on).",
     )
     p.add_argument(
         "--mujoco-viewer",
@@ -332,7 +339,18 @@ def main() -> None:
                 break
 
             if phase == "move_out" and prev_phase != "move_out":
+                new_direction = False
                 if prev_phase in (None, "init", "return"):
+                    new_direction = True
+                elif (
+                    config.skip_return
+                    and prev_phase == "hold"
+                    and traj.current_step_index == 0
+                ):
+                    new_direction = True
+                    env.restore_grasp_pose()
+
+                if new_direction:
                     dir_idx += 1
                     print(f"\n--- Direction {dir_idx}: ({directions[dir_idx][0]:+.3f}, "
                           f"{directions[dir_idx][1]:+.3f}, {directions[dir_idx][2]:+.3f}) ---")

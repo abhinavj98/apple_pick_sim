@@ -3,18 +3,22 @@
 ## Behavior summary
 
 §2.1 drives the EE through Fibonacci-hemisphere push directions. For each direction the
-trajectory repeats **fast move → hold** for each increment, then **return**:
+trajectory repeats **fast move → hold** for each increment, then either **return** or a
+**grasp-pose teleport** between directions:
 
 1. **move_out** — fast linear burst along the direction for `movement_per_step_m / move_speed_mps` seconds (default 5 cm at 0.2 m/s ≈ 0.25 s).
 2. **hold** — zero velocity for `hold_duration_s` (default 1.5 s) so transients decay; steady-state `ft_wrist` is logged at each amplitude.
 3. Repeat steps 1–2 for `total_movement_m / movement_per_step_m` increments (default 2 × 5 cm → 10 cm total; must be an integer multiple — see `derive_n_steps()`).
-4. **return** — one fast reverse over `total_movement_m` back to the grasp center.
+4. **return** *(optional)* — one fast reverse over `total_movement_m` back to the grasp center when `skip_return=False`.
+5. **teleport** *(default)* — when `skip_return=True`, the trajectory omits return frames; the caller invokes `ApplePickSysIdEnv.restore_grasp_pose()` at each direction boundary to snap robot + cable state back to the post-`reset()` grasp pose.
 
 Quasi-static behavior comes from **hold settling**, not slow crawl speed.
 
-Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0.10`, `move_speed_mps=0.2`, `hold_duration_s=1.5`, `control_hz=60`.
+Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0.10`, `move_speed_mps=0.2`, `hold_duration_s=1.5`, `control_hz=60`, `skip_return=True`.
 
 `ApplePickSysIdEnv` extends VIC with `Box(6)` EE velocity actions, excitation metadata obs, actual `tcp_pos` from `body_q` (not the VIC target), and optional robot-facing weld placement. Default VIC stiffness is `vic_linear_k=2000` N/m (not the replay-env default). Stem force/torque caps are off by default (`stem_force_cap_n=None`).
+
+**Grasp-pose snapshot/restore:** `reset()` calls `snapshot_grasp_pose()`, which stores robot `body_q`/`joint_q`, cable `body_q`, and VIC `target_tf`. `restore_grasp_pose()` writes those buffers back, re-syncs MuJoCo/`robot_state_1`, aligns VBD `body_q_prev`, zeros lagged `proxy_forces`/`coupling_forces_cache`, and resets `vic_target_twist`. Use this at direction boundaries when `skip_return=True`. Full-transition logging (`[s_t, Δs_t]`) should mark or exclude teleported frames because `tcp_pos` jumps discontinuously.
 
 **Robot-facing weld:** when `fix_to_apple=True` and `robot_facing_weld=True` (default), each `reset()` picks a Fibonacci-hemisphere weld direction toward the fixture robot base; successive resets cycle through `n_weld_hemisphere_samples` (default 10). Override via `reset(options={"weld_direction": (x, y, z)})`. `info["weld_direction"]` reports the unit vector used.
 
@@ -48,8 +52,8 @@ Excitation push directions (TCP → apple) are sampled separately from weld dire
 
 ## Tests
 
-- `apple_pick_sim/tests/test_quasi_static_sysid.py` — lattice geometry, per-increment phase sequence, hold counts, amplitude at holds, net displacement, `derive_n_steps` integer-multiple rule
-- `apple_pick_gym/tests/test_sysid_env.py` — action/obs contract, `tcp_pos` source, weld direction cycling/override, excitation context round-trip, VIC defaults, no force termination
+- `apple_pick_sim/tests/test_quasi_static_sysid.py` — lattice geometry, per-increment phase sequence, hold counts, amplitude at holds, net displacement, `derive_n_steps` integer-multiple rule, `skip_return` frame counts
+- `apple_pick_gym/tests/test_sysid_env.py` — action/obs contract, `tcp_pos` source, weld direction cycling/override, excitation context round-trip, VIC defaults, no force termination, `restore_grasp_pose`
 
 ## How to verify
 
@@ -90,3 +94,5 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py --viewer null \
 ```
 
 Full 10-direction run needs `max_episode_steps` on the env constructor ≥ `estimate_trajectory_frames(QuasiStaticStepConfig(), 10) + 64` (default 240 truncates early).
+
+Physical return (legacy): pass `--no-skip-return` to the example or set `skip_return=False` on `QuasiStaticStepConfig`.

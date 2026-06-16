@@ -20,6 +20,7 @@ class QuasiStaticStepConfig:
     hold_duration_s: float = 0.5
     move_speed_mps: float = 0.2
     control_hz: float = 60.0
+    skip_return: bool = True
 
     def __post_init__(self) -> None:
         if self.movement_per_step_m <= 0.0:
@@ -62,7 +63,9 @@ def estimate_trajectory_frames(config: QuasiStaticStepConfig, n_directions: int)
         int(math.ceil(config.total_movement_m / config.move_speed_mps * config.control_hz)),
     )
     hold_frames = max(0, int(math.ceil(config.hold_duration_s * config.control_hz)))
-    per_dir = n_steps * (move_frames + hold_frames) + return_frames
+    per_dir = n_steps * (move_frames + hold_frames)
+    if not config.skip_return:
+        per_dir += return_frames
     return int(n_directions) * per_dir
 
 
@@ -149,11 +152,12 @@ class QuasiStaticTrajectory:
                 for _ in range(hold_frames):
                     yield self._phase, hold_vel
 
-            self._phase = "return"
-            ret_vel = EEVelocity(linear=tuple(-direction * cfg.move_speed_mps))
-            for _ in range(return_frames):
-                self._amplitude_m = max(0.0, self._amplitude_m - ret_step_delta)
-                yield self._phase, ret_vel
+            if not cfg.skip_return:
+                self._phase = "return"
+                ret_vel = EEVelocity(linear=tuple(-direction * cfg.move_speed_mps))
+                for _ in range(return_frames):
+                    self._amplitude_m = max(0.0, self._amplitude_m - ret_step_delta)
+                    yield self._phase, ret_vel
 
             self._amplitude_m = 0.0
 

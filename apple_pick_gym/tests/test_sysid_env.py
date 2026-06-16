@@ -177,6 +177,41 @@ def test_sysid_env_tcp_pos_is_actual():
 
 
 @gymnasium_available
+def test_restore_grasp_pose_returns_tcp_to_initial():
+    from apple_pick_sim.tests.conftest import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    from apple_pick_gym.envs import ApplePickSysIdEnv
+
+    env = ApplePickSysIdEnv(
+        max_episode_steps=8,
+        fix_to_apple=False,
+        fix_to_apple_warmup_substeps=0,
+    )
+    obs, _ = env.reset(seed=0)
+    initial_tcp = np.asarray(obs["tcp_pos"], dtype=np.float64).copy()
+
+    push = np.array([0.2, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    for _ in range(4):
+        obs, *_ = env.step(push)
+
+    displaced = np.asarray(obs["tcp_pos"], dtype=np.float64)
+    assert float(np.linalg.norm(displaced - initial_tcp)) > 0.005
+
+    env.restore_grasp_pose()
+    restored = np.asarray(env._tcp_pos(), dtype=np.float64)
+    np.testing.assert_allclose(restored, initial_tcp, rtol=0, atol=0.001)
+
+    zero = np.zeros((6,), dtype=np.float32)
+    obs, *_ = env.step(zero)
+    after_step = np.asarray(obs["tcp_pos"], dtype=np.float64)
+    np.testing.assert_allclose(after_step, initial_tcp, rtol=0, atol=0.01)
+    env.close()
+
+
+@gymnasium_available
 def test_sysid_env_no_force_termination():
     from apple_pick_sim.tests.conftest import fr3_assets_available
 

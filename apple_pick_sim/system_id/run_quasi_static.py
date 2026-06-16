@@ -120,7 +120,17 @@ def main(argv: list[str] | None = None) -> int:
             break
 
         if phase == "move_out" and prev_phase != "move_out":
+            new_direction = False
             if prev_phase in (None, "return"):
+                new_direction = True
+            elif (
+                config.skip_return
+                and prev_phase == "hold"
+                and traj.current_step_index == 0
+            ):
+                new_direction = True
+                env.restore_grasp_pose()
+            if new_direction:
                 dir_idx += 1
 
         direction = traj.current_direction

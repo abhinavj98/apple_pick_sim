@@ -3,13 +3,15 @@
 This module exercises the **production build path** — ``generate_coupled_cable_scene``
 with ``GripperProxyConfig(fix_to_apple=True, robot_facing_weld=True)`` — not a
 standalone geometry mock. Each test rebuilds a full VBD cable scene and checks that
-the welded gripper proxy lands on the apple hemisphere that faces ``robot_base_pos``.
+the welded gripper proxy lands on the stem-perpendicular hemisphere that faces
+``robot_base_pos``.
 
 **What "robot-facing" means geometrically**
 
-Given apple center ``A`` and robot base ``R``, the expected exterior weld pole is
-along the unit vector ``(R - A)``. The proxy COM should sit at distance
-``apple_radius + proxy_clearance`` from ``A`` in that direction.
+Given apple center ``A``, robot base ``R``, and physical stem direction ``s``,
+the expected exterior weld pole is ``stem_perpendicular_robot_pole(s, R-A)``:
+perpendicular to the stem and on the side toward the robot. The proxy COM should
+sit at distance ``apple_radius + proxy_clearance`` from ``A`` in that direction.
 
 **Why two direction checks (``weld_dir`` and ``offset_approach``)**
 
@@ -19,10 +21,10 @@ along the unit vector ``(R - A)``. The proxy COM should sit at distance
   fixed-joint anchor stored at build time in ``_add_gripper_proxy``. We rotate the
   offset position from apple frame to world and normalize.
 
-We assert both align with ``robot_dir`` because the proxy link is added with identity
-quaternion at build time; the welded orientation lives in the joint offset, not in
-``body_q[proxy, 3:7]`` until a full FK pass (which coupled cable build deliberately
-skips for the proxy articulation).
+We assert both align with the stem-perpendicular pole because the proxy link is added
+with identity quaternion at build time; the welded orientation lives in the joint
+offset, not in ``body_q[proxy, 3:7]`` until a full FK pass (which coupled cable build
+deliberately skips for the proxy articulation).
 
 **Visualization**
 
@@ -43,6 +45,7 @@ import numpy as np
 import pytest
 import warp as wp
 
+from apple_pick_sim.system_id import stem_perpendicular_robot_pole
 from apple_pick_sim.tests.conftest import (
     COUPLED_ROBOT_BASE_POS,
     COUPLED_VBD_SCENE_KW,
@@ -97,6 +100,17 @@ def _build_robot_facing_scene(
     )
 
 
+def _stem_direction_world(scene) -> np.ndarray:
+    """Unit vector from distal stem segment base toward tip (apple pole)."""
+    stem = scene.stem_bodies
+    assert len(stem) >= 2
+    body_q = scene.state_0.body_q.to("cpu").numpy()
+    tip = body_q[stem[-1], :3]
+    base = body_q[stem[-2], :3]
+    d = tip - base
+    return d / np.linalg.norm(d)
+
+
 def _fibonacci_hemisphere_directions(
     pole_dir: np.ndarray,
     count: int = 8,
@@ -125,7 +139,7 @@ def _offset_approach_in_world(scene) -> np.ndarray | None:
 
     ``gripper_proxy_offset_in_apple_frame`` stores ``(pos, quat)`` of the parent
     anchor in the apple body frame. For robot-facing weld, the position component
-    points from apple COM toward the exterior pole (same line as ``robot_dir``).
+    points from apple COM toward the exterior pole (same line as the expected pole).
     """
     offset = scene.gripper_proxy_offset_in_apple_frame
     if offset is None or scene.apple_body is None:
@@ -157,17 +171,16 @@ def _weld_geometry(
     apple_pos = body_q[scene.apple_body, :3].astype(np.float64)
     proxy_pos = body_q[scene.gripper_proxy_body, :3].astype(np.float64)
 
-    # Expected facing: apple center → robot base.
     robot_vec = np.asarray(robot_base_pos, dtype=np.float64) - apple_pos
     robot_dir = robot_vec / np.linalg.norm(robot_vec)
+    stem_dir = _stem_direction_world(scene)
+    expected_pole = stem_perpendicular_robot_pole(stem_dir, robot_vec)
 
-    # Observed weld pole: apple center → proxy COM (from integrated body poses).
     weld_vec = proxy_pos - apple_pos
     weld_dir = weld_vec / np.linalg.norm(weld_vec)
 
     offset_approach = _offset_approach_in_world(scene)
 
-    # Proxy box half-extent is the clearance used in _add_gripper_proxy placement.
     clearance = float(max(scene.gripper_proxy_config.box_half_extents))
     expected_radius = float(scene.params.apple_radius) + clearance
 
@@ -175,16 +188,17 @@ def _weld_geometry(
         "apple_pos": apple_pos,
         "proxy_pos": proxy_pos,
         "robot_dir": robot_dir,
+        "expected_pole": expected_pole,
+        "stem_dir": stem_dir,
         "weld_dir": weld_dir,
         "offset_approach": offset_approach,
-        # Dot products near 1.0 ⇒ directions agree (allow ~8° slack at 0.99).
-        "weld_robot_dot": float(np.dot(weld_dir, robot_dir)),
-        "offset_robot_dot": (
+        "weld_pole_dot": float(np.dot(weld_dir, expected_pole)),
+        "offset_pole_dot": (
             None
             if offset_approach is None
-            else float(np.dot(offset_approach, robot_dir))
+            else float(np.dot(offset_approach, expected_pole))
         ),
-        # Proxy should sit one apple radius + box clearance from apple COM.
+        "weld_stem_dot": float(np.dot(weld_dir, stem_dir)),
         "surface_error_m": abs(float(np.linalg.norm(weld_vec)) - expected_radius),
     }
 
@@ -228,22 +242,22 @@ def _viz_output_path(tmp_path: Path, filename: str) -> Path:
 
 @pytest.mark.parametrize("seed", SAMPLE_SEEDS)
 def test_robot_facing_weld_samples_align_with_robot_base(seed: int):
-    """Many fruiting layouts: weld pole tracks a fixed robot base."""
+    """Many fruiting layouts: weld pole tracks stem⊥ robot-facing direction."""
     fs = _import_fs()
     scene = _build_robot_facing_scene(fs, seed=seed, robot_base_pos=COUPLED_ROBOT_BASE_POS)
     geom = _weld_geometry(scene, COUPLED_ROBOT_BASE_POS)
-    assert geom["weld_robot_dot"] > 0.99
-    assert geom["offset_robot_dot"] is not None
-    assert geom["offset_robot_dot"] > 0.99
+    assert geom["weld_pole_dot"] > 0.99
+    assert geom["offset_pole_dot"] is not None
+    assert geom["offset_pole_dot"] > 0.99
+    assert abs(float(geom["weld_stem_dot"])) < 0.05
     assert geom["surface_error_m"] < 0.02
 
 
 @pytest.mark.parametrize("offset", ROBOT_BASE_OFFSETS)
 def test_robot_facing_weld_tracks_robot_base_ring_offsets(offset):
-    """One fruiting layout, several robot bases: weld follows each base."""
+    """One fruiting layout, several robot bases: weld follows each stem⊥ pole."""
     fs = _import_fs()
     seed = 17
-    # First build locates the apple; offsets are applied in world frame from that COM.
     scene0 = _build_robot_facing_scene(fs, seed=seed, robot_base_pos=COUPLED_ROBOT_BASE_POS)
     apple_pos = _weld_geometry(scene0, COUPLED_ROBOT_BASE_POS)["apple_pos"]
     robot_base = (
@@ -253,20 +267,21 @@ def test_robot_facing_weld_tracks_robot_base_ring_offsets(offset):
     )
     scene = _build_robot_facing_scene(fs, seed=seed, robot_base_pos=robot_base)
     geom = _weld_geometry(scene, robot_base)
-    assert geom["weld_robot_dot"] > 0.99
-    assert geom["offset_robot_dot"] is not None
-    assert geom["offset_robot_dot"] > 0.99
+    assert geom["weld_pole_dot"] > 0.99
+    assert geom["offset_pole_dot"] is not None
+    assert geom["offset_pole_dot"] > 0.99
+    assert abs(float(geom["weld_stem_dot"])) < 0.05
 
 
 def test_weld_direction_places_proxy_at_specified_direction():
-    """Fibonacci samples on the robot-facing hemisphere land at the requested direction."""
+    """Fibonacci samples on the stem⊥ robot-facing hemisphere land at the requested direction."""
     fs = _import_fs()
     seed = 17
     ref = _build_robot_facing_scene(fs, seed=seed, robot_base_pos=COUPLED_ROBOT_BASE_POS)
-    robot_dir = _weld_geometry(ref, COUPLED_ROBOT_BASE_POS)["robot_dir"]
+    expected_pole = _weld_geometry(ref, COUPLED_ROBOT_BASE_POS)["expected_pole"]
     cos_1deg = math.cos(math.radians(1.0))
 
-    for direction in _fibonacci_hemisphere_directions(robot_dir, count=8):
+    for direction in _fibonacci_hemisphere_directions(expected_pole, count=8):
         scene = _build_robot_facing_scene(
             fs,
             seed=seed,
@@ -277,7 +292,7 @@ def test_weld_direction_places_proxy_at_specified_direction():
         assert float(np.dot(geom["weld_dir"], direction)) > cos_1deg
         assert geom["offset_approach"] is not None
         assert float(np.dot(geom["offset_approach"], direction)) > cos_1deg
-        assert geom["weld_robot_dot"] > 0.0
+        assert float(geom["weld_pole_dot"]) > 0.0
         assert geom["surface_error_m"] < 0.02
 
 
@@ -285,10 +300,10 @@ def test_weld_direction_not_on_robot_hemisphere_raises():
     """Opposite hemisphere weld_direction is rejected when robot_facing_weld=True."""
     fs = _import_fs()
     ref = _build_robot_facing_scene(fs, seed=17, robot_base_pos=COUPLED_ROBOT_BASE_POS)
-    robot_dir = _weld_geometry(ref, COUPLED_ROBOT_BASE_POS)["robot_dir"]
-    away = -robot_dir
+    expected_pole = _weld_geometry(ref, COUPLED_ROBOT_BASE_POS)["expected_pole"]
+    away = -expected_pole
 
-    with pytest.raises(ValueError, match="robot-facing hemisphere"):
+    with pytest.raises(ValueError, match="stem-perpendicular"):
         _build_robot_facing_scene(
             fs,
             seed=17,
@@ -298,13 +313,14 @@ def test_weld_direction_not_on_robot_hemisphere_raises():
 
 
 def test_weld_direction_falls_back_to_pole_when_none():
-    """Omitting weld_direction keeps exact robot-facing pole placement."""
+    """Omitting weld_direction keeps exact stem⊥ robot-facing pole placement."""
     fs = _import_fs()
     scene = _build_robot_facing_scene(fs, seed=5, robot_base_pos=COUPLED_ROBOT_BASE_POS)
     geom = _weld_geometry(scene, COUPLED_ROBOT_BASE_POS)
-    assert geom["weld_robot_dot"] > 0.99
-    assert geom["offset_robot_dot"] is not None
-    assert geom["offset_robot_dot"] > 0.99
+    assert geom["weld_pole_dot"] > 0.99
+    assert geom["offset_pole_dot"] is not None
+    assert geom["offset_pole_dot"] > 0.99
+    assert abs(float(geom["weld_stem_dot"])) < 0.05
 
 
 def test_robot_facing_weld_ring_samples_around_apple():
@@ -316,9 +332,10 @@ def test_robot_facing_weld_ring_samples_around_apple():
     for robot_base in _robot_bases_on_ring(apple_pos):
         scene = _build_robot_facing_scene(fs, seed=seed, robot_base_pos=robot_base)
         geom = _weld_geometry(scene, robot_base)
-        assert geom["weld_robot_dot"] > 0.99
-        assert geom["offset_robot_dot"] is not None
-        assert geom["offset_robot_dot"] > 0.99
+        assert geom["weld_pole_dot"] > 0.99
+        assert geom["offset_pole_dot"] is not None
+        assert geom["offset_pole_dot"] > 0.99
+        assert abs(float(geom["weld_stem_dot"])) < 0.05
 
 
 def test_robot_facing_weld_visualization(tmp_path: Path):
@@ -328,10 +345,9 @@ def test_robot_facing_weld_visualization(tmp_path: Path):
 
     fs = _import_fs()
 
-    # --- Figure 1: one subplot per seed (varying fruiting geometry) ---
     fig = plt.figure(figsize=(14, 10))
     fig.suptitle(
-        "Robot-facing weld: green=weld dir, red=robot dir, cyan=offset approach",
+        "Robot-facing weld: green=weld dir, red=pole dir, cyan=offset approach",
         fontsize=12,
     )
 
@@ -347,7 +363,6 @@ def test_robot_facing_weld_visualization(tmp_path: Path):
         r = float(scene.params.apple_radius)
         robot_base = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64)
 
-        # Wireframe apple sphere centered at COM.
         u = np.linspace(0.0, 2.0 * np.pi, 24)
         v = np.linspace(0.0, np.pi, 12)
         xs = apple[0] + r * np.outer(np.cos(u), np.sin(v))
@@ -361,9 +376,10 @@ def test_robot_facing_weld_visualization(tmp_path: Path):
             geom["weld_dir"][0], geom["weld_dir"][1], geom["weld_dir"][2],
             length=arrow_len, color="green", linewidth=2, label="weld",
         )
+        pole = geom["expected_pole"]
         ax.quiver(
             apple[0], apple[1], apple[2],
-            geom["robot_dir"][0], geom["robot_dir"][1], geom["robot_dir"][2],
+            pole[0], pole[1], pole[2],
             length=arrow_len, color="red", linewidth=1.5, linestyle="dashed",
         )
         if geom["offset_approach"] is not None:
@@ -377,7 +393,7 @@ def test_robot_facing_weld_visualization(tmp_path: Path):
         ax.scatter(*proxy, color="green", s=30)
         ax.scatter(*robot_base, color="red", marker="^", s=40)
 
-        ax.set_title(f"seed={seed} dot={geom['weld_robot_dot']:.3f}")
+        ax.set_title(f"seed={seed} dot={geom['weld_pole_dot']:.3f}")
         ax.set_xlabel("x")
         ax.set_ylabel("y")
         ax.set_zlabel("z")
@@ -388,7 +404,6 @@ def test_robot_facing_weld_visualization(tmp_path: Path):
     fig.savefig(out_multi, dpi=150)
     plt.close(fig)
 
-    # --- Figure 2: one apple, many robot bases on a ring ---
     fig2 = plt.figure(figsize=(12, 10))
     fig2.suptitle("One apple, robot bases on a lower ring (seed=23)", fontsize=12)
     seed = 23
@@ -411,7 +426,6 @@ def test_robot_facing_weld_visualization(tmp_path: Path):
         geom = _weld_geometry(scene, robot_base)
         proxy = geom["proxy_pos"]
         ax2.scatter(*proxy, s=35)
-        # Solid: apple → proxy (actual weld). Dashed: apple → robot base (target).
         ax2.plot(
             [apple[0], proxy[0]],
             [apple[1], proxy[1]],
@@ -437,7 +451,6 @@ def test_robot_facing_weld_visualization(tmp_path: Path):
     fig2.savefig(out_ring, dpi=150)
     plt.close(fig2)
 
-    # --- Figure 3: one apple, Fibonacci hemisphere weld directions ---
     fig3 = plt.figure(figsize=(10, 9))
     fig3.suptitle(
         "Fibonacci hemisphere weld directions on one apple (seed=17)",
@@ -447,9 +460,9 @@ def test_robot_facing_weld_visualization(tmp_path: Path):
     ref = _build_robot_facing_scene(fs, seed=seed, robot_base_pos=COUPLED_ROBOT_BASE_POS)
     geom_ref = _weld_geometry(ref, COUPLED_ROBOT_BASE_POS)
     apple = geom_ref["apple_pos"]
-    robot_dir = geom_ref["robot_dir"]
+    expected_pole = geom_ref["expected_pole"]
     r = float(ref.params.apple_radius)
-    fib_dirs = _fibonacci_hemisphere_directions(robot_dir, count=8)
+    fib_dirs = _fibonacci_hemisphere_directions(expected_pole, count=8)
     cmap = plt.get_cmap("tab10")
 
     ax3 = fig3.add_subplot(1, 1, 1, projection="3d")
@@ -464,8 +477,8 @@ def test_robot_facing_weld_visualization(tmp_path: Path):
     arrow_len = max(0.12, r * 1.2)
     ax3.quiver(
         apple[0], apple[1], apple[2],
-        robot_dir[0], robot_dir[1], robot_dir[2],
-        length=arrow_len, color="red", linewidth=2, label="robot pole",
+        expected_pole[0], expected_pole[1], expected_pole[2],
+        length=arrow_len, color="red", linewidth=2, label="stem⊥ pole",
     )
 
     proxy_points: list[np.ndarray] = []

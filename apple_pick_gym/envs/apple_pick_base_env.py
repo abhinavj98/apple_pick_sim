@@ -72,6 +72,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
         self._scene = None
         self._controller = None
         self._n_woody_parts = 0
+        self._pending_weld_direction: tuple[float, float, float] | None = None
 
         self._setup_action_space()
 
@@ -114,7 +115,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
         return (
             resources.files("apple_pick_sim")
             / "fixtures"
-            / "fruiting_system_ranges_straight_rod_test.json"
+            / "fruiting_system_ranges_example_variance.json"
         )
 
     def _coupled_build_kwargs(self, *, params: Any | None = None) -> dict[str, Any]:
@@ -272,6 +273,40 @@ class ApplePickBaseEnv(gym.Env, ABC):
             )
         self._n_woody_parts = n
 
+    def _make_gripper_proxy_config(self, *, fix_to_apple: bool):
+        """Return gripper proxy config for scene build (subclasses may extend)."""
+        import apple_pick_sim.fruiting_system as fs
+        from apple_pick_sim.robot import fr3_robot
+
+        return fs.GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+            fix_to_apple=fix_to_apple,
+        )
+
+    def _weld_direction_before_fix_to_apple_build(self, probe_scene: Any) -> tuple[float, float, float] | None:
+        """Return explicit weld direction from a settled or vbd-only probe scene."""
+        del probe_scene
+        return None
+
+    def _build_vbd_only_probe(
+        self,
+        ranges: dict,
+        scene_seed: int,
+        *,
+        injected_params: Any | None = None,
+    ) -> Any:
+        """Lightweight cable-only scene for apple pose before welded rebuild."""
+        import apple_pick_sim.coupled_fruiting as cf
+
+        return cf.build_coupled_fruiting_fr3(
+            ranges,
+            scene_seed,
+            vbd_only=True,
+            **self._coupled_build_kwargs(params=injected_params),
+            gripper_proxy=self._make_gripper_proxy_config(fix_to_apple=False),
+        )
+
     def _build_scene(
         self,
         ranges: dict,
@@ -280,49 +315,50 @@ class ApplePickBaseEnv(gym.Env, ABC):
         injected_params: Any | None = None,
     ) -> None:
         import apple_pick_sim.coupled_fruiting as cf
-        import apple_pick_sim.fruiting_system as fs
-        from apple_pick_sim.robot import fr3_robot
 
         build_kw = self._coupled_build_kwargs(params=injected_params)
-        gripper_kw = dict(
-            mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
-        )
 
         if self._cfg.fix_to_apple and self._cfg.fix_to_apple_warmup_substeps > 0:
-            settled = cf.build_coupled_fruiting_fr3(
-                ranges,
-                scene_seed,
-                vbd_only=True,
-                **build_kw,
-                gripper_proxy=fs.GripperProxyConfig(**gripper_kw, fix_to_apple=False),
+            settled = self._build_vbd_only_probe(
+                ranges, scene_seed, injected_params=injected_params
             )
             _frame_dt, _substeps_per_step, sub_dt = self._timing_constants()
             cf.settle_vbd_substeps(
                 settled, substeps=self._cfg.fix_to_apple_warmup_substeps, dt=sub_dt
+            )
+            self._pending_weld_direction = self._weld_direction_before_fix_to_apple_build(
+                settled
             )
             self._scene = cf.build_coupled_fruiting_fr3(
                 ranges,
                 scene_seed,
                 **build_kw,
                 skip_ik_bootstrap=True,
-                gripper_proxy=fs.GripperProxyConfig(**gripper_kw, fix_to_apple=True),
+                gripper_proxy=self._make_gripper_proxy_config(fix_to_apple=True),
             )
+            self._pending_weld_direction = None
             cf.seed_fix_to_apple_from_settled(
                 welded_scene=self._scene,
                 settled_scene=settled,
                 quiet_apple_proxy=True,
             )
         else:
+            if self._cfg.fix_to_apple:
+                probe = self._build_vbd_only_probe(
+                    ranges, scene_seed, injected_params=injected_params
+                )
+                self._pending_weld_direction = self._weld_direction_before_fix_to_apple_build(
+                    probe
+                )
             self._scene = cf.build_coupled_fruiting_fr3(
                 ranges,
                 scene_seed,
                 **build_kw,
-                gripper_proxy=fs.GripperProxyConfig(
-                    **gripper_kw,
-                    fix_to_apple=self._cfg.fix_to_apple,
+                gripper_proxy=self._make_gripper_proxy_config(
+                    fix_to_apple=self._cfg.fix_to_apple
                 ),
             )
+            self._pending_weld_direction = None
 
         self._finalize_scene()
 

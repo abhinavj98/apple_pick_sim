@@ -294,12 +294,41 @@ def _finalize_fruiting_builder(
         enable_self_collisions=enable_self_collisions,
         gripper_proxy_joints=proxy_joints,
     )
+def _approach_dir_from_robot_base(
+    apple_pos: wp.vec3,
+    robot_base_pos: tuple[float, float, float],
+) -> wp.vec3:
+    """Unit vector from apple center toward the robot base."""
+    robot_vec = wp.vec3(*robot_base_pos) - apple_pos
+    return wp.normalize(robot_vec)
+
+
+def _resolve_robot_facing_approach_dir(
+    config: GripperProxyConfig,
+    apple_pos: wp.vec3,
+    robot_base_pos: tuple[float, float, float],
+) -> wp.vec3:
+    """Approach direction for robot-facing weld (pole or explicit ``weld_direction``)."""
+    robot_approach_dir = _approach_dir_from_robot_base(apple_pos, robot_base_pos)
+    if config.weld_direction is None:
+        return robot_approach_dir
+
+    weld_dir = wp.normalize(wp.vec3(*config.weld_direction))
+    if wp.dot(weld_dir, robot_approach_dir) < 0.0:
+        raise ValueError(
+            "weld_direction must be on the robot-facing hemisphere "
+            "(dot product with apple→robot ≥ 0)"
+        )
+    return weld_dir
+
+
 def _add_gripper_proxy(
     builder: newton.ModelBuilder,
     artifacts: _FruitingChainArtifacts,
     config: GripperProxyConfig,
     *,
     apple_radius: float | None,
+    robot_base_pos: tuple[float, float, float] | None = None,
 ) -> tuple[int, int | None, tuple[float, float, float, float, float, float, float] | None]:
     """Add gripper proxy link, shape, and joint(s).
 
@@ -313,13 +342,36 @@ def _add_gripper_proxy(
     them; staggered coupling teleports their poses from the robot TCP each substep while
     the stem supplies the harvested wrench.
     """
+    if config.robot_facing_weld and not config.fix_to_apple:
+        raise ValueError("robot_facing_weld requires fix_to_apple=True")
+    if config.weld_direction is not None and not config.fix_to_apple:
+        raise ValueError("weld_direction requires fix_to_apple=True")
+
     hx, hy, hz = config.box_half_extents
     clearance = max(hx, hy, hz)
+    robot_facing_approach_dir: wp.vec3 | None = None
 
     if apple_radius is not None:
-        proxy_pos = artifacts.proxy_placement_origin + artifacts.proxy_placement_dir * (
-            apple_radius + clearance
-        )
+        if config.fix_to_apple and config.robot_facing_weld:
+            if robot_base_pos is None:
+                raise ValueError("robot_facing_weld requires robot_base_pos")
+            robot_facing_approach_dir = _resolve_robot_facing_approach_dir(
+                config,
+                artifacts.proxy_placement_origin,
+                robot_base_pos,
+            )
+            proxy_pos = artifacts.proxy_placement_origin + robot_facing_approach_dir * (
+                apple_radius + clearance
+            )
+        elif config.fix_to_apple and config.weld_direction is not None:
+            weld_dir = wp.normalize(wp.vec3(*config.weld_direction))
+            proxy_pos = artifacts.proxy_placement_origin + weld_dir * (
+                apple_radius + clearance
+            )
+        else:
+            proxy_pos = artifacts.proxy_placement_origin + artifacts.proxy_placement_dir * (
+                apple_radius + clearance
+            )
     elif config.fix_to_apple:
         if artifacts.apple_body is None:
             raise ValueError("fix_to_apple requires an apple body in the scene")
@@ -348,19 +400,29 @@ def _add_gripper_proxy(
     if config.fix_to_apple:
         assert artifacts.apple_body is not None
         if apple_radius is not None:
-            # 1. Random approach direction (proxy Z-axis will point along this toward apple center)
-            theta = random.uniform(0.0, 2 * math.pi)
-            phi = math.acos(random.uniform(-1.0, 1.0))
-            approach_dir = wp.vec3(
-                math.sin(phi) * math.cos(theta),
-                math.sin(phi) * math.sin(theta),
-                math.cos(phi),
-            )
+            if config.robot_facing_weld:
+                assert robot_facing_approach_dir is not None
+                approach_dir = robot_facing_approach_dir
+            elif config.weld_direction is not None:
+                approach_dir = wp.normalize(wp.vec3(*config.weld_direction))
+            else:
+                # Random approach direction (proxy Z-axis will point along this toward apple center)
+                theta = random.uniform(0.0, 2 * math.pi)
+                phi = math.acos(random.uniform(-1.0, 1.0))
+                approach_dir = wp.vec3(
+                    math.sin(phi) * math.cos(theta),
+                    math.sin(phi) * math.sin(theta),
+                    math.cos(phi),
+                )
 
-            # 2. Position offset: proxy sits on the surface, opposite the approach vector
-            off = approach_dir * -(apple_radius + clearance)
+            # Position offset in apple frame: robot-facing weld uses the exterior pole
+            # toward the robot; legacy random weld keeps the opposite convention.
+            if config.robot_facing_weld or config.weld_direction is not None:
+                off = approach_dir * (apple_radius + clearance)
+            else:
+                off = approach_dir * -(apple_radius + clearance)
 
-            # 3. Construct look-at rotation (proxy local Z → approach_dir)
+            # Construct look-at rotation (proxy local Z → approach_dir)
             z_axis = approach_dir
             up = wp.vec3(0.0, 0.0, 1.0)
             if abs(wp.dot(z_axis, up)) > 0.99:
@@ -374,10 +436,13 @@ def _add_gripper_proxy(
             )
             base_rot = wp.quat_from_matrix(R)
 
-            # Optional: randomize roll around the approach axis
-            roll_angle = random.uniform(0.0, 2 * math.pi)
-            roll_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), roll_angle)
-            final_rot = wp.mul(base_rot, roll_rot)
+            if config.robot_facing_weld or config.weld_direction is not None:
+                final_rot = base_rot
+            else:
+                # Optional: randomize roll around the approach axis
+                roll_angle = random.uniform(0.0, 2 * math.pi)
+                roll_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), roll_angle)
+                final_rot = wp.mul(base_rot, roll_rot)
 
 
             # 4. Full rigid pose: parent anchor in apple frame, child at identity

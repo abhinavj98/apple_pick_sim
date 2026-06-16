@@ -12,6 +12,8 @@ from apple_pick_sim.system_id.fibonacci_hemisphere import sample_fibonacci_hemis
 from apple_pick_sim.system_id.quasi_static_trajectory import (
     QuasiStaticStepConfig,
     QuasiStaticTrajectory,
+    derive_n_steps,
+    estimate_trajectory_frames,
 )
 
 
@@ -52,16 +54,28 @@ def _collect_trajectory(traj: QuasiStaticTrajectory) -> list[tuple[str, object]]
     return list(traj.iter_frames())
 
 
+def test_quasi_static_config_derives_n_steps():
+    assert derive_n_steps(movement_per_step_m=0.05, total_movement_m=0.10) == 2
+    assert derive_n_steps(movement_per_step_m=0.05, total_movement_m=0.05) == 1
+    with pytest.raises(ValueError, match="integer multiple"):
+        derive_n_steps(movement_per_step_m=0.05, total_movement_m=0.12)
+
+
 def test_quasi_static_trajectory_phase_sequence():
     directions = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-    config = QuasiStaticStepConfig(n_steps=2, hold_duration_s=0.1, control_hz=10.0)
+    config = QuasiStaticStepConfig(
+        movement_per_step_m=0.05,
+        total_movement_m=0.10,
+        hold_duration_s=0.1,
+        control_hz=10.0,
+    )
     traj = QuasiStaticTrajectory(directions, config)
 
     phases: list[str] = []
     for phase, _ in _collect_trajectory(traj):
         if not phases or phases[-1] != phase:
             phases.append(phase)
-    per_dir = ["move_out", "hold", "return"]
+    per_dir = ["move_out", "hold", "move_out", "hold", "return"]
     expected = per_dir + per_dir
     assert phases == expected
 
@@ -69,9 +83,9 @@ def test_quasi_static_trajectory_phase_sequence():
 def test_quasi_static_trajectory_returns_to_center():
     directions = np.array([[1.0, 0.0, 0.0]])
     config = QuasiStaticStepConfig(
-        step_size_m=0.02,
-        n_steps=3,
-        move_speed_mps=0.05,
+        movement_per_step_m=0.02,
+        total_movement_m=0.06,
+        move_speed_mps=0.2,
         hold_duration_s=0.0,
         control_hz=60.0,
     )
@@ -87,22 +101,80 @@ def test_quasi_static_trajectory_returns_to_center():
 
 
 def test_quasi_static_trajectory_hold_frame_count():
-    config = QuasiStaticStepConfig(hold_duration_s=1.5, control_hz=60.0, n_steps=1)
+    config = QuasiStaticStepConfig(
+        movement_per_step_m=0.05,
+        total_movement_m=0.10,
+        hold_duration_s=1.5,
+        control_hz=60.0,
+    )
     directions = np.array([[0.0, 0.0, 1.0]])
     traj = QuasiStaticTrajectory(directions, config)
 
-    expected = int(math.ceil(config.hold_duration_s * config.control_hz))
+    expected_per_hold = int(math.ceil(config.hold_duration_s * config.control_hz))
     hold_frames = [v for phase, v in _collect_trajectory(traj) if phase == "hold"]
-    assert len(hold_frames) == expected
+    assert len(hold_frames) == 2 * expected_per_hold
     for vel in hold_frames:
         assert vel.is_zero()
 
 
+def test_quasi_static_trajectory_amplitude_at_holds():
+    config = QuasiStaticStepConfig(
+        movement_per_step_m=0.05,
+        total_movement_m=0.10,
+        hold_duration_s=0.1,
+        control_hz=10.0,
+    )
+    directions = np.array([[1.0, 0.0, 0.0]])
+    traj = QuasiStaticTrajectory(directions, config)
+
+    hold_amplitudes: list[float] = []
+    prev_phase: str | None = None
+    for phase, _ in traj.iter_frames():
+        if phase == "hold" and prev_phase != "hold":
+            hold_amplitudes.append(traj.current_amplitude_m)
+        prev_phase = phase
+
+    np.testing.assert_allclose(
+        hold_amplitudes,
+        [0.05, 0.10],
+        rtol=1e-6,
+        atol=1e-9,
+    )
+
+
+def test_quasi_static_trajectory_move_burst_duration():
+    config = QuasiStaticStepConfig(
+        movement_per_step_m=0.05,
+        total_movement_m=0.10,
+        move_speed_mps=0.2,
+        hold_duration_s=0.1,
+        control_hz=60.0,
+    )
+    directions = np.array([[0.0, 0.0, 1.0]])
+    traj = QuasiStaticTrajectory(directions, config)
+
+    expected_burst = max(
+        1, int(math.ceil(config.movement_per_step_m / config.move_speed_mps * config.control_hz))
+    )
+    burst_lengths: list[int] = []
+    run_len = 0
+    prev_phase: str | None = None
+    for phase, _ in traj.iter_frames():
+        if phase == "move_out":
+            run_len += 1
+        elif prev_phase == "move_out":
+            burst_lengths.append(run_len)
+            run_len = 0
+        prev_phase = phase
+
+    assert burst_lengths == [expected_burst, expected_burst]
+
+
 def test_quasi_static_trajectory_move_speed():
     config = QuasiStaticStepConfig(
-        step_size_m=0.02,
-        n_steps=2,
-        move_speed_mps=0.05,
+        movement_per_step_m=0.05,
+        total_movement_m=0.10,
+        move_speed_mps=0.2,
         hold_duration_s=0.0,
         control_hz=60.0,
     )
@@ -116,6 +188,24 @@ def test_quasi_static_trajectory_move_speed():
             assert speed <= config.move_speed_mps + eps
             if speed > eps:
                 assert abs(speed - config.move_speed_mps) < 1e-6
+
+
+def test_estimate_trajectory_frames():
+    config = QuasiStaticStepConfig(
+        movement_per_step_m=0.05,
+        total_movement_m=0.10,
+        hold_duration_s=1.5,
+        move_speed_mps=0.2,
+        control_hz=60.0,
+    )
+    assert estimate_trajectory_frames(config, n_directions=2) == 2 * (
+        2
+        * (
+            max(1, int(math.ceil(0.05 / 0.2 * 60.0)))
+            + int(math.ceil(1.5 * 60.0))
+        )
+        + max(1, int(math.ceil(0.10 / 0.2 * 60.0)))
+    )
 
 
 def test_excitation_context_frozen():

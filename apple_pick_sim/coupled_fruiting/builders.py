@@ -225,6 +225,7 @@ def build_coupled_fruiting_placeholder(
     vbd_only: bool = False,
     mujoco_only: bool = False,
     mujoco_use_cpu: bool | None = None,
+    robot_base_pos: tuple[float, float, float] | None = None,
 ) -> CoupledFruitingScene:
     """Build cable + placeholder box-TCP scene for VBD-only or full staggered coupling."""
     if vbd_only and mujoco_only:
@@ -243,6 +244,7 @@ def build_coupled_fruiting_placeholder(
         omit=omit,
         enable_self_collisions=enable_self_collisions,
         gripper_proxy=gripper_proxy,
+        robot_base_pos=resolve_robot_base_pos(ranges, override=robot_base_pos),
     )
 
     newton.eval_fk(cable.model, cable.model.joint_q, cable.model.joint_qd, cable.state_0)
@@ -346,6 +348,7 @@ def build_coupled_fruiting_fr3(
         omit=omit,
         enable_self_collisions=enable_self_collisions,
         gripper_proxy=gripper_proxy,
+        robot_base_pos=resolve_robot_base_pos(ranges, override=robot_base_pos),
     )
     newton.eval_fk(cable.model, cable.model.joint_q, cable.model.joint_qd, cable.state_0)
     wp.synchronize()

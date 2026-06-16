@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
+
+from apple_pick_sim.tests.conftest import COUPLED_ROBOT_BASE_POS, fr3_assets_available
 
 
 def _maybe_import_gymnasium():
@@ -19,6 +23,89 @@ gymnasium_available = pytest.mark.skipif(
     not _maybe_import_gymnasium(),
     reason="gymnasium not installed (expected to be provided by newton[dev])",
 )
+
+
+@gymnasium_available
+@pytest.mark.skipif(not fr3_assets_available(), reason="Requires bundled assets/fr3 and usd-core")
+def test_sysid_reset_reports_weld_direction():
+    from apple_pick_gym.envs import ApplePickSysIdEnv
+
+    env = ApplePickSysIdEnv(
+        max_episode_steps=2,
+        fix_to_apple=True,
+        fix_to_apple_warmup_substeps=0,
+        n_weld_hemisphere_samples=8,
+    )
+    _, info = env.reset(seed=3)
+    assert "weld_direction" in info
+    weld = np.asarray(info["weld_direction"], dtype=np.float64).reshape(3)
+    assert abs(float(np.linalg.norm(weld)) - 1.0) < 1e-5
+
+    scene = env.unwrapped._scene
+    apple = int(scene.cable.apple_body)
+    apple_pos = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[apple, :3]
+    robot_dir = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+    robot_dir /= np.linalg.norm(robot_dir)
+    assert float(np.dot(weld, robot_dir)) >= 0.0
+    env.close()
+
+
+@gymnasium_available
+@pytest.mark.skipif(not fr3_assets_available(), reason="Requires bundled assets/fr3 and usd-core")
+def test_sysid_successive_resets_cycle_weld():
+    from apple_pick_gym.envs import ApplePickSysIdEnv
+
+    env = ApplePickSysIdEnv(
+        max_episode_steps=2,
+        fix_to_apple=True,
+        fix_to_apple_warmup_substeps=0,
+        n_weld_hemisphere_samples=8,
+    )
+    _, info_a = env.reset(seed=3)
+    _, info_b = env.reset(seed=3)
+    weld_a = np.asarray(info_a["weld_direction"], dtype=np.float64)
+    weld_b = np.asarray(info_b["weld_direction"], dtype=np.float64)
+    assert not np.allclose(weld_a, weld_b, atol=1e-4)
+    env.close()
+
+
+@gymnasium_available
+@pytest.mark.skipif(not fr3_assets_available(), reason="Requires bundled assets/fr3 and usd-core")
+def test_sysid_reset_weld_direction_override():
+    from apple_pick_gym.envs import ApplePickSysIdEnv
+
+    env = ApplePickSysIdEnv(
+        max_episode_steps=2,
+        fix_to_apple=True,
+        fix_to_apple_warmup_substeps=0,
+    )
+    _, info_ref = env.reset(seed=3)
+    weld_ref = np.asarray(info_ref["weld_direction"], dtype=np.float64)
+    scene = env.unwrapped._scene
+    apple = int(scene.cable.apple_body)
+    apple_pos = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[apple, :3]
+    robot_dir = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+    robot_dir /= np.linalg.norm(robot_dir)
+
+    oblique = robot_dir + np.array([0.3, 0.2, 0.0], dtype=np.float64)
+    oblique /= np.linalg.norm(oblique)
+    assert float(np.dot(oblique, robot_dir)) > 0.0
+
+    env.close()
+    env = ApplePickSysIdEnv(
+        max_episode_steps=2,
+        fix_to_apple=True,
+        fix_to_apple_warmup_substeps=0,
+    )
+    _, info = env.reset(
+        seed=3,
+        options={"weld_direction": (float(oblique[0]), float(oblique[1]), float(oblique[2]))},
+    )
+    weld = np.asarray(info["weld_direction"], dtype=np.float64)
+    cos_1deg = math.cos(math.radians(1.0))
+    assert float(np.dot(weld, oblique)) > cos_1deg
+    assert not np.allclose(weld, weld_ref, atol=1e-3)
+    env.close()
 
 
 @gymnasium_available
@@ -90,7 +177,7 @@ def test_sysid_env_tcp_pos_is_actual():
 
 
 @gymnasium_available
-def test_sysid_env_wrench_guard():
+def test_sysid_env_no_force_termination():
     from apple_pick_sim.tests.conftest import fr3_assets_available
 
     if not fr3_assets_available():
@@ -102,12 +189,11 @@ def test_sysid_env_wrench_guard():
         max_episode_steps=2,
         fix_to_apple=False,
         fix_to_apple_warmup_substeps=0,
-        max_tcp_force_n=0.001,
     )
     env.reset(seed=0)
     action = np.array([0.2, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
     _, _, terminated, _, _ = env.step(action)
-    assert terminated is True
+    assert terminated is False
     env.close()
 
 
@@ -191,10 +277,41 @@ def test_sysid_env_log_movement_direction_arrow():
     assert viewer2.arrow_calls == ["/gym/movement_direction"]
     assert viewer2.line_calls == []
 
+    viewer3 = _ArrowProbe()
+    ApplePickSysIdEnv.log_movement_direction_arrow(viewer3, {}, scene=scene)
+    assert viewer3.arrow_calls == ["/gym/movement_direction"]
+    assert viewer3.line_calls == []
+
 
 @gymnasium_available
-def test_sysid_env_default_vic_stiffness():
+def test_sysid_env_default_vic_stiffness_and_no_stem_caps():
     from apple_pick_gym.envs import ApplePickSysIdEnv
 
     env = ApplePickSysIdEnv()
-    assert env._vic_gains.linear_k == 3000.0
+    assert env._vic_gains.linear_k == 2000.0
+    assert env._stem_force_cap_n is None
+    assert env._stem_torque_cap_nm is None
+    build_kw = env._coupled_build_kwargs()
+    assert build_kw["stem_force_cap_N"] is None
+    assert build_kw["stem_torque_cap_Nm"] is None
+
+
+@gymnasium_available
+def test_gym_make_does_not_set_sysid_env_internal_max_episode_steps():
+    """``gym.make(..., max_episode_steps=N)`` only wraps TimeLimit; truncation uses env cfg."""
+    import gymnasium as gym
+
+    import apple_pick_gym  # noqa: F401 — registers ApplePickSysId-v0
+
+    from apple_pick_gym.envs import ApplePickSysIdEnv
+
+    want = 512
+    wrapped = gym.make("ApplePickSysId-v0", render_mode=None, max_episode_steps=want)
+    try:
+        assert wrapped._max_episode_steps == want
+        assert wrapped.unwrapped._cfg.max_episode_steps == 240
+    finally:
+        wrapped.close()
+
+    direct = ApplePickSysIdEnv(render_mode=None, max_episode_steps=want)
+    assert direct._cfg.max_episode_steps == want

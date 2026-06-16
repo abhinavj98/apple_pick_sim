@@ -12,7 +12,13 @@ With Newton GL viewer (requires a display)::
 
     uv run python apple_pick_gym/examples/example_gym_sysid.py --viewer gl
 
-Headless smoke (first direction only)::
+Canonical one-direction run (2 cm increments, 10 cm total)::
+
+    uv run python apple_pick_gym/examples/example_gym_sysid.py \\
+      --n-directions 1 --movement-per-step-m 0.02 --total-movement-m 0.10 \\
+      --move-speed-mps 0.2
+
+Headless smoke (cap env steps)::
 
     uv run python apple_pick_gym/examples/example_gym_sysid.py --viewer null \\
       --n-directions 1 --max-steps 200
@@ -21,7 +27,6 @@ Headless smoke (first direction only)::
 from __future__ import annotations
 
 import argparse
-import math
 import os
 import sys
 import time
@@ -43,19 +48,45 @@ def _action_from_velocity(vel) -> np.ndarray:
     return np.concatenate([lin, ang])
 
 
-def _estimate_trajectory_frames(n_directions: int, config) -> int:
-    move_frames = max(1, int(math.ceil(config.step_size_m / config.move_speed_mps * config.control_hz)))
-    return_frames = max(
-        1,
-        int(
-            math.ceil(
-                config.n_steps * config.step_size_m / config.move_speed_mps * config.control_hz
-            )
-        ),
+def _fmt_pos_cm(pos: np.ndarray) -> str:
+    p = np.asarray(pos, dtype=np.float64).reshape(3)
+    return (
+        f"({p[0]*100:+.1f},{p[1]*100:+.1f},{p[2]*100:+.1f})"
     )
-    hold_frames = max(0, int(math.ceil(config.hold_duration_s * config.control_hz)))
-    per_dir = config.n_steps * move_frames + hold_frames + return_frames
-    return n_directions * per_dir
+
+
+def _fmt_vel_mps(vel: np.ndarray) -> str:
+    v = np.asarray(vel, dtype=np.float64).reshape(3)
+    return f"({v[0]:+.3f},{v[1]:+.3f},{v[2]:+.3f})"
+
+
+def _fmt_force_n(force: np.ndarray) -> str:
+    f = np.asarray(force, dtype=np.float64).reshape(3)
+    return f"({f[0]:+.3f},{f[1]:+.3f},{f[2]:+.3f})"
+
+
+def _fmt_dir(v: np.ndarray, *, threshold: float = 1e-6) -> str:
+    u = np.asarray(v, dtype=np.float64).reshape(3)
+    n = float(np.linalg.norm(u))
+    if n < threshold:
+        return "n/a"
+    u = u / n
+    return f"({u[0]:+.3f},{u[1]:+.3f},{u[2]:+.3f})"
+
+
+def _tcp_target_pos(env) -> np.ndarray:
+    return np.asarray(env._controller.target_tf[:3], dtype=np.float64)
+
+
+def _trajectory_config_from_args(args: argparse.Namespace):
+    from apple_pick_sim.system_id import QuasiStaticStepConfig
+
+    return QuasiStaticStepConfig(
+        movement_per_step_m=float(args.movement_per_step_m),
+        total_movement_m=float(args.total_movement_m),
+        move_speed_mps=float(args.move_speed_mps),
+        hold_duration_s=float(args.hold_duration_s),
+    )
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -69,12 +100,6 @@ def _make_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Cap env steps (0 = full trajectory for --n-directions)",
-    )
-    p.add_argument(
-        "--max-tcp-force-n",
-        type=float,
-        default=1000.0,
-        help="Wrench safety stop [N]; post-grasp transients can exceed 500 N on step 0",
     )
     p.add_argument(
         "--hz",
@@ -95,6 +120,30 @@ def _make_parser() -> argparse.ArgumentParser:
         help="VBD settle substeps before welding (fix_to_apple only).",
     )
     p.add_argument(
+        "--hold-duration-s",
+        type=float,
+        default=0.5,
+        help="Zero-velocity hold after each increment [s] (default 1.5).",
+    )
+    p.add_argument(
+        "--movement-per-step-m",
+        type=float,
+        default=0.05,
+        help="Distance per fast move burst [m] (default 0.05 = 5 cm).",
+    )
+    p.add_argument(
+        "--total-movement-m",
+        type=float,
+        default=0.10,
+        help="Total push excursion per direction [m] (default 0.10 = 10 cm).",
+    )
+    p.add_argument(
+        "--move-speed-mps",
+        type=float,
+        default=0.2,
+        help="Linear speed during move/return bursts [m/s] (default 0.2).",
+    )
+    p.add_argument(
         "--mujoco-viewer",
         action="store_true",
         help="Open MuJoCo passive viewer for the FR3 arm (requires a GUI session).",
@@ -110,7 +159,11 @@ def _maybe_log_forces(viewer: object, obs: dict, info: dict, *, amplitude_m: flo
     ft = obs.get("ft_wrist")
     if ft is not None:
         w = np.asarray(ft, dtype=np.float64).reshape(6)
-        log("SysID |F| wrist [N]", float(np.linalg.norm(w[:3])), smoothing=3)
+        f = w[:3]
+        log("SysID |F| wrist [N]", float(np.linalg.norm(f)), smoothing=3)
+        log("SysID Fx wrist [N]", float(f[0]), smoothing=3)
+        log("SysID Fy wrist [N]", float(f[1]), smoothing=3)
+        log("SysID Fz wrist [N]", float(f[2]), smoothing=3)
         log("SysID amp [m]", float(amplitude_m), smoothing=3)
 
     ee = info.get("end_effector_wrench")
@@ -130,27 +183,23 @@ def main() -> None:
 
     viewer, args = newton.examples.init(parser=parser)
 
-    import gymnasium as gym
-    import apple_pick_gym  # noqa: F401 — registers ApplePickSysId-v0
     from apple_pick_gym.envs import ApplePickSysIdEnv
     from apple_pick_sim.system_id import (
         ExcitationContext,
-        QuasiStaticStepConfig,
         QuasiStaticTrajectory,
+        estimate_trajectory_frames,
         sample_fibonacci_hemisphere,
     )
 
-    config = QuasiStaticStepConfig()
+    config = _trajectory_config_from_args(args)
     n_directions = int(args.n_directions)
     max_steps = int(args.max_steps)
     if max_steps <= 0:
-        max_steps = _estimate_trajectory_frames(n_directions, config) + 64
+        max_steps = estimate_trajectory_frames(config, n_directions) + 64
 
-    env = gym.make(
-        "ApplePickSysId-v0",
+    env = ApplePickSysIdEnv(
         render_mode=None,
         max_episode_steps=max_steps,
-        max_tcp_force_n=float(args.max_tcp_force_n),
         fix_to_apple=bool(args.fix_to_apple),
         fix_to_apple_warmup_substeps=int(args.fix_to_apple_warmup_substeps),
         control_hz=config.control_hz,
@@ -158,11 +207,11 @@ def main() -> None:
     )
     obs, info = env.reset(seed=int(args.seed))
 
-    scene = env.unwrapped._scene
+    scene = env._scene
     if scene is None:
         raise RuntimeError("Env did not create a scene; did reset() succeed?")
 
-    tcp_target = np.asarray(env.unwrapped._controller.target_tf[:3], dtype=np.float64)
+    tcp_target = np.asarray(env._controller.target_tf[:3], dtype=np.float64)
     stem_dir = _normalize(np.asarray(obs["apple_pos"], dtype=np.float64) - tcp_target)
     directions = sample_fibonacci_hemisphere(n_directions, stem_dir)
     traj = QuasiStaticTrajectory(directions, config)
@@ -179,19 +228,31 @@ def main() -> None:
     if hasattr(viewer, "hide_loading_splash"):
         viewer.hide_loading_splash()
 
-    hold_forces: dict[int, list[np.ndarray]] = defaultdict(list)
+    hold_forces: dict[tuple[int, int], list[np.ndarray]] = defaultdict(list)
     prev_phase: str | None = None
     dir_idx = -1
 
     print(f"Quasi-static sys-ID: {n_directions} directions, up to {max_steps} env steps")
+    print(
+        f"Trajectory: {config.movement_per_step_m*100:.1f} cm/step, "
+        f"{config.total_movement_m*100:.1f} cm total, "
+        f"{config.move_speed_mps:.2f} m/s burst, {config.hold_duration_s:.1f} s hold"
+    )
     print(f"Stem direction (TCP → apple): ({stem_dir[0]:+.3f}, {stem_dir[1]:+.3f}, {stem_dir[2]:+.3f})")
+
+    wall_start = time.perf_counter()
 
     def _render_frame(
         frame_obs: dict,
         frame_info: dict,
         t: float,
         phase: str,
+        *,
+        expected_pos: np.ndarray,
+        command_vel: np.ndarray,
+        actual_pos: np.ndarray,
         linear_velocity: tuple[float, float, float] | None = None,
+        step_wall_s: float | None = None,
     ) -> None:
         if scene.last_vbd_contacts is not None:
             viz_contacts = scene.last_vbd_contacts
@@ -223,15 +284,44 @@ def main() -> None:
 
         amp = traj.current_amplitude_m
         ft = np.asarray(frame_obs.get("ft_wrist", np.zeros(6)), dtype=np.float64)
+        pos_err_mm = float(np.linalg.norm(expected_pos - actual_pos)) * 1000.0
+        f_wrist = ft[:3]
+        excitation_dir = frame_obs.get("excitation_direction")
+        cmd_dir = (
+            np.asarray(excitation_dir, dtype=np.float64).reshape(3)
+            if excitation_dir is not None
+            else command_vel
+        )
+        wall_elapsed_s = time.perf_counter() - wall_start
+        step_wall_str = (
+            f"  step_wall={step_wall_s:.3f}s"
+            if step_wall_s is not None
+            else ""
+        )
         print(
-            f"  step phase={phase:8s} dir={dir_idx:2d} amp={amp*100:5.1f} cm"
-            f"  |F|={np.linalg.norm(ft[:3]):6.2f} N",
-            end="\r",
+            f"  step phase={phase:8s} dir={dir_idx:2d} step={traj.current_step_index:1d}, \n"
+            f"amp={amp*100:5.1f} cm  |F|={np.linalg.norm(f_wrist):6.2f} N"
+            f"  F={_fmt_force_n(f_wrist)} N  F_dir={_fmt_dir(f_wrist)}, \n"
+            f"cmd_d={_fmt_dir(cmd_dir)}  "
+            f"exp_cm={_fmt_pos_cm(expected_pos)}, \n"
+            f"cmd_mps={_fmt_vel_mps(command_vel)}, \n"
+            f"act_cm={_fmt_pos_cm(actual_pos)}, \n"
+            f"err={pos_err_mm:5.1f} mm  sim={t:.3f}s  wall={wall_elapsed_s:.3f}s{step_wall_str}",
             flush=True,
         )
 
     try:
-        _render_frame(obs, info, sim_time, "init")
+        init_expected = _tcp_target_pos(env)
+        init_actual = np.asarray(obs["tcp_pos"], dtype=np.float64)
+        _render_frame(
+            obs,
+            info,
+            sim_time,
+            "init",
+            expected_pos=init_expected,
+            command_vel=np.zeros(3, dtype=np.float64),
+            actual_pos=init_actual,
+        )
 
         for step_idx, (phase, vel) in enumerate(traj.iter_frames()):
             if step_idx >= max_steps:
@@ -242,29 +332,42 @@ def main() -> None:
                 break
 
             if phase == "move_out" and prev_phase != "move_out":
-                dir_idx += 1
-                print(f"\n--- Direction {dir_idx}: ({directions[dir_idx][0]:+.3f}, "
-                      f"{directions[dir_idx][1]:+.3f}, {directions[dir_idx][2]:+.3f}) ---")
+                if prev_phase in (None, "init", "return"):
+                    dir_idx += 1
+                    print(f"\n--- Direction {dir_idx}: ({directions[dir_idx][0]:+.3f}, "
+                          f"{directions[dir_idx][1]:+.3f}, {directions[dir_idx][2]:+.3f}) ---")
 
             ctx = ExcitationContext(
                 type="quasi_static",
                 f_inst=0.0,
                 direction=traj.current_direction,
             )
-            env.unwrapped.set_excitation_context(ctx)
+            env.set_excitation_context(ctx)
 
             action = _action_from_velocity(vel)
+            step_wall_start = time.perf_counter()
             obs, _reward, terminated, truncated, info = env.step(action)
             sim_time += 1.0 / config.control_hz
 
-            scene = env.unwrapped._scene
+            scene = env._scene
             if scene is None:
                 break
 
             if phase == "hold" and dir_idx >= 0:
-                hold_forces[dir_idx].append(np.asarray(obs["ft_wrist"][:3], dtype=np.float64))
+                key = (dir_idx, traj.current_step_index)
+                hold_forces[key].append(np.asarray(obs["ft_wrist"][:3], dtype=np.float64))
 
-            _render_frame(obs, info, sim_time, phase, linear_velocity=vel.linear)
+            _render_frame(
+                obs,
+                info,
+                sim_time,
+                phase,
+                expected_pos=_tcp_target_pos(env),
+                command_vel=np.asarray(action[:3], dtype=np.float64),
+                actual_pos=np.asarray(obs["tcp_pos"], dtype=np.float64),
+                linear_velocity=vel.linear,
+                step_wall_s=time.perf_counter() - step_wall_start,
+            )
             prev_phase = phase
 
             if mujoco_viewer and scene.robot_model is not None:
@@ -281,24 +384,27 @@ def main() -> None:
                 time.sleep(max(0.0, render_dt - (1.0 / config.control_hz)))
 
             if terminated:
-                print(f"\nTerminated (wrench guard at step {step_idx}).")
+                print(f"\nTerminated at step {step_idx}.")
                 break
             if truncated:
                 print(f"\nTruncated at step {step_idx} (max_episode_steps={max_steps}).")
                 break
 
-        print("\nMean steady-state wrist force [N] per direction (hold phases):")
-        for idx in sorted(hold_forces):
-            samples = hold_forces[idx]
-            if not samples:
-                print(f"  dir {idx:2d}: (no hold samples)")
-                continue
-            mean_f = np.mean(np.stack(samples, axis=0), axis=0)
-            d = directions[idx]
-            print(
-                f"  dir {idx:2d}  d=({d[0]:+.3f},{d[1]:+.3f},{d[2]:+.3f})"
-                f"  F=({mean_f[0]:+.3f},{mean_f[1]:+.3f},{mean_f[2]:+.3f})"
-            )
+        print("\nMean steady-state wrist force [N] per direction and increment (hold phases):")
+        for dir_idx in sorted({k[0] for k in hold_forces}):
+            d = directions[dir_idx]
+            for step_idx in sorted(k[1] for k in hold_forces if k[0] == dir_idx):
+                samples = hold_forces[(dir_idx, step_idx)]
+                if not samples:
+                    continue
+                mean_f = np.mean(np.stack(samples, axis=0), axis=0)
+                amp_cm = (step_idx + 1) * config.movement_per_step_m * 100.0
+                print(
+                    f"  dir {dir_idx:2d} step {step_idx} amp={amp_cm:4.1f} cm"
+                    f"  cmd_d=({d[0]:+.3f},{d[1]:+.3f},{d[2]:+.3f})"
+                    f"  F=({mean_f[0]:+.3f},{mean_f[1]:+.3f},{mean_f[2]:+.3f})"
+                    f"  F_dir={_fmt_dir(mean_f)}"
+                )
     finally:
         env.close()
 

@@ -87,6 +87,7 @@ def generate_coupled_cable_scene(
     omit: Collection[str] | None = None,
     enable_self_collisions: bool = False,
     gripper_proxy: GripperProxyConfig | None = None,
+    robot_base_pos: tuple[float, float, float] | None = None,
 ) -> CoupledCableScene:
     """Build the VBD cable ``Model``: P0 fruiting tree + collision-equipped gripper proxy.
 
@@ -112,6 +113,8 @@ def generate_coupled_cable_scene(
         enable_self_collisions: Same semantics as :func:`generate_scene` (proxy is excluded
             from intra-chain filter pairs so it can contact the apple).
         gripper_proxy: Proxy mass/shape/placement options; defaults to :class:`GripperProxyConfig`.
+        robot_base_pos: World translation of the robot base; required when
+            ``gripper_proxy.robot_facing_weld`` is ``True``.
 
     Returns:
         A :class:`CoupledCableScene` ready for VBD-only rollouts or robot coupling.
@@ -126,6 +129,7 @@ def generate_coupled_cable_scene(
         device=device,
         enable_self_collisions=enable_self_collisions,
         gripper_proxy=proxy_cfg,
+        robot_base_pos=robot_base_pos,
     )
 
 def geometry_fingerprint_coupled(scene: CoupledCableScene) -> dict:
@@ -187,6 +191,7 @@ def _build_coupled_cable_scene(
     *,
     enable_self_collisions: bool,
     gripper_proxy: GripperProxyConfig,
+    robot_base_pos: tuple[float, float, float] | None = None,
 ) -> CoupledCableScene:
     builder = _new_fruiting_builder()
     artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
@@ -195,6 +200,7 @@ def _build_coupled_cable_scene(
         artifacts,
         gripper_proxy,
         apple_radius=params.apple_radius,
+        robot_base_pos=robot_base_pos,
     )
     model = _finalize_fruiting_builder(
         builder,

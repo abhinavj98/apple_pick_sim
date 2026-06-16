@@ -21,7 +21,7 @@ from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import (
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
 
 _N_ARM_DOF = 7
-_TORQUE_CLAMP = 100.0
+_TORQUE_CLAMP = 100000.0
 _TORCH_INSTALL_HINT = (
     "PyTorch is required for VIC joint torques. "
     "Install from newton/: uv sync --extra torch-cu12"

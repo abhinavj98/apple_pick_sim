@@ -39,7 +39,7 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
         max_woody_parts: int = 64,
         mujoco_solver_kwargs: dict[str, Any] | None = None,
         control_hz: float = 60.0,
-        vic_linear_k: float = 800.0,
+        vic_linear_k: float = 4000.0,
         vic_linear_d: float = 80.0,
         vic_angular_k: float = 40.0,
         vic_angular_d: float = 4.0,
@@ -64,6 +64,14 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
             mujoco_solver_kwargs=mujoco_solver_kwargs,
             control_hz=control_hz,
         )
+        print(f"vic_linear_k: {vic_linear_k}")
+        print(f"vic_linear_d: {vic_linear_d}")
+        print(f"vic_angular_k: {vic_angular_k}")
+        print(f"vic_angular_d: {vic_angular_d}")
+        print(f"vic_use_joint_torques: {vic_use_joint_torques}")
+        print(f"max_episode_steps: {max_episode_steps}")
+        print(f"enable_self_collisions: {enable_self_collisions}")
+        print(f"fix_to_apple: {fix_to_apple}")
 
     def _create_controller(self):
         from apple_pick_sim.robot import fr3_robot

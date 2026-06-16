@@ -5,11 +5,15 @@ from apple_pick_sim.system_id.fibonacci_hemisphere import sample_fibonacci_hemis
 from apple_pick_sim.system_id.quasi_static_trajectory import (
     QuasiStaticStepConfig,
     QuasiStaticTrajectory,
+    derive_n_steps,
+    estimate_trajectory_frames,
 )
 
 __all__ = [
     "ExcitationContext",
     "QuasiStaticStepConfig",
     "QuasiStaticTrajectory",
+    "derive_n_steps",
+    "estimate_trajectory_frames",
     "sample_fibonacci_hemisphere",
 ]

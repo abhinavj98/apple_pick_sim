@@ -45,6 +45,7 @@ import sys
 from pathlib import Path
 
 import dataclasses
+import numpy as np
 import newton
 import newton.examples
 import warp as wp
@@ -116,6 +117,61 @@ def _resolve_step_mode(args: argparse.Namespace | None) -> str:
 def _resolve_controller_mode(args: argparse.Namespace | None) -> str:
     """Return ``"vic"``, ``"ee"``, or ``"direct"`` from CLI ``--controller``."""
     return str(getattr(args, "controller", "vic") if args else "vic")
+
+
+def _format_wp_transform(tf: wp.transform) -> str:
+    pos = wp.transform_get_translation(tf)
+    rot = wp.transform_get_rotation(tf)
+    return (
+        f"pos=({float(pos[0]):.4f}, {float(pos[1]):.4f}, {float(pos[2]):.4f}) "
+        f"quat=({float(rot[0]):.4f}, {float(rot[1]):.4f}, {float(rot[2]):.4f}, {float(rot[3]):.4f})"
+    )
+
+
+def _proxy_expected_tf(scene: CoupledFruitingScene) -> wp.transform | None:
+    """Cable gripper-proxy body pose — the TCP alignment target at bootstrap."""
+    proxy_body = scene.cable.gripper_proxy_body
+    if proxy_body is None:
+        return None
+    bq = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[proxy_body]
+    return wp.transform(
+        wp.vec3(float(bq[0]), float(bq[1]), float(bq[2])),
+        wp.quat(float(bq[3]), float(bq[4]), float(bq[5]), float(bq[6])),
+    )
+
+
+def _print_target_and_expected_tf(
+    scene: CoupledFruitingScene,
+    controller: (
+        fr3_robot.Fr3EEImpedanceController
+        | fr3_robot.Fr3EEVelocityController
+        | fr3_robot.Fr3EEDirectJointController
+    ),
+    *,
+    sim_time: float | None = None,
+) -> None:
+    expected_tf = _proxy_expected_tf(scene)
+    prefix = f"t={sim_time:6.2f}s " if sim_time is not None else ""
+    print(f"{prefix}target_tf:   {_format_wp_transform(controller.target_tf)}", flush=True)
+    if expected_tf is not None:
+        print(f"{prefix}expected_tf: {_format_wp_transform(expected_tf)}", flush=True)
+        target_pos = wp.transform_get_translation(controller.target_tf)
+        exp_pos = wp.transform_get_translation(expected_tf)
+        err_mm = float(
+            np.linalg.norm(
+                np.array([float(target_pos[i]) for i in range(3)])
+                - np.array([float(exp_pos[i]) for i in range(3)])
+            )
+        ) * 1000.0
+        print(f"{prefix}target−expected err={err_mm:5.1f} mm", flush=True)
+    else:
+        print(f"{prefix}expected_tf: (no gripper proxy on cable scene)", flush=True)
+    if scene.robot_state_0 is not None and scene.tcp_body_index is not None:
+        tcp_q7 = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[int(scene.tcp_body_index)]
+        print(
+            f"{prefix}actual_tcp:  pos=({tcp_q7[0]:.4f}, {tcp_q7[1]:.4f}, {tcp_q7[2]:.4f})",
+            flush=True,
+        )
 
 
 def _resolve_robot_kind(args: argparse.Namespace | None) -> str:
@@ -252,10 +308,16 @@ def _make_parser() -> argparse.ArgumentParser:
             "Default: off (velocity-delta harvest, proxy-only sync)."
         ),
     )
-    parser.add_argument("--vic-linear-k", type=float, default=800.0, help="VIC linear K [N/m].")
+    parser.add_argument("--vic-linear-k", type=float, default=8000.0, help="VIC linear K [N/m].")
     parser.add_argument("--vic-linear-d", type=float, default=80.0, help="VIC linear D [N·s/m].")
     parser.add_argument("--vic-angular-k", type=float, default=40.0, help="VIC angular K [N·m/rad].")
     parser.add_argument("--vic-angular-d", type=float, default=4.0, help="VIC angular D [N·m·s/rad].")
+    parser.add_argument(
+        "--print-tcp-transforms",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print target_tf / expected_tf / actual_tcp each frame (default on).",
+    )
     return parser
 
 
@@ -439,6 +501,7 @@ class ExampleCoupledFruiting:
             self._mujoco_viewer = False
 
         self._controller_mode = _resolve_controller_mode(args)
+        self._print_tcp_transforms = bool(getattr(args, "print_tcp_transforms", True))
         self._ee_ctrl: (
             fr3_robot.Fr3EEImpedanceController
             | fr3_robot.Fr3EEVelocityController
@@ -447,6 +510,9 @@ class ExampleCoupledFruiting:
         ) = None
         if robot_kind == "fr3" and has_robot and self._step_mode != "vbd":
             self._ee_ctrl = self._configure_fr3_controller(args, self._controller_mode)
+            if self._print_tcp_transforms:
+                print("FR3 TCP transforms after controller sync:", flush=True)
+                _print_target_and_expected_tf(self.scene, self._ee_ctrl)
 
         enable_kb = bool(getattr(args, "fr3_keyboard", False)) if args else False
         kb_ok = hasattr(self.viewer, "is_key_down")
@@ -584,6 +650,12 @@ class ExampleCoupledFruiting:
     def step(self) -> None:
         self.simulate()
         self.sim_time += self.frame_dt
+        if self._print_tcp_transforms and self._ee_ctrl is not None:
+            _print_target_and_expected_tf(
+                self.scene,
+                self._ee_ctrl,
+                sim_time=self.sim_time,
+            )
 
     def render(self) -> None:
         if self.scene.last_vbd_contacts is not None:

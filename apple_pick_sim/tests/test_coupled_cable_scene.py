@@ -13,6 +13,7 @@ import pytest
 
 from apple_pick_sim.tests.conftest import (
     COUPLED_BASE_POS,
+    COUPLED_ROBOT_BASE_POS,
     COUPLED_VBD_SCENE_KW,
     NO_SELF_COLLISION_KW,
     RANGES_FIXTURE,
@@ -186,6 +187,88 @@ def _stem_direction_world(scene) -> np.ndarray:
     base = body_q[stem[-2], :3]
     d = tip - base
     return d / np.linalg.norm(d)
+
+
+def test_robot_facing_weld_places_proxy_toward_robot_base():
+    """Welded grasp sits on the apple hemisphere facing the robot base."""
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=5,
+        gripper_proxy=fs.GripperProxyConfig(
+            fix_to_apple=True,
+            robot_facing_weld=True,
+        ),
+        robot_base_pos=COUPLED_ROBOT_BASE_POS,
+        **COUPLED_VBD_SCENE_KW,
+    )
+    body_q = scene.state_0.body_q.to("cpu").numpy()
+    apple_pos = body_q[scene.apple_body, :3]
+    proxy_pos = body_q[scene.gripper_proxy_body, :3]
+    robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+    weld_vec = proxy_pos - apple_pos
+    robot_vec /= np.linalg.norm(robot_vec)
+    weld_vec /= np.linalg.norm(weld_vec)
+    assert float(np.dot(weld_vec, robot_vec)) > 0.99
+
+
+def test_weld_direction_replaces_pole():
+    """Explicit weld_direction places proxy off the robot-facing pole."""
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    ref = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=5,
+        gripper_proxy=fs.GripperProxyConfig(
+            fix_to_apple=True,
+            robot_facing_weld=True,
+        ),
+        robot_base_pos=COUPLED_ROBOT_BASE_POS,
+        **COUPLED_VBD_SCENE_KW,
+    )
+    body_q = ref.state_0.body_q.to("cpu").numpy()
+    apple_pos = body_q[ref.apple_body, :3]
+    robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+    robot_dir = robot_vec / np.linalg.norm(robot_vec)
+
+    # Oblique direction on the robot-facing hemisphere (45° from pole).
+    oblique = robot_dir + np.array([0.3, 0.2, 0.0], dtype=np.float64)
+    oblique /= np.linalg.norm(oblique)
+    assert float(np.dot(oblique, robot_dir)) > 0.0
+
+    scene = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=5,
+        gripper_proxy=fs.GripperProxyConfig(
+            fix_to_apple=True,
+            robot_facing_weld=True,
+            weld_direction=(float(oblique[0]), float(oblique[1]), float(oblique[2])),
+        ),
+        robot_base_pos=COUPLED_ROBOT_BASE_POS,
+        **COUPLED_VBD_SCENE_KW,
+    )
+    body_q = scene.state_0.body_q.to("cpu").numpy()
+    proxy_pos = body_q[scene.gripper_proxy_body, :3]
+    weld_vec = proxy_pos - apple_pos
+    weld_dir = weld_vec / np.linalg.norm(weld_vec)
+    assert float(np.dot(weld_dir, oblique)) > 0.99
+    assert float(np.dot(weld_dir, robot_dir)) < 0.99
+
+
+def test_robot_facing_weld_requires_robot_base_pos():
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    with pytest.raises(ValueError, match="robot_facing_weld requires robot_base_pos"):
+        fs.generate_coupled_cable_scene(
+            ranges,
+            seed=5,
+            gripper_proxy=fs.GripperProxyConfig(
+                fix_to_apple=True,
+                robot_facing_weld=True,
+            ),
+            **COUPLED_VBD_SCENE_KW,
+        )
 
 
 def test_fix_to_apple_weld_direction_is_stem_pole():

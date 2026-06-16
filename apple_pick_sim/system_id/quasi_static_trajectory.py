@@ -13,15 +13,61 @@ from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
 
 @dataclass(frozen=True)
 class QuasiStaticStepConfig:
-    step_size_m: float = 0.02
-    n_steps: int = 5
-    hold_duration_s: float = 1.5
-    move_speed_mps: float = 0.05
+    """Per-increment fast move + hold quasi-static push parameters."""
+
+    movement_per_step_m: float = 0.05
+    total_movement_m: float = 0.10
+    hold_duration_s: float = 0.5
+    move_speed_mps: float = 0.2
     control_hz: float = 60.0
+
+    def __post_init__(self) -> None:
+        if self.movement_per_step_m <= 0.0:
+            raise ValueError("movement_per_step_m must be positive")
+        if self.total_movement_m <= 0.0:
+            raise ValueError("total_movement_m must be positive")
+        derive_n_steps(
+            movement_per_step_m=self.movement_per_step_m,
+            total_movement_m=self.total_movement_m,
+        )
+
+
+def derive_n_steps(*, movement_per_step_m: float, total_movement_m: float) -> int:
+    """Return the number of move-hold increments for a quasi-static push."""
+    if movement_per_step_m <= 0.0:
+        raise ValueError("movement_per_step_m must be positive")
+    if total_movement_m <= 0.0:
+        raise ValueError("total_movement_m must be positive")
+    n_steps = max(1, round(total_movement_m / movement_per_step_m))
+    if abs(n_steps * movement_per_step_m - total_movement_m) > 1e-6:
+        raise ValueError(
+            "total_movement_m must be an integer multiple of movement_per_step_m "
+            f"(got {total_movement_m} / {movement_per_step_m})"
+        )
+    return n_steps
+
+
+def estimate_trajectory_frames(config: QuasiStaticStepConfig, n_directions: int) -> int:
+    """Estimate env steps for a full multi-direction quasi-static trajectory."""
+    n_steps = derive_n_steps(
+        movement_per_step_m=config.movement_per_step_m,
+        total_movement_m=config.total_movement_m,
+    )
+    move_frames = max(
+        1,
+        int(math.ceil(config.movement_per_step_m / config.move_speed_mps * config.control_hz)),
+    )
+    return_frames = max(
+        1,
+        int(math.ceil(config.total_movement_m / config.move_speed_mps * config.control_hz)),
+    )
+    hold_frames = max(0, int(math.ceil(config.hold_duration_s * config.control_hz)))
+    per_dir = n_steps * (move_frames + hold_frames) + return_frames
+    return int(n_directions) * per_dir
 
 
 class QuasiStaticTrajectory:
-    """Stepped push-hold-return sequence along multiple world directions."""
+    """Fast move + hold push sequence along multiple world directions."""
 
     def __init__(
         self,
@@ -37,12 +83,25 @@ class QuasiStaticTrajectory:
         self._directions = (dirs / norms).astype(np.float64)
         self._config = config or QuasiStaticStepConfig()
         self._dir_index = 0
+        self._step_index = 0
         self._phase: str | None = None
         self._amplitude_m = 0.0
 
     @property
+    def n_steps(self) -> int:
+        cfg = self._config
+        return derive_n_steps(
+            movement_per_step_m=cfg.movement_per_step_m,
+            total_movement_m=cfg.total_movement_m,
+        )
+
+    @property
     def current_direction(self) -> np.ndarray:
         return self._directions[self._dir_index].copy()
+
+    @property
+    def current_step_index(self) -> int:
+        return int(self._step_index)
 
     @property
     def current_amplitude_m(self) -> float:
@@ -50,13 +109,12 @@ class QuasiStaticTrajectory:
 
     def _move_frame_count(self) -> int:
         cfg = self._config
-        duration = cfg.step_size_m / cfg.move_speed_mps
+        duration = cfg.movement_per_step_m / cfg.move_speed_mps
         return max(1, int(math.ceil(duration * cfg.control_hz)))
 
     def _return_frame_count(self) -> int:
         cfg = self._config
-        total_dist = cfg.n_steps * cfg.step_size_m
-        duration = total_dist / cfg.move_speed_mps
+        duration = cfg.total_movement_m / cfg.move_speed_mps
         return max(1, int(math.ceil(duration * cfg.control_hz)))
 
     def _hold_frame_count(self) -> int:
@@ -69,24 +127,27 @@ class QuasiStaticTrajectory:
         move_frames = self._move_frame_count()
         return_frames = self._return_frame_count()
         hold_frames = self._hold_frame_count()
-        total_out_frames = cfg.n_steps * move_frames
-        out_step_delta = (cfg.n_steps * cfg.step_size_m) / total_out_frames
-        ret_step_delta = (cfg.n_steps * cfg.step_size_m) / return_frames
+        step_delta = cfg.movement_per_step_m / move_frames
+        ret_step_delta = cfg.total_movement_m / return_frames
+        n_steps = self.n_steps
 
         for dir_idx, direction in enumerate(self._directions):
             self._dir_index = dir_idx
             self._amplitude_m = 0.0
 
-            self._phase = "move_out"
             out_vel = EEVelocity(linear=tuple(direction * cfg.move_speed_mps))
-            for _ in range(total_out_frames):
-                self._amplitude_m += out_step_delta
-                yield self._phase, out_vel
+            for step_idx in range(n_steps):
+                self._step_index = step_idx
+                self._phase = "move_out"
+                for _ in range(move_frames):
+                    self._amplitude_m += step_delta
+                    yield self._phase, out_vel
 
-            self._phase = "hold"
-            hold_vel = EEVelocity()
-            for _ in range(hold_frames):
-                yield self._phase, hold_vel
+                self._phase = "hold"
+                self._amplitude_m = (step_idx + 1) * cfg.movement_per_step_m
+                hold_vel = EEVelocity()
+                for _ in range(hold_frames):
+                    yield self._phase, hold_vel
 
             self._phase = "return"
             ret_vel = EEVelocity(linear=tuple(-direction * cfg.move_speed_mps))
@@ -97,3 +158,4 @@ class QuasiStaticTrajectory:
             self._amplitude_m = 0.0
 
         self._phase = None
+        self._step_index = 0

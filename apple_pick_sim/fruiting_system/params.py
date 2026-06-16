@@ -75,6 +75,19 @@ class GripperProxyConfig:
     Default ``False``: velocity-delta harvest + proxy-only sync. Set ``True`` for stem-harvest /
     apple co-teleport (see ``example_coupled_fruiting.py --fix-to-apple``).
     """
+    robot_facing_weld: bool = False
+    """If ``True`` and ``fix_to_apple=True``, weld to the apple face toward ``robot_base_pos``.
+
+    Requires ``robot_base_pos`` at scene build time; otherwise placement uses a random
+    exterior surface point (legacy behavior).
+    """
+    weld_direction: tuple[float, float, float] | None = None
+    """Explicit unit approach vector for the weld pole (world frame, normalized at build time).
+
+    When set and ``fix_to_apple=True``, replaces the default approach direction.
+    When ``robot_facing_weld=True``, validated to lie on the robot-facing hemisphere
+    (dot ≥ 0 with apple→robot unit vector); raises ``ValueError`` otherwise.
+    """
 
 @dataclasses.dataclass(frozen=True)
 class FixtureArgs:

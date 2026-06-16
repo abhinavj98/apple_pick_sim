@@ -24,8 +24,20 @@ Trajectories must excite multiple vibrational modes while the robot maintains gr
 
 - Build a **forward-looking hemisphere** of unit directions toward the stem attachment point.
 - Sample **~10 directions** with a **Fibonacci / golden-ratio lattice** (uniform solid angle). Avoid naive uniform azimuth/elevation, which over-samples near the pole.
-- For each direction: step the end-effector from center in **2 cm increments** up to **10 cm**, then return to center before the next direction. Captures compression, shear, and coupled compressive–shear modes relevant to push-then-shear picking while limiting canopy penetration.
+- For each direction: step the end-effector from center in configurable increments (default **5 cm** per step, **10 cm** total) with a **fast move + hold** at each amplitude, then return to center before the next direction. Captures compression, shear, and coupled compressive–shear modes relevant to push-then-shear picking while limiting canopy penetration.
 - **Hold** each pose **1–2 s** so transients decay before logging steady-state F/T.
+
+**Implementation (§2.1 shipped):** trajectory generators and gym replay live under `apple_pick_sim/system_id/` and `apple_pick_gym/envs/apple_pick_sysid_env.py`. Details, defaults, and test commands: `docs/system-id-quasi-static-implementation.md`.
+
+**Run in sim** (one direction, 2 cm increments, 10 cm total):
+
+```bash
+uv run python apple_pick_gym/examples/example_gym_sysid.py \
+  --n-directions 1 --movement-per-step-m 0.02 --total-movement-m 0.10 \
+  --move-speed-mps 0.2
+```
+
+On headless Linux the example auto-appends `--viewer null`. The script prints per-step phase/force logs and mean steady-state `ft_wrist` per hold increment at the end. Data is not yet written to disk (see `docs/sysid-data-collection-review.md`).
 
 ### 2.2 Multi-Axis Log Chirps (modal excitation)
 
@@ -114,4 +126,11 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 
 ## Tests and implementation
 
-Planned code home: `apple_pick_sim/system_id/` (trajectory generators, replay hooks). First milestone: executable trajectory specs + sim replay smoke—see `docs/ROADMAP.md` **[M3.0]**.
+| Milestone | Status | Code / docs |
+| --- | --- | --- |
+| M3.0 §2.1 quasi-static | **In progress** (trajectory + gym replay) | `apple_pick_sim/system_id/`, `apple_pick_gym/envs/apple_pick_sysid_env.py`, `docs/system-id-quasi-static-implementation.md` |
+| M3.0 §2.2–2.3 chirps / torsion | Planned | — |
+| M3.1 MMD features | Planned | — |
+| M3.2 CEM loop | Planned | — |
+
+Verify §2.1: `docs/system-id-quasi-static-implementation.md` (pytest + `example_gym_sysid.py`). Broader M3 schedule: `docs/ROADMAP.md`.

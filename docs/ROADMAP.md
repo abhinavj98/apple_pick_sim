@@ -124,6 +124,16 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --viewer null 
 
 # Coupling verification CLI
 uv run python apple_pick_sim/diagnostics/verify_coupling.py --num-substeps 600 --max-force 5 --max-torque 1
+
+# M3.0 §2.1 quasi-static sys-ID (pytest)
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_quasi_static_sysid.py \
+  apple_pick_gym/tests/test_sysid_env.py -q
+
+# M3.0 §2.1 quasi-static demo (one direction, 2 cm steps)
+uv run python apple_pick_gym/examples/example_gym_sysid.py \
+  --n-directions 1 --movement-per-step-m 0.02 --total-movement-m 0.10 \
+  --move-speed-mps 0.2
 ```
 
 **Stop and ask the maintainer when:**

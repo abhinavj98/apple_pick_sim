@@ -75,6 +75,7 @@ def _configure_joint_torque_vic(scene) -> Fr3EEImpedanceController:
         scene.mj_solver,
         scene=scene,
     )
+    ctrl.sync_target_from_state(scene.robot_state_0)
     return ctrl
 
 

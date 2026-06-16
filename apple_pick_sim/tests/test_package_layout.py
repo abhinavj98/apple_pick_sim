@@ -55,6 +55,14 @@ def test_coupled_fruiting_public_build_api():
     assert callable(cf.settle_vbd_substeps)
 
 
+def test_fruiting_system_coupled_api_not_on_scene_module():
+    """Coupled cable API lives in ``fruiting_system.coupled``, not ``scene``."""
+    import apple_pick_sim.fruiting_system.scene as scene_mod
+
+    assert not hasattr(scene_mod, "generate_coupled_cable_scene")
+    assert not hasattr(scene_mod, "geometry_fingerprint_coupled")
+
+
 def test_sim_device_module_exports():
     from apple_pick_sim import sim_device as sd
 

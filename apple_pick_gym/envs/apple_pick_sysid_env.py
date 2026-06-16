@@ -186,7 +186,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         kw["stem_torque_cap_Nm"] = self._stem_torque_cap_nm
         if self._cfg.fix_to_apple and self._robot_facing_weld:
             # Weld hemisphere uses the fixture robot base; arm root tracks the proxy for reach.
-            from apple_pick_sim.tests.conftest import COUPLED_ROBOT_BASE_POS
+            from apple_pick_sim.coupled_fruiting.defaults import COUPLED_ROBOT_BASE_POS
 
             kw["robot_base_pos"] = COUPLED_ROBOT_BASE_POS
             kw["robot_base_from_proxy"] = True
@@ -203,7 +203,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             return None
 
         from apple_pick_sim.system_id import sample_fibonacci_hemisphere
-        from apple_pick_sim.tests.conftest import COUPLED_ROBOT_BASE_POS
+        from apple_pick_sim.coupled_fruiting.defaults import COUPLED_ROBOT_BASE_POS
 
         cable = probe_scene.cable
         apple_body = cable.apple_body

@@ -16,8 +16,8 @@ class ApplePickReplayEnv(ApplePickBaseEnv):
     Observations (all ``float32``):
 
     - ``ft_wrist``: ``(6,)`` TCP coupling wrench ``[F(3), tau(3)]`` [N, N·m]
-    - ``woody_start``: ``(N*3,)`` parent-side fixed-joint anchor positions [m]
-    - ``woody_end``: ``(N*3,)`` child-side fixed-joint anchor positions [m]
+    - ``woody_part_start_pos``: ``(N*3,)`` parent-side fixed-joint anchor positions [m]
+    - ``woody_part_end_pos``: ``(N*3,)`` child-side fixed-joint anchor positions [m]
     - ``tcp_velocity``: ``(6,)`` TCP spatial velocity ``[v(3), omega(3)]`` [m/s, rad/s]
 
     Action contract: continuous EE velocity command per step (``Box(6)``).
@@ -29,10 +29,10 @@ class ApplePickReplayEnv(ApplePickBaseEnv):
         return spaces.Dict(
             {
                 "ft_wrist": spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
-                "woody_start": spaces.Box(
+                "woody_part_start_pos": spaces.Box(
                     low=-np.inf, high=np.inf, shape=(n_woody * 3,), dtype=np.float32
                 ),
-                "woody_end": spaces.Box(
+                "woody_part_end_pos": spaces.Box(
                     low=-np.inf, high=np.inf, shape=(n_woody * 3,), dtype=np.float32
                 ),
                 "tcp_velocity": spaces.Box(
@@ -54,8 +54,8 @@ class ApplePickReplayEnv(ApplePickBaseEnv):
         start_pos, end_pos = self._woody_start_end_pos()
         return {
             "ft_wrist": self._end_effector_wrench(),
-            "woody_start": start_pos,
-            "woody_end": end_pos,
+            "woody_part_start_pos": start_pos,
+            "woody_part_end_pos": end_pos,
             "tcp_velocity": self._tcp_velocity(),
         }
 

@@ -241,9 +241,13 @@ uv run python apple_pick_sim/diagnostics/verify_coupling.py \
   --num-substeps 600 --max-force 5 --max-torque 1
 ```
 
-### Gymnasium environment (`ApplePickCoupled-v0`)
+### Gymnasium environments (`apple_pick_gym/`)
 
-Headless env over the coupled FR3 stack; `Discrete(13)` keyboard-style actions; real observations (woody part poses/forces, apple position, TCP wrench/velocity). See `apple_pick_gym/envs/apple_pick_coupled_env.py`.
+Headless Gymnasium wrappers over the coupled FR3 stack. Registered envs include `ApplePickCoupled-v0`, `ApplePickVic-v0`, `ApplePickSysId-v0`, and `ApplePickReplayEnv`. All expose `Dict` observations and set `info["obs_schema"] == "v1"` on `reset()` / `step()`.
+
+**Observation contract:** key names, shapes, units, and env-specific semantics are documented in [`docs/gym-observation-contract.md`](docs/gym-observation-contract.md). Check `obs_schema` when loading rollouts recorded before the v1 replay key rename (`woody_start` / `woody_end` → `woody_part_*`).
+
+`ApplePickCoupled-v0` uses `Discrete(13)` keyboard-style actions with woody part poses/forces, apple position, and TCP wrench/velocity. See `apple_pick_gym/envs/apple_pick_coupled_env.py`.
 
 ```bash
 uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/ -q

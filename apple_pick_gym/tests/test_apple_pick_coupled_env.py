@@ -358,7 +358,12 @@ def test_replay_env_observation_contract():
     env = ApplePickReplayEnv(max_episode_steps=2)
     obs, info = env.reset(seed=0)
 
-    expected_keys = {"ft_wrist", "woody_start", "woody_end", "tcp_velocity"}
+    expected_keys = {
+        "ft_wrist",
+        "woody_part_start_pos",
+        "woody_part_end_pos",
+        "tcp_velocity",
+    }
     assert isinstance(obs, dict)
     assert set(obs.keys()) == expected_keys
     assert env.observation_space.contains(obs)
@@ -366,8 +371,8 @@ def test_replay_env_observation_contract():
     assert obs["tcp_velocity"].shape == (6,)
     n = int(info["n_woody_parts"])
     assert n > 0
-    assert obs["woody_start"].shape == (n * 3,)
-    assert obs["woody_end"].shape == (n * 3,)
+    assert obs["woody_part_start_pos"].shape == (n * 3,)
+    assert obs["woody_part_end_pos"].shape == (n * 3,)
 
     obs2, reward, terminated, truncated, _ = env.step(np.zeros((6,), dtype=np.float32))
     assert env.observation_space.contains(obs2)

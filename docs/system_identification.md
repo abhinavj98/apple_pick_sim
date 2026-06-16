@@ -128,7 +128,7 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 
 | Milestone | Status | Code / docs |
 | --- | --- | --- |
-| M3.0 §2.1 quasi-static | **In progress** (trajectory + gym replay) | `apple_pick_sim/system_id/`, `apple_pick_gym/envs/apple_pick_sysid_env.py`, `docs/system-id-quasi-static-implementation.md` |
+| M3.0 §2.1 quasi-static | **Done** (trajectory + gym replay) | `apple_pick_sim/system_id/`, `apple_pick_gym/envs/apple_pick_sysid_env.py`, `docs/system-id-quasi-static-implementation.md` |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
 | M3.1 MMD features | Planned | — |
 | M3.2 CEM loop | Planned | — |

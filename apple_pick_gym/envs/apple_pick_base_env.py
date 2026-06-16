@@ -121,7 +121,10 @@ class ApplePickBaseEnv(gym.Env, ABC):
         )
 
     def _coupled_build_kwargs(self, *, params: Any | None = None) -> dict[str, Any]:
-        from apple_pick_sim.tests.conftest import COUPLED_BASE_POS, COUPLED_ROBOT_BASE_POS
+        from apple_pick_sim.coupled_fruiting.defaults import (
+            COUPLED_BASE_POS,
+            COUPLED_ROBOT_BASE_POS,
+        )
 
         kw: dict[str, Any] = {
             "base_pos": COUPLED_BASE_POS,
@@ -259,6 +262,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
         assert self._scene is not None
         _, _, sub_dt = self._timing_constants()
         return {
+            "obs_schema": "v1",
             "step_count": int(self._step_count),
             "n_woody_parts": int(self._n_woody_parts),
             "params_fingerprint": fs.params_fingerprint(self._scene.cable.params),

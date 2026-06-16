@@ -109,58 +109,6 @@ def generate_scene(
     )
 
 
-def generate_coupled_cable_scene(
-    ranges: dict,
-    seed: int,
-    *,
-    params: FruitingSystemParams | None = None,
-    base_pos: tuple[float, float, float] | None = None,
-    device: str | None = None,
-    omit: Collection[str] | None = None,
-    enable_self_collisions: bool = False,
-    gripper_proxy: GripperProxyConfig | None = None,
-) -> CoupledCableScene:
-    """Build the VBD cable ``Model``: P0 fruiting tree + collision-equipped gripper proxy.
-
-    This is **Model B** in the two-``Model`` stack: ``SolverVBD`` integrates rods,
-    apple, and the gripper proxy. The robot arm (**Model A**, ``SolverMuJoCo``) is built
-    separately in ``coupled_fruiting.build_coupled_fruiting_placeholder``; coupling forces
-    never cross ``Model`` boundaries directly—they flow through the proxy registry and
-    per-substep ``proxy_forces`` buffer (see module docstring).
-
-    The proxy body is a free rigid body (or FIXED to the apple when
-    ``gripper_proxy.fix_to_apple``) placed near the apple for EE–apple contact during
-    staggered ``SolverMuJoCo`` + ``SolverVBD`` coupling. P0 body indices and fixed-joint
-    metadata match :func:`generate_scene` for the same ``(ranges, seed)``.
-
-    Args:
-        ranges: Range dict as returned by :func:`load_ranges`.
-        seed: Deterministic integer seed.
-        base_pos: World-space position of the first rod segment's base (pinned).
-        device: Warp device string. Defaults to :func:`~apple_pick_sim.sim_device.default_sim_device`.
-        params: Pre-sampled parameters; when ``None``, :func:`sample_params` runs from
-            ``(ranges, seed, omit)``.
-        omit: Forwarded to :func:`sample_params` when ``params`` is ``None``.
-        enable_self_collisions: Same semantics as :func:`generate_scene` (proxy is excluded
-            from intra-chain filter pairs so it can contact the apple).
-        gripper_proxy: Proxy mass/shape/placement options; defaults to :class:`GripperProxyConfig`.
-
-    Returns:
-        A :class:`CoupledCableScene` ready for VBD-only rollouts or robot coupling.
-    """
-    device = resolve_sim_device(device)
-
-    resolved_params = params if params is not None else sample_params(ranges, seed, omit=omit)
-    proxy_cfg = gripper_proxy if gripper_proxy is not None else GripperProxyConfig()
-    return _build_coupled_cable_scene(
-        resolved_params,
-        base_pos=resolve_fruiting_base_pos(ranges, (0.5, 0.5, 0.5), override=base_pos),
-        device=device,
-        enable_self_collisions=enable_self_collisions,
-        gripper_proxy=proxy_cfg,
-    )
-
-
 def geometry_fingerprint(scene: FruitingSystemScene) -> dict:
     """Return a dict of scalar geometry summaries extracted from a built scene.
 
@@ -197,16 +145,6 @@ def geometry_fingerprint(scene: FruitingSystemScene) -> dict:
     fp["stem_tip_pos"] = _pos(scene.stem_bodies[-1]) if scene.stem_bodies else None
     fp["apple_pos"] = _pos(scene.apple_body) if scene.apple_body is not None else None
 
-    return fp
-
-
-def geometry_fingerprint_coupled(scene: CoupledCableScene) -> dict:
-    """Like :func:`geometry_fingerprint` plus gripper-proxy body index and position."""
-    fp = geometry_fingerprint(scene)
-    body_q = scene.state_0.body_q.to("cpu").numpy()
-    p = body_q[scene.gripper_proxy_body]
-    fp["gripper_proxy_body"] = scene.gripper_proxy_body
-    fp["gripper_proxy_pos"] = (round(float(p[0]), 5), round(float(p[1]), 5), round(float(p[2]), 5))
     return fp
 
 

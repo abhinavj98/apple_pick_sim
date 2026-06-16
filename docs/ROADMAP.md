@@ -43,7 +43,7 @@ Later: real-data collection [M4], final pick policy [M5].
 **Build on (do not reimplement):**
 
 - [M1] stack: `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_fr3`, `measure_fruiting_forces`, `sample_params` / `params_fingerprint`, VIC joint torques (`docs/variable-impedance-teleop.md`, `docs/vic-implementation.md`).
-- [M2.1] shipped: `apple_pick_gym/` — `ApplePickCoupledEnv`, real `Dict` observations (woody part poses/forces, apple position, TCP wrench/velocity); reuse θ packing / subprocess patterns when M3.2 lands.
+- [M2.1] shipped: `apple_pick_gym/` — `ApplePickCoupledEnv`, real `Dict` observations (woody part poses/forces, apple position, TCP wrench/velocity); observation contract `docs/gym-observation-contract.md` (`info["obs_schema"] == "v1"`); reuse θ packing / subprocess patterns when M3.2 lands.
 
 **Next up (ordered):**
 
@@ -109,7 +109,7 @@ Sim parameter identification from field trajectories: CEM + MMD over transition 
 | `apple_pick_sim/` | Simulation code (`fruiting_system/`, `coupled_fruiting/`, `examples/`, tests) |
 | `apple_pick_gym/` | Gymnasium adapter (`ApplePickCoupled-v0`); depends on `apple_pick_sim`, not vice versa |
 | `newton/` | Upstream physics submodule (vendored) |
-| `docs/` | Vision, roadmap, architecture, implementation notes (`system_identification.md` for M3) |
+| `docs/` | Vision, roadmap, architecture, implementation notes (`system_identification.md` for M3, `gym-observation-contract.md` for gym obs v1) |
 
 **How to validate changes:**
 

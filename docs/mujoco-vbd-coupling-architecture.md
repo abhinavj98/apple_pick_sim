@@ -191,7 +191,7 @@ sequenceDiagram
 
 - **Sync:** Proxy and apple share TCP-corrected velocity; apple position reverses `proxy_offset_in_apple`.
 - **Harvest:** `harvest_stem_tension_for_tcp` reads the **stem–apple FIXED** constraint via `fixed_joint_wrenches_child_com_vbd` (not velocity delta on the proxy).
-- **Explicit apple weight (default on):** When `stem_harvest_explicit_apple_weight=True`, adds **`-m_apple · gravity`** and **\((p_{\mathrm{apple}} - p_{\mathrm{tcp}}) \times F_{\mathrm{add}}\)** before gain/caps (`explicit_load.py`). Prescribed apples (`inv_mass == 0`) do not integrate gravity; this restores quasi-static weight and moment at the flange.
+- **Explicit apple weight (on for welded builds):** `build_coupled_fruiting_*` sets `stem_harvest_explicit_apple_weight=True` when `fix_to_apple=True` (see `builders._resolve_stem_harvest_explicit_apple_weight`; dataclass field default is `False`). When enabled, adds **`-m_apple · gravity`** and **\((p_{\mathrm{apple}} - p_{\mathrm{tcp}}) \times F_{\mathrm{add}}\)** before gain/caps (`explicit_load.py`). Prescribed apples (`inv_mass == 0`) do not integrate gravity; this restores quasi-static weight and moment at the flange. Free-proxy builds keep it off so VBD gravity is not double-counted at the TCP.
 - **Feedback tuning:** `stem_coupling_gain` defaults to **1.0** (full stem reaction at TCP). Optional `stem_force_cap_N`, `stem_torque_cap_Nm` clamp lagged feedback. Use `stem_coupling_gain < 1` only when under-relaxing unstable teleop.
 
 **Intent:** Tree load on the arm is **stem gather + optional explicit apple support**; disable explicit load with `CoupledFruitingScene.stem_harvest_explicit_apple_weight = False` to compare raw joint reactions only.
@@ -281,7 +281,7 @@ Kinematic overwrite of `body_q` without updating `SolverVBD.body_q_prev` makes V
 ```
 examples/example_coupled_fruiting.py
   └── build_coupled_fruiting_placeholder()  # or build_coupled_fruiting_fr3()
-        ├── fruiting_system.generate_coupled_cable_scene()   # Model B
+        ├── fruiting_system.coupled.generate_coupled_cable_scene()   # Model B (re-exported from fruiting_system)
         └── robot model (placeholder TCP or FR3 USD)           # Model A
   └── each frame: optional update_fr3_ee_teleop(frame_dt)
   └── each substep: coupled_substep(dt)  # or mujoco_substep / vbd_substep

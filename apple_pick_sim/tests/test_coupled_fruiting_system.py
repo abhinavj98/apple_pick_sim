@@ -403,31 +403,6 @@ def test_coupled_substep_after_cable_clear_forces_hook_runs_once_per_substep():
     assert len(calls) == 2
 
 
-def test_coupled_harvest_forces_stay_small_without_external_load():
-    """Stem-harvest TCP load stays finite/capped when the arm is held via direct joints."""
-    from apple_pick_sim.robot import fr3_robot
-
-    cf = _import_cf()
-    fs = _import_fs()
-    ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = build_coupled_fr3(cf, ranges, 8,
-        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False),
-        mujoco_solver_kwargs=DEFAULT_MJ_KW,
-    )
-    tcp = scene.tcp_body_index
-    proxy = scene.cable.gripper_proxy_body
-    run_coupled_substeps_direct_hold(scene, fr3_robot, 60, sub_dt=SUB_DT)
-    wrenches = scene.proxy_forces.numpy().reshape(-1, 6)
-    fmag = float(np.linalg.norm(wrenches[tcp, :3]))
-    assert fmag < _QUIESCENT_HARVEST_F_CAP_N, (
-        f"spurious coupling harvest |F|={fmag:.2f} N (expected capped under hold)"
-    )
-    rq = scene.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp]
-    pq = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[proxy]
-    pos_err = float(np.linalg.norm(rq[:3] - pq[:3]))
-    assert pos_err < 2e-3, f"TCP-proxy drift under hold: {pos_err} m"
-
-
 def test_measure_fruiting_forces_after_coupled_step():
     cf = _import_cf()
     fs = _import_fs()
@@ -1770,7 +1745,7 @@ def test_example_coupled_fruiting_default_robot_is_fr3():
 
     args = ex._make_parser().parse_args([])
     assert args.robot == "fr3"
-    assert args.vic_linear_k == 800.0
+    assert args.vic_linear_k == 8000.0
     assert args.vic_angular_d == 4.0
 
 

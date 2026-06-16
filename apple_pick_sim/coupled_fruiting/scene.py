@@ -367,7 +367,7 @@ class CoupledFruitingScene:
     stem_coupling_gain: float = DEFAULT_STEM_COUPLING_GAIN
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM
-    stem_harvest_explicit_apple_weight: bool = True
+    stem_harvest_explicit_apple_weight: bool = False
     """Add ``-m_apple * gravity`` to stem harvest (prescribed apple, ``inv_mass == 0``)."""
     apple_mass_kg: float = 0.0
     """Cached ``body_mass[apple]`` at build; avoids host sync during CUDA graph capture."""

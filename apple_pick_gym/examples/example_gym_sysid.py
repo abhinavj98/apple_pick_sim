@@ -123,7 +123,7 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--hold-duration-s",
         type=float,
-        default=0.5,
+        default=1.5,
         help="Zero-velocity hold after each increment [s] (default 1.5).",
     )
     p.add_argument(

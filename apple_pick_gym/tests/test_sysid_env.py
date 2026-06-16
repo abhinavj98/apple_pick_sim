@@ -7,7 +7,8 @@ import math
 import numpy as np
 import pytest
 
-from apple_pick_sim.tests.conftest import COUPLED_ROBOT_BASE_POS, fr3_assets_available
+from apple_pick_sim.coupled_fruiting.defaults import COUPLED_ROBOT_BASE_POS
+from apple_pick_sim.tests.conftest import fr3_assets_available
 
 
 def _maybe_import_gymnasium():

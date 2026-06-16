@@ -48,6 +48,25 @@ def _cached_apple_mass_kg(cable: CoupledCableScene) -> float:
     return apple_mass_kg_from_model(cable.model, cable.apple_body)
 
 
+def _resolve_stem_harvest_explicit_apple_weight(
+    gripper_proxy: GripperProxyConfig | None,
+    *,
+    override: bool | None = None,
+) -> bool:
+    """Enable explicit apple-weight correction only for prescribed (welded) apples."""
+    if override is True:
+        if gripper_proxy is not None and not gripper_proxy.fix_to_apple:
+            raise ValueError(
+                "stem_harvest_explicit_apple_weight=True with fix_to_apple=False is not "
+                "supported: VBD already integrates apple gravity; explicit correction "
+                "double-counts apple weight at the TCP."
+            )
+        return True
+    if override is False:
+        return False
+    return bool(gripper_proxy is not None and gripper_proxy.fix_to_apple)
+
+
 def _robot_root_xform(
     ranges: dict,
     proxy_body_q7: Any,
@@ -99,6 +118,7 @@ def _assemble_coupled_robot_scene(
     qd_synced: wp.array | None = None,
     mirror_welded_cable_after_bootstrap: bool = False,
     skip_ik_bootstrap: bool = False,
+    stem_harvest_explicit_apple_weight: bool | None = None,
 ) -> CoupledFruitingScene:
     """Wire cable scene, robot model, bootstrap, and coupling buffers into a ``CoupledFruitingScene``."""
     robot_state_0 = robot_model.state()
@@ -140,6 +160,11 @@ def _assemble_coupled_robot_scene(
     stem_joint = (
         _find_stem_apple_joint(cable) if cable.apple_body is not None else None
     )
+    grip_cfg = cable.gripper_proxy_config
+    explicit_apple_weight = _resolve_stem_harvest_explicit_apple_weight(
+        grip_cfg,
+        override=stem_harvest_explicit_apple_weight,
+    )
 
     scene = CoupledFruitingScene(
         cable=cable,
@@ -165,6 +190,7 @@ def _assemble_coupled_robot_scene(
         stem_torque_cap_Nm=stem_torque_cap_Nm,
         apple_mass_kg=_cached_apple_mass_kg(cable),
         qd_synced=qd_synced,
+        stem_harvest_explicit_apple_weight=explicit_apple_weight,
     )
     init_robot_mujoco_step_buffers(scene)
     return scene

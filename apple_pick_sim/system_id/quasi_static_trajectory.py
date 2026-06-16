@@ -17,7 +17,7 @@ class QuasiStaticStepConfig:
 
     movement_per_step_m: float = 0.05
     total_movement_m: float = 0.10
-    hold_duration_s: float = 0.5
+    hold_duration_s: float = 1.5
     move_speed_mps: float = 0.2
     control_hz: float = 60.0
     skip_return: bool = True

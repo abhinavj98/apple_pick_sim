@@ -79,8 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         ExcitationContext,
         QuasiStaticTrajectory,
         estimate_trajectory_frames,
-        sample_fibonacci_hemisphere,
+        sample_robot_facing_pull_directions,
     )
+    from apple_pick_sim.tests.conftest import COUPLED_ROBOT_BASE_POS
 
     config = _trajectory_config_from_args(args)
     max_steps = int(args.max_steps)
@@ -95,9 +96,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     obs, _ = env.reset(seed=args.seed)
 
-    tcp_target = np.asarray(env._controller.target_tf[:3], dtype=np.float64)
-    stem_dir = _normalize(np.asarray(obs["apple_pos"], dtype=np.float64) - tcp_target)
-    directions = sample_fibonacci_hemisphere(args.n_directions, stem_dir)
+    apple_pos = np.asarray(obs["apple_pos"], dtype=np.float64)
+    robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+
+    cable = env._scene.cable
+    stem_bodies = cable.stem_bodies
+    assert len(stem_bodies) >= 2
+    body_q = cable.state_0.body_q.numpy().reshape(-1, 7)
+    physical_stem = body_q[int(stem_bodies[-1]), :3] - body_q[int(stem_bodies[-2]), :3]
+    physical_stem = _normalize(physical_stem)
+
+    directions = sample_robot_facing_pull_directions(args.n_directions, physical_stem, robot_vec)
 
     traj = QuasiStaticTrajectory(directions, config)
 

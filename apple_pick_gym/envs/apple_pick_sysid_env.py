@@ -202,7 +202,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             self._pending_weld_reference_quat = None
             return None
 
-        from apple_pick_sim.system_id import sample_fibonacci_hemisphere
+        from apple_pick_sim.system_id import sample_fibonacci_hemisphere, stem_perpendicular_robot_pole
         from apple_pick_sim.coupled_fruiting.defaults import COUPLED_ROBOT_BASE_POS
 
         cable = probe_scene.cable
@@ -228,14 +228,23 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             float(apple_quat[3]),
         )
         robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
-        robot_dir = robot_vec / np.linalg.norm(robot_vec)
+
+        stem_bodies = cable.stem_bodies
+        assert len(stem_bodies) >= 2
+        body_q = cable.state_0.body_q.numpy().reshape(-1, 7)
+        stem_tip = body_q[int(stem_bodies[-1]), :3]
+        stem_base = body_q[int(stem_bodies[-2]), :3]
+        physical_stem = stem_tip - stem_base
+        physical_stem /= np.linalg.norm(physical_stem)
+
+        pole = stem_perpendicular_robot_pole(physical_stem, robot_vec)
 
         if self._weld_direction_override is not None:
             weld = self._weld_direction_override
         else:
             directions = sample_fibonacci_hemisphere(
                 self._n_weld_hemisphere_samples,
-                robot_dir,
+                pole,
             )
             idx = self._weld_reset_count % self._n_weld_hemisphere_samples
             self._weld_reset_count += 1

@@ -48,7 +48,7 @@ Later: real-data collection [M4], final pick policy [M5].
 **Next up (ordered):**
 
 1. [x] **M3.0.1 — Quasi-static §2.1 trajectory + gym replay (shipped):** Fibonacci forward-hemisphere directions, stepped push–hold–return phase machine, `ApplePickSysId-v0`, `example_gym_sysid.py` smoke. Spec: `docs/system-id-quasi-static-implementation.md`, review: `docs/sysid-data-collection-review.md`.
-2. [ ] **M3.0.2 — Quasi-static directions + digital-twin fixtures (next):** Verify excitation directions are correct relative to stem attachment and fixture `fruiting_base_pos` / `robot_base_pos` (forward hemisphere toward apple, robot-facing weld framing, no sign/frame mix-ups); tune JSON **ranges** so geometry and stiffness bands match a physical digital-twin target; deliver a small **named fixture catalog** under `apple_pick_sim/fixtures/` (e.g. straight-rod test baseline + field-twin candidate) with documented base poses, range bounds, and per-fixture sys-id smoke (`example_gym_sysid.py` + pytest). Unblocks trustworthy §2.1 data capture and CEM rollouts.
+2. [ ] **M3.0.2 — Quasi-static directions + digital-twin fixtures (next):** Verify excitation directions are correct relative to stem attachment and fixture `fruiting_base_pos` / `robot_base_pos` (forward hemisphere toward apple, robot-facing weld framing, no sign/frame mix-ups); use `apple_pick_gym/examples/visualize_pull_directions.py` for live geometry checks; tune JSON **ranges** so geometry and stiffness bands match a physical digital-twin target; deliver a small **named fixture catalog** under `apple_pick_sim/fixtures/` (e.g. straight-rod test baseline + field-twin candidate) with documented base poses, range bounds, and per-fixture sys-id smoke (`example_gym_sysid.py` + pytest). Unblocks trustworthy §2.1 data capture and CEM rollouts.
 3. [ ] **M3.0.3 — Remaining excitation trajectories (§2.2–2.3):** Translational **log chirps** ($A \propto 1/f$), torsional quasi-static + chirp; trajectory type + instantaneous $f(t)$ in logged state; wrench force-limit guard; §2.1 amplitude bounds feed 2.2/2.3. Deliver: trajectory generators + sim replay smoke (recorded $v_{ee}$ drives VBD).
 4. [ ] **M3.1 — Transition dataset + MMD:** Per-direction transition features $[s_t, \Delta s_t]$, z-score normalization, anisotropic RBF MMD objective.
 5. [ ] **M3.2 — CEM loop:** Sample $\theta$, subprocess rollouts, elite update; validate on held-out discrete-frequency trajectories.
@@ -132,7 +132,13 @@ uv run python apple_pick_sim/diagnostics/verify_coupling.py --num-substeps 600 -
 # M3.0 §2.1 quasi-static sys-ID (pytest)
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_quasi_static_sysid.py \
+  apple_pick_sim/tests/test_visualize_pull_directions.py \
   apple_pick_gym/tests/test_sysid_env.py -q
+
+# M3.0 §2.1 pull-direction geometry viz (PNG; matches collection defaults)
+uv run python apple_pick_gym/examples/visualize_pull_directions.py \
+  --seed 0 --n-directions 10 --fix-to-apple-warmup-substeps 0 \
+  --output pull_directions.png
 
 # M3.0 §2.1 quasi-static demo (one direction, 2 cm steps)
 uv run python apple_pick_gym/examples/example_gym_sysid.py \

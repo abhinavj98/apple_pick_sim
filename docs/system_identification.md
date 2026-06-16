@@ -39,6 +39,14 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
 
 On headless Linux the example auto-appends `--viewer null`. The script prints per-step phase/force logs and mean steady-state `ft_wrist` per hold increment at the end. Data is not yet written to disk (see `docs/sysid-data-collection-review.md`).
 
+**Verify pull-direction geometry** (default 90° hemisphere, matches collection):
+
+```bash
+uv run python apple_pick_gym/examples/visualize_pull_directions.py \
+  --seed 0 --n-directions 10 --fix-to-apple-warmup-substeps 0 \
+  --output pull_directions.png
+```
+
 ### 2.2 Multi-Axis Log Chirps (modal excitation)
 
 **Purpose:** Identify natural frequencies and bandwidth of each node. Primary branch resonates lower; stem/spur higher.

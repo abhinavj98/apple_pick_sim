@@ -303,6 +303,31 @@ def _approach_dir_from_robot_base(
     return wp.normalize(robot_vec)
 
 
+def _stem_perpendicular_robot_pole(
+    stem_dir: wp.vec3,
+    robot_vec: wp.vec3,
+) -> wp.vec3:
+    """Unit pole in the stem-perpendicular plane facing the robot."""
+    stem = wp.normalize(stem_dir)
+    perp = robot_vec - wp.dot(robot_vec, stem) * stem
+    perp_len = float(wp.length(perp))
+    if perp_len < 1e-12:
+        ref = wp.vec3(1.0, 0.0, 0.0)
+        perp = wp.cross(stem, ref)
+        perp_len = float(wp.length(perp))
+        if perp_len < 1e-12:
+            ref = wp.vec3(0.0, 1.0, 0.0)
+            perp = wp.cross(stem, ref)
+            perp_len = float(wp.length(perp))
+        if perp_len < 1e-12:
+            raise ValueError("cannot construct perpendicular to stem_dir")
+        pole = perp / perp_len
+        if wp.dot(pole, robot_vec) < 0.0:
+            pole = -pole
+        return pole
+    return perp / perp_len
+
+
 def _weld_apple_center(
     config: GripperProxyConfig,
     artifacts: _FruitingChainArtifacts,
@@ -327,17 +352,19 @@ def _resolve_robot_facing_approach_dir(
     config: GripperProxyConfig,
     apple_pos: wp.vec3,
     robot_base_pos: tuple[float, float, float],
+    stem_dir: wp.vec3,
 ) -> wp.vec3:
-    """Approach direction for robot-facing weld (pole or explicit ``weld_direction``)."""
-    robot_approach_dir = _approach_dir_from_robot_base(apple_pos, robot_base_pos)
+    """Approach direction for robot-facing weld (stem⊥ pole or explicit ``weld_direction``)."""
+    robot_vec = wp.vec3(*robot_base_pos) - apple_pos
+    pole = _stem_perpendicular_robot_pole(stem_dir, robot_vec)
     if config.weld_direction is None:
-        return robot_approach_dir
+        return pole
 
     weld_dir = wp.normalize(wp.vec3(*config.weld_direction))
-    if wp.dot(weld_dir, robot_approach_dir) < 0.0:
+    if wp.dot(weld_dir, pole) < 0.0:
         raise ValueError(
-            "weld_direction must be on the robot-facing hemisphere "
-            "(dot product with apple→robot ≥ 0)"
+            "weld_direction must be on the stem-perpendicular robot-facing hemisphere "
+            "(dot product with stem⊥ pole ≥ 0)"
         )
     return weld_dir
 
@@ -387,6 +414,7 @@ def _add_gripper_proxy(
                 config,
                 weld_apple_center,
                 robot_base_pos,
+                artifacts.proxy_placement_dir,
             )
             proxy_pos = weld_apple_center + robot_facing_approach_dir * (
                 apple_radius + clearance

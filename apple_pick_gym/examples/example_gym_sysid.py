@@ -195,8 +195,9 @@ def main() -> None:
         ExcitationContext,
         QuasiStaticTrajectory,
         estimate_trajectory_frames,
-        sample_fibonacci_hemisphere,
+        sample_robot_facing_pull_directions,
     )
+    from apple_pick_sim.tests.conftest import COUPLED_ROBOT_BASE_POS
 
     config = _trajectory_config_from_args(args)
     n_directions = int(args.n_directions)
@@ -219,8 +220,18 @@ def main() -> None:
         raise RuntimeError("Env did not create a scene; did reset() succeed?")
 
     tcp_target = np.asarray(env._controller.target_tf[:3], dtype=np.float64)
-    stem_dir = _normalize(np.asarray(obs["apple_pos"], dtype=np.float64) - tcp_target)
-    directions = sample_fibonacci_hemisphere(n_directions, stem_dir)
+    apple_pos = np.asarray(obs["apple_pos"], dtype=np.float64)
+    grasp_axis = _normalize(apple_pos - tcp_target)
+    robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+
+    cable = scene.cable
+    stem_bodies = cable.stem_bodies
+    assert len(stem_bodies) >= 2
+    body_q = cable.state_0.body_q.numpy().reshape(-1, 7)
+    physical_stem_dir = _normalize(
+        body_q[int(stem_bodies[-1]), :3] - body_q[int(stem_bodies[-2]), :3]
+    )
+    directions = sample_robot_facing_pull_directions(n_directions, physical_stem_dir, robot_vec)
     traj = QuasiStaticTrajectory(directions, config)
 
     viewer.set_model(scene.cable.model)
@@ -245,7 +256,14 @@ def main() -> None:
         f"{config.total_movement_m*100:.1f} cm total, "
         f"{config.move_speed_mps:.2f} m/s burst, {config.hold_duration_s:.1f} s hold"
     )
-    print(f"Stem direction (TCP → apple): ({stem_dir[0]:+.3f}, {stem_dir[1]:+.3f}, {stem_dir[2]:+.3f})")
+    print(
+        f"Physical stem (base → tip): "
+        f"({physical_stem_dir[0]:+.3f}, {physical_stem_dir[1]:+.3f}, {physical_stem_dir[2]:+.3f})"
+    )
+    print(
+        f"Grasp axis (TCP → apple): "
+        f"({grasp_axis[0]:+.3f}, {grasp_axis[1]:+.3f}, {grasp_axis[2]:+.3f})"
+    )
 
     wall_start = time.perf_counter()
 

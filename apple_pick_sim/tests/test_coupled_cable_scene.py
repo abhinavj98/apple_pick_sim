@@ -190,7 +190,7 @@ def _stem_direction_world(scene) -> np.ndarray:
 
 
 def test_robot_facing_weld_places_proxy_toward_robot_base():
-    """Welded grasp sits on the apple hemisphere facing the robot base."""
+    """Welded grasp sits on the stem-perpendicular robot-facing pole."""
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     scene = fs.generate_coupled_cable_scene(
@@ -208,13 +208,17 @@ def test_robot_facing_weld_places_proxy_toward_robot_base():
     proxy_pos = body_q[scene.gripper_proxy_body, :3]
     robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
     weld_vec = proxy_pos - apple_pos
-    robot_vec /= np.linalg.norm(robot_vec)
     weld_vec /= np.linalg.norm(weld_vec)
-    assert float(np.dot(weld_vec, robot_vec)) > 0.99
+    stem = _stem_direction_world(scene)
+    from apple_pick_sim.system_id import stem_perpendicular_robot_pole
+
+    pole = stem_perpendicular_robot_pole(stem, robot_vec)
+    assert float(np.dot(weld_vec, pole)) > 0.99
+    assert abs(float(np.dot(weld_vec, stem))) < 0.05
 
 
 def test_weld_direction_replaces_pole():
-    """Explicit weld_direction places proxy off the robot-facing pole."""
+    """Explicit weld_direction places proxy off the stem-perpendicular pole."""
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     ref = fs.generate_coupled_cable_scene(
@@ -230,12 +234,15 @@ def test_weld_direction_replaces_pole():
     body_q = ref.state_0.body_q.to("cpu").numpy()
     apple_pos = body_q[ref.apple_body, :3]
     robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
-    robot_dir = robot_vec / np.linalg.norm(robot_vec)
+    stem = _stem_direction_world(ref)
+    from apple_pick_sim.system_id import stem_perpendicular_robot_pole
 
-    # Oblique direction on the robot-facing hemisphere (45° from pole).
-    oblique = robot_dir + np.array([0.3, 0.2, 0.0], dtype=np.float64)
+    pole = stem_perpendicular_robot_pole(stem, robot_vec)
+
+    # Oblique direction on the stem-perpendicular hemisphere (offset in the stem plane).
+    oblique = pole + np.array([0.3, 0.2, 0.0], dtype=np.float64)
     oblique /= np.linalg.norm(oblique)
-    assert float(np.dot(oblique, robot_dir)) > 0.0
+    assert float(np.dot(oblique, pole)) > 0.0
 
     scene = fs.generate_coupled_cable_scene(
         ranges,
@@ -253,7 +260,7 @@ def test_weld_direction_replaces_pole():
     weld_vec = proxy_pos - apple_pos
     weld_dir = weld_vec / np.linalg.norm(weld_vec)
     assert float(np.dot(weld_dir, oblique)) > 0.99
-    assert float(np.dot(weld_dir, robot_dir)) < 0.99
+    assert float(np.dot(weld_dir, pole)) < 0.99
 
 
 def test_weld_reference_pos_accepts_settled_hemisphere_direction():
@@ -274,18 +281,32 @@ def test_weld_reference_pos_accepts_settled_hemisphere_direction():
     settled_apple = np.array([0.21797176, 0.33258533, 0.6142479], dtype=np.float64)
     settled_quat = np.array([0.01010303, 0.832637, -0.09918664, -0.5447711], dtype=np.float64)
 
-    robot_dir_nom = (np.asarray(COUPLED_ROBOT_BASE_POS) - nominal_apple)
-    robot_dir_nom /= np.linalg.norm(robot_dir_nom)
-    robot_dir_set = (np.asarray(COUPLED_ROBOT_BASE_POS) - settled_apple)
-    robot_dir_set /= np.linalg.norm(robot_dir_set)
+    robot_vec_nom = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - nominal_apple
+    robot_vec_set = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - settled_apple
+    physical_stem = _stem_direction_world(ref)
 
-    from apple_pick_sim.system_id import sample_fibonacci_hemisphere
+    from apple_pick_sim.system_id import sample_fibonacci_hemisphere, stem_perpendicular_robot_pole
 
-    weld = sample_fibonacci_hemisphere(10, robot_dir_set)[0]
-    assert float(np.dot(weld, robot_dir_set)) >= 0.0
-    assert float(np.dot(weld, robot_dir_nom)) < 0.0
+    pole_set = stem_perpendicular_robot_pole(physical_stem, robot_vec_set)
+    pole_nom = stem_perpendicular_robot_pole(physical_stem, robot_vec_nom)
 
-    with pytest.raises(ValueError, match="robot-facing hemisphere"):
+    samples = sample_fibonacci_hemisphere(64, pole_set)
+    weld = next(
+        (
+            d
+            for d in samples
+            if float(np.dot(d, pole_set)) >= 0.0 and float(np.dot(d, pole_nom)) < 0.0
+        ),
+        None,
+    )
+    if weld is None:
+        # Tilt toward the stem to leave the nominal cap while staying near the settled pole.
+        weld = pole_set + 0.85 * physical_stem
+        weld = weld / np.linalg.norm(weld)
+    assert float(np.dot(weld, pole_set)) >= 0.0
+    assert float(np.dot(weld, pole_nom)) < 0.0
+
+    with pytest.raises(ValueError, match="stem-perpendicular"):
         fs.generate_coupled_cable_scene(
             ranges,
             seed=2345,

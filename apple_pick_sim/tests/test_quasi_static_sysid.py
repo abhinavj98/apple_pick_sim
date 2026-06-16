@@ -8,7 +8,11 @@ import numpy as np
 import pytest
 
 from apple_pick_sim.system_id.excitation_state import ExcitationContext
-from apple_pick_sim.system_id.fibonacci_hemisphere import sample_fibonacci_hemisphere
+from apple_pick_sim.system_id.fibonacci_hemisphere import (
+    sample_fibonacci_hemisphere,
+    sample_robot_facing_pull_directions,
+    stem_perpendicular_robot_pole,
+)
 from apple_pick_sim.system_id.quasi_static_trajectory import (
     QuasiStaticStepConfig,
     QuasiStaticTrajectory,
@@ -48,6 +52,89 @@ def test_fibonacci_hemisphere_approx_uniform():
             dot = float(np.clip(dirs[i] @ dirs[j], -1.0, 1.0))
             angle = math.acos(dot)
             assert angle >= min_angle_rad - 1e-6, f"dirs {i},{j} too close: {math.degrees(angle):.1f}°"
+
+
+def test_fibonacci_hemisphere_pole_aligned_within_90_degrees():
+    pole = np.array([0.2, 0.2, -0.98], dtype=np.float64)
+    pole /= np.linalg.norm(pole)
+    dirs = sample_fibonacci_hemisphere(20, pole)
+    dots = dirs @ pole
+    assert np.all(dots >= -1e-9)
+    angles = np.arccos(np.clip(dots, -1.0, 1.0))
+    assert np.all(angles <= 0.5 * np.pi + 1e-6)
+
+
+def test_fibonacci_hemisphere_polar_cap_limits_cone():
+    pole = np.array([0.2, 0.2, -0.98], dtype=np.float64)
+    pole /= np.linalg.norm(pole)
+    max_angle = np.pi / 3.0
+    dirs = sample_fibonacci_hemisphere(30, pole, max_polar_angle=max_angle)
+    dots = dirs @ pole
+    assert np.all(dots >= np.cos(max_angle) - 1e-9)
+    angles = np.arccos(np.clip(dots, -1.0, 1.0))
+    assert np.all(angles <= max_angle + 1e-6)
+
+
+def test_stem_perpendicular_robot_pole_orthogonal_to_stem():
+    stem = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    robot_vec = np.array([0.3, 0.4, -0.5], dtype=np.float64)
+    pole = stem_perpendicular_robot_pole(stem, robot_vec)
+    assert abs(float(np.linalg.norm(pole)) - 1.0) < 1e-9
+    assert abs(float(np.dot(pole, stem))) < 1e-9
+
+
+def test_stem_perpendicular_robot_pole_faces_robot():
+    stem = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    robot_vec = np.array([0.3, 0.4, -0.5], dtype=np.float64)
+    pole = stem_perpendicular_robot_pole(stem, robot_vec)
+    assert float(np.dot(pole, robot_vec)) > 0.0
+
+
+def test_stem_perpendicular_robot_pole_parallel_fallback():
+    stem = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    robot_vec = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    pole = stem_perpendicular_robot_pole(stem, robot_vec)
+    assert abs(float(np.linalg.norm(pole)) - 1.0) < 1e-9
+    assert abs(float(np.dot(pole, stem))) < 1e-9
+
+
+def test_sample_fibonacci_hemisphere_on_stem_perp_pole():
+    stem = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    robot_vec = np.array([0.3, 0.4, -0.5], dtype=np.float64)
+    pole = stem_perpendicular_robot_pole(stem, robot_vec)
+    max_angle = np.pi / 3.0
+    dirs = sample_fibonacci_hemisphere(30, pole, max_polar_angle=max_angle)
+    stem_dots = dirs @ stem
+    assert np.all(np.abs(stem_dots) <= np.sin(max_angle) + 1e-9)
+    pole_dots = dirs @ pole
+    assert np.all(pole_dots >= np.cos(max_angle) - 1e-9)
+
+
+def test_sample_robot_facing_pull_directions_matches_pole_cap():
+    stem = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    robot_vec = np.array([0.3, 0.4, -0.5], dtype=np.float64)
+    pole = stem_perpendicular_robot_pole(stem, robot_vec)
+    dirs = sample_robot_facing_pull_directions(20, stem, robot_vec)
+    expected = sample_fibonacci_hemisphere(20, pole)
+    np.testing.assert_allclose(dirs, expected, rtol=1e-9, atol=1e-9)
+
+
+def test_fibonacci_hemisphere_horizontal_half_plane_toward_pole():
+    pole = np.array([0.2, 0.2, -0.98], dtype=np.float64)
+    pole /= np.linalg.norm(pole)
+    pole_xy_hat = pole[:2] / np.linalg.norm(pole[:2])
+    dirs = sample_fibonacci_hemisphere(
+        30,
+        pole,
+        max_polar_angle=np.pi / 3.0,
+        min_horizontal_dot=0.0,
+    )
+    for d in dirs:
+        d_xy = d[:2]
+        n = float(np.linalg.norm(d_xy))
+        if n < 1e-9:
+            continue
+        assert float(np.dot(d_xy / n, pole_xy_hat)) >= -1e-9
 
 
 def _collect_trajectory(traj: QuasiStaticTrajectory) -> list[tuple[str, object]]:

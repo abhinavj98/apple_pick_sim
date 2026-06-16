@@ -254,3 +254,25 @@ uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/ -q
 ```
 
 The root `pyproject.toml` installs `apple_pick_sim` and `apple_pick_gym` editable and path-depends on the `newton/` submodule.
+
+### M3.0 §2.1 quasi-static sys-ID (`ApplePickSysId-v0`)
+
+Stepped push–hold excitation along Fibonacci-hemisphere pull directions. Spec: `docs/system-id-quasi-static-implementation.md`.
+
+```bash
+# One-direction smoke (2 cm steps, 10 cm total)
+uv run python apple_pick_gym/examples/example_gym_sysid.py \
+  --n-directions 1 --movement-per-step-m 0.02 --total-movement-m 0.10 \
+  --move-speed-mps 0.2
+
+# Pull-direction geometry figure (default 90° hemisphere; matches collection)
+uv run python apple_pick_gym/examples/visualize_pull_directions.py \
+  --seed 0 --n-directions 10 --fix-to-apple-warmup-substeps 0 \
+  --output pull_directions.png
+
+# Tests
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_quasi_static_sysid.py \
+  apple_pick_sim/tests/test_visualize_pull_directions.py \
+  apple_pick_gym/tests/test_sysid_env.py -q
+```

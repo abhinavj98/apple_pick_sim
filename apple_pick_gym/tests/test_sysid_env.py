@@ -62,9 +62,20 @@ def test_sysid_reset_reports_weld_direction():
     scene = env.unwrapped._scene
     apple = int(scene.cable.apple_body)
     apple_pos = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[apple, :3]
-    robot_dir = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
-    robot_dir /= np.linalg.norm(robot_dir)
-    assert float(np.dot(weld, robot_dir)) >= 0.0
+    robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+    robot_dir = robot_vec / np.linalg.norm(robot_vec)
+
+    stem_bodies = scene.cable.stem_bodies
+    assert len(stem_bodies) >= 2
+    body_q = scene.cable.state_0.body_q.numpy().reshape(-1, 7)
+    physical_stem = body_q[int(stem_bodies[-1]), :3] - body_q[int(stem_bodies[-2]), :3]
+    physical_stem /= np.linalg.norm(physical_stem)
+
+    from apple_pick_sim.system_id import stem_perpendicular_robot_pole
+
+    pole = stem_perpendicular_robot_pole(physical_stem, robot_vec)
+    assert float(np.dot(weld, pole)) >= 0.0
+    assert abs(float(np.dot(weld, physical_stem))) <= np.sin(0.5 * np.pi) + 1e-5
     env.close()
 
 
@@ -102,12 +113,18 @@ def test_sysid_reset_weld_direction_override():
     scene = env.unwrapped._scene
     apple = int(scene.cable.apple_body)
     apple_pos = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[apple, :3]
-    robot_dir = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
-    robot_dir /= np.linalg.norm(robot_dir)
+    robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+    stem_bodies = scene.cable.stem_bodies
+    body_q = scene.cable.state_0.body_q.numpy().reshape(-1, 7)
+    physical_stem = body_q[int(stem_bodies[-1]), :3] - body_q[int(stem_bodies[-2]), :3]
+    physical_stem /= np.linalg.norm(physical_stem)
 
-    oblique = robot_dir + np.array([0.3, 0.2, 0.0], dtype=np.float64)
+    from apple_pick_sim.system_id import stem_perpendicular_robot_pole
+
+    pole = stem_perpendicular_robot_pole(physical_stem, robot_vec)
+    oblique = pole + np.array([0.3, 0.2, 0.0], dtype=np.float64)
     oblique /= np.linalg.norm(oblique)
-    assert float(np.dot(oblique, robot_dir)) > 0.0
+    assert float(np.dot(oblique, pole)) > 0.0
 
     env.close()
     env = ApplePickSysIdEnv(

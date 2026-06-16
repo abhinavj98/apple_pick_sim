@@ -30,7 +30,9 @@ Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0
 
 | Module | Role |
 |--------|------|
-| `apple_pick_sim/system_id/fibonacci_hemisphere.py` | Golden-ratio Fibonacci lattice; forward hemisphere filter |
+| `apple_pick_sim/system_id/fibonacci_hemisphere.py` | Golden-ratio polar-cap lattice, rotation to world frame, `stem_perpendicular_robot_pole`, `sample_robot_facing_pull_directions` |
+| `apple_pick_sim/system_id/pull_direction_viz.py` | Live env geometry extraction + 3-panel matplotlib figures |
+| `apple_pick_gym/examples/visualize_pull_directions.py` | CLI to render pull-direction figures from `ApplePickSysIdEnv` |
 | `apple_pick_sim/system_id/quasi_static_trajectory.py` | Phase machine, `derive_n_steps`, `estimate_trajectory_frames`, `iter_frames()` |
 | `apple_pick_sim/system_id/excitation_state.py` | `ExcitationContext` dataclass |
 | `apple_pick_gym/envs/apple_pick_sysid_env.py` | Gym env (`ApplePickSysId-v0`) |
@@ -39,20 +41,37 @@ Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0
 
 ## Fibonacci hemisphere
 
-Points on the unit sphere use the standard golden-angle lattice:
+Pull excitation directions and weld orientations share the same pole geometry but serve different roles:
+
+- **Pull directions** (TCP push during §2.1): sampled via `sample_robot_facing_pull_directions(n, physical_stem, robot_vec)`.
+- **Weld directions** (gripper orientation at reset): one direction per reset from the same pole-centered cap (`ApplePickSysIdEnv`, cycles across resets).
+
+**Pole:** `stem_perpendicular_robot_pole(physical_stem, robot_vec)` — unit vector perpendicular to the physical stem (base→tip) and facing the fixture robot base (`robot_vec = robot_base_pos − apple_pos`).
+
+**Cap sampling:** build an area-uniform golden-ratio lattice on the `+Z` polar cap in a local frame, then rotate so `+Z` aligns with the pole:
 
 \[
-\phi_i = \arccos\left(1 - \frac{2(i + \tfrac{1}{2})}{N}\right),\quad
+z_i = \cos\theta_{\max} + (1 - \cos\theta_{\max})\left(1 - \frac{i + \tfrac{1}{2}}{N}\right),\quad
+\phi_i = \arccos(z_i),\quad
 \theta_i = \frac{2\pi(i + \tfrac{1}{2})}{\varphi}
 \]
 
-where \(\varphi = (1+\sqrt{5})/2\). Directions with \(\mathbf{d}_i \cdot \hat{s} \ge 0\) for stem direction \(\hat{s}\) are kept; if fewer than `n` survive, indices wrap with reflection duplicates.
+where \(\varphi = (1+\sqrt{5})/2\) and \(\theta_{\max}\) is `max_polar_angle` (default \(\pi/2\), full hemisphere). Every output satisfies \(\mathbf{d}_i \cdot \hat{p} \ge \cos\theta_{\max}\) for pole \(\hat{p}\).
 
-Excitation push directions (TCP → apple) are sampled separately from weld directions (apple → robot base).
+Optional `min_horizontal_dot` filters to the world-XY half-plane toward the pole (not used by default collection or viz). When the filtered pool is shorter than `n`, indices wrap (possible duplicates).
+
+**Verify geometry visually:**
+
+```bash
+uv run python apple_pick_gym/examples/visualize_pull_directions.py \
+  --seed 0 --n-directions 10 --fix-to-apple-warmup-substeps 0 \
+  --output pull_directions.png
+```
 
 ## Tests
 
-- `apple_pick_sim/tests/test_quasi_static_sysid.py` — lattice geometry, per-increment phase sequence, hold counts, amplitude at holds, net displacement, `derive_n_steps` integer-multiple rule, `skip_return` frame counts
+- `apple_pick_sim/tests/test_quasi_static_sysid.py` — polar-cap geometry, pole orthogonality, optional horizontal filter, trajectory phases
+- `apple_pick_sim/tests/test_visualize_pull_directions.py` — live env pull-direction sanity, weld/proxy robot-facing checks, PNG smoke
 - `apple_pick_gym/tests/test_sysid_env.py` — action/obs contract, `tcp_pos` source, weld direction cycling/override, excitation context round-trip, VIC defaults, no force termination, `restore_grasp_pose`
 
 ## How to verify
@@ -60,6 +79,7 @@ Excitation push directions (TCP → apple) are sampled separately from weld dire
 ```bash
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_quasi_static_sysid.py \
+  apple_pick_sim/tests/test_visualize_pull_directions.py \
   apple_pick_gym/tests/test_sysid_env.py -q
 ```
 

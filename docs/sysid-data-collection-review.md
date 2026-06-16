@@ -12,11 +12,13 @@
 
 The implementation is correct:
 
-- `_fibonacci_sphere(n)` generates `(n, 3)` unit vectors on the full sphere using the golden-ratio Fibonacci lattice (indices offset by 0.5, azimuth via `theta = 2π i / φ`, elevation via `phi = arccos(1 - 2i/n)`). This is the standard formulation and avoids polar over-sampling.
-- `sample_fibonacci_hemisphere(n, stem_dir)` builds a pool 4× larger than needed, keeps only the forward-facing half (`dot(d, stem_dir) >= 0`), then draws the first `n` from that forward set with cycling if the pool runs short. All outputs are re-normalised.
-- Tests confirm unit norms, forward-facing invariant, exact count, and ≥15° pairwise separation for 10 samples.
+- `_fibonacci_hemisphere_local(n, max_polar_angle)` generates area-uniform unit directions on a polar cap around `+Z` (golden-ratio azimuth, `z` linear in index so solid angle is uniform). Default `max_polar_angle=π/2` is a full hemisphere.
+- `sample_fibonacci_hemisphere(n, pole_dir, …)` rotates that cap so `+Z` aligns with the pole and returns world-frame directions with `dot(d, pole) >= cos(max_polar_angle)`.
+- `sample_robot_facing_pull_directions(n, physical_stem, robot_vec, …)` is the shared entry point for data collection and viz: pole = `stem_perpendicular_robot_pole(physical_stem, robot_vec)`, then cap sampling at default 90°.
+- Optional `min_horizontal_dot` filters to the world-XY half-plane toward the pole; **not** used by default collection or viz (both use the full pole-centered hemisphere).
+- Tests confirm unit norms, pole cap bounds, pole orthogonality, robot-facing pole, and optional horizontal filter.
 
-**Verdict:** faithful to §2.1 spec.
+**Verdict:** faithful to §2.1 spec. Use `visualize_pull_directions.py` (default 90°) to verify geometry against the live env before M3.0.2 fixture tuning.
 
 ### 1.2 Trajectory phase machine (`quasi_static_trajectory.py`)
 

@@ -189,7 +189,7 @@ uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/ -q
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py --viewer null --num-frames 60
 ```
 
-GPU coupling inventory and benchmarks: `docs/gpu-coupling-optimization.md`, `docs/gpu-architecture-report.md`.
+GPU coupling inventory and benchmarks: `docs/gpu-coupling-optimization.md`.
 
 ## Tests
 
@@ -243,7 +243,7 @@ uv run python apple_pick_sim/diagnostics/verify_coupling.py \
 
 ### Gymnasium environments (`apple_pick_gym/`)
 
-Headless Gymnasium wrappers over the coupled FR3 stack. Registered envs include `ApplePickCoupled-v0`, `ApplePickVic-v0`, `ApplePickSysId-v0`, and `ApplePickReplayEnv`. Coupled/VIC/SysID envs expose `Dict` observations and set `info["obs_schema"] == "v2"` on `reset()` / `step()`.
+Headless Gymnasium wrappers over the coupled FR3 stack. Registered envs include `ApplePickCoupled-v0`, `ApplePickVic-v0`, `ApplePickSysId-v0`, and `ApplePickReplay-v0`. Coupled/VIC/SysID envs expose `Dict` observations and set `info["obs_schema"] == "v2"` on `reset()` / `step()`.
 
 **Observation contract:** key names, shapes, units, and env-specific semantics are documented in [`docs/gym-observation-contract.md`](docs/gym-observation-contract.md). Check `obs_schema` when loading rollouts recorded before the v1 replay key rename (`woody_start` / `woody_end` → `woody_part_*`).
 

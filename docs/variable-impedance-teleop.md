@@ -159,7 +159,7 @@ Typical post-grasp VIC (this repo's `--vic` default): teleop advances `target_tf
 ## FD / FIM (\(\pi_{\mathrm{exp}}\))
 
 | Arm mode | Same action \(u\) ⇒ same \(x^{\mathrm{ee}}\)? | FD layout |
-|----------|-----------------------------------------------|-----------| 
+|----------|-----------------------------------------------|-----------|
 | Kinematic teleop | Yes (one leader arm, ghost plants) | **`fd_ghost`** OK for early smoke |
 | Dynamic VIC | **No** — compliance depends on plant \(\theta\) | **`fd_mega_same_u`** or **`fd_replay`** (W × 1×1 coupled workers, same \(u_{0:H}\)) |
 

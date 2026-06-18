@@ -100,4 +100,4 @@ Expected tests for M3.0.3/M3.0.4:
 - privileged replay and observation-only replay run the same recorded `action` sequence;
 - drift metrics are reported for TCP/apple/woody/F/T observations;
 - a sim-generated digital-twin fixture can rebuild topology and base poses from metadata;
-- fixture catalog smoke runs `example_gym_sysid.py --json <fixture> --output <dataset>`.
+- fixture catalog smoke runs `example_gym_sysid.py --output <dataset>` with a named fixture selection path added before M3.0.4 validation.

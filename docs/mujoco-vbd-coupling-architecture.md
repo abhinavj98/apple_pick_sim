@@ -1,6 +1,6 @@
 # MuJoCo + VBD two-Model coupling architecture (M1)
 
-This document describes how the **apple-picking fruiting stack** splits simulation across two Newton `Model` instances, which solver **owns** which part of the scene graph, and how **`fruiting_system/`**, **`coupled_fruiting/`**, and **`coupled_fruiting/proxy_coupling.py`** cooperate. It matches the implementation as of **[M1] Slice 2f** (`docs/ROADMAP.md`, `docs/slice-2f-structural-refactor.md`).
+This document describes how the **apple-picking fruiting stack** splits simulation across two Newton `Model` instances, which solver **owns** which part of the scene graph, and how **`fruiting_system/`**, **`coupled_fruiting/`**, and **`coupled_fruiting/proxy_coupling.py`** cooperate. It matches the shipped **[M1]** stack tracked in `docs/ROADMAP.md`.
 
 **Naming:** The cable side uses **`SolverVBD`** (variational rigid/cable integrator in Newton). The robot side uses **`SolverMuJoCo`** (MuJoCo embedded in Newton). There is **no separate MuJoCo process**—both solvers run inside the same Newton/Warp host.
 

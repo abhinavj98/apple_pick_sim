@@ -56,7 +56,7 @@ Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → 
 |----------|-----------|--------|
 | `coupled_substep` | `wp.clone(body_qd)` | **Fixed** — pooled `qd_synced` + `wp.copy` |
 | `harvest_stem_tension_for_tcp` | Full-buffer `.numpy()` + NumPy limit | **Fixed** — device gather + Warp limit kernel |
-| `DEFAULT_MUJOCO_SOLVER_KWARGS` | `use_mujoco_cpu` | **Default `True`**; opt-in GPU via `mujoco_use_cpu=False` on CUDA |
+| `DEFAULT_MUJOCO_SOLVER_KWARGS` | `use_mujoco_cpu` | **Default `False`** in solver kwargs; builders resolve to MuJoCo CPU on CPU Warp devices and MuJoCo Warp on CUDA unless explicitly overridden |
 | `CouplingForceDebugRecorder` | `.numpy()` | Debug only (unchanged) |
 | FR3 teleop / IK | Host `joint_q` / keyboard | Frame-rate path (acceptable) |
 

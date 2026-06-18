@@ -115,8 +115,10 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
         self._scene.update_fr3_ee_teleop(frame_dt, self._controller, velocity=vel)
 
     @staticmethod
-    def _observation_space_for(n_woody: int) -> spaces.Dict:
-        base = ApplePickCoupledEnv._observation_space_for(n_woody)
+    def _observation_space_for(
+        n_woody: int, junction_names: list[str] | None = None
+    ) -> spaces.Dict:
+        base = ApplePickCoupledEnv._observation_space_for(n_woody, junction_names)
         return spaces.Dict(
             {
                 **dict(base.spaces),
@@ -176,7 +178,7 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
     ) -> None:
         """Draw debug spheres at woody fixed-joint anchors from an observation dict.
 
-        Uses ``woody_part_start_pos`` (flat ``N*3`` world positions [m]) for inter-rod
+        Uses ``woody_part_start_pos`` (per-junction ``(3,)`` world positions [m]) for inter-rod
         and rod–apple fixed joints. The pinned primary-chain root is not a fixed joint
         in ``fruiting_fixed_joints``; pass ``scene`` to also draw it (blue marker).
         Intended for manual visual verification in examples.
@@ -205,7 +207,7 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
                 colors=wp.full(n, wp.vec3(*rgb), dtype=wp.vec3, device=device),
             )
 
-        start = np.asarray(obs["woody_part_start_pos"], dtype=np.float32).reshape(-1, 3)
+        start = ApplePickVicEnv._woody_pos_matrix(obs["woody_part_start_pos"])
         _emit("/gym/woody_parts", start, (0.95, 0.15, 0.15))
 
         base = ApplePickVicEnv._primary_base_world_pos(scene) if scene is not None else None
@@ -213,6 +215,27 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
             _emit("/gym/primary_base", base.reshape(1, 3), (0.15, 0.45, 0.95))
         else:
             log_points("/gym/primary_base", None)
+
+    @staticmethod
+    def _woody_pos_matrix(
+        woody_pos: dict[str, np.ndarray] | np.ndarray,
+        *,
+        junction_names: list[str] | None = None,
+    ) -> np.ndarray:
+        """Return woody anchor positions as ``(N, 3)`` from dict or legacy flat array."""
+        if isinstance(woody_pos, dict):
+            if not woody_pos:
+                return np.zeros((0, 3), dtype=np.float32)
+            if junction_names is not None:
+                return np.stack(
+                    [np.asarray(woody_pos[name], dtype=np.float32) for name in junction_names],
+                    axis=0,
+                )
+            return np.stack(
+                [np.asarray(v, dtype=np.float32) for v in woody_pos.values()],
+                axis=0,
+            )
+        return np.asarray(woody_pos, dtype=np.float32).reshape(-1, 3)
 
     @staticmethod
     def _junction_labels_for_obs(
@@ -259,15 +282,24 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
             return
 
         forces = np.asarray(force, dtype=np.float32).reshape(-1, 6)
-        starts = np.asarray(start, dtype=np.float32).reshape(-1, 3)
-        ends = np.asarray(end, dtype=np.float32).reshape(-1, 3)
+        if isinstance(start, dict):
+            labels = (
+                list(junction_names)
+                if junction_names is not None
+                else list(start.keys())
+            )
+            starts = ApplePickVicEnv._woody_pos_matrix(start, junction_names=labels)
+            ends = ApplePickVicEnv._woody_pos_matrix(end, junction_names=labels)
+        else:
+            starts = np.asarray(start, dtype=np.float32).reshape(-1, 3)
+            ends = np.asarray(end, dtype=np.float32).reshape(-1, 3)
+            labels = ApplePickVicEnv._junction_labels_for_obs(
+                len(forces), scene=scene, junction_names=junction_names
+            )
         n = len(forces)
         if n == 0 or len(starts) != n or len(ends) != n:
             return
 
-        labels = ApplePickVicEnv._junction_labels_for_obs(
-            n, scene=scene, junction_names=junction_names
-        )
         origins = 0.5 * (starts + ends)
         for i, label in enumerate(labels):
             log_tcp_force_arrow(

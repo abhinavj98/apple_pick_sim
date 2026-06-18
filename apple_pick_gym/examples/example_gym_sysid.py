@@ -22,15 +22,24 @@ Headless smoke (cap env steps)::
 
     uv run python apple_pick_gym/examples/example_gym_sysid.py --viewer null \\
       --n-directions 1 --max-steps 200
+
+Per-step trajectory and summary prints (off by default)::
+
+    uv run python apple_pick_gym/examples/example_gym_sysid.py --debug --viewer null \\
+      --n-directions 1 --max-steps 200
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 
@@ -63,6 +72,18 @@ def _fmt_vel_mps(vel: np.ndarray) -> str:
 def _fmt_force_n(force: np.ndarray) -> str:
     f = np.asarray(force, dtype=np.float64).reshape(3)
     return f"({f[0]:+.3f},{f[1]:+.3f},{f[2]:+.3f})"
+
+
+def _debug_flag_in_argv() -> bool:
+    return "--debug" in sys.argv
+
+
+def _make_debug_printer(enabled: bool):
+    def debug_print(*args, **kwargs) -> None:
+        if enabled:
+            print(*args, **kwargs)
+
+    return debug_print
 
 
 def _fmt_dir(v: np.ndarray, *, threshold: float = 1e-6) -> str:
@@ -155,6 +176,17 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Open MuJoCo passive viewer for the FR3 arm (requires a GUI session).",
     )
+    p.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Directory to write Parquet trajectory dataset (metadata + per-episode frames).",
+    )
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print per-step trajectory logs, summaries, and operational notices.",
+    )
     return p
 
 
@@ -180,21 +212,29 @@ def _maybe_log_forces(viewer: object, obs: dict, info: dict, *, amplitude_m: flo
 
 
 def main() -> None:
+    debug_print = _make_debug_printer(_debug_flag_in_argv())
+
     if "--viewer" not in sys.argv and sys.platform.startswith("linux"):
         if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
             sys.argv.extend(["--viewer", "null", "--num-frames", "1"])
-            print("No DISPLAY/WAYLAND_DISPLAY: using --viewer null (override with --viewer gl).")
+            debug_print(
+                "No DISPLAY/WAYLAND_DISPLAY: using --viewer null (override with --viewer gl)."
+            )
 
     parser = _make_parser()
     import newton.examples
 
     viewer, args = newton.examples.init(parser=parser)
+    debug_print = _make_debug_printer(bool(args.debug))
 
     from apple_pick_gym.envs import ApplePickSysIdEnv
     from apple_pick_sim.system_id import (
+        EpisodeMeta,
         ExcitationContext,
         QuasiStaticTrajectory,
+        TrajectoryWriter,
         estimate_trajectory_frames,
+        grasp_snapshot_from_env,
         sample_robot_facing_pull_directions,
     )
     from apple_pick_sim.tests.conftest import COUPLED_ROBOT_BASE_POS
@@ -205,6 +245,8 @@ def main() -> None:
     if max_steps <= 0:
         max_steps = estimate_trajectory_frames(config, n_directions) + 64
 
+    trajectory_writer = TrajectoryWriter(episode_id=str(uuid4())) if args.output else None
+
     env = ApplePickSysIdEnv(
         render_mode=None,
         max_episode_steps=max_steps,
@@ -214,6 +256,16 @@ def main() -> None:
         mujoco_solver_kwargs={"disable_contacts": True},
     )
     obs, info = env.reset(seed=int(args.seed))
+    _reset_weld_direction = info.get("weld_direction")
+
+    if trajectory_writer is not None:
+        snapshot = grasp_snapshot_from_env(
+            env,
+            obs=obs,
+            weld_direction=_reset_weld_direction,
+        )
+        snapshot_path = trajectory_writer.save_initial_state(Path(args.output), snapshot)
+        debug_print(f"Saved initial state snapshot to {snapshot_path}")
 
     scene = env._scene
     if scene is None:
@@ -240,7 +292,7 @@ def main() -> None:
 
     mujoco_viewer = bool(getattr(args, "mujoco_viewer", False))
     if mujoco_viewer and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        print("Suppressing --mujoco-viewer (no DISPLAY/WAYLAND_DISPLAY).")
+        debug_print("Suppressing --mujoco-viewer (no DISPLAY/WAYLAND_DISPLAY).")
         mujoco_viewer = False
 
     if hasattr(viewer, "hide_loading_splash"):
@@ -249,18 +301,19 @@ def main() -> None:
     hold_forces: dict[tuple[int, int], list[np.ndarray]] = defaultdict(list)
     prev_phase: str | None = None
     dir_idx = -1
+    recorded_steps = 0
 
-    print(f"Quasi-static sys-ID: {n_directions} directions, up to {max_steps} env steps")
-    print(
+    debug_print(f"Quasi-static sys-ID: {n_directions} directions, up to {max_steps} env steps")
+    debug_print(
         f"Trajectory: {config.movement_per_step_m*100:.1f} cm/step, "
         f"{config.total_movement_m*100:.1f} cm total, "
         f"{config.move_speed_mps:.2f} m/s burst, {config.hold_duration_s:.1f} s hold"
     )
-    print(
+    debug_print(
         f"Physical stem (base → tip): "
         f"({physical_stem_dir[0]:+.3f}, {physical_stem_dir[1]:+.3f}, {physical_stem_dir[2]:+.3f})"
     )
-    print(
+    debug_print(
         f"Grasp axis (TCP → apple): "
         f"({grasp_axis[0]:+.3f}, {grasp_axis[1]:+.3f}, {grasp_axis[2]:+.3f})"
     )
@@ -323,7 +376,7 @@ def main() -> None:
             if step_wall_s is not None
             else ""
         )
-        print(
+        debug_print(
             f"  step phase={phase:8s} dir={dir_idx:2d} step={traj.current_step_index:1d}, \n"
             f"amp={amp*100:5.1f} cm  |F|={np.linalg.norm(f_wrist):6.2f} N"
             f"  F={_fmt_force_n(f_wrist)} N  F_dir={_fmt_dir(f_wrist)}, \n"
@@ -350,10 +403,10 @@ def main() -> None:
 
         for step_idx, (phase, vel) in enumerate(traj.iter_frames()):
             if step_idx >= max_steps:
-                print(f"\nStopped at --max-steps={max_steps}")
+                debug_print(f"\nStopped at --max-steps={max_steps}")
                 break
             if not viewer.is_running():
-                print("\nViewer closed.")
+                debug_print("\nViewer closed.")
                 break
 
             if phase == "move_out" and prev_phase != "move_out":
@@ -370,8 +423,10 @@ def main() -> None:
 
                 if new_direction:
                     dir_idx += 1
-                    print(f"\n--- Direction {dir_idx}: ({directions[dir_idx][0]:+.3f}, "
-                          f"{directions[dir_idx][1]:+.3f}, {directions[dir_idx][2]:+.3f}) ---")
+                    debug_print(
+                        f"\n--- Direction {dir_idx}: ({directions[dir_idx][0]:+.3f}, "
+                        f"{directions[dir_idx][1]:+.3f}, {directions[dir_idx][2]:+.3f}) ---"
+                    )
 
             ctx = ExcitationContext(
                 type="quasi_static",
@@ -384,6 +439,18 @@ def main() -> None:
             step_wall_start = time.perf_counter()
             obs, _reward, terminated, truncated, info = env.step(action)
             sim_time += 1.0 / config.control_hz
+
+            if trajectory_writer is not None:
+                trajectory_writer.record_step(
+                    step_idx=step_idx,
+                    sim_time=sim_time,
+                    phase=phase,
+                    dir_idx=dir_idx,
+                    amplitude_m=traj.current_amplitude_m,
+                    action=action,
+                    obs=obs,
+                )
+                recorded_steps += 1
 
             scene = env._scene
             if scene is None:
@@ -420,13 +487,13 @@ def main() -> None:
                 time.sleep(max(0.0, render_dt - (1.0 / config.control_hz)))
 
             if terminated:
-                print(f"\nTerminated at step {step_idx}.")
+                debug_print(f"\nTerminated at step {step_idx}.")
                 break
             if truncated:
-                print(f"\nTruncated at step {step_idx} (max_episode_steps={max_steps}).")
+                debug_print(f"\nTruncated at step {step_idx} (max_episode_steps={max_steps}).")
                 break
 
-        print("\nMean steady-state wrist force [N] per direction and increment (hold phases):")
+        debug_print("\nMean steady-state wrist force [N] per direction and increment (hold phases):")
         for dir_idx in sorted({k[0] for k in hold_forces}):
             d = directions[dir_idx]
             for step_idx in sorted(k[1] for k in hold_forces if k[0] == dir_idx):
@@ -435,12 +502,55 @@ def main() -> None:
                     continue
                 mean_f = np.mean(np.stack(samples, axis=0), axis=0)
                 amp_cm = (step_idx + 1) * config.movement_per_step_m * 100.0
-                print(
+                debug_print(
                     f"  dir {dir_idx:2d} step {step_idx} amp={amp_cm:4.1f} cm"
                     f"  cmd_d=({d[0]:+.3f},{d[1]:+.3f},{d[2]:+.3f})"
                     f"  F=({mean_f[0]:+.3f},{mean_f[1]:+.3f},{mean_f[2]:+.3f})"
                     f"  F_dir={_fmt_dir(mean_f)}"
                 )
+
+        if trajectory_writer is not None and recorded_steps > 0:
+            weld = info.get("weld_direction")
+            if weld is None:
+                weld = _reset_weld_direction
+            if weld is None:
+                weld_arr = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+            else:
+                weld_arr = np.asarray(weld, dtype=np.float64).reshape(3)
+            weld_norm = float(np.linalg.norm(weld_arr))
+            if weld_norm < 1e-12:
+                weld_tuple = (0.0, 0.0, 1.0)
+            else:
+                weld_tuple = (
+                    float(weld_arr[0] / weld_norm),
+                    float(weld_arr[1] / weld_norm),
+                    float(weld_arr[2] / weld_norm),
+                )
+            params_fp = info.get("params_fingerprint", {})
+            meta = EpisodeMeta(
+                episode_id=trajectory_writer.episode_id,
+                weld_direction=weld_tuple,
+                excitation_type="quasi_static",
+                n_woody_parts=int(info.get("n_woody_parts", 0)),
+                junction_names=list(env.unwrapped.junction_names),
+                params_fingerprint=json.dumps(params_fp, sort_keys=True),
+                control_hz=float(config.control_hz),
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                seed=int(args.seed),
+                n_directions=n_directions,
+                initial_tcp_pos=tuple(float(x) for x in tcp_target.reshape(3)),
+                movement_per_step_m=float(config.movement_per_step_m),
+                total_movement_m=float(config.total_movement_m),
+                hold_duration_s=float(config.hold_duration_s),
+                move_speed_mps=float(config.move_speed_mps),
+                skip_return=bool(config.skip_return),
+            )
+            output_dir = Path(args.output)
+            frames_path = trajectory_writer.save(output_dir, meta)
+            debug_print(
+                f"\nSaved {recorded_steps} frames to {frames_path}\n"
+                f"Metadata appended to {output_dir / 'metadata.parquet'}"
+            )
     finally:
         env.close()
 

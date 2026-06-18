@@ -11,6 +11,7 @@ import numpy as np
 
 try:
     import gymnasium as gym
+    from gymnasium import spaces
 except Exception as e:  # pragma: no cover
     raise ImportError(
         "apple_pick_gym requires gymnasium to be installed. "
@@ -187,6 +188,31 @@ class ApplePickBaseEnv(gym.Env, ABC):
             dt=float(sub_dt),
         )["fixed_joints"]
 
+    @staticmethod
+    def _placeholder_junction_names(n_woody: int) -> list[str]:
+        return [f"joint_{i}" for i in range(int(n_woody))]
+
+    @staticmethod
+    def _woody_pos_obs_space(junction_names: list[str]) -> spaces.Dict:
+        return spaces.Dict(
+            {
+                name: spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32)
+                for name in junction_names
+            }
+        )
+
+    def _woody_pos_dict(
+        self, flat_start: np.ndarray, flat_end: np.ndarray
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+        """Split flat ``(N*3,)`` anchor arrays into per-junction ``(3,)`` dicts."""
+        names = self.junction_names
+        start = np.asarray(flat_start, dtype=np.float32).reshape(-1, 3)
+        end = np.asarray(flat_end, dtype=np.float32).reshape(-1, 3)
+        return (
+            {name: start[i].copy() for i, name in enumerate(names)},
+            {name: end[i].copy() for i, name in enumerate(names)},
+        )
+
     def _woody_start_end_pos(self) -> tuple[np.ndarray, np.ndarray]:
         """World-frame fixed-joint anchors for each inter-segment FIXED joint.
 
@@ -262,7 +288,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
         assert self._scene is not None
         _, _, sub_dt = self._timing_constants()
         return {
-            "obs_schema": "v1",
+            "obs_schema": "v2",
             "step_count": int(self._step_count),
             "n_woody_parts": int(self._n_woody_parts),
             "params_fingerprint": fs.params_fingerprint(self._scene.cable.params),

@@ -61,6 +61,8 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         self._n_weld_hemisphere_samples = int(n_weld_hemisphere_samples)
         self._weld_reset_count = 0
         self._weld_direction_override: tuple[float, float, float] | None = None
+        self._weld_reference_pos_override: tuple[float, float, float] | None = None
+        self._weld_reference_quat_override: tuple[float, float, float, float] | None = None
         self._last_weld_direction: tuple[float, float, float] | None = None
         self._grasp_robot_body_q: np.ndarray | None = None
         self._grasp_robot_body_qd: np.ndarray | None = None
@@ -68,6 +70,8 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         self._grasp_robot_joint_qd: np.ndarray | None = None
         self._grasp_cable_body_q: np.ndarray | None = None
         self._grasp_cable_body_qd: np.ndarray | None = None
+        self._grasp_cable_state_1_body_q: np.ndarray | None = None
+        self._grasp_cable_state_1_body_qd: np.ndarray | None = None
         self._grasp_target_tf: Any | None = None
         self._excitation_context = ExcitationContext(
             type="quasi_static",
@@ -108,6 +112,18 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             )
         else:
             self._weld_direction_override = None
+        ref_pos = options.get("weld_reference_pos")
+        self._weld_reference_pos_override = (
+            None
+            if ref_pos is None
+            else tuple(float(x) for x in np.asarray(ref_pos, dtype=np.float64).reshape(3))
+        )
+        ref_quat = options.get("weld_reference_quat")
+        self._weld_reference_quat_override = (
+            None
+            if ref_quat is None
+            else tuple(float(x) for x in np.asarray(ref_quat, dtype=np.float64).reshape(4))
+        )
 
         obs, info = super().reset(seed=seed, options=options)
         self.snapshot_grasp_pose()
@@ -126,6 +142,8 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         self._grasp_robot_joint_qd = scene.robot_state_0.joint_qd.numpy().copy()
         self._grasp_cable_body_q = scene.cable.state_0.body_q.numpy().copy()
         self._grasp_cable_body_qd = scene.cable.state_0.body_qd.numpy().copy()
+        self._grasp_cable_state_1_body_q = scene.cable.state_1.body_q.numpy().copy()
+        self._grasp_cable_state_1_body_qd = scene.cable.state_1.body_qd.numpy().copy()
         self._grasp_target_tf = self._controller.target_tf
 
     def restore_grasp_pose(self) -> None:
@@ -135,7 +153,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         if self._grasp_robot_body_q is None:
             raise RuntimeError("Call reset() or snapshot_grasp_pose() before restore_grasp_pose().")
 
-        from apple_pick_sim.coupled_fruiting.proxy_coupling import align_proxy_body_q_prev_for_vbd
+        from apple_pick_sim.coupled_fruiting.proxy_coupling import sync_solver_body_q_prev_from_state
         from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
         from apple_pick_sim.robot import fr3_robot
 
@@ -144,16 +162,30 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         scene.robot_state_0.body_qd.assign(self._grasp_robot_body_qd)
         scene.robot_state_0.joint_q.assign(self._grasp_robot_joint_q)
         scene.robot_state_0.joint_qd.assign(self._grasp_robot_joint_qd)
+        scene.robot_model.joint_q.assign(self._grasp_robot_joint_q)
+        scene.robot_model.joint_qd.assign(self._grasp_robot_joint_qd)
         init_robot_mujoco_step_buffers(scene)
+        fr3_robot.hold_mujoco_actuator_targets_at_state(
+            scene.robot_model, scene.robot_state_0, scene.robot_control
+        )
+        if getattr(scene, "vic_jt_default_dof_pos", None) is not None:
+            default_q = np.asarray(self._grasp_robot_joint_q, dtype=np.float32).reshape(-1).copy()
+            if default_q.shape[0] > 6:
+                default_q[6] = 0.0
+            scene.vic_jt_default_dof_pos.assign(default_q)
 
         cable = scene.cable
         cable.state_0.body_q.assign(self._grasp_cable_body_q)
         cable.state_0.body_qd.assign(self._grasp_cable_body_qd)
-        cable.state_1.body_q.assign(self._grasp_cable_body_q)
-        cable.state_1.body_qd.assign(self._grasp_cable_body_qd)
-        align_proxy_body_q_prev_for_vbd(
-            cable, tuple(range(int(cable.model.body_count)))
-        )
+        if self._grasp_cable_state_1_body_q is not None:
+            cable.state_1.body_q.assign(self._grasp_cable_state_1_body_q)
+        else:
+            cable.state_1.body_q.assign(self._grasp_cable_body_q)
+        if self._grasp_cable_state_1_body_qd is not None:
+            cable.state_1.body_qd.assign(self._grasp_cable_state_1_body_qd)
+        else:
+            cable.state_1.body_qd.assign(self._grasp_cable_body_qd)
+        sync_solver_body_q_prev_from_state(cable, cable.state_0.body_q)
 
         self._controller.target_tf = self._grasp_target_tf
         scene.vic_target_tf = self._grasp_target_tf
@@ -214,13 +246,21 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             return None
 
         apple_q7 = probe_scene.cable.state_0.body_q.numpy().reshape(-1, 7)[int(apple_body)]
-        apple_pos = apple_q7[:3]
+        apple_pos = (
+            np.asarray(self._weld_reference_pos_override, dtype=np.float64)
+            if self._weld_reference_pos_override is not None
+            else apple_q7[:3]
+        )
         self._pending_weld_reference_pos = (
             float(apple_pos[0]),
             float(apple_pos[1]),
             float(apple_pos[2]),
         )
-        apple_quat = apple_q7[3:7]
+        apple_quat = (
+            np.asarray(self._weld_reference_quat_override, dtype=np.float64)
+            if self._weld_reference_quat_override is not None
+            else apple_q7[3:7]
+        )
         self._pending_weld_reference_quat = (
             float(apple_quat[0]),
             float(apple_quat[1]),
@@ -265,8 +305,10 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         self.observation_space = self._observation_space_for(self._cfg.max_woody_parts)
 
     @staticmethod
-    def _observation_space_for(n_woody: int) -> spaces.Dict:
-        base = ApplePickVicEnv._observation_space_for(n_woody)
+    def _observation_space_for(
+        n_woody: int, junction_names: list[str] | None = None
+    ) -> spaces.Dict:
+        base = ApplePickVicEnv._observation_space_for(n_woody, junction_names)
         return spaces.Dict(
             {
                 **dict(base.spaces),
@@ -297,6 +339,12 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             "excitation_f_inst": np.float32(ctx.f_inst),
             "excitation_direction": np.asarray(ctx.direction, dtype=np.float32),
         }
+
+    def _make_info(self) -> dict[str, Any]:
+        info = super()._make_info()
+        if self._last_weld_direction is not None:
+            info["weld_direction"] = np.asarray(self._last_weld_direction, dtype=np.float32)
+        return info
 
     def _make_obs(self) -> dict[str, Any]:
         obs = super()._make_obs()

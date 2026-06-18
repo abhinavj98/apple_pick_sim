@@ -27,8 +27,9 @@ class ApplePickCoupledEnv(ApplePickBaseEnv):
 
     Observations (all ``float32``):
 
-    - ``woody_part_start_pos``: ``(N*3,)`` parent-side fixed-joint anchor positions [m]
-    - ``woody_part_end_pos``: ``(N*3,)`` child-side fixed-joint anchor positions [m]
+    - ``woody_part_start_pos``: ``dict[str, (3,)]`` parent-side anchor positions [m] keyed by
+      junction name (see :attr:`~apple_pick_gym.envs.apple_pick_base_env.ApplePickBaseEnv.junction_names`)
+    - ``woody_part_end_pos``: ``dict[str, (3,)]`` child-side anchor positions [m], same keys
     - ``woody_part_force``: ``(N*6,)`` fixed-joint wrenches ``[F(3), tau(3)]`` [N, N·m]
       (index order matches :attr:`~apple_pick_gym.envs.apple_pick_base_env.ApplePickBaseEnv.junction_names`)
     - ``apple_pos``: ``(3,)`` apple body world position [m]
@@ -39,15 +40,18 @@ class ApplePickCoupledEnv(ApplePickBaseEnv):
     """
 
     @staticmethod
-    def _observation_space_for(n_woody: int) -> spaces.Dict:
+    def _observation_space_for(
+        n_woody: int, junction_names: list[str] | None = None
+    ) -> spaces.Dict:
+        names = (
+            junction_names
+            if junction_names is not None
+            else ApplePickBaseEnv._placeholder_junction_names(n_woody)
+        )
         return spaces.Dict(
             {
-                "woody_part_start_pos": spaces.Box(
-                    low=-np.inf, high=np.inf, shape=(n_woody * 3,), dtype=np.float32
-                ),
-                "woody_part_end_pos": spaces.Box(
-                    low=-np.inf, high=np.inf, shape=(n_woody * 3,), dtype=np.float32
-                ),
+                "woody_part_start_pos": ApplePickBaseEnv._woody_pos_obs_space(names),
+                "woody_part_end_pos": ApplePickBaseEnv._woody_pos_obs_space(names),
                 "woody_part_force": spaces.Box(
                     low=-np.inf, high=np.inf, shape=(n_woody * 6,), dtype=np.float32
                 ),
@@ -64,11 +68,14 @@ class ApplePickCoupledEnv(ApplePickBaseEnv):
         self.observation_space = self._observation_space_for(self._cfg.max_woody_parts)
 
     def _setup_observation_space(self) -> None:
-        self.observation_space = self._observation_space_for(self._n_woody_parts)
+        self.observation_space = self._observation_space_for(
+            self._n_woody_parts, self.junction_names
+        )
 
     def _make_obs(self) -> dict[str, Any]:
         _, _, sub_dt = self._timing_constants()
-        start_pos, end_pos = self._woody_start_end_pos()
+        start_flat, end_flat = self._woody_start_end_pos()
+        start_pos, end_pos = self._woody_pos_dict(start_flat, end_flat)
         return {
             "woody_part_start_pos": start_pos,
             "woody_part_end_pos": end_pos,

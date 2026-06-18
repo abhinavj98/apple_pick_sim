@@ -27,7 +27,7 @@ Trajectories must excite multiple vibrational modes while the robot maintains gr
 - For each direction: step the end-effector from center in configurable increments (default **5 cm** per step, **10 cm** total) with a **fast move + hold** at each amplitude, then return to center before the next direction. Captures compression, shear, and coupled compressive–shear modes relevant to push-then-shear picking while limiting canopy penetration.
 - **Hold** each pose **1–2 s** so transients decay before logging steady-state F/T.
 
-**Implementation (§2.1 shipped):** trajectory generators and gym replay live under `apple_pick_sim/system_id/` and `apple_pick_gym/envs/apple_pick_sysid_env.py`. Details, defaults, and test commands: `docs/system-id-quasi-static-implementation.md`.
+**Implementation (§2.1 shipped):** trajectory generators, Parquet recording, and dataset replay live under `apple_pick_sim/system_id/` and `apple_pick_gym/`. Details, defaults, and test commands: `docs/system-id-quasi-static-implementation.md` and `docs/sysid-trajectory-storage.md`.
 
 **Run in sim** (one direction, 2 cm increments, 10 cm total):
 
@@ -37,7 +37,7 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --move-speed-mps 0.2
 ```
 
-On headless Linux the example auto-appends `--viewer null`. The script prints per-step phase/force logs and mean steady-state `ft_wrist` per hold increment at the end. Data is not yet written to disk (see `docs/sysid-data-collection-review.md`).
+On headless Linux the example auto-appends `--viewer null`. Pass `--output <dataset_dir>` to write Parquet frames, episode metadata, and an initial-state snapshot for replay.
 
 **Verify pull-direction geometry** (default 90° hemisphere, matches collection):
 
@@ -121,7 +121,7 @@ Tune simulation parameters $\theta$ (masses, spring constants $K$, damping $B$).
 
 1. **Initialize:** $\mathcal{N}(\mu_0, \Sigma_0)$ with broad $\Sigma_0$.
 2. **Sample:** $N \approx 50$–$100$ candidate $\theta_i$.
-3. **Simulate:** VBD with each $\theta_i$, driven by **identical** recorded $v_{ee}(t)$; extract transition samples.
+3. **Simulate:** VBD with each $\theta_i$, initialized from real observations, driven by **identical** recorded $v_{ee}(t)$; extract transition samples.
 4. **Evaluate:**
 
 $$L(\theta) = \text{MMD}^2(P, Q)$$
@@ -137,6 +137,8 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | Milestone | Status | Code / docs |
 | --- | --- | --- |
 | M3.0 §2.1 quasi-static | **Done** (trajectory + gym replay) | `apple_pick_sim/system_id/`, `apple_pick_gym/envs/apple_pick_sysid_env.py`, `docs/system-id-quasi-static-implementation.md` |
+| M3.0.2 recording + privileged-state replay | **Done** | `TrajectoryWriter`, `TrajectoryDataset`, `ApplePickReplayEnv`, `example_gym_replay.py`, `docs/sysid-trajectory-storage.md` |
+| M3.0.3 observation-only replay init | **Next** | Reconstruct a plausible Newton initial state/equilibrium from recorded observations, without saved simulator state |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
 | M3.1 MMD features | Planned | — |
 | M3.2 CEM loop | Planned | — |

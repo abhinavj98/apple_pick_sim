@@ -11,12 +11,14 @@ dependencies = [
 [project.optional-dependencies]
 gym = [
     "gymnasium>=1.0.0",
+    "pyarrow>=18.0.0",
 ]
 vic = [
     "newton[torch-cu12]",
 ]
 dev = [
     "gymnasium>=1.0.0",
+    "pyarrow>=18.0.0",
     "pytest>=9.0.3",
 ]
 

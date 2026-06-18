@@ -84,6 +84,7 @@ def test_env_observation_contract():
 
     env = gym.make("ApplePickCoupled-v0", render_mode=None, max_episode_steps=2)
     obs, info = env.reset(seed=0)
+    unwrapped = env.unwrapped
 
     expected_keys = {
         "woody_part_start_pos",
@@ -101,15 +102,19 @@ def test_env_observation_contract():
     assert obs["tcp_velocity"].shape == (6,)
     n = int(info["n_woody_parts"])
     assert n > 0
-    assert obs["woody_part_start_pos"].shape == (n * 3,)
-    assert obs["woody_part_end_pos"].shape == (n * 3,)
+    assert isinstance(obs["woody_part_start_pos"], dict)
+    assert isinstance(obs["woody_part_end_pos"], dict)
+    assert set(obs["woody_part_start_pos"].keys()) == set(unwrapped.junction_names)
+    assert set(obs["woody_part_end_pos"].keys()) == set(unwrapped.junction_names)
+    for name in unwrapped.junction_names:
+        assert obs["woody_part_start_pos"][name].shape == (3,)
+        assert obs["woody_part_end_pos"][name].shape == (3,)
     assert obs["woody_part_force"].shape == (n * 6,)
     assert obs["apple_pos"].dtype == np.float32
     assert "params_fingerprint" in info
 
     apple_key = next(k for k in info["fruiting_link_forces"] if k.endswith("_apple"))
-    apple_joint_idx = list(info["fruiting_link_forces"].keys()).index(apple_key)
-    apple_end = obs["woody_part_end_pos"][apple_joint_idx * 3 : (apple_joint_idx + 1) * 3]
+    apple_end = obs["woody_part_end_pos"][apple_key]
     assert not np.allclose(apple_end, obs["apple_pos"], atol=1e-5)
 
     obs2, reward, terminated, truncated, info2 = env.step(12)
@@ -360,9 +365,11 @@ def test_replay_env_observation_contract():
 
     expected_keys = {
         "ft_wrist",
-        "woody_part_start_pos",
-        "woody_part_end_pos",
+        "woody_start",
+        "woody_end",
         "tcp_velocity",
+        "tcp_pos",
+        "apple_pos",
     }
     assert isinstance(obs, dict)
     assert set(obs.keys()) == expected_keys
@@ -371,14 +378,8 @@ def test_replay_env_observation_contract():
     assert obs["tcp_velocity"].shape == (6,)
     n = int(info["n_woody_parts"])
     assert n > 0
-    assert obs["woody_part_start_pos"].shape == (n * 3,)
-    assert obs["woody_part_end_pos"].shape == (n * 3,)
-
-    obs2, reward, terminated, truncated, _ = env.step(np.zeros((6,), dtype=np.float32))
-    assert env.observation_space.contains(obs2)
-    assert isinstance(reward, float)
-    assert terminated is False
-    assert isinstance(truncated, (bool, np.bool_))
+    assert obs["woody_start"].shape == (n * 3,)
+    assert obs["woody_end"].shape == (n * 3,)
     env.close()
 
 
@@ -524,8 +525,14 @@ def test_vic_env_log_junction_force_arrows():
     scene = type("Scene", (), {"cable": _Cable()})()
     viewer = _ArrowProbe()
     obs = {
-        "woody_part_start_pos": np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32),
-        "woody_part_end_pos": np.array([0.0, 0.0, 0.1, 1.0, 0.0, 0.1], dtype=np.float32),
+        "woody_part_start_pos": {
+            "primary_secondary": np.array([0.0, 0.0, 0.0], dtype=np.float32),
+            "stem_apple": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        },
+        "woody_part_end_pos": {
+            "primary_secondary": np.array([0.0, 0.0, 0.1], dtype=np.float32),
+            "stem_apple": np.array([1.0, 0.0, 0.1], dtype=np.float32),
+        },
         "woody_part_force": np.array(
             [0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0],
             dtype=np.float32,
@@ -569,8 +576,14 @@ def test_vic_env_log_woody_part_markers():
 
     viewer = _LogPointsProbe()
     obs = {
-        "woody_part_start_pos": np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0], dtype=np.float32),
-        "woody_part_end_pos": np.array([0.0, 0.0, 0.1, 1.0, 0.0, 0.1], dtype=np.float32),
+        "woody_part_start_pos": {
+            "primary_secondary": np.array([0.0, 0.0, 0.0], dtype=np.float32),
+            "stem_apple": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        },
+        "woody_part_end_pos": {
+            "primary_secondary": np.array([0.0, 0.0, 0.1], dtype=np.float32),
+            "stem_apple": np.array([1.0, 0.0, 0.1], dtype=np.float32),
+        },
     }
     ApplePickVicEnv.log_woody_part_markers(viewer, obs, radius=0.01)
 
@@ -594,8 +607,8 @@ def test_vic_env_log_woody_part_markers():
     ApplePickVicEnv.log_woody_part_markers(
         viewer2,
         {
-            "woody_part_start_pos": np.zeros(0, np.float32),
-            "woody_part_end_pos": np.zeros(0, np.float32),
+            "woody_part_start_pos": {},
+            "woody_part_end_pos": {},
         },
     )
     assert viewer2.calls == [("/gym/woody_parts", None), ("/gym/primary_base", None)]

@@ -144,6 +144,28 @@ def test_sysid_reset_weld_direction_override():
 
 
 @gymnasium_available
+@pytest.mark.skipif(not fr3_assets_available(), reason="Requires bundled assets/fr3 and usd-core")
+def test_sysid_step_info_includes_weld_direction():
+    from apple_pick_gym.envs import ApplePickSysIdEnv
+
+    env = ApplePickSysIdEnv(
+        max_episode_steps=2,
+        fix_to_apple=True,
+        fix_to_apple_warmup_substeps=0,
+        robot_facing_weld=True,
+    )
+    _, reset_info = env.reset(seed=0)
+    assert "weld_direction" in reset_info
+    reset_weld = np.asarray(reset_info["weld_direction"], dtype=np.float64)
+
+    _, _, _, _, step_info = env.step(np.zeros(6, dtype=np.float32))
+    assert "weld_direction" in step_info
+    step_weld = np.asarray(step_info["weld_direction"], dtype=np.float64)
+    np.testing.assert_allclose(step_weld, reset_weld, atol=1e-5)
+    env.close()
+
+
+@gymnasium_available
 def test_sysid_env_action_space():
     from apple_pick_gym.envs import ApplePickSysIdEnv
 

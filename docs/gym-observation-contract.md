@@ -35,6 +35,20 @@ Logs without `info["obs_schema"]` should be treated as pre-v1 replay layout.
 
 `N` is the number of woody fixed joints in the current scene (`info["n_woody_parts"]`). Dict keys match `env.junction_names`.
 
+## Observation-only replay subset
+
+M3.0.3 uses a reset-frame subset of the observation contract to initialize replay without privileged simulator arrays. For real-world collection, these fields must be sensor-derived or calibration-derived in the same world frame used by the simulator:
+
+| Field | Why replay needs it |
+|-------|---------------------|
+| `tcp_pos`, `tcp_velocity` | Rebuild the robot/TCP initial condition and drive transition features |
+| `ft_wrist` | Compare interaction wrench and build MMD features; must be bias-corrected or accompanied by bias metadata |
+| `apple_pos` | Place the fruit body and grasp/weld reference |
+| `woody_part_start_pos`, `woody_part_end_pos` | Reconstruct or validate branch/stem geometry by junction name |
+| `excitation_type`, `excitation_f_inst`, `excitation_direction` | Replay the same excitation context and feature labels |
+
+Additional calibration metadata (`robot_base_pos`, `fruiting_base_pos`, camera/F/T transforms, grasp/weld transform, fixture identity) belongs in episode metadata or a named digital-twin fixture, not as per-step observation keys unless it changes during an episode. See `docs/observation-replay-digital-twin.md`.
+
 ## Env-specific keys
 
 ### `ApplePickCoupled-v0`

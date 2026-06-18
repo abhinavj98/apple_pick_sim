@@ -229,9 +229,8 @@ off the apple COM.
 
 ```bash
 # From repo root:
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
-    ../apple_pick_sim/tests/test_wrench_equilibrium.py -v \
-    -p no:launch_testing
+uv run --env-file pytest.env python -m pytest \
+    apple_pick_sim/tests/test_wrench_equilibrium.py -v
 ```
 
 ---

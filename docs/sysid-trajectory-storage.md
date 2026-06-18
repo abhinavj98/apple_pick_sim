@@ -6,7 +6,7 @@ Parquet persistence for quasi-static (and future) sysID rollouts, plus dataset-b
 
 Recording and replaying are complete for sim-to-sim datasets. Collection writes per-frame observations/actions, episode metadata, and an optional privileged initial-state snapshot. Replay loads the dataset, restores the saved Newton state when available, and applies the recorded EE velocity actions open-loop while recomputing observations from the live simulation.
 
-The next sysID step is **observation-only replay initialization**: replay should initialize from recorded observations and calibration metadata, not from privileged simulator arrays such as body poses, velocities, solver previous-state buffers, or saved controller internals. The first validation target is sim-to-sim replay with the `.npz` snapshot withheld, so we can measure how close an observation-derived initial state gets before using real-world data.
+The next sysID step is **observation-only replay initialization**: replay should initialize from recorded observations and calibration metadata, not from privileged simulator arrays such as body poses, velocities, solver previous-state buffers, or saved controller internals. The first validation target is sim-to-sim replay with the `.npz` snapshot withheld, so we can measure how close an observation-derived initial state gets before using real-world data. Observation and digital-twin requirements are specified in `docs/observation-replay-digital-twin.md`.
 
 ## Layout
 
@@ -54,6 +54,22 @@ Per-junction woody columns are dynamic (one start/end pair per entry in `junctio
 
 `timestamp`, `seed`, `n_directions`, `initial_tcp_pos`, `fixture_path`, trajectory config (`movement_per_step_m`, `total_movement_m`, `hold_duration_s`, `move_speed_mps`, `skip_return`)
 
+## Observation-only initialization metadata
+
+For M3.0.3, datasets must be usable when `initial_states/<episode_id>.npz` is absent. The required real-world equivalent is:
+
+| Item | Storage location today | Required evolution |
+|------|------------------------|--------------------|
+| TCP pose/twist at reset | `initial_tcp_pos`, first-frame `tcp_pos`, `tcp_velocity`; optional snapshot `obs_tcp_pos`, `obs_tcp_velocity` | Store reset-frame observation values even when no privileged snapshot is written |
+| F/T bias-corrected wrench | first-frame `ft_wrist`; optional snapshot `obs_ft_wrist` | Record bias metadata or bias-corrected convention in episode metadata |
+| Apple pose | first-frame `apple_pos`; optional snapshot `obs_apple_pos` | Add apple orientation when available |
+| Woody endpoints | per-frame `woody_start__<junction>`, `woody_end__<junction>`; optional snapshot `obs_woody_start`, `obs_woody_end` | Keep `junction_names` stable and map each key to the fixture topology |
+| Grasp/weld transform | `weld_direction`; optional snapshot `weld_reference_pos`, `weld_reference_quat` | Store real grasp transform/calibration rather than deriving only from sim body state |
+| Calibration transforms | not represented directly | Add fixture/world/robot/camera/F/T transforms when field data collection starts |
+| Digital-twin fixture identity | `fixture_path` | Point to a named fixture catalog entry with topology, base poses, and geometry ranges |
+
+The `.npz` snapshot may continue to be written for privileged replay baselines, but it must be optional. Replay code should treat the absence of `.npz` as the normal real-data path, not as a corrupted dataset.
+
 ## Displacement convention
 
 Steady-state stiffness from a recorded episode:
@@ -93,7 +109,7 @@ uv run python apple_pick_gym/examples/example_gym_replay.py \
 
 `ApplePickReplay-v0` (`ApplePickReplayEnv`) loads a dataset and applies stored `action` rows open-loop. The Gym `action` argument is ignored during replay.
 
-Current replay is state-initialized when `initial_states/<episode_id>.npz` exists. That privileged snapshot is useful for proving storage, action replay, and live-vs-recorded observation comparison, but it is not the real-data sysID path. Real-world replay must instead infer the initial Newton state from observable quantities such as TCP pose/velocity, F/T bias-corrected wrench, apple pose, woody marker positions, grasp/weld direction, and known calibration transforms.
+Current replay is state-initialized when `initial_states/<episode_id>.npz` exists. That privileged snapshot is useful for proving storage, action replay, and live-vs-recorded observation comparison, but it is not the real-data sysID path. Real-world replay must instead infer the initial Newton state from observable quantities such as TCP pose/velocity, F/T bias-corrected wrench, apple pose, woody marker positions, grasp/weld direction, digital-twin fixture geometry, and known calibration transforms.
 
 ```python
 from apple_pick_gym.envs import ApplePickReplayEnv

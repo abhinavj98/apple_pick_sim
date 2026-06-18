@@ -4,7 +4,9 @@
 
 Develop a high-fidelity, tunable simulation model of an apple-branch system. The physical system is modeled as a topological network of spatial springs and masses (primary branch, secondary branch, spur, stem), solved via VBD (Variational Body Dynamics). Parameters (stiffness, damping, mass) are identified from real-world kinematic and force/torque (F/T) telemetry.
 
-Optimization uses the **Cross-Entropy Method (CEM)** against field data, with **Maximum Mean Discrepancy (MMD)** as the objective so we avoid strict time-pairing requirements of L2 regression.
+Optimization uses the **Cross-Entropy Method (CEM)** against field data, with **Maximum Mean Discrepancy (MMD)** as the objective so we avoid strict time-pairing requirements of L2 regression. Before optimizer selection is finalized, M3 must verify observation-only replay in sim-to-sim: treat a differently tuned simulator as ground truth, reconstruct the tunable simulator from collectable observations, replay the same recorded actions, and measure the reconstruction error floor.
+
+Observation-only replay and digital-twin reconstruction requirements live in `docs/observation-replay-digital-twin.md`.
 
 ## 2. Excitation Trajectories
 
@@ -99,6 +101,8 @@ Observable state $s_t$ at time $t$:
 
 **Observability:** Field data may not include all $P_{\text{nodes}}$ (occlusion, no markers). If only wrench + EE kinematics are reliable, reduce $s_t$ explicitly—do not assume full internal node coordinates in $P$ for MMD.
 
+**Replay initialization bundle:** M3.0.3 requires a separate initial-observation bundle before transition features are built. At minimum this includes schema/episode metadata, control rate, recorded TCP actions, TCP pose/twist, bias-corrected F/T wrench, apple pose, woody endpoint observations with junction labels, grasp/weld transform, and robot/fruiting/camera/F/T calibration transforms. This bundle replaces privileged simulator arrays such as `body_q`, `body_qd`, joint buffers, VBD previous-state buffers, and controller target transforms; see `docs/observation-replay-digital-twin.md` for the replacement map.
+
 ### 3.2 Transition Feature Vector
 
 Markovian flow (not absolute pose alone):
@@ -121,7 +125,7 @@ Tune simulation parameters $\theta$ (masses, spring constants $K$, damping $B$).
 
 1. **Initialize:** $\mathcal{N}(\mu_0, \Sigma_0)$ with broad $\Sigma_0$.
 2. **Sample:** $N \approx 50$–$100$ candidate $\theta_i$.
-3. **Simulate:** VBD with each $\theta_i$, initialized from real observations, driven by **identical** recorded $v_{ee}(t)$; extract transition samples.
+3. **Simulate:** VBD with each $\theta_i$, initialized from the observation-derived digital twin, driven by **identical** recorded $v_{ee}(t)$; extract transition samples.
 4. **Evaluate:**
 
 $$L(\theta) = \text{MMD}^2(P, Q)$$
@@ -138,7 +142,8 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | --- | --- | --- |
 | M3.0 §2.1 quasi-static | **Done** (trajectory + gym replay) | `apple_pick_sim/system_id/`, `apple_pick_gym/envs/apple_pick_sysid_env.py`, `docs/system-id-quasi-static-implementation.md` |
 | M3.0.2 recording + privileged-state replay | **Done** | `TrajectoryWriter`, `TrajectoryDataset`, `ApplePickReplayEnv`, `example_gym_replay.py`, `docs/sysid-trajectory-storage.md` |
-| M3.0.3 observation-only replay init | **Next** | Reconstruct a plausible Newton initial state/equilibrium from recorded observations, without saved simulator state |
+| M3.0.3 observation-only replay init | **Next** | Reconstruct a plausible Newton initial state/equilibrium from recorded observations, without saved simulator state; spec in `docs/observation-replay-digital-twin.md` |
+| M3.0.4 digital-twin fixture reconstruction | Planned | Named fixture catalog and sim-to-sim transfer validation before real-world collection |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
 | M3.1 MMD features | Planned | — |
 | M3.2 CEM loop | Planned | — |

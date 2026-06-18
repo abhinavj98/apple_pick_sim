@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-06-17 (M3 active: recording/replay complete; observation-only replay init next) |
+| **Last updated** | 2026-06-18 (M3 active: observation-only replay + digital-twin setup next) |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 
@@ -36,9 +36,9 @@ Later: real-data collection [M4], final pick policy [M5].
 
 **Active milestone:** [M3] — Simulation parameter identification (CEM + MMD).
 
-**Goal:** Move from sim-to-sim recording/replay into real-data-ready replay. The next slice is observation-only initialization: reconstruct a plausible Newton initial state/equilibrium from recorded observations, without privileged simulator state, then use that path for CEM calibration of fruiting-system parameters $\theta$.
+**Goal:** Move from sim-to-sim recording/replay into real-data-ready replay. The next slice is observation-only initialization: identify the real-world observable bundle needed to rebuild a plausible Newton initial state/equilibrium, without privileged simulator state, then use that path for CEM calibration of fruiting-system parameters $\theta$.
 
-**Spec:** `docs/system_identification.md`
+**Specs:** `docs/system_identification.md`, `docs/observation-replay-digital-twin.md`
 
 **Build on (do not reimplement):**
 
@@ -49,8 +49,8 @@ Later: real-data collection [M4], final pick policy [M5].
 
 1. [x] **M3.0.1 — Quasi-static §2.1 trajectory + gym replay (shipped):** Fibonacci forward-hemisphere directions, stepped push–hold–return phase machine, `ApplePickSysId-v0`, `example_gym_sysid.py` smoke. Spec: `docs/system-id-quasi-static-implementation.md`, review: `docs/sysid-data-collection-review.md`.
 2. [x] **M3.0.2 — Recording + privileged-state replay (shipped):** `example_gym_sysid.py --output` writes Parquet frames, metadata, and initial-state snapshots; `ApplePickReplay-v0` restores saved Newton state when present and applies recorded EE velocity actions open-loop. Docs: `docs/sysid-trajectory-storage.md`.
-3. [ ] **M3.0.3 — Observation-only replay initialization (next):** Reconstruct a plausible Newton initial state/equilibrium from recorded observations and calibration metadata only. Do not use privileged saved simulator arrays (`body_q`, `body_qd`, solver previous-state buffers, controller target transforms) for this path. First validation: collect sim data, withhold the `.npz` snapshot, initialize from observations, replay actions, and compare drift against privileged-state replay.
-4. [ ] **M3.0.4 — Quasi-static directions + digital-twin fixtures:** Verify excitation directions are correct relative to stem attachment and fixture `fruiting_base_pos` / `robot_base_pos` (forward hemisphere toward apple, robot-facing weld framing, no sign/frame mix-ups); use `apple_pick_gym/examples/visualize_pull_directions.py` for live geometry checks; tune JSON **ranges** so geometry and stiffness bands match a physical digital-twin target; deliver a small **named fixture catalog** under `apple_pick_sim/fixtures/` (e.g. straight-rod test baseline + field-twin candidate) with documented base poses, range bounds, and per-fixture sys-id smoke (`example_gym_sysid.py` + pytest). Unblocks trustworthy §2.1 data capture and CEM rollouts.
+3. [ ] **M3.0.3 — Observation-only replay initialization (next):** Reconstruct a plausible Newton initial state/equilibrium from recorded observations and calibration metadata only. Do not use privileged saved simulator arrays (`body_q`, `body_qd`, `joint_q`, solver previous-state buffers, controller target transforms) for this path. First validation: collect sim data, withhold the `.npz` snapshot, initialize from observations, replay actions, and compare drift against privileged-state replay using TCP/apple pose, woody marker, and F/T errors.
+4. [ ] **M3.0.4 — Digital-twin geometry reconstruction + fixtures:** Define the observable geometry bundle (topology/junction labels, tracked woody endpoints, apple pose, stem/apple frame, robot/camera/F/T calibration transforms, grasp/weld transform, base poses), rebuild a named fixture from those observations, and verify excitation directions relative to stem attachment and fixture `fruiting_base_pos` / `robot_base_pos` (forward hemisphere toward apple, robot-facing weld framing, no sign/frame mix-ups). Start with sim-to-sim transfer: treat a differently tuned fixture/sim as ground truth, generate observations from it, rebuild geometry in the tunable sim, then measure replay drift before deciding the optimizer. Deliver a small **named fixture catalog** under `apple_pick_sim/fixtures/` (e.g. straight-rod test baseline + field-twin candidate) with documented base poses, range bounds, and per-fixture sys-id smoke (`example_gym_sysid.py` + pytest). Use `apple_pick_gym/examples/visualize_pull_directions.py` for live geometry checks.
 5. [ ] **M3.0.5 — Remaining excitation trajectories (§2.2–2.3):** Translational **log chirps** ($A \propto 1/f$), torsional quasi-static + chirp; trajectory type + instantaneous $f(t)$ in logged state; wrench force-limit guard; §2.1 amplitude bounds feed 2.2/2.3. Deliver: trajectory generators + sim replay smoke (recorded $v_{ee}$ drives VBD).
 6. [ ] **M3.1 — Transition dataset + MMD:** Per-direction transition features $[s_t, \Delta s_t]$, z-score normalization, anisotropic RBF MMD objective.
 7. [ ] **M3.2 — CEM loop:** Sample $\theta$, subprocess rollouts, elite update; validate on held-out discrete-frequency trajectories.
@@ -67,7 +67,7 @@ Procedural fruiting system, fixtures, force readouts, `example_fruiting_system.p
 
 MuJoCo + VBD coupling, FR3 import, proxy wrench exchange, GPU hot path, VIC teleop, settle-then-weld.
 
-Key docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md`, `docs/variable-impedance-teleop.md`, `docs/vic-implementation.md`, `docs/vic-joint-torques-implementation.md`, `docs/gpu-coupling-optimization.md`.
+Key docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md`, `docs/variable-impedance-teleop.md`, `docs/gpu-coupling-optimization.md`.
 
 ### [M2] Done (partial)
 
@@ -88,7 +88,7 @@ Sim parameter identification from field trajectories: CEM + MMD over transition 
 | M3.0.1 | Done | §2.1 quasi-static trajectory + `ApplePickSysId-v0` gym replay |
 | M3.0.2 | Done | Parquet recording + `ApplePickReplay-v0` privileged-state action replay |
 | M3.0.3 | **Next** | Observation-only replay initialization; no privileged simulator state |
-| M3.0.4 | Planned | Direction convention validation + digital-twin fixture catalog (JSON ranges, base poses, smoke) |
+| M3.0.4 | Planned | Digital-twin geometry reconstruction + fixture catalog; sim-to-sim transfer validation |
 | M3.0.5 | Planned | §2.2–2.3 log chirp + torsional trajectories + sim replay smoke |
 | M3.1 | Planned | MMD feature pipeline per direction |
 | M3.2 | Planned | CEM calibration + held-out validation |
@@ -113,7 +113,7 @@ Sim parameter identification from field trajectories: CEM + MMD over transition 
 | `apple_pick_sim/` | Simulation code (`fruiting_system/`, `coupled_fruiting/`, `examples/`, tests) |
 | `apple_pick_gym/` | Gymnasium adapter (`ApplePickCoupled-v0`); depends on `apple_pick_sim`, not vice versa |
 | `newton/` | Upstream physics submodule (vendored) |
-| `docs/` | Vision, roadmap, architecture, implementation notes (`system_identification.md` for M3, `gym-observation-contract.md` for gym obs v2) |
+| `docs/` | Vision, roadmap, architecture, implementation notes (`system_identification.md` and `observation-replay-digital-twin.md` for M3, `gym-observation-contract.md` for gym obs v2) |
 
 **How to validate changes:**
 

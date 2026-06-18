@@ -4,7 +4,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last reviewed** | 2026-05-28 |
+| **Last reviewed** | 2026-06-18 |
 | **Owner** | Abhinav |
 | **Related** | `./ROADMAP.md` |
 
@@ -27,9 +27,11 @@ Build an apple-picking simulator whose parameters are grounded in and refined ag
 1. **Visual and structural variance:** Read properties of the fruiting system from configuration or data files, then procedurally vary geometry and layout so policies and estimators see diverse but plausible canopies and fruit.
 2. **Manipulation stack:** Use Newton with appropriate solvers for plant and fruit physics, and integrate MuJoCo-based control and contact where needed for a Franka FR3 arm interacting with the scene.
 3. **Learning infrastructure:** Build reinforcement-learning tooling so a policy can be trained in simulation; exploration and reward design should support objectives such as maximizing Fisher information (informative trajectories for identification and downstream transfer).
-4. **Real-world data:** Collect trajectories with the same (or closely matched) policy and sensing assumptions used in simulation, so datasets align across the sim–real gap.
-5. **Calibration loop:** Use real-world observations together with gradients or sensitivity information from the Newton-based simulator to update physical and scene parameters, tightening agreement where it matters for manipulation.
-6. **Manipulation Policy:** Then learn a final apple-picking policy via RL in this fine-tuned simulation
+4. **Replayable observation data:** Define the smallest real-world observable bundle needed to initialize and replay sys-ID episodes without privileged simulator arrays, then use sim-to-sim tests to quantify the drift introduced by partial state information.
+5. **Digital-twin scene reconstruction:** Use calibrated geometry observations and named fixture catalogs to rebuild fruiting-system topology, base poses, apple/stem frames, and grasp transforms before tuning dynamics.
+6. **Real-world data:** Collect trajectories with the same (or closely matched) policy and sensing assumptions used in simulation, so datasets align across the sim–real gap.
+7. **Calibration loop:** Use real-world observations together with gradients, sensitivity information, or black-box objectives from the Newton-based simulator to update physical and scene parameters, tightening agreement where it matters for manipulation.
+8. **Manipulation Policy:** Then learn a final apple-picking policy via RL in this fine-tuned simulation
 
 ## Success criteria (measurable where possible)
 
@@ -38,6 +40,8 @@ Build an apple-picking simulator whose parameters are grounded in and refined ag
 | Procedural fruiting variance | Automated script or test asserts distinct geometry or labels across seeds; runs in CI or locally | Same generator API, different seeds → different valid scenes |
 | Simulated pick / interaction | Regression test or recorded metric on a canonical scenario (e.g. stem load, slip, or task success) | Golden scenarios may start simple and grow with milestones |
 | Policy and data alignment | Documented policy interface; real logs can be ingested next to sim rollouts without ad hoc rewrites | Formats and observation spaces stay versioned |
+| Observation-only replay | With privileged snapshots withheld, sim-to-sim replay initialized from observations has bounded drift against privileged replay | Drift metrics include TCP/apple pose, woody marker positions, and F/T error over the same recorded action sequence |
+| Digital-twin reconstruction | A named fixture built from calibration observations recreates geometry/topology well enough for replay and parameter tuning | Start with sim-to-sim ground truth fixtures before real-world reconstruction |
 | Parameter updates improve fit | Quantitative comparison (e.g. force, pose, or event error) drops on a held-out real segment after calibration | Exact metric chosen in roadmap; may evolve |
 
 ## In scope
@@ -46,7 +50,7 @@ Build an apple-picking simulator whose parameters are grounded in and refined ag
 - Procedural or data-driven variation of fruiting-system assets from structured inputs.
 - Integration paths for arm simulation and control (e.g. MuJoCo + Franka FR3) that match documented milestones.
 - RL training harnesses, logging, and evaluation hooks tied to the simulator (Gymnasium adapter `apple_pick_gym/` — see `docs/ROADMAP.md` [M2]).
-- Real-data collection protocols and file formats that pair with simulation and calibration.
+- Real-data collection protocols, observation contracts, fixture catalogs, and file formats that pair with simulation and calibration.
 
 ## Out of scope (non-goals)
 

@@ -1,6 +1,7 @@
 ---
 description: Keep README accurate; run documented runtime commands before finalizing
-alwaysApply: true
+globs: README.md, docs/**/*.md, pyproject.toml, uv.lock, pytest.env
+alwaysApply: false
 ---
 
 # README and runtime command verification

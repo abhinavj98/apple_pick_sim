@@ -20,6 +20,8 @@ Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0
 
 **Grasp-pose snapshot/restore:** `reset()` calls `snapshot_grasp_pose()`, which stores robot `body_q`/`joint_q`, cable `body_q`, and VIC `target_tf`. `restore_grasp_pose()` writes those buffers back, re-syncs MuJoCo/`robot_state_1`, aligns VBD `body_q_prev`, zeros lagged `proxy_forces`/`coupling_forces_cache`, and resets `vic_target_twist`. Use this at direction boundaries when `skip_return=True`. Full-transition logging (`[s_t, Δs_t]`) should mark or exclude teleported frames because `tcp_pos` jumps discontinuously.
 
+**Observation-only replay boundary:** the snapshot/restore path above is a simulator convenience, not the real-data initialization path. M3.0.3 must rebuild the post-grasp state from reset observations, calibration transforms, and digital-twin fixture metadata; see `docs/observation-replay-digital-twin.md`.
+
 **Robot-facing weld:** when `fix_to_apple=True` and `robot_facing_weld=True` (default), each `reset()` picks a Fibonacci-hemisphere weld direction toward the fixture robot base; successive resets cycle through `n_weld_hemisphere_samples` (default 10). Override via `reset(options={"weld_direction": (x, y, z)})`. `info["weld_direction"]` reports the unit vector used.
 
 **Episode length:** `ApplePickSysIdEnv` defaults to `max_episode_steps=240`. A full multi-direction run needs `estimate_trajectory_frames(config, n_directions) + margin`. `gym.make(..., max_episode_steps=N)` only sets the `TimeLimit` wrapper — the env still truncates at its constructor default (240) unless you pass `max_episode_steps` into `ApplePickSysIdEnv(...)` directly.

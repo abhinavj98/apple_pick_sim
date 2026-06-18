@@ -1,6 +1,7 @@
 ---
 description: For major or important changes, add human-readable implementation notes tied to tests
-alwaysApply: true
+globs: apple_pick_sim/**/*.py, apple_pick_gym/**/*.py, docs/**/*.md
+alwaysApply: false
 ---
 
 # Implementation documentation (major / important work)

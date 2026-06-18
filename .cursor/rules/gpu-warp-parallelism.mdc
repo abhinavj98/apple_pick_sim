@@ -1,6 +1,7 @@
 ---
 description: GPU parallelism and NVIDIA Warp usage for simulation hot paths
-alwaysApply: true
+globs: apple_pick_sim/**/*.py, apple_pick_gym/**/*.py
+alwaysApply: false
 ---
 
 # GPU parallelism and NVIDIA Warp

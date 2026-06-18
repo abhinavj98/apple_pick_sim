@@ -243,7 +243,7 @@ uv run python apple_pick_sim/diagnostics/verify_coupling.py \
 
 ### Gymnasium environments (`apple_pick_gym/`)
 
-Headless Gymnasium wrappers over the coupled FR3 stack. Registered envs include `ApplePickCoupled-v0`, `ApplePickVic-v0`, `ApplePickSysId-v0`, and `ApplePickReplayEnv`. All expose `Dict` observations and set `info["obs_schema"] == "v1"` on `reset()` / `step()`.
+Headless Gymnasium wrappers over the coupled FR3 stack. Registered envs include `ApplePickCoupled-v0`, `ApplePickVic-v0`, `ApplePickSysId-v0`, and `ApplePickReplayEnv`. Coupled/VIC/SysID envs expose `Dict` observations and set `info["obs_schema"] == "v2"` on `reset()` / `step()`.
 
 **Observation contract:** key names, shapes, units, and env-specific semantics are documented in [`docs/gym-observation-contract.md`](docs/gym-observation-contract.md). Check `obs_schema` when loading rollouts recorded before the v1 replay key rename (`woody_start` / `woody_end` → `woody_part_*`).
 
@@ -275,4 +275,24 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_quasi_static_sysid.py \
   apple_pick_sim/tests/test_visualize_pull_directions.py \
   apple_pick_gym/tests/test_sysid_env.py -q
+```
+
+### M3 replay and digital-twin setup
+
+Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Privileged `.npz` snapshots are currently used as a baseline for exact sim-to-sim state replay; the next path is observation-only initialization from reset observations and digital-twin fixture metadata. Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md) and [`docs/observation-replay-digital-twin.md`](docs/observation-replay-digital-twin.md).
+
+```bash
+# Collect a short dataset
+uv run python apple_pick_gym/examples/example_gym_sysid.py \
+  --viewer null --n-directions 1 --max-steps 200 \
+  --output /tmp/sysid_dataset
+
+# Replay and print dataset-vs-live observation errors
+uv run python apple_pick_gym/examples/example_gym_replay.py \
+  --dataset /tmp/sysid_dataset --viewer null
+
+# Storage + replay tests
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_trajectory_store.py \
+  apple_pick_gym/tests/test_replay_env.py -q
 ```

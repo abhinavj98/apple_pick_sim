@@ -5,38 +5,17 @@ alwaysApply: true
 
 # UV as the package manager
 
-This project standardizes on **[uv](https://docs.astral.sh/uv/)** for Python dependency management and execution. Do not suggest or use bare `python`, `pip`, `pip install`, or ad-hoc virtualenvs unless uv is unavailable and the user explicitly opts out.
+Use **uv** for Python dependency management and execution. Do not suggest bare `python`, `pip`, `pip install`, or ad-hoc virtualenvs unless uv is unavailable or the user explicitly opts out.
 
 ## What to use
 
-| Task | Prefer |
-|------|--------|
-| Install / sync deps | `uv sync` (with extras/flags as documented, e.g. from `newton/`) |
-| Run a script or module | `uv run …` (use `--directory <path>` when the `pyproject.toml` is not the cwd) |
-| Run tests | `uv run pytest …` or `uv run python -m pytest …` from the project that owns `pyproject.toml` |
-| Add a dependency | `uv add <package>` in the directory that contains `pyproject.toml` |
-| REPL / one-off debugging | `uv run python` (or `uv run ipython` if present) |
-
-## This repository layout
-
-- The root **`pyproject.toml`** path-depends on **`newton/`** (git submodule). Sync from the repo root: `uv sync --extra gym --extra vic --extra dev`.
-- Project-local scripts run from the repo root, for example:
+- Sync from the repo root: `uv sync --extra gym --extra vic --extra dev`.
+- Run project scripts from the repo root with `uv run`, for example:
 
 ```bash
 uv run python apple_pick_sim/examples/example_apple_stem.py
 ```
 
-When proposing commands in chat or in CI snippets, default to **uv-first** forms like the above.
-
-## Anti-patterns
-
-```bash
-# ❌ BAD — bypasses the locked uv environment
-python apple_pick_sim/examples/example_apple_stem.py
-pip install numpy
-
-# ✅ GOOD — uses the root lockfile and editable apple_pick_sim install
-uv run python apple_pick_sim/examples/example_apple_stem.py
-```
-
-If documentation elsewhere shows `python`/`pip`, prefer updating examples to uv when editing those files.
+- Run tests with `uv run pytest ...` or `uv run python -m pytest ...`.
+- Add dependencies with `uv add <package>` in the directory that owns the relevant `pyproject.toml`.
+- Use `uv run --directory <path> ...` when the command must run from another project directory, such as `newton/`.

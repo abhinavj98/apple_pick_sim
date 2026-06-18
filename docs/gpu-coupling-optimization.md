@@ -1,22 +1,88 @@
-# Slice 2g — GPU coupling optimization
+# GPU coupling architecture and optimization
 
-**Last updated:** 2026-05-25
+**Last updated:** 2026-06-09
 
 ## Behavior summary
 
-Staggered **MuJoCo + VBD** coupling (`CoupledFruitingScene.coupled_substep`) is optimized to keep state on the GPU: pooled `qd_synced`, device stem harvest/limit, optional MuJoCo Warp (`use_mujoco_cpu=False`), and optional CUDA graph replay in headless examples.
+Apple Pick Sim runs on **Newton + NVIDIA Warp**. The **coupled picking hot path** (`CoupledFruitingScene.coupled_substep`) keeps cable state, proxy mirror/harvest, and (optionally) MuJoCo Warp on the GPU. Setup, IK teleop, Gym observations, and debug readouts use the CPU with explicit `.numpy()` sync points.
 
-Coupling semantics are unchanged: apply lagged wrench → MuJoCo → sync proxy → VBD → harvest.
+Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → mirror TCP to proxy (± apple) → VBD cable step → harvest wrench at TCP**.
 
-## Hot-path inventory (per substep)
+**Default device:** `cuda:0` when available (`apple_pick_sim/sim_device.py`). Override with `--device cpu` or `APPLE_PICK_SIM_DEVICE=cpu`.
 
-| Location | Operation | Status (2g) |
-|----------|-----------|-------------|
+---
+
+## What runs on GPU (per substep)
+
+| Stage | Module | Mechanism |
+|-------|--------|-----------|
+| MuJoCo robot | `newton.solvers.SolverMuJoCo` | GPU when `use_mujoco_cpu=False` (default on CUDA) |
+| TCP → proxy mirror | `proxy_coupling.launch_mirror_robot_to_proxy[_and_apple]` | Warp kernels |
+| VBD cable | `SolverVBD` + collision | Device-resident `body_q`, `body_qd` |
+| Velocity-delta harvest | `proxy_coupling.launch_compute_proxy_reaction_wrench` | Warp kernel over proxy registry |
+| Stem harvest (`fix_to_apple`) | `proxy_coupling.harvest_stem_tension_for_tcp` | Device gather + `_limit_and_write_tcp_stem_wrench_kernel` |
+| Wrench apply (dynamic arm) | `apply_wrench._apply_spatial_wrench_to_body_f` | Warp kernel on `body_f` |
+| VIC joint torques | `vic_joint_torques.apply_vic_joint_torques_to_scene` | PyTorch + Warp (`joint_f`) |
+| VIC spatial (legacy) | `vic_wrench.launch_apply_vic_to_coupling_cache` | Warp kernel |
+| Pooled sync buffer | `scene.qd_synced` | `wp.copy` (no per-step alloc) |
+
+## What stays on CPU
+
+| Path | Why |
+|------|-----|
+| Scene build, JSON fixtures, `sample_params` | One-off setup |
+| FR3 IK bootstrap & keyboard teleop | Frame-rate; writes `joint_q` on host/model |
+| `example_coupled_fruiting.py` viewer / plots | Debug; `.numpy()` after step |
+| `ApplePickCoupledEnv` observations | `measure_fruiting_forces` + `.numpy()` readouts each step |
+| `CouplingForceDebugRecorder` | Opt-in debug |
+| `settle_then_weld.seed_fix_to_apple_from_settled` | Copies cable state via NumPy between two builds |
+| Tests (most) | Correctness checks; parity tests compare CPU reference vs GPU |
+
+**Build note:** `build_coupled_fruiting_fr3` calls `wp.synchronize()` after cable FK before reading proxy pose for FR3 placement (avoids stale GPU reads).
+
+## Rough code split (apple_pick_sim/)
+
+| Category | Approx. share of coupling-related logic | Notes |
+|----------|----------------------------------------|-------|
+| GPU hot path (Warp kernels + launches) | **~70%** of substep work | `proxy_coupling.py`, `apply_wrench.py`, `vic_*`, Newton/Warp solvers |
+| CPU orchestration | **~20%** | `scene.py` substep ordering, builders, bootstrap |
+| CPU-only / I/O | **~10%** | Examples, gym adapter, diagnostics CLI |
+
+---
+
+## Hot-path optimization inventory (per substep)
+
+| Location | Operation | Status |
+|----------|-----------|--------|
 | `coupled_substep` | `wp.clone(body_qd)` | **Fixed** — pooled `qd_synced` + `wp.copy` |
 | `harvest_stem_tension_for_tcp` | Full-buffer `.numpy()` + NumPy limit | **Fixed** — device gather + Warp limit kernel |
 | `DEFAULT_MUJOCO_SOLVER_KWARGS` | `use_mujoco_cpu` | **Default `True`**; opt-in GPU via `mujoco_use_cpu=False` on CUDA |
 | `CouplingForceDebugRecorder` | `.numpy()` | Debug only (unchanged) |
 | FR3 teleop / IK | Host `joint_q` / keyboard | Frame-rate path (acceptable) |
+
+---
+
+## Logic correctness
+
+### Staggered two-model loop
+
+Documented in `docs/mujoco-vbd-coupling-architecture.md`. `coupled_substep` applies **lagged** `proxy_forces` to the robot, advances MuJoCo, mirrors TCP motion to the cable proxy (and apple when welded), runs VBD, then **harvests** fresh coupling wrench into `proxy_forces` for the next substep. Tests: `test_coupled_substep_lag_one_step`, `test_qd_synced_buffer_reused_across_substeps`.
+
+### Stem harvest vs velocity delta
+
+When the scene has an apple, `stem_apple_joint_index` is set and harvest uses the **stem–apple fixed joint** reaction (not velocity delta). With `fix_to_apple=True`, proxy and apple co-teleport with the TCP; harvest includes optional **explicit apple weight** (`explicit_load.py`) for prescribed apples (`inv_mass == 0`).
+
+**GPU/CPU parity fix (2026-06-09):** `_limit_and_write_tcp_stem_wrench_kernel` now always transfers stem force from apple COM to TCP via lever arm when `robot_body_q` and apple index are provided; explicit weight adds support force and `(r × F_apple)` separately—matching `_harvest_stem_tension_for_tcp_cpu`. Verified by `test_stem_harvest_cpu_gpu_parity` and `test_stem_harvest_explicit_adds_force_and_torque`.
+
+### Settle-then-weld
+
+Two-build workflow (`settle_then_weld.py`): settle free apple on VBD, build welded scene, copy settled `body_q`/`body_qd`, align proxy offset, re-run IK at fixed FR3 base. Tests use `COUPLED_BASE_POS` + `COUPLED_ROBOT_BASE_POS` with adjacent-seed retry on IK bootstrap flakiness.
+
+### Gym env (M2.1)
+
+`ApplePickCoupledEnv` uses **kinematic direct-joint** control (not VIC). Physics still runs on GPU; observations are assembled on CPU from `measure_fruiting_forces` and TCP buffers.
+
+---
 
 ## Profiler harness
 
@@ -32,26 +98,22 @@ From repository root:
 
 ```bash
 # CPU + MuJoCo CPU (default stability path)
-PYTHONPATH=$(pwd) uv run --directory newton python \
-  ../apple_pick_sim/diagnostics/benchmark_coupling.py \
+uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
   --robot placeholder --device cpu --mujoco-cpu \
   --warmup-substeps 30 --bench-substeps 300
 
 # CUDA + MuJoCo CPU
-PYTHONPATH=$(pwd) uv run --directory newton python \
-  ../apple_pick_sim/diagnostics/benchmark_coupling.py \
+uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
   --robot placeholder --device cuda:0 --mujoco-cpu \
   --warmup-substeps 30 --bench-substeps 300
 
 # CUDA + MuJoCo Warp (GPU robot)
-PYTHONPATH=$(pwd) uv run --directory newton python \
-  ../apple_pick_sim/diagnostics/benchmark_coupling.py \
+uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
   --robot placeholder --device cuda:0 --mujoco-gpu \
   --warmup-substeps 30 --bench-substeps 300
 
 # Stem-harvest path (fix_to_apple)
-PYTHONPATH=$(pwd) uv run --directory newton python \
-  ../apple_pick_sim/diagnostics/benchmark_coupling.py \
+uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
   --robot placeholder --device cuda:0 --fix-to-apple \
   --warmup-substeps 30 --bench-substeps 300
 ```
@@ -62,13 +124,14 @@ PYTHONPATH=$(pwd) uv run --directory newton python \
 
 | Robot | Device | MuJoCo | fix_to_apple | ms/substep | substeps/s | Notes |
 |-------|--------|--------|--------------|------------|------------|-------|
-| placeholder | cpu | CPU | false | ~10.2 | ~98 | See [slice-2e-hardening.md](slice-2e-hardening.md) |
-| placeholder | cpu | CPU | false | ~8.5 | ~118 | RTX 4090 host, 2026-05-25 Slice 2g |
+| placeholder | cpu | CPU | false | ~8.5 | ~118 | RTX 4090 host |
 | placeholder | cuda:0 | Warp | false | ~12.2 | ~82 | default CUDA path (`--mujoco-gpu` explicit) |
 | placeholder | cuda:0 | CPU | false | ~10.1 | ~99 | `--mujoco-cpu` on CUDA (robot CPU, cable GPU) |
-| fr3 | cpu | CPU | false | ~12.3 | ~81 | slice-2e table |
+| fr3 | cpu | CPU | false | ~12.3 | ~81 | FR3 chain |
 
 Re-run after hardware or dependency changes; update this table when reporting regressions.
+
+---
 
 ## CUDA graph capture constraints
 
@@ -82,15 +145,31 @@ CUDA graphs record a **fixed** GPU launch sequence. Safe for headless examples w
 
 Pattern: `example_apple_stem.py` — capture `simulate()` loop, host readouts **after** `capture_launch`.
 
+---
+
 ## Tests
 
 | Module | What it catches |
 |--------|-----------------|
+| `test_proxy_coupling.py` | `test_stem_harvest_cpu_gpu_parity`, mirror/harvest kernels |
 | `test_coupled_fruiting_system.py` | `test_qd_synced_buffer_reused_across_substeps`, `test_coupled_substep_lag_one_step`, FR3 CUDA slow test |
-| `test_proxy_coupling.py` | `test_stem_harvest_cpu_gpu_parity` |
+| `test_explicit_apple_load.py` | Explicit apple weight force/torque |
 | `test_cuda_graph.py` | Headless graph smoke (CUDA only) |
+| `test_settle_then_weld.py` | Two-build initialization |
+| `apple_pick_gym/tests/` | Env API + observation shapes |
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -q -p no:launch_testing
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/ -m slow -q -p no:launch_testing
+uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/ -q -m "not slow"
+uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/ -m slow -q
+```
+
+## How to verify
+
+```bash
+uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
+  --robot placeholder --device cuda:0 --mujoco-gpu \
+  --warmup-substeps 30 --bench-substeps 300
+
+uv run python apple_pick_sim/diagnostics/verify_coupling.py \
+  --num-substeps 600 --max-force 5 --max-torque 1
 ```

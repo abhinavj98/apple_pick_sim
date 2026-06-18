@@ -1,0 +1,35 @@
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+.venv/
+
+# Simulation, benchmark, and debug outputs
+outputs/
+runs/
+logs/
+*.log
+*.npz
+*.npy
+*.csv
+
+# Media artifacts
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4
+*.mov
+
+# Cursor-local generated context snapshots
+.cursor/projects/

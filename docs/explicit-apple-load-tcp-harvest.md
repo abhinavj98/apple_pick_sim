@@ -70,5 +70,5 @@ After `coupled_substep`, welded builds with explicit load enabled include quasi-
 Run:
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_explicit_apple_load.py -q -p no:launch_testing
+uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_explicit_apple_load.py -q
 ```

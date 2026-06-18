@@ -298,9 +298,9 @@ examples/example_coupled_fruiting.py
 
 | Area | Tests | Command (repo root) |
 |------|-------|---------------------|
-| Sync / harvest kernels | `apple_pick_sim/tests/test_proxy_coupling.py` | `PYTHONPATH=$(pwd) uv run --directory newton python -m pytest ../apple_pick_sim/tests/test_proxy_coupling.py -q -p no:launch_testing` |
+| Sync / harvest kernels | `apple_pick_sim/tests/test_proxy_coupling.py` | `uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_proxy_coupling.py -q` |
 | Coupled / MJC-only loop | `apple_pick_sim/tests/test_coupled_fruiting_system.py` | See `README.md` / `docs/ROADMAP.md` |
-| FR3 teleop (headless) | `test_fr3_ee_velocity_controller.py`, `test_fr3_ee_teleop_drives_mujoco_joint_targets` | `pytest` paths in `docs/fr3-usd-import-implementation.md` |
+| FR3 teleop (headless) | `test_fr3_ee_velocity_controller.py`, `test_fr3_ee_teleop_drives_mujoco_joint_targets` | `uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_fr3_ee_velocity_controller.py -q` |
 | P0 fixed-joint readouts | `apple_pick_sim/tests/test_wrench_equilibrium.py` | Documented in `docs/WRENCH_READOUT.md` |
 | Interactive FR3 teleop | `examples/example_coupled_fruiting.py --robot fr3 --only-mjc --fr3-keyboard` | See `README.md` |
 
@@ -309,8 +309,7 @@ examples/example_coupled_fruiting.py
 ## 10. Related docs
 
 - `docs/ROADMAP.md` — [M1] objective, per-model table, coupling protocol, harvest options 1–3
-- `docs/slice-2f-structural-refactor.md` — package layout, gate pytest commands
-- `docs/fr3-usd-import-implementation.md` — FR3 USD import, keyboard teleop entry points
 - `docs/WRENCH_READOUT.md` — fixed-joint wrench semantics (stem harvest path)
+- `docs/gpu-coupling-optimization.md` — GPU architecture and benchmarks
 - `apple_pick_sim/fruiting_system/coupled.py` — staggered protocol overview (M1)
 - `apple_pick_sim/coupled_fruiting/scene.py` — `CoupledFruitingScene` substep loop

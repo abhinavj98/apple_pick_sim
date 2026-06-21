@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -39,11 +40,27 @@ def _synthetic_obs(*, n_woody: int = 2) -> dict:
         "ft_wrist": np.arange(6, dtype=np.float32) + 1.0,
         "tcp_pos": np.array([0.1, 0.2, 0.3], dtype=np.float32),
         "apple_pos": np.array([0.4, 0.5, 0.6], dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "apple_quat": np.array([0.0, 0.1, 0.0, 0.995], dtype=np.float32),
+        "robot_joint_q": np.linspace(0.0, 0.6, 7, dtype=np.float32),
         "woody_part_force": np.arange(n_woody * 6, dtype=np.float32),
     }
 
 
-def _synthetic_meta(*, episode_id: str = "ep-001") -> EpisodeMeta:
+def _synthetic_fruiting_params_json() -> str:
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(
+        Path(__file__).resolve().parents[1] / "fixtures" / "fruiting_system_ranges_straight_rod_test.json"
+    )
+    return fs.fruiting_params_to_json(fs.sample_params(ranges, seed=42))
+
+
+def _synthetic_meta(
+    *,
+    episode_id: str = "ep-001",
+    fruiting_system_params: str | None = None,
+) -> EpisodeMeta:
     return EpisodeMeta(
         episode_id=episode_id,
         weld_direction=(0.0, 0.0, 1.0),
@@ -51,12 +68,22 @@ def _synthetic_meta(*, episode_id: str = "ep-001") -> EpisodeMeta:
         n_woody_parts=2,
         junction_names=["joint_0", "joint_1"],
         params_fingerprint=json.dumps({"stem_bend_stiffness": 30.0}),
+        fruiting_system_params=fruiting_system_params,
         control_hz=60.0,
         timestamp="2026-06-16T12:00:00Z",
         seed=42,
         n_directions=1,
         initial_tcp_pos=(0.0, 0.0, 0.5),
+        initial_tcp_quat=(0.0, 0.0, 0.0, 1.0),
+        initial_apple_pos=(0.4, 0.5, 0.6),
+        initial_apple_quat=(0.0, 0.1, 0.0, 0.995),
+        initial_robot_joint_q=tuple(float(x) for x in np.linspace(0.0, 0.6, 7)),
         fixture_path="fixtures/example.json",
+        fruiting_base_pos=(0.0, 0.2, 1.3),
+        apple_radius=0.04,
+        rod_radii={"primary": 0.012, "secondary": 0.01, "spur": 0.008, "stem": 0.004},
+        weld_reference_pos=(0.4, 0.5, 0.6),
+        weld_reference_quat=(0.0, 0.1, 0.0, 0.995),
         movement_per_step_m=0.05,
         total_movement_m=0.10,
         hold_duration_s=1.5,
@@ -104,6 +131,11 @@ def test_writer_creates_valid_parquet(tmp_path: Path):
         "joint_0",
         "joint_1",
     ]
+    assert table.column("tcp_quat")[0].as_py() == [0.0, 0.0, 0.0, 1.0]
+    assert table.column("apple_quat")[0].as_py() == pytest.approx([0.0, 0.1, 0.0, 0.995])
+    assert table.column("robot_joint_q")[0].as_py() == pytest.approx(
+        np.linspace(0.0, 0.6, 7, dtype=np.float32).tolist()
+    )
 
 
 def test_metadata_appended_across_runs(tmp_path: Path):
@@ -118,6 +150,83 @@ def test_metadata_appended_across_runs(tmp_path: Path):
     ids = set(table.column("episode_id").to_pylist())
     assert ids == {"ep-a", "ep-b"}
     assert table.column("junction_names")[0].as_py() == ["joint_0", "joint_1"]
+    assert table.column("fruiting_base_pos")[0].as_py() == [0.0, 0.2, 1.3]
+    assert table.column("apple_radius")[0].as_py() == 0.04
+    assert table.column("initial_tcp_quat")[0].as_py() == [0.0, 0.0, 0.0, 1.0]
+    assert table.column("initial_apple_pos")[0].as_py() == [0.4, 0.5, 0.6]
+    assert table.column("initial_apple_quat")[0].as_py() == [0.0, 0.1, 0.0, 0.995]
+    assert table.column("initial_robot_joint_q")[0].as_py() == pytest.approx(
+        np.linspace(0.0, 0.6, 7).tolist()
+    )
+    assert json.loads(table.column("rod_radii")[0].as_py()) == {
+        "primary": 0.012,
+        "secondary": 0.01,
+        "spur": 0.008,
+        "stem": 0.004,
+    }
+    assert table.column("weld_reference_pos")[0].as_py() == [0.4, 0.5, 0.6]
+    assert table.column("weld_reference_quat")[0].as_py() == [0.0, 0.1, 0.0, 0.995]
+
+
+def test_metadata_writes_fruiting_system_params_column(tmp_path: Path):
+    params_json = _synthetic_fruiting_params_json()
+    writer = TrajectoryWriter(episode_id="ep-params")
+    _record_synthetic_frames(writer, n=2)
+    writer.save(
+        tmp_path,
+        _synthetic_meta(
+            episode_id="ep-params",
+            fruiting_system_params=params_json,
+        ),
+    )
+
+    table = pq.read_table(tmp_path / "metadata.parquet")
+    assert table.column("fruiting_system_params")[0].as_py() == params_json
+
+    dataset = TrajectoryDataset(tmp_path)
+    loaded_meta = dataset.load_episode_meta("ep-params")
+    assert loaded_meta["fruiting_system_params"] == params_json
+
+
+def test_metadata_append_promotes_legacy_schema(tmp_path: Path):
+    legacy_row = _synthetic_meta(episode_id="legacy").to_row()
+    for key in (
+        "fruiting_base_pos",
+        "fruiting_system_params",
+        "initial_tcp_quat",
+        "initial_apple_pos",
+        "initial_apple_quat",
+        "initial_robot_joint_q",
+        "apple_radius",
+        "rod_radii",
+        "weld_reference_pos",
+        "weld_reference_quat",
+        "movement_per_step_m",
+        "total_movement_m",
+        "hold_duration_s",
+        "move_speed_mps",
+        "skip_return",
+    ):
+        legacy_row.pop(key)
+    pq.write_table(pa.Table.from_pylist([legacy_row]), tmp_path / "metadata.parquet")
+
+    writer = TrajectoryWriter(episode_id="new")
+    _record_synthetic_frames(writer, n=2)
+    writer.save(tmp_path, _synthetic_meta(episode_id="new"))
+
+    table = pq.read_table(tmp_path / "metadata.parquet")
+    ids = table.column("episode_id").to_pylist()
+    assert ids == ["legacy", "new"]
+    assert table.column("fruiting_base_pos")[ids.index("legacy")].as_py() is None
+    assert table.column("fruiting_system_params")[ids.index("legacy")].as_py() is None
+    assert table.column("fruiting_base_pos")[ids.index("new")].as_py() == [0.0, 0.2, 1.3]
+    assert table.column("rod_radii")[ids.index("legacy")].as_py() is None
+    assert json.loads(table.column("rod_radii")[ids.index("new")].as_py()) == {
+        "primary": 0.012,
+        "secondary": 0.01,
+        "spur": 0.008,
+        "stem": 0.004,
+    }
 
 
 def test_dataset_roundtrip(tmp_path: Path):
@@ -151,12 +260,39 @@ def test_dataset_load_episode_obs_arrays(tmp_path: Path):
     assert arrays["action"].shape == (4, 6)
     assert arrays["ft_wrist"].shape == (4, 6)
     assert arrays["tcp_pos"].shape == (4, 3)
+    assert arrays["tcp_quat"].shape == (4, 4)
+    assert arrays["apple_quat"].shape == (4, 4)
+    assert arrays["robot_joint_q"].shape == (4, 7)
     assert set(arrays["woody_part_start_pos"].keys()) == {"joint_0", "joint_1"}
     assert arrays["woody_part_start_pos"]["joint_0"].shape == (4, 3)
     flat = stack_woody_pos_frame(
         arrays["woody_part_start_pos"], 0, arrays["junction_names"]
     )
     assert flat.shape == (6,)
+
+
+def test_digital_twin_obs_from_episode_uses_metadata_and_frame_zero(tmp_path: Path):
+    from apple_pick_sim.system_id.parquet_init import digital_twin_obs_from_episode
+
+    writer = TrajectoryWriter(episode_id="ep-init")
+    _record_synthetic_frames(writer, n=2)
+    writer.save(tmp_path, _synthetic_meta(episode_id="ep-init"))
+
+    dataset = TrajectoryDataset(tmp_path)
+    obs = digital_twin_obs_from_episode(dataset, "ep-init")
+
+    assert obs.fruiting_base_pos == (0.0, 0.2, 1.3)
+    assert obs.weld_direction == (0.0, 0.0, 1.0)
+    assert obs.junction_names == ["joint_0", "joint_1"]
+    assert obs.apple_radius == 0.04
+    assert obs.rod_radii == {
+        "primary": 0.012,
+        "secondary": 0.01,
+        "spur": 0.008,
+        "stem": 0.004,
+    }
+    np.testing.assert_allclose(obs.woody_part_start_pos[:3], [0.0, 1.0, 2.0])
+    np.testing.assert_allclose(obs.woody_part_end_pos[:3], [0.5, 1.5, 2.5])
 
 
 def test_missing_dataset_dir_raises(tmp_path: Path):

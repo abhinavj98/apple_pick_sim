@@ -7,6 +7,7 @@ import json
 import math
 from collections.abc import Collection
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -45,6 +46,9 @@ class FruitingSystemParams:
     apple_density: float | None
 
 
+FRUITING_SYSTEM_PARAMS_SCHEMA = "fruiting_system_params_v1"
+
+
 def analytic_apple_mass_kg(params: FruitingSystemParams) -> float | None:
     """Solid-sphere mass from sampled ``apple_radius`` and ``apple_density`` [kg]."""
     if params.apple_radius is None or params.apple_density is None:
@@ -52,6 +56,91 @@ def analytic_apple_mass_kg(params: FruitingSystemParams) -> float | None:
     r = float(params.apple_radius)
     rho = float(params.apple_density)
     return (4.0 / 3.0) * math.pi * r**3 * rho
+
+
+def _rod_params_to_row(rod: RodParams | None) -> dict[str, Any] | None:
+    if rod is None:
+        return None
+    return {
+        "num_segments": int(rod.num_segments),
+        "length": float(rod.length),
+        "radius": float(rod.radius),
+        "bend_stiffness": float(rod.bend_stiffness),
+        "bend_damping": float(rod.bend_damping),
+        "stretch_stiffness": float(rod.stretch_stiffness),
+        "density": float(rod.density),
+        "direction": [float(x) for x in rod.direction],
+    }
+
+
+def fruiting_params_to_dict(params: FruitingSystemParams) -> dict[str, Any]:
+    """Return a lossless JSON-ready representation of sampled fruiting params."""
+    return {
+        "schema": FRUITING_SYSTEM_PARAMS_SCHEMA,
+        "primary": _rod_params_to_row(params.primary),
+        "secondary": _rod_params_to_row(params.secondary),
+        "spur": _rod_params_to_row(params.spur),
+        "stem": _rod_params_to_row(params.stem),
+        "apple_radius": None if params.apple_radius is None else float(params.apple_radius),
+        "apple_density": None if params.apple_density is None else float(params.apple_density),
+    }
+
+
+def fruiting_params_to_json(params: FruitingSystemParams) -> str:
+    """Serialize sampled fruiting params for episode metadata storage."""
+    return json.dumps(fruiting_params_to_dict(params), sort_keys=True, separators=(",", ":"))
+
+
+def _expect_mapping(value: Any, *, field: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be a JSON object")
+    return value
+
+
+def _rod_params_from_row(value: Any, *, field: str) -> RodParams | None:
+    if value is None:
+        return None
+    row = _expect_mapping(value, field=field)
+    direction = row.get("direction")
+    if not isinstance(direction, (list, tuple)) or len(direction) != 3:
+        raise ValueError(f"{field}.direction must be [x, y, z]")
+    return RodParams(
+        num_segments=int(row["num_segments"]),
+        length=float(row["length"]),
+        radius=float(row["radius"]),
+        bend_stiffness=float(row["bend_stiffness"]),
+        bend_damping=float(row["bend_damping"]),
+        stretch_stiffness=float(row["stretch_stiffness"]),
+        density=float(row["density"]),
+        direction=(float(direction[0]), float(direction[1]), float(direction[2])),
+    )
+
+
+def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
+    """Deserialize :func:`fruiting_params_to_dict` output."""
+    row = _expect_mapping(data, field="fruiting_system_params")
+    schema = row.get("schema")
+    if schema != FRUITING_SYSTEM_PARAMS_SCHEMA:
+        raise ValueError(
+            f"unsupported fruiting params schema {schema!r}; "
+            f"expected {FRUITING_SYSTEM_PARAMS_SCHEMA!r}"
+        )
+    params = FruitingSystemParams(
+        primary=_rod_params_from_row(row.get("primary"), field="primary"),
+        secondary=_rod_params_from_row(row.get("secondary"), field="secondary"),
+        spur=_rod_params_from_row(row.get("spur"), field="spur"),
+        stem=_rod_params_from_row(row.get("stem"), field="stem"),
+        apple_radius=None if row.get("apple_radius") is None else float(row["apple_radius"]),
+        apple_density=None if row.get("apple_density") is None else float(row["apple_density"]),
+    )
+    if not any((params.primary, params.secondary, params.spur, params.stem)):
+        raise ValueError("at least one rod segment must be present in fruiting params")
+    return params
+
+
+def fruiting_params_from_json(value: str) -> FruitingSystemParams:
+    """Deserialize sampled fruiting params stored as episode metadata JSON."""
+    return fruiting_params_from_dict(json.loads(value))
 
 
 @dataclasses.dataclass(frozen=True)

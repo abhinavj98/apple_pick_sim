@@ -155,6 +155,18 @@ def test_sample_params_deterministic():
     assert fp1 == fp2, "Same seed must produce identical params"
 
 
+def test_fruiting_params_json_roundtrip_preserves_sampled_values():
+    """Exact sampled params must survive metadata JSON without fingerprint rounding."""
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    params = fs.sample_params(ranges, seed=42)
+
+    encoded = fs.fruiting_params_to_json(params)
+    decoded = fs.fruiting_params_from_json(encoded)
+
+    assert dataclasses.asdict(decoded) == dataclasses.asdict(params)
+
+
 def test_sample_params_populates_all_segments_when_ranges_non_null():
     """Regression: sample_params must return every segment present in the range dict."""
     fs = _import_module()

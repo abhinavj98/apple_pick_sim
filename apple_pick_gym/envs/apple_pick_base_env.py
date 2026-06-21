@@ -76,6 +76,8 @@ class ApplePickBaseEnv(gym.Env, ABC):
         self._pending_weld_direction: tuple[float, float, float] | None = None
         self._pending_weld_reference_pos: tuple[float, float, float] | None = None
         self._pending_weld_reference_quat: tuple[float, float, float, float] | None = None
+        self._reset_fruiting_base_pos: tuple[float, float, float] | None = None
+        self._reset_robot_base_pos: tuple[float, float, float] | None = None
 
         self._setup_action_space()
 
@@ -121,22 +123,28 @@ class ApplePickBaseEnv(gym.Env, ABC):
             / "fruiting_system_ranges_example_variance.json"
         )
 
-    def _coupled_build_kwargs(self, *, params: Any | None = None) -> dict[str, Any]:
-        from apple_pick_sim.coupled_fruiting.defaults import (
-            COUPLED_BASE_POS,
-            COUPLED_ROBOT_BASE_POS,
-        )
+    @staticmethod
+    def _coerce_optional_xyz(value: Any, *, field: str) -> tuple[float, float, float] | None:
+        if value is None:
+            return None
+        arr = np.asarray(value, dtype=np.float64).reshape(-1)
+        if arr.size != 3:
+            raise ValueError(f"{field} must be a length-3 position")
+        return (float(arr[0]), float(arr[1]), float(arr[2]))
 
+    def _coupled_build_kwargs(self, *, params: Any | None = None) -> dict[str, Any]:
         kw: dict[str, Any] = {
-            "base_pos": COUPLED_BASE_POS,
             "enable_self_collisions": self._cfg.enable_self_collisions,
             "mujoco_solver_kwargs": self._cfg.mujoco_solver_kwargs,
             "ik_bootstrap_iterations": 256,
         }
+        if self._reset_fruiting_base_pos is not None:
+            kw["base_pos"] = self._reset_fruiting_base_pos
         if params is not None:
             kw["params"] = params
+        if self._reset_robot_base_pos is not None:
+            kw["robot_base_pos"] = self._reset_robot_base_pos
         if self._cfg.fix_to_apple:
-            kw["robot_base_pos"] = COUPLED_ROBOT_BASE_POS
             kw["robot_base_from_proxy"] = False
         else:
             kw["robot_base_from_proxy"] = True
@@ -276,6 +284,24 @@ class ApplePickBaseEnv(gym.Env, ABC):
         bq = self._scene.cable.state_0.body_q.numpy().reshape(-1, 7)
         return np.asarray(bq[int(apple), :3], dtype=np.float32)
 
+    def _apple_quat(self) -> np.ndarray:
+        assert self._scene is not None
+        apple = self._scene.cable.apple_body
+        if apple is None:
+            return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        bq = self._scene.cable.state_0.body_q.numpy().reshape(-1, 7)
+        return np.asarray(bq[int(apple), 3:7], dtype=np.float32)
+
+    def _rod_radii(self) -> dict[str, float]:
+        assert self._scene is not None
+        params = self._scene.cable.params
+        out: dict[str, float] = {}
+        for name in ("primary", "secondary", "spur", "stem"):
+            rod = getattr(params, name, None)
+            if rod is not None:
+                out[name] = float(rod.radius)
+        return out
+
     def _tcp_velocity(self) -> np.ndarray:
         assert self._scene is not None
         tcp = int(self._scene.tcp_body_index)
@@ -288,7 +314,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
         assert self._scene is not None
         _, _, sub_dt = self._timing_constants()
         return {
-            "obs_schema": "v2",
+            "obs_schema": "v3",
             "step_count": int(self._step_count),
             "n_woody_parts": int(self._n_woody_parts),
             "params_fingerprint": fs.params_fingerprint(self._scene.cable.params),
@@ -427,6 +453,15 @@ class ApplePickBaseEnv(gym.Env, ABC):
             ranges = fs.load_ranges(Path(ranges_path))
         else:
             ranges = fs.load_ranges(self._fixture_ranges_path())
+        fixture_args = fs.parse_fixture_args(ranges)
+        self._reset_fruiting_base_pos = self._coerce_optional_xyz(
+            options.get("fruiting_base_pos", fixture_args.fruiting_base_pos),
+            field="fruiting_base_pos",
+        )
+        self._reset_robot_base_pos = self._coerce_optional_xyz(
+            options.get("robot_base_pos", fixture_args.robot_base_pos),
+            field="robot_base_pos",
+        )
 
         injected_params = options.get("params")
         self._build_scene(ranges, scene_seed, injected_params=injected_params)

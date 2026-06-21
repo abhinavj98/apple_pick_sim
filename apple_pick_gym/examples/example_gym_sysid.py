@@ -23,6 +23,16 @@ Headless smoke (cap env steps)::
     uv run python apple_pick_gym/examples/example_gym_sysid.py --viewer null \\
       --n-directions 1 --max-steps 200
 
+Dataset collection writes Parquet observations by default; add ``--save-snapshot``
+only when a privileged ``initial_states/*.npz`` baseline is needed::
+
+    uv run python apple_pick_gym/examples/example_gym_sysid.py --viewer null \\
+      --n-directions 1 --max-steps 200 --output /tmp/sysid_dataset
+
+    uv run python apple_pick_gym/examples/example_gym_sysid.py --viewer null \\
+      --n-directions 1 --max-steps 200 --save-snapshot \\
+      --output /tmp/sysid_dataset_with_snapshot
+
 Per-step trajectory and summary prints (off by default)::
 
     uv run python apple_pick_gym/examples/example_gym_sysid.py --debug --viewer null \\
@@ -183,6 +193,11 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Directory to write Parquet trajectory dataset (metadata + per-episode frames).",
     )
     p.add_argument(
+        "--save-snapshot",
+        action="store_true",
+        help="Also write privileged initial_states/*.npz baseline data (default off).",
+    )
+    p.add_argument(
         "--debug",
         action="store_true",
         help="Print per-step trajectory logs, summaries, and operational notices.",
@@ -228,6 +243,7 @@ def main() -> None:
     debug_print = _make_debug_printer(bool(args.debug))
 
     from apple_pick_gym.envs import ApplePickSysIdEnv
+    from apple_pick_sim.fruiting_system import fruiting_params_to_json
     from apple_pick_sim.system_id import (
         EpisodeMeta,
         ExcitationContext,
@@ -237,7 +253,6 @@ def main() -> None:
         grasp_snapshot_from_env,
         sample_robot_facing_pull_directions,
     )
-    from apple_pick_sim.tests.conftest import COUPLED_ROBOT_BASE_POS
 
     config = _trajectory_config_from_args(args)
     n_directions = int(args.n_directions)
@@ -256,12 +271,14 @@ def main() -> None:
         mujoco_solver_kwargs={"disable_contacts": True},
     )
     obs, info = env.reset(seed=int(args.seed))
-    _reset_weld_direction = info.get("weld_direction")
+    reset_obs = obs
+    reset_info = dict(info)
+    _reset_weld_direction = reset_info.get("weld_direction")
 
-    if trajectory_writer is not None:
+    if trajectory_writer is not None and bool(args.save_snapshot):
         snapshot = grasp_snapshot_from_env(
             env,
-            obs=obs,
+            obs=reset_obs,
             weld_direction=_reset_weld_direction,
         )
         snapshot_path = trajectory_writer.save_initial_state(Path(args.output), snapshot)
@@ -274,7 +291,8 @@ def main() -> None:
     tcp_target = np.asarray(env._controller.target_tf[:3], dtype=np.float64)
     apple_pos = np.asarray(obs["apple_pos"], dtype=np.float64)
     grasp_axis = _normalize(apple_pos - tcp_target)
-    robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+    robot_base_pos = np.asarray(reset_info["robot_base_pos"], dtype=np.float64)
+    robot_vec = robot_base_pos - apple_pos
 
     cable = scene.cable
     stem_bodies = cable.stem_bodies
@@ -510,7 +528,7 @@ def main() -> None:
                 )
 
         if trajectory_writer is not None and recorded_steps > 0:
-            weld = info.get("weld_direction")
+            weld = reset_info.get("weld_direction")
             if weld is None:
                 weld = _reset_weld_direction
             if weld is None:
@@ -526,19 +544,54 @@ def main() -> None:
                     float(weld_arr[1] / weld_norm),
                     float(weld_arr[2] / weld_norm),
                 )
-            params_fp = info.get("params_fingerprint", {})
+            params_fp = reset_info.get("params_fingerprint", {})
             meta = EpisodeMeta(
                 episode_id=trajectory_writer.episode_id,
                 weld_direction=weld_tuple,
                 excitation_type="quasi_static",
-                n_woody_parts=int(info.get("n_woody_parts", 0)),
+                n_woody_parts=int(reset_info.get("n_woody_parts", 0)),
                 junction_names=list(env.unwrapped.junction_names),
                 params_fingerprint=json.dumps(params_fp, sort_keys=True),
+                fruiting_system_params=fruiting_params_to_json(scene.cable.params),
                 control_hz=float(config.control_hz),
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 seed=int(args.seed),
                 n_directions=n_directions,
-                initial_tcp_pos=tuple(float(x) for x in tcp_target.reshape(3)),
+                initial_tcp_pos=tuple(
+                    float(x) for x in np.asarray(reset_obs["tcp_pos"]).reshape(3)
+                ),
+                initial_tcp_quat=tuple(
+                    float(x) for x in np.asarray(reset_obs["tcp_quat"]).reshape(4)
+                ),
+                initial_apple_pos=tuple(
+                    float(x) for x in np.asarray(reset_obs["apple_pos"]).reshape(3)
+                ),
+                initial_apple_quat=tuple(
+                    float(x) for x in np.asarray(reset_obs["apple_quat"]).reshape(4)
+                ),
+                initial_robot_joint_q=tuple(
+                    float(x) for x in np.asarray(reset_obs["robot_joint_q"]).reshape(-1)
+                ),
+                fixture_path=str(env.unwrapped._fixture_ranges_path()),
+                fruiting_base_pos=(
+                    None
+                    if reset_info.get("fruiting_base_pos") is None
+                    else tuple(
+                        float(x) for x in np.asarray(reset_info["fruiting_base_pos"]).reshape(3)
+                    )
+                ),
+                apple_radius=(
+                    None
+                    if scene.cable.params.apple_radius is None
+                    else float(scene.cable.params.apple_radius)
+                ),
+                rod_radii=reset_info.get("rod_radii"),
+                weld_reference_pos=tuple(
+                    float(x) for x in np.asarray(reset_obs["apple_pos"]).reshape(3)
+                ),
+                weld_reference_quat=tuple(
+                    float(x) for x in np.asarray(reset_obs["apple_quat"]).reshape(4)
+                ),
                 movement_per_step_m=float(config.movement_per_step_m),
                 total_movement_m=float(config.total_movement_m),
                 hold_duration_s=float(config.hold_duration_s),

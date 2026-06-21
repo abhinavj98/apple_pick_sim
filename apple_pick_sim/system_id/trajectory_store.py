@@ -38,6 +38,9 @@ BONUS_FRAME_COLUMNS: tuple[str, ...] = (
     "amplitude_m",
     "tcp_pos",
     "apple_pos",
+    "tcp_quat",
+    "apple_quat",
+    "robot_joint_q",
     "woody_part_force",
 )
 
@@ -81,12 +84,22 @@ METADATA_COLUMNS: tuple[str, ...] = (
     "n_woody_parts",
     "junction_names",
     "params_fingerprint",
+    "fruiting_system_params",
     "control_hz",
     "timestamp",
     "seed",
     "n_directions",
     "initial_tcp_pos",
+    "initial_tcp_quat",
+    "initial_apple_pos",
+    "initial_apple_quat",
+    "initial_robot_joint_q",
     "fixture_path",
+    "fruiting_base_pos",
+    "apple_radius",
+    "rod_radii",
+    "weld_reference_pos",
+    "weld_reference_quat",
     "movement_per_step_m",
     "total_movement_m",
     "hold_duration_s",
@@ -157,6 +170,11 @@ def _as_f32_list(value: Any, *, size: int | None = None) -> list[float]:
     return [float(x) for x in arr.tolist()]
 
 
+def _metadata_table_from_rows(rows: list[dict[str, Any]]) -> pa.Table:
+    """Build current metadata schema while filling legacy missing columns with nulls."""
+    return pa.Table.from_pylist([{name: row.get(name) for name in METADATA_COLUMNS} for row in rows])
+
+
 def target_tf_to_array(target_tf: Any) -> np.ndarray:
     """Serialize a Warp transform as ``(7,)`` float32 ``[px, py, pz, qx, qy, qz, qw]``."""
     import warp as wp
@@ -198,10 +216,11 @@ def grasp_snapshot_from_env(
         "robot_joint_qd": scene.robot_state_0.joint_qd.numpy().copy(),
         "cable_body_q": scene.cable.state_0.body_q.numpy().copy(),
         "cable_body_qd": scene.cable.state_0.body_qd.numpy().copy(),
-        "cable_state_1_body_q": scene.cable.state_1.body_q.numpy().copy(),
-        "cable_state_1_body_qd": scene.cable.state_1.body_qd.numpy().copy(),
         "vic_target_tf": target_tf_to_array(controller.target_tf),
     }
+    if getattr(scene.cable, "state_1", None) is not None:
+        snapshot["cable_state_1_body_q"] = scene.cable.state_1.body_q.numpy().copy()
+        snapshot["cable_state_1_body_qd"] = scene.cable.state_1.body_qd.numpy().copy()
     apple_body = getattr(scene.cable, "apple_body", None)
     if apple_body is not None:
         apple_q = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[int(apple_body)]
@@ -311,6 +330,15 @@ class TrajectoryWriter:
             "amplitude_m": float(amplitude_m),
             "tcp_pos": _as_f32_list(obs.get("tcp_pos", np.zeros(3)), size=3),
             "apple_pos": _as_f32_list(obs.get("apple_pos", np.zeros(3)), size=3),
+            "tcp_quat": _as_f32_list(
+                obs.get("tcp_quat", np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)),
+                size=4,
+            ),
+            "apple_quat": _as_f32_list(
+                obs.get("apple_quat", np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)),
+                size=4,
+            ),
+            "robot_joint_q": _as_f32_list(obs.get("robot_joint_q", np.zeros(7)), size=7),
             "woody_part_force": _as_f32_list(obs.get("woody_part_force", np.zeros(0))),
         }
         for name in sorted(start_by_name):
@@ -335,10 +363,11 @@ class TrajectoryWriter:
         pq.write_table(pa.Table.from_pylist(self._rows), frames_path)
 
         meta_path = output_dir / "metadata.parquet"
-        meta_table = pa.Table.from_pylist([meta.to_row()])
+        meta_rows = [meta.to_row()]
         if meta_path.exists():
             existing = pq.read_table(meta_path)
-            meta_table = pa.concat_tables([existing, meta_table])
+            meta_rows = existing.to_pylist() + meta_rows
+        meta_table = _metadata_table_from_rows(meta_rows)
         pq.write_table(meta_table, meta_path)
         return frames_path
 
@@ -431,5 +460,8 @@ class TrajectoryDataset:
             "woody_part_end_pos": _stack_woody(WOODY_END_PREFIX),
             "tcp_pos": _stack_column("tcp_pos").reshape(-1, 3),
             "apple_pos": _stack_column("apple_pos").reshape(-1, 3),
+            "tcp_quat": _stack_column("tcp_quat").reshape(-1, 4),
+            "apple_quat": _stack_column("apple_quat").reshape(-1, 4),
+            "robot_joint_q": _stack_column("robot_joint_q").reshape(-1, 7),
             "junction_names": list(junction_names),
         }

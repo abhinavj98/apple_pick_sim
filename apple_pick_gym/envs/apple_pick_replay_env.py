@@ -13,6 +13,10 @@ from apple_pick_sim.system_id.trajectory_store import (
     TrajectoryDataset,
     load_grasp_snapshot_into_env,
 )
+from apple_pick_sim.system_id.parquet_init import (
+    initialize_env_from_parquet,
+    observation_reset_options_from_parquet,
+)
 
 
 class ApplePickReplayEnv(ApplePickSysIdEnv):
@@ -81,7 +85,16 @@ class ApplePickReplayEnv(ApplePickSysIdEnv):
                     low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32
                 ),
                 "tcp_pos": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
+                "tcp_quat": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32
+                ),
                 "apple_pos": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
+                "apple_quat": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32
+                ),
+                "robot_joint_q": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
+                ),
             }
         )
 
@@ -102,7 +115,10 @@ class ApplePickReplayEnv(ApplePickSysIdEnv):
             "woody_end": end_pos,
             "tcp_velocity": self._tcp_velocity(),
             "tcp_pos": self._tcp_pos(),
+            "tcp_quat": self._tcp_quat(),
             "apple_pos": self._apple_pos(),
+            "apple_quat": self._apple_quat(),
+            "robot_joint_q": self._robot_joint_q(),
         }
 
     def load_dataset(
@@ -128,6 +144,7 @@ class ApplePickReplayEnv(ApplePickSysIdEnv):
 
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         options = dict(options or {})
+        use_snapshot = bool(options.pop("use_snapshot", True))
         dataset_dir = options.pop("dataset_dir", None)
         if dataset_dir is not None:
             self.load_dataset(dataset_dir, episode_id=options.get("episode_id"))
@@ -135,7 +152,7 @@ class ApplePickReplayEnv(ApplePickSysIdEnv):
             self.load_dataset(self._dataset_dir, episode_id=options.get("episode_id"))
 
         snap = None
-        if self._dataset is not None and self._episode_id is not None:
+        if use_snapshot and self._dataset is not None and self._episode_id is not None:
             snap = self._dataset.load_initial_state(self._episode_id)
 
         if snap is not None and "weld_direction" in snap:
@@ -149,9 +166,16 @@ class ApplePickReplayEnv(ApplePickSysIdEnv):
                     float(x) for x in snap["weld_reference_quat"]
                 )
         elif self._episode_meta is not None:
+            if self._dataset is not None and self._episode_id is not None:
+                derived_options = observation_reset_options_from_parquet(
+                    self._dataset,
+                    self._episode_id,
+                )
+                for key, value in derived_options.items():
+                    options.setdefault(key, value)
             weld = self._episode_meta.get("weld_direction")
             if weld is not None:
-                options["weld_direction"] = weld
+                options.setdefault("weld_direction", weld)
 
         if self._episode_meta is not None:
             control_hz = self._episode_meta.get("control_hz")
@@ -171,8 +195,15 @@ class ApplePickReplayEnv(ApplePickSysIdEnv):
                 load_grasp_snapshot_into_env(self, snap)
                 obs = self._make_obs()
                 info["initial_state_restored"] = True
+                info["observation_init"] = False
             else:
                 info["initial_state_restored"] = False
+                info["observation_init"] = False
+        elif self._dataset is not None and self._episode_id is not None:
+            initialize_env_from_parquet(self, self._dataset, self._episode_id)
+            obs = self._make_obs()
+            info["initial_state_restored"] = False
+            info["observation_init"] = True
 
         return obs, info
 

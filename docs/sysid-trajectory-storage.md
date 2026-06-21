@@ -4,7 +4,7 @@ Parquet persistence for quasi-static (and future) sysID rollouts, plus dataset-b
 
 ## Status
 
-Recording and replaying are complete for sim-to-sim datasets. Collection writes per-frame observations/actions, episode metadata, and an optional privileged initial-state snapshot. Replay loads the dataset, restores the saved Newton state when available, and applies the recorded EE velocity actions open-loop while recomputing observations from the live simulation.
+Recording and replaying are complete for sim-to-sim datasets. Collection writes per-frame observations/actions, reset observable state in episode metadata, and an optional privileged initial-state snapshot. Replay loads the dataset, restores the saved Newton state when available, and applies the recorded EE velocity actions open-loop while recomputing observations from the live simulation.
 
 The next sysID step is **observation-only replay initialization**: replay should initialize from recorded observations and calibration metadata, not from privileged simulator arrays such as body poses, velocities, solver previous-state buffers, or saved controller internals. The first validation target is sim-to-sim replay with the `.npz` snapshot withheld, so we can measure how close an observation-derived initial state gets before using real-world data. Observation and digital-twin requirements are specified in `docs/observation-replay-digital-twin.md`.
 
@@ -15,6 +15,8 @@ The next sysID step is **observation-only replay initialization**: replay should
   metadata.parquet              # one row per episode (appended across runs)
   frames/
     <episode_id>.parquet        # per-frame timeseries for one episode
+  initial_states/
+    <episode_id>.npz            # optional privileged baseline (--save-snapshot)
 ```
 
 ## Required frame columns
@@ -36,7 +38,8 @@ Per-junction woody columns are dynamic (one start/end pair per entry in `junctio
 
 ## Bonus frame columns (written by default)
 
-`sim_time`, `dir_idx`, `amplitude_m`, `tcp_pos`, `apple_pos`, `woody_part_force`
+`sim_time`, `dir_idx`, `amplitude_m`, `tcp_pos`, `tcp_quat`, `apple_pos`,
+`apple_quat`, `robot_joint_q`, `woody_part_force`
 
 ## Required metadata columns
 
@@ -48,11 +51,12 @@ Per-junction woody columns are dynamic (one start/end pair per entry in `junctio
 | `n_woody_parts` | Number of woody fixed joints |
 | `junction_names` | Ordered junction labels for woody parquet columns |
 | `params_fingerprint` | JSON stiffness/damping summary of `FruitingSystemParams` θ |
+| `fruiting_system_params` | Lossless JSON for the sampled `FruitingSystemParams` used to build the episode; nullable for legacy or real-data rows |
 | `control_hz` | Env step rate |
 
 ## Bonus metadata columns
 
-`timestamp`, `seed`, `n_directions`, `initial_tcp_pos`, `fixture_path`, trajectory config (`movement_per_step_m`, `total_movement_m`, `hold_duration_s`, `move_speed_mps`, `skip_return`)
+`timestamp`, `seed`, `n_directions`, reset observable state (`initial_tcp_pos`, `initial_tcp_quat`, `initial_apple_pos`, `initial_apple_quat`, `initial_robot_joint_q`), `fixture_path`, trajectory config (`movement_per_step_m`, `total_movement_m`, `hold_duration_s`, `move_speed_mps`, `skip_return`)
 
 ## Observation-only initialization metadata
 
@@ -60,15 +64,19 @@ For M3.0.3, datasets must be usable when `initial_states/<episode_id>.npz` is ab
 
 | Item | Storage location today | Required evolution |
 |------|------------------------|--------------------|
-| TCP pose/twist at reset | `initial_tcp_pos`, first-frame `tcp_pos`, `tcp_velocity`; optional snapshot `obs_tcp_pos`, `obs_tcp_velocity` | Store reset-frame observation values even when no privileged snapshot is written |
+| TCP pose/twist at reset | metadata `initial_tcp_pos`, `initial_tcp_quat`; per-step `tcp_velocity`; optional snapshot `obs_tcp_pos`, `obs_tcp_velocity` | Keep reset-frame TCP position/orientation/velocity available even when no privileged snapshot is written |
 | F/T bias-corrected wrench | first-frame `ft_wrist`; optional snapshot `obs_ft_wrist` | Record bias metadata or bias-corrected convention in episode metadata |
-| Apple pose | first-frame `apple_pos`; optional snapshot `obs_apple_pos` | Add apple orientation when available |
+| Apple pose | metadata `initial_apple_pos`, `initial_apple_quat`; optional snapshot `obs_apple_pos` | Keep reset-frame apple position/orientation in the v3 pose bundle |
+| Robot joint positions | metadata `initial_robot_joint_q` | Restore the dynamic robot state and MuJoCo/VIC buffers from observed joint positions |
 | Woody endpoints | per-frame `woody_start__<junction>`, `woody_end__<junction>`; optional snapshot `obs_woody_start`, `obs_woody_end` | Keep `junction_names` stable and map each key to the fixture topology |
-| Grasp/weld transform | `weld_direction`; optional snapshot `weld_reference_pos`, `weld_reference_quat` | Store real grasp transform/calibration rather than deriving only from sim body state |
+| Sampled fruiting parameters | metadata `fruiting_system_params`; summary in `params_fingerprint` | Rebuild the same sim-to-sim θ without depending on the original procedural seed; for real data this becomes calibrated or candidate θ |
+| Grasp/weld transform | `weld_direction`, metadata `weld_reference_pos`, `weld_reference_quat`; optional snapshot copies | Store real grasp transform/calibration rather than deriving only from sim body state |
 | Calibration transforms | not represented directly | Add fixture/world/robot/camera/F/T transforms when field data collection starts |
 | Digital-twin fixture identity | `fixture_path` | Point to a named fixture catalog entry with topology, base poses, and geometry ranges |
 
-The `.npz` snapshot may continue to be written for privileged replay baselines, but it must be optional. Replay code should treat the absence of `.npz` as the normal real-data path, not as a corrupted dataset.
+Per-step frame 0 remains the observation after replay action 0 has been applied, so replay can compare action 0 against recorded frame 0 after one `env.step(action_0)`. Observation-only reset initialization prefers the metadata reset fields above and falls back to frame-0 `robot_joint_q`, `tcp_pos`, and `tcp_quat` only for legacy datasets that predate reset metadata.
+
+`fruiting_system_params` is not a privileged dynamic state snapshot: it stores the episode's realized physical parameters (geometry, stiffness/damping, density, segment counts, apple scalars), not Newton body transforms, velocities, solver buffers, or controller internals. No-snapshot replay prefers this exact θ when present, then falls back to observation-derived geometry plus fixture midpoint dynamics for legacy datasets. The `.npz` snapshot may continue to be written for privileged replay baselines, but it must be optional. Replay code should treat the absence of `.npz` as the normal real-data path, not as a corrupted dataset.
 
 ## Displacement convention
 
@@ -91,6 +99,16 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --output /tmp/sysid_dataset
 ```
 
+The command above does **not** write `initial_states/*.npz`. Add
+`--save-snapshot` only when collecting a privileged sim-to-sim baseline for
+comparison while observation-only replay is being validated:
+
+```bash
+uv run python apple_pick_gym/examples/example_gym_sysid.py \
+  --viewer null --n-directions 1 --max-steps 200 --save-snapshot \
+  --output /tmp/sysid_dataset_with_snapshot
+```
+
 Implementation: [`apple_pick_sim/system_id/trajectory_store.py`](../apple_pick_sim/system_id/trajectory_store.py), wired in [`apple_pick_gym/examples/example_gym_sysid.py`](../apple_pick_gym/examples/example_gym_sysid.py).
 
 ## Replay example script
@@ -99,17 +117,17 @@ Implementation: [`apple_pick_sim/system_id/trajectory_store.py`](../apple_pick_s
 
 ```bash
 uv run python apple_pick_gym/examples/example_gym_replay.py \
-  --dataset tmp/sysid_dataset --viewer null
+  --dataset /tmp/sysid_dataset --viewer null
 
 uv run python apple_pick_gym/examples/example_gym_replay.py \
-  --dataset tmp/sysid_dataset --list-episodes
+  --dataset /tmp/sysid_dataset --list-episodes
 ```
 
 ## Replay env
 
 `ApplePickReplay-v0` (`ApplePickReplayEnv`) loads a dataset and applies stored `action` rows open-loop. The Gym `action` argument is ignored during replay.
 
-Current replay is state-initialized when `initial_states/<episode_id>.npz` exists. That privileged snapshot is useful for proving storage, action replay, and live-vs-recorded observation comparison, but it is not the real-data sysID path. Real-world replay must instead infer the initial Newton state from observable quantities such as TCP pose/velocity, F/T bias-corrected wrench, apple pose, woody marker positions, grasp/weld direction, digital-twin fixture geometry, and known calibration transforms.
+Current replay is state-initialized when `initial_states/<episode_id>.npz` exists and snapshot loading is enabled. That privileged snapshot remains useful for proving storage, action replay, and live-vs-recorded observation comparison, but it is not the default collection path and it is not the real-data sysID path. Real-world replay must instead infer the initial Newton state from observable v3 quantities such as TCP position/orientation/velocity, robot joint positions, F/T bias-corrected wrench, apple position/orientation, woody marker positions, grasp/weld direction, digital-twin fixture geometry, and known calibration transforms.
 
 ```python
 from apple_pick_gym.envs import ApplePickReplayEnv

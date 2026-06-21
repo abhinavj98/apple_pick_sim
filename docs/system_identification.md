@@ -39,7 +39,7 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --move-speed-mps 0.2
 ```
 
-On headless Linux the example auto-appends `--viewer null`. Pass `--output <dataset_dir>` to write Parquet frames, episode metadata, and an initial-state snapshot for replay.
+On headless Linux the example auto-appends `--viewer null`. Pass `--output <dataset_dir>` to write observation-first Parquet frames and episode metadata. Privileged `initial_states/*.npz` snapshots are default-off; add `--save-snapshot` only when collecting a sim-to-sim baseline for comparison.
 
 **Verify pull-direction geometry** (default 90° hemisphere, matches collection):
 

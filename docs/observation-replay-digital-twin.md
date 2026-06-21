@@ -37,7 +37,7 @@ These fields are the minimum practical bundle to reconstruct the post-grasp init
 | Junction labels/topology | Fixture file or perception topology output | `junction_names`, fixture JSON | Map observations to Newton bodies/joints |
 | Grasp/weld transform | Robot grasp planner, calibration, or marker on gripper/apple | `weld_direction`, `weld_reference_pos`, `weld_reference_quat` | Recreate post-grasp coupling |
 | Base/calibration transforms | Robot-to-world, camera-to-world, F/T frame transforms | `fruiting_base_pos`, `robot_base_pos`, fixture metadata | Put all observations in one world frame |
-| Candidate geometry parameters | Measurement/calibration pass | fixture JSON/ranges | Build the digital twin geometry |
+| Candidate or sampled physical parameters | Measurement/calibration pass or sim metadata | `fruiting_system_params`, fixture JSON/ranges | Build the digital twin geometry and dynamics without relying on a procedural seed |
 
 Recommended optional fields:
 
@@ -61,6 +61,8 @@ Recommended optional fields:
 
 The initializer should prefer invariants over hidden-state guesses: known topology, calibrated frames, measured poses, zero or measured initial velocities, and a deterministic settle pass before replay starts.
 
+For sim-to-sim datasets, `fruiting_system_params` records the exact sampled `FruitingSystemParams` used during collection. This removes seed-dependent resampling from no-snapshot replay, but it is still metadata for θ, not a privileged simulator state restore. Full-state replay still requires the optional `.npz` snapshot.
+
 ## Digital-twin fixture contract
 
 A digital-twin fixture is the bridge between observations and Newton geometry. Each named fixture should document:
@@ -73,6 +75,41 @@ A digital-twin fixture is the bridge between observations and Newton geometry. E
 - a sys-ID smoke command and replay drift thresholds.
 
 The first implementation should use a sim-generated ground-truth fixture, then rebuild a separate tunable fixture from exported observations. This verifies the reconstruction and replay machinery before the project depends on real perception quality.
+
+The current named catalog lives at
+`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`. `straight_rod_test`
+is the deterministic reconstruction baseline, and `example_variance` matches the
+default gym/sys-ID fixture. Catalog entries are checked by
+`apple_pick_sim/tests/test_digital_twin.py::test_fixture_catalog_references_existing_assets`,
+which verifies that paths exist, referenced range/observation files load, base
+poses agree with the range fixture `args`, and smoke commands use `uv run`.
+
+## Sim-to-sim smoke commands
+
+Collect a short observation-only dataset without privileged simulator snapshots
+(this is the default; omit `--save-snapshot`):
+
+```bash
+uv run python apple_pick_gym/examples/example_gym_sysid.py \
+  --viewer null --n-directions 1 --max-steps 200 \
+  --output /tmp/apple_pick_sysid_no_snapshot
+```
+
+When a privileged baseline is needed for comparison, opt in explicitly:
+
+```bash
+uv run python apple_pick_gym/examples/example_gym_sysid.py \
+  --viewer null --n-directions 1 --max-steps 200 --save-snapshot \
+  --output /tmp/apple_pick_sysid_with_snapshot
+```
+
+Check pull-direction geometry against the current fixture/base-pose conventions:
+
+```bash
+uv run python apple_pick_gym/examples/visualize_pull_directions.py \
+  --seed 0 --n-directions 10 --fix-to-apple-warmup-substeps 0 \
+  --output /tmp/apple_pick_pull_directions.png
+```
 
 ## Relation to current code
 
@@ -100,4 +137,5 @@ Expected tests for M3.0.3/M3.0.4:
 - privileged replay and observation-only replay run the same recorded `action` sequence;
 - drift metrics are reported for TCP/apple/woody/F/T observations;
 - a sim-generated digital-twin fixture can rebuild topology and base poses from metadata;
-- fixture catalog smoke runs `example_gym_sysid.py --output <dataset>` with a named fixture selection path added before M3.0.4 validation.
+- fixture catalog references are covered by `test_fixture_catalog_references_existing_assets`;
+- per-fixture sys-ID smoke can use catalog `smoke_commands`; adding a named fixture selection CLI remains separate from the current manifest check.

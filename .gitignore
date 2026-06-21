@@ -32,6 +32,7 @@ coverage.xml
 
 # Logs and local scratch
 *.log
+tmp/
 
 # Editors / OS
 .idea/

@@ -52,6 +52,9 @@ def _write_minimal_dataset(tmp_path: Path, *, n_frames: int = 3) -> str:
                 "ft_wrist": np.zeros(6, dtype=np.float32),
                 "tcp_pos": np.zeros(3, dtype=np.float32),
                 "apple_pos": np.zeros(3, dtype=np.float32),
+                "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+                "apple_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+                "robot_joint_q": np.zeros(7, dtype=np.float32),
                 "woody_part_force": np.zeros(12, dtype=np.float32),
             },
         )
@@ -67,6 +70,11 @@ def _write_minimal_dataset(tmp_path: Path, *, n_frames: int = 3) -> str:
             control_hz=60.0,
             n_directions=1,
             skip_return=True,
+            fruiting_base_pos=(0.0, 0.2, 1.3),
+            apple_radius=0.04,
+            rod_radii={"primary": 0.01, "secondary": 0.01, "spur": 0.01, "stem": 0.004},
+            weld_reference_pos=(0.0, 0.0, 0.0),
+            weld_reference_quat=(0.0, 0.0, 0.0, 1.0),
         ),
     )
     return episode_id
@@ -104,6 +112,8 @@ def test_replay_env_loads_episode(tmp_path: Path):
     obs, info = env.reset(seed=3)
     assert obs["ft_wrist"].shape == (6,)
     assert info["replay_episode_id"] == episode_id
+    assert info["observation_init"] is True
+    assert info["initial_state_restored"] is False
     env.close()
 
 
@@ -175,3 +185,44 @@ def test_replay_env_obs_keys(tmp_path: Path):
     ):
         assert key in obs
     env.close()
+
+
+def test_replay_comparison_includes_v3_pose_fields():
+    from apple_pick_gym.examples.example_gym_replay import _compare_to_dataset
+
+    obs = {
+        "ft_wrist": np.zeros(6, dtype=np.float32),
+        "tcp_velocity": np.zeros(6, dtype=np.float32),
+        "tcp_pos": np.array([0.001, 0.0, 0.0], dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.1, 0.0, 0.995], dtype=np.float32),
+        "apple_pos": np.array([0.0, 0.002, 0.0], dtype=np.float32),
+        "apple_quat": np.array([0.0, 0.0, 0.2, 0.98], dtype=np.float32),
+        "robot_joint_q": np.full(7, 0.1, dtype=np.float32),
+        "woody_start": np.zeros(3, dtype=np.float32),
+        "woody_end": np.zeros(3, dtype=np.float32),
+    }
+    recorded = {
+        "action": np.zeros((1, 6), dtype=np.float32),
+        "ft_wrist": np.zeros((1, 6), dtype=np.float32),
+        "tcp_velocity": np.zeros((1, 6), dtype=np.float32),
+        "tcp_pos": np.zeros((1, 3), dtype=np.float32),
+        "tcp_quat": np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+        "apple_pos": np.zeros((1, 3), dtype=np.float32),
+        "apple_quat": np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+        "robot_joint_q": np.zeros((1, 7), dtype=np.float32),
+        "woody_part_start_pos": {"joint_0": np.zeros((1, 3), dtype=np.float32)},
+        "woody_part_end_pos": {"joint_0": np.zeros((1, 3), dtype=np.float32)},
+        "junction_names": ["joint_0"],
+    }
+
+    err = _compare_to_dataset(
+        frame_idx=0,
+        obs=obs,
+        info={"replay_action": np.zeros(6, dtype=np.float32)},
+        recorded=recorded,
+    )
+
+    assert err is not None
+    assert err.tcp_quat_rmse > 0.0
+    assert err.apple_quat_rmse > 0.0
+    assert err.robot_joint_q_rmse == pytest.approx(0.1)

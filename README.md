@@ -243,7 +243,7 @@ uv run python apple_pick_sim/diagnostics/verify_coupling.py \
 
 ### Gymnasium environments (`apple_pick_gym/`)
 
-Headless Gymnasium wrappers over the coupled FR3 stack. Registered envs include `ApplePickCoupled-v0`, `ApplePickVic-v0`, `ApplePickSysId-v0`, and `ApplePickReplay-v0`. Coupled/VIC/SysID envs expose `Dict` observations and set `info["obs_schema"] == "v2"` on `reset()` / `step()`.
+Headless Gymnasium wrappers over the coupled FR3 stack. Registered envs include `ApplePickCoupled-v0`, `ApplePickVic-v0`, `ApplePickSysId-v0`, and `ApplePickReplay-v0`. Coupled/VIC/SysID/Replay envs expose `Dict` observations and set `info["obs_schema"] == "v3"` on `reset()` / `step()`.
 
 **Observation contract:** key names, shapes, units, and env-specific semantics are documented in [`docs/gym-observation-contract.md`](docs/gym-observation-contract.md). Check `obs_schema` when loading rollouts recorded before the v1 replay key rename (`woody_start` / `woody_end` → `woody_part_*`).
 
@@ -279,17 +279,30 @@ uv run --env-file pytest.env python -m pytest \
 
 ### M3 replay and digital-twin setup
 
-Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Privileged `.npz` snapshots are currently used as a baseline for exact sim-to-sim state replay; the next path is observation-only initialization from reset observations and digital-twin fixture metadata. Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md) and [`docs/observation-replay-digital-twin.md`](docs/observation-replay-digital-twin.md).
+Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Parquet recordings are observation-first; privileged `.npz` snapshots are opt-in (`--save-snapshot`) for exact sim-to-sim baseline comparisons. Digital-twin fixture names, base poses, observation fixtures, and smoke commands are listed in `apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`. Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md), [`docs/observation-replay-digital-twin.md`](docs/observation-replay-digital-twin.md), and [`docs/digital-twin-from-obs-implementation.md`](docs/digital-twin-from-obs-implementation.md).
 
 ```bash
-# Collect a short dataset
+# Collect a short observation-only dataset (no privileged snapshot by default)
 uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --viewer null --n-directions 1 --max-steps 200 \
   --output /tmp/sysid_dataset
 
+# Optional privileged baseline for sim-to-sim comparison
+uv run python apple_pick_gym/examples/example_gym_sysid.py \
+  --viewer null --n-directions 1 --max-steps 200 --save-snapshot \
+  --output /tmp/sysid_dataset_with_snapshot
+
 # Replay and print dataset-vs-live observation errors
 uv run python apple_pick_gym/examples/example_gym_replay.py \
   --dataset /tmp/sysid_dataset --viewer null
+
+# Digital-twin catalog and reconstruction tests
+uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
+
+# Pull-direction geometry figure
+uv run python apple_pick_gym/examples/visualize_pull_directions.py \
+  --seed 0 --n-directions 10 --fix-to-apple-warmup-substeps 0 \
+  --output /tmp/apple_pick_pull_directions.png
 
 # Storage + replay tests
 uv run --env-file pytest.env python -m pytest \

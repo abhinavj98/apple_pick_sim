@@ -220,7 +220,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             # Weld hemisphere uses the fixture robot base; arm root tracks the proxy for reach.
             from apple_pick_sim.coupled_fruiting.defaults import COUPLED_ROBOT_BASE_POS
 
-            kw["robot_base_pos"] = COUPLED_ROBOT_BASE_POS
+            kw["robot_base_pos"] = self._reset_robot_base_pos or COUPLED_ROBOT_BASE_POS
             kw["robot_base_from_proxy"] = True
             kw["ik_bootstrap_iterations"] = 512
         return kw
@@ -267,7 +267,8 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             float(apple_quat[2]),
             float(apple_quat[3]),
         )
-        robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+        robot_base_pos = self._reset_robot_base_pos or COUPLED_ROBOT_BASE_POS
+        robot_vec = np.asarray(robot_base_pos, dtype=np.float64) - apple_pos
 
         stem_bodies = cable.stem_bodies
         assert len(stem_bodies) >= 2
@@ -320,6 +321,15 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
                     low=-1.0, high=1.0, shape=(3,), dtype=np.float32
                 ),
                 "tcp_pos": spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32),
+                "tcp_quat": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32
+                ),
+                "apple_quat": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32
+                ),
+                "robot_joint_q": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
+                ),
             }
         )
 
@@ -328,6 +338,16 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         tcp = int(self._scene.tcp_body_index)
         bq = self._scene.robot_state_0.body_q.numpy().reshape(-1, 7)
         return np.asarray(bq[tcp, :3], dtype=np.float32)
+
+    def _tcp_quat(self) -> np.ndarray:
+        assert self._scene is not None
+        tcp = int(self._scene.tcp_body_index)
+        bq = self._scene.robot_state_0.body_q.numpy().reshape(-1, 7)
+        return np.asarray(bq[tcp, 3:7], dtype=np.float32)
+
+    def _robot_joint_q(self) -> np.ndarray:
+        assert self._scene is not None
+        return np.asarray(self._scene.robot_state_0.joint_q.numpy(), dtype=np.float32).reshape(-1)
 
     def _excitation_obs(self) -> dict[str, Any]:
         ctx = self._excitation_context
@@ -342,6 +362,20 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
 
     def _make_info(self) -> dict[str, Any]:
         info = super()._make_info()
+        info["rod_radii"] = self._rod_radii()
+        base = self._primary_base_world_pos(self._scene)
+        if base is not None:
+            info["fruiting_base_pos"] = np.asarray(base, dtype=np.float32)
+        if self._reset_robot_base_pos is not None:
+            info["robot_base_pos"] = np.asarray(self._reset_robot_base_pos, dtype=np.float32)
+        if self._pending_weld_reference_pos is not None:
+            info["weld_reference_pos"] = np.asarray(
+                self._pending_weld_reference_pos, dtype=np.float32
+            )
+        if self._pending_weld_reference_quat is not None:
+            info["weld_reference_quat"] = np.asarray(
+                self._pending_weld_reference_quat, dtype=np.float32
+            )
         if self._last_weld_direction is not None:
             info["weld_direction"] = np.asarray(self._last_weld_direction, dtype=np.float32)
         return info
@@ -350,6 +384,9 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         obs = super()._make_obs()
         obs.update(self._excitation_obs())
         obs["tcp_pos"] = self._tcp_pos()
+        obs["tcp_quat"] = self._tcp_quat()
+        obs["apple_quat"] = self._apple_quat()
+        obs["robot_joint_q"] = self._robot_joint_q()
         return obs
 
     def _action_to_command(self, action):

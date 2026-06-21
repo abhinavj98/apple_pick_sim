@@ -11,22 +11,22 @@ Collect a dataset (if needed)::
 
     uv run python apple_pick_gym/examples/example_gym_sysid.py \\
       --viewer null --n-directions 1 --max-steps 200 \\
-      --output tmp/sysid_dataset
+      --output /tmp/sysid_dataset
 
 Replay headless (prints dataset vs live observation errors)::
 
     uv run python apple_pick_gym/examples/example_gym_replay.py \\
-      --dataset tmp/sysid_dataset --viewer null
+      --dataset /tmp/sysid_dataset --viewer null
 
 List episodes in a dataset::
 
     uv run python apple_pick_gym/examples/example_gym_replay.py \\
-      --dataset tmp/sysid_dataset --list-episodes
+      --dataset /tmp/sysid_dataset --list-episodes
 
 Per-step error breakdown::
 
     uv run python apple_pick_gym/examples/example_gym_replay.py \\
-      --dataset tmp/sysid_dataset --debug --viewer null
+      --dataset /tmp/sysid_dataset --debug --viewer null
 """
 
 from __future__ import annotations
@@ -52,9 +52,12 @@ class ReplayErrors:
     ft_torque_nm: float
     tcp_pos_mm: float
     tcp_vel_rmse: float
+    tcp_quat_rmse: float
     woody_start_mm: float
     woody_end_mm: float
     apple_pos_mm: float
+    apple_quat_rmse: float
+    robot_joint_q_rmse: float
 
 
 @dataclass
@@ -66,9 +69,12 @@ class ReplayErrorSummary:
     ft_torque_nm: list[float] = field(default_factory=list)
     tcp_pos_mm: list[float] = field(default_factory=list)
     tcp_vel_rmse: list[float] = field(default_factory=list)
+    tcp_quat_rmse: list[float] = field(default_factory=list)
     woody_start_mm: list[float] = field(default_factory=list)
     woody_end_mm: list[float] = field(default_factory=list)
     apple_pos_mm: list[float] = field(default_factory=list)
+    apple_quat_rmse: list[float] = field(default_factory=list)
+    robot_joint_q_rmse: list[float] = field(default_factory=list)
 
     def record(self, err: ReplayErrors) -> None:
         self.n_steps += 1
@@ -78,9 +84,12 @@ class ReplayErrorSummary:
         self.ft_torque_nm.append(err.ft_torque_nm)
         self.tcp_pos_mm.append(err.tcp_pos_mm)
         self.tcp_vel_rmse.append(err.tcp_vel_rmse)
+        self.tcp_quat_rmse.append(err.tcp_quat_rmse)
         self.woody_start_mm.append(err.woody_start_mm)
         self.woody_end_mm.append(err.woody_end_mm)
         self.apple_pos_mm.append(err.apple_pos_mm)
+        self.apple_quat_rmse.append(err.apple_quat_rmse)
+        self.robot_joint_q_rmse.append(err.robot_joint_q_rmse)
 
     @staticmethod
     def _mean(xs: list[float]) -> float:
@@ -128,6 +137,18 @@ class ReplayErrorSummary:
             f"  |Δapple_pos| [mm]:            "
             f"{self._mean(self.apple_pos_mm):.2f} / {self._max(self.apple_pos_mm):.2f}"
         )
+        print(
+            f"  tcp_quat RMSE:                "
+            f"{self._mean(self.tcp_quat_rmse):.4f} / {self._max(self.tcp_quat_rmse):.4f}"
+        )
+        print(
+            f"  apple_quat RMSE:              "
+            f"{self._mean(self.apple_quat_rmse):.4f} / {self._max(self.apple_quat_rmse):.4f}"
+        )
+        print(
+            f"  robot_joint_q RMSE [rad]:     "
+            f"{self._mean(self.robot_joint_q_rmse):.4f} / {self._max(self.robot_joint_q_rmse):.4f}"
+        )
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -167,6 +188,11 @@ def _make_parser() -> argparse.ArgumentParser:
         "--no-robot-facing-weld",
         action="store_true",
         help="Disable robot-facing weld hemisphere (easier IK; mismatches collected episodes).",
+    )
+    p.add_argument(
+        "--no-snapshot",
+        action="store_true",
+        help="Ignore initial_states/*.npz and initialize replay from observable Parquet data.",
     )
     p.add_argument(
         "--hz",
@@ -215,6 +241,18 @@ def _norm_diff(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.linalg.norm(d))
 
 
+def _recorded_rmse(
+    obs: dict,
+    recorded: dict[str, np.ndarray],
+    key: str,
+    frame_idx: int,
+) -> float:
+    rec = recorded.get(key)
+    if key not in obs or rec is None or np.asarray(rec).size == 0:
+        return 0.0
+    return _rmse(np.asarray(obs[key], dtype=np.float32), np.asarray(rec[frame_idx], dtype=np.float32))
+
+
 def _compare_to_dataset(
     *,
     frame_idx: int,
@@ -258,9 +296,12 @@ def _compare_to_dataset(
         ft_torque_nm=_norm_diff(live_ft[3:], rec_ft[3:]),
         tcp_pos_mm=1000.0 * _norm_diff(live_tcp_pos, rec_tcp_pos),
         tcp_vel_rmse=_rmse(live_tcp_vel, rec_tcp_vel),
+        tcp_quat_rmse=_recorded_rmse(obs, recorded, "tcp_quat", frame_idx),
         woody_start_mm=1000.0 * _norm_diff(live_woody_start, rec_woody_start),
         woody_end_mm=1000.0 * _norm_diff(live_woody_end, rec_woody_end),
         apple_pos_mm=1000.0 * _norm_diff(live_apple, rec_apple),
+        apple_quat_rmse=_recorded_rmse(obs, recorded, "apple_quat", frame_idx),
+        robot_joint_q_rmse=_recorded_rmse(obs, recorded, "robot_joint_q", frame_idx),
     )
 
 
@@ -275,9 +316,12 @@ def _compare_reset_to_snapshot(obs: dict, snapshot: dict[str, np.ndarray]) -> Re
         ft_torque_nm=_norm_diff(obs["ft_wrist"][3:], snapshot["obs_ft_wrist"][3:]),
         tcp_pos_mm=1000.0 * _norm_diff(obs["tcp_pos"], snapshot["obs_tcp_pos"]),
         tcp_vel_rmse=_rmse(obs["tcp_velocity"], snapshot["obs_tcp_velocity"]),
+        tcp_quat_rmse=0.0,
         woody_start_mm=1000.0 * _norm_diff(obs["woody_start"], snapshot["obs_woody_start"]),
         woody_end_mm=1000.0 * _norm_diff(obs["woody_end"], snapshot["obs_woody_end"]),
         apple_pos_mm=1000.0 * _norm_diff(obs["apple_pos"], snapshot["obs_apple_pos"]),
+        apple_quat_rmse=0.0,
+        robot_joint_q_rmse=0.0,
     )
 
 
@@ -357,13 +401,18 @@ def main() -> None:
     )
     env.load_dataset(args.dataset, episode_id=episode_id)
 
-    obs, info = env.reset(seed=int(replay_seed))
+    obs, info = env.reset(
+        seed=int(replay_seed),
+        options={"use_snapshot": not bool(args.no_snapshot)},
+    )
     scene = env._scene
     if scene is None:
         raise RuntimeError("Env did not create a scene; did reset() succeed?")
 
     if info.get("initial_state_restored"):
         print("  initial_state_restored: yes (loaded from initial_states/*.npz)")
+    elif info.get("observation_init"):
+        print("  initial_state_restored: no (observation-only parquet init)")
     else:
         print("  initial_state_restored: no (warmup-only reset)")
 

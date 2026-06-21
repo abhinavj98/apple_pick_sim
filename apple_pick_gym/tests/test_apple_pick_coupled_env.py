@@ -185,6 +185,7 @@ def test_env_parity_against_direct_coupled_sim():
     from apple_pick_sim.tests.conftest import RANGES_FIXTURE, build_coupled_fr3
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
+    fixture_args = fs.parse_fixture_args(ranges)
     seed = 13
     mujoco_solver_kwargs = {"disable_contacts": True}
 
@@ -193,6 +194,8 @@ def test_env_parity_against_direct_coupled_sim():
         cf,
         ranges,
         seed,
+        base_pos=fixture_args.fruiting_base_pos,
+        robot_base_pos=fixture_args.robot_base_pos,
         mujoco_solver_kwargs=mujoco_solver_kwargs,
     )
     direct_scene.robot_kinematic_mode = True
@@ -353,6 +356,40 @@ def test_apple_pick_base_env_is_abstract():
 
 
 @gymnasium_available
+def test_reset_build_kwargs_preserve_fixture_and_observed_base_poses(monkeypatch):
+    from apple_pick_gym.envs import ApplePickCoupledEnv
+    from apple_pick_sim.tests.conftest import RANGES_FIXTURE
+
+    captured: list[dict] = []
+
+    def _capture_build(self, ranges, scene_seed: int, *, injected_params=None):
+        del ranges, scene_seed
+        captured.append(self._coupled_build_kwargs(params=injected_params))
+
+    monkeypatch.setattr(ApplePickCoupledEnv, "_build_scene", _capture_build)
+    monkeypatch.setattr(ApplePickCoupledEnv, "_set_n_woody_parts", lambda self: None)
+    monkeypatch.setattr(ApplePickCoupledEnv, "_setup_observation_space", lambda self: None)
+    monkeypatch.setattr(ApplePickCoupledEnv, "_make_obs", lambda self: {})
+    monkeypatch.setattr(ApplePickCoupledEnv, "_make_info", lambda self: {})
+
+    env = ApplePickCoupledEnv()
+    env.reset(seed=0, options={"ranges_path": str(RANGES_FIXTURE)})
+    assert captured[-1]["base_pos"] == pytest.approx((0.0, 0.2, 1.3))
+    assert captured[-1]["robot_base_pos"] == pytest.approx((0.0, 0.0, 1.0))
+
+    env.reset(
+        seed=0,
+        options={
+            "ranges_path": str(RANGES_FIXTURE),
+            "fruiting_base_pos": (1.0, 2.0, 3.0),
+            "robot_base_pos": (4.0, 5.0, 6.0),
+        },
+    )
+    assert captured[-1]["base_pos"] == pytest.approx((1.0, 2.0, 3.0))
+    assert captured[-1]["robot_base_pos"] == pytest.approx((4.0, 5.0, 6.0))
+
+
+@gymnasium_available
 def test_replay_env_observation_contract():
     from apple_pick_gym.envs import ApplePickReplayEnv
     from apple_pick_sim.tests.conftest import fr3_assets_available
@@ -369,7 +406,10 @@ def test_replay_env_observation_contract():
         "woody_end",
         "tcp_velocity",
         "tcp_pos",
+        "tcp_quat",
         "apple_pos",
+        "apple_quat",
+        "robot_joint_q",
     }
     assert isinstance(obs, dict)
     assert set(obs.keys()) == expected_keys

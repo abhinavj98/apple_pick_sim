@@ -7,7 +7,6 @@ import math
 import numpy as np
 import pytest
 
-from apple_pick_sim.coupled_fruiting.defaults import COUPLED_ROBOT_BASE_POS
 from apple_pick_sim.tests.conftest import fr3_assets_available
 
 
@@ -62,8 +61,7 @@ def test_sysid_reset_reports_weld_direction():
     scene = env.unwrapped._scene
     apple = int(scene.cable.apple_body)
     apple_pos = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[apple, :3]
-    robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
-    robot_dir = robot_vec / np.linalg.norm(robot_vec)
+    robot_vec = np.asarray(info["robot_base_pos"], dtype=np.float64) - apple_pos
 
     stem_bodies = scene.cable.stem_bodies
     assert len(stem_bodies) >= 2
@@ -113,7 +111,7 @@ def test_sysid_reset_weld_direction_override():
     scene = env.unwrapped._scene
     apple = int(scene.cable.apple_body)
     apple_pos = scene.cable.state_0.body_q.numpy().reshape(-1, 7)[apple, :3]
-    robot_vec = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) - apple_pos
+    robot_vec = np.asarray(info_ref["robot_base_pos"], dtype=np.float64) - apple_pos
     stem_bodies = scene.cable.stem_bodies
     body_q = scene.cable.state_0.body_q.numpy().reshape(-1, 7)
     physical_stem = body_q[int(stem_bodies[-1]), :3] - body_q[int(stem_bodies[-2]), :3]
@@ -199,9 +197,15 @@ def test_sysid_env_obs_keys():
         "excitation_f_inst",
         "excitation_direction",
         "tcp_pos",
+        "tcp_quat",
+        "apple_quat",
+        "robot_joint_q",
         "ft_wrist",
     ):
         assert key in obs
+    assert obs["tcp_quat"].shape == (4,)
+    assert obs["apple_quat"].shape == (4,)
+    assert obs["robot_joint_q"].shape == (7,)
     assert env.observation_space.contains(obs)
     env.close()
 

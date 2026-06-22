@@ -38,6 +38,7 @@ def _synthetic_obs(*, n_woody: int = 2) -> dict:
             for i, name in enumerate(names)
         },
         "ft_wrist": np.arange(6, dtype=np.float32) + 1.0,
+        "raw_ft_wrist": np.arange(6, dtype=np.float32) + 101.0,
         "tcp_pos": np.array([0.1, 0.2, 0.3], dtype=np.float32),
         "apple_pos": np.array([0.4, 0.5, 0.6], dtype=np.float32),
         "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
@@ -135,6 +136,9 @@ def test_writer_creates_valid_parquet(tmp_path: Path):
     assert table.column("apple_quat")[0].as_py() == pytest.approx([0.0, 0.1, 0.0, 0.995])
     assert table.column("robot_joint_q")[0].as_py() == pytest.approx(
         np.linspace(0.0, 0.6, 7, dtype=np.float32).tolist()
+    )
+    assert table.column("raw_ft_wrist")[0].as_py() == pytest.approx(
+        (np.arange(6, dtype=np.float32) + 101.0).tolist()
     )
 
 
@@ -259,6 +263,7 @@ def test_dataset_load_episode_obs_arrays(tmp_path: Path):
     arrays = dataset.load_episode_obs_arrays("ep-obs")
     assert arrays["action"].shape == (4, 6)
     assert arrays["ft_wrist"].shape == (4, 6)
+    assert arrays["raw_ft_wrist"].shape == (4, 6)
     assert arrays["tcp_pos"].shape == (4, 3)
     assert arrays["tcp_quat"].shape == (4, 4)
     assert arrays["apple_quat"].shape == (4, 4)

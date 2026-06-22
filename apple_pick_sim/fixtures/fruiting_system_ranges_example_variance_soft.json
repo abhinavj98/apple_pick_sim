@@ -1,0 +1,55 @@
+{
+  "_comment": "Soft variant of fruiting_system_ranges_example_variance.json for VIC/sysID diagnostics. Geometry, damping, density, and apple ranges are unchanged; rod bend/stretch stiffness ranges are scaled to 0.1x.",
+  "args": {
+    "fruiting_base_pos": [0.0, 0.2, 1.5],
+    "robot_base_pos": [0.0, 0.0, 1.0]
+  },
+  "primary": {
+    "num_segments": { "min": 3, "max": 6 },
+    "length": { "min": 0.05, "max": 0.1 },
+    "radius": { "min": 0.012, "max": 0.025 },
+    "bend_stiffness": { "min": 10.0, "max": 200.0 },
+    "bend_damping": { "min": 0.08, "max": 0.14 },
+    "stretch_stiffness": { "min": 1.0e6, "max": 1.0e7 },
+    "density": { "min": 300.0, "max": 500.0 },
+    "azimuth_deg": { "min": 20.0, "max": 50.0 },
+    "elevation_deg": { "min": -30.0, "max": 30.0 }
+  },
+  "secondary": {
+    "num_segments": { "min": 3, "max": 6 },
+    "length": { "min": 0.1, "max": 0.2 },
+    "radius": { "min": 0.012, "max": 0.025 },
+    "bend_stiffness": { "min": 10.0, "max": 200.0 },
+    "bend_damping": { "min": 0.10, "max": 0.16 },
+    "stretch_stiffness": { "min": 1.0e6, "max": 1.0e7 },
+    "density": { "min": 300.0, "max": 500.0 },
+    "elevation_delta_deg": { "min": 20.0, "max": 50.0 },
+    "lateral_delta_deg": { "min": -30.0, "max": 30.0 }
+  },
+  "spur": {
+    "num_segments": { "min": 2, "max": 4 },
+    "length": { "min": 0.05, "max": 0.15 },
+    "radius": { "min": 0.006, "max": 0.014 },
+    "bend_stiffness": { "min": 1.0, "max": 20.0 },
+    "bend_damping": { "min": 0.08, "max": 0.14 },
+    "stretch_stiffness": { "min": 1.0e5, "max": 1.0e6 },
+    "density": { "min": 200.0, "max": 400.0 },
+    "elevation_delta_deg": { "min": 20.0, "max": 70.0 },
+    "lateral_delta_deg": { "min": -45.0, "max": 45.0 }
+  },
+  "stem": {
+    "num_segments": { "min": 2, "max": 3 },
+    "length": { "min": 0.030, "max": 0.080 },
+    "radius": { "min": 0.003, "max": 0.008 },
+    "bend_stiffness": { "min": 0.001, "max": 0.05 },
+    "bend_damping": { "min": 0.05, "max": 0.10 },
+    "stretch_stiffness": { "min": 1.0e4, "max": 1.0e5 },
+    "density": { "min": 150.0, "max": 300.0 },
+    "elevation_delta_deg": { "min": 40.0, "max": 90.0 },
+    "lateral_delta_deg": { "min": -60.0, "max": 60.0 }
+  },
+  "apple": {
+    "radius": { "min": 0.040, "max": 0.080 },
+    "density": { "min": 700.0, "max": 1000.0 }
+  }
+}

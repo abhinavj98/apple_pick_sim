@@ -42,8 +42,8 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         vic_angular_k: float = 40.0,
         vic_angular_d: float = 4.0,
         vic_use_joint_torques: bool = True,
-        stem_force_cap_n: float | None = None,
-        stem_torque_cap_nm: float | None = None,
+        stem_force_cap_n: float | None = 100.0,
+        stem_torque_cap_nm: float | None = 100.0,
         max_linear_vel: float = 1.0,
         max_angular_vel: float = 1.0,
         robot_facing_weld: bool = True,
@@ -330,6 +330,9 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
                 "robot_joint_q": spaces.Box(
                     low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32
                 ),
+                "raw_ft_wrist": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32
+                ),
             }
         )
 
@@ -348,6 +351,67 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
     def _robot_joint_q(self) -> np.ndarray:
         assert self._scene is not None
         return np.asarray(self._scene.robot_state_0.joint_q.numpy(), dtype=np.float32).reshape(-1)
+
+    def _raw_ft_wrist(self) -> np.ndarray:
+        """Uncapped stem-harvest TCP wrench for diagnostics; ``ft_wrist`` is applied/capped."""
+        assert self._scene is not None
+        scene = self._scene
+        cable = scene.cable
+        if scene.stem_apple_joint_index is None:
+            return np.zeros(6, dtype=np.float32)
+
+        from apple_pick_sim.coupled_fruiting.explicit_load import (
+            apple_com_from_tcp_grasp_offset,
+            apple_explicit_wrench_about_tcp,
+            body_com_position_world,
+            body_orientation_world,
+        )
+        from apple_pick_sim.vbd_fixed_joint_wrenches import fixed_joint_wrenches_child_com_vbd
+
+        _frame_dt, _substeps_per_step, sub_dt = self._timing_constants()
+        records = fixed_joint_wrenches_child_com_vbd(
+            cable.model,
+            cable.solver,
+            body_q=cable.state_0.body_q,
+            body_q_prev=cable.state_1.body_q,
+            dt=sub_dt,
+            joint_pairs=[(int(scene.stem_apple_joint_index), "stem_apple")],
+        )
+        if not records:
+            return np.zeros(6, dtype=np.float32)
+
+        rec = records[0]
+        f_stem_at_com = np.asarray(rec.force_world, dtype=np.float64)
+        tau_total_tcp = np.asarray(rec.torque_at_child_com_world, dtype=np.float64)
+        f_total_tcp = f_stem_at_com.copy()
+
+        apple_body = cable.apple_body
+        if apple_body is not None:
+            tcp = int(scene.tcp_body_index)
+            p_tcp = body_com_position_world(scene.robot_state_0.body_q, tcp)
+            if cable.gripper_proxy_offset_in_apple_frame is not None:
+                tcp_rot = body_orientation_world(scene.robot_state_0.body_q, tcp)
+                p_apple = apple_com_from_tcp_grasp_offset(
+                    p_tcp,
+                    tcp_rot,
+                    cable.gripper_proxy_offset_in_apple_frame,
+                )
+            else:
+                p_apple = body_com_position_world(cable.state_0.body_q, int(apple_body))
+
+            tau_total_tcp = tau_total_tcp + np.cross(p_apple - p_tcp, f_stem_at_com)
+            if scene.stem_harvest_explicit_apple_weight and scene.apple_mass_kg > 0.0:
+                f_apple, tau_apple = apple_explicit_wrench_about_tcp(
+                    float(scene.apple_mass_kg),
+                    scene.gravity_vec,
+                    p_tcp,
+                    apple_pos_world=p_apple,
+                )
+                f_total_tcp = f_total_tcp + f_apple
+                tau_total_tcp = tau_total_tcp + tau_apple
+
+        gain = float(scene.stem_coupling_gain)
+        return np.concatenate([f_total_tcp * gain, tau_total_tcp * gain]).astype(np.float32)
 
     def _excitation_obs(self) -> dict[str, Any]:
         ctx = self._excitation_context
@@ -387,6 +451,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         obs["tcp_quat"] = self._tcp_quat()
         obs["apple_quat"] = self._apple_quat()
         obs["robot_joint_q"] = self._robot_joint_q()
+        obs["raw_ft_wrist"] = self._raw_ft_wrist()
         return obs
 
     def _action_to_command(self, action):

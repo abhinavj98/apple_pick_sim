@@ -172,11 +172,14 @@ def seed_fix_to_apple_from_settled(
 
     cable_w.state_0.body_q.assign(bq_w.reshape(-1, 7))
     cable_w.state_0.body_qd.assign(bqd_w.reshape(-1, 6))
+    cable_w.state_1.body_q.assign(bq_w.reshape(-1, 7))
+    cable_w.state_1.body_qd.assign(bqd_w.reshape(-1, 6))
 
     # Do not call eval_fk() here: the welded and settled models do not share joint-space
     # coordinates (free proxy vs fixed proxy↔apple), so FK from welded joint_q would
     # overwrite the seeded settled body poses.
-    # Align the VBD previous-pose buffer so the next step doesn't see an artificial jump.
+    # Align VBD's warm-start/previous-pose buffers so the first step does not see
+    # a mixed settled/unsettled state and inject an artificial stem impulse.
     body_count = int(cable_w.model.body_count)
     align_proxy_body_q_prev_for_vbd(cable_w, tuple(range(body_count)))
 

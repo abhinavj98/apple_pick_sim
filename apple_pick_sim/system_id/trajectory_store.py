@@ -36,6 +36,7 @@ BONUS_FRAME_COLUMNS: tuple[str, ...] = (
     "sim_time",
     "dir_idx",
     "amplitude_m",
+    "raw_ft_wrist",
     "tcp_pos",
     "apple_pos",
     "tcp_quat",
@@ -325,6 +326,7 @@ class TrajectoryWriter:
             "action": _as_f32_list(action, size=6),
             "tcp_velocity": _as_f32_list(obs["tcp_velocity"], size=6),
             "ft_wrist": _as_f32_list(obs["ft_wrist"], size=6),
+            "raw_ft_wrist": _as_f32_list(obs.get("raw_ft_wrist", obs["ft_wrist"]), size=6),
             "sim_time": float(sim_time),
             "dir_idx": int(dir_idx),
             "amplitude_m": float(amplitude_m),
@@ -451,10 +453,17 @@ class TrajectoryDataset:
                 )
             return out
 
+        ft_wrist = _stack_column("ft_wrist").reshape(-1, 6)
+        raw_ft_wrist = (
+            _stack_column("raw_ft_wrist").reshape(-1, 6)
+            if "raw_ft_wrist" in table.column_names
+            else ft_wrist.copy()
+        )
         return {
             "step_idx": np.asarray(table.column("step_idx").to_pylist(), dtype=np.int32),
             "action": _stack_column("action").reshape(-1, 6),
-            "ft_wrist": _stack_column("ft_wrist").reshape(-1, 6),
+            "ft_wrist": ft_wrist,
+            "raw_ft_wrist": raw_ft_wrist,
             "tcp_velocity": _stack_column("tcp_velocity").reshape(-1, 6),
             "woody_part_start_pos": _stack_woody(WOODY_START_PREFIX),
             "woody_part_end_pos": _stack_woody(WOODY_END_PREFIX),

@@ -164,6 +164,35 @@ def test_sysid_step_info_includes_weld_direction():
 
 
 @gymnasium_available
+@pytest.mark.skipif(not fr3_assets_available(), reason="Requires bundled assets/fr3 and usd-core")
+def test_sysid_zero_action_first_step_stays_quiet_after_welded_warmup():
+    """Quiet-start reset must seed both VBD state buffers before the first step."""
+    from apple_pick_gym.envs import ApplePickSysIdEnv
+
+    env = ApplePickSysIdEnv(
+        max_episode_steps=2,
+        fix_to_apple=True,
+        fix_to_apple_warmup_substeps=1800,
+        mujoco_solver_kwargs={"disable_contacts": True},
+    )
+    obs, _ = env.reset(seed=0)
+    initial_tcp = np.asarray(obs["tcp_pos"], dtype=np.float64)
+    scene = env.unwrapped._scene
+    cable = scene.cable
+
+    state_0 = cable.state_0.body_q.numpy().reshape(-1, 7)
+    state_1 = cable.state_1.body_q.numpy().reshape(-1, 7)
+    np.testing.assert_allclose(state_1[:, :3], state_0[:, :3], rtol=0.0, atol=1e-5)
+
+    obs, *_ = env.step(np.zeros(6, dtype=np.float32))
+    tcp_error_m = float(np.linalg.norm(np.asarray(obs["tcp_pos"], dtype=np.float64) - initial_tcp))
+    ft_mag_n = float(np.linalg.norm(np.asarray(obs["ft_wrist"], dtype=np.float64)[:3]))
+    assert tcp_error_m < 0.005
+    assert ft_mag_n < 250.0
+    env.close()
+
+
+@gymnasium_available
 def test_sysid_env_action_space():
     from apple_pick_gym.envs import ApplePickSysIdEnv
 
@@ -201,11 +230,13 @@ def test_sysid_env_obs_keys():
         "apple_quat",
         "robot_joint_q",
         "ft_wrist",
+        "raw_ft_wrist",
     ):
         assert key in obs
     assert obs["tcp_quat"].shape == (4,)
     assert obs["apple_quat"].shape == (4,)
     assert obs["robot_joint_q"].shape == (7,)
+    assert obs["raw_ft_wrist"].shape == (6,)
     assert env.observation_space.contains(obs)
     env.close()
 
@@ -380,16 +411,16 @@ def test_sysid_env_log_movement_direction_arrow():
 
 
 @gymnasium_available
-def test_sysid_env_default_vic_stiffness_and_no_stem_caps():
+def test_sysid_env_default_vic_stiffness_and_100n_force_torque_caps():
     from apple_pick_gym.envs import ApplePickSysIdEnv
 
     env = ApplePickSysIdEnv()
     assert env._vic_gains.linear_k == 2000.0
-    assert env._stem_force_cap_n is None
-    assert env._stem_torque_cap_nm is None
+    assert env._stem_force_cap_n == 100.0
+    assert env._stem_torque_cap_nm == 100.0
     build_kw = env._coupled_build_kwargs()
-    assert build_kw["stem_force_cap_N"] is None
-    assert build_kw["stem_torque_cap_Nm"] is None
+    assert build_kw["stem_force_cap_N"] == 100.0
+    assert build_kw["stem_torque_cap_Nm"] == 100.0
 
 
 @gymnasium_available

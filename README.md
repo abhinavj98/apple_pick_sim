@@ -296,6 +296,27 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
 uv run python apple_pick_gym/examples/example_gym_replay.py \
   --dataset /tmp/sysid_dataset --viewer null
 
+# List recorded episodes before running parameter sweeps
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null --list-episodes
+
+# Diagnostic bend-stiffness smoke: one candidate, observation-only replay
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null \
+  --primary-bend-stiffness-values 10 \
+  --secondary-bend-stiffness-values 10 \
+  --spur-bend-stiffness-values 10 \
+  --stem-bend-stiffness-values 10 \
+  --max-candidates 1
+
+# Expand each axis to sweep primary/secondary/spur/stem bend stiffnesses
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null \
+  --primary-bend-stiffness-values 10,25,50 \
+  --secondary-bend-stiffness-values 10,25,50 \
+  --spur-bend-stiffness-values 10,25,50 \
+  --stem-bend-stiffness-values 10,25,50
+
 # Digital-twin catalog and reconstruction tests
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
 

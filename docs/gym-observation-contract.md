@@ -81,7 +81,8 @@ Coupled keys plus:
 
 | Key | Shape | Source |
 |-----|-------|--------|
-| `ft_wrist` | `(6,)` | Lagged plant wrench from `coupling_forces_cache` (F/T sensor proxy) |
+| `ft_wrist` | `(6,)` | Lagged applied plant wrench from `coupling_forces_cache` (F/T sensor proxy); SysId defaults cap applied force/torque norms at 100 N / 100 N·m |
+| `raw_ft_wrist` | `(6,)` | SysId-only uncapped stem-harvest TCP wrench for diagnostics/objectives |
 | `tcp_pos` | `(3,)` | Actual TCP body position (SysId only) |
 | `excitation_type` | scalar int | SysId excitation phase metadata (SysId only) |
 | `excitation_f_inst` | scalar float | Instantaneous excitation frequency (SysId only) |

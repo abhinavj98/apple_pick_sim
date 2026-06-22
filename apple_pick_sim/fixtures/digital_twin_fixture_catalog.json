@@ -20,6 +20,15 @@
       "smoke_commands": [
         "uv run python apple_pick_gym/examples/example_gym_sysid.py --viewer null --n-directions 1 --max-steps 200 --output /tmp/sysid_dataset"
       ]
+    },
+    "example_variance_soft": {
+      "description": "Soft procedural variance fixture for VIC/sysID diagnostics; rod bend/stretch stiffness ranges are 0.1x example_variance.",
+      "ranges_path": "apple_pick_sim/fixtures/fruiting_system_ranges_example_variance_soft.json",
+      "fruiting_base_pos": [0.0, 0.2, 1.5],
+      "robot_base_pos": [0.0, 0.0, 1.0],
+      "smoke_commands": [
+        "uv run python apple_pick_gym/examples/example_gym_sysid.py --viewer null --n-directions 1 --max-steps 200 --output /tmp/sysid_dataset"
+      ]
     }
   }
 }

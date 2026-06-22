@@ -22,6 +22,7 @@ from apple_pick_sim.tests.conftest import NO_SELF_COLLISION_KW
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 RANGES_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_straight_rod_test.json"
 VARIANCE_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_example_variance.json"
+SOFT_VARIANCE_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_example_variance_soft.json"
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +108,21 @@ def test_fixture_args_null_robot_base_in_variance_fixture():
     args = fs.parse_fixture_args(ranges)
     assert args.fruiting_base_pos == (0.0, 0.2, 1.5)
     assert args.robot_base_pos == (0.0, 0.0, 1.0)
+
+
+def test_soft_variance_fixture_uses_tenth_stiffness_ranges():
+    fs = _import_module()
+    baseline = fs.load_ranges(VARIANCE_FIXTURE)
+    soft = fs.load_ranges(SOFT_VARIANCE_FIXTURE)
+
+    for segment in ("primary", "secondary", "spur", "stem"):
+        for key in ("bend_stiffness", "stretch_stiffness"):
+            assert soft[segment][key]["min"] == pytest.approx(
+                baseline[segment][key]["min"] * 0.1
+            )
+            assert soft[segment][key]["max"] == pytest.approx(
+                baseline[segment][key]["max"] * 0.1
+            )
 
 
 def test_resolve_fruiting_base_pos_prefers_override():

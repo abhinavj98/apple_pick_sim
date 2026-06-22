@@ -160,8 +160,8 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--movement-per-step-m",
         type=float,
-        default=0.05,
-        help="Distance per fast move burst [m] (default 0.05 = 5 cm).",
+        default=0.02,
+        help="Distance per fast move burst [m] (default 0.02 = 2 cm).",
     )
     p.add_argument(
         "--total-movement-m",
@@ -187,6 +187,12 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Open MuJoCo passive viewer for the FR3 arm (requires a GUI session).",
     )
     p.add_argument(
+        "--ranges-path",
+        type=str,
+        default=None,
+        help="Fruiting-system ranges JSON to use when building the reset scene.",
+    )
+    p.add_argument(
         "--output",
         type=str,
         default=None,
@@ -205,6 +211,13 @@ def _make_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _reset_options_from_args(args: argparse.Namespace) -> dict[str, str]:
+    options: dict[str, str] = {}
+    if getattr(args, "ranges_path", None):
+        options["ranges_path"] = str(args.ranges_path)
+    return options
+
+
 def _maybe_log_forces(viewer: object, obs: dict, info: dict, *, amplitude_m: float) -> None:
     log = getattr(viewer, "log_scalar", None)
     if log is None:
@@ -219,6 +232,10 @@ def _maybe_log_forces(viewer: object, obs: dict, info: dict, *, amplitude_m: flo
         log("SysID Fy wrist [N]", float(f[1]), smoothing=3)
         log("SysID Fz wrist [N]", float(f[2]), smoothing=3)
         log("SysID amp [m]", float(amplitude_m), smoothing=3)
+    raw_ft = obs.get("raw_ft_wrist")
+    if raw_ft is not None:
+        w = np.asarray(raw_ft, dtype=np.float64).reshape(6)
+        log("SysID |F| wrist raw [N]", float(np.linalg.norm(w[:3])), smoothing=3)
 
     ee = info.get("end_effector_wrench")
     if ee is not None:
@@ -270,7 +287,11 @@ def main() -> None:
         control_hz=config.control_hz,
         mujoco_solver_kwargs={"disable_contacts": True},
     )
-    obs, info = env.reset(seed=int(args.seed))
+    reset_options = _reset_options_from_args(args)
+    obs, info = env.reset(
+        seed=int(args.seed),
+        options=reset_options or None,
+    )
     reset_obs = obs
     reset_info = dict(info)
     _reset_weld_direction = reset_info.get("weld_direction")
@@ -317,6 +338,7 @@ def main() -> None:
         viewer.hide_loading_splash()
 
     hold_forces: dict[tuple[int, int], list[np.ndarray]] = defaultdict(list)
+    raw_hold_forces: dict[tuple[int, int], list[np.ndarray]] = defaultdict(list)
     prev_phase: str | None = None
     dir_idx = -1
     recorded_steps = 0
@@ -380,8 +402,10 @@ def main() -> None:
 
         amp = traj.current_amplitude_m
         ft = np.asarray(frame_obs.get("ft_wrist", np.zeros(6)), dtype=np.float64)
+        raw_ft = np.asarray(frame_obs.get("raw_ft_wrist", ft), dtype=np.float64)
         pos_err_mm = float(np.linalg.norm(expected_pos - actual_pos)) * 1000.0
         f_wrist = ft[:3]
+        f_raw = raw_ft[:3]
         excitation_dir = frame_obs.get("excitation_direction")
         cmd_dir = (
             np.asarray(excitation_dir, dtype=np.float64).reshape(3)
@@ -397,6 +421,7 @@ def main() -> None:
         debug_print(
             f"  step phase={phase:8s} dir={dir_idx:2d} step={traj.current_step_index:1d}, \n"
             f"amp={amp*100:5.1f} cm  |F|={np.linalg.norm(f_wrist):6.2f} N"
+            f"  |F_raw|={np.linalg.norm(f_raw):6.2f} N"
             f"  F={_fmt_force_n(f_wrist)} N  F_dir={_fmt_dir(f_wrist)}, \n"
             f"cmd_d={_fmt_dir(cmd_dir)}  "
             f"exp_cm={_fmt_pos_cm(expected_pos)}, \n"
@@ -477,6 +502,9 @@ def main() -> None:
             if phase == "hold" and dir_idx >= 0:
                 key = (dir_idx, traj.current_step_index)
                 hold_forces[key].append(np.asarray(obs["ft_wrist"][:3], dtype=np.float64))
+                raw_hold_forces[key].append(
+                    np.asarray(obs.get("raw_ft_wrist", obs["ft_wrist"])[:3], dtype=np.float64)
+                )
 
             _render_frame(
                 obs,
@@ -519,11 +547,14 @@ def main() -> None:
                 if not samples:
                     continue
                 mean_f = np.mean(np.stack(samples, axis=0), axis=0)
+                raw_samples = raw_hold_forces.get((dir_idx, step_idx), samples)
+                mean_raw_f = np.mean(np.stack(raw_samples, axis=0), axis=0)
                 amp_cm = (step_idx + 1) * config.movement_per_step_m * 100.0
                 debug_print(
                     f"  dir {dir_idx:2d} step {step_idx} amp={amp_cm:4.1f} cm"
                     f"  cmd_d=({d[0]:+.3f},{d[1]:+.3f},{d[2]:+.3f})"
                     f"  F=({mean_f[0]:+.3f},{mean_f[1]:+.3f},{mean_f[2]:+.3f})"
+                    f"  |F_raw|={np.linalg.norm(mean_raw_f):.3f}"
                     f"  F_dir={_fmt_dir(mean_f)}"
                 )
 

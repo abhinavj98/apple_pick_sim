@@ -16,7 +16,7 @@ Quasi-static behavior comes from **hold settling**, not slow crawl speed.
 
 Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0.10`, `move_speed_mps=0.2`, `hold_duration_s=1.5`, `control_hz=60`, `skip_return=True`.
 
-`ApplePickSysIdEnv` extends VIC with `Box(6)` EE velocity actions, excitation metadata obs, actual `tcp_pos` from `body_q` (not the VIC target), and optional robot-facing weld placement. Default VIC stiffness is `vic_linear_k=2000` N/m (not the replay-env default). Stem force/torque caps are off by default (`stem_force_cap_n=None`).
+`ApplePickSysIdEnv` extends VIC with `Box(6)` EE velocity actions, excitation metadata obs, actual `tcp_pos` from `body_q` (not the VIC target), and optional robot-facing weld placement. Default VIC stiffness is `vic_linear_k=2000` N/m (not the replay-env default). Applied stem feedback defaults to `stem_force_cap_n=100` N and `stem_torque_cap_nm=100` N·m.
 
 **Grasp-pose snapshot/restore:** `reset()` calls `snapshot_grasp_pose()`, which stores robot `body_q`/`joint_q`, cable `body_q`, and VIC `target_tf`. `restore_grasp_pose()` writes those buffers back, re-syncs MuJoCo/`robot_state_1`, aligns VBD `body_q_prev`, zeros lagged `proxy_forces`/`coupling_forces_cache`, and resets `vic_target_twist`. Use this at direction boundaries when `skip_return=True`. Full-transition logging (`[s_t, Δs_t]`) should mark or exclude teleported frames because `tcp_pos` jumps discontinuously.
 
@@ -26,7 +26,7 @@ Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0
 
 **Episode length:** `ApplePickSysIdEnv` defaults to `max_episode_steps=240`. A full multi-direction run needs `estimate_trajectory_frames(config, n_directions) + margin`. `gym.make(..., max_episode_steps=N)` only sets the `TimeLimit` wrapper — the env still truncates at its constructor default (240) unless you pass `max_episode_steps` into `ApplePickSysIdEnv(...)` directly.
 
-**Wrench guard:** not implemented in the env yet. `compute_terminated` inherits the coupled-env stub (`False` always). Monitor `obs["ft_wrist"]` in the caller for now; see `docs/system_identification.md` §2 safety note.
+**Wrench guard:** `ApplePickSysIdEnv` caps the applied stem-harvest feedback to the robot at 100 N and 100 N·m by default (`ft_wrist`). It also exposes/logs `raw_ft_wrist`, the uncapped stem-harvest TCP wrench, so diagnostics and objectives can still see solver spikes. `compute_terminated` still inherits the coupled-env stub (`False` always); callers should monitor force limits for abort policy.
 
 ## Code map
 

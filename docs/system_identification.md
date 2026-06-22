@@ -142,6 +142,7 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | --- | --- | --- |
 | M3.0 §2.1 quasi-static | **Done** (trajectory + gym replay) | `apple_pick_sim/system_id/`, `apple_pick_gym/envs/apple_pick_sysid_env.py`, `docs/system-id-quasi-static-implementation.md` |
 | M3.0.2 recording + privileged-state replay | **Done** | `TrajectoryWriter`, `TrajectoryDataset`, `ApplePickReplayEnv`, `example_gym_replay.py`, `docs/sysid-trajectory-storage.md` |
+| M3 diagnostic stiffness grid | **Initial script** | `apple_pick_gym/examples/run_system_identification.py` sweeps `primary` / `secondary` / `spur` / `stem` `bend_stiffness` values over a Parquet dataset and prints replay loss summaries. |
 | M3.0.3 observation-only replay init | **Next** | Reconstruct a plausible Newton initial state/equilibrium from recorded observations, without saved simulator state; spec in `docs/observation-replay-digital-twin.md` |
 | M3.0.4 digital-twin fixture reconstruction | Planned | Named fixture catalog and sim-to-sim transfer validation before real-world collection |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
@@ -149,3 +150,42 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | M3.2 CEM loop | Planned | — |
 
 Verify §2.1: `docs/system-id-quasi-static-implementation.md` (pytest + `example_gym_sysid.py`). Broader M3 schedule: `docs/ROADMAP.md`.
+
+Diagnostic bend-stiffness grid smoke:
+
+```bash
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null \
+  --primary-bend-stiffness-values 10 \
+  --secondary-bend-stiffness-values 10 \
+  --spur-bend-stiffness-values 10 \
+  --stem-bend-stiffness-values 10 \
+  --max-candidates 1
+```
+
+Run `--list-episodes` first when a dataset contains multiple recordings:
+
+```bash
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null --list-episodes
+```
+
+Then expand each axis to search a grid. The command below evaluates
+`3^4 = 81` candidates in grid order:
+
+```bash
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null \
+  --primary-bend-stiffness-values 10,25,50 \
+  --secondary-bend-stiffness-values 10,25,50 \
+  --spur-bend-stiffness-values 10,25,50 \
+  --stem-bend-stiffness-values 10,25,50
+```
+
+For each candidate the script prints mean/max replay errors for TCP force,
+TCP torque, TCP position, TCP velocity, apple position, and woody endpoints.
+It does not rank candidates or compute a weighted objective yet; this is a
+diagnostic bridge between observation-only replay and the later MMD/CEM loop.
+The default initializer is observation-only Parquet replay. Use
+`--use-snapshot` only for privileged sim-to-sim debugging against
+`initial_states/*.npz`.

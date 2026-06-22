@@ -32,13 +32,13 @@ The next sysID step is **observation-only replay initialization**: replay should
 | `tcp_velocity` | list[f32]×6 | EE velocity observation |
 | `woody_start__<junction>` | list[f32]×3 | Parent-side anchor for one junction (e.g. `woody_start__stem_apple`) |
 | `woody_end__<junction>` | list[f32]×3 | Child-side anchor for the same junction |
-| `ft_wrist` | list[f32]×6 | Plant F/T at TCP `[F, τ]` |
+| `ft_wrist` | list[f32]×6 | Applied plant F/T feedback at TCP `[F, τ]`; sys-ID defaults cap force/torque norms at 100 N / 100 N·m before applying them to the robot |
 
 Per-junction woody columns are dynamic (one start/end pair per entry in `junction_names` metadata). There are no flat `woody_part_start_pos` / `woody_part_end_pos` frame columns.
 
 ## Bonus frame columns (written by default)
 
-`sim_time`, `dir_idx`, `amplitude_m`, `tcp_pos`, `tcp_quat`, `apple_pos`,
+`sim_time`, `dir_idx`, `amplitude_m`, `raw_ft_wrist` (uncapped stem-harvest TCP wrench; legacy loaders fall back to `ft_wrist`), `tcp_pos`, `tcp_quat`, `apple_pos`,
 `apple_quat`, `robot_joint_q`, `woody_part_force`
 
 ## Required metadata columns
@@ -122,6 +122,49 @@ uv run python apple_pick_gym/examples/example_gym_replay.py \
 uv run python apple_pick_gym/examples/example_gym_replay.py \
   --dataset /tmp/sysid_dataset --list-episodes
 ```
+
+## Diagnostic stiffness grid
+
+[`apple_pick_gym/examples/run_system_identification.py`](../apple_pick_gym/examples/run_system_identification.py)
+uses the same dataset format and replay env, but loops over candidate
+`primary`, `secondary`, `spur`, and `stem` `bend_stiffness` values. It
+recreates the replay digital twin from observable Parquet metadata by default,
+drives the sim with recorded EE velocity actions, and prints replay loss
+summaries for each candidate in grid-search order.
+
+List episodes:
+
+```bash
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null --list-episodes
+```
+
+Run one candidate as a smoke check:
+
+```bash
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null \
+  --primary-bend-stiffness-values 10 \
+  --secondary-bend-stiffness-values 10 \
+  --spur-bend-stiffness-values 10 \
+  --stem-bend-stiffness-values 10 \
+  --max-candidates 1
+```
+
+Run a larger grid:
+
+```bash
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null \
+  --primary-bend-stiffness-values 10,25,50 \
+  --secondary-bend-stiffness-values 10,25,50 \
+  --spur-bend-stiffness-values 10,25,50 \
+  --stem-bend-stiffness-values 10,25,50
+```
+
+Use `--episode-id <uuid>` to restrict evaluation to one recorded episode, or
+repeat `--episode-id` to evaluate a subset. `--use-snapshot` is available for
+privileged sim-to-sim debugging only; leave it off for observation-only replay.
 
 ## Replay env
 

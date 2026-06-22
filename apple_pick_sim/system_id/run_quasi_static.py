@@ -47,8 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--movement-per-step-m",
         type=float,
-        default=0.05,
-        help="Distance per fast move burst [m] (default 0.05 = 5 cm).",
+        default=0.02,
+        help="Distance per fast move burst [m] (default 0.02 = 2 cm).",
     )
     parser.add_argument(
         "--total-movement-m",

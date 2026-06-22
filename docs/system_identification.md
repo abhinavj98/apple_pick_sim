@@ -142,7 +142,7 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | --- | --- | --- |
 | M3.0 §2.1 quasi-static | **Done** (trajectory + gym replay) | `apple_pick_sim/system_id/`, `apple_pick_gym/envs/apple_pick_sysid_env.py`, `docs/system-id-quasi-static-implementation.md` |
 | M3.0.2 recording + privileged-state replay | **Done** | `TrajectoryWriter`, `TrajectoryDataset`, `ApplePickReplayEnv`, `example_gym_replay.py`, `docs/sysid-trajectory-storage.md` |
-| M3 diagnostic stiffness grid | **Initial script** | `apple_pick_gym/examples/run_system_identification.py` sweeps `primary` / `secondary` / `spur` / `stem` `bend_stiffness` values over a Parquet dataset and prints replay loss summaries. |
+| M3.1.1 MMD stiffness grid | **Done** | `apple_pick_gym/examples/run_system_identification.py --mmd-output <dir>` sweeps `primary` / `secondary` / `spur` / `stem` `bend_stiffness` values, replays recorded actions, and ranks candidates by hold-phase biased MMD². |
 | M3.0.3 observation-only replay init | **Next** | Reconstruct a plausible Newton initial state/equilibrium from recorded observations, without saved simulator state; spec in `docs/observation-replay-digital-twin.md` |
 | M3.0.4 digital-twin fixture reconstruction | Planned | Named fixture catalog and sim-to-sim transfer validation before real-world collection |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
@@ -179,13 +179,19 @@ uv run python apple_pick_gym/examples/run_system_identification.py \
   --primary-bend-stiffness-values 10,25,50 \
   --secondary-bend-stiffness-values 10,25,50 \
   --spur-bend-stiffness-values 10,25,50 \
-  --stem-bend-stiffness-values 10,25,50
+  --stem-bend-stiffness-values 10,25,50 \
+  --mmd-output /tmp/apple_pick_mmd_grid
 ```
 
 For each candidate the script prints mean/max replay errors for TCP force,
 TCP torque, TCP position, TCP velocity, apple position, and woody endpoints.
-It does not rank candidates or compute a weighted objective yet; this is a
-diagnostic bridge between observation-only replay and the later MMD/CEM loop.
+When `--mmd-output` is set, it also computes the stiffness diagnostic objective:
+hold-phase biased MMD² over per-direction transition features, with the first
+half of each hold segment discarded before feature construction. It writes
+`mmd_results.csv` plus a compact diagnostic plot bundle:
+`mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and
+`mmd_stiffness_sensitivity.png`. This remains a diagnostic grid search, not
+simulator tuning or CEM.
 The default initializer is observation-only Parquet replay. Use
 `--use-snapshot` only for privileged sim-to-sim debugging against
 `initial_states/*.npz`.

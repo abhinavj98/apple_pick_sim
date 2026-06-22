@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -118,6 +119,7 @@ def test_parser_defaults_to_observation_only_replay(monkeypatch):
     )
 
     assert args.use_snapshot is False
+    assert args.mmd_output is None
     assert args.primary_bend_stiffness_values == (1.0,)
     assert args.secondary_bend_stiffness_values == (2.0,)
     assert args.spur_bend_stiffness_values == (3.0,)
@@ -140,3 +142,123 @@ def test_parser_allows_listing_episodes_without_grid_values(monkeypatch):
     )
 
     assert args.list_episodes is True
+
+
+def test_parser_accepts_mmd_output_directory(monkeypatch):
+    module = _load_example_module()
+
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+
+    args = module._make_parser().parse_args(
+        [
+            "--dataset",
+            "dataset-dir",
+            "--primary-bend-stiffness-values",
+            "1",
+            "--secondary-bend-stiffness-values",
+            "2",
+            "--spur-bend-stiffness-values",
+            "3",
+            "--stem-bend-stiffness-values",
+            "4",
+            "--mmd-output",
+            "mmd-out",
+        ]
+    )
+
+    assert args.mmd_output == "mmd-out"
+
+
+def _mmd_arrays(*, shift: float = 0.0) -> dict:
+    steps = 6
+    base = np.arange(steps, dtype=np.float32).reshape(steps, 1)
+    return {
+        "ft_wrist": np.hstack([base + shift + i for i in range(6)]).astype(np.float32),
+        "tcp_velocity": np.hstack([base + 10.0 + i for i in range(6)]).astype(
+            np.float32
+        ),
+        "action": np.hstack([base + 20.0 + i for i in range(6)]).astype(np.float32),
+        "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
+        "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
+        "woody_part_start_pos": {
+            "stem_apple": np.hstack([base + 50.0 + i for i in range(3)]).astype(
+                np.float32
+            )
+        },
+        "woody_part_end_pos": {
+            "stem_apple": np.hstack([base + 60.0 + i for i in range(3)]).astype(
+                np.float32
+            )
+        },
+        "excitation_direction": np.tile(
+            np.array([[1.0, 0.0, 0.0]], dtype=np.float32), (steps, 1)
+        ),
+        "phase": np.ones(steps, dtype=np.int8),
+        "dir_idx": np.zeros(steps, dtype=np.int32),
+        "excitation_type": np.zeros(steps, dtype=np.int8),
+        "junction_names": ["stem_apple"],
+    }
+
+
+def test_mmd_result_helpers_rank_identical_candidate_below_shifted_candidate():
+    module = _load_example_module()
+    gt_context = module._prepare_gt_mmd_context([_mmd_arrays()])
+    candidate = module.BendStiffnessCandidate(
+        primary=1.0,
+        secondary=2.0,
+        spur=3.0,
+        stem=4.0,
+    )
+
+    identical = module._compute_candidate_mmd_result(
+        candidate_index=1,
+        candidate=candidate,
+        gt_context=gt_context,
+        replay_observations=[_mmd_arrays()],
+    )
+    shifted = module._compute_candidate_mmd_result(
+        candidate_index=2,
+        candidate=candidate,
+        gt_context=gt_context,
+        replay_observations=[_mmd_arrays(shift=10.0)],
+    )
+
+    assert identical.aggregate_mmd2 < shifted.aggregate_mmd2
+    assert identical.per_direction_mmd2.keys() == {0}
+    assert identical.stiffnesses == {
+        "primary": 1.0,
+        "secondary": 2.0,
+        "spur": 3.0,
+        "stem": 4.0,
+    }
+
+
+def test_write_mmd_outputs_creates_csv_and_diagnostic_plot_bundle(tmp_path: Path, capsys):
+    module = _load_example_module()
+    from apple_pick_sim.system_id.mmd_results import MmdCandidateResult
+
+    result = MmdCandidateResult(
+        candidate_index=1,
+        stiffnesses={
+            "primary": 1.0,
+            "secondary": 2.0,
+            "spur": 3.0,
+            "stem": 4.0,
+        },
+        aggregate_mmd2=0.25,
+        per_direction_mmd2={0: 0.1, 1: 0.4},
+    )
+
+    module._write_mmd_outputs([result], tmp_path)
+
+    output = capsys.readouterr().out
+    assert (tmp_path / "mmd_results.csv").is_file()
+    assert (tmp_path / "mmd_ranked_loss.png").is_file()
+    assert (tmp_path / "mmd_direction_heatmap.png").is_file()
+    assert (tmp_path / "mmd_stiffness_sensitivity.png").is_file()
+    assert "MMD results CSV:" in output
+    assert "mmd_ranked_loss.png" in output
+    assert "mmd_direction_heatmap.png" in output
+    assert "mmd_stiffness_sensitivity.png" in output

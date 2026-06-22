@@ -130,7 +130,9 @@ uses the same dataset format and replay env, but loops over candidate
 `primary`, `secondary`, `spur`, and `stem` `bend_stiffness` values. It
 recreates the replay digital twin from observable Parquet metadata by default,
 drives the sim with recorded EE velocity actions, and prints replay loss
-summaries for each candidate in grid-search order.
+summaries for each candidate in grid-search order. Add `--mmd-output <dir>` to
+rank candidates by hold-phase biased MMD² and write `mmd_results.csv` plus
+`mmd_ranked_loss.png`.
 
 List episodes:
 
@@ -159,7 +161,8 @@ uv run python apple_pick_gym/examples/run_system_identification.py \
   --primary-bend-stiffness-values 10,25,50 \
   --secondary-bend-stiffness-values 10,25,50 \
   --spur-bend-stiffness-values 10,25,50 \
-  --stem-bend-stiffness-values 10,25,50
+  --stem-bend-stiffness-values 10,25,50 \
+  --mmd-output /tmp/apple_pick_mmd_grid
 ```
 
 Use `--episode-id <uuid>` to restrict evaluation to one recorded episode, or

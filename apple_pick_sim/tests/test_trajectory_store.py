@@ -274,6 +274,15 @@ def test_dataset_load_episode_obs_arrays(tmp_path: Path):
         arrays["woody_part_start_pos"], 0, arrays["junction_names"]
     )
     assert flat.shape == (6,)
+    np.testing.assert_array_equal(arrays["phase"], np.array([0, 1, 2, 1], dtype=np.int8))
+    np.testing.assert_array_equal(arrays["dir_idx"], np.zeros(4, dtype=np.int32))
+    np.testing.assert_array_equal(
+        arrays["excitation_type"], np.zeros(4, dtype=np.int8)
+    )
+    np.testing.assert_allclose(
+        arrays["excitation_direction"],
+        np.tile(np.array([[1.0, 0.0, 0.0]], dtype=np.float32), (4, 1)),
+    )
 
 
 def test_digital_twin_obs_from_episode_uses_metadata_and_frame_zero(tmp_path: Path):

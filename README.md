@@ -309,13 +309,14 @@ uv run python apple_pick_gym/examples/run_system_identification.py \
   --stem-bend-stiffness-values 10 \
   --max-candidates 1
 
-# Expand each axis to sweep primary/secondary/spur/stem bend stiffnesses
+# Expand each axis to sweep primary/secondary/spur/stem bend stiffnesses and rank by MMD
 uv run python apple_pick_gym/examples/run_system_identification.py \
   --dataset /tmp/sysid_dataset --viewer null \
   --primary-bend-stiffness-values 10,25,50 \
   --secondary-bend-stiffness-values 10,25,50 \
   --spur-bend-stiffness-values 10,25,50 \
-  --stem-bend-stiffness-values 10,25,50
+  --stem-bend-stiffness-values 10,25,50 \
+  --mmd-output /tmp/apple_pick_mmd_grid
 
 # Digital-twin catalog and reconstruction tests
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
@@ -330,3 +331,7 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_trajectory_store.py \
   apple_pick_gym/tests/test_replay_env.py -q
 ```
+
+The MMD grid command writes `mmd_results.csv` plus compact diagnostics:
+`mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and
+`mmd_stiffness_sensitivity.png`.

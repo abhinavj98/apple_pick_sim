@@ -49,6 +49,14 @@ class BendStiffnessCandidate(NamedTuple):
         }
 
 
+class MmdDirectionContext(NamedTuple):
+    """GT normalization and bandwidth for one direction."""
+
+    gt_norm: np.ndarray
+    stats: object
+    bandwidth: float
+
+
 def parse_positive_float_grid(value: str) -> tuple[float, ...]:
     """Parse a comma-separated list of positive floats for one grid axis."""
     if value.strip() == "":
@@ -153,6 +161,12 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print per-step replay diagnostics and observation errors.",
     )
+    p.add_argument(
+        "--mmd-output",
+        type=str,
+        default=None,
+        help="Directory for MMD grid CSV and ranked-loss PNG outputs.",
+    )
     for segment in ROD_SEGMENTS:
         p.add_argument(
             f"--{segment}-bend-stiffness-values",
@@ -171,6 +185,120 @@ def _candidate_label(candidate: BendStiffnessCandidate) -> str:
         f"spur={candidate.spur:g} "
         f"stem={candidate.stem:g}"
     )
+
+
+def _candidate_stiffnesses(candidate: BendStiffnessCandidate) -> dict[str, float]:
+    return {
+        "primary": float(candidate.primary),
+        "secondary": float(candidate.secondary),
+        "spur": float(candidate.spur),
+        "stem": float(candidate.stem),
+    }
+
+
+def _combine_transition_features(episodes: list[dict]) -> dict[int, np.ndarray]:
+    from apple_pick_sim.system_id.mmd_features import build_transition_features_by_direction
+
+    parts: dict[int, list[np.ndarray]] = {}
+    for arrays in episodes:
+        for direction, features in build_transition_features_by_direction(arrays).items():
+            parts.setdefault(int(direction), []).append(features)
+    return {
+        direction: np.concatenate(chunks, axis=0)
+        for direction, chunks in sorted(parts.items())
+        if chunks
+    }
+
+
+def _prepare_gt_mmd_context(recorded_episodes: list[dict]) -> dict[int, MmdDirectionContext]:
+    from apple_pick_sim.system_id.mmd import (
+        apply_normalization,
+        fit_gt_normalization,
+        rbf_bandwidth_median,
+    )
+
+    gt_by_direction = _combine_transition_features(recorded_episodes)
+    if not gt_by_direction:
+        raise ValueError("No valid hold-only GT transition features were found.")
+
+    context: dict[int, MmdDirectionContext] = {}
+    for direction, gt_features in gt_by_direction.items():
+        stats = fit_gt_normalization(gt_features)
+        gt_norm = apply_normalization(gt_features, stats)
+        bandwidth = rbf_bandwidth_median(gt_norm)
+        context[direction] = MmdDirectionContext(
+            gt_norm=gt_norm,
+            stats=stats,
+            bandwidth=bandwidth,
+        )
+    return context
+
+
+def _compute_candidate_mmd_result(
+    *,
+    candidate_index: int,
+    candidate: BendStiffnessCandidate,
+    gt_context: dict[int, MmdDirectionContext],
+    replay_observations: list[dict],
+):
+    from apple_pick_sim.system_id.mmd import apply_normalization, biased_mmd2
+    from apple_pick_sim.system_id.mmd_results import MmdCandidateResult
+
+    candidate_by_direction = _combine_transition_features(replay_observations)
+    per_direction: dict[int, float] = {}
+    for direction, context in gt_context.items():
+        candidate_features = candidate_by_direction.get(direction)
+        if candidate_features is None:
+            print(f"  MMD direction {direction}: skipped (no valid candidate hold transitions)")
+            continue
+        if candidate_features.shape[1] != context.gt_norm.shape[1]:
+            raise ValueError(
+                "MMD feature dimension mismatch for direction "
+                f"{direction}: gt={context.gt_norm.shape[1]} candidate={candidate_features.shape[1]}"
+            )
+        candidate_norm = apply_normalization(candidate_features, context.stats)
+        per_direction[direction] = biased_mmd2(
+            context.gt_norm,
+            candidate_norm,
+            context.bandwidth,
+        )
+    if not per_direction:
+        raise ValueError("No candidate directions had valid hold-only MMD transitions.")
+    aggregate = float(np.mean(list(per_direction.values())))
+    return MmdCandidateResult(
+        candidate_index=int(candidate_index),
+        stiffnesses=_candidate_stiffnesses(candidate),
+        aggregate_mmd2=aggregate,
+        per_direction_mmd2=per_direction,
+    )
+
+
+def _print_mmd_ranking(results: list) -> None:
+    from apple_pick_sim.system_id.mmd_results import rank_results
+
+    print("\nMMD candidate ranking (lower is better):")
+    for rank, result in enumerate(rank_results(results), start=1):
+        direction_bits = " ".join(
+            f"dir{direction}={loss:.6g}"
+            for direction, loss in sorted(result.per_direction_mmd2.items())
+        )
+        print(
+            f"  #{rank}: candidate {result.candidate_index} "
+            f"aggregate={result.aggregate_mmd2:.6g} {direction_bits}"
+        )
+
+
+def _write_mmd_outputs(results: list, output_dir: str) -> None:
+    from apple_pick_sim.system_id.mmd_results import (
+        write_diagnostic_plots,
+        write_results_csv,
+    )
+
+    csv_path = write_results_csv(results, output_dir)
+    plot_paths = write_diagnostic_plots(results, output_dir)
+    print(f"MMD results CSV: {csv_path}")
+    for path in plot_paths:
+        print(f"MMD diagnostic plot: {path}")
 
 
 def _episode_ids_to_evaluate(dataset, requested: list[str] | None) -> list[str]:
@@ -206,6 +334,7 @@ def _record_episode_errors(
     env,
     recorded: dict,
     error_summary,
+    observation_collector=None,
     n_frames: int,
     debug: bool,
     render_dt: float,
@@ -230,6 +359,8 @@ def _record_episode_errors(
         )
         if err is not None:
             error_summary.record(err)
+        if observation_collector is not None:
+            observation_collector.record(obs, frame_idx=frame_idx)
 
         if debug:
             ft = np.asarray(obs["ft_wrist"], dtype=np.float64)[:3]
@@ -307,8 +438,10 @@ def _evaluate_candidate(
         apply_param_overrides,
         load_base_params_from_dataset,
     )
+    from apple_pick_sim.system_id.mmd_features import ReplayObservationCollector
 
     summary = ReplayErrorSummary()
+    replay_observations: list[dict] = []
     render_dt = 1.0 / float(args.hz)
     for episode_id in episode_ids:
         meta = dataset.load_episode_meta(episode_id)
@@ -348,18 +481,26 @@ def _evaluate_candidate(
                 f"  episode {episode_id} frames={n_frames} "
                 f"init={'snapshot' if info.get('initial_state_restored') else 'observation'}"
             )
+            observation_collector = (
+                ReplayObservationCollector(recorded)
+                if getattr(args, "mmd_output", None)
+                else None
+            )
             _record_episode_errors(
                 env=env,
                 recorded=recorded,
                 error_summary=summary,
+                observation_collector=observation_collector,
                 n_frames=n_frames,
                 debug=bool(args.debug),
                 render_dt=render_dt,
                 viewer=viewer,
             )
+            if observation_collector is not None and observation_collector.n_rows > 0:
+                replay_observations.append(observation_collector.to_arrays())
         finally:
             env.close()
-    return summary
+    return summary, replay_observations
 
 
 def main() -> None:
@@ -402,11 +543,20 @@ def main() -> None:
     print(f"Episodes: {len(episode_ids)}")
     print(f"Initialization: {'snapshot' if args.use_snapshot else 'observable parquet'}")
 
+    gt_mmd_context = None
+    mmd_results = []
+    if args.mmd_output:
+        print("MMD: preparing hold-only GT transition features")
+        gt_mmd_context = _prepare_gt_mmd_context(
+            [dataset.load_episode_obs_arrays(episode_id) for episode_id in episode_ids]
+        )
+        print(f"MMD: prepared {len(gt_mmd_context)} direction(s)")
+
     evaluated = 0
     for candidate in candidates:
         evaluated += 1
         print(f"\n[{evaluated}] evaluating {_candidate_label(candidate)}")
-        summary = _evaluate_candidate(
+        summary, replay_observations = _evaluate_candidate(
             args=args,
             dataset=dataset,
             episode_ids=episode_ids,
@@ -414,9 +564,21 @@ def main() -> None:
             viewer=viewer,
         )
         _print_candidate_summary(candidate, summary)
+        if gt_mmd_context is not None:
+            result = _compute_candidate_mmd_result(
+                candidate_index=evaluated,
+                candidate=candidate,
+                gt_context=gt_mmd_context,
+                replay_observations=replay_observations,
+            )
+            mmd_results.append(result)
+            print(f"  aggregate biased MMD^2: {result.aggregate_mmd2:.6g}")
 
     if evaluated == 0:
         raise SystemExit("No stiffness candidates were generated.")
+    if mmd_results:
+        _print_mmd_ranking(mmd_results)
+        _write_mmd_outputs(mmd_results, args.mmd_output)
 
 
 if __name__ == "__main__":

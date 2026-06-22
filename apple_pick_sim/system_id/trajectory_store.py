@@ -461,6 +461,12 @@ class TrajectoryDataset:
         )
         return {
             "step_idx": np.asarray(table.column("step_idx").to_pylist(), dtype=np.int32),
+            "phase": np.asarray(table.column("phase").to_pylist(), dtype=np.int8),
+            "dir_idx": np.asarray(table.column("dir_idx").to_pylist(), dtype=np.int32),
+            "excitation_type": np.asarray(
+                table.column("excitation_type").to_pylist(), dtype=np.int8
+            ),
+            "excitation_direction": _stack_column("excitation_direction").reshape(-1, 3),
             "action": _stack_column("action").reshape(-1, 6),
             "ft_wrist": ft_wrist,
             "raw_ft_wrist": raw_ft_wrist,

@@ -406,6 +406,7 @@ def _add_gripper_proxy(
     clearance = max(hx, hy, hz)
     robot_facing_approach_dir: wp.vec3 | None = None
 
+    vis_offset: wp.vec3 = wp.vec3(0.0, 0.0, 0.0)
     if apple_radius is not None:
         if config.fix_to_apple and config.robot_facing_weld:
             if robot_base_pos is None:
@@ -416,22 +417,25 @@ def _add_gripper_proxy(
                 robot_base_pos,
                 artifacts.proxy_placement_dir,
             )
-            proxy_pos = weld_apple_center + robot_facing_approach_dir * (
-                apple_radius + clearance
-            )
+            # IK target is on the apple surface; proxy is visually offset by clearance at runtime.
+            proxy_pos = weld_apple_center + robot_facing_approach_dir * apple_radius
+            vis_offset = robot_facing_approach_dir * clearance
         elif config.fix_to_apple and config.weld_direction is not None:
             weld_dir = wp.normalize(wp.vec3(*config.weld_direction))
-            proxy_pos = weld_apple_center + weld_dir * (apple_radius + clearance)
+            proxy_pos = weld_apple_center + weld_dir * apple_radius
+            vis_offset = weld_dir * clearance
         else:
-            proxy_pos = artifacts.proxy_placement_origin + artifacts.proxy_placement_dir * (
-                apple_radius + clearance
-            )
+            # Free proxy or legacy random weld.
+            proxy_pos = artifacts.proxy_placement_origin + artifacts.proxy_placement_dir * apple_radius
+            vis_offset = artifacts.proxy_placement_dir * clearance
     elif config.fix_to_apple:
         if artifacts.apple_body is None:
             raise ValueError("fix_to_apple requires an apple body in the scene")
         proxy_pos = artifacts.proxy_placement_origin
+        vis_offset = wp.vec3(0.0, 0.0, 0.0)
     else:
-        proxy_pos = artifacts.proxy_placement_origin + artifacts.proxy_placement_dir * clearance
+        proxy_pos = artifacts.proxy_placement_origin
+        vis_offset = artifacts.proxy_placement_dir * clearance
   
     proxy_body = builder.add_link(
         xform=wp.transform(proxy_pos, wp.quat_identity()),
@@ -529,7 +533,7 @@ def _add_gripper_proxy(
         proxy_free_joint = builder.add_joint_free(parent=-1, child=proxy_body)
         artifacts.all_joints.append(proxy_free_joint)
 
-    return proxy_body, apple_fixed_joint, proxy_offset_in_apple_frame, proxy_free_joint
+    return proxy_body, apple_fixed_joint, proxy_offset_in_apple_frame, proxy_free_joint, vis_offset
 
 def make_fruiting_solver_vbd(model: newton.Model, **overrides: Any) -> newton.solvers.SolverVBD:
     kwargs: dict[str, Any] = {

@@ -261,6 +261,11 @@ def test_dataset_load_episode_obs_arrays(tmp_path: Path):
 
     dataset = TrajectoryDataset(tmp_path)
     arrays = dataset.load_episode_obs_arrays("ep-obs")
+    np.testing.assert_allclose(arrays["sim_time"], np.arange(4, dtype=np.float32) / 60.0)
+    np.testing.assert_allclose(
+        arrays["amplitude_m"],
+        np.array([0.05, 0.10, 0.15, 0.20], dtype=np.float32),
+    )
     assert arrays["action"].shape == (4, 6)
     assert arrays["ft_wrist"].shape == (4, 6)
     assert arrays["raw_ft_wrist"].shape == (4, 6)

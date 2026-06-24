@@ -1694,7 +1694,9 @@ def test_example_coupled_fruiting_fix_to_apple_parser_default():
 
     args = ex._make_parser().parse_args([])
     assert ex._fix_to_apple_from_args(args) is False
-    assert ex._gripper_proxy_from_args(args, robot_kind="fr3").fix_to_apple is False
+    proxy_config = ex._gripper_proxy_from_args(args, robot_kind="fr3")
+    assert proxy_config.fix_to_apple is False
+    assert proxy_config.robot_facing_weld is False
 
 
 def test_example_coupled_fruiting_fix_to_apple_parser_enabled():
@@ -1702,7 +1704,9 @@ def test_example_coupled_fruiting_fix_to_apple_parser_enabled():
 
     args = ex._make_parser().parse_args(["--fix-to-apple"])
     assert ex._fix_to_apple_from_args(args) is True
-    assert ex._gripper_proxy_from_args(args, robot_kind="fr3").fix_to_apple is True
+    proxy_config = ex._gripper_proxy_from_args(args, robot_kind="fr3")
+    assert proxy_config.fix_to_apple is True
+    assert proxy_config.robot_facing_weld is True
 
 
 def test_example_coupled_fruiting_fix_to_apple_parser_disabled_explicit():

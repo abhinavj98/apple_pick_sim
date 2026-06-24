@@ -459,7 +459,7 @@ class TrajectoryDataset:
             if "raw_ft_wrist" in table.column_names
             else ft_wrist.copy()
         )
-        return {
+        arrays = {
             "step_idx": np.asarray(table.column("step_idx").to_pylist(), dtype=np.int32),
             "phase": np.asarray(table.column("phase").to_pylist(), dtype=np.int8),
             "dir_idx": np.asarray(table.column("dir_idx").to_pylist(), dtype=np.int32),
@@ -480,3 +480,8 @@ class TrajectoryDataset:
             "robot_joint_q": _stack_column("robot_joint_q").reshape(-1, 7),
             "junction_names": list(junction_names),
         }
+        if "sim_time" in table.column_names:
+            arrays["sim_time"] = _stack_column("sim_time").reshape(-1)
+        if "amplitude_m" in table.column_names:
+            arrays["amplitude_m"] = _stack_column("amplitude_m").reshape(-1)
+        return arrays

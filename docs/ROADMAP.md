@@ -157,6 +157,9 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --viewer null --n-directions 1 --max-steps 200 \
   --output /tmp/apple_pick_sysid_no_snapshot
 
+# M3 raw dataset dashboard (local browser; use --help as a non-interactive smoke)
+uv run python apple_pick_gym/examples/dashboard_sysid_dataset.py --help
+
 # M3.0.4 optional privileged baseline for comparison
 uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --viewer null --n-directions 1 --max-steps 200 --save-snapshot \

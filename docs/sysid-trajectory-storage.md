@@ -169,6 +169,19 @@ Use `--episode-id <uuid>` to restrict evaluation to one recorded episode, or
 repeat `--episode-id` to evaluate a subset. `--use-snapshot` is available for
 privileged sim-to-sim debugging only; leave it off for observation-only replay.
 
+## Dataset dashboard
+
+[`apple_pick_gym/examples/dashboard_sysid_dataset.py`](../apple_pick_gym/examples/dashboard_sysid_dataset.py)
+opens a local Plotly Dash app for raw dataset sanity checks before replay or
+MMD tuning. It reads the same Parquet dataset directory and plots 3D TCP, apple,
+and woody endpoint trajectories, linked motion/wrench time series, and
+per-hold force/displacement summaries.
+
+```bash
+uv run python apple_pick_gym/examples/dashboard_sysid_dataset.py \
+  --dataset /tmp/sysid_dataset
+```
+
 ## Replay env
 
 `ApplePickReplay-v0` (`ApplePickReplayEnv`) loads a dataset and applies stored `action` rows open-loop. The Gym `action` argument is ignored during replay.

@@ -66,6 +66,12 @@ class CoupledCableScene:
     gripper_proxy_apple_joint: int | None = None
     """Apple-body-frame vector from apple COM to proxy COM when ``gripper_proxy_apple_joint`` is set."""
     gripper_proxy_offset_in_apple_frame: tuple[float, float, float, float, float, float, float] | None = None
+    gripper_proxy_vis_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """World-frame offset from TCP COM to proxy COM for visual placement (= approach_dir × clearance).
+
+    Applied each substep by the offset mirror kernel so the proxy box *face* sits flush with
+    the apple surface while ``tcp_pos`` reports the surface position.
+    """
 
     def proxy_registry(self, robot_body_id: int):
         """Map robot TCP body id → cable ``gripper_proxy_body`` for staggered wrench I/O.
@@ -195,7 +201,7 @@ def _build_coupled_cable_scene(
 ) -> CoupledCableScene:
     builder = _new_fruiting_builder()
     artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
-    proxy_body, proxy_apple_joint, proxy_offset_in_apple, proxy_free_joint = _add_gripper_proxy(
+    proxy_body, proxy_apple_joint, proxy_offset_in_apple, proxy_free_joint, vis_offset = _add_gripper_proxy(
         builder,
         artifacts,
         gripper_proxy,
@@ -235,6 +241,9 @@ def _build_coupled_cable_scene(
         gripper_proxy_config=gripper_proxy,
         gripper_proxy_apple_joint=proxy_apple_joint,
         gripper_proxy_offset_in_apple_frame=proxy_offset_in_apple,
+        gripper_proxy_vis_offset=(
+            float(vis_offset[0]), float(vis_offset[1]), float(vis_offset[2])
+        ),
     )
     _align_coupled_scene_chain_from_reference(
         scene,

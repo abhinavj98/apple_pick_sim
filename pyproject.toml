@@ -10,6 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gym = [
+    "dash>=4.2.0",
     "gymnasium>=1.0.0",
     "pyarrow>=18.0.0",
 ]

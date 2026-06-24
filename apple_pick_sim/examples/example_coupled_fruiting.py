@@ -71,7 +71,7 @@ def _default_ranges_path() -> Path:
     return (
         Path(__file__).resolve().parent.parent
         / "fixtures"
-        / "fruiting_system_ranges_example_variance.json"
+        / "fruiting_system_ranges_example_variance_soft.json"
     )
 
 
@@ -97,8 +97,9 @@ def _gripper_proxy_from_args(
             mass=fr3_robot.EE_MASS_KG,
             box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
             fix_to_apple=fix,
+            robot_facing_weld=fix,
         )
-    return GripperProxyConfig(fix_to_apple=fix)
+    return GripperProxyConfig(fix_to_apple=fix, robot_facing_weld=fix)
 
 
 def _resolve_step_mode(args: argparse.Namespace | None) -> str:
@@ -318,6 +319,28 @@ def _make_parser() -> argparse.ArgumentParser:
         default=True,
         help="Print target_tf / expected_tf / actual_tcp each frame (default on).",
     )
+    parser.add_argument(
+        "--world-axes",
+        action="store_true",
+        help=(
+            "Draw world-frame X/Y/Z axes as RGB arrows in the Newton viewer "
+            "(requires --viewer gl or viser)."
+        ),
+    )
+    parser.add_argument(
+        "--world-axes-length",
+        type=float,
+        default=0.3,
+        help="Length [m] of each world-axis arrow (default 0.3).",
+    )
+    parser.add_argument(
+        "--world-axes-origin",
+        type=float,
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        default=[0.0, 0.0, 0.0],
+        help="World-frame origin of the axes arrows [m] (default 0 0 0).",
+    )
     return parser
 
 
@@ -397,7 +420,7 @@ class ExampleCoupledFruiting:
                             **build_kw,
                             "vbd_only": True,
                             "gripper_proxy": dataclasses.replace(
-                                gripper, fix_to_apple=False
+                                gripper, fix_to_apple=False, robot_facing_weld=False
                             ),
                         },
                     )
@@ -409,7 +432,7 @@ class ExampleCoupledFruiting:
                             **build_kw,
                             "skip_ik_bootstrap": True,
                             "gripper_proxy": dataclasses.replace(
-                                gripper, fix_to_apple=True
+                                gripper, fix_to_apple=True, robot_facing_weld=True
                             ),
                         },
                     )
@@ -452,6 +475,15 @@ class ExampleCoupledFruiting:
         self._tcp_force_gain = tcp_force_gain
         self._tcp_force_min_length = tcp_force_min_len
         self._tcp_force_max_length = tcp_force_max_len
+        self._world_axes = bool(getattr(args, "world_axes", False))
+        self._world_axes_length = float(getattr(args, "world_axes_length", 0.3))
+        _origin_raw = getattr(args, "world_axes_origin", [0.0, 0.0, 0.0]) if args else [0.0, 0.0, 0.0]
+        self._world_axes_origin = tuple(float(v) for v in _origin_raw)
+        if self._world_axes and graphical:
+            print(
+                f"World axes: RGB = XYZ from origin {self._world_axes_origin}, "
+                f"length={self._world_axes_length:.3f} m."
+            )
         if (
             self._step_mode == "coupled"
             and bool(getattr(args, "debug_coupling_forces", False))
@@ -679,6 +711,8 @@ class ExampleCoupledFruiting:
                 min_length=self._tcp_force_min_length,
                 max_length=self._tcp_force_max_length,
             )
+        if self._world_axes:
+            self._render_world_axes()
         self.viewer.end_frame()
         if self._mujoco_viewer and self.scene.robot_model is not None:
             fr3_robot.sync_mujoco_visual_state(
@@ -687,6 +721,28 @@ class ExampleCoupledFruiting:
                 self.scene.robot_state_0,
             )
             self.scene.mj_solver.render_mujoco_viewer()
+
+    def _render_world_axes(self) -> None:
+        """Draw world-frame X (red), Y (green), Z (blue) axis arrows in the Newton viewer."""
+        log_lines = getattr(self.viewer, "log_lines", None)
+        log_arrows = getattr(self.viewer, "log_arrows", None)
+        _log = log_arrows if log_arrows is not None else log_lines
+        if _log is None:
+            return
+        dev = str(getattr(self.viewer, "device", "cpu"))
+        o = np.array(self._world_axes_origin, dtype=np.float32)
+        L = self._world_axes_length
+        # X → red, Y → green, Z → blue
+        axes = [
+            ("x", np.array([L, 0.0, 0.0], dtype=np.float32), np.array([[1.0, 0.0, 0.0]], dtype=np.float32)),
+            ("y", np.array([0.0, L, 0.0], dtype=np.float32), np.array([[0.0, 1.0, 0.0]], dtype=np.float32)),
+            ("z", np.array([0.0, 0.0, L], dtype=np.float32), np.array([[0.0, 0.0, 1.0]], dtype=np.float32)),
+        ]
+        for label, tip_offset, color in axes:
+            starts = wp.array(o.reshape(1, 3), dtype=wp.vec3, device=dev)
+            ends = wp.array((o + tip_offset).reshape(1, 3), dtype=wp.vec3, device=dev)
+            colors = wp.array(color, dtype=wp.vec3, device=dev)
+            _log(f"/debug/world_axis_{label}", starts, ends, colors)
 
     def cleanup(self) -> None:
         if self._mujoco_viewer:

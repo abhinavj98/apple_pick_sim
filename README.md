@@ -31,7 +31,7 @@ uv sync --extra gym --extra vic --extra dev
 | Extra | Purpose |
 | ----- | ------- |
 | *(base)* | `newton[examples]` — sim, viewers, scripts |
-| `gym` | Gymnasium envs (`apple_pick_gym/`) |
+| `gym` | Gymnasium envs (`apple_pick_gym/`) and Dash dataset dashboard |
 | `vic` | VIC joint-torque teleop (`newton[torch-cu12]`, PyTorch) |
 | `dev` | pytest + gymnasium |
 
@@ -295,6 +295,10 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
 # Replay and print dataset-vs-live observation errors
 uv run python apple_pick_gym/examples/example_gym_replay.py \
   --dataset /tmp/sysid_dataset --viewer null
+
+# Inspect collected raw trajectories in a local browser dashboard
+uv run python apple_pick_gym/examples/dashboard_sysid_dataset.py \
+  --dataset /tmp/sysid_dataset
 
 # List recorded episodes before running parameter sweeps
 uv run python apple_pick_gym/examples/run_system_identification.py \

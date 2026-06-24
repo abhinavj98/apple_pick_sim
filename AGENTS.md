@@ -33,3 +33,17 @@ For isolated feature or fix work, agents should follow `.cursor/rules/worktree-f
 - Follow **TDD** (tests first) per `.cursor/rules/test-driven-development.mdc`.
 - Prefer completing the **next slice** in `docs/ROADMAP.md` under **Current focus**; do not expand scope into the backlog unless instructed.
 - After changes, run the **validation commands** listed in `docs/ROADMAP.md` (update that section if the canonical commands change).
+
+# Follow these rules unless overriden
+
+`.cursor/rules/` contains rules that should be followed unless the user explicitly overrides them for a specific task. Rules are organized by category and can be enabled/disabled individually. Common rules include: 
+
+`.cursor/rules/task-decomposition.mdc` - breaking down tasks into smaller steps
+`.cursor/rules/test-driven-development.mdc` - writing tests before implementation
+`.cursor/rules/code-generation.mdc` - guidelines for code generation
+`.cursor/rules/code-review.mdc` - code review checklist
+`.cursor/rules/error-handling.mdc` - error handling best practices
+`.cursor/rules/security.mdc` - security best practices
+`.cursor/rules/performance-optimization.mdc` - performance optimization
+`.cursor/rules/documentation.mdc` - documentation guidelines
+`.cursor/rules/testing-strategy.mdc` - testing strategy

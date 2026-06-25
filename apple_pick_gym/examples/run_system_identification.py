@@ -24,16 +24,18 @@ import math
 import os
 import sys
 import time
-from itertools import islice, product
-from typing import NamedTuple
+from itertools import product
+from typing import Any, NamedTuple
 
 import numpy as np
+from tqdm import tqdm
 
 
 def print(*args, **kwargs):
+    """Route prints through ``tqdm.write`` so grid-search progress bars stay intact."""
     import builtins
+
     try:
-        from tqdm import tqdm
         tqdm.write(" ".join(str(arg) for arg in args), file=kwargs.get("file", sys.stdout))
     except Exception:
         builtins.print(*args, **kwargs)
@@ -62,7 +64,7 @@ class MmdDirectionContext(NamedTuple):
     """GT normalization and bandwidth for one direction."""
 
     gt_norm: np.ndarray
-    stats: object
+    stats: Any
     bandwidth: float
 
 
@@ -350,7 +352,6 @@ def _record_episode_errors(
     viewer,
 ) -> int:
     from apple_pick_gym.examples.example_gym_replay import _compare_to_dataset, _fmt_force
-    from tqdm import tqdm
 
     sim_time = 0.0
     step_dt = 1.0 / float(env._cfg.control_hz)
@@ -571,7 +572,6 @@ def main() -> None:
         print(f"MMD: prepared {len(gt_mmd_context)} direction(s)")
 
     evaluated = 0
-    from tqdm import tqdm
     for candidate in tqdm(candidates, desc="Grid Search Progress"):
         evaluated += 1
         print(f"\n[{evaluated}/{len(candidates)}] evaluating {_candidate_label(candidate)}")

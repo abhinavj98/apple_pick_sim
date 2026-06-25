@@ -25,6 +25,23 @@ def _apply_spatial_wrench_to_body_f(state: Any, tcp_body_index: int, wrenches_sp
     )
 
 
+def _apply_registry_spatial_wrenches_to_body_f(
+    state: Any,
+    robot_ids: wp.array,
+    wrenches_spatial: wp.array,
+) -> None:
+    """Write lagged coupling wrenches for all registry TCP bodies into ``body_f``."""
+    state.body_f.zero_()
+    dev = state.body_f.device
+    n = int(robot_ids.shape[0])
+    wp.launch(
+        _write_registry_spatial_wrenches_kernel,
+        dim=n,
+        inputs=[state.body_f, robot_ids, wrenches_spatial],
+        device=dev,
+    )
+
+
 def _add_tcp_spatial_wrench_inplace(
     wrenches_spatial: wp.array,
     tcp_body_index: int,
@@ -57,6 +74,18 @@ def _add_tcp_spatial_wrench_kernel(
     vectors are world frame [N, N·m] at the TCP COM.
     """
     wrenches[tcp_index] = wrenches[tcp_index] + delta
+
+
+@wp.kernel
+def _write_registry_spatial_wrenches_kernel(
+    body_f: wp.array(dtype=wp.spatial_vector),
+    robot_ids: wp.array(dtype=int),
+    wrenches: wp.array(dtype=wp.spatial_vector),
+):
+    """Write ``wrenches[robot_ids[i]]`` into ``body_f`` for each registry row ``i``."""
+    i = wp.tid()
+    rid = robot_ids[i]
+    body_f[rid] = wrenches[rid]
 
 
 @wp.kernel

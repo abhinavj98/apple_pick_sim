@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import numpy as np
 import warp as wp
 
 class _KeyViewer(Protocol):
@@ -28,6 +29,23 @@ class EEVelocity:
 
     def is_zero(self, tol: float = 1e-9) -> bool:
         return all(abs(v) < tol for v in (*self.linear, *self.angular))
+
+
+def add_gaussian_noise_to_ee_velocity(
+    base: EEVelocity,
+    *,
+    rng: np.random.Generator,
+    std: float,
+) -> EEVelocity:
+    """Return ``base`` plus independent Gaussian noise on each twist component."""
+    if std <= 0.0:
+        return base
+    comps = np.asarray((*base.linear, *base.angular), dtype=np.float64)
+    noisy = comps + rng.normal(0.0, std, size=6)
+    return EEVelocity(
+        linear=(float(noisy[0]), float(noisy[1]), float(noisy[2])),
+        angular=(float(noisy[3]), float(noisy[4]), float(noisy[5])),
+    )
 
 
 def _quat_mul(a: wp.quat, b: wp.quat) -> wp.quat:

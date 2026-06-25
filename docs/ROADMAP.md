@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-06-18 (M3 active: observation-only replay + digital-twin setup next) |
+| **Last updated** | 2026-06-25 (M3 active; [V] batched vectorization in parallel on `apple-pick-sim-vecorization`) |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 
@@ -27,6 +27,7 @@
 2. **Done — [M1]:** Two-`Model` `SolverMuJoCo` + `SolverVBD` staggered coupling, FR3 + gripper proxy, VIC joint-torque teleop (default in `example_coupled_fruiting.py`), settle-then-weld, explicit apple load. Architecture: `docs/mujoco-vbd-coupling-architecture.md`.
 3. **Done (partial) — [M2]:** `ApplePickCoupled-v0` with real observations shipped (M2.1). Remaining RL/FID slices deferred to backlog.
 4. **Now — [M3]:** Simulation parameter identification — excitation trajectories, field replay, CEM + MMD calibration (`docs/system_identification.md`).
+5. **In parallel — [V]:** Batched coupled vectorization via `replicate(N)` — same topology per batch, per-env numeric θ; feeds M3.2 CEM and M2 RL (`docs/vectorized-coupled-fruiting.md`).
 
 Later: real-data collection [M4], final pick policy [M5].
 
@@ -39,6 +40,13 @@ Later: real-data collection [M4], final pick policy [M5].
 **Goal:** Move from sim-to-sim recording/replay into real-data-ready replay. The next slice is observation-only initialization: identify the real-world observable bundle needed to rebuild a plausible Newton initial state/equilibrium, without privileged simulator state, then use that path for CEM calibration of fruiting-system parameters $\theta$.
 
 **Specs:** `docs/system_identification.md`, `docs/observation-replay-digital-twin.md`
+
+**Parallel track — [V] batched vectorization** (branch `apple-pick-sim-vecorization`, spec `docs/vectorized-coupled-fruiting.md`):
+
+- **Batch contract:** fixed `num_segments` and `omit` set per batch; only numeric `FruitingSystemParams` vary (stiffness, lengths, directions, etc.).
+- **V.1 (done on vectorization branch):** `replicate(N)` cable + robot, batched settle→weld init, `BatchedEnvLayout`, multi-TCP wrench apply, `BatchedTemplateIK` per-env scatter teleop (example: homogeneous keyboard), `example_batched_coupled_fruiting.py` + `test_vectorized_coupled_fruiting.py`.
+- **V.2 (next on vectorization branch):** Per-env K/B scatter, recorded-action replay, transition gather → replaces subprocess stiffness grid for M3.2.
+- **V.3:** Per-env geometry DR, batched gym `(N, act_dim)` → IK scatter, transition gather → M2 RL.
 
 **Build on (do not reimplement):**
 
@@ -93,11 +101,24 @@ Sim parameter identification from field trajectories: CEM + MMD over transition 
 | M3.1 | Planned | MMD feature pipeline per direction |
 | M3.2 | Planned | CEM calibration + held-out validation |
 
+### [V] Batched vectorization (parallel)
+
+Homogeneous multi-world coupled rollouts: `ModelBuilder.replicate()` on cable + robot models, fixed topology per batch, per-env θ. Spec: `docs/vectorized-coupled-fruiting.md`.
+
+| Slice | Status | Deliverable |
+| ----- | ------ | ----------- |
+| V.1 | **Done** (vectorization branch) | `replicate(N)`, batched settle→weld, `BatchedTemplateIK` scatter + homogeneous example teleop, layout + tests, `example_batched_coupled_fruiting.py` |
+| V.2 | **Next** (vectorization branch) | Per-env stiffness/damping; recorded-action replay; `gather_transitions` for MMD/CEM |
+| V.3 | Planned | Per-env geometry DR; gym `(N, act_dim)` → scatter; batched `apple_pick_gym` adapter |
+
+**Consumers:** M3.2 (batched CEM rollouts), M2.3 / M2.2c (parallel RL envs).
+
 ---
 
 ## Backlog
 
-- **[M2] remaining:** M2.0 (interface ADR), M2.2a (`ApplePickFID-v0`), M2.2c (SKRL smoke), M2.3 (π_exp training) — resume after M3 or in parallel if maintainer directs.
+- **[M2] remaining:** M2.0 (interface ADR), M2.2a (`ApplePickFID-v0`), M2.2c (SKRL smoke), M2.3 (π_exp training) — resume after M3 or in parallel if maintainer directs; batched env backend depends on **[V].3**.
+- **[V] remaining:** V.2–V.3 after V.1; batched VIC deferred.
 - Additional manipulators or crops — explicit scope change only.
 - Triangle mesh import/export — P0 stays capsule primitives.
 - Real-data pipeline [M4], final pick policy [M5] — after M3 contracts exist.
@@ -113,7 +134,7 @@ Sim parameter identification from field trajectories: CEM + MMD over transition 
 | `apple_pick_sim/` | Simulation code (`fruiting_system/`, `coupled_fruiting/`, `examples/`, tests) |
 | `apple_pick_gym/` | Gymnasium adapter (`ApplePickCoupled-v0`); depends on `apple_pick_sim`, not vice versa |
 | `newton/` | Upstream physics submodule (vendored) |
-| `docs/` | Vision, roadmap, architecture, implementation notes (`system_identification.md` and `observation-replay-digital-twin.md` for M3, `gym-observation-contract.md` for gym obs v2) |
+| `docs/` | Vision, roadmap, architecture, implementation notes (`system_identification.md` and `observation-replay-digital-twin.md` for M3, `vectorized-coupled-fruiting.md` for [V], `gym-observation-contract.md` for gym obs v3) |
 
 **How to validate changes:**
 
@@ -164,6 +185,14 @@ uv run python apple_pick_gym/examples/dashboard_sysid_dataset.py --help
 uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --viewer null --n-directions 1 --max-steps 200 --save-snapshot \
   --output /tmp/apple_pick_sysid_with_snapshot
+
+# [V] Batched coupled fruiting (V.1; see docs/vectorized-coupled-fruiting.md)
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_vectorized_coupled_fruiting.py -q
+uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
+  --viewer null --num-frames 500 --num-envs 4 --fix-to-apple --controller direct --seed 42
+uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
+  --viewer null --num-frames 120 --robot placeholder --num-envs 2 --fix-to-apple
 ```
 
 **Stop and ask the maintainer when:**

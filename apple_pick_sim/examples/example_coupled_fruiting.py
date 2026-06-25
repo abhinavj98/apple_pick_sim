@@ -424,7 +424,7 @@ class ExampleCoupledFruiting:
                             ),
                         },
                     )
-                    settle_vbd_substeps(settled, substeps=300, dt=self.sim_dt)
+                    settle_vbd_substeps(settled, substeps=1000, dt=self.sim_dt)
                     self.scene = build_fn(
                         self.ranges,
                         try_seed,

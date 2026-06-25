@@ -243,8 +243,6 @@ def placement_xform_for_proxy(
     return wp.transform(wp.vec3(float(p[0]), float(p[1]), base_z), wp.quat_identity())
 
 
-
-
 def ik_bootstrap_joint_q_candidates(
     robot_model: newton.Model,
     *,
@@ -253,11 +251,15 @@ def ik_bootstrap_joint_q_candidates(
     """Return deterministic initial ``joint_q`` configs for TCP IK bootstrap retries."""
     if max_seeds < 1:
         raise ValueError(f"max_seeds must be >= 1, got {max_seeds}")
+    if int(robot_model.world_count) > 1:
+        raise ValueError(
+            "ik_bootstrap_joint_q_candidates requires a single-world robot model"
+        )
 
     jc = int(robot_model.joint_coord_count)
+    default = robot_model.joint_q.numpy().reshape(-1)[:jc].astype(np.float64).copy()
     lower = robot_model.joint_limit_lower.numpy().reshape(-1)[:jc].astype(np.float64)
     upper = robot_model.joint_limit_upper.numpy().reshape(-1)[:jc].astype(np.float64)
-    default = robot_model.joint_q.numpy().reshape(-1)[:jc].astype(np.float64)
     span = upper - lower
 
     recipes: list[np.ndarray] = [default.copy()]
@@ -267,10 +269,10 @@ def ik_bootstrap_joint_q_candidates(
     for cand in recipes:
         if len(out) >= max_seeds:
             break
-        arr = np.asarray(cand, dtype=np.float64).reshape(-1)
-        if any(np.allclose(arr, prev, atol=1e-4, rtol=0.0) for prev in out):
+        w0 = np.asarray(cand, dtype=np.float64).reshape(-1)[:jc]
+        if any(np.allclose(w0, prev, atol=1e-4, rtol=0.0) for prev in out):
             continue
-        out.append(arr)
+        out.append(w0.copy())
     return out
 
 
@@ -316,6 +318,12 @@ def bootstrap_tcp_ik_from_proxy(
     initial configurations (limit midpoints and span fractions) and keeps the best result.
     """
     import newton.ik as ik
+
+    if int(robot_model.world_count) > 1:
+        raise ValueError(
+            "bootstrap_tcp_ik_from_proxy does not support replicated robot models; "
+            "solve IK on the single-world ik_template_robot_model and broadcast joint_q."
+        )
 
     proxy_body = cable_scene.gripper_proxy_body
     fix_to_apple = getattr(cable_scene, "gripper_proxy_apple_joint", None) is not None
@@ -429,4 +437,26 @@ def bootstrap_tcp_ik_from_proxy(
     else:
         warn_if_ik_bootstrap_not_converged(pos_err, rot_err, target_pos=target_xyz)
 
+
+def batched_ik_teleop_kwargs(scene: Any) -> dict[str, Any]:
+    """Return kwargs for :class:`~apple_pick_sim.robot.fr3_robot.Fr3BatchedEEVelocityController`.
+
+    Newton IK must run on the single-world ``ik_template_robot_model`` with
+    ``n_problems=num_envs``, not on the replicated ``robot_model``.
+    """
+    layout = getattr(scene, "layout", None)
+    tpl = getattr(scene, "ik_template_robot_model", None)
+    robot_model = getattr(scene, "robot_model", None)
+    if (
+        tpl is None
+        or layout is None
+        or robot_model is None
+        or int(robot_model.world_count) <= 1
+    ):
+        return {}
+    return {
+        "ik_robot_model": tpl,
+        "ik_tcp_body_index": int(layout.template_tcp_body),
+        "layout": layout,
+    }
 

@@ -219,7 +219,7 @@ def _build_fruiting_chain_into_builder(
     )
     if apple_body is not None:
         chain_bodies.append(apple_body)
-    
+
     return _FruitingChainArtifacts(
         cable_joint_indices=cable_joint_indices,
         fruiting_fixed_joints=fruiting_fixed_joints,
@@ -417,7 +417,7 @@ def _add_gripper_proxy(
                 robot_base_pos,
                 artifacts.proxy_placement_dir,
             )
-            # IK target is on the apple surface; proxy is visually offset by clearance at runtime.
+            # IK target is on the apple surface; clearance is stored in vis_offset.
             proxy_pos = weld_apple_center + robot_facing_approach_dir * apple_radius
             vis_offset = robot_facing_approach_dir * clearance
         elif config.fix_to_apple and config.weld_direction is not None:
@@ -436,7 +436,7 @@ def _add_gripper_proxy(
     else:
         proxy_pos = artifacts.proxy_placement_origin
         vis_offset = artifacts.proxy_placement_dir * clearance
-  
+
     proxy_body = builder.add_link(
         xform=wp.transform(proxy_pos, wp.quat_identity()),
         mass=config.mass,

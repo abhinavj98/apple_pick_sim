@@ -70,6 +70,60 @@ def resolve_ee_body_index(model: newton.Model) -> int:
     raise ValueError(f"ambiguous or missing ee in body_label: {labels}")
 
 
+def build_fr3_robot_builder(
+    *,
+    usd_path: Path | str | None = None,
+    root_xform: wp.transform | None = None,
+    add_ground_plane: bool = False,
+) -> tuple[newton.ModelBuilder, int]:
+    """Populate an FR3 USD scene on a builder without ``finalize``."""
+    if not fr3_assets_available():
+        raise FileNotFoundError(
+            f"Bundled FR3 scene or Omniverse subtree missing; see {TESTFR3_SCENE_USD} and assets/fr3/README.md"
+        )
+    path = Path(usd_path) if usd_path is not None else TESTFR3_SCENE_USD
+    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
+    SolverMuJoCo.register_custom_attributes(builder)
+    usd_kw: dict[str, Any] = {
+        "floating": False,
+        "collapse_fixed_joints": False,
+        "enable_self_collisions": False,
+        "schema_resolvers": [SchemaResolverMjc(), SchemaResolverNewton()],
+    }
+    if root_xform is not None:
+        usd_kw["xform"] = root_xform
+        usd_kw["override_root_xform"] = True
+    builder.add_usd(str(path), **usd_kw)
+    if add_ground_plane:
+        builder.add_ground_plane()
+    tcp_idx = resolve_tcp_body_index_from_builder(builder)
+    return builder, tcp_idx
+
+
+def resolve_tcp_body_index_from_builder(builder: newton.ModelBuilder) -> int:
+    """Return TCP body index from ``builder.body_label`` before ``finalize``."""
+    labels = list(builder.body_label)
+    ee_hits = [
+        i
+        for i, lbl in enumerate(labels)
+        if lbl.endswith("/ee") or lbl.split("/")[-1] == "ee"
+    ]
+    if len(ee_hits) != 1:
+        raise ValueError(f"ambiguous or missing ee in body_label ({len(ee_hits)} hits): {labels}")
+    ee_index = ee_hits[0]
+    ee_label = labels[ee_index]
+    tcp_hits = [
+        i
+        for i, lbl in enumerate(labels)
+        if (lbl.endswith("/tcp") or lbl.split("/")[-1] == "tcp") and lbl.startswith(ee_label)
+    ]
+    if len(tcp_hits) == 1:
+        return tcp_hits[0]
+    if len(tcp_hits) == 0:
+        return ee_index
+    raise ValueError(f"ambiguous tcp underneath ee in body_label ({len(tcp_hits)} hits): {labels}")
+
+
 def build_fr3_robot_model_from_usd(
     *,
     device: str | None = None,
@@ -98,25 +152,11 @@ def build_fr3_robot_model_from_usd(
         )
 
     device = resolve_sim_device(device)
-    path = Path(usd_path) if usd_path is not None else TESTFR3_SCENE_USD
-    builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
-    SolverMuJoCo.register_custom_attributes(builder)
-
-    usd_kw: dict[str, Any] = {
-        "floating": False,
-        # EE / tcp are separate rigid bodies welded with FIXED joints --- must stay explicit.
-        "collapse_fixed_joints": False,
-        "enable_self_collisions": False,
-        "schema_resolvers": [SchemaResolverMjc(), SchemaResolverNewton()],
-    }
-    if root_xform is not None:
-        usd_kw["xform"] = root_xform
-        usd_kw["override_root_xform"] = True
-    builder.add_usd(str(path), **usd_kw)
-
-    if add_ground_plane:
-        builder.add_ground_plane()
-
+    builder, _ = build_fr3_robot_builder(
+        usd_path=usd_path,
+        root_xform=root_xform,
+        add_ground_plane=add_ground_plane,
+    )
     model = builder.finalize(device=device)
     # Model A: zero gravity for teleop/PD hold (cable VBD keeps -9.81 on its own model).
     model.set_gravity((0.0, 0.0, 0.0))

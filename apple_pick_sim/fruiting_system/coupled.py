@@ -12,6 +12,7 @@ import newton
 
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.fruiting_system.build import (
+    _FruitingChainArtifacts,
     _add_gripper_proxy,
     _build_fruiting_chain_into_builder,
     _finalize_fruiting_builder,
@@ -67,10 +68,9 @@ class CoupledCableScene:
     """Apple-body-frame vector from apple COM to proxy COM when ``gripper_proxy_apple_joint`` is set."""
     gripper_proxy_offset_in_apple_frame: tuple[float, float, float, float, float, float, float] | None = None
     gripper_proxy_vis_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    """World-frame offset from TCP COM to proxy COM for visual placement (= approach_dir × clearance).
+    """World-frame clearance offset from proxy COM to the apple surface (= approach_dir × clearance).
 
-    Applied each substep by the offset mirror kernel so the proxy box *face* sits flush with
-    the apple surface while ``tcp_pos`` reports the surface position.
+    Stored at build time for viewer/debug use; not applied automatically during coupling.
     """
 
     def proxy_registry(self, robot_body_id: int):
@@ -83,6 +83,53 @@ class CoupledCableScene:
         from apple_pick_sim.coupled_fruiting.proxy_coupling import ProxyBodyRegistry
 
         return ProxyBodyRegistry.from_mapping({robot_body_id: self.gripper_proxy_body})
+
+
+@dataclasses.dataclass
+class CoupledCablePopulateResult:
+    """Builder-populated cable template before ``finalize``."""
+
+    artifacts: _FruitingChainArtifacts
+    proxy_body: int
+    proxy_apple_joint: int | None
+    proxy_offset_in_apple: tuple[float, float, float, float, float, float, float] | None
+    proxy_free_joint: int | None
+    vis_offset: tuple[float, float, float]
+
+
+def _populate_coupled_cable_builder(
+    builder: newton.ModelBuilder,
+    params: FruitingSystemParams,
+    base_pos: tuple[float, float, float],
+    *,
+    gripper_proxy: GripperProxyConfig,
+    robot_base_pos: tuple[float, float, float] | None = None,
+) -> CoupledCablePopulateResult:
+    """Add fruiting chain + gripper proxy to ``builder`` (no ``finalize``)."""
+    artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
+    proxy_body, proxy_apple_joint, proxy_offset_in_apple, proxy_free_joint, vis_offset = (
+        _add_gripper_proxy(
+            builder,
+            artifacts,
+            gripper_proxy,
+            apple_radius=params.apple_radius,
+            robot_base_pos=robot_base_pos,
+        )
+    )
+    return CoupledCablePopulateResult(
+        artifacts=artifacts,
+        proxy_body=proxy_body,
+        proxy_apple_joint=proxy_apple_joint,
+        proxy_offset_in_apple=proxy_offset_in_apple,
+        proxy_free_joint=proxy_free_joint,
+        vis_offset=(
+            float(vis_offset[0]),
+            float(vis_offset[1]),
+            float(vis_offset[2]),
+        ),
+    )
+
+
 def generate_coupled_cable_scene(
     ranges: dict,
     seed: int,
@@ -200,14 +247,19 @@ def _build_coupled_cable_scene(
     robot_base_pos: tuple[float, float, float] | None = None,
 ) -> CoupledCableScene:
     builder = _new_fruiting_builder()
-    artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
-    proxy_body, proxy_apple_joint, proxy_offset_in_apple, proxy_free_joint, vis_offset = _add_gripper_proxy(
+    populated = _populate_coupled_cable_builder(
         builder,
-        artifacts,
-        gripper_proxy,
-        apple_radius=params.apple_radius,
+        params,
+        base_pos,
+        gripper_proxy=gripper_proxy,
         robot_base_pos=robot_base_pos,
     )
+    artifacts = populated.artifacts
+    proxy_body = populated.proxy_body
+    proxy_apple_joint = populated.proxy_apple_joint
+    proxy_offset_in_apple = populated.proxy_offset_in_apple
+    proxy_free_joint = populated.proxy_free_joint
+    vis_offset = populated.vis_offset
     model = _finalize_fruiting_builder(
         builder,
         artifacts,

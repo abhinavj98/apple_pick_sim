@@ -12,6 +12,7 @@ import newton
 
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.coupled_fruiting.apply_wrench import (
+    _apply_registry_spatial_wrenches_to_body_f,
     _apply_spatial_wrench_to_body_f,
 )
 from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
@@ -29,7 +30,9 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     harvest_stem_tension_for_tcp,
     launch_mirror_robot_to_proxy,
     launch_mirror_robot_to_proxy_and_apple,
+    launch_mirror_robot_to_proxy_offset_and_apple,
     sync_solver_body_q_prev_from_state,
+    welded_co_teleport_arrays_for_layout,
 )
 
 DEFAULT_STEM_COUPLING_GAIN: float = 1.0
@@ -115,9 +118,17 @@ def _mujoco_robot_substep_prefix(scene: Any, dt: float) -> None:
             apply_vic_to_coupling_cache(scene)
         if scene.force_debug is not None:
             scene.force_debug.record_applied_from_scene(scene)
-        _apply_spatial_wrench_to_body_f(
-            scene.robot_state_0, scene.tcp_body_index, scene.coupling_forces_cache
-        )
+        if scene.proxy_registry is not None:
+            dev = scene.robot_state_0.body_f.device
+            _apply_registry_spatial_wrenches_to_body_f(
+                scene.robot_state_0,
+                scene.proxy_registry.robot_ids_wp(dev),
+                scene.coupling_forces_cache,
+            )
+        else:
+            _apply_spatial_wrench_to_body_f(
+                scene.robot_state_0, scene.tcp_body_index, scene.coupling_forces_cache
+            )
         if not scene.use_mujoco_contacts and not scene.robot_disable_contacts:
             scene.robot_model.collide(scene.robot_state_0, scene.mj_contacts)
         scene.mj_solver.step(
@@ -165,6 +176,8 @@ def _update_fr3_ee_teleop_impl(
         fr3_robot.Fr3EEVelocityController
         | fr3_robot.Fr3EEImpedanceController
         | fr3_robot.Fr3EEDirectJointController
+        | fr3_robot.Fr3BatchedEEVelocityController
+        | fr3_robot.Fr3BatchedEEDirectJointController
     ),
     *,
     viewer: fr3_robot._KeyViewer | None = None,
@@ -233,31 +246,58 @@ def _harvest_coupling_wrenches(
     """
     use_stem_harvest = scene.stem_apple_joint_index is not None
     if use_stem_harvest:
-        apple_bid = apple_body_index if apple_body_index is not None else cable.apple_body
-        grasp_off = (
-            grasp_offset_in_apple_frame
-            if grasp_offset_in_apple_frame is not None
-            else cable.gripper_proxy_offset_in_apple_frame
-        )
-        harvest_stem_tension_for_tcp(
-            cable_model=cable.model,
-            cable_solver=cable.solver,
-            body_q_post=cable.state_0.body_q,
-            body_q_prev=cable.state_1.body_q,
-            dt=dt,
-            stem_apple_joint_index=scene.stem_apple_joint_index,
-            tcp_body_index=scene.tcp_body_index,
-            out_robot_wrenches=scene.proxy_forces,
-            coupling_gain=scene.stem_coupling_gain,
-            force_cap_N=scene.stem_force_cap_N,
-            torque_cap_Nm=scene.stem_torque_cap_Nm,
-            explicit_apple_weight=scene.stem_harvest_explicit_apple_weight,
-            apple_body_index=apple_bid,
-            apple_mass_kg=scene.apple_mass_kg,
-            gravity=scene.gravity_vec,
-            robot_body_q=scene.robot_state_0.body_q,
-            grasp_offset_in_apple_frame=grasp_off,
-        )
+        layout = getattr(scene, "layout", None)
+        tpl_stem = scene.stem_apple_joint_index
+        offset = cable.gripper_proxy_offset_in_apple_frame
+        if layout is not None and layout.num_envs > 1 and tpl_stem is not None:
+            for w in range(layout.num_envs):
+                apple_idx = int(layout.apple_body_indices[w])
+                harvest_stem_tension_for_tcp(
+                    cable_model=cable.model,
+                    cable_solver=cable.solver,
+                    body_q_post=cable.state_0.body_q,
+                    body_q_prev=cable.state_1.body_q,
+                    dt=dt,
+                    stem_apple_joint_index=layout.joint_index(w, tpl_stem),
+                    tcp_body_index=int(layout.tcp_body_indices[w]),
+                    out_robot_wrenches=scene.proxy_forces,
+                    coupling_gain=scene.stem_coupling_gain,
+                    force_cap_N=scene.stem_force_cap_N,
+                    torque_cap_Nm=scene.stem_torque_cap_Nm,
+                    explicit_apple_weight=scene.stem_harvest_explicit_apple_weight,
+                    apple_body_index=apple_idx if apple_idx >= 0 else None,
+                    apple_mass_kg=scene.apple_mass_kg,
+                    gravity=scene.gravity_vec,
+                    robot_body_q=scene.robot_state_0.body_q,
+                    grasp_offset_in_apple_frame=offset,
+                    clear_wrenches=(w == 0),
+                )
+        else:
+            apple_bid = apple_body_index if apple_body_index is not None else cable.apple_body
+            grasp_off = (
+                grasp_offset_in_apple_frame
+                if grasp_offset_in_apple_frame is not None
+                else offset
+            )
+            harvest_stem_tension_for_tcp(
+                cable_model=cable.model,
+                cable_solver=cable.solver,
+                body_q_post=cable.state_0.body_q,
+                body_q_prev=cable.state_1.body_q,
+                dt=dt,
+                stem_apple_joint_index=scene.stem_apple_joint_index,
+                tcp_body_index=scene.tcp_body_index,
+                out_robot_wrenches=scene.proxy_forces,
+                coupling_gain=scene.stem_coupling_gain,
+                force_cap_N=scene.stem_force_cap_N,
+                torque_cap_Nm=scene.stem_torque_cap_Nm,
+                explicit_apple_weight=scene.stem_harvest_explicit_apple_weight,
+                apple_body_index=apple_bid,
+                apple_mass_kg=scene.apple_mass_kg,
+                gravity=scene.gravity_vec,
+                robot_body_q=scene.robot_state_0.body_q,
+                grasp_offset_in_apple_frame=grasp_off,
+            )
     else:
         harvest_proxy_wrenches(
             cable.solver,
@@ -295,24 +335,46 @@ def _sync_single_proxy_after_mujoco(scene: CoupledFruitingScene, dt: float) -> N
         and cable.gripper_proxy_offset_in_apple_frame is not None
     )
     if use_apple_sync:
-        launch_mirror_robot_to_proxy_and_apple(
-            robot_ids=rid,
-            proxy_ids=pid,
-            src_body_q=scene.robot_state_0.body_q,
-            src_body_qd=scene.robot_state_0.body_qd,
-            dst_body_q=cable.state_0.body_q,
-            dst_body_qd=cable.state_0.body_qd,
-            proxy_forces=scene.coupling_forces_cache,
-            cable_model=cable.model,
-            gravity=scene.gravity_vec,
-            dt=dt,
-            apple_body_id=cable.apple_body,
-            proxy_offset_in_apple=wp.transform(
-                wp.vec3(*cable.gripper_proxy_offset_in_apple_frame[:3]),
-                wp.quat(*cable.gripper_proxy_offset_in_apple_frame[3:]),
-            ),
-            device=str(dev),
-        )
+        layout = getattr(scene, "layout", None)
+        if layout is not None and layout.num_envs > 1:
+            apple_ids, pos_off, grasp_off = welded_co_teleport_arrays_for_layout(
+                layout, cable, device=str(dev)
+            )
+            launch_mirror_robot_to_proxy_offset_and_apple(
+                robot_ids=rid,
+                proxy_ids=pid,
+                position_offsets=pos_off,
+                apple_body_ids=apple_ids,
+                proxy_offset_in_apple=grasp_off,
+                src_body_q=scene.robot_state_0.body_q,
+                src_body_qd=scene.robot_state_0.body_qd,
+                dst_body_q=cable.state_0.body_q,
+                dst_body_qd=cable.state_0.body_qd,
+                proxy_forces=scene.coupling_forces_cache,
+                cable_model=cable.model,
+                gravity=scene.gravity_vec,
+                dt=dt,
+                device=str(dev),
+            )
+        else:
+            launch_mirror_robot_to_proxy_and_apple(
+                robot_ids=rid,
+                proxy_ids=pid,
+                src_body_q=scene.robot_state_0.body_q,
+                src_body_qd=scene.robot_state_0.body_qd,
+                dst_body_q=cable.state_0.body_q,
+                dst_body_qd=cable.state_0.body_qd,
+                proxy_forces=scene.coupling_forces_cache,
+                cable_model=cable.model,
+                gravity=scene.gravity_vec,
+                dt=dt,
+                apple_body_id=cable.apple_body,
+                proxy_offset_in_apple=wp.transform(
+                    wp.vec3(*cable.gripper_proxy_offset_in_apple_frame[:3]),
+                    wp.quat(*cable.gripper_proxy_offset_in_apple_frame[3:]),
+                ),
+                device=str(dev),
+            )
     else:
         launch_mirror_robot_to_proxy(
             robot_ids=rid,
@@ -328,10 +390,16 @@ def _sync_single_proxy_after_mujoco(scene: CoupledFruitingScene, dt: float) -> N
             device=str(dev),
         )
     if use_apple_sync:
-        prescribed = (
-            int(cable.gripper_proxy_body),
-            int(cable.apple_body),
-        )
+        layout = getattr(scene, "layout", None)
+        if layout is not None and layout.num_envs > 1:
+            prescribed = tuple(layout.proxy_body_indices) + tuple(
+                int(i) for i in layout.apple_body_indices if int(i) >= 0
+            )
+        else:
+            prescribed = (
+                int(cable.gripper_proxy_body),
+                int(cable.apple_body),
+            )
         copy_cable_body_q_between_states(
             cable,
             src_state=cable.state_0,
@@ -381,6 +449,12 @@ class CoupledFruitingScene:
     vic_gains: fr3_robot.ImpedanceGains | None = None
     vic_target_tf: wp.transform | None = None
     vic_target_twist: fr3_robot.EEVelocity | None = None
+    layout: Any | None = None
+    """Optional :class:`~apple_pick_sim.coupled_fruiting.batched_layout.BatchedEnvLayout`."""
+    env_spacing: tuple[float, float, float] | None = None
+    """Replicate spacing for batched scenes (used when seeding settle-then-weld)."""
+    ik_template_robot_model: Any | None = None
+    """Single-world robot model kept for IK bootstrap in batched scenes (world_count>1)."""
 
     def update_fr3_ee_teleop(
         self,

@@ -19,6 +19,11 @@ import numpy as np
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.proxy_coupling import align_proxy_body_q_prev_for_vbd
+from apple_pick_sim.coupled_fruiting.batched_build import (
+    broadcast_settled_cable_state_to_batched_worlds,
+)
+from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
+from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
 from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
 
 
@@ -65,11 +70,11 @@ def settle_vbd_substeps(scene: Any, *, substeps: int, dt: float) -> None:
 
 
 def _nominal_cable_view(scene: Any) -> Any:
-    """Return single-instance cable for mega layout, else the scene's full cable.
+    """Return a single-instance cable view when the scene exposes one, else the full cable.
 
-    Mega / multi-instance scenes expose ``as_single_instance_coupled``; this
-    picks ``scene.nominal_index`` (default 0) so settle/seed logic operates on
-    one fruiting instance without iterating all ghosts.
+    When ``cable`` supports ``as_single_instance_coupled`` (duck-typed), picks
+    ``scene.nominal_index`` (default 0) so settle/seed logic operates on one
+    fruiting instance without iterating all ghosts.
 
     Used by :func:`seed_fix_to_apple_from_settled` when copying settled poses
     into the welded scene during ``fix_to_apple`` quiet-start initialization.
@@ -86,13 +91,20 @@ def _bootstrap_tcp_at_fixed_origin(
     *,
     ik_iterations: int = 96,
 ) -> None:
-    """Align TCP to the seeded cable proxy using the scene's fixed FR3 base placement."""
+    """Align TCP to the seeded cable proxy using the scene's fixed FR3 base placement.
+
+    For batched scenes (world_count > 1), IK is solved on the single-world template
+    model stored in ``scene.ik_template_robot_model`` to avoid Newton's IK FK building
+    an incorrect kinematic chain from multi-world joint coordinates.  The solved
+    world-0 joint_q is then written into the batched model and broadcast to all worlds.
+    """
     if scene.robot_model is None or scene.robot_state_0 is None or scene.mj_solver is None:
         return
 
     import newton
 
     from apple_pick_sim.coupled_fruiting.bootstrap import bootstrap_articulated_tcp_from_proxy
+    from apple_pick_sim.coupled_fruiting.bootstrap import bootstrap_tcp_joint_from_proxy
     from apple_pick_sim.robot import fr3_robot
     from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
 
@@ -100,20 +112,68 @@ def _bootstrap_tcp_at_fixed_origin(
     root = np.asarray(getattr(scene, "fr3_root_world_pos", (0.0, 0.0, 0.0)), dtype=np.float64)
     root_xyz = (float(root[0]), float(root[1]), float(root[2]))
 
-    try:
-        bootstrap_articulated_tcp_from_proxy(
-            cable,
-            scene.robot_model,
-            scene.tcp_body_index,
-            scene.robot_state_0,
-            ik_iterations=ik_iterations,
-            raise_on_failure=True,
+    layout = getattr(scene, "layout", None)
+    tpl_robot = getattr(scene, "ik_template_robot_model", None)
+    use_template_ik = (
+        tpl_robot is not None
+        and layout is not None
+        and int(scene.robot_model.world_count) > 1
+    )
+
+    if use_template_ik:
+        tpl_state = tpl_robot.state()
+        tpl_tcp = int(layout.template_tcp_body)
+        bootstrap_fn = (
+            bootstrap_tcp_joint_from_proxy
+            if int(tpl_robot.body_count) <= 2
+            else bootstrap_articulated_tcp_from_proxy
         )
-    except IKBootstrapConvergenceError as exc:
-        raise IKBootstrapConvergenceError(
-            "Settled gripper proxy is unreachable from the specified FR3 base at "
-            f"({root_xyz[0]:.3f}, {root_xyz[1]:.3f}, {root_xyz[2]:.3f}): {exc}"
-        ) from exc
+        try:
+            bootstrap_fn(
+                cable,
+                tpl_robot,
+                tpl_tcp,
+                tpl_state,
+                **(
+                    {"ik_iterations": ik_iterations, "raise_on_failure": True}
+                    if bootstrap_fn is bootstrap_articulated_tcp_from_proxy
+                    else {}
+                ),
+            )
+        except IKBootstrapConvergenceError as exc:
+            raise IKBootstrapConvergenceError(
+                "Settled gripper proxy is unreachable from the specified FR3 base at "
+                f"({root_xyz[0]:.3f}, {root_xyz[1]:.3f}, {root_xyz[2]:.3f}): {exc}"
+            ) from exc
+        # Copy solved world-0 joint_q into the batched model and broadcast.
+        tpl_jq = tpl_robot.joint_q.numpy().copy()
+        coord_per = int(tpl_jq.shape[0])
+        batched_jq = scene.robot_model.joint_q.numpy().copy()
+        batched_jq[:coord_per] = tpl_jq
+        scene.robot_model.joint_q.assign(batched_jq)
+        scene.robot_state_0.joint_q.assign(batched_jq)
+        newton.eval_fk(
+            scene.robot_model,
+            scene.robot_model.joint_q,
+            scene.robot_model.joint_qd,
+            scene.robot_state_0,
+        )
+        broadcast_joint_q_from_world0(scene, layout)
+    else:
+        try:
+            bootstrap_articulated_tcp_from_proxy(
+                cable,
+                scene.robot_model,
+                scene.tcp_body_index,
+                scene.robot_state_0,
+                ik_iterations=ik_iterations,
+                raise_on_failure=True,
+            )
+        except IKBootstrapConvergenceError as exc:
+            raise IKBootstrapConvergenceError(
+                "Settled gripper proxy is unreachable from the specified FR3 base at "
+                f"({root_xyz[0]:.3f}, {root_xyz[1]:.3f}, {root_xyz[2]:.3f}): {exc}"
+            ) from exc
 
     init_robot_mujoco_step_buffers(scene)
     fr3_robot.init_mujoco_actuator_targets_from_model(
@@ -138,6 +198,11 @@ def seed_fix_to_apple_from_settled(
     at the configured grasp offset from the apple so the proxy↔apple fixed joint has
     minimal initial violation.
 
+    When ``settled_scene`` has the same world count as ``welded_scene`` (``N > 1``),
+    each world is copied directly (world *i* settled → world *i* welded). When the
+    settled scene has a single world and the welded scene has multiple, the legacy
+    single-world broadcast path applies spacing offsets per env.
+
     Args:
         welded_scene: A coupled scene built with ``GripperProxyConfig(fix_to_apple=True)``.
         settled_scene: A coupled scene built with ``GripperProxyConfig(fix_to_apple=False)``
@@ -147,11 +212,24 @@ def seed_fix_to_apple_from_settled(
     cable_w = welded_scene.cable
     cable_s = settled_scene.cable
 
-    # Copy state for all bodies that exist in both models (body_count is expected to match).
-    bq = cable_s.state_0.body_q.numpy().reshape(-1, 7)
-    bqd = cable_s.state_0.body_qd.numpy().reshape(-1, 6)
-    cable_w.state_0.body_q.assign(bq)
-    cable_w.state_0.body_qd.assign(bqd)
+    layout: BatchedEnvLayout | None = getattr(welded_scene, "layout", None)
+    settled_worlds = int(cable_s.model.world_count)
+    env_spacing = getattr(welded_scene, "env_spacing", None)
+    if (
+        layout is not None
+        and settled_worlds == 1
+        and layout.num_envs > 1
+        and env_spacing is not None
+    ):
+        broadcast_settled_cable_state_to_batched_worlds(
+            cable_s, cable_w, layout, env_spacing
+        )
+    else:
+        # Copy state for all bodies that exist in both models (body_count is expected to match).
+        bq = cable_s.state_0.body_q.numpy().reshape(-1, 7)
+        bqd = cable_s.state_0.body_qd.numpy().reshape(-1, 6)
+        cable_w.state_0.body_q.assign(bq)
+        cable_w.state_0.body_qd.assign(bqd)
 
     apple = cable_w.apple_body
     proxy = cable_w.gripper_proxy_body
@@ -161,14 +239,22 @@ def seed_fix_to_apple_from_settled(
 
     bq_w = cable_w.state_0.body_q.numpy().reshape(-1, 7).copy()
     bqd_w = cable_w.state_0.body_qd.numpy().reshape(-1, 6).copy()
-    # Enforce proxy placement at the welded offset (7D transform from apple frame).
-    proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq_w[apple], offset)
-    bq_w[proxy, :3] = proxy_pos
-    bq_w[proxy, 3:] = proxy_quat
+    if layout is not None:
+        apple_proxy_pairs = [
+            (layout.apple_body_indices[w], layout.proxy_body_indices[w])
+            for w in range(layout.num_envs)
+            if layout.apple_body_indices[w] >= 0
+        ]
+    else:
+        apple_proxy_pairs = [(apple, proxy)] if apple is not None else []
 
-    if quiet_apple_proxy:
-        bqd_w[apple] = 0.0
-        bqd_w[proxy] = 0.0
+    for apple_idx, proxy_idx in apple_proxy_pairs:
+        proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq_w[apple_idx], offset)
+        bq_w[proxy_idx, :3] = proxy_pos
+        bq_w[proxy_idx, 3:] = proxy_quat
+        if quiet_apple_proxy:
+            bqd_w[apple_idx] = 0.0
+            bqd_w[proxy_idx] = 0.0
 
     cable_w.state_0.body_q.assign(bq_w.reshape(-1, 7))
     cable_w.state_0.body_qd.assign(bqd_w.reshape(-1, 6))
@@ -185,3 +271,5 @@ def seed_fix_to_apple_from_settled(
 
     wp.synchronize()
     _bootstrap_tcp_at_fixed_origin(welded_scene, ik_iterations=256)
+    if layout is not None:
+        broadcast_joint_q_from_world0(welded_scene, layout)

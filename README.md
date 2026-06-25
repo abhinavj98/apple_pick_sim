@@ -164,6 +164,25 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py --robot placeholder --viewer null --num-frames 60
 ```
 
+### `example_batched_coupled_fruiting.py` (V.1 vectorization)
+
+Batched coupled fruiting: **N** worlds via ``replicate()``, settle→weld init, then FR3 teleop via ``BatchedTemplateIK`` per-env scatter (reference example: same keyboard velocity on all envs; use ``velocity_for_world`` for different actions per arm). Full flow: **`docs/vectorized-coupled-fruiting.md`**.
+
+```bash
+# Headless smoke (settle→weld)
+uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
+  --viewer null --num-frames 500 --num-envs 4 --fix-to-apple --seed 42
+
+# Interactive keyboard teleop
+uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
+  --num-envs 4 --env-spacing 2.5 2.5 0 --fix-to-apple --controller direct \
+  --fr3-keyboard --viewer gl --seed 42
+
+# Fast robot for CI
+uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
+  --viewer null --num-frames 120 --robot placeholder --num-envs 2 --fix-to-apple
+```
+
 **FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):
 
 - **Coupled fruiting + arm (default):** ``example_coupled_fruiting.py`` with ``--fr3-keyboard --viewer gl`` (VIC joint torques).

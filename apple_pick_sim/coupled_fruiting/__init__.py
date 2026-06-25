@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from apple_pick_sim.coupled_fruiting.apply_wrench import (
     _add_tcp_spatial_wrench_inplace,
+    _apply_registry_spatial_wrenches_to_body_f,
     _apply_spatial_wrench_to_body_f,
 )
 from apple_pick_sim.coupled_fruiting.bootstrap import (
@@ -11,10 +12,14 @@ from apple_pick_sim.coupled_fruiting.bootstrap import (
     bootstrap_tcp_joint_from_proxy,
 )
 from apple_pick_sim.coupled_fruiting.builders import (
+    build_batched_coupled_fruiting_fr3,
+    build_batched_coupled_fruiting_placeholder,
     build_coupled_fruiting_fr3,
     build_coupled_fruiting_placeholder,
     build_placeholder_tcp_robot_model,
 )
+from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
+from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
 from apple_pick_sim.coupled_fruiting.scene import (
     DEFAULT_FR3_MUJOCO_SOLVER_KWARGS,
     DEFAULT_MUJOCO_SOLVER_KWARGS,
@@ -29,6 +34,7 @@ from apple_pick_sim.coupled_fruiting.settle_then_weld import (
 )
 
 __all__ = [
+    "BatchedEnvLayout",
     "CoupledFruitingScene",
     "DEFAULT_FR3_MUJOCO_SOLVER_KWARGS",
     "DEFAULT_MUJOCO_SOLVER_KWARGS",
@@ -36,9 +42,13 @@ __all__ = [
     "DEFAULT_STEM_FORCE_CAP_N",
     "DEFAULT_STEM_TORQUE_CAP_NM",
     "_add_tcp_spatial_wrench_inplace",
+    "_apply_registry_spatial_wrenches_to_body_f",
     "_apply_spatial_wrench_to_body_f",
     "bootstrap_articulated_tcp_from_proxy",
     "bootstrap_tcp_joint_from_proxy",
+    "broadcast_joint_q_from_world0",
+    "build_batched_coupled_fruiting_fr3",
+    "build_batched_coupled_fruiting_placeholder",
     "build_coupled_fruiting_fr3",
     "build_coupled_fruiting_placeholder",
     "build_placeholder_tcp_robot_model",

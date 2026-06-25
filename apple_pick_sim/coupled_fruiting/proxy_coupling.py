@@ -572,6 +572,7 @@ def harvest_stem_tension_for_tcp(
     gravity: wp.vec3 | None = None,
     robot_body_q: wp.array | None = None,
     grasp_offset_in_apple_frame: tuple | None = None,
+    clear_wrenches: bool = True,
 ) -> None:
     """Write the stem-apple FIXED joint constraint wrench into ``out_robot_wrenches[tcp]``.
 
@@ -585,13 +586,17 @@ def harvest_stem_tension_for_tcp(
 
     Pass ``apple_mass_kg`` from scene build so CUDA graph capture never syncs
     ``model.body_mass`` to the host each substep.
+
+    When ``clear_wrenches`` is false, the caller must zero ``out_robot_wrenches``
+    before the first call in a batched loop; subsequent calls accumulate.
     """
     from apple_pick_sim.coupled_fruiting.explicit_load import apple_mass_kg_from_model
     from apple_pick_sim.vbd_fixed_joint_wrenches import gather_joint_wrench_child_com_device
 
     dev = out_robot_wrenches.device
     n = int(out_robot_wrenches.shape[0])
-    wp.launch(_zero_all_wrenches_kernel, dim=n, inputs=[out_robot_wrenches], device=dev)
+    if clear_wrenches:
+        wp.launch(_zero_all_wrenches_kernel, dim=n, inputs=[out_robot_wrenches], device=dev)
 
     out_f, out_t = gather_joint_wrench_child_com_device(
         cable_model,
@@ -989,6 +994,28 @@ def launch_mirror_robot_to_proxy_offset_and_apple(
             dt,
         ],
         device=device if device is not None else cable_model.device,
+    )
+
+
+def welded_co_teleport_arrays_for_layout(
+    layout: Any,
+    cable: Any,
+    *,
+    device: str,
+) -> tuple[wp.array, wp.array, wp.array]:
+    """Per-registry-row apple ids, zero TCP offsets, and grasp offsets for batched weld sync."""
+    off = cable.gripper_proxy_offset_in_apple_frame
+    if off is None:
+        raise ValueError("welded_co_teleport_arrays_for_layout requires grasp offset")
+    grasp = wp.transform(
+        wp.vec3(float(off[0]), float(off[1]), float(off[2])),
+        wp.quat(float(off[3]), float(off[4]), float(off[5]), float(off[6])),
+    )
+    n = int(layout.num_envs)
+    return (
+        wp.array(list(layout.apple_body_indices), dtype=int, device=device),
+        wp.zeros(n, dtype=wp.vec3, device=device),
+        wp.array([grasp] * n, dtype=wp.transform, device=device),
     )
 
 

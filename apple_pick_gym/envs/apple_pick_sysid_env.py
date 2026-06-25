@@ -48,6 +48,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         max_angular_vel: float = 1.0,
         robot_facing_weld: bool = True,
         n_weld_hemisphere_samples: int = 10,
+        device: str | None = None,
     ) -> None:
         self._stem_force_cap_n = (
             None if stem_force_cap_n is None else float(stem_force_cap_n)
@@ -92,6 +93,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             vic_angular_k=vic_angular_k,
             vic_angular_d=vic_angular_d,
             vic_use_joint_torques=vic_use_joint_torques,
+            device=device,
         )
 
     def set_excitation_context(self, ctx: ExcitationContext) -> None:

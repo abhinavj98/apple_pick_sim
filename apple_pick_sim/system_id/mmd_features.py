@@ -16,9 +16,7 @@ STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "apple_pos",
     "woody_part_start_pos",
     "woody_part_end_pos",
-    "excitation_direction",
-    "phase",
-    "excitation_type",
+    "woody_bending_angles",
 )
 
 REQUIRED_ARRAY_KEYS: tuple[str, ...] = (
@@ -222,6 +220,46 @@ def _stack_woody(
     return np.stack(rows, axis=0).astype(np.float32, copy=False)
 
 
+def build_bending_angles(
+    arrays: Mapping[str, Any],
+    *,
+    n_frames: int,
+    junction_names: list[str],
+) -> np.ndarray:
+    """Compute local bending deflection angles (in radians) from rest pose (frame 0)."""
+    n_junctions = len(junction_names)
+    if n_junctions == 0:
+        return np.zeros((n_frames, 0), dtype=np.float32)
+
+    angles = np.zeros((n_frames, n_junctions), dtype=np.float64)
+    for j_idx, name in enumerate(junction_names):
+        starts = np.asarray(arrays["woody_part_start_pos"][name], dtype=np.float64)
+        ends = np.asarray(arrays["woody_part_end_pos"][name], dtype=np.float64)
+
+        if starts.ndim == 1:
+            starts = np.tile(starts, (n_frames, 1))
+        if ends.ndim == 1:
+            ends = np.tile(ends, (n_frames, 1))
+
+        vectors = ends - starts  # (n_frames, 3)
+        lengths = np.linalg.norm(vectors, axis=1, keepdims=True)
+
+        lengths_nonzero = np.where(lengths == 0.0, 1.0, lengths)
+        dirs = vectors / lengths_nonzero  # (n_frames, 3)
+
+        dir_rest = dirs[0]  # (3,)
+        dot_products = np.sum(dirs * dir_rest, axis=1)  # (n_frames,)
+        dot_products = np.clip(dot_products, -1.0, 1.0)
+
+        angle_deflection = np.arccos(dot_products)
+        angles[:, j_idx] = np.where(lengths.reshape(-1) == 0.0, 0.0, angle_deflection)
+
+    # Force frame 0 deflection to be exactly 0.0
+    angles[0, :] = 0.0
+
+    return angles.astype(np.float32, copy=False)
+
+
 def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
     """Build per-frame observable state rows in the MMD feature order."""
 
@@ -248,16 +286,10 @@ def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
             n_frames=n_frames,
             junction_names=junction_names,
         ),
-        _as_2d(
-            arrays["excitation_direction"],
-            name="excitation_direction",
+        build_bending_angles(
+            arrays,
             n_frames=n_frames,
-        ),
-        _as_2d(arrays["phase"], name="phase", n_frames=n_frames),
-        _as_2d(
-            arrays["excitation_type"],
-            name="excitation_type",
-            n_frames=n_frames,
+            junction_names=junction_names,
         ),
     ]
     return np.concatenate(columns, axis=1).astype(np.float32, copy=False)
@@ -301,18 +333,27 @@ def iter_kept_hold_segments(
 
 def build_transition_features_by_direction(
     arrays: Mapping[str, Any],
-) -> dict[int, np.ndarray]:
-    """Build hold-only transition feature rows keyed by direction index."""
+) -> dict[tuple[float, float, float], np.ndarray]:
+    """Build hold-only transition feature rows keyed by excitation direction."""
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
     state = build_state_matrix(arrays)
     phase = np.asarray(arrays["phase"]).reshape(-1)
     dir_idx = np.asarray(arrays["dir_idx"]).reshape(-1)
+    excitation_dir = np.asarray(arrays["excitation_direction"]).reshape(-1, 3)
     if state.shape[0] != phase.size or state.shape[0] != dir_idx.size:
         raise ValueError("state, phase, and dir_idx frame counts must match")
 
-    out: dict[int, np.ndarray] = {}
+    out: dict[tuple[float, float, float], np.ndarray] = {}
     for direction in sorted({int(value) for value in dir_idx.tolist()}):
+        frame_indices = np.where(dir_idx == direction)[0]
+        if len(frame_indices) == 0:
+            continue
+        first_frame = frame_indices[0]
+        vec = excitation_dir[first_frame]
+        
+        vec_key = (float(np.round(vec[0], 3)), float(np.round(vec[1], 3)), float(np.round(vec[2], 3)))
+        
         rows: list[np.ndarray] = []
         for segment in iter_kept_hold_segments(
             phase=phase,
@@ -324,5 +365,9 @@ def build_transition_features_by_direction(
                 delta = state[int(end_idx)] - current
                 rows.append(np.concatenate([current, delta]).astype(np.float32))
         if rows:
-            out[direction] = np.stack(rows, axis=0).astype(np.float32, copy=False)
+            arr = np.stack(rows, axis=0).astype(np.float32, copy=False)
+            if vec_key in out:
+                out[vec_key] = np.concatenate([out[vec_key], arr], axis=0)
+            else:
+                out[vec_key] = arr
     return out

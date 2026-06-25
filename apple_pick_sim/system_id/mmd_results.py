@@ -19,7 +19,7 @@ class MmdCandidateResult:
     candidate_index: int
     stiffnesses: dict[str, float]
     aggregate_mmd2: float
-    per_direction_mmd2: dict[int, float]
+    per_direction_mmd2: dict[tuple[float, float, float], float]
 
     def __post_init__(self) -> None:
         if not self.per_direction_mmd2:
@@ -32,10 +32,10 @@ def rank_results(results: list[MmdCandidateResult]) -> list[MmdCandidateResult]:
     return sorted(results, key=lambda result: (result.aggregate_mmd2, result.candidate_index))
 
 
-def _all_directions(results: list[MmdCandidateResult]) -> list[int]:
+def _all_directions(results: list[MmdCandidateResult]) -> list[tuple[float, float, float]]:
     return sorted(
         {
-            int(direction)
+            direction
             for result in results
             for direction in result.per_direction_mmd2.keys()
         }
@@ -75,7 +75,7 @@ def write_results_csv(
         "stem_bend_stiffness",
         "aggregate_mmd2",
         "n_directions",
-    ] + [f"direction_{direction}_mmd2" for direction in directions]
+    ] + [f"direction_({direction[0]:+.3f},{direction[1]:+.3f},{direction[2]:+.3f})_mmd2" for direction in directions]
 
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -92,8 +92,8 @@ def write_results_csv(
                 "n_directions": len(result.per_direction_mmd2),
             }
             for direction in directions:
-                value = result.per_direction_mmd2.get(direction)
-                row[f"direction_{direction}_mmd2"] = "" if value is None else value
+                col_name = f"direction_({direction[0]:+.3f},{direction[1]:+.3f},{direction[2]:+.3f})_mmd2"
+                row[col_name] = "" if value is None else value
             writer.writerow(row)
     return path
 
@@ -130,7 +130,7 @@ def write_ranked_loss_plot(
 
 def _direction_loss_matrix(
     results: list[MmdCandidateResult],
-) -> tuple[list[MmdCandidateResult], list[int], np.ndarray]:
+) -> tuple[list[MmdCandidateResult], list[tuple[float, float, float]], np.ndarray]:
     ranked = rank_results(results)
     directions = _all_directions(ranked)
     matrix = np.full((len(directions), len(ranked)), np.nan, dtype=np.float64)
@@ -170,7 +170,7 @@ def write_direction_heatmap_plot(
         ha="right",
     )
     ax.set_yticks(range(len(directions)))
-    ax.set_yticklabels([str(direction) for direction in directions])
+    ax.set_yticklabels([f"({direction[0]:+.3f},{direction[1]:+.3f},{direction[2]:+.3f})" for direction in directions])
     fig.colorbar(image, ax=ax, label="Biased MMD^2")
     fig.tight_layout()
     fig.savefig(path)

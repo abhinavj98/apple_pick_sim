@@ -55,6 +55,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
         max_woody_parts: int = 64,
         mujoco_solver_kwargs: dict[str, Any] | None = None,
         control_hz: float = 60.0,
+        device: str | None = None,
     ) -> None:
         if render_mode not in (None, "none"):
             raise ValueError("Only headless operation is supported (render_mode=None).")
@@ -78,6 +79,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
         self._pending_weld_reference_quat: tuple[float, float, float, float] | None = None
         self._reset_fruiting_base_pos: tuple[float, float, float] | None = None
         self._reset_robot_base_pos: tuple[float, float, float] | None = None
+        self._device = device
 
         self._setup_action_space()
 
@@ -138,6 +140,8 @@ class ApplePickBaseEnv(gym.Env, ABC):
             "mujoco_solver_kwargs": self._cfg.mujoco_solver_kwargs,
             "ik_bootstrap_iterations": 256,
         }
+        if self._device is not None:
+            kw["device"] = self._device
         if self._reset_fruiting_base_pos is not None:
             kw["base_pos"] = self._reset_fruiting_base_pos
         if params is not None:

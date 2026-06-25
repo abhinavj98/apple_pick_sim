@@ -113,11 +113,8 @@ def test_build_state_matrix_uses_exact_feature_order():
             300.0,
             301.0,
             302.0,
-            # excitation_direction, phase, excitation_type
+            # woody_bending_angles in junction_names order: joint_b then joint_a
             0.0,
-            1.0,
-            0.0,
-            1.0,
             0.0,
         ],
         dtype=np.float32,
@@ -131,20 +128,26 @@ def test_transition_features_are_hold_only_per_direction_and_segment():
     arrays["dir_idx"] = np.array(
         [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1], dtype=np.int32
     )
+    arrays["excitation_direction"] = np.vstack([
+        np.tile([1.0, 0.0, 0.0], (8, 1)),
+        np.tile([0.0, 1.0, 0.0], (6, 1))
+    ]).astype(np.float32)
     arrays["phase"] = np.array(
         [0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 2, 1], dtype=np.int8
     )
 
     by_direction = build_transition_features_by_direction(arrays)
 
-    assert set(by_direction) == {0, 1}
+    dir_0_key = (1.0, 0.0, 0.0)
+    dir_1_key = (0.0, 1.0, 0.0)
+    assert set(by_direction) == {dir_0_key, dir_1_key}
     state = build_state_matrix(arrays)
     expected_dir0 = np.concatenate([state[3], state[4] - state[3]])
     expected_dir1 = np.concatenate([state[10], state[11] - state[10]])
-    assert by_direction[0].shape == (1, state.shape[1] * 2)
-    assert by_direction[1].shape == (1, state.shape[1] * 2)
-    np.testing.assert_allclose(by_direction[0][0], expected_dir0)
-    np.testing.assert_allclose(by_direction[1][0], expected_dir1)
+    assert by_direction[dir_0_key].shape == (1, state.shape[1] * 2)
+    assert by_direction[dir_1_key].shape == (1, state.shape[1] * 2)
+    np.testing.assert_allclose(by_direction[dir_0_key][0], expected_dir0)
+    np.testing.assert_allclose(by_direction[dir_1_key][0], expected_dir1)
 
 
 def test_transition_features_fail_when_required_field_is_missing():

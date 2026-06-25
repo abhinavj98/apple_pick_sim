@@ -29,6 +29,15 @@ from typing import NamedTuple
 
 import numpy as np
 
+
+def print(*args, **kwargs):
+    import builtins
+    try:
+        from tqdm import tqdm
+        tqdm.write(" ".join(str(arg) for arg in args), file=kwargs.get("file", sys.stdout))
+    except Exception:
+        builtins.print(*args, **kwargs)
+
 ROD_SEGMENTS: tuple[str, ...] = ("primary", "secondary", "spur", "stem")
 
 
@@ -196,13 +205,13 @@ def _candidate_stiffnesses(candidate: BendStiffnessCandidate) -> dict[str, float
     }
 
 
-def _combine_transition_features(episodes: list[dict]) -> dict[int, np.ndarray]:
+def _combine_transition_features(episodes: list[dict]) -> dict[tuple[float, float, float], np.ndarray]:
     from apple_pick_sim.system_id.mmd_features import build_transition_features_by_direction
 
-    parts: dict[int, list[np.ndarray]] = {}
+    parts: dict[tuple[float, float, float], list[np.ndarray]] = {}
     for arrays in episodes:
         for direction, features in build_transition_features_by_direction(arrays).items():
-            parts.setdefault(int(direction), []).append(features)
+            parts.setdefault(direction, []).append(features)
     return {
         direction: np.concatenate(chunks, axis=0)
         for direction, chunks in sorted(parts.items())
@@ -210,7 +219,7 @@ def _combine_transition_features(episodes: list[dict]) -> dict[int, np.ndarray]:
     }
 
 
-def _prepare_gt_mmd_context(recorded_episodes: list[dict]) -> dict[int, MmdDirectionContext]:
+def _prepare_gt_mmd_context(recorded_episodes: list[dict]) -> dict[tuple[float, float, float], MmdDirectionContext]:
     from apple_pick_sim.system_id.mmd import (
         apply_normalization,
         fit_gt_normalization,
@@ -221,7 +230,7 @@ def _prepare_gt_mmd_context(recorded_episodes: list[dict]) -> dict[int, MmdDirec
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
-    context: dict[int, MmdDirectionContext] = {}
+    context: dict[tuple[float, float, float], MmdDirectionContext] = {}
     for direction, gt_features in gt_by_direction.items():
         stats = fit_gt_normalization(gt_features)
         gt_norm = apply_normalization(gt_features, stats)
@@ -238,14 +247,14 @@ def _compute_candidate_mmd_result(
     *,
     candidate_index: int,
     candidate: BendStiffnessCandidate,
-    gt_context: dict[int, MmdDirectionContext],
+    gt_context: dict[tuple[float, float, float], MmdDirectionContext],
     replay_observations: list[dict],
 ):
     from apple_pick_sim.system_id.mmd import apply_normalization, biased_mmd2
     from apple_pick_sim.system_id.mmd_results import MmdCandidateResult
 
     candidate_by_direction = _combine_transition_features(replay_observations)
-    per_direction: dict[int, float] = {}
+    per_direction: dict[tuple[float, float, float], float] = {}
     for direction, context in gt_context.items():
         candidate_features = candidate_by_direction.get(direction)
         if candidate_features is None:
@@ -279,7 +288,7 @@ def _print_mmd_ranking(results: list) -> None:
     print("\nMMD candidate ranking (lower is better):")
     for rank, result in enumerate(rank_results(results), start=1):
         direction_bits = " ".join(
-            f"dir{direction}={loss:.6g}"
+            f"d=({direction[0]:+.3f},{direction[1]:+.3f},{direction[2]:+.3f})={loss:.6g}"
             for direction, loss in sorted(result.per_direction_mmd2.items())
         )
         print(
@@ -341,11 +350,17 @@ def _record_episode_errors(
     viewer,
 ) -> int:
     from apple_pick_gym.examples.example_gym_replay import _compare_to_dataset, _fmt_force
+    from tqdm import tqdm
 
     sim_time = 0.0
     step_dt = 1.0 / float(env._cfg.control_hz)
     steps = 0
-    for step_idx in range(n_frames):
+
+    frame_range = range(n_frames)
+    if (getattr(viewer, "name", None) == "null" or type(viewer).__name__ == "ViewerNull") and not debug:
+        frame_range = tqdm(frame_range, desc="    Simulating frames", leave=False)
+
+    for step_idx in frame_range:
         obs, _reward, terminated, truncated, info = env.step(env.action_space.sample())
         sim_time += step_dt
         steps += 1
@@ -461,6 +476,7 @@ def _evaluate_candidate(
             fix_to_apple_warmup_substeps=int(args.fix_to_apple_warmup_substeps),
             robot_facing_weld=not bool(args.no_robot_facing_weld),
             mujoco_solver_kwargs={"disable_contacts": True},
+            device=args.device,
         )
         try:
             env.load_dataset(args.dataset, episode_id=episode_id)
@@ -529,15 +545,17 @@ def main() -> None:
 
     _require_grid_values(parser, args)
     episode_ids = _episode_ids_to_evaluate(dataset, args.episode_id)
-    candidates = iter_bend_stiffness_candidates(
-        primary_values=args.primary_bend_stiffness_values,
-        secondary_values=args.secondary_bend_stiffness_values,
-        spur_values=args.spur_bend_stiffness_values,
-        stem_values=args.stem_bend_stiffness_values,
+    candidates = list(
+        iter_bend_stiffness_candidates(
+            primary_values=args.primary_bend_stiffness_values,
+            secondary_values=args.secondary_bend_stiffness_values,
+            spur_values=args.spur_bend_stiffness_values,
+            stem_values=args.stem_bend_stiffness_values,
+        )
     )
     max_candidates = int(args.max_candidates)
     if max_candidates > 0:
-        candidates = islice(candidates, max_candidates)
+        candidates = candidates[:max_candidates]
 
     print(f"Dataset: {dataset.dataset_dir}")
     print(f"Episodes: {len(episode_ids)}")
@@ -553,9 +571,10 @@ def main() -> None:
         print(f"MMD: prepared {len(gt_mmd_context)} direction(s)")
 
     evaluated = 0
-    for candidate in candidates:
+    from tqdm import tqdm
+    for candidate in tqdm(candidates, desc="Grid Search Progress"):
         evaluated += 1
-        print(f"\n[{evaluated}] evaluating {_candidate_label(candidate)}")
+        print(f"\n[{evaluated}/{len(candidates)}] evaluating {_candidate_label(candidate)}")
         summary, replay_observations = _evaluate_candidate(
             args=args,
             dataset=dataset,

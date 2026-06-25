@@ -51,6 +51,7 @@ class ApplePickReplayEnv(ApplePickSysIdEnv):
         control_hz: float = 60.0,
         dataset_dir: str | Path | None = None,
         robot_facing_weld: bool = False,
+        device: str | None = None,
     ) -> None:
         self._dataset_dir = Path(dataset_dir) if dataset_dir is not None else None
         self._dataset: TrajectoryDataset | None = None
@@ -68,6 +69,7 @@ class ApplePickReplayEnv(ApplePickSysIdEnv):
             mujoco_solver_kwargs=mujoco_solver_kwargs,
             control_hz=control_hz,
             robot_facing_weld=robot_facing_weld,
+            device=device,
         )
 
     @staticmethod

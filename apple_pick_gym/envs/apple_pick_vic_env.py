@@ -44,6 +44,7 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
         vic_angular_k: float = 40.0,
         vic_angular_d: float = 4.0,
         vic_use_joint_torques: bool = True,
+        device: str | None = None,
     ) -> None:
         from apple_pick_sim.robot import fr3_robot
 
@@ -63,6 +64,7 @@ class ApplePickVicEnv(ApplePickCoupledEnv):
             max_woody_parts=max_woody_parts,
             mujoco_solver_kwargs=mujoco_solver_kwargs,
             control_hz=control_hz,
+            device=device,
         )
 
     def _create_controller(self):

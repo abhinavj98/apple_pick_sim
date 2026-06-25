@@ -17,6 +17,79 @@ def _quat_to_ik_vec4(q: wp.quat) -> wp.vec4:
     return wp.vec4(q[0], q[1], q[2], q[3])
 
 
+@wp.func
+def _vec4_to_quat(v: wp.vec4) -> wp.quat:
+    return wp.quat(v[0], v[1], v[2], v[3])
+
+
+@wp.func
+def _quat_mul(a: wp.quat, b: wp.quat) -> wp.quat:
+    ax, ay, az, aw = a[0], a[1], a[2], a[3]
+    bx, by, bz, bw = b[0], b[1], b[2], b[3]
+    return wp.quat(
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+
+@wp.kernel(enable_backward=False)
+def _gather_tcp_world_poses_kernel(
+    body_q: wp.array(dtype=wp.transform),
+    tcp_indices: wp.array(dtype=int),
+    origins: wp.array(dtype=wp.vec3),
+    out_pos_world: wp.array(dtype=wp.vec3),
+    out_rot_world: wp.array(dtype=wp.vec4),
+    target_positions: wp.array(dtype=wp.vec3),
+    target_rotations: wp.array(dtype=wp.vec4),
+):
+    """Gather TCP poses from batched FK; world frame adds origin, IK targets stay template-frame."""
+    i = wp.tid()
+    tcp_idx = tcp_indices[i]
+    tf = body_q[tcp_idx]
+    body_pos = wp.transform_get_translation(tf)
+    body_rot = wp.transform_get_rotation(tf)
+    origin = origins[i]
+    pos_world = body_pos + origin
+    rot_v4 = wp.vec4(body_rot[0], body_rot[1], body_rot[2], body_rot[3])
+    out_pos_world[i] = pos_world
+    out_rot_world[i] = rot_v4
+    target_positions[i] = body_pos
+    target_rotations[i] = rot_v4
+
+
+@wp.kernel(enable_backward=False)
+def _integrate_tcp_targets_kernel(
+    pos_world: wp.array(dtype=wp.vec3),
+    rot_world: wp.array(dtype=wp.vec4),
+    lin_vels: wp.array(dtype=wp.vec3),
+    ang_vels: wp.array(dtype=wp.vec3),
+    origins: wp.array(dtype=wp.vec3),
+    dt: float,
+    target_positions: wp.array(dtype=wp.vec3),
+    target_rotations: wp.array(dtype=wp.vec4),
+):
+    """Integrate world-frame TCP targets and write template-frame IK objectives."""
+    i = wp.tid()
+    pos = pos_world[i]
+    rot = _vec4_to_quat(rot_world[i])
+    lin = lin_vels[i]
+    ang = ang_vels[i]
+    pos_new = pos + lin * dt
+    ang_mag = wp.length(ang)
+    if ang_mag > 1.0e-12:
+        delta_rot = wp.quat_from_axis_angle(ang / ang_mag, ang_mag * dt)
+        rot_new = wp.normalize(_quat_mul(delta_rot, rot))
+    else:
+        rot_new = rot
+    rot_v4 = wp.vec4(rot_new[0], rot_new[1], rot_new[2], rot_new[3])
+    pos_world[i] = pos_new
+    rot_world[i] = rot_v4
+    target_positions[i] = pos_new - origins[i]
+    target_rotations[i] = rot_v4
+
+
 class BatchedTemplateIK:
     """Run ``IKSolver`` on a single-world template with ``n_problems=num_envs``."""
 
@@ -45,6 +118,18 @@ class BatchedTemplateIK:
         n = self.n_problems
         self.target_positions = wp.zeros(n, dtype=wp.vec3, device=dev)
         self.target_rotations = wp.zeros(n, dtype=wp.vec4, device=dev)
+
+        origins = [layout.world_origin(w) for w in range(n)]
+        self._world_origins_wp = wp.array(
+            [wp.vec3(float(o[0]), float(o[1]), float(o[2])) for o in origins],
+            dtype=wp.vec3,
+            device=dev,
+        )
+        self._tcp_body_indices_wp = wp.array(
+            list(layout.tcp_body_indices),
+            dtype=int,
+            device=dev,
+        )
 
         self._pos_obj = ik.IKObjectivePosition(
             link_index=self.tcp_body_index,
@@ -132,11 +217,55 @@ class BatchedTemplateIK:
     def seed_from_state(self, state: Any) -> None:
         """Copy each world's ``joint_q`` slice from the batched model into IK rows."""
         del state
-        full = self.sim_model.joint_q.numpy().reshape(-1)
-        rows = np.zeros((self.n_problems, self.n_coords), dtype=np.float32)
-        for w in range(self.n_problems):
-            rows[w] = full[self.layout.joint_q_slice(w)].astype(np.float32, copy=False)
-        self.joint_q.assign(rows)
+        sim_jq_2d = self.sim_model.joint_q.reshape((self.n_problems, self.n_coords))
+        wp.copy(self.joint_q, sim_jq_2d)
+
+    def gather_tcp_targets_from_state(
+        self,
+        state: Any,
+        out_pos_world: wp.array,
+        out_rot_world: wp.array,
+    ) -> None:
+        """Batch-gather TCP poses from ``state.body_q`` into world buffers and IK targets."""
+        wp.launch(
+            _gather_tcp_world_poses_kernel,
+            dim=self.n_problems,
+            inputs=[
+                state.body_q,
+                self._tcp_body_indices_wp,
+                self._world_origins_wp,
+                out_pos_world,
+                out_rot_world,
+                self.target_positions,
+                self.target_rotations,
+            ],
+            device=self.device,
+        )
+
+    def advance_targets_batch(
+        self,
+        pos_world: wp.array,
+        rot_world: wp.array,
+        lin_vels_wp: wp.array,
+        ang_vels_wp: wp.array,
+        dt: float,
+    ) -> None:
+        """Integrate per-env twists and upload template-frame targets to the IK objectives."""
+        wp.launch(
+            _integrate_tcp_targets_kernel,
+            dim=self.n_problems,
+            inputs=[
+                pos_world,
+                rot_world,
+                lin_vels_wp,
+                ang_vels_wp,
+                self._world_origins_wp,
+                float(dt),
+                self.target_positions,
+                self.target_rotations,
+            ],
+            device=self.device,
+        )
 
     def set_target(self, world: int, target_tf: wp.transform) -> None:
         """Set IK target in template frame."""
@@ -150,29 +279,26 @@ class BatchedTemplateIK:
         self.set_target(world, self.world_to_template(target_tf_world, world))
 
     def set_target_from_fk(self, state: Any) -> None:
-        """Anchor IK targets to each world's TCP pose from ``sim_model.joint_q``."""
-        del state
-        for w in range(self.n_problems):
-            self.set_target_world(w, self.sim_tcp_pose_from_model(w))
+        """Anchor IK targets to each world's TCP pose from ``state.body_q``."""
+        pos_world = wp.zeros(self.n_problems, dtype=wp.vec3, device=self.device)
+        rot_world = wp.zeros(self.n_problems, dtype=wp.vec4, device=self.device)
+        self.gather_tcp_targets_from_state(state, pos_world, rot_world)
 
     def step(self, iterations: int) -> None:
         self._solver.step(self.joint_q, self.joint_q, iterations=iterations)
 
     def scatter_to_model(self, state: Any, *, eval_fk: bool = True) -> np.ndarray:
         """Write IK rows into batched ``sim_model`` / ``state`` joint arrays."""
-        full = self.sim_model.joint_q.numpy().copy()
-        rows = self.joint_q.numpy()
-        for w in range(self.n_problems):
-            sl = self.layout.joint_q_slice(w)
-            full[sl] = rows[w].astype(full.dtype, copy=False)
+        sim_jq_2d = self.sim_model.joint_q.reshape((self.n_problems, self.n_coords))
+        wp.copy(sim_jq_2d, self.joint_q)
+        state_jq_2d = state.joint_q.reshape((self.n_problems, self.n_coords))
+        wp.copy(state_jq_2d, self.joint_q)
         jqd = np.zeros(int(self.sim_model.joint_dof_count), dtype=np.float32)
-        self.sim_model.joint_q.assign(full)
         self.sim_model.joint_qd.assign(jqd)
-        state.joint_q.assign(full)
         state.joint_qd.assign(jqd)
         if eval_fk:
             newton.eval_fk(self.sim_model, state.joint_q, state.joint_qd, state)
-        return full
+        return self.sim_model.joint_q.numpy().copy()
 
     def pose_error(self, world: int, target_tf_world: wp.transform) -> tuple[float, float]:
         """TCP pose error for one problem row vs a world-frame ``target_tf_world``."""

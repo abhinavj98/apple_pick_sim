@@ -39,6 +39,7 @@ from apple_pick_sim.coupled_fruiting import (
     settle_vbd_substeps,
 )
 from apple_pick_sim.fruiting_system import GripperProxyConfig, load_ranges
+from apple_pick_sim.batched_viz import log_batched_endpoints, log_batched_tcp_force_arrows
 
 
 def _default_ranges_path() -> Path:
@@ -207,6 +208,53 @@ def _make_parser() -> argparse.ArgumentParser:
         default=0.02,
         help="Gaussian std [m/s and rad/s per twist component] when --noisy-action (default: 0.02).",
     )
+    parser.add_argument(
+        "--tcp-force-arrow",
+        action="store_true",
+        help=(
+            "Draw harvested TCP force as a yellow world-frame arrow at each env's robot TCP "
+            "(requires --viewer gl or viser; use --tcp-force-scale to tune length)."
+        ),
+    )
+    parser.add_argument(
+        "--tcp-force-scale",
+        type=float,
+        default=0.02,
+        help="Arrow length per newton [m/N] for --tcp-force-arrow (default: 0.02 → 50 N ≈ 1 m).",
+    )
+    parser.add_argument(
+        "--tcp-force-arrow-gain",
+        type=float,
+        default=1.0,
+        help="Dimensionless multiplier on --tcp-force-scale (default: 1).",
+    )
+    parser.add_argument(
+        "--tcp-force-min-length",
+        type=float,
+        default=0.08,
+        help="Minimum arrow length [m] when force is above threshold (default: 0.08).",
+    )
+    parser.add_argument(
+        "--tcp-force-max-length",
+        type=float,
+        default=1.5,
+        help="Maximum arrow length [m]; 0 disables cap (default: 1.5).",
+    )
+    parser.add_argument(
+        "--mark-endpoints",
+        action="store_true",
+        help=(
+            "Draw red XYZ crosses at each env's apple and gripper-proxy markers, "
+            "plus red spheres at woody fixed-joint parent anchors "
+            "(requires --viewer gl or viser; use --endpoint-radius for cross half-size / dot radius)."
+        ),
+    )
+    parser.add_argument(
+        "--endpoint-radius",
+        type=float,
+        default=0.05,
+        help="Sphere radius [m] for --mark-endpoints (default: 0.05).",
+    )
     return parser
 
 
@@ -350,8 +398,49 @@ class ExampleBatchedCoupledFruiting:
 
         self._status_every = int(getattr(args, "status_every", 60))
 
+        self._tcp_force_arrow = bool(getattr(args, "tcp_force_arrow", False))
+        tcp_force_scale = float(getattr(args, "tcp_force_scale", 0.02))
+        tcp_force_gain = float(getattr(args, "tcp_force_arrow_gain", 1.0))
+        tcp_force_min_len = float(getattr(args, "tcp_force_min_length", 0.08))
+        tcp_force_max_len = float(getattr(args, "tcp_force_max_length", 1.5))
+        if tcp_force_scale <= 0.0:
+            raise ValueError("--tcp-force-scale must be positive")
+        if tcp_force_gain <= 0.0:
+            raise ValueError("--tcp-force-arrow-gain must be positive")
+        if tcp_force_min_len < 0.0:
+            raise ValueError("--tcp-force-min-length must be >= 0")
+        if tcp_force_max_len < 0.0:
+            raise ValueError("--tcp-force-max-length must be >= 0")
+        self._tcp_force_scale = tcp_force_scale
+        self._tcp_force_gain = tcp_force_gain
+        self._tcp_force_min_length = tcp_force_min_len
+        self._tcp_force_max_length = tcp_force_max_len
+
+        self._mark_endpoints = bool(getattr(args, "mark_endpoints", False))
+        endpoint_radius = float(getattr(args, "endpoint_radius", 0.05))
+        if endpoint_radius <= 0.0:
+            raise ValueError("--endpoint-radius must be positive")
+        self._endpoint_radius = endpoint_radius
+
         self.viewer.set_model(self.scene.cable.model)
         graphical = isinstance(viewer, newton.viewer.ViewerGL)
+        if self._tcp_force_arrow and graphical:
+            cap = (
+                f"{self._tcp_force_max_length:.2f} m max"
+                if self._tcp_force_max_length > 0.0
+                else "no max"
+            )
+            print(
+                "TCP force arrows: yellow at each env's robot TCP; "
+                f"scale={self._tcp_force_scale:.4f} m/N × gain {self._tcp_force_gain:g}, "
+                f"min {self._tcp_force_min_length:.2f} m, {cap}."
+            )
+        if self._mark_endpoints and graphical:
+            print(
+                f"Endpoint markers: red XYZ crosses at apple + proxy; "
+                f"red dots at woody parent anchors "
+                f"(radius/half-size={self._endpoint_radius:.3f} m)."
+            )
         if graphical and self.num_envs > 1:
             self.viewer.set_world_offsets(self.env_spacing)
 
@@ -523,6 +612,23 @@ class ExampleBatchedCoupledFruiting:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.scene.cable.state_0)
         self.viewer.log_contacts(self._viz_contacts, self.scene.cable.state_0)
+        if self._tcp_force_arrow:
+            log_batched_tcp_force_arrows(
+                self.viewer,
+                self.scene,
+                self.layout,
+                scale_per_newton=self._tcp_force_scale,
+                gain=self._tcp_force_gain,
+                min_length=self._tcp_force_min_length,
+                max_length=self._tcp_force_max_length,
+            )
+        if self._mark_endpoints:
+            log_batched_endpoints(
+                self.viewer,
+                self.scene,
+                self.layout,
+                radius=self._endpoint_radius,
+            )
         self.viewer.end_frame()
 
     def test_final(self, tolerance: float = 0.05) -> None:

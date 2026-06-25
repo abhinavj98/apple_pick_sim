@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -14,7 +15,6 @@ from apple_pick_sim.robot.fr3_robot.batched_template_ik import BatchedTemplateIK
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import (
     EEVelocity,
     _KeyViewer,
-    integrate_tcp_target,
     read_keyboard_ee_velocity,
 )
 from apple_pick_sim.robot.fr3_robot.placement import (
@@ -56,10 +56,16 @@ class Fr3BatchedEEVelocityController:
         self.ik_pos_tol_m = ik_pos_tol_m
         self.ik_rot_tol_rad = ik_rot_tol_rad
         self.print_ik_teleop_error_each_step = print_ik_teleop_error_each_step
+        n = layout.num_envs
+        dev = robot_model.device
         self.target_tf = [
             wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
-            for _ in range(layout.num_envs)
+            for _ in range(n)
         ]
+        self._target_pos_wp = wp.zeros(n, dtype=wp.vec3, device=dev)
+        self._target_rot_wp = wp.zeros(n, dtype=wp.vec4, device=dev)
+        self._lin_vels_wp = wp.zeros(n, dtype=wp.vec3, device=dev)
+        self._ang_vels_wp = wp.zeros(n, dtype=wp.vec3, device=dev)
         self._ik = BatchedTemplateIK(
             ik_model=ik_robot_model,
             sim_model=robot_model,
@@ -76,10 +82,22 @@ class Fr3BatchedEEVelocityController:
             return velocity
         return EEVelocity()
 
-    def sync_target_from_state(self, state: Any) -> None:
+    def _sync_target_tf_from_device(self) -> None:
+        pos_np = self._target_pos_wp.numpy()
+        rot_np = self._target_rot_wp.numpy()
         for w in range(self.layout.num_envs):
-            self.target_tf[w] = self._ik.sim_tcp_pose_from_model(w)
-        self._ik.set_target_from_fk(state)
+            p = pos_np[w]
+            r = rot_np[w]
+            self.target_tf[w] = wp.transform(
+                wp.vec3(float(p[0]), float(p[1]), float(p[2])),
+                wp.quat(float(r[0]), float(r[1]), float(r[2]), float(r[3])),
+            )
+
+    def sync_target_from_state(self, state: Any) -> None:
+        self._ik.gather_tcp_targets_from_state(
+            state, self._target_pos_wp, self._target_rot_wp
+        )
+        self._sync_target_tf_from_device()
 
     def seed_ik_from_state(self, state: Any) -> None:
         self._ik.seed_from_state(state)
@@ -100,17 +118,24 @@ class Fr3BatchedEEVelocityController:
                 angular_speed=self.angular_speed,
                 poll_events=poll_events,
             )
+        lin_np = np.zeros((self.layout.num_envs, 3), dtype=np.float32)
+        ang_np = np.zeros((self.layout.num_envs, 3), dtype=np.float32)
         for w in range(self.layout.num_envs):
             v = self._velocity_for(w, velocity)
             if lock_angular:
                 v = EEVelocity(linear=v.linear, angular=(0.0, 0.0, 0.0))
-            self.target_tf[w] = integrate_tcp_target(
-                self.target_tf[w],
-                linear_vel=v.linear_vec,
-                angular_vel=v.angular_vec,
-                dt=dt,
-            )
-            self._ik.set_target_world(w, self.target_tf[w])
+            lin_np[w] = v.linear
+            ang_np[w] = v.angular
+        self._lin_vels_wp.assign(lin_np)
+        self._ang_vels_wp.assign(ang_np)
+        self._ik.advance_targets_batch(
+            self._target_pos_wp,
+            self._target_rot_wp,
+            self._lin_vels_wp,
+            self._ang_vels_wp,
+            dt,
+        )
+        self._sync_target_tf_from_device()
         return velocity if velocity is not None else self._velocity_for(0, None)
 
     def solve_ik(self, state: Any | None = None) -> None:
@@ -120,10 +145,12 @@ class Fr3BatchedEEVelocityController:
 
     def measure_ik_target_error(self, state: Any) -> tuple[float, float]:
         del state
+        self._sync_target_tf_from_device()
         return self._ik.max_pose_error(self.target_tf)
 
     def measure_ik_target_error_per_world(self, state: Any) -> list[tuple[float, float]]:
         del state
+        self._sync_target_tf_from_device()
         return self._ik.pose_errors_per_world(self.target_tf)
 
     def command_velocity_for_world(
@@ -194,6 +221,7 @@ class Fr3BatchedEEVelocityController:
         )
 
     def _raise_if_ik_not_converged(self, pos_err_m: float, rot_err_rad: float) -> None:
+        self._sync_target_tf_from_device()
         target_pos = wp.transform_get_translation(self.target_tf[0])
         raise_if_ik_teleop_not_converged(
             pos_err_m,

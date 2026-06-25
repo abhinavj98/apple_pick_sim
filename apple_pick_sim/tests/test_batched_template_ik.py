@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 import warp as wp
@@ -10,7 +12,7 @@ import newton
 
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.robot.fr3_robot.batched_template_ik import BatchedTemplateIK
-from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
+from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity, integrate_tcp_target
 from apple_pick_sim.robot.fr3_robot.controllers.ee_velocity_batched import (
     Fr3BatchedEEVelocityController,
 )
@@ -129,6 +131,156 @@ def test_same_velocity_all_worlds_equal_joint_q():
     ik_engine.step(iterations=12)
     rows = ik_engine.joint_q.numpy()
     np.testing.assert_allclose(rows[0], rows[1], atol=1e-4)
+
+
+def _scatter_to_model_loop_reference(
+    ik_engine: BatchedTemplateIK,
+    state: Any,
+    *,
+    eval_fk: bool,
+) -> np.ndarray:
+    """Reference loop implementation for parity checks."""
+    full = ik_engine.sim_model.joint_q.numpy().copy()
+    rows = ik_engine.joint_q.numpy()
+    for w in range(ik_engine.n_problems):
+        sl = ik_engine.layout.joint_q_slice(w)
+        full[sl] = rows[w].astype(full.dtype, copy=False)
+    jqd = np.zeros(int(ik_engine.sim_model.joint_dof_count), dtype=np.float32)
+    ik_engine.sim_model.joint_q.assign(full)
+    ik_engine.sim_model.joint_qd.assign(jqd)
+    state.joint_q.assign(full)
+    state.joint_qd.assign(jqd)
+    if eval_fk:
+        newton.eval_fk(ik_engine.sim_model, state.joint_q, state.joint_qd, state)
+    return full
+
+
+def _seed_from_state_loop_reference(ik_engine: BatchedTemplateIK) -> np.ndarray:
+    full = ik_engine.sim_model.joint_q.numpy().reshape(-1)
+    rows = np.zeros((ik_engine.n_problems, ik_engine.n_coords), dtype=np.float32)
+    for w in range(ik_engine.n_problems):
+        rows[w] = full[ik_engine.layout.joint_q_slice(w)].astype(np.float32, copy=False)
+    return rows
+
+
+def test_scatter_to_model_matches_loop():
+    template_model, batched_model, layout = _build_two_world_arm_pair()
+    state = batched_model.state()
+    ik_engine = BatchedTemplateIK(
+        ik_model=template_model,
+        sim_model=batched_model,
+        layout=layout,
+        tcp_body_index=layout.template_tcp_body,
+    )
+    rows = np.array([[0.11, 0.22], [0.33, 0.44]], dtype=np.float32)
+    ik_engine.joint_q.assign(rows)
+
+    ik_engine.scatter_to_model(state, eval_fk=False)
+    vectorized = batched_model.joint_q.numpy().copy()
+
+    batched_model.joint_q.assign(np.zeros_like(batched_model.joint_q.numpy()))
+    state.joint_q.assign(batched_model.joint_q.numpy())
+    loop_ref = _scatter_to_model_loop_reference(ik_engine, state, eval_fk=False)
+
+    np.testing.assert_allclose(vectorized, loop_ref, atol=1e-6)
+
+
+def test_seed_from_state_matches_loop():
+    template_model, batched_model, layout = _build_two_world_arm_pair()
+    state = batched_model.state()
+    ik_engine = BatchedTemplateIK(
+        ik_model=template_model,
+        sim_model=batched_model,
+        layout=layout,
+        tcp_body_index=layout.template_tcp_body,
+    )
+    jq = batched_model.joint_q.numpy().copy()
+    for w in range(layout.num_envs):
+        jq[layout.joint_q_slice(w)] = np.array([0.15 * (w + 1), -0.1 * w], dtype=jq.dtype)
+    batched_model.joint_q.assign(jq)
+    state.joint_q.assign(jq)
+
+    ik_engine.seed_from_state(state)
+    vectorized = ik_engine.joint_q.numpy()
+    loop_ref = _seed_from_state_loop_reference(ik_engine)
+
+    np.testing.assert_allclose(vectorized, loop_ref, atol=1e-6)
+
+
+def test_advance_targets_batch_matches_sequential():
+    template_model, batched_model, layout = _build_two_world_arm_pair()
+    state = batched_model.state()
+    ik_engine = BatchedTemplateIK(
+        ik_model=template_model,
+        sim_model=batched_model,
+        layout=layout,
+        tcp_body_index=layout.template_tcp_body,
+    )
+    jq = batched_model.joint_q.numpy().copy()
+    for w in range(layout.num_envs):
+        jq[layout.joint_q_slice(w)] = np.array([0.25 + 0.1 * w, -0.15], dtype=jq.dtype)
+    batched_model.joint_q.assign(jq)
+    state.joint_q.assign(jq)
+    newton.eval_fk(batched_model, state.joint_q, state.joint_qd, state)
+
+    pos_world = wp.zeros(layout.num_envs, dtype=wp.vec3, device=batched_model.device)
+    rot_world = wp.zeros(layout.num_envs, dtype=wp.vec4, device=batched_model.device)
+    ik_engine.gather_tcp_targets_from_state(state, pos_world, rot_world)
+
+    dt = 1.0 / 60.0
+    lin_vels = [
+        wp.vec3(0.02, 0.01, 0.0),
+        wp.vec3(0.0, 0.03, -0.01),
+    ]
+    ang_vels = [
+        wp.vec3(0.0, 0.0, 0.5),
+        wp.vec3(0.0, 0.2, 0.0),
+    ]
+    pos_seq = pos_world.numpy().copy()
+    rot_seq = rot_world.numpy().copy()
+    target_pos_seq = np.zeros((layout.num_envs, 3), dtype=np.float32)
+    target_rot_seq = np.zeros((layout.num_envs, 4), dtype=np.float32)
+    for w in range(layout.num_envs):
+        tf = integrate_tcp_target(
+            wp.transform(
+                wp.vec3(float(pos_seq[w, 0]), float(pos_seq[w, 1]), float(pos_seq[w, 2])),
+                wp.quat(
+                    float(rot_seq[w, 0]),
+                    float(rot_seq[w, 1]),
+                    float(rot_seq[w, 2]),
+                    float(rot_seq[w, 3]),
+                ),
+            ),
+            linear_vel=lin_vels[w],
+            angular_vel=ang_vels[w],
+            dt=dt,
+        )
+        p = wp.transform_get_translation(tf)
+        r = wp.transform_get_rotation(tf)
+        pos_seq[w] = (float(p[0]), float(p[1]), float(p[2]))
+        rot_seq[w] = (float(r[0]), float(r[1]), float(r[2]), float(r[3]))
+        ik_engine.set_target_world(w, tf)
+        target_pos_seq[w] = ik_engine.target_positions.numpy()[w]
+        target_rot_seq[w] = ik_engine.target_rotations.numpy()[w]
+
+    pos_batch = wp.array(pos_world.numpy().copy(), dtype=wp.vec3, device=batched_model.device)
+    rot_batch = wp.array(rot_world.numpy().copy(), dtype=wp.vec4, device=batched_model.device)
+    lin_wp = wp.array(lin_vels, dtype=wp.vec3, device=batched_model.device)
+    ang_wp = wp.array(ang_vels, dtype=wp.vec3, device=batched_model.device)
+    ik_engine.advance_targets_batch(pos_batch, rot_batch, lin_wp, ang_wp, dt)
+
+    np.testing.assert_allclose(
+        ik_engine.target_positions.numpy(),
+        target_pos_seq,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        ik_engine.target_rotations.numpy(),
+        target_rot_seq,
+        atol=1e-5,
+    )
+    np.testing.assert_allclose(pos_batch.numpy(), pos_seq, atol=1e-5)
+    np.testing.assert_allclose(rot_batch.numpy(), rot_seq, atol=1e-5)
 
 
 def test_different_velocity_per_world_diverges_targets():

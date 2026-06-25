@@ -93,6 +93,7 @@ def write_results_csv(
             }
             for direction in directions:
                 col_name = f"direction_({direction[0]:+.3f},{direction[1]:+.3f},{direction[2]:+.3f})_mmd2"
+                value = result.per_direction_mmd2.get(direction)
                 row[col_name] = "" if value is None else value
             writer.writerow(row)
     return path

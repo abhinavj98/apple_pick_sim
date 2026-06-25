@@ -235,7 +235,7 @@ def warn_ik_bootstrap_for_fr3_scene(scene: Any) -> bool:
 def placement_xform_for_proxy(
     proxy_body_q7: Any,
     *,
-    vertical_reach_m: float = 0.85,
+    vertical_reach_m: float = 0.80,
 ) -> wp.transform:
     """World transform to park the FR3 root so ``tcp`` can reach a high gripper proxy."""
     p = np.asarray(proxy_body_q7, dtype=np.float64).reshape(7)
@@ -292,7 +292,7 @@ def _ik_bootstrap_error_score(pos_err: float, rot_err: float) -> float:
 def root_world_translation_for_proxy(
     proxy_body_q7: Any,
     *,
-    vertical_reach_m: float = 0.85,
+    vertical_reach_m: float = 0.80,
 ) -> np.ndarray:
     """World translation applied to the FR3 USD root for proxy reach placement."""
     tf = placement_xform_for_proxy(proxy_body_q7, vertical_reach_m=vertical_reach_m)

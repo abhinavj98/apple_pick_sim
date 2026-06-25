@@ -226,7 +226,7 @@ def test_mmd_result_helpers_rank_identical_candidate_below_shifted_candidate():
     )
 
     assert identical.aggregate_mmd2 < shifted.aggregate_mmd2
-    assert identical.per_direction_mmd2.keys() == {0}
+    assert identical.per_direction_mmd2.keys() == {(1.0, 0.0, 0.0)}
     assert identical.stiffnesses == {
         "primary": 1.0,
         "secondary": 2.0,
@@ -248,7 +248,7 @@ def test_write_mmd_outputs_creates_csv_and_diagnostic_plot_bundle(tmp_path: Path
             "stem": 4.0,
         },
         aggregate_mmd2=0.25,
-        per_direction_mmd2={0: 0.1, 1: 0.4},
+        per_direction_mmd2={(1.0, 0.0, 0.0): 0.1, (0.0, 1.0, 0.0): 0.4},
     )
 
     module._write_mmd_outputs([result], tmp_path)

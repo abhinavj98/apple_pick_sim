@@ -182,7 +182,7 @@ def _weld_geometry(
     offset_approach = _offset_approach_in_world(scene)
 
     clearance = float(max(scene.gripper_proxy_config.box_half_extents))
-    expected_radius = float(scene.params.apple_radius) + clearance
+    expected_radius = float(scene.params.apple_radius)
 
     return {
         "apple_pos": apple_pos,

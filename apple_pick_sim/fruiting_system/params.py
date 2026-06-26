@@ -421,6 +421,42 @@ def sample_params(
     )
 
 
+def _fix_topology(
+    p: FruitingSystemParams, topo: FruitingSystemParams
+) -> FruitingSystemParams:
+    """Return ``p`` with ``num_segments`` overridden to match ``topo`` (other params unchanged)."""
+
+    def _rod(r: RodParams | None, t: RodParams | None) -> RodParams | None:
+        if r is None or t is None:
+            return None
+        return dataclasses.replace(r, num_segments=t.num_segments)
+
+    return dataclasses.replace(
+        p,
+        primary=_rod(p.primary, topo.primary),
+        secondary=_rod(p.secondary, topo.secondary),
+        spur=_rod(p.spur, topo.spur),
+        stem=_rod(p.stem, topo.stem),
+    )
+
+
+def sample_heterogeneous_params_list(
+    ranges: dict,
+    topology_seed: int,
+    num_envs: int,
+    *,
+    omit: Collection[str] | None = None,
+) -> list[FruitingSystemParams]:
+    """Sample ``num_envs`` param sets with segment topology fixed to ``topology_seed``."""
+    if num_envs < 1:
+        raise ValueError("num_envs must be >= 1")
+    topo = sample_params(ranges, topology_seed, omit=omit)
+    return [
+        _fix_topology(sample_params(ranges, topology_seed + 1 + w, omit=omit), topo)
+        for w in range(num_envs)
+    ]
+
+
 def copy_fruiting_params(params: FruitingSystemParams) -> FruitingSystemParams:
     """Deep-copy sampled params (geometry and stiffness scalars)."""
     def _rod(r: RodParams | None) -> RodParams | None:

@@ -26,6 +26,7 @@ from apple_pick_sim.fruiting_system.params import (
     perturb_rod_stiffness,
     resolve_fruiting_base_pos,
     resolve_robot_base_pos,
+    sample_heterogeneous_params_list,
     sample_params,
     set_rod_bend_stiffness,
 )
@@ -81,5 +82,6 @@ __all__ = [
     "resolve_robot_base_pos",
     "set_rod_bend_stiffness",
     "run_rollout",
+    "sample_heterogeneous_params_list",
     "sample_params",
 ]

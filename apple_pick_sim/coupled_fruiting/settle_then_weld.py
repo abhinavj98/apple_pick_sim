@@ -13,6 +13,7 @@ runtime. This module provides a robust two-build workflow:
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import numpy as np
@@ -185,11 +186,66 @@ def _bootstrap_tcp_at_fixed_origin(
         scene.coupling_forces_cache.zero_()
 
 
+@dataclasses.dataclass
+class _WorldCableView:
+    """Duck-typed :class:`~apple_pick_sim.fruiting_system.CoupledCableScene` view for per-env IK."""
+
+    gripper_proxy_body: int
+    state_0: Any
+    gripper_proxy_apple_joint: int | None = None
+
+
+def _bootstrap_tcp_per_env(
+    scene: Any,
+    layout: BatchedEnvLayout,
+    *,
+    ik_iterations: int = 256,
+) -> None:
+    """Align each world's TCP to its own settled proxy via template IK."""
+    tpl_robot = getattr(scene, "ik_template_robot_model", None)
+    if tpl_robot is None or scene.robot_model is None:
+        return
+
+    import newton
+
+    from apple_pick_sim.coupled_fruiting.bootstrap import bootstrap_articulated_tcp_from_proxy
+
+    coord_per = int(tpl_robot.joint_coord_count)
+    batched_jq = scene.robot_model.joint_q.numpy().copy()
+    for w in range(layout.num_envs):
+        view = _WorldCableView(
+            gripper_proxy_body=layout.proxy_body_indices[w],
+            state_0=scene.cable.state_0,
+            gripper_proxy_apple_joint=scene.cable.gripper_proxy_apple_joint,
+        )
+        tpl_state = tpl_robot.state()
+        bootstrap_articulated_tcp_from_proxy(
+            view,
+            tpl_robot,
+            layout.template_tcp_body,
+            tpl_state,
+            ik_iterations=ik_iterations,
+            raise_on_failure=False,
+        )
+        c0 = w * coord_per
+        batched_jq[c0 : c0 + coord_per] = tpl_robot.joint_q.numpy()
+    scene.robot_model.joint_q.assign(batched_jq)
+    scene.robot_state_0.joint_q.assign(batched_jq)
+    newton.eval_fk(
+        scene.robot_model,
+        scene.robot_model.joint_q,
+        scene.robot_model.joint_qd,
+        scene.robot_state_0,
+    )
+
+
 def seed_fix_to_apple_from_settled(
     *,
     welded_scene: Any,
     settled_scene: Any,
     quiet_apple_proxy: bool = True,
+    per_env_ik: bool = False,
+    per_world_proxy_offsets: tuple[tuple | None, ...] | None = None,
 ) -> None:
     """Seed a welded (``fix_to_apple=True``) scene from a settled free-apple scene.
 
@@ -233,8 +289,8 @@ def seed_fix_to_apple_from_settled(
 
     apple = cable_w.apple_body
     proxy = cable_w.gripper_proxy_body
-    offset = cable_w.gripper_proxy_offset_in_apple_frame
-    if apple is None or offset is None:
+    default_offset = cable_w.gripper_proxy_offset_in_apple_frame
+    if apple is None or default_offset is None:
         return
 
     bq_w = cable_w.state_0.body_q.numpy().reshape(-1, 7).copy()
@@ -248,7 +304,13 @@ def seed_fix_to_apple_from_settled(
     else:
         apple_proxy_pairs = [(apple, proxy)] if apple is not None else []
 
-    for apple_idx, proxy_idx in apple_proxy_pairs:
+    for i, (apple_idx, proxy_idx) in enumerate(apple_proxy_pairs):
+        if per_world_proxy_offsets is not None:
+            offset = per_world_proxy_offsets[i]
+        else:
+            offset = default_offset
+        if offset is None:
+            continue
         proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq_w[apple_idx], offset)
         bq_w[proxy_idx, :3] = proxy_pos
         bq_w[proxy_idx, 3:] = proxy_quat
@@ -270,6 +332,21 @@ def seed_fix_to_apple_from_settled(
     align_proxy_body_q_prev_for_vbd(cable_w, tuple(range(body_count)))
 
     wp.synchronize()
-    _bootstrap_tcp_at_fixed_origin(welded_scene, ik_iterations=256)
-    if layout is not None:
-        broadcast_joint_q_from_world0(welded_scene, layout)
+    if per_env_ik and layout is not None and layout.num_envs > 1:
+        _bootstrap_tcp_per_env(welded_scene, layout, ik_iterations=256)
+    else:
+        _bootstrap_tcp_at_fixed_origin(welded_scene, ik_iterations=256)
+        if layout is not None:
+            broadcast_joint_q_from_world0(welded_scene, layout)
+        return
+
+    from apple_pick_sim.robot import fr3_robot
+
+    init_robot_mujoco_step_buffers(welded_scene)
+    fr3_robot.init_mujoco_actuator_targets_from_model(
+        welded_scene.robot_model, welded_scene.robot_control
+    )
+    if welded_scene.proxy_forces is not None:
+        welded_scene.proxy_forces.zero_()
+    if welded_scene.coupling_forces_cache is not None:
+        welded_scene.coupling_forces_cache.zero_()

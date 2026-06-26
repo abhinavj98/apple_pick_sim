@@ -16,6 +16,8 @@ from apple_pick_sim.coupled_fruiting.builders import (
     build_batched_coupled_fruiting_placeholder,
     build_coupled_fruiting_fr3,
     build_coupled_fruiting_placeholder,
+    build_heterogeneous_coupled_fruiting_fr3,
+    build_heterogeneous_coupled_fruiting_placeholder,
     build_placeholder_tcp_robot_model,
 )
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
@@ -51,6 +53,8 @@ __all__ = [
     "build_batched_coupled_fruiting_placeholder",
     "build_coupled_fruiting_fr3",
     "build_coupled_fruiting_placeholder",
+    "build_heterogeneous_coupled_fruiting_fr3",
+    "build_heterogeneous_coupled_fruiting_placeholder",
     "build_placeholder_tcp_robot_model",
     "seed_fix_to_apple_from_settled",
     "settle_vbd_substeps",

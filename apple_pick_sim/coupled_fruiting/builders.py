@@ -41,6 +41,7 @@ from apple_pick_sim.fruiting_system import (
 from apple_pick_sim.coupled_fruiting.proxy_coupling import ProxyBodyRegistry
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.batched_build import (
+    build_heterogeneous_coupled_cable_scene,
     build_replicated_coupled_cable_scene,
     build_replicated_robot_model,
 )
@@ -882,5 +883,344 @@ def build_batched_coupled_fruiting_fr3(
         proxy_bq,
         robot_base_pos=robot_base_pos if not robot_base_from_proxy else None,
         robot_base_from_proxy=robot_base_from_proxy,
+    )
+    return scene
+
+
+def build_heterogeneous_coupled_fruiting_placeholder(
+    ranges: dict,
+    params_list: Sequence[FruitingSystemParams],
+    *,
+    env_spacing: tuple[float, float, float] = (2.5, 2.5, 0.0),
+    base_pos: tuple[float, float, float] | None = None,
+    device: str | None = None,
+    omit: Any | None = None,
+    enable_self_collisions: bool = False,
+    gripper_proxy: GripperProxyConfig | None = None,
+    cable_collision_pipeline: Any | None = None,
+    mujoco_solver_kwargs: dict[str, Any] | None = None,
+    stem_coupling_gain: float = DEFAULT_STEM_COUPLING_GAIN,
+    stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N,
+    stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM,
+    mujoco_use_cpu: bool | None = None,
+    robot_base_pos: tuple[float, float, float] | None = None,
+    skip_ik_bootstrap: bool = True,
+    vbd_only: bool = False,
+    defer_template_robot_bootstrap: bool = False,
+) -> CoupledFruitingScene:
+    """Build heterogeneous placeholder-TCP coupled scenes via ``add_world``."""
+    _ = defer_template_robot_bootstrap
+    _ = omit
+    params = list(params_list)
+    num_envs = len(params)
+    if gripper_proxy is None:
+        gripper_proxy = GripperProxyConfig()
+    fix = bool(gripper_proxy.fix_to_apple)
+    _validate_batched_options(
+        num_envs=num_envs, fix_to_apple=fix, vbd_only=vbd_only, mujoco_only=False
+    )
+    if num_envs == 1:
+        return build_coupled_fruiting_placeholder(
+            ranges,
+            0,
+            params=params[0],
+            base_pos=base_pos,
+            device=device,
+            enable_self_collisions=enable_self_collisions,
+            gripper_proxy=gripper_proxy,
+            cable_collision_pipeline=cable_collision_pipeline,
+            mujoco_solver_kwargs=mujoco_solver_kwargs,
+            stem_coupling_gain=stem_coupling_gain,
+            stem_force_cap_N=stem_force_cap_N,
+            stem_torque_cap_Nm=stem_torque_cap_Nm,
+            mujoco_use_cpu=mujoco_use_cpu,
+            robot_base_pos=robot_base_pos,
+            vbd_only=vbd_only,
+        )
+
+    device = resolve_sim_device(device)
+    resolved_base = resolve_fruiting_base_pos(ranges, (0.0, 0.2, 1.0), override=base_pos)
+    resolved_robot_base = resolve_robot_base_pos(ranges, override=robot_base_pos)
+
+    cable, per_world_offsets = build_heterogeneous_coupled_cable_scene(
+        params,
+        env_spacing=env_spacing,
+        device=device,
+        enable_self_collisions=enable_self_collisions,
+        base_pos=resolved_base,
+        robot_base_pos=resolved_robot_base,
+        gripper_proxy=gripper_proxy,
+    )
+    pipe = (
+        cable_collision_pipeline
+        if cable_collision_pipeline is not None
+        else example_collision_pipeline(cable.model, args=None)
+    )
+    gravity_vec = wp.vec3(0.0, 0.0, -9.81)
+    if vbd_only:
+        return CoupledFruitingScene(
+            cable=cable,
+            cable_collision_pipeline=pipe,
+            vbd_only=True,
+            gravity_vec=gravity_vec,
+            env_spacing=env_spacing,
+            per_env_params=params,
+            per_world_proxy_offsets=per_world_offsets,
+        )
+
+    grip_cfg = cable.gripper_proxy_config
+    tpl_mj_kw = dict(DEFAULT_MUJOCO_SOLVER_KWARGS)
+    if mujoco_solver_kwargs:
+        tpl_mj_kw.update(mujoco_solver_kwargs)
+    tpl_mj_kw["use_mujoco_cpu"] = resolve_mujoco_use_cpu(device, mujoco_use_cpu)
+    mj_kw = _mj_kw_for_batch(dict(tpl_mj_kw), num_envs)
+
+    tpl_robot_model, tpl_tcp, _ = build_placeholder_tcp_robot_model(
+        gripper_cfg=grip_cfg,
+        device=device,
+        mujoco_solver_kwargs=tpl_mj_kw,
+    )
+    tpl_state = tpl_robot_model.state()
+    bootstrap_tcp_joint_from_proxy(cable, tpl_robot_model, tpl_tcp, tpl_state)
+
+    robot_model, template_tcp, mj_solver = build_replicated_robot_model(
+        tpl_robot_model,
+        tpl_tcp,
+        num_envs=num_envs,
+        env_spacing=env_spacing,
+        device=device,
+        template_builder_factory=lambda: build_placeholder_tcp_robot_builder(
+            gripper_cfg=grip_cfg
+        ),
+        mujoco_solver_kwargs=mj_kw,
+    )
+    layout = BatchedEnvLayout.from_template_scene(
+        cable,
+        cable.model,
+        robot_model,
+        template_tcp_body=template_tcp,
+        env_spacing=(0.0, 0.0, 0.0),
+    )
+    registry = _batched_proxy_registry(layout)
+    tcp_world0 = layout.tcp_body_indices[0]
+
+    scene = _assemble_coupled_robot_scene(
+        cable,
+        device=device,
+        pipe=pipe,
+        gravity_vec=gravity_vec,
+        robot_model=robot_model,
+        tcp_body=tcp_world0,
+        mj_solver=mj_solver,
+        mj_kw=mj_kw,
+        bootstrap_fn=bootstrap_tcp_joint_from_proxy,
+        mujoco_only=False,
+        stem_coupling_gain=stem_coupling_gain,
+        stem_force_cap_N=stem_force_cap_N,
+        stem_torque_cap_Nm=stem_torque_cap_Nm,
+        qd_synced=wp.empty_like(cable.state_0.body_qd),
+        proxy_registry=registry,
+        layout=layout,
+        env_spacing=env_spacing,
+        skip_ik_bootstrap=skip_ik_bootstrap,
+        ik_template_robot_model=tpl_robot_model,
+    )
+    scene.per_env_params = params
+    scene.per_world_proxy_offsets = per_world_offsets
+    newton.eval_fk(
+        robot_model,
+        robot_model.joint_q,
+        robot_model.joint_qd,
+        scene.robot_state_0,
+    )
+    init_robot_mujoco_step_buffers(scene)
+    return scene
+
+
+def build_heterogeneous_coupled_fruiting_fr3(
+    ranges: dict,
+    params_list: Sequence[FruitingSystemParams],
+    *,
+    env_spacing: tuple[float, float, float] = (2.5, 2.5, 0.0),
+    base_pos: tuple[float, float, float] | None = None,
+    device: str | None = None,
+    omit: Any | None = None,
+    enable_self_collisions: bool = False,
+    gripper_proxy: GripperProxyConfig | None = None,
+    cable_collision_pipeline: Any | None = None,
+    mujoco_solver_kwargs: dict[str, Any] | None = None,
+    usd_path: str | Path | None = None,
+    stem_coupling_gain: float = DEFAULT_STEM_COUPLING_GAIN,
+    stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N,
+    stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM,
+    ik_bootstrap_iterations: int = 96,
+    mujoco_use_cpu: bool | None = None,
+    robot_base_pos: tuple[float, float, float] | None = None,
+    robot_base_from_proxy: bool = False,
+    skip_ik_bootstrap: bool = True,
+    vbd_only: bool = False,
+    defer_template_robot_bootstrap: bool = False,
+) -> CoupledFruitingScene:
+    """Build heterogeneous FR3 coupled scenes via ``add_world`` (uniform topology)."""
+    if not fr3_robot.fr3_assets_available():
+        raise FileNotFoundError(
+            "Bundled FR3 assets missing; see assets/fr3/README.md"
+        )
+    if robot_base_from_proxy:
+        raise ValueError(
+            "robot_base_from_proxy is not supported for heterogeneous batched builds "
+            "(each env's proxy starts at a different position)"
+        )
+    _ = omit
+    params = list(params_list)
+    num_envs = len(params)
+    if gripper_proxy is None:
+        gripper_proxy = GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+        )
+    fix = bool(gripper_proxy.fix_to_apple)
+    _validate_batched_options(
+        num_envs=num_envs, fix_to_apple=fix, vbd_only=vbd_only, mujoco_only=False
+    )
+    if num_envs == 1:
+        return build_coupled_fruiting_fr3(
+            ranges,
+            0,
+            params=params[0],
+            base_pos=base_pos,
+            device=device,
+            enable_self_collisions=enable_self_collisions,
+            gripper_proxy=gripper_proxy,
+            cable_collision_pipeline=cable_collision_pipeline,
+            mujoco_solver_kwargs=mujoco_solver_kwargs,
+            usd_path=usd_path,
+            stem_coupling_gain=stem_coupling_gain,
+            stem_force_cap_N=stem_force_cap_N,
+            stem_torque_cap_Nm=stem_torque_cap_Nm,
+            ik_bootstrap_iterations=ik_bootstrap_iterations,
+            mujoco_use_cpu=mujoco_use_cpu,
+            robot_base_pos=robot_base_pos,
+            skip_ik_bootstrap=skip_ik_bootstrap,
+            vbd_only=vbd_only,
+        )
+
+    device = resolve_sim_device(device)
+    resolved_base = resolve_fruiting_base_pos(ranges, (0.0, 0.2, 1.0), override=base_pos)
+    resolved_robot_base = resolve_robot_base_pos(ranges, override=robot_base_pos)
+
+    cable, per_world_offsets = build_heterogeneous_coupled_cable_scene(
+        params,
+        env_spacing=env_spacing,
+        device=device,
+        enable_self_collisions=enable_self_collisions,
+        base_pos=resolved_base,
+        robot_base_pos=resolved_robot_base,
+        gripper_proxy=gripper_proxy,
+    )
+    pipe = (
+        cable_collision_pipeline
+        if cable_collision_pipeline is not None
+        else example_collision_pipeline(cable.model, args=None)
+    )
+    gravity_vec = wp.vec3(0.0, 0.0, -9.81)
+    if vbd_only:
+        return CoupledFruitingScene(
+            cable=cable,
+            cable_collision_pipeline=pipe,
+            vbd_only=True,
+            gravity_vec=gravity_vec,
+            env_spacing=env_spacing,
+            per_env_params=params,
+            per_world_proxy_offsets=per_world_offsets,
+        )
+
+    proxy_bq = cable.state_0.body_q.numpy().reshape(-1, 7)[cable.gripper_proxy_body]
+    root_xform = _robot_root_xform(ranges, proxy_bq, robot_base_pos=robot_base_pos)
+
+    mj_kw = dict(DEFAULT_FR3_MUJOCO_SOLVER_KWARGS)
+    if mujoco_solver_kwargs:
+        mj_kw.update(mujoco_solver_kwargs)
+    mj_kw["use_mujoco_cpu"] = resolve_mujoco_use_cpu(device, mujoco_use_cpu)
+    tpl_mj_kw = dict(mj_kw)
+    batched_mj_kw = _mj_kw_for_batch(dict(mj_kw), num_envs)
+
+    tpl_robot_model, tpl_tcp, _ = fr3_robot.build_fr3_robot_model_from_usd(
+        device=device,
+        usd_path=usd_path,
+        root_xform=root_xform,
+        mujoco_solver_kwargs=tpl_mj_kw,
+    )
+    tpl_state = tpl_robot_model.state()
+    if not defer_template_robot_bootstrap:
+        bootstrap_articulated_tcp_from_proxy(
+            cable,
+            tpl_robot_model,
+            tpl_tcp,
+            tpl_state,
+            ik_iterations=ik_bootstrap_iterations,
+        )
+
+    def _robot_builder_factory() -> tuple[newton.ModelBuilder, int]:
+        return fr3_robot.build_fr3_robot_builder(
+            usd_path=usd_path,
+            root_xform=root_xform,
+        )
+
+    robot_model, template_tcp, mj_solver = build_replicated_robot_model(
+        tpl_robot_model,
+        tpl_tcp,
+        num_envs=num_envs,
+        env_spacing=env_spacing,
+        device=device,
+        template_builder_factory=_robot_builder_factory,
+        mujoco_solver_kwargs=batched_mj_kw,
+    )
+    layout = BatchedEnvLayout.from_template_scene(
+        cable,
+        cable.model,
+        robot_model,
+        template_tcp_body=template_tcp,
+        env_spacing=(0.0, 0.0, 0.0),
+    )
+    registry = _batched_proxy_registry(layout)
+    tcp_world0 = layout.tcp_body_indices[0]
+
+    scene = _assemble_coupled_robot_scene(
+        cable,
+        device=device,
+        pipe=pipe,
+        gravity_vec=gravity_vec,
+        robot_model=robot_model,
+        tcp_body=tcp_world0,
+        mj_solver=mj_solver,
+        mj_kw=batched_mj_kw,
+        bootstrap_fn=bootstrap_articulated_tcp_from_proxy,
+        mujoco_only=False,
+        stem_coupling_gain=stem_coupling_gain,
+        stem_force_cap_N=stem_force_cap_N,
+        stem_torque_cap_Nm=stem_torque_cap_Nm,
+        init_mujoco_actuator_targets=True,
+        qd_synced=wp.empty_like(cable.state_0.body_qd),
+        proxy_registry=registry,
+        layout=layout,
+        env_spacing=env_spacing,
+        skip_ik_bootstrap=skip_ik_bootstrap,
+        ik_template_robot_model=tpl_robot_model,
+    )
+    scene.per_env_params = params
+    scene.per_world_proxy_offsets = per_world_offsets
+    newton.eval_fk(
+        robot_model,
+        robot_model.joint_q,
+        robot_model.joint_qd,
+        scene.robot_state_0,
+    )
+    init_robot_mujoco_step_buffers(scene)
+    scene.fr3_root_world_pos = _fr3_root_world_pos(
+        ranges,
+        proxy_bq,
+        robot_base_pos=robot_base_pos,
+        robot_base_from_proxy=False,
     )
     return scene

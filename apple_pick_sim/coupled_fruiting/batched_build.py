@@ -18,8 +18,10 @@ from apple_pick_sim.fruiting_system.build import (
 )
 from apple_pick_sim.fruiting_system.coupled import (
     CoupledCableScene,
+    CoupledCablePopulateResult,
     _populate_coupled_cable_builder,
 )
+from apple_pick_sim.fruiting_system.params import FruitingSystemParams, GripperProxyConfig
 from apple_pick_sim.coupled_fruiting.proxy_coupling import align_proxy_body_q_prev_for_vbd
 
 
@@ -124,6 +126,144 @@ def build_replicated_coupled_cable_scene(
     )
     align_proxy_body_q_prev_for_vbd(scene, tpl_proxy_ids)
     return scene
+
+
+def _rod_segments_match(a: FruitingSystemParams, b: FruitingSystemParams) -> bool:
+    for seg in ("primary", "secondary", "spur", "stem"):
+        ra = getattr(a, seg)
+        rb = getattr(b, seg)
+        if (ra is None) != (rb is None):
+            return False
+        if ra is not None and rb is not None and ra.num_segments != rb.num_segments:
+            return False
+    if (a.apple_radius is None) != (b.apple_radius is None):
+        return False
+    return True
+
+
+def _assert_uniform_topology(params_list: list[FruitingSystemParams]) -> None:
+    if not params_list:
+        raise ValueError("params_list must be non-empty")
+    topo0 = params_list[0]
+    for w, params_w in enumerate(params_list[1:], start=1):
+        if not _rod_segments_match(topo0, params_w):
+            raise ValueError(
+                f"heterogeneous build topology mismatch at env {w}: "
+                "segment enablement or num_segments differs across envs"
+            )
+
+
+def _assert_uniform_world_entity_gaps(model: newton.Model, num_envs: int) -> int:
+    """Return bodies_per_world after verifying uniform body/joint/shape counts."""
+    world_count = int(model.world_count)
+    if world_count != num_envs:
+        raise ValueError(
+            f"expected world_count={num_envs} after heterogeneous build, got {world_count}"
+        )
+
+    def _uniform_per_world(arr: wp.array, label: str) -> int:
+        starts = arr.numpy()
+        per = int(starts[1] - starts[0])
+        for w in range(world_count):
+            gap = int(starts[w + 1] - starts[w])
+            if gap != per:
+                raise ValueError(
+                    f"heterogeneous build produced non-uniform world {label} counts "
+                    f"(world {w} gap {gap} != {per})"
+                )
+        return per
+
+    bodies_per = _uniform_per_world(model.body_world_start, "body")
+    _uniform_per_world(model.joint_world_start, "joint")
+    _uniform_per_world(model.shape_world_start, "shape")
+    return bodies_per
+
+
+def build_heterogeneous_coupled_cable_scene(
+    params_list: list[FruitingSystemParams],
+    *,
+    env_spacing: tuple[float, float, float],
+    device: str,
+    enable_self_collisions: bool,
+    base_pos: tuple[float, float, float],
+    robot_base_pos: tuple[float, float, float] | None,
+    gripper_proxy: GripperProxyConfig,
+) -> tuple[CoupledCableScene, tuple[tuple[float, float, float, float, float, float, float] | None, ...]]:
+    """Build ``len(params_list)`` heterogeneous VBD worlds via ``add_world`` (co-located)."""
+    del env_spacing  # viewer-only; physics worlds share the origin
+    num_envs = len(params_list)
+    if num_envs < 1:
+        raise ValueError("build_heterogeneous_coupled_cable_scene requires num_envs >= 1")
+    _assert_uniform_topology(params_list)
+
+    outer = _new_fruiting_builder()
+    populate_results: list[CoupledCablePopulateResult] = []
+    for params_w in params_list:
+        sub = _new_fruiting_builder()
+        pop = _populate_coupled_cable_builder(
+            sub,
+            params_w,
+            base_pos,
+            gripper_proxy=gripper_proxy,
+            robot_base_pos=robot_base_pos,
+        )
+        _prepare_cable_template_builder_for_replicate(
+            sub,
+            pop.artifacts,
+            enable_self_collisions=enable_self_collisions,
+            proxy_free_joint=pop.proxy_free_joint,
+        )
+        outer.add_world(sub)
+        populate_results.append(pop)
+
+    outer.color()
+    model = outer.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    bodies_per_world = _assert_uniform_world_entity_gaps(model, num_envs)
+    tpl = populate_results[0]
+
+    if gripper_proxy.fix_to_apple and tpl.artifacts.apple_body is not None:
+        from apple_pick_sim.fruiting_system.build import prescribe_body_vbd_on_model
+
+        prescribed: list[int] = []
+        for w in range(num_envs):
+            off = w * bodies_per_world
+            prescribed.append(off + int(tpl.artifacts.apple_body))
+            prescribed.append(off + int(tpl.proxy_body))
+        prescribe_body_vbd_on_model(model, *prescribed)
+
+    state_0, state_1, control, solver = _scene_states_from_model(model)
+    scene = CoupledCableScene(
+        model=model,
+        state_0=state_0,
+        state_1=state_1,
+        control=control,
+        solver=solver,
+        params=params_list[0],
+        primary_bodies=tpl.artifacts.seg_bodies.get("primary", []),
+        secondary_bodies=tpl.artifacts.seg_bodies.get("secondary", []),
+        spur_bodies=tpl.artifacts.seg_bodies.get("spur", []),
+        stem_bodies=tpl.artifacts.seg_bodies.get("stem", []),
+        apple_body=tpl.artifacts.apple_body,
+        fruiting_fixed_joints=tuple(tpl.artifacts.fruiting_fixed_joints),
+        cable_joint_indices=tuple(tpl.artifacts.cable_joint_indices),
+        gripper_proxy_body=tpl.proxy_body,
+        gripper_proxy_config=gripper_proxy,
+        gripper_proxy_apple_joint=tpl.proxy_apple_joint,
+        gripper_proxy_offset_in_apple_frame=tpl.proxy_offset_in_apple,
+        gripper_proxy_vis_offset=tpl.vis_offset,
+    )
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_1)
+    wp.synchronize()
+    proxy_ids = tuple(
+        int(tpl.proxy_body) + w * bodies_per_world for w in range(num_envs)
+    )
+    align_proxy_body_q_prev_for_vbd(scene, proxy_ids)
+
+    per_world_offsets = tuple(pop.proxy_offset_in_apple for pop in populate_results)
+    return scene, per_world_offsets
 
 
 def broadcast_settled_cable_state_to_batched_worlds(

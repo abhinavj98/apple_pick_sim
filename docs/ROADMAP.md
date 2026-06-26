@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-06-25 (M3 active; [V] batched vectorization in parallel on `apple-pick-sim-vecorization`) |
+| **Last updated** | 2026-06-25 (M3 active; [V] V.1 done, V.2 next on `apple-pick-sim-vecorization`) |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 
@@ -44,9 +44,9 @@ Later: real-data collection [M4], final pick policy [M5].
 **Parallel track — [V] batched vectorization** (branch `apple-pick-sim-vecorization`, spec `docs/vectorized-coupled-fruiting.md`):
 
 - **Batch contract:** fixed `num_segments` and `omit` set per batch; only numeric `FruitingSystemParams` vary (stiffness, lengths, directions, etc.).
-- **V.1 (done on vectorization branch):** `replicate(N)` cable + robot, batched settle→weld init, `BatchedEnvLayout`, multi-TCP wrench apply, `BatchedTemplateIK` per-env scatter teleop (example: homogeneous keyboard), `example_batched_coupled_fruiting.py` + `test_vectorized_coupled_fruiting.py`.
-- **V.2 (next on vectorization branch):** Per-env K/B scatter, recorded-action replay, transition gather → replaces subprocess stiffness grid for M3.2.
-- **V.3:** Per-env geometry DR, batched gym `(N, act_dim)` → IK scatter, transition gather → M2 RL.
+- **V.1 (done):** `replicate(N)` cable + robot, batched settle→weld init, `BatchedEnvLayout`, multi-TCP wrench apply, `BatchedTemplateIK` per-env scatter teleop (example: homogeneous keyboard), co-located physics + viewer grid, `example_batched_coupled_fruiting.py` + `test_vectorized_coupled_fruiting.py`. Spec: [independent env semantics — V.1 limitations](vectorized-coupled-fruiting.md#v1-shipped-vs-v2-independent-envs).
+- **V.2 (next):** Fully **independent envs** within a batch — per-env DR (numeric θ / seeds), per-env settle→weld→**IK bootstrap** (no `broadcast_joint_q_from_world0` on FR3), per-env actions at runtime; then K/B runtime scatter, recorded-action replay, `gather_transitions()` for M3.2 CEM.
+- **V.3:** Per-env geometry DR on reset; batched gym `(N, act_dim)` → IK scatter; batched `apple_pick_gym` adapter → M2 RL.
 
 **Build on (do not reimplement):**
 
@@ -107,9 +107,12 @@ Homogeneous multi-world coupled rollouts: `ModelBuilder.replicate()` on cable + 
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
-| V.1 | **Done** (vectorization branch) | `replicate(N)`, batched settle→weld, `BatchedTemplateIK` scatter + homogeneous example teleop, layout + tests, `example_batched_coupled_fruiting.py` |
-| V.2 | **Next** (vectorization branch) | Per-env stiffness/damping; recorded-action replay; `gather_transitions` for MMD/CEM |
-| V.3 | Planned | Per-env geometry DR; gym `(N, act_dim)` → scatter; batched `apple_pick_gym` adapter |
+| V.1 | **Done** | `replicate(N)`, batched settle→weld, `BatchedTemplateIK` scatter, homogeneous example teleop, layout + tests, co-located physics / viewer spacing doc |
+| V.2 | **Next** | Independent envs: per-env seeds/θ DR, per-env IK weld bootstrap, per-env actions; K/B scatter; recorded-action replay; `gather_transitions` for MMD/CEM |
+| V.2.1 | Planned (within V.2) | Per-env IK bootstrap after settle→weld (replace joint broadcast); tests for all-world TCP at proxy |
+| V.2.2 | Planned (within V.2) | Per-env `sample_params` / stiffness scatter at build or reset |
+| V.2.3 | Planned (within V.2) | Example + API for per-env actions (`velocity_for_world`, action buffer); drop placeholder broadcast on independent path |
+| V.3 | Planned | Per-env geometry DR on reset; gym `(N, act_dim)` → scatter; batched `apple_pick_gym` adapter |
 
 **Consumers:** M3.2 (batched CEM rollouts), M2.3 / M2.2c (parallel RL envs).
 
@@ -118,7 +121,7 @@ Homogeneous multi-world coupled rollouts: `ModelBuilder.replicate()` on cable + 
 ## Backlog
 
 - **[M2] remaining:** M2.0 (interface ADR), M2.2a (`ApplePickFID-v0`), M2.2c (SKRL smoke), M2.3 (π_exp training) — resume after M3 or in parallel if maintainer directs; batched env backend depends on **[V].3**.
-- **[V] remaining:** V.2–V.3 after V.1; batched VIC deferred.
+- **[V] remaining:** V.2 (independent envs + CEM gather) and V.3 after V.1; batched VIC deferred.
 - Additional manipulators or crops — explicit scope change only.
 - Triangle mesh import/export — P0 stays capsule primitives.
 - Real-data pipeline [M4], final pick policy [M5] — after M3 contracts exist.
@@ -186,13 +189,17 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --viewer null --n-directions 1 --max-steps 200 --save-snapshot \
   --output /tmp/apple_pick_sysid_with_snapshot
 
-# [V] Batched coupled fruiting (V.1; see docs/vectorized-coupled-fruiting.md)
+# [V] Batched coupled fruiting (V.1 done; V.2 next — see docs/vectorized-coupled-fruiting.md)
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_vectorized_coupled_fruiting.py -q
 uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
   --viewer null --num-frames 500 --num-envs 4 --fix-to-apple --controller direct --seed 42
 uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
   --viewer null --num-frames 120 --robot placeholder --num-envs 2 --fix-to-apple
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py -q
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \
+  --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 ```
 
 **Stop and ask the maintainer when:**

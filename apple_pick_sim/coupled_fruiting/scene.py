@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import warp as wp
@@ -455,6 +455,10 @@ class CoupledFruitingScene:
     """Replicate spacing for batched scenes (used when seeding settle-then-weld)."""
     ik_template_robot_model: Any | None = None
     """Single-world robot model kept for IK bootstrap in batched scenes (world_count>1)."""
+    per_env_params: Sequence[Any] | None = None
+    """Per-world :class:`~apple_pick_sim.fruiting_system.FruitingSystemParams` when heterogeneous."""
+    per_world_proxy_offsets: tuple[tuple | None, ...] | None = None
+    """Per-env apple-frame grasp offsets for heterogeneous settle-then-weld."""
 
     def update_fr3_ee_teleop(
         self,

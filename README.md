@@ -164,9 +164,9 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py --robot placeholder --viewer null --num-frames 60
 ```
 
-### `example_batched_coupled_fruiting.py` (V.1 vectorization)
+### `example_batched_coupled_fruiting.py` (V.1 shipped; V.2 independent envs next)
 
-Batched coupled fruiting: **N** worlds via ``replicate()``, settle→weld init, then FR3 teleop via ``BatchedTemplateIK`` per-env scatter (reference example: same keyboard velocity on all envs; use ``velocity_for_world`` for different actions per arm). Full flow: **`docs/vectorized-coupled-fruiting.md`**.
+Batched coupled fruiting: **N** worlds via ``replicate()``, settle→weld init, then FR3 teleop via ``BatchedTemplateIK`` per-env scatter. **V.1:** reference example uses the same keyboard velocity on all envs; **V.2 (next):** per-env seeds, weld bootstrap, and actions. Full flow: **`docs/vectorized-coupled-fruiting.md`**.
 
 ```bash
 # Headless smoke (settle→weld)

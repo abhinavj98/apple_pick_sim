@@ -14,9 +14,9 @@ Before **any major production code change** (not read-only Q&A, reviews, or docs
      ```bash
      git worktree add ../apple_pick_sim-<slug> -b feature/<slug>
      cd ../apple_pick_sim-<slug> && git submodule update --init --recursive
-     cd newton && uv sync --extra examples
+     uv sync --extra gym --extra vic --extra dev
      ```
-3. **Edit and test in the worktree** — use absolute paths under the worktree root, or `cd` there for shell commands. Run tests with documented `uv run --directory newton …` from the worktree root.
+3. **Edit and test in the worktree** — use absolute paths under the worktree root, or `cd` there for shell commands. Run tests with documented root-local `uv run --env-file pytest.env …` commands from the worktree root.
 4. **Tell the user** to open the worktree in a new Cursor window for ongoing work: **File → New Window → Open Folder** → `../apple_pick_sim-<slug>`.
 5. **Commits** happen on the feature branch in the worktree, not on `main`.
 

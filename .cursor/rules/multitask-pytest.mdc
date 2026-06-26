@@ -13,14 +13,14 @@ From **repository root** (`apple_pick_sim/`):
 
 ```bash
 cd /home/abhinav/codes/apple_pick_sim
-export PYTHONPATH="$(pwd)"
-unset PYTEST_DISABLE_PLUGIN_AUTOLOAD   # never set this; plugin autoload must stay on
+uv sync --extra gym --extra vic --extra dev
 ```
 
-- **Do not** set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` (disables all plugins and breaks normal pytest behavior).
-- **Do** disable only the broken ROS entrypoint: **`-p no:launch_testing`** on every pytest invocation (see `docs/ROADMAP.md` Agent execution notes).
+- Use the root project uv environment, not the Newton submodule environment.
+- Use `--env-file pytest.env` for pytest runs. ROS Humble exposes a broken pytest plugin, and `pytest.env` disables plugin autoload consistently for this repo.
+- Keep **`-p no:launch_testing`** on every pytest invocation for compatibility with documented commands.
 
-All pytest commands use **`uv run --directory newton`** so the Newton submodule venv and lockfile apply.
+All pytest commands run from the repository root with **`uv run --env-file pytest.env`** so project-local dependencies such as `pyarrow` are available.
 
 ## Slow vs fast split
 
@@ -32,8 +32,8 @@ All pytest commands use **`uv run --directory newton`** so the Newton submodule 
 Collect slow node IDs:
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
-  ../apple_pick_sim/tests --collect-only -q -p no:launch_testing -m slow
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests --collect-only -q -p no:launch_testing -m slow
 ```
 
 ## Multitask agent layout
@@ -44,27 +44,27 @@ PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
 Example fast batch (default gate):
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
-  ../apple_pick_sim/tests/ -q -p no:launch_testing -m "not slow"
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/ -q -p no:launch_testing -m "not slow"
 ```
 
 Example **one slow test** (repeat per collected node id):
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
-  ../apple_pick_sim/tests/test_mega_fd_kinematics.py::test_fd_stem_wrench_matches_coupled_gather_after_drive \
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_mega_fd_kinematics.py::test_fd_stem_wrench_matches_coupled_gather_after_drive \
   -q -p no:launch_testing --tb=short
 ```
 
 Scene-merge / mega validation (when that slice is active):
 
 ```bash
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
-  ../apple_pick_sim/tests/test_proxy_coupling.py \
-  ../apple_pick_sim/tests/test_mega_coupled_fruiting.py \
-  ../apple_pick_sim/tests/test_mega_fd.py \
-  ../apple_pick_sim/tests/test_mega_fd_kinematics.py \
-  ../apple_pick_sim/tests/test_settle_then_weld.py \
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_proxy_coupling.py \
+  apple_pick_sim/tests/test_mega_coupled_fruiting.py \
+  apple_pick_sim/tests/test_mega_fd.py \
+  apple_pick_sim/tests/test_mega_fd_kinematics.py \
+  apple_pick_sim/tests/test_settle_then_weld.py \
   -q -p no:launch_testing
 ```
 
@@ -98,12 +98,12 @@ From repo root after substantive changes:
 
 ```bash
 # Fast default
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
-  ../apple_pick_sim/tests/ -q -p no:launch_testing -m "not slow"
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/ -q -p no:launch_testing -m "not slow"
 
 # Slow gate
-PYTHONPATH=$(pwd) uv run --directory newton python -m pytest \
-  ../apple_pick_sim/tests/ -m slow -q -p no:launch_testing
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/ -m slow -q -p no:launch_testing
 ```
 
 See also `docs/ROADMAP.md` → **Agent execution notes**.

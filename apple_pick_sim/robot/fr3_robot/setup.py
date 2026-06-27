@@ -14,6 +14,9 @@ from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.coupled_fruiting.vic_joint_torques import allocate_vic_joint_torque_buffers
+from apple_pick_sim.coupled_fruiting.vic_joint_torques_batched import (
+    allocate_vic_joint_torque_buffers_batched,
+)
 from apple_pick_sim.robot.fr3_robot.paths import TESTFR3_SCENE_USD, fr3_assets_available
 
 def resolve_tcp_body_index(model: newton.Model) -> int:
@@ -284,6 +287,43 @@ def configure_vic_joint_torques_arm(
             kd_null=kd_null,
             singularity_damping=singularity_damping,
         )
+
+
+def configure_vic_joint_torques_arm_batched(
+    robot_model: newton.Model,
+    state: Any,
+    control: Any,
+    mj_solver: SolverMuJoCo,
+    *,
+    scene: Any,
+    layout: Any,
+    tcp_body_index: int | None = None,
+    kp_null: float = 10.0,
+    kd_null: float = 6.3246,
+    singularity_damping: float = 0.0,
+) -> None:
+    """One-shot batched VIC setup: zero PD, ``joint_f`` for all worlds, batched J/H buffers."""
+    zero_mujoco_joint_pd(robot_model)
+    mj_solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+    hold_mujoco_actuator_targets_at_state(robot_model, state, control)
+    if control.joint_f is None:
+        n = int(robot_model.joint_dof_count)
+        control.joint_f = wp.zeros(n, dtype=float, device=robot_model.device)
+    if tcp_body_index is not None:
+        tcp = int(tcp_body_index)
+    elif getattr(scene, "tcp_body_index", None) is not None:
+        tcp = int(scene.tcp_body_index)
+    else:
+        tcp = int(layout.tcp_body_indices[0])
+    allocate_vic_joint_torque_buffers_batched(
+        robot_model,
+        scene,
+        layout,
+        tcp_body_index=tcp,
+        kp_null=kp_null,
+        kd_null=kd_null,
+        singularity_damping=singularity_damping,
+    )
 
 
 def configure_vic_wrench_only_arm(

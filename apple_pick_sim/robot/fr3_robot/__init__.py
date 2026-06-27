@@ -11,6 +11,9 @@ from apple_pick_sim.robot.fr3_robot.controllers.ee_direct_joint_batched import (
     Fr3BatchedEEDirectJointController,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.ee_velocity import Fr3EEVelocityController
+from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance_batched import (
+    Fr3BatchedEEImpedanceController,
+)
 from apple_pick_sim.robot.fr3_robot.controllers.ee_velocity_batched import (
     Fr3BatchedEEVelocityController,
 )
@@ -51,6 +54,7 @@ from apple_pick_sim.robot.fr3_robot.setup import (
     build_fr3_robot_builder,
     build_fr3_robot_model_from_usd,
     configure_vic_joint_torques_arm,
+    configure_vic_joint_torques_arm_batched,
     configure_vic_wrench_only_arm,
     hold_mujoco_actuator_targets_at_state,
     init_mujoco_actuator_targets_from_model,
@@ -71,6 +75,7 @@ __all__ = [
     "EEVelocity",
     "FR3_KEYBOARD_BINDINGS",
     "Fr3BatchedEEDirectJointController",
+    "Fr3BatchedEEImpedanceController",
     "Fr3BatchedEEVelocityController",
     "Fr3EEDirectJointController",
     "Fr3EEImpedanceController",
@@ -91,6 +96,7 @@ __all__ = [
     "build_fr3_robot_builder",
     "build_fr3_robot_model_from_usd",
     "configure_vic_joint_torques_arm",
+    "configure_vic_joint_torques_arm_batched",
     "configure_vic_wrench_only_arm",
     "fr3_assets_available",
     "hold_mujoco_actuator_targets_at_state",

@@ -19,6 +19,10 @@ from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
     allocate_vic_joint_torque_buffers,
     apply_vic_joint_torques_to_scene,
 )
+from apple_pick_sim.coupled_fruiting.vic_joint_torques_batched import (
+    allocate_vic_joint_torque_buffers_batched,
+    apply_vic_joint_torques_batched_to_scene,
+)
 from apple_pick_sim.coupled_fruiting.vic_wrench import apply_vic_to_coupling_cache
 from apple_pick_sim.coupling_force_debug import CouplingForceDebugRecorder
 from apple_pick_sim.fruiting_system import CoupledCableScene
@@ -114,7 +118,13 @@ def _mujoco_robot_substep_prefix(scene: Any, dt: float) -> None:
         if getattr(scene, "vic_use_joint_torques", False):
             if scene.robot_control.joint_f is not None:
                 scene.robot_control.joint_f.zero_()
-            apply_vic_joint_torques_to_scene(scene)
+            if (
+                getattr(scene, "layout", None) is not None
+                and getattr(scene, "vic_target_positions_wp", None) is not None
+            ):
+                apply_vic_joint_torques_batched_to_scene(scene)
+            else:
+                apply_vic_joint_torques_to_scene(scene)
         else:
             apply_vic_to_coupling_cache(scene)
         if scene.force_debug is not None:
@@ -179,6 +189,7 @@ def _update_fr3_ee_teleop_impl(
         | fr3_robot.Fr3EEDirectJointController
         | fr3_robot.Fr3BatchedEEVelocityController
         | fr3_robot.Fr3BatchedEEDirectJointController
+        | fr3_robot.Fr3BatchedEEImpedanceController
     ),
     *,
     viewer: fr3_robot._KeyViewer | None = None,
@@ -217,8 +228,12 @@ def _update_fr3_ee_teleop_impl(
         velocity=velocity,
     )
     if getattr(scene, "vic_controller", None) is not None:
-        scene.vic_target_tf = controller.target_tf
-        scene.vic_target_twist = velocity
+        if isinstance(controller, fr3_robot.Fr3BatchedEEImpedanceController):
+            controller.stage_targets_to_scene(scene)
+            scene.vic_target_twist = velocity
+        else:
+            scene.vic_target_tf = controller.target_tf
+            scene.vic_target_twist = velocity
     return velocity
 
 
@@ -480,6 +495,8 @@ class CoupledFruitingScene:
     vic_gains: fr3_robot.ImpedanceGains | None = None
     vic_target_tf: wp.transform | None = None
     vic_target_twist: fr3_robot.EEVelocity | None = None
+    vic_target_positions_wp: wp.array | None = None
+    vic_target_rotations_wp: wp.array | None = None
     layout: Any | None = None
     """Optional :class:`~apple_pick_sim.coupled_fruiting.batched_layout.BatchedEnvLayout`."""
     env_spacing: tuple[float, float, float] | None = None
@@ -501,7 +518,9 @@ class CoupledFruitingScene:
         self,
         dt: float,
         controller: (
-            fr3_robot.Fr3EEVelocityController | fr3_robot.Fr3EEImpedanceController
+            fr3_robot.Fr3EEVelocityController
+            | fr3_robot.Fr3EEImpedanceController
+            | fr3_robot.Fr3BatchedEEImpedanceController
         ),
         *,
         viewer: fr3_robot._KeyViewer | None = None,

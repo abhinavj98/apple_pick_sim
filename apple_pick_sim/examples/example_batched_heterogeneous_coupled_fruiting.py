@@ -14,6 +14,11 @@ Per-env scripted actions (RL scatter-path demo)::
     uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \\
       --num-envs 4 --viewer gl --demo-per-env-actions --seed 42
 
+Variable-impedance teleop (requires PyTorch; ``uv sync --extra vic``)::
+
+    uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \\
+      --num-envs 4 --viewer gl --controller vic --seed 42
+
 Default ranges: ``fruiting_system_ranges_real_world_proxy_variance.json`` (real-world
 bench proxy with per-env DR). Robot base at origin; fruiting chain at (0, 0.5, 0.95) m.
 """
@@ -91,8 +96,6 @@ def _gripper_proxy_from_args(
 
 
 def _reject_unsupported_flags(args: argparse.Namespace) -> None:
-    if getattr(args, "controller", "direct") == "vic":
-        raise SystemExit("VIC is not supported (use --controller direct or ee).")
     if bool(getattr(args, "only_vbd", False)) or bool(getattr(args, "only_mjc", False)):
         raise SystemExit("--only-vbd and --only-mjc are not supported.")
 
@@ -147,7 +150,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--controller",
         type=str,
-        choices=("direct", "ee"),
+        choices=("direct", "ee", "vic"),
         default="direct",
     )
     parser.add_argument("--fr3-keyboard", action="store_true")
@@ -186,6 +189,10 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mark-endpoints", action="store_true")
     parser.add_argument("--endpoint-radius", type=float, default=0.05)
     parser.add_argument("--mujoco-viewer", action="store_true")
+    parser.add_argument("--vic-linear-k", type=float, default=8000.0, help="VIC linear K [N/m].")
+    parser.add_argument("--vic-linear-d", type=float, default=80.0, help="VIC linear D [N·s/m].")
+    parser.add_argument("--vic-angular-k", type=float, default=40.0, help="VIC angular K [N·m/rad].")
+    parser.add_argument("--vic-angular-d", type=float, default=4.0, help="VIC angular D [N·m·s/rad].")
     return parser
 
 
@@ -384,6 +391,8 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 velocity_for_world=velocity_for_world,
                 **ik_kw,
             )
+        elif mode == "vic":
+            return self._configure_fr3_vic(ik_kw, velocity_for_world)
         else:
             self.scene.robot_kinematic_mode = True
             ctrl = fr3_robot.Fr3BatchedEEDirectJointController(
@@ -396,6 +405,50 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
             )
         ctrl.sync_target_from_state(self.scene.robot_state_0)
         return ctrl
+
+    def _configure_fr3_vic(self, ik_kw: dict, velocity_for_world):
+        from apple_pick_sim.coupled_fruiting.vic_joint_torques import _require_torch
+
+        _require_torch()
+        self.scene.robot_kinematic_mode = False
+        fr3_robot.init_mujoco_actuator_targets_from_model(
+            self.scene.robot_model, self.scene.robot_control
+        )
+        print("Batched FR3 dynamic-arm mode: MuJoCo integrates lagged plant wrenches on TCP body_f.")
+        self.scene.vic_use_joint_torques = True
+        vic = fr3_robot.Fr3BatchedEEImpedanceController(
+            self.scene.robot_model,
+            linear_speed=_FR3_TELEOP_LINEAR_SPEED,
+            angular_speed=_FR3_TELEOP_ANGULAR_SPEED,
+            velocity_for_world=velocity_for_world,
+            **ik_kw,
+        )
+        self.scene.vic_controller = vic
+        self.scene.vic_gains = fr3_robot.ImpedanceGains(
+            linear_k=float(getattr(self.args, "vic_linear_k", 8000.0)),
+            linear_d=float(getattr(self.args, "vic_linear_d", 80.0)),
+            angular_k=float(getattr(self.args, "vic_angular_k", 40.0)),
+            angular_d=float(getattr(self.args, "vic_angular_d", 4.0)),
+        )
+        fr3_robot.configure_vic_joint_torques_arm_batched(
+            self.scene.robot_model,
+            self.scene.robot_state_0,
+            self.scene.robot_control,
+            self.scene.mj_solver,
+            scene=self.scene,
+            layout=self.scene.layout,
+        )
+        self.scene.vic_joint_torques_configured = True
+        vic.sync_target_from_state(self.scene.robot_state_0)
+        vic.stage_targets_to_scene(self.scene)
+        self.scene.vic_target_twist = fr3_robot.EEVelocity()
+        g = self.scene.vic_gains
+        print(
+            f"Batched VIC enabled (joint torques, joint PD off): "
+            f"K=({g.linear_k:g}, {g.angular_k:g}) "
+            f"D=({g.linear_d:g}, {g.angular_d:g}) N/m, N·m/rad."
+        )
+        return vic
 
     def _velocity_for_world(self, world: int) -> fr3_robot.EEVelocity:
         if self._demo_per_env_actions:

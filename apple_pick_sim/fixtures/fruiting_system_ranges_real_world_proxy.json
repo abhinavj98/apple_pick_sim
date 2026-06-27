@@ -1,0 +1,45 @@
+{
+  "_comment": "Nominal real-world bench proxy. Active placeholders: primary.bend_stiffness not yet sys-ID calibrated (proxy tier bands 210–736 N/m); spur/stem stiffness interim; rod radius from example_variance midpoints until measured; EE mass 0.5 kg pending weigh-in.",
+  "args": {
+    "fruiting_base_pos": [0.0, 0.5, 0.95],
+    "robot_base_pos": [0.0, 0.0, 0.0]
+  },
+  "primary": {
+    "num_segments": { "min": 2, "max": 4 },
+    "length": { "min": 0.10, "max": 0.20 },
+    "radius": { "min": 0.012, "max": 0.025 },
+    "bend_stiffness": { "min": 210.0, "max": 736.0 },
+    "bend_damping": { "min": 0.08, "max": 0.14 },
+    "stretch_stiffness": { "min": 1.0e7, "max": 1.0e8 },
+    "density": { "min": 300.0, "max": 500.0 },
+    "azimuth_deg": { "min": 0.0, "max": 0.0 },
+    "elevation_deg": { "min": 0.0, "max": 0.0 }
+  },
+  "secondary": null,
+  "spur": {
+    "num_segments": { "min": 4, "max": 6 },
+    "length": { "min": 0.01, "max": 0.1 },
+    "radius": { "min": 0.006, "max": 0.014 },
+    "bend_stiffness": { "min": 10.0, "max": 200.0 },
+    "bend_damping": { "min": 0.08, "max": 0.14 },
+    "stretch_stiffness": { "min": 1.0e6, "max": 1.0e7 },
+    "density": { "min": 200.0, "max": 400.0 },
+    "elevation_delta_deg": { "min": -90.0, "max": -90.0 },
+    "lateral_delta_deg": { "min": 0.0, "max": 0.0 }
+  },
+  "stem": {
+    "num_segments": { "min": 4, "max": 6 },
+    "length": { "min": 0.01, "max": 0.02 },
+    "radius": { "min": 0.003, "max": 0.008 },
+    "bend_stiffness": { "min": 0.01, "max": 0.5 },
+    "bend_damping": { "min": 0.05, "max": 0.10 },
+    "stretch_stiffness": { "min": 1.0e5, "max": 1.0e6 },
+    "density": { "min": 150.0, "max": 300.0 },
+    "elevation_delta_deg": { "min": 65.0, "max": 65.0 },
+    "lateral_delta_deg": { "min": 0.0, "max": 0.0 }
+  },
+  "apple": {
+    "radius": { "min": 0.04, "max": 0.08 },
+    "density": { "min": 700.0, "max": 700.0 }
+  }
+}

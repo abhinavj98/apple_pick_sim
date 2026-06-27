@@ -12,6 +12,8 @@ import newton
 from apple_pick_sim.coupling_force_debug import read_tcp_wrench
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.digital_twin.record import fruiting_tree_fixed_joints
+from apple_pick_sim.fruiting_system.gripper_proxy_shape import gripper_proxy_clearance
+from apple_pick_sim.fruiting_system.params import GripperProxyConfig
 from apple_pick_sim.fruiting_system.scene import fixed_joint_anchors_world
 from apple_pick_sim.tcp_force_viz import (
     _clear_logged_arrow,
@@ -82,12 +84,14 @@ def _proxy_marker_position(
     if float(np.linalg.norm(off)) > 1e-9:
         return com + off
     cfg = getattr(cable, "gripper_proxy_config", None)
-    hz = 0.04
-    if cfg is not None:
+    clearance = 0.04
+    if isinstance(cfg, GripperProxyConfig):
+        clearance = gripper_proxy_clearance(cfg)
+    elif cfg is not None:
         ext = getattr(cfg, "box_half_extents", None)
         if ext is not None:
-            hz = float(ext[2])
-    return com + np.array([0.0, 0.0, hz * 1.05], dtype=np.float64)
+            clearance = float(ext[2])
+    return com + np.array([0.0, 0.0, clearance * 1.05], dtype=np.float64)
 
 
 def _cross_segment_arrays(

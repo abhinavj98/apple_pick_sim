@@ -191,6 +191,8 @@ Tests: `apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py`.
 
 Runtime stepping remains vectorized: `settle_vbd_substeps`, `coupled_substep`, and `BatchedTemplateIK.scatter_to_model` are unchanged.
 
+**Vectorization gaps (heterogeneous):** stem harvest still loops per env each substep; per-env grasp offsets and apple mass are not wired into runtime coupling after weld. Full audit and recommended fix order: [`heterogeneous-batched-vectorization-audit.md`](heterogeneous-batched-vectorization-audit.md).
+
 ---
 
 In the batched example (`example_batched_coupled_fruiting.py`), all **N** worlds occupy the **same physical coordinates** in simulation, but the Newton GL / Viser viewer arranges them in a **grid** so they are easy to inspect. This is intentional and matches Newton’s multi-world guidance ([`newton/docs/concepts/worlds.rst`](../newton/docs/concepts/worlds.rst), `ModelBuilder.replicate` docstring).

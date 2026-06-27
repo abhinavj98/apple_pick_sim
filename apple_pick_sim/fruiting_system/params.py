@@ -7,9 +7,23 @@ import json
 import math
 from collections.abc import Collection
 from pathlib import Path
-from typing import Any
+from typing import Literal
 
+from apple_pick_sim.fruiting_system.gripper_proxy_shape import (
+    GRIPPER_PROXY_CYLINDER_HALF_HEIGHT,
+    GRIPPER_PROXY_CYLINDER_RADIUS,
+)
 import numpy as np
+
+# Placeholder until hardware weigh-in; see docs/real-world-proxy.md.
+PLACEHOLDER_EE_MASS_KG: float = 0.5
+
+TOPOLOGY_T_JUNCTION = "t_junction"
+TOPOLOGY_LINEAR_CHAIN = "linear_chain"
+ALLOWED_TOPOLOGIES = frozenset({TOPOLOGY_T_JUNCTION, TOPOLOGY_LINEAR_CHAIN})
+DEFAULT_TOPOLOGY = TOPOLOGY_T_JUNCTION
+DEFAULT_SPUR_ATTACH_FRACTION = 0.5
+REAL_WORLD_PROXY_VARIANCE_FIXTURE = "fruiting_system_ranges_real_world_proxy_variance.json"
 
 @dataclasses.dataclass
 class RodParams:
@@ -44,6 +58,8 @@ class FruitingSystemParams:
     stem: RodParams | None
     apple_radius: float | None
     apple_density: float | None
+    topology: str = DEFAULT_TOPOLOGY
+    spur_attach_fraction: float = DEFAULT_SPUR_ATTACH_FRACTION
 
 
 FRUITING_SYSTEM_PARAMS_SCHEMA = "fruiting_system_params_v1"
@@ -83,6 +99,8 @@ def fruiting_params_to_dict(params: FruitingSystemParams) -> dict[str, Any]:
         "stem": _rod_params_to_row(params.stem),
         "apple_radius": None if params.apple_radius is None else float(params.apple_radius),
         "apple_density": None if params.apple_density is None else float(params.apple_density),
+        "topology": params.topology,
+        "spur_attach_fraction": float(params.spur_attach_fraction),
     }
 
 
@@ -125,6 +143,14 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
             f"unsupported fruiting params schema {schema!r}; "
             f"expected {FRUITING_SYSTEM_PARAMS_SCHEMA!r}"
         )
+    topology = row.get("topology", DEFAULT_TOPOLOGY)
+    if topology not in ALLOWED_TOPOLOGIES:
+        raise ValueError(
+            f"unsupported topology {topology!r}; expected one of {sorted(ALLOWED_TOPOLOGIES)}"
+        )
+    spur_attach_fraction = float(
+        row.get("spur_attach_fraction", DEFAULT_SPUR_ATTACH_FRACTION)
+    )
     params = FruitingSystemParams(
         primary=_rod_params_from_row(row.get("primary"), field="primary"),
         secondary=_rod_params_from_row(row.get("secondary"), field="secondary"),
@@ -132,6 +158,8 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
         stem=_rod_params_from_row(row.get("stem"), field="stem"),
         apple_radius=None if row.get("apple_radius") is None else float(row["apple_radius"]),
         apple_density=None if row.get("apple_density") is None else float(row["apple_density"]),
+        topology=topology,
+        spur_attach_fraction=spur_attach_fraction,
     )
     if not any((params.primary, params.secondary, params.spur, params.stem)):
         raise ValueError("at least one rod segment must be present in fruiting params")
@@ -150,12 +178,16 @@ class GripperProxyConfig:
     The proxy is the VBD-side stand-in for the robot TCP: its pose tracks the MuJoCo
     body each substep, and contact/joint reactions on the proxy are harvested as wrenches
     fed back into ``robot_state.body_f`` on the next substep (see module docstring).
-    Mass and box half-extents should match the robot TCP link built in
+    Mass and collision shape should match the robot TCP link built in
     ``coupled_fruiting.build_placeholder_tcp_robot_model`` so velocity-delta harvest
-    uses consistent inertia.
+    uses consistent inertia. Default shape is a cylinder (50 mm radius, 140 mm length)
+    with the distal tip at the body origin (+Z).
     """
 
-    mass: float = 5.0
+    mass: float = PLACEHOLDER_EE_MASS_KG
+    shape: Literal["box", "cylinder"] = "cylinder"
+    cylinder_radius: float = GRIPPER_PROXY_CYLINDER_RADIUS
+    cylinder_half_height: float = GRIPPER_PROXY_CYLINDER_HALF_HEIGHT
     box_half_extents: tuple[float, float, float] = (0.05, 0.05, 0.05)
     label: str = "gripper_proxy"
     fix_to_apple: bool = False
@@ -243,6 +275,11 @@ def resolve_robot_base_pos(
     if override is not None:
         return override
     return parse_fixture_args(ranges).robot_base_pos
+
+
+def default_ranges_fixture_path() -> Path:
+    """Default range JSON for examples and gym env (real-world proxy domain randomization)."""
+    return Path(__file__).resolve().parent.parent / "fixtures" / REAL_WORLD_PROXY_VARIANCE_FIXTURE
 
 
 def load_ranges(path: str | Path) -> dict:
@@ -411,6 +448,9 @@ def sample_params(
             "At least one rod segment must be enabled (check ranges and omit)."
         )
 
+    topology = _topology_from_ranges(ranges)
+    spur_attach_fraction = _spur_attach_fraction_from_ranges(ranges)
+
     return FruitingSystemParams(
         primary=primary,
         secondary=secondary,
@@ -418,6 +458,8 @@ def sample_params(
         stem=stem,
         apple_radius=apple_radius,
         apple_density=apple_density,
+        topology=topology,
+        spur_attach_fraction=spur_attach_fraction,
     )
 
 
@@ -437,6 +479,8 @@ def _fix_topology(
         secondary=_rod(p.secondary, topo.secondary),
         spur=_rod(p.spur, topo.spur),
         stem=_rod(p.stem, topo.stem),
+        topology=topo.topology,
+        spur_attach_fraction=topo.spur_attach_fraction,
     )
 
 
@@ -469,6 +513,8 @@ def copy_fruiting_params(params: FruitingSystemParams) -> FruitingSystemParams:
         stem=_rod(params.stem),
         apple_radius=params.apple_radius,
         apple_density=params.apple_density,
+        topology=params.topology,
+        spur_attach_fraction=params.spur_attach_fraction,
     )
 
 
@@ -582,7 +628,28 @@ def params_fingerprint(params: FruitingSystemParams) -> dict:
         "secondary_dir_x": None if s is None else round(s.direction[0], 6),
         "spur_dir_z": None if sp is None else round(sp.direction[2], 6),
         "stem_dir_z": None if st is None else round(st.direction[2], 6),
+        "topology": params.topology,
+        "spur_attach_fraction": round(params.spur_attach_fraction, 9),
     }
+
+
+def _topology_from_ranges(ranges: dict) -> str:
+    topology = ranges.get("topology", DEFAULT_TOPOLOGY)
+    if topology not in ALLOWED_TOPOLOGIES:
+        raise ValueError(
+            f"unsupported topology {topology!r}; expected one of {sorted(ALLOWED_TOPOLOGIES)}"
+        )
+    return topology
+
+
+def _spur_attach_fraction_from_ranges(ranges: dict) -> float:
+    raw = ranges.get("spur_attach_fraction", DEFAULT_SPUR_ATTACH_FRACTION)
+    fraction = float(raw)
+    if not (0.0 < fraction < 1.0):
+        raise ValueError(
+            f"spur_attach_fraction must lie in (0, 1), got {fraction}"
+        )
+    return fraction
 
 def _direction_from_angles(azimuth_deg: float, elevation_deg: float) -> tuple[float, float, float]:
     """Convert azimuth + elevation angles (degrees) to a unit direction vector."""
@@ -692,6 +759,19 @@ def _validate_ranges(data: dict) -> None:
         raise ValueError(
             "At least one rod segment (primary, secondary, spur, or stem) must be non-null in the range file"
         )
+
+    topology = data.get("topology", DEFAULT_TOPOLOGY)
+    if topology not in ALLOWED_TOPOLOGIES:
+        raise ValueError(
+            f"unsupported topology {topology!r}; expected one of {sorted(ALLOWED_TOPOLOGIES)}"
+        )
+
+    if "spur_attach_fraction" in data:
+        fraction = float(data["spur_attach_fraction"])
+        if not (0.0 < fraction < 1.0):
+            raise ValueError(
+                f"spur_attach_fraction must lie in (0, 1), got {fraction}"
+            )
 
     args = data.get("args")
     if args is None:

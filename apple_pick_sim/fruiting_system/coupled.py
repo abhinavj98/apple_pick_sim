@@ -14,6 +14,7 @@ from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.fruiting_system.build import (
     _FruitingChainArtifacts,
     _add_gripper_proxy,
+    _attach_t_junction_world_supports,
     _build_fruiting_chain_into_builder,
     _finalize_fruiting_builder,
     _new_fruiting_builder,
@@ -22,6 +23,7 @@ from apple_pick_sim.fruiting_system.build import (
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     GripperProxyConfig,
+    TOPOLOGY_T_JUNCTION,
     resolve_fruiting_base_pos,
     sample_params,
 )
@@ -116,6 +118,8 @@ def _populate_coupled_cable_builder(
             robot_base_pos=robot_base_pos,
         )
     )
+    if params.topology == TOPOLOGY_T_JUNCTION:
+        _attach_t_junction_world_supports(builder, artifacts)
     return CoupledCablePopulateResult(
         artifacts=artifacts,
         proxy_body=proxy_body,

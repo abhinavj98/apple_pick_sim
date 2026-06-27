@@ -321,6 +321,47 @@ def test_generate_scene_returns_scene():
     assert scene.model is not None
 
 
+REAL_WORLD_PROXY_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_real_world_proxy.json"
+
+
+def _shape_pairs_filtered(model, body_a: int, body_b: int) -> bool:
+    """Return True if every shape pair between two bodies is collision-filtered."""
+    shapes_a = model.body_shapes.get(body_a, [])
+    shapes_b = model.body_shapes.get(body_b, [])
+    if not shapes_a or not shapes_b:
+        return False
+    pairs = set(model.shape_collision_filter_pairs)
+    for s1 in shapes_a:
+        for s2 in shapes_b:
+            if (s1, s2) in pairs or (s2, s1) in pairs:
+                return True
+    return False
+
+
+def test_default_collision_filters_apple_woody_enabled_stem_isolated():
+    """Apple may contact woody segments; stem is filtered from woody bodies and apple."""
+    fs = _import_module()
+    ranges = fs.load_ranges(REAL_WORLD_PROXY_FIXTURE)
+    scene = fs.generate_scene(ranges, seed=42, device="cpu", enable_self_collisions=False)
+    assert scene.apple_body is not None
+    assert scene.primary_bodies
+    assert scene.spur_bodies
+    assert scene.stem_bodies
+
+    model = scene.model
+    apple = scene.apple_body
+    primary = scene.primary_bodies[0]
+    spur = scene.spur_bodies[0]
+    stem = scene.stem_bodies[0]
+
+    assert not _shape_pairs_filtered(model, apple, primary)
+    assert not _shape_pairs_filtered(model, apple, spur)
+    assert _shape_pairs_filtered(model, apple, stem)
+    assert _shape_pairs_filtered(model, stem, primary)
+    assert _shape_pairs_filtered(model, stem, spur)
+    assert _shape_pairs_filtered(model, primary, spur)
+
+
 def test_generate_scene_self_collision_off_by_default():
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
@@ -333,7 +374,7 @@ def test_generate_scene_self_collision_off_by_default():
 
 
 def test_generate_scene_disable_self_collision_superset_of_joint_default_filters():
-    """enable_self_collisions=False adds intra-chain filter pairs (see _apply_all_chain_collision_filters)."""
+    """enable_self_collisions=False adds intra-chain filter pairs (see _apply_default_fruiting_collision_filters)."""
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     seed = 0
@@ -870,6 +911,50 @@ def test_measure_fruiting_forces_state1_matches_solver_body_q_prev():
     f0 = out["fixed_joints"][0].force_world
     f1 = out_bqp["fixed_joints"][0].force_world
     np.testing.assert_allclose(f0, f1, rtol=0.0, atol=0.0)
+
+
+def test_example_fruiting_system_regenerate_uses_self_collision_parser_default():
+    from apple_pick_sim.examples import example_fruiting_system as ex
+
+    class _ViewerStub:
+        def set_model(self, model):
+            del model
+
+    args = ex._make_parser().parse_args(["--seed", "0", "--viewer", "null"])
+    example = ex.ExampleFruitingSystem(_ViewerStub(), args)
+    pairs = len(example.model.shape_collision_filter_pairs)
+    fs = _import_module()
+    scene_off = fs.generate_scene(
+        example.ranges, 0, device=example._device_str(), enable_self_collisions=False
+    )
+    assert pairs == len(scene_off.model.shape_collision_filter_pairs)
+
+
+def test_example_fruiting_system_default_ranges_path_is_real_world_proxy_variance():
+    from apple_pick_sim.examples import example_fruiting_system as ex
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path
+
+    fs = _import_module()
+    path = ex._default_ranges_path()
+    assert path == default_ranges_fixture_path()
+    assert path.name == "fruiting_system_ranges_real_world_proxy_variance.json"
+    ranges = fs.load_ranges(path)
+    assert ranges["secondary"] is None
+    assert fs.parse_fixture_args(ranges).fruiting_base_pos == pytest.approx((0.0, 0.5, 0.95))
+
+
+def test_example_coupled_fruiting_default_ranges_path_is_real_world_proxy_variance():
+    from apple_pick_sim.examples import example_coupled_fruiting as ex
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path
+
+    assert ex._default_ranges_path() == default_ranges_fixture_path()
+
+
+def test_example_batched_coupled_fruiting_default_ranges_path_is_real_world_proxy_variance():
+    from apple_pick_sim.examples import example_batched_coupled_fruiting as ex
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path
+
+    assert ex._default_ranges_path() == default_ranges_fixture_path()
 
 
 def test_example_fruiting_system_enable_self_collision_parser_default():

@@ -13,6 +13,7 @@ import newton
 
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.fruiting_system.build import (
+    _attach_t_junction_world_supports,
     _build_fruiting_chain_into_builder,
     _finalize_fruiting_builder,
     _new_fruiting_builder,
@@ -22,6 +23,7 @@ from apple_pick_sim.fruiting_system.build import (
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     RodParams,
+    TOPOLOGY_T_JUNCTION,
     load_ranges,
     params_fingerprint,
     resolve_fruiting_base_pos,
@@ -91,9 +93,10 @@ def generate_scene(
             :func:`~apple_pick_sim.sim_device.default_sim_device` (``cuda:0`` when CUDA is available).
         omit: Forwarded to :func:`sample_params` to force segments off without editing JSON.
         enable_self_collisions: If ``False`` (default), register shape collision filter pairs
-            between every pair of distinct chain bodies (primary through apple), so the
-            articulation does not self-collide; ground contact is unchanged. If ``True``,
-            only Newton joint parent/child filters apply, so non-adjacent chain links may collide.
+            so woody segments (primary/secondary/spur) and the stem do not collide with each
+            other or with the apple; apple↔woody contacts remain enabled. Ground contact is
+            unchanged. If ``True``, only Newton joint parent/child filters apply, so
+            non-adjacent chain links may collide.
 
     Returns:
         A :class:`FruitingSystemScene` ready to simulate.
@@ -278,6 +281,8 @@ def _build_scene(
     """Build a Newton ModelBuilder scene from sampled params."""
     builder = _new_fruiting_builder()
     artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
+    if params.topology == TOPOLOGY_T_JUNCTION:
+        _attach_t_junction_world_supports(builder, artifacts)
     model = _finalize_fruiting_builder(
         builder, artifacts, device=device, enable_self_collisions=enable_self_collisions
     )

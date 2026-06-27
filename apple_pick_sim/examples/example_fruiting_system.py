@@ -1,10 +1,15 @@
 """Interactive variational fruiting-system example (P0).
 
-The first built rod in the chain has its base **pinned** in world space (in the
-default JSON workflow that is the **primary** segment). In the range file, JSON
-``null`` for ``secondary``, ``spur``, ``stem``, or ``apple`` omits that piece from
-:func:`apple_pick_sim.fruiting_system.sample_params` / :func:`apple_pick_sim.fruiting_system.generate_scene`;
-the remaining segments stay connected in order.
+Default fixture: ``fruiting_system_ranges_real_world_proxy_variance.json`` — **T-junction**
+real-world bench proxy with domain randomization (see ``docs/real-world-proxy.md``). ``fruiting_base_pos`` in the JSON
+``args`` block is the **T center** (mid-span spur attach on the horizontal primary);
+world-fixed supports pin the primary at **both endpoints** along **±X**. Spur, stem,
+and apple hang from that center toward **−Z**. ``secondary`` is omitted (``null``).
+
+In the range file, JSON ``null`` for ``secondary``, ``spur``, ``stem``, or ``apple``
+omits that piece from :func:`apple_pick_sim.fruiting_system.sample_params` /
+:func:`apple_pick_sim.fruiting_system.generate_scene`; the remaining segments stay
+connected in order. Legacy serial chains opt in with ``"topology": "linear_chain"``.
 
 Each **script run** uses a new random seed unless you pass ``--seed``.
 From code, call :meth:`ExampleFruitingSystem.regenerate` to build another instance
@@ -25,12 +30,12 @@ Run from the repository root (see README)::
 Optional arguments (Newton example parser + extras)::
 
     uv run --directory newton python ../apple_pick_sim/examples/example_fruiting_system.py \\
-        --json ../apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 123
+        --json ../apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy.json --seed 123
 
-    ``--no-self-collision`` sets ``enable_self_collisions=False``: collision filter pairs are
-    registered between **every pair of distinct chain bodies** (no intra-chain contacts); ground
-    is unchanged. Default (flag omitted) keeps only joint parent/child filters, so non-adjacent
-    links may collide.
+    Default collision policy (``enable_self_collisions=False``): woody segments and the stem do
+    not collide with each other or with the apple; **apple↔woody** (primary/secondary/spur)
+    contacts stay enabled. Pass ``--enable-self-collision`` for full intra-chain contacts.
+    Ground contact is unchanged.
 """
 
 from __future__ import annotations
@@ -50,6 +55,7 @@ from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.fruiting_system import (
     FixedJointWrenchRecord,
     FruitingSystemScene,
+    default_ranges_fixture_path,
     example_collision_pipeline,
     fixed_joint_wrenches_child_com_vbd,
     generate_scene,
@@ -59,11 +65,7 @@ from apple_pick_sim.fruiting_system import (
 
 
 def _default_ranges_path() -> Path:
-    return (
-        Path(__file__).resolve().parent.parent
-        / "fixtures"
-        / "fruiting_system_ranges_example_variance.json"
-    )
+    return default_ranges_fixture_path()
 
 
 def _enable_self_collisions_from_args(args: argparse.Namespace | None) -> bool:
@@ -79,7 +81,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to fruiting-system range JSON (default: "
-            "apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json)."
+            "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json)."
         ),
     )
     parser.add_argument(
@@ -147,9 +149,7 @@ class ExampleFruitingSystem:
         if seed is None:
             seed = secrets.randbelow(2**31 - 1)
         print(f"Regenerating fruiting system (seed={seed}) …")
-        enable_self = not (
-            getattr(self.args, "no_self_collision", False) if self.args else False
-        )
+        enable_self = _enable_self_collisions_from_args(self.args)
         self._scene = generate_scene(
             self.ranges,
             seed,

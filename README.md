@@ -55,10 +55,12 @@ This runs the apple simulation with three branch stiffness presets. The terminal
 
 ### `example_fruiting_system.py` (variational fruiting)
 
-Procedural **primary → secondary → spur → stem → apple** layout from `apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json` (default for
-`example_fruiting_system.py`); each run draws a new sample unless you pass `--seed`. Unit tests
-use `fruiting_system_ranges_straight_rod_test.json` for deterministic, nearly vertical chains.
-Uses the same Newton viewer pattern as the stem example.
+Default fixture: **`fruiting_system_ranges_real_world_proxy.json`** — T-junction bench layout
+(primary simply supported along **±X**, spur/stem/apple from the **T center** at `(0, 0.5, 0.95)` m;
+see `docs/real-world-proxy.md`). Each run draws a new sample unless you pass `--seed`. Pass
+`--json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json` for the wide-angle
+procedural variance chain. Unit tests use `fruiting_system_ranges_straight_rod_test.json` for
+deterministic, nearly vertical chains. Uses the same Newton viewer pattern as the stem example.
 
 ```bash
 uv run python apple_pick_sim/examples/example_fruiting_system.py
@@ -68,7 +70,7 @@ Useful options (see also the script docstring):
 
 ```bash
 uv run python apple_pick_sim/examples/example_fruiting_system.py \
-  --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 123
+  --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 123  # legacy variance chain
 ```
 
 **Collisions:** The library default `generate_scene(..., enable_self_collisions=True)` only relies on Newton’s joint **parent/child** collision filters (adjacent rod segments do not collide). **Non-adjacent** chain capsules can still collide with each other and with the apple.
@@ -79,9 +81,12 @@ From Python, call `ExampleFruitingSystem.regenerate()` (optional seed) to rebuil
 
 ## P0 variational fruiting (JSON + seed)
 
-Range fixtures live under `apple_pick_sim/fixtures/`: **`fruiting_system_ranges_example_variance.json`**
-(wide angles; default for the viewer example) and **`fruiting_system_ranges_straight_rod_test.json`**
-(nearly −Z chain; default for tests). The generator is the **`apple_pick_sim/fruiting_system/`** package (`params.py`, `build.py`, `scene.py`, `coupled.py`; public API via `apple_pick_sim.fruiting_system`).
+Range fixtures live under `apple_pick_sim/fixtures/`: **`fruiting_system_ranges_real_world_proxy.json`**
+(T-junction bench proxy; default for `example_fruiting_system.py` and `example_coupled_fruiting.py`),
+**`fruiting_system_ranges_example_variance.json`** (wide-angle procedural variance), and
+**`fruiting_system_ranges_straight_rod_test.json`** (nearly −Z chain; default for tests). The
+generator is the **`apple_pick_sim/fruiting_system/`** package (`params.py`, `build.py`, `scene.py`,
+`coupled.py`; public API via `apple_pick_sim.fruiting_system`).
 
 **Geometry-only smoke check** (no viewer):
 

@@ -7,7 +7,7 @@ Run from the repository root::
 
     uv run python apple_pick_sim/examples/example_digital_twin.py \\
       --obs apple_pick_sim/fixtures/digital_twin_obs_example.json \\
-      --base-fixture apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json
+      --base-fixture apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy.json
 
 Optional ``--settle-substeps`` runs quasi-static VBD settling before the interactive loop.
 Pass ``--no-fix-to-apple`` to keep a free gripper proxy (weld direction is ignored).
@@ -26,6 +26,7 @@ import warp as wp
 
 from apple_pick_sim.digital_twin import build_digital_twin_scene, load_digital_twin_obs
 from apple_pick_sim.fruiting_system import (
+    default_ranges_fixture_path,
     example_collision_pipeline,
     fixed_joint_anchors_world,
     geometry_fingerprint_coupled,
@@ -43,11 +44,7 @@ def _default_obs_path() -> Path:
 
 
 def _default_base_fixture_path() -> Path:
-    return (
-        Path(__file__).resolve().parent.parent
-        / "fixtures"
-        / "fruiting_system_ranges_straight_rod_test.json"
-    )
+    return default_ranges_fixture_path()
 
 
 def _settle_cable_substeps(scene, *, substeps: int, dt: float) -> None:
@@ -77,7 +74,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Base range JSON for non-geometric parameters "
-            "(default: fixtures/fruiting_system_ranges_straight_rod_test.json)."
+            "(default: fixtures/fruiting_system_ranges_real_world_proxy_variance.json)."
         ),
     )
     parser.add_argument(

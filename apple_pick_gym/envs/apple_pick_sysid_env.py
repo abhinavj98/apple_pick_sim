@@ -198,14 +198,14 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             scene.coupling_forces_cache.zero_()
 
     def _make_gripper_proxy_config(self, *, fix_to_apple: bool):
+        import dataclasses
+
         import apple_pick_sim.fruiting_system as fs
 
         cfg = super()._make_gripper_proxy_config(fix_to_apple=fix_to_apple)
         if fix_to_apple and self._robot_facing_weld:
-            return fs.GripperProxyConfig(
-                mass=cfg.mass,
-                box_half_extents=cfg.box_half_extents,
-                label=cfg.label,
+            return dataclasses.replace(
+                cfg,
                 fix_to_apple=True,
                 robot_facing_weld=True,
                 weld_direction=self._pending_weld_direction,

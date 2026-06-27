@@ -219,10 +219,7 @@ def _build_welded_direct(seed: int = 0):
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    gripper_kw = dict(
-        mass=fr3_robot.EE_MASS_KG,
-        box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
-    )
+    gripper_kw = dict(mass=fr3_robot.EE_MASS_KG)
     return build_coupled_fr3(
         cf,
         ranges,
@@ -236,10 +233,7 @@ def _build_welded_scene(seed: int = 0):
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    gripper_kw = dict(
-        mass=fr3_robot.EE_MASS_KG,
-        box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
-    )
+    gripper_kw = dict(mass=fr3_robot.EE_MASS_KG)
     settled = cf.build_coupled_fruiting_fr3(
         ranges,
         seed,

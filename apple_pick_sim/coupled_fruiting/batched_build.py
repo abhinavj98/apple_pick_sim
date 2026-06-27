@@ -12,7 +12,7 @@ import newton
 from apple_pick_sim.fruiting_system.build import (
     _FruitingChainArtifacts,
     _apply_all_chain_collision_filters,
-    _finalize_fruiting_builder,
+    _register_fruiting_articulations,
     _new_fruiting_builder,
     _scene_states_from_model,
 )
@@ -34,17 +34,16 @@ def _prepare_cable_template_builder_for_replicate(
 ) -> None:
     """Add articulations and collision filters on the template before ``replicate()``."""
     proxy_joints = (int(proxy_free_joint),) if proxy_free_joint is not None else ()
-    joint_list = sorted(artifacts.all_joints)
-    proxy_set = set(proxy_joints)
-    if proxy_set:
-        chain_joints = [j for j in joint_list if j not in proxy_set]
-        builder.add_articulation(chain_joints)
-        for pj in proxy_joints:
-            builder.add_articulation([pj])
-    else:
-        builder.add_articulation(joint_list)
-    if not enable_self_collisions:
-        _apply_all_chain_collision_filters(builder, artifacts.chain_bodies)
+    _register_fruiting_articulations(
+        builder,
+        all_joints=artifacts.all_joints,
+        chain_bodies=artifacts.chain_bodies,
+        enable_self_collisions=enable_self_collisions,
+        seg_bodies=artifacts.seg_bodies,
+        apple_body=artifacts.apple_body,
+        gripper_proxy_joints=proxy_joints,
+        world_root_joints=artifacts.world_root_joints,
+    )
 
 
 def build_replicated_coupled_cable_scene(

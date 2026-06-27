@@ -12,7 +12,8 @@ OMNIVERSE_FR3_USD = _OMNI_FR3_ROOT / "fr3.usd"
 OMNIVERSE_FR3_SCHEMA = _OMNI_FR3_ROOT / "configuration" / "fr3_robot_schema.usd"
 
 EE_MASS_KG = 1.5
-EE_BOX_HALF_EXTENTS = (0.05, 0.05, 0.05)
+EE_CYLINDER_RADIUS = 0.05
+EE_CYLINDER_HALF_HEIGHT = 0.07
 
 
 def fr3_assets_available() -> bool:

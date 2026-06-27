@@ -13,19 +13,29 @@ from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     GripperProxyConfig,
     RodParams,
+    TOPOLOGY_LINEAR_CHAIN,
+    TOPOLOGY_T_JUNCTION,
     load_ranges,
     parse_fixture_args,
+    _spur_attach_fraction_from_ranges,
+    _topology_from_ranges,
 )
 
 _ROD_NAMES = ("primary", "secondary", "spur", "stem")
+_SUPPORT_JUNCTION_PREFIX = "primary_support_"
+
+
+def _is_support_junction(name: str) -> bool:
+    return name.startswith(_SUPPORT_JUNCTION_PREFIX)
 
 
 def ordered_rod_segments_from_junctions(junction_names: list[str]) -> tuple[str, ...]:
     """Return enabled rod segment names in chain order from junction labels."""
-    if not junction_names:
-        raise ValueError("junction_names must not be empty")
+    rod_junctions = [n for n in junction_names if not _is_support_junction(n)]
+    if not rod_junctions:
+        raise ValueError("junction_names must include at least one rod junction")
     rods: list[str] = []
-    for i, name in enumerate(junction_names):
+    for i, name in enumerate(rod_junctions):
         if "_" not in name:
             raise ValueError(f"invalid junction name {name!r}")
         left, right = name.split("_", 1)
@@ -42,8 +52,9 @@ def ordered_rod_segments_from_junctions(junction_names: list[str]) -> tuple[str,
 
 
 def junction_has_apple(junction_names: list[str]) -> bool:
-    """True when the last junction attaches a rod to the apple."""
-    return bool(junction_names) and junction_names[-1].endswith("_apple")
+    """True when the last rod junction (ignoring world supports) attaches to the apple."""
+    rod_junctions = [n for n in junction_names if not _is_support_junction(n)]
+    return bool(rod_junctions) and rod_junctions[-1].endswith("_apple")
 
 
 def _median_range_scalar(block: dict, key: str) -> float:
@@ -97,6 +108,8 @@ def params_from_ranges_median(ranges: dict) -> FruitingSystemParams:
         stem=rods["stem"],
         apple_radius=apple_radius,
         apple_density=apple_density,
+        topology=_topology_from_ranges(ranges),
+        spur_attach_fraction=_spur_attach_fraction_from_ranges(ranges),
     )
 
 
@@ -105,18 +118,33 @@ def infer_segment_geometry(
 ) -> dict[str, tuple[tuple[float, float, float], float]]:
     """Recover per-rod unit direction and length from junction anchor positions."""
     rods = ordered_rod_segments_from_junctions(obs.junction_names)
+    name_to_idx = {name: i for i, name in enumerate(obs.junction_names)}
     start_positions = obs.woody_part_start_pos.reshape(-1, 3)
     end_positions = obs.woody_part_end_pos.reshape(-1, 3)
     base = np.asarray(obs.fruiting_base_pos, dtype=np.float64)
+    rod_junction_indices = [
+        name_to_idx[name]
+        for name in obs.junction_names
+        if not _is_support_junction(name)
+    ]
 
     geometry: dict[str, tuple[tuple[float, float, float], float]] = {}
+    left_i = name_to_idx.get("primary_support_left")
+    right_i = name_to_idx.get("primary_support_right")
+
     for i, rod_name in enumerate(rods):
-        if i == 0:
+        if i == 0 and left_i is not None and right_i is not None:
+            origin = end_positions[left_i]
+            target = end_positions[right_i]
+        elif i == 0:
             origin = base
-            target = start_positions[0]
+            target = start_positions[rod_junction_indices[0]]
+        elif i < len(rod_junction_indices):
+            origin = start_positions[rod_junction_indices[i - 1]]
+            target = start_positions[rod_junction_indices[i]]
         else:
-            origin = end_positions[i - 1]
-            target = start_positions[i]
+            origin = start_positions[rod_junction_indices[i - 1]]
+            target = end_positions[rod_junction_indices[i - 1]]
         delta = target - origin
         length = float(np.linalg.norm(delta))
         if length < 1e-9:
@@ -171,6 +199,11 @@ def infer_params_from_obs(
 
     apple_radius = _resolve_apple_radius(obs, ranges) if has_apple else None
     apple_density = template.apple_density if has_apple else None
+    topology = (
+        TOPOLOGY_T_JUNCTION
+        if any(_is_support_junction(n) for n in obs.junction_names)
+        else template.topology
+    )
 
     return FruitingSystemParams(
         primary=_rod_for("primary"),
@@ -179,6 +212,8 @@ def infer_params_from_obs(
         stem=_rod_for("stem"),
         apple_radius=apple_radius,
         apple_density=apple_density,
+        topology=topology,
+        spur_attach_fraction=template.spur_attach_fraction,
     )
 
 

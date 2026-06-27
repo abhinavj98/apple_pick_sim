@@ -117,13 +117,9 @@ class ApplePickBaseEnv(gym.Env, ABC):
         return float(frame_dt), int(substeps_per_step), float(self.SUB_DT)
 
     def _fixture_ranges_path(self) -> Path:
-        import importlib.resources as resources
+        from apple_pick_sim.fruiting_system import default_ranges_fixture_path
 
-        return (
-            resources.files("apple_pick_sim")
-            / "fixtures"
-            / "fruiting_system_ranges_example_variance.json"
-        )
+        return default_ranges_fixture_path()
 
     @staticmethod
     def _coerce_optional_xyz(value: Any, *, field: str) -> tuple[float, float, float] | None:
@@ -342,7 +338,6 @@ class ApplePickBaseEnv(gym.Env, ABC):
 
         return fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
             fix_to_apple=fix_to_apple,
         )
 

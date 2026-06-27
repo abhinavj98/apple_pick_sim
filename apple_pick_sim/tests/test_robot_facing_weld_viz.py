@@ -45,6 +45,7 @@ import numpy as np
 import pytest
 import warp as wp
 
+from apple_pick_sim.fruiting_system.gripper_proxy_shape import gripper_proxy_clearance
 from apple_pick_sim.system_id import stem_perpendicular_robot_pole
 from apple_pick_sim.tests.conftest import (
     COUPLED_ROBOT_BASE_POS,
@@ -181,7 +182,7 @@ def _weld_geometry(
 
     offset_approach = _offset_approach_in_world(scene)
 
-    clearance = float(max(scene.gripper_proxy_config.box_half_extents))
+    clearance = gripper_proxy_clearance(scene.gripper_proxy_config)
     expected_radius = float(scene.params.apple_radius)
 
     return {

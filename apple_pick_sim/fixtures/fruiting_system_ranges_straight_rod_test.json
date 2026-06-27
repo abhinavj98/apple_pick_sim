@@ -1,5 +1,6 @@
 {
   "_comment": "Straight-rod / nearly vertical chain for unit tests (wrench equilibrium, fruiting_system). Primary along world \u2212Z (elevation \u221290\u00b0); child segments use \u00b10.5\u00b0 deflection deltas.",
+  "topology": "linear_chain",
   "args": {
     "fruiting_base_pos": [
       0.0,

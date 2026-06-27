@@ -16,13 +16,17 @@ Run from the repository root (see README for ``PYTHONPATH``). VIC joint torques 
 Options (Newton example parser + extras)::
 
     PYTHONPATH=$(pwd) uv run --directory newton python ../apple_pick_sim/examples/example_coupled_fruiting.py \\
-      --json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json --seed 42
+      --json apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy.json --seed 42
 
 Intra-chain self collisions are **off** by default. Pass ``--enable-self-collision`` to set
 ``enable_self_collisions=True`` on the coupled cable scene (same semantics as P0 when collisions are on).
 
 ``--fix-to-apple`` / ``--no-fix-to-apple`` select stem-harvest + apple co-teleport vs the default
 velocity-delta harvest (proxy-only sync).
+
+Default fixture: ``fruiting_system_ranges_real_world_proxy_variance.json`` (robot at origin,
+fruiting chain at (0, 0.5, 0.95) m with domain randomization). ``robot_base_from_proxy`` is disabled when the
+JSON supplies ``robot_base_pos``.
 
 Pass ``--fr3-keyboard`` with ``--viewer gl`` for TCP keyboard teleop.
 
@@ -62,17 +66,18 @@ from apple_pick_sim.coupled_fruiting import (
 )
 from apple_pick_sim.fruiting_system import (
     GripperProxyConfig,
+    PLACEHOLDER_EE_MASS_KG,
     geometry_fingerprint,
+    default_ranges_fixture_path,
     load_ranges,
+    parse_fixture_args,
 )
+
+# Real-world bench proxy EE: 50 mm radius, 140 mm length (docs/real-world-proxy.md).
 
 
 def _default_ranges_path() -> Path:
-    return (
-        Path(__file__).resolve().parent.parent
-        / "fixtures"
-        / "fruiting_system_ranges_example_variance_soft.json"
-    )
+    return default_ranges_fixture_path()
 
 
 def _fix_to_apple_from_args(args: argparse.Namespace | None) -> bool:
@@ -94,8 +99,7 @@ def _gripper_proxy_from_args(
     fix = _fix_to_apple_from_args(args)
     if robot_kind == "fr3":
         return GripperProxyConfig(
-            mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+            mass=PLACEHOLDER_EE_MASS_KG,
             fix_to_apple=fix,
             robot_facing_weld=fix,
         )
@@ -194,7 +198,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to fruiting-system range JSON (default: "
-            "apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json)."
+            "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json)."
         ),
     )
     parser.add_argument(
@@ -404,7 +408,9 @@ class ExampleCoupledFruiting:
             mujoco_only=(self._step_mode == "mjc"),
         )
         if robot_kind == "fr3" and not (fix_to_apple and self._step_mode != "vbd"):
-            build_kw["robot_base_from_proxy"] = True
+            # Real-world proxy supplies robot_base_pos in JSON; do not auto-park from proxy.
+            if parse_fixture_args(self.ranges).robot_base_pos is None:
+                build_kw["robot_base_from_proxy"] = True
         if fix_to_apple and self._step_mode != "vbd":
             from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
 

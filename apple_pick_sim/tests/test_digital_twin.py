@@ -11,6 +11,7 @@ import pytest
 
 from apple_pick_sim.tests.conftest import FIXTURES_DIR, NO_SELF_COLLISION_KW, RANGES_FIXTURE
 
+PROXY_FIXTURE = FIXTURES_DIR / "fruiting_system_ranges_real_world_proxy.json"
 STRAIGHT_ROD_FIXTURE = RANGES_FIXTURE
 
 
@@ -176,6 +177,7 @@ def test_topology_primary_only():
         stem=None,
         apple_radius=ref_params.apple_radius,
         apple_density=ref_params.apple_density,
+        topology=fs.TOPOLOGY_LINEAR_CHAIN,
     )
     ref_scene = fs.generate_coupled_cable_scene(
         ranges,
@@ -291,3 +293,48 @@ def test_fixture_catalog_references_existing_assets():
         assert len(fixture["robot_base_pos"]) == 3
         assert fixture["smoke_commands"], name
         assert all(cmd.startswith("uv run ") for cmd in fixture["smoke_commands"])
+
+
+def test_round_trip_t_junction_junction_positions():
+    """T-junction obs with support labels rebuilds matching rod junction anchors."""
+    fs = _import_fs()
+    dt = _import_dt()
+    ranges = fs.load_ranges(PROXY_FIXTURE)
+    args = fs.parse_fixture_args(ranges)
+    base_pos = args.fruiting_base_pos or (0.0, 0.5, 0.95)
+    ref_params = _median_params(fs, ranges)
+    ref_scene = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=0,
+        params=ref_params,
+        base_pos=base_pos,
+        device="cpu",
+        **NO_SELF_COLLISION_KW,
+    )
+    obs = _obs_from_scene(ref_scene, fruiting_base_pos=base_pos, weld_direction=(0.0, 1.0, 0.0))
+    inferred = dt.infer_params_from_obs(obs, PROXY_FIXTURE)
+    assert inferred.topology == fs.TOPOLOGY_T_JUNCTION
+    twin_scene = dt.build_digital_twin_scene(
+        obs,
+        PROXY_FIXTURE,
+        device="cpu",
+        fix_to_apple=False,
+        **NO_SELF_COLLISION_KW,
+    )
+    rod_labels = {
+        lab
+        for lab in (label.removeprefix("joint_") for _, label in ref_scene.fruiting_fixed_joints)
+        if not lab.startswith("primary_support_")
+    }
+    ref_parent, ref_child = fs.fixed_joint_anchors_world(
+        ref_scene.model,
+        ref_scene.state_0.body_q,
+        [(j, l) for j, l in ref_scene.fruiting_fixed_joints if l.removeprefix("joint_") in rod_labels],
+    )
+    twin_parent, twin_child = fs.fixed_joint_anchors_world(
+        twin_scene.model,
+        twin_scene.state_0.body_q,
+        [(j, l) for j, l in twin_scene.fruiting_fixed_joints if l.removeprefix("joint_") in rod_labels],
+    )
+    np.testing.assert_allclose(twin_parent, ref_parent, atol=1e-3)
+    np.testing.assert_allclose(twin_child, ref_child, atol=1e-3)

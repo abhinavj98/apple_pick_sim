@@ -46,7 +46,6 @@ _SETTLE_SUBSTEPS = 50
 def _gripper_free() -> GripperProxyConfig:
     return GripperProxyConfig(
         mass=fr3_robot.EE_MASS_KG,
-        box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
         fix_to_apple=False,
         robot_facing_weld=False,
     )
@@ -55,7 +54,6 @@ def _gripper_free() -> GripperProxyConfig:
 def _gripper_welded() -> GripperProxyConfig:
     return GripperProxyConfig(
         mass=fr3_robot.EE_MASS_KG,
-        box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
         fix_to_apple=True,
         robot_facing_weld=True,
     )

@@ -348,6 +348,16 @@ def test_truncation_after_max_episode_steps():
 
 
 @gymnasium_available
+def test_apple_pick_coupled_env_default_ranges_fixture_is_real_world_proxy_variance():
+    from apple_pick_gym.envs import ApplePickCoupledEnv
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path
+
+    env = ApplePickCoupledEnv()
+    assert env._fixture_ranges_path() == default_ranges_fixture_path()
+    env.close()
+
+
+@gymnasium_available
 def test_apple_pick_base_env_is_abstract():
     from apple_pick_gym.envs import ApplePickBaseEnv
 

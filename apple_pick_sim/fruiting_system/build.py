@@ -12,10 +12,16 @@ import warp as wp
 
 import newton
 
+from apple_pick_sim.fruiting_system.gripper_proxy_shape import (
+    add_gripper_proxy_collision_shape,
+    gripper_proxy_clearance,
+)
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     GripperProxyConfig,
     RodParams,
+    TOPOLOGY_LINEAR_CHAIN,
+    TOPOLOGY_T_JUNCTION,
 )
 
 FRUITING_VBD_RIGID_JOINT_KD = 5.0e-4
@@ -62,6 +68,43 @@ class _FruitingChainArtifacts:
     chain_bodies: list[int]
     proxy_placement_origin: wp.vec3
     proxy_placement_dir: wp.vec3
+    world_root_joints: tuple[int, ...] = ()
+    t_junction_support_ctx: tuple[list[wp.vec3], list[int], float] | None = None
+def _apply_default_fruiting_collision_filters(
+    builder: newton.ModelBuilder,
+    seg_bodies: dict[str, list[int]],
+    apple_body: int | None,
+) -> None:
+    """Filter intra-chain contacts except apple↔woody (primary/secondary/spur).
+
+    Woody segments do not collide with each other or with the stem. The stem is
+    isolated from woody bodies and the apple. Apple↔woody collisions remain enabled
+    so the fruit can contact the branch structure.
+    """
+    woody = (
+        list(seg_bodies.get("primary", []))
+        + list(seg_bodies.get("secondary", []))
+        + list(seg_bodies.get("spur", []))
+    )
+    stem = list(seg_bodies.get("stem", []))
+
+    if apple_body is None:
+        chain = woody + stem
+        if chain:
+            _apply_all_chain_collision_filters(builder, chain)
+        return
+
+    if woody:
+        _apply_all_chain_collision_filters(builder, woody)
+    if stem:
+        _apply_all_chain_collision_filters(builder, stem)
+    if stem and woody:
+        _apply_collision_filters_between_chain_groups(builder, stem, woody)
+    if stem:
+        _apply_collision_filters_between_chain_groups(builder, stem, [apple_body])
+    # Apple ↔ woody: intentionally not filtered.
+
+
 def _apply_all_chain_collision_filters(
     builder: newton.ModelBuilder,
     chain_body_indices: list[int],
@@ -90,6 +133,19 @@ def _build_fruiting_chain_into_builder(
     base_pos: tuple[float, float, float],
 ) -> _FruitingChainArtifacts:
     """Populate rod chain + apple on ``builder`` (no articulation / finalize yet)."""
+    if params.topology == TOPOLOGY_T_JUNCTION:
+        return _build_t_junction_into_builder(builder, params, base_pos)
+    if params.topology != TOPOLOGY_LINEAR_CHAIN:
+        raise ValueError(f"unsupported topology {params.topology!r}")
+    return _build_linear_chain_into_builder(builder, params, base_pos)
+
+
+def _build_linear_chain_into_builder(
+    builder: newton.ModelBuilder,
+    params: FruitingSystemParams,
+    base_pos: tuple[float, float, float],
+) -> _FruitingChainArtifacts:
+    """Serial primary→…→apple chain with a zero-mass pin at the first primary body."""
     if not any((params.primary, params.secondary, params.spur, params.stem)):
         raise ValueError(
             "At least one rod segment (primary, secondary, spur, or stem) must be non-None."
@@ -232,6 +288,218 @@ def _build_fruiting_chain_into_builder(
     )
 
 
+def _build_t_junction_into_builder(
+    builder: newton.ModelBuilder,
+    params: FruitingSystemParams,
+    base_pos: tuple[float, float, float],
+) -> _FruitingChainArtifacts:
+    """T topology: primary simply supported at both ends; spur branch at mid-span."""
+    if params.secondary is not None:
+        raise ValueError("T-junction topology does not support secondary segment")
+    if params.primary is None:
+        raise ValueError("T-junction topology requires primary segment")
+
+    cable_joint_indices: list[int] = []
+    fruiting_fixed_joints: list[tuple[int, str]] = []
+    all_joints: list[int] = []
+    seg_bodies: dict[str, list[int]] = {
+        "primary": [],
+        "secondary": [],
+        "spur": [],
+        "stem": [],
+    }
+
+    center = wp.vec3(*base_pos)
+    primary = params.primary
+    direction = wp.normalize(wp.vec3(*primary.direction))
+    half_len = primary.length / 2.0
+    start = center - direction * half_len
+    primary_points, primary_quats = _make_rod_geometry(
+        start, primary.direction, primary.length, primary.num_segments
+    )
+    rod_cfg = builder.ShapeConfig(density=primary.density)
+    primary_bodies, primary_joints = builder.add_rod(
+        positions=primary_points,
+        quaternions=primary_quats,
+        radius=primary.radius,
+        cfg=rod_cfg,
+        bend_stiffness=primary.bend_stiffness,
+        bend_damping=primary.bend_damping,
+        stretch_stiffness=primary.stretch_stiffness,
+        stretch_damping=0.0,
+        wrap_in_articulation=False,
+        label="primary",
+    )
+    all_joints.extend(primary_joints)
+    cable_joint_indices.extend(primary_joints)
+    seg_bodies["primary"] = primary_bodies
+
+    branch_specs: list[tuple[str, RodParams]] = [
+        (n, rp)
+        for n, rp in (("spur", params.spur), ("stem", params.stem))
+        if rp is not None
+    ]
+
+    prev_bodies: list[int] = primary_bodies
+    prev_name = "primary"
+    prev_rod: RodParams = primary
+    prev_points: list[wp.vec3] = primary_points
+    prev_quats: list[wp.quat] = primary_quats
+    parent_idx = _primary_spur_parent_body_index(
+        primary.num_segments, params.spur_attach_fraction
+    )
+
+    for branch_i, (name, rod) in enumerate(branch_specs):
+        if branch_i == 0:
+            branch_start = primary_points[parent_idx + 1]
+        else:
+            branch_start = prev_points[-1]
+        points, quats = _make_rod_geometry(
+            branch_start, rod.direction, rod.length, rod.num_segments
+        )
+        rod_cfg = builder.ShapeConfig(density=rod.density)
+        bodies, joints = builder.add_rod(
+            positions=points,
+            quaternions=quats,
+            radius=rod.radius,
+            cfg=rod_cfg,
+            bend_stiffness=rod.bend_stiffness,
+            bend_damping=rod.bend_damping,
+            stretch_stiffness=rod.stretch_stiffness,
+            stretch_damping=0.0,
+            wrap_in_articulation=False,
+            label=name,
+        )
+        all_joints.extend(joints)
+        cable_joint_indices.extend(joints)
+
+        if branch_i == 0:
+            parent_seg_len = prev_rod.length / prev_rod.num_segments
+            j_link = _connect_rod_tip_to_base(
+                builder,
+                parent_body=prev_bodies[parent_idx],
+                parent_seg_length=parent_seg_len,
+                child_body=bodies[0],
+                key=f"joint_{prev_name}_{name}",
+            )
+        else:
+            parent_seg_len = prev_rod.length / prev_rod.num_segments
+            j_link = _connect_rod_tip_to_base(
+                builder,
+                parent_body=prev_bodies[-1],
+                parent_seg_length=parent_seg_len,
+                child_body=bodies[0],
+                key=f"joint_{prev_name}_{name}",
+            )
+        all_joints.append(j_link)
+        fruiting_fixed_joints.append((j_link, f"joint_{prev_name}_{name}"))
+
+        seg_bodies[name] = bodies
+        prev_bodies = bodies
+        prev_name = name
+        prev_rod = rod
+        prev_points = points
+        prev_quats = quats
+
+    if not branch_specs:
+        raise ValueError(
+            "T-junction topology requires at least one branch segment (spur or stem)."
+        )
+
+    assert prev_rod is not None and prev_points is not None and prev_quats is not None
+    last_name = prev_name
+    tip_seg_len = prev_rod.length / prev_rod.num_segments
+    stem_tip_pt = prev_points[-1]
+    stem_base_pt = prev_points[-2]
+    last_seg_dir = wp.normalize(stem_tip_pt - stem_base_pt)
+    proxy_placement_origin = stem_tip_pt
+    proxy_placement_dir = last_seg_dir
+
+    apple_body: int | None = None
+    if params.apple_radius is not None and params.apple_density is not None:
+        apple_pos = stem_tip_pt + last_seg_dir * params.apple_radius
+        proxy_placement_origin = apple_pos
+        apple_mass = (4.0 / 3.0) * math.pi * params.apple_radius**3 * params.apple_density
+        apple_quat = wp.quat_identity()
+        apple_body = builder.add_link(
+            xform=wp.transform(apple_pos, apple_quat),
+            mass=apple_mass,
+            label="apple",
+        )
+        apple_shape_cfg = builder.default_shape_cfg.copy()
+        apple_shape_cfg.density = 0.0
+        builder.add_shape_sphere(
+            body=apple_body, radius=params.apple_radius, cfg=apple_shape_cfg
+        )
+        j_st2apple = _connect_rod_tip_to_apple(
+            builder,
+            stem_tip_body=prev_bodies[-1],
+            stem_tip_quat=prev_quats[-1],
+            stem_seg_length=tip_seg_len,
+            segment_dir_world=last_seg_dir,
+            apple_radius=params.apple_radius,
+            apple_body=apple_body,
+            apple_quat=apple_quat,
+            key=f"joint_{last_name}_apple",
+        )
+        all_joints.append(j_st2apple)
+        fruiting_fixed_joints.append((j_st2apple, f"joint_{last_name}_apple"))
+
+    chain_bodies: list[int] = (
+        seg_bodies["primary"]
+        + seg_bodies["spur"]
+        + seg_bodies["stem"]
+    )
+    if apple_body is not None:
+        chain_bodies.append(apple_body)
+
+    primary_seg_len = primary.length / primary.num_segments
+    return _FruitingChainArtifacts(
+        cable_joint_indices=cable_joint_indices,
+        fruiting_fixed_joints=fruiting_fixed_joints,
+        seg_bodies=seg_bodies,
+        apple_body=apple_body,
+        all_joints=all_joints,
+        chain_bodies=chain_bodies,
+        proxy_placement_origin=proxy_placement_origin,
+        proxy_placement_dir=proxy_placement_dir,
+        t_junction_support_ctx=(primary_points, primary_bodies, primary_seg_len),
+    )
+
+
+def _attach_t_junction_world_supports(
+    builder: newton.ModelBuilder,
+    artifacts: _FruitingChainArtifacts,
+) -> None:
+    """Add world-fixed primary endpoint supports (must run after all other joints)."""
+    ctx = artifacts.t_junction_support_ctx
+    if ctx is None:
+        return
+    primary_points, primary_bodies, primary_seg_len = ctx
+    j_left = _connect_world_to_rod_base(
+        builder,
+        world_pos=primary_points[0],
+        body=primary_bodies[0],
+        key="joint_primary_support_left",
+    )
+    j_right = _connect_world_to_rod_tip(
+        builder,
+        world_pos=primary_points[-1],
+        body=primary_bodies[-1],
+        seg_length=primary_seg_len,
+        key="joint_primary_support_right",
+    )
+    artifacts.all_joints.extend((j_left, j_right))
+    artifacts.fruiting_fixed_joints.extend(
+        (
+            (j_left, "joint_primary_support_left"),
+            (j_right, "joint_primary_support_right"),
+        )
+    )
+    artifacts.world_root_joints = (j_left, j_right)
+    artifacts.t_junction_support_ctx = None
+
+
 def _apply_collision_filters_between_chain_groups(
     builder: newton.ModelBuilder,
     chain_a: list[int],
@@ -245,6 +513,38 @@ def _apply_collision_filters_between_chain_groups(
                     builder.add_shape_collision_filter_pair(shape1, shape2)
 
 
+def _register_fruiting_articulations(
+    builder: newton.ModelBuilder,
+    *,
+    all_joints: list[int],
+    chain_bodies: list[int],
+    enable_self_collisions: bool,
+    seg_bodies: dict[str, list[int]] | None = None,
+    apple_body: int | None = None,
+    gripper_proxy_joints: tuple[int, ...] = (),
+    world_root_joints: tuple[int, ...] = (),
+    extra_chain_groups_for_filters: tuple[list[int], ...] = (),
+) -> None:
+    """Register articulations and optional collision filters (no ``finalize``)."""
+    joint_list = sorted(all_joints)
+    isolated = sorted(set(gripper_proxy_joints) | set(world_root_joints))
+    if isolated:
+        isolated_set = set(isolated)
+        chain_joints = [j for j in joint_list if j not in isolated_set]
+        builder.add_articulation(chain_joints)
+        for ij in isolated:
+            builder.add_articulation([ij])
+    else:
+        builder.add_articulation(joint_list)
+    if not enable_self_collisions:
+        if seg_bodies is not None:
+            _apply_default_fruiting_collision_filters(builder, seg_bodies, apple_body)
+        else:
+            _apply_all_chain_collision_filters(builder, chain_bodies)
+    for other in extra_chain_groups_for_filters:
+        _apply_collision_filters_between_chain_groups(builder, chain_bodies, other)
+
+
 def _finalize_fruiting_builder_joints(
     builder: newton.ModelBuilder,
     *,
@@ -252,23 +552,24 @@ def _finalize_fruiting_builder_joints(
     chain_bodies: list[int],
     device: str,
     enable_self_collisions: bool,
+    seg_bodies: dict[str, list[int]] | None = None,
+    apple_body: int | None = None,
     gripper_proxy_joints: tuple[int, ...] = (),
+    world_root_joints: tuple[int, ...] = (),
     extra_chain_groups_for_filters: tuple[list[int], ...] = (),
 ) -> newton.Model:
-    """Finalize a cable ``Model``; FREE proxy joints live in separate articulations."""
-    joint_list = sorted(all_joints)
-    proxy_set = set(gripper_proxy_joints)
-    if proxy_set:
-        chain_joints = [j for j in joint_list if j not in proxy_set]
-        builder.add_articulation(chain_joints)
-        for pj in gripper_proxy_joints:
-            builder.add_articulation([pj])
-    else:
-        builder.add_articulation(joint_list)
-    if not enable_self_collisions:
-        _apply_all_chain_collision_filters(builder, chain_bodies)
-    for other in extra_chain_groups_for_filters:
-        _apply_collision_filters_between_chain_groups(builder, chain_bodies, other)
+    """Finalize a cable ``Model``; world-root and FREE proxy joints use separate articulations."""
+    _register_fruiting_articulations(
+        builder,
+        all_joints=all_joints,
+        chain_bodies=chain_bodies,
+        enable_self_collisions=enable_self_collisions,
+        seg_bodies=seg_bodies,
+        apple_body=apple_body,
+        gripper_proxy_joints=gripper_proxy_joints,
+        world_root_joints=world_root_joints,
+        extra_chain_groups_for_filters=extra_chain_groups_for_filters,
+    )
     # builder.add_ground_plane()
     builder.color()
     model = builder.finalize(device=device)
@@ -292,7 +593,10 @@ def _finalize_fruiting_builder(
         chain_bodies=artifacts.chain_bodies,
         device=device,
         enable_self_collisions=enable_self_collisions,
+        seg_bodies=artifacts.seg_bodies,
+        apple_body=artifacts.apple_body,
         gripper_proxy_joints=proxy_joints,
+        world_root_joints=artifacts.world_root_joints,
     )
 def _approach_dir_from_robot_base(
     apple_pos: wp.vec3,
@@ -396,14 +700,13 @@ def _add_gripper_proxy(
     if config.weld_reference_quat is not None and config.weld_reference_pos is None:
         raise ValueError("weld_reference_quat requires weld_reference_pos")
 
-    hx, hy, hz = config.box_half_extents
     weld_apple_center = _weld_apple_center(config, artifacts)
     weld_apple_quat = (
         None
         if config.weld_reference_quat is None
         else wp.quat(*config.weld_reference_quat)
     )
-    clearance = max(hx, hy, hz)
+    clearance = gripper_proxy_clearance(config)
     robot_facing_approach_dir: wp.vec3 | None = None
 
     vis_offset: wp.vec3 = wp.vec3(0.0, 0.0, 0.0)
@@ -444,12 +747,11 @@ def _add_gripper_proxy(
     )
     proxy_shape_cfg = builder.default_shape_cfg.copy()
     proxy_shape_cfg.density = 0.0
-    builder.add_shape_box(
-        body=proxy_body,
-        hx=hx,
-        hy=hy,
-        hz=hz,
-        cfg=proxy_shape_cfg,
+    add_gripper_proxy_collision_shape(
+        builder,
+        proxy_body,
+        config,
+        shape_cfg=proxy_shape_cfg,
     )
 
     apple_fixed_joint: int | None = None
@@ -567,6 +869,46 @@ def _make_rod_geometry(
     points = [start + d * (length * i / num_segments) for i in range(num_segments + 1)]
     quats = newton.utils.create_parallel_transport_cable_quaternions(points)
     return points, quats
+
+
+def _primary_spur_parent_body_index(num_segments: int, fraction: float) -> int:
+    """Index of the primary body whose tip hosts the spur branch."""
+    point_index = int(round(float(fraction) * num_segments))
+    point_index = max(1, min(num_segments, point_index))
+    return point_index - 1
+
+
+def _connect_world_to_rod_base(
+    builder: newton.ModelBuilder,
+    world_pos: wp.vec3,
+    body: int,
+    key: str,
+) -> int:
+    """World-fixed support at a rod segment base (local ``(0,0,0)``)."""
+    return builder.add_joint_fixed(
+        parent=-1,
+        child=body,
+        parent_xform=wp.transform(world_pos, wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        label=key,
+    )
+
+
+def _connect_world_to_rod_tip(
+    builder: newton.ModelBuilder,
+    world_pos: wp.vec3,
+    body: int,
+    seg_length: float,
+    key: str,
+) -> int:
+    """World-fixed support at a rod segment tip (local ``(0,0,seg_length)``)."""
+    return builder.add_joint_fixed(
+        parent=-1,
+        child=body,
+        parent_xform=wp.transform(world_pos, wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, seg_length), wp.quat_identity()),
+        label=key,
+    )
 
 
 def _connect_rod_tip_to_base(

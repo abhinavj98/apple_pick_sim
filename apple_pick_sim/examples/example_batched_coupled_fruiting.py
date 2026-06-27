@@ -40,17 +40,13 @@ from apple_pick_sim.coupled_fruiting import (
     seed_fix_to_apple_from_settled,
     settle_vbd_substeps,
 )
-from apple_pick_sim.fruiting_system import GripperProxyConfig, load_ranges
+from apple_pick_sim.fruiting_system import GripperProxyConfig, default_ranges_fixture_path, load_ranges
 from apple_pick_sim.batched_viz import log_batched_endpoints, log_batched_tcp_force_arrows
 from apple_pick_sim.coupled_fruiting.batched_robot_status import print_batched_robot_status
 
 
 def _default_ranges_path() -> Path:
-    return (
-        Path(__file__).resolve().parent.parent
-        / "fixtures"
-        / "fruiting_system_ranges_example_variance_soft.json"
-    )
+    return default_ranges_fixture_path()
 
 
 def _fix_to_apple_from_args(args: argparse.Namespace | None) -> bool:
@@ -70,7 +66,6 @@ def _gripper_proxy_from_args(
     if robot_kind == "fr3":
         return GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
             fix_to_apple=fix,
             robot_facing_weld=fix,
         )
@@ -103,7 +98,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to fruiting-system range JSON (default: "
-            "apple_pick_sim/fixtures/fruiting_system_ranges_example_variance_soft.json)."
+            "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json)."
         ),
     )
     parser.add_argument(

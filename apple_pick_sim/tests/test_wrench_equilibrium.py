@@ -146,6 +146,7 @@ def _make_minimal_scene(apple_radius: float, apple_density: float, device: str =
         ),
         apple_radius=apple_radius,
         apple_density=apple_density,
+        topology=fs.TOPOLOGY_LINEAR_CHAIN,
     )
     scene = fs._build_scene(
         params,
@@ -206,6 +207,7 @@ def _make_full_chain_scene(device: str = "cpu"):
         ),
         apple_radius=0.040,
         apple_density=850.0,
+        topology=fs.TOPOLOGY_LINEAR_CHAIN,
     )
     scene = fs._build_scene(
         params,
@@ -770,3 +772,72 @@ def test_fruiting_ranges_fixture_chain_nearly_vertical():
                 f"only {math.degrees(math.acos(np.clip(c, -1.0, 1.0))):.2f}° from -Z "
                 f"(need ≤ 4°)"
             )
+
+
+def _make_t_junction_scene(device: str = "cpu"):
+    """Deterministic T topology: stiff horizontal primary, vertical spur→stem→apple."""
+    fs = _import_fs()
+    params = fs.FruitingSystemParams(
+        primary=fs.RodParams(
+            num_segments=2,
+            length=0.20,
+            radius=0.008,
+            bend_stiffness=3000.0,
+            bend_damping=10.0,
+            stretch_stiffness=1.0e8,
+            density=300.0,
+            direction=(1.0, 0.0, 0.0),
+        ),
+        secondary=None,
+        spur=fs.RodParams(
+            num_segments=2,
+            length=0.08,
+            radius=0.004,
+            bend_stiffness=600.0,
+            bend_damping=5.0,
+            stretch_stiffness=1.0e7,
+            density=150.0,
+            direction=(0.0, 0.0, -1.0),
+        ),
+        stem=fs.RodParams(
+            num_segments=2,
+            length=0.06,
+            radius=0.003,
+            bend_stiffness=100.0,
+            bend_damping=5.0,
+            stretch_stiffness=1.0e6,
+            density=200.0,
+            direction=(0.0, 0.0, -1.0),
+        ),
+        apple_radius=0.04,
+        apple_density=700.0,
+        topology=fs.TOPOLOGY_T_JUNCTION,
+        spur_attach_fraction=0.5,
+    )
+    return fs._build_scene(
+        params,
+        base_pos=(0.0, 0.0, _BASE_Z),
+        device=device,
+        enable_self_collisions=False,
+    )
+
+
+def test_t_junction_stem_apple_at_equilibrium():
+    """T branch below mid-span: ``joint_stem_apple`` Fz ≈ m_apple·g at quasi-static rest."""
+    scene = _make_t_junction_scene()
+    expected_mass = _apple_mass_from_model(scene)
+    mean_fz, _sim_dt = _settle_joint_fz_last_frame_mean(
+        scene,
+        joint_labels=["joint_stem_apple"],
+        num_frames=220,
+        substeps=10,
+    )
+    np.testing.assert_allclose(
+        mean_fz["joint_stem_apple"],
+        expected_mass * G,
+        rtol=0.08,
+        err_msg=(
+            f"joint_stem_apple Fz={mean_fz['joint_stem_apple']:.4f} N "
+            f"expected ≈ {expected_mass * G:.4f} N"
+        ),
+    )

@@ -46,7 +46,6 @@ def _make_settle_then_weld(cf, fs, ranges, seed: int, *, settle_substeps: int):
                 **_BUILD_KW,
                 gripper_proxy=fs.GripperProxyConfig(
                     mass=fr3_robot.EE_MASS_KG,
-                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
                     fix_to_apple=False,
                 ),
             )
@@ -58,7 +57,6 @@ def _make_settle_then_weld(cf, fs, ranges, seed: int, *, settle_substeps: int):
                 skip_ik_bootstrap=True,
                 gripper_proxy=fs.GripperProxyConfig(
                     mass=fr3_robot.EE_MASS_KG,
-                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
                     fix_to_apple=True,
                 ),
             )
@@ -153,7 +151,6 @@ def test_seed_bootstrap_clears_proxy_forces():
                 **_BUILD_KW,
                 gripper_proxy=fs.GripperProxyConfig(
                     mass=fr3_robot.EE_MASS_KG,
-                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
                     fix_to_apple=False,
                 ),
             )
@@ -165,7 +162,6 @@ def test_seed_bootstrap_clears_proxy_forces():
                 skip_ik_bootstrap=True,
                 gripper_proxy=fs.GripperProxyConfig(
                     mass=fr3_robot.EE_MASS_KG,
-                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
                     fix_to_apple=True,
                 ),
             )
@@ -199,7 +195,6 @@ def test_seed_raises_when_settled_proxy_unreachable_from_specified_origin():
         mujoco_solver_kwargs={"disable_contacts": True},
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
             fix_to_apple=False,
         ),
     )
@@ -212,7 +207,6 @@ def test_seed_raises_when_settled_proxy_unreachable_from_specified_origin():
         skip_ik_bootstrap=True,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
             fix_to_apple=True,
         ),
     )
@@ -235,7 +229,6 @@ def test_welded_build_skip_ik_bootstrap_defers_tcp_alignment_to_seed():
         skip_ik_bootstrap=True,
         gripper_proxy=fs.GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
             fix_to_apple=True,
         ),
     )
@@ -260,7 +253,6 @@ def test_welded_build_skip_ik_bootstrap_defers_tcp_alignment_to_seed():
             **_BUILD_KW,
             gripper_proxy=fs.GripperProxyConfig(
                 mass=fr3_robot.EE_MASS_KG,
-                box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
                 fix_to_apple=False,
             ),
         )
@@ -300,7 +292,6 @@ def test_build_raises_when_proxy_unreachable_from_specified_robot_base():
             mujoco_solver_kwargs={"disable_contacts": True},
             gripper_proxy=fs.GripperProxyConfig(
                 mass=fr3_robot.EE_MASS_KG,
-                box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
                 fix_to_apple=True,
             ),
         )

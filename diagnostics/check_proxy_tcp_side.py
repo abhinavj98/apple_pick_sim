@@ -34,9 +34,7 @@ def main() -> None:
     proxy_cfg = GripperProxyConfig(
         fix_to_apple=args.fix_to_apple,
         robot_facing_weld=args.fix_to_apple,
-        **({"mass": fr3_robot.EE_MASS_KG,
-            "box_half_extents": fr3_robot.EE_BOX_HALF_EXTENTS}
-           if args.robot == "fr3" else {}),
+        **({"mass": fr3_robot.EE_MASS_KG} if args.robot == "fr3" else {}),
     )
 
     print(f"Building scene (robot={args.robot}, fix_to_apple={args.fix_to_apple}, seed={args.seed}) ...")

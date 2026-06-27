@@ -13,6 +13,9 @@ Per-env scripted actions (RL scatter-path demo)::
 
     uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \\
       --num-envs 4 --viewer gl --demo-per-env-actions --seed 42
+
+Default ranges: ``fruiting_system_ranges_real_world_proxy_variance.json`` (real-world
+bench proxy with per-env DR). Robot base at origin; fruiting chain at (0, 0.5, 0.95) m.
 """
 
 from __future__ import annotations
@@ -43,9 +46,13 @@ from apple_pick_sim.coupled_fruiting import (
 from apple_pick_sim.fruiting_system import (
     FruitingSystemParams,
     GripperProxyConfig,
+    PLACEHOLDER_EE_MASS_KG,
+    default_ranges_fixture_path,
     load_ranges,
     sample_heterogeneous_params_list,
 )
+
+# Real-world bench proxy EE: 50 mm radius, 140 mm length (docs/real-world-proxy.md).
 from apple_pick_sim.batched_viz import log_batched_endpoints, log_batched_tcp_force_arrows
 from apple_pick_sim.coupled_fruiting.batched_robot_status import print_batched_robot_status
 
@@ -57,11 +64,7 @@ _FR3_TELEOP_IK_ITERATIONS = 128
 
 
 def _default_ranges_path() -> Path:
-    return (
-        Path(__file__).resolve().parent.parent
-        / "fixtures"
-        / "fruiting_system_ranges_example_variance_soft.json"
-    )
+    return default_ranges_fixture_path()
 
 
 def _fix_to_apple_from_args(args: argparse.Namespace | None) -> bool:
@@ -80,8 +83,7 @@ def _gripper_proxy_from_args(
     fix = _fix_to_apple_from_args(args)
     if robot_kind == "fr3":
         return GripperProxyConfig(
-            mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
+            mass=PLACEHOLDER_EE_MASS_KG,
             fix_to_apple=fix,
             robot_facing_weld=fix,
         )
@@ -126,7 +128,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Path to fruiting-system range JSON (default: "
-            "apple_pick_sim/fixtures/fruiting_system_ranges_example_variance_soft.json)."
+            "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json)."
         ),
     )
     parser.add_argument("--hz", type=float, default=30.0, help="Target frame rate [Hz].")

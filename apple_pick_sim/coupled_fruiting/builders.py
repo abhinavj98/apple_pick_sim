@@ -29,6 +29,7 @@ from apple_pick_sim.coupled_fruiting.explicit_load import apple_mass_kg_from_mod
 from apple_pick_sim.coupled_fruiting.stem import _find_stem_apple_joint
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.sim_mujoco_device import resolve_mujoco_use_cpu
+from apple_pick_sim.fruiting_system.gripper_proxy_shape import add_gripper_proxy_collision_shape
 from apple_pick_sim.fruiting_system import (
     CoupledCableScene,
     FruitingSystemParams,
@@ -245,8 +246,7 @@ def build_placeholder_tcp_robot_builder(
     *,
     gripper_cfg: GripperProxyConfig,
 ) -> tuple[newton.ModelBuilder, int]:
-    """Populate placeholder box-TCP robot on a builder without ``finalize``."""
-    hx, hy, hz = gripper_cfg.box_half_extents
+    """Populate placeholder TCP robot on a builder without ``finalize``."""
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
     tcp_body = builder.add_link(
         mass=gripper_cfg.mass,
@@ -254,7 +254,12 @@ def build_placeholder_tcp_robot_builder(
     )
     shape_cfg = builder.default_shape_cfg.copy()
     shape_cfg.density = 0.0
-    builder.add_shape_box(body=tcp_body, hx=hx, hy=hy, hz=hz, cfg=shape_cfg)
+    add_gripper_proxy_collision_shape(
+        builder,
+        tcp_body,
+        gripper_cfg,
+        shape_cfg=shape_cfg,
+    )
     j_free = builder.add_joint_free(parent=-1, child=tcp_body)
     builder.add_articulation([j_free])
     return builder, tcp_body
@@ -412,7 +417,6 @@ def build_coupled_fruiting_fr3(
     if gripper_proxy is None:
         gripper_proxy = GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
         )
 
     cable = generate_coupled_cable_scene(
@@ -710,7 +714,6 @@ def build_batched_coupled_fruiting_fr3(
     if gripper_proxy is None:
         gripper_proxy = GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
         )
     fix = bool(gripper_proxy.fix_to_apple)
     _validate_batched_options(
@@ -1077,7 +1080,6 @@ def build_heterogeneous_coupled_fruiting_fr3(
     if gripper_proxy is None:
         gripper_proxy = GripperProxyConfig(
             mass=fr3_robot.EE_MASS_KG,
-            box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
         )
     fix = bool(gripper_proxy.fix_to_apple)
     _validate_batched_options(

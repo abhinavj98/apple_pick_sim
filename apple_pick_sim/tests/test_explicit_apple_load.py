@@ -370,7 +370,6 @@ def test_settle_weld_hold_explicit_support_matches_mg():
                 **_SETTLE_WELD_BUILD_KW,
                 gripper_proxy=fs.GripperProxyConfig(
                     mass=fr3_robot.EE_MASS_KG,
-                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
                     fix_to_apple=False,
                 ),
             )
@@ -382,7 +381,6 @@ def test_settle_weld_hold_explicit_support_matches_mg():
                 **_SETTLE_WELD_BUILD_KW,
                 gripper_proxy=fs.GripperProxyConfig(
                     mass=fr3_robot.EE_MASS_KG,
-                    box_half_extents=fr3_robot.EE_BOX_HALF_EXTENTS,
                     fix_to_apple=True,
                 ),
             )

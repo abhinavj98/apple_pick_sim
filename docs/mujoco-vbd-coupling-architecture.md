@@ -93,7 +93,7 @@ After each MuJoCo substep, the TCP state on `robot_state_0` is the **kinematic a
 | Load JSON ranges, deterministic sampling | `load_ranges`, `sample_params`, `FruitingSystemParams` |
 | Build **P0** VBD-only scene | `generate_scene` → `FruitingSystemScene` |
 | Build **M1 cable** scene (Model B) | `generate_coupled_cable_scene` → `CoupledCableScene` |
-| Rod chain topology | `_build_fruiting_chain_into_builder`: primary → secondary → spur → stem → apple |
+| Rod chain topology | `_build_fruiting_chain_into_builder` routes on `params.topology`: default **T-junction** (simply supported primary + mid-span branch); opt-in **`linear_chain`** for serial primary → … → apple |
 | Gripper proxy geometry and joints | `_add_gripper_proxy`, `GripperProxyConfig` |
 | Default VBD solver settings | `make_fruiting_solver_vbd` |
 | P0 fixed-joint wrench API | `measure_fruiting_forces`, `iter_fruiting_fixed_joint_indices` |

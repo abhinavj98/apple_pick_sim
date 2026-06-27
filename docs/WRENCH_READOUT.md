@@ -173,6 +173,24 @@ the cut** (i.e. descendants of the child of joint j).
 every cut, so it never enters any subtree sum.  The remaining primary bodies
 also sit above the cut for `joint_primary_secondary`.
 
+### T-junction (`real_world_proxy` default)
+
+Simply supported primary with mid-span branch. Rod–rod subtree cuts still obey the
+theorem above:
+
+| Joint | Bodies in subtree | Expected `force_world[Z]` (quasi-static) |
+|---|---|---|
+| `joint_stem_apple` | apple | `m_apple · g` |
+| `joint_spur_stem` | stem_bodies + apple | `(M_stem + m_apple) · g` |
+| `joint_primary_spur` | spur_bodies + stem_bodies + apple | `(M_spur + M_stem + m_apple) · g` |
+
+`joint_primary_support_left` / `joint_primary_support_right` are **world-root** joints
+(finalized in separate articulations). Their upward reactions split primary + branch
+load with the simply-supported beam boundary conditions; do not apply the serial-chain
+table row-for-row. Automated check today: `test_t_junction_stem_apple_at_equilibrium`
+(vertical spur branch below the mid-span cut). Mid-span `joint_primary_spur` readouts
+with dual world supports are not yet asserted in CI.
+
 ---
 
 ## 6. How masses are computed

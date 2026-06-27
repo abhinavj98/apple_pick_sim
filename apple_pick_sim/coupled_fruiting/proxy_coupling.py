@@ -448,6 +448,206 @@ def _limit_and_write_tcp_stem_wrench_kernel(
     )
 
 
+@wp.kernel
+def _batched_limit_and_write_tcp_stem_wrench_kernel(
+    wrenches: wp.array(dtype=wp.spatial_vector),
+    tcp_indices: wp.array(dtype=int),
+    force_raw: wp.array(dtype=wp.vec3),
+    torque_raw: wp.array(dtype=wp.vec3),
+    coupling_gain: float,
+    force_cap_N: float,
+    torque_cap_Nm: float,
+    use_force_cap: int,
+    use_torque_cap: int,
+    use_explicit_apple_weight: wp.array(dtype=int),
+    apple_mass_kg: wp.array(dtype=float),
+    gravity: wp.vec3,
+    robot_body_q: wp.array(dtype=wp.transform),
+    cable_body_q: wp.array(dtype=wp.transform),
+    apple_body_indices: wp.array(dtype=int),
+    grasp_offsets: wp.array(dtype=wp.transform),
+    use_grasp_offset: wp.array(dtype=int),
+):
+    """Under-relax and clamp batched stem harvest; write spatial wrench per TCP row."""
+    i = wp.tid()
+    tcp_index = tcp_indices[i]
+    f_stem_at_com = force_raw[i]
+    tau_stem_at_com = torque_raw[i]
+
+    f_total_tcp = f_stem_at_com
+    tau_total_tcp = tau_stem_at_com
+
+    apple_body_index = apple_body_indices[i]
+    if apple_body_index >= 0:
+        tcp_xf = robot_body_q[tcp_index]
+        p_tcp = wp.transform_get_translation(tcp_xf)
+        if use_grasp_offset[i] != 0:
+            apple_xf = wp.transform_multiply(tcp_xf, wp.transform_inverse(grasp_offsets[i]))
+            p_apple = wp.transform_get_translation(apple_xf)
+        else:
+            p_apple = wp.transform_get_translation(cable_body_q[apple_body_index])
+
+        r_tcp_to_apple_com = p_apple - p_tcp
+        tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_stem_at_com)
+
+        if use_explicit_apple_weight[i] != 0 and apple_mass_kg[i] > 0.0:
+            g = gravity
+            m = apple_mass_kg[i]
+            f_apple_weight = wp.vec3(-m * g[0], -m * g[1], -m * g[2])
+            f_total_tcp = f_total_tcp + f_apple_weight
+            tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_apple_weight)
+
+    f_total_tcp = f_total_tcp * coupling_gain
+    tau_total_tcp = tau_total_tcp * coupling_gain
+
+    if use_force_cap != 0 and force_cap_N > 0.0:
+        fn = wp.length(f_total_tcp)
+        if fn > force_cap_N:
+            f_total_tcp = f_total_tcp * (force_cap_N / fn)
+    if use_torque_cap != 0 and torque_cap_Nm > 0.0:
+        tn = wp.length(tau_total_tcp)
+        if tn > torque_cap_Nm:
+            tau_total_tcp = tau_total_tcp * (torque_cap_Nm / tn)
+
+    wrenches[tcp_index] = wp.spatial_vector(
+        f_total_tcp[0],
+        f_total_tcp[1],
+        f_total_tcp[2],
+        tau_total_tcp[0],
+        tau_total_tcp[1],
+        tau_total_tcp[2],
+    )
+
+
+def _grasp_offset_to_transform(offset: tuple | None) -> wp.transform:
+    if offset is None:
+        return wp.transform_identity()
+    if len(offset) == 7:
+        return wp.transform(
+            wp.vec3(float(offset[0]), float(offset[1]), float(offset[2])),
+            wp.quat(float(offset[3]), float(offset[4]), float(offset[5]), float(offset[6])),
+        )
+    return wp.transform(
+        wp.vec3(float(offset[0]), float(offset[1]), float(offset[2])),
+        wp.quat_identity(),
+    )
+
+
+def harvest_batched_stem_tension(
+    *,
+    stem_joint_indices_wp: wp.array,
+    tcp_indices_wp: wp.array,
+    apple_indices_wp: wp.array,
+    grasp_offsets_wp: wp.array,
+    apple_masses_wp: wp.array,
+    use_grasp_offset_wp: wp.array,
+    cable_model,
+    cable_solver,
+    body_q_post: wp.array,
+    body_q_prev: wp.array,
+    dt: float,
+    out_robot_wrenches: wp.array,
+    coupling_gain: float = 1.0,
+    force_cap_N: float | None = None,
+    torque_cap_Nm: float | None = None,
+    explicit_apple_weight: bool = True,
+    gravity: wp.vec3 | None = None,
+    robot_body_q: wp.array | None = None,
+    device: str | None = None,
+) -> None:
+    """Batched stem harvest for ``N`` envs: one gather + one write kernel launch."""
+    from apple_pick_sim.vbd_fixed_joint_wrenches import gather_joint_wrench_child_com_device
+
+    dev = device if device is not None else str(out_robot_wrenches.device)
+    n = int(tcp_indices_wp.shape[0])
+    if n == 0:
+        return
+
+    wp.launch(_zero_all_wrenches_kernel, dim=int(out_robot_wrenches.shape[0]), inputs=[out_robot_wrenches], device=dev)
+
+    out_f, out_t = gather_joint_wrench_child_com_device(
+        cable_model,
+        cable_solver,
+        body_q=body_q_post,
+        body_q_prev=body_q_prev,
+        joint_indices=stem_joint_indices_wp.numpy(),
+        dt=dt,
+        control=cable_model.control(clone_variables=False),
+    )
+    g = gravity if gravity is not None else wp.vec3(0.0, 0.0, -9.81)
+    robot_bq = robot_body_q if robot_body_q is not None else body_q_post
+    use_explicit_arr = wp.full(n, 1 if explicit_apple_weight else 0, dtype=int, device=dev)
+
+    f_cap = float(force_cap_N) if force_cap_N is not None else 0.0
+    t_cap = float(torque_cap_Nm) if torque_cap_Nm is not None else 0.0
+    wp.launch(
+        _batched_limit_and_write_tcp_stem_wrench_kernel,
+        dim=n,
+        inputs=[
+            out_robot_wrenches,
+            tcp_indices_wp,
+            out_f,
+            out_t,
+            float(coupling_gain),
+            f_cap,
+            t_cap,
+            1 if force_cap_N is not None and force_cap_N > 0.0 else 0,
+            1 if torque_cap_Nm is not None and torque_cap_Nm > 0.0 else 0,
+            use_explicit_arr,
+            apple_masses_wp,
+            g,
+            robot_bq,
+            body_q_post,
+            apple_indices_wp,
+            grasp_offsets_wp,
+            use_grasp_offset_wp,
+        ],
+        device=dev,
+    )
+
+
+def prepare_batched_stem_harvest_arrays(scene: Any, layout: Any) -> None:
+    """Cache per-env stem harvest index/offset/mass arrays on ``scene`` (build-time)."""
+    if layout is None or int(layout.num_envs) < 2:
+        return
+    tpl_stem = scene.stem_apple_joint_index
+    if tpl_stem is None:
+        return
+
+    cable = scene.cable
+    dev = str(cable.model.device)
+    n = int(layout.num_envs)
+    default_off = cable.gripper_proxy_offset_in_apple_frame
+    per_offsets = getattr(scene, "per_world_proxy_offsets", None)
+
+    stem_joints = [layout.joint_index(w, tpl_stem) for w in range(n)]
+    grasp_list: list[wp.transform] = []
+    use_grasp: list[int] = []
+    for w in range(n):
+        off = per_offsets[w] if per_offsets is not None and per_offsets[w] is not None else default_off
+        if off is None:
+            grasp_list.append(wp.transform_identity())
+            use_grasp.append(0)
+        else:
+            grasp_list.append(_grasp_offset_to_transform(off))
+            use_grasp.append(1)
+
+    masses_np = cable.model.body_mass.numpy()
+    apple_masses = [
+        float(masses_np[int(layout.apple_body_indices[w])])
+        if int(layout.apple_body_indices[w]) >= 0
+        else 0.0
+        for w in range(n)
+    ]
+
+    scene.stem_harvest_joint_indices_wp = wp.array(stem_joints, dtype=int, device=dev)
+    scene.stem_harvest_tcp_indices_wp = wp.array(list(layout.tcp_body_indices), dtype=int, device=dev)
+    scene.stem_harvest_apple_indices_wp = wp.array(list(layout.apple_body_indices), dtype=int, device=dev)
+    scene.stem_harvest_grasp_offsets_wp = wp.array(grasp_list, dtype=wp.transform, device=dev)
+    scene.stem_harvest_apple_masses_wp = wp.array(apple_masses, dtype=float, device=dev)
+    scene.stem_harvest_use_grasp_offset_wp = wp.array(use_grasp, dtype=int, device=dev)
+
+
 def _harvest_stem_tension_for_tcp_cpu(
     *,
     cable_model,
@@ -1002,20 +1202,28 @@ def welded_co_teleport_arrays_for_layout(
     cable: Any,
     *,
     device: str,
+    per_world_proxy_offsets: tuple[tuple | None, ...] | None = None,
 ) -> tuple[wp.array, wp.array, wp.array]:
     """Per-registry-row apple ids, zero TCP offsets, and grasp offsets for batched weld sync."""
-    off = cable.gripper_proxy_offset_in_apple_frame
-    if off is None:
+    default_off = cable.gripper_proxy_offset_in_apple_frame
+    if default_off is None and (
+        per_world_proxy_offsets is None
+        or all(o is None for o in per_world_proxy_offsets)
+    ):
         raise ValueError("welded_co_teleport_arrays_for_layout requires grasp offset")
-    grasp = wp.transform(
-        wp.vec3(float(off[0]), float(off[1]), float(off[2])),
-        wp.quat(float(off[3]), float(off[4]), float(off[5]), float(off[6])),
-    )
     n = int(layout.num_envs)
+    grasp_list: list[wp.transform] = []
+    for w in range(n):
+        off = (
+            per_world_proxy_offsets[w]
+            if per_world_proxy_offsets is not None and per_world_proxy_offsets[w] is not None
+            else default_off
+        )
+        grasp_list.append(_grasp_offset_to_transform(off))
     return (
         wp.array(list(layout.apple_body_indices), dtype=int, device=device),
         wp.zeros(n, dtype=wp.vec3, device=device),
-        wp.array([grasp] * n, dtype=wp.transform, device=device),
+        wp.array(grasp_list, dtype=wp.transform, device=device),
     )
 
 

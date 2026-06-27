@@ -200,43 +200,122 @@ def _bootstrap_tcp_per_env(
     layout: BatchedEnvLayout,
     *,
     ik_iterations: int = 256,
+    n_seeds: int = 4,
 ) -> None:
-    """Align each world's TCP to its own settled proxy via template IK."""
+    """Align each world's TCP to its own settled proxy via batched template IK."""
     tpl_robot = getattr(scene, "ik_template_robot_model", None)
     if tpl_robot is None or scene.robot_model is None:
         return
 
-    import newton
-
-    from apple_pick_sim.coupled_fruiting.bootstrap import bootstrap_articulated_tcp_from_proxy
-
-    coord_per = int(tpl_robot.joint_coord_count)
-    batched_jq = scene.robot_model.joint_q.numpy().copy()
-    for w in range(layout.num_envs):
-        view = _WorldCableView(
-            gripper_proxy_body=layout.proxy_body_indices[w],
-            state_0=scene.cable.state_0,
-            gripper_proxy_apple_joint=scene.cable.gripper_proxy_apple_joint,
-        )
-        tpl_state = tpl_robot.state()
-        bootstrap_articulated_tcp_from_proxy(
-            view,
-            tpl_robot,
-            layout.template_tcp_body,
-            tpl_state,
-            ik_iterations=ik_iterations,
-            raise_on_failure=False,
-        )
-        c0 = w * coord_per
-        batched_jq[c0 : c0 + coord_per] = tpl_robot.joint_q.numpy()
-    scene.robot_model.joint_q.assign(batched_jq)
-    scene.robot_state_0.joint_q.assign(batched_jq)
-    newton.eval_fk(
-        scene.robot_model,
-        scene.robot_model.joint_q,
-        scene.robot_model.joint_qd,
-        scene.robot_state_0,
+    from apple_pick_sim.robot.fr3_robot.batched_template_ik import BatchedTemplateIK
+    from apple_pick_sim.robot.fr3_robot.placement import (
+        IK_BOOTSTRAP_POS_TOL_M,
+        IK_BOOTSTRAP_ROT_TOL_RAD,
+        ik_bootstrap_joint_q_candidates,
     )
+
+    ik_solver = BatchedTemplateIK(
+        tpl_robot,
+        scene.robot_model,
+        layout,
+        layout.template_tcp_body,
+    )
+    dev = tpl_robot.device
+    proxy_indices_wp = wp.array(list(layout.proxy_body_indices), dtype=int, device=dev)
+    n = int(layout.num_envs)
+
+    ik_solver.gather_targets_from_proxy_state(scene.cable.state_0, proxy_indices_wp)
+
+    proxy_bq = scene.cable.state_0.body_q.numpy().reshape(-1, 7)
+    targets_world = [
+        wp.transform(
+            wp.vec3(
+                float(proxy_bq[layout.proxy_body_indices[w], 0]),
+                float(proxy_bq[layout.proxy_body_indices[w], 1]),
+                float(proxy_bq[layout.proxy_body_indices[w], 2]),
+            ),
+            wp.quat(
+                float(proxy_bq[layout.proxy_body_indices[w], 3]),
+                float(proxy_bq[layout.proxy_body_indices[w], 4]),
+                float(proxy_bq[layout.proxy_body_indices[w], 5]),
+                float(proxy_bq[layout.proxy_body_indices[w], 6]),
+            ),
+        )
+        for w in range(n)
+    ]
+
+    fix_to_apple = scene.cable.gripper_proxy_apple_joint is not None
+    seeds = ik_bootstrap_joint_q_candidates(tpl_robot, max_seeds=n_seeds)
+    best_jq = np.zeros((n, ik_solver.n_coords), dtype=np.float32)
+    best_score = np.full(n, np.inf, dtype=np.float64)
+
+    def _world_proxy_pos_err(jq_row: np.ndarray, world: int) -> float:
+        tpl_tf = ik_solver.tcp_pose_from_joint_coords(jq_row)
+        world_tf = ik_solver.template_to_world(tpl_tf, world)
+        p_tcp = wp.transform_get_translation(world_tf)
+        proxy_idx = int(layout.proxy_body_indices[world])
+        proxy_pos = proxy_bq[proxy_idx, :3]
+        return float(
+            np.linalg.norm(
+                np.array([float(p_tcp[0]), float(p_tcp[1]), float(p_tcp[2])]) - proxy_pos
+            )
+        )
+
+    for seed_idx, seed_jq in enumerate(seeds):
+        if seed_idx == 0:
+            unconverged = np.arange(n, dtype=int)
+        else:
+            unconverged = np.where(best_score > 1.0)[0]
+            if unconverged.size == 0:
+                break
+        jq_np = ik_solver.joint_q.numpy().copy()
+        seed_row = np.asarray(seed_jq, dtype=np.float32).reshape(-1)[: ik_solver.n_coords]
+        jq_np[unconverged] = seed_row
+        ik_solver.joint_q.assign(jq_np)
+
+        ik_solver.step(ik_iterations)
+        jq_now = ik_solver.joint_q.numpy()
+        for w in range(n):
+            pos_err = _world_proxy_pos_err(jq_now[w], w)
+            rot_err = 0.0
+            if not fix_to_apple:
+                _pos, rot_err = ik_solver.pose_errors_per_world(targets_world)[w]
+                del _pos
+            score = pos_err / IK_BOOTSTRAP_POS_TOL_M + rot_err / IK_BOOTSTRAP_ROT_TOL_RAD
+            if score < best_score[w]:
+                best_score[w] = score
+                best_jq[w] = jq_now[w]
+
+    ik_solver.joint_q.assign(best_jq)
+
+    unconverged = np.where(best_score > 1.0)[0]
+    if unconverged.size > 0:
+        import newton
+
+        from apple_pick_sim.coupled_fruiting.bootstrap import bootstrap_articulated_tcp_from_proxy
+
+        coord_per = int(tpl_robot.joint_coord_count)
+        batched_jq = ik_solver.joint_q.numpy().copy()
+        for w in unconverged:
+            view = _WorldCableView(
+                gripper_proxy_body=layout.proxy_body_indices[int(w)],
+                state_0=scene.cable.state_0,
+                gripper_proxy_apple_joint=scene.cable.gripper_proxy_apple_joint,
+            )
+            tpl_state = tpl_robot.state()
+            bootstrap_articulated_tcp_from_proxy(
+                view,
+                tpl_robot,
+                layout.template_tcp_body,
+                tpl_state,
+                ik_iterations=ik_iterations,
+                raise_on_failure=False,
+            )
+            c0 = int(w) * coord_per
+            batched_jq[c0 : c0 + coord_per] = tpl_robot.joint_q.numpy().reshape(-1)[:coord_per]
+        ik_solver.joint_q.assign(batched_jq)
+
+    ik_solver.scatter_to_model(scene.robot_state_0)
 
 
 def seed_fix_to_apple_from_settled(
@@ -334,6 +413,9 @@ def seed_fix_to_apple_from_settled(
     wp.synchronize()
     if per_env_ik and layout is not None and layout.num_envs > 1:
         _bootstrap_tcp_per_env(welded_scene, layout, ik_iterations=256)
+        from apple_pick_sim.coupled_fruiting.proxy_coupling import prepare_batched_stem_harvest_arrays
+
+        prepare_batched_stem_harvest_arrays(welded_scene, layout)
     else:
         _bootstrap_tcp_at_fixed_origin(welded_scene, ik_iterations=256)
         if layout is not None:

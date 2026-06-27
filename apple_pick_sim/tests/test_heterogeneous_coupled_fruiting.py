@@ -28,6 +28,7 @@ from apple_pick_sim.coupled_fruiting import (
 )
 from apple_pick_sim.coupled_fruiting.batched_build import build_heterogeneous_coupled_cable_scene
 from apple_pick_sim.robot import fr3_robot
+from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_POS_TOL_M
 
 _NUM_ENVS = 2
 _SETTLE_SUBSTEPS = 50
@@ -182,8 +183,27 @@ def _make_hetero_settle_then_weld(ranges, seed: int, *, settle_substeps: int = _
 
 @requires_fr3
 @pytest.mark.slow
+def test_batched_ik_bootstrap_aligns_all_proxy_targets(ranges):
+    """After per-env batched IK bootstrap, each TCP is within tolerance of its proxy."""
+    welded, _settled, _params = _make_hetero_settle_then_weld(ranges, seed=54)
+    layout = welded.layout
+    assert layout is not None
+
+    cable = welded.cable
+    bq = cable.state_0.body_q.numpy().reshape(-1, 7)
+    for w in range(layout.num_envs):
+        proxy_idx = layout.proxy_body_indices[w]
+        tcp_idx = layout.tcp_body_indices[w]
+        proxy_pos = bq[proxy_idx, :3]
+        tcp_pos = welded.robot_state_0.body_q.numpy().reshape(-1, 7)[tcp_idx, :3]
+        pos_err = float(np.linalg.norm(tcp_pos - proxy_pos))
+        assert pos_err < IK_BOOTSTRAP_POS_TOL_M, f"world {w} pos_err={pos_err}"
+
+
+@requires_fr3
+@pytest.mark.slow
 def test_per_env_ik_produces_different_joint_q(ranges):
-    welded, _settled, _params = _make_hetero_settle_then_weld(ranges, seed=20)
+    welded, _settled, _params = _make_hetero_settle_then_weld(ranges, seed=54)
     layout = welded.layout
     assert layout is not None
     jcs = welded.robot_model.joint_coord_world_start.numpy()

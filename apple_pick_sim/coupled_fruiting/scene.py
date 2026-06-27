@@ -26,6 +26,7 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     ProxyBodyRegistry,
     align_proxy_body_q_prev_for_vbd,
     copy_cable_body_q_between_states,
+    harvest_batched_stem_tension,
     harvest_proxy_wrenches,
     harvest_stem_tension_for_tcp,
     launch_mirror_robot_to_proxy,
@@ -249,7 +250,34 @@ def _harvest_coupling_wrenches(
         layout = getattr(scene, "layout", None)
         tpl_stem = scene.stem_apple_joint_index
         offset = cable.gripper_proxy_offset_in_apple_frame
-        if layout is not None and layout.num_envs > 1 and tpl_stem is not None:
+        if (
+            layout is not None
+            and layout.num_envs > 1
+            and tpl_stem is not None
+            and scene.stem_harvest_joint_indices_wp is not None
+        ):
+            harvest_batched_stem_tension(
+                stem_joint_indices_wp=scene.stem_harvest_joint_indices_wp,
+                tcp_indices_wp=scene.stem_harvest_tcp_indices_wp,
+                apple_indices_wp=scene.stem_harvest_apple_indices_wp,
+                grasp_offsets_wp=scene.stem_harvest_grasp_offsets_wp,
+                apple_masses_wp=scene.stem_harvest_apple_masses_wp,
+                use_grasp_offset_wp=scene.stem_harvest_use_grasp_offset_wp,
+                cable_model=cable.model,
+                cable_solver=cable.solver,
+                body_q_post=cable.state_0.body_q,
+                body_q_prev=cable.state_1.body_q,
+                dt=dt,
+                out_robot_wrenches=scene.proxy_forces,
+                coupling_gain=scene.stem_coupling_gain,
+                force_cap_N=scene.stem_force_cap_N,
+                torque_cap_Nm=scene.stem_torque_cap_Nm,
+                explicit_apple_weight=scene.stem_harvest_explicit_apple_weight,
+                gravity=scene.gravity_vec,
+                robot_body_q=scene.robot_state_0.body_q,
+                device=str(scene.proxy_forces.device),
+            )
+        elif layout is not None and layout.num_envs > 1 and tpl_stem is not None:
             for w in range(layout.num_envs):
                 apple_idx = int(layout.apple_body_indices[w])
                 harvest_stem_tension_for_tcp(
@@ -338,7 +366,10 @@ def _sync_single_proxy_after_mujoco(scene: CoupledFruitingScene, dt: float) -> N
         layout = getattr(scene, "layout", None)
         if layout is not None and layout.num_envs > 1:
             apple_ids, pos_off, grasp_off = welded_co_teleport_arrays_for_layout(
-                layout, cable, device=str(dev)
+                layout,
+                cable,
+                device=str(dev),
+                per_world_proxy_offsets=getattr(scene, "per_world_proxy_offsets", None),
             )
             launch_mirror_robot_to_proxy_offset_and_apple(
                 robot_ids=rid,
@@ -459,6 +490,12 @@ class CoupledFruitingScene:
     """Per-world :class:`~apple_pick_sim.fruiting_system.FruitingSystemParams` when heterogeneous."""
     per_world_proxy_offsets: tuple[tuple | None, ...] | None = None
     """Per-env apple-frame grasp offsets for heterogeneous settle-then-weld."""
+    stem_harvest_joint_indices_wp: wp.array | None = None
+    stem_harvest_tcp_indices_wp: wp.array | None = None
+    stem_harvest_apple_indices_wp: wp.array | None = None
+    stem_harvest_grasp_offsets_wp: wp.array | None = None
+    stem_harvest_apple_masses_wp: wp.array | None = None
+    stem_harvest_use_grasp_offset_wp: wp.array | None = None
 
     def update_fr3_ee_teleop(
         self,

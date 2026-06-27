@@ -39,7 +39,10 @@ from apple_pick_sim.fruiting_system import (
     resolve_fruiting_base_pos,
     resolve_robot_base_pos,
 )
-from apple_pick_sim.coupled_fruiting.proxy_coupling import ProxyBodyRegistry
+from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+    ProxyBodyRegistry,
+    prepare_batched_stem_harvest_arrays,
+)
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.batched_build import (
     build_heterogeneous_coupled_cable_scene,
@@ -134,6 +137,13 @@ def _fr3_root_world_pos(
     if resolved is not None:
         return resolved
     return fr3_robot.root_world_translation_for_proxy(proxy_body_q7)
+
+
+def _maybe_prepare_batched_stem_harvest(scene: CoupledFruitingScene) -> None:
+    """Cache batched stem-harvest arrays when the scene has multiple welded envs."""
+    layout = getattr(scene, "layout", None)
+    if layout is not None and int(layout.num_envs) > 1 and scene.stem_apple_joint_index is not None:
+        prepare_batched_stem_harvest_arrays(scene, layout)
 
 
 def _assemble_coupled_robot_scene(
@@ -677,6 +687,7 @@ def build_batched_coupled_fruiting_placeholder(
         scene.robot_state_0,
     )
     init_robot_mujoco_step_buffers(scene)
+    _maybe_prepare_batched_stem_harvest(scene)
     return scene
 
 
@@ -887,6 +898,7 @@ def build_batched_coupled_fruiting_fr3(
         robot_base_pos=robot_base_pos if not robot_base_from_proxy else None,
         robot_base_from_proxy=robot_base_from_proxy,
     )
+    _maybe_prepare_batched_stem_harvest(scene)
     return scene
 
 
@@ -1030,6 +1042,7 @@ def build_heterogeneous_coupled_fruiting_placeholder(
     )
     scene.per_env_params = params
     scene.per_world_proxy_offsets = per_world_offsets
+    _maybe_prepare_batched_stem_harvest(scene)
     newton.eval_fk(
         robot_model,
         robot_model.joint_q,
@@ -1212,6 +1225,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
     )
     scene.per_env_params = params
     scene.per_world_proxy_offsets = per_world_offsets
+    _maybe_prepare_batched_stem_harvest(scene)
     newton.eval_fk(
         robot_model,
         robot_model.joint_q,

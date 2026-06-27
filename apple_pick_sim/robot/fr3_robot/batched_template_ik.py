@@ -35,6 +35,24 @@ def _quat_mul(a: wp.quat, b: wp.quat) -> wp.quat:
 
 
 @wp.kernel(enable_backward=False)
+def _gather_proxy_targets_from_cable_kernel(
+    cable_body_q: wp.array(dtype=wp.transform),
+    proxy_indices: wp.array(dtype=int),
+    world_origins: wp.array(dtype=wp.vec3),
+    target_positions: wp.array(dtype=wp.vec3),
+    target_rotations: wp.array(dtype=wp.vec4),
+):
+    """Gather per-env proxy poses from cable ``body_q`` into template-frame IK targets."""
+    i = wp.tid()
+    tf = cable_body_q[proxy_indices[i]]
+    body_pos = wp.transform_get_translation(tf)
+    body_rot = wp.transform_get_rotation(tf)
+    origin = world_origins[i]
+    target_positions[i] = body_pos - origin
+    target_rotations[i] = wp.vec4(body_rot[0], body_rot[1], body_rot[2], body_rot[3])
+
+
+@wp.kernel(enable_backward=False)
 def _gather_tcp_world_poses_kernel(
     body_q: wp.array(dtype=wp.transform),
     tcp_indices: wp.array(dtype=int),
@@ -219,6 +237,25 @@ class BatchedTemplateIK:
         del state
         sim_jq_2d = self.sim_model.joint_q.reshape((self.n_problems, self.n_coords))
         wp.copy(self.joint_q, sim_jq_2d)
+
+    def gather_targets_from_proxy_state(
+        self,
+        cable_state: Any,
+        proxy_indices_wp: wp.array,
+    ) -> None:
+        """Set IK targets from per-env cable proxy poses (template frame)."""
+        wp.launch(
+            _gather_proxy_targets_from_cable_kernel,
+            dim=self.n_problems,
+            inputs=[
+                cable_state.body_q,
+                proxy_indices_wp,
+                self._world_origins_wp,
+                self.target_positions,
+                self.target_rotations,
+            ],
+            device=self.device,
+        )
 
     def gather_tcp_targets_from_state(
         self,

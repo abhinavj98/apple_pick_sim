@@ -242,7 +242,8 @@ class Fr3BatchedEEVelocityController:
         *,
         command_velocity: EEVelocity | None = None,
     ) -> None:
-        full_jq = self._ik.scatter_to_model(state, eval_fk=False)
+        self._ik.scatter_to_model(state, eval_fk=False)
+        full_jq = self._ik.sim_model.joint_q.numpy().copy()
         sync_mujoco_actuator_targets_from_joint_q(
             self.robot_model,
             state,

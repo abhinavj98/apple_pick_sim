@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from apple_pick_sim.robot.fr3_robot.placement import (
+    IK_BOOTSTRAP_DEFAULT_MAX_SEEDS,
     IK_BOOTSTRAP_POS_TOL_M,
     IK_BOOTSTRAP_ROT_TOL_RAD,
     IKBootstrapConvergenceError,
@@ -112,6 +113,26 @@ def test_ik_bootstrap_joint_q_candidates_include_model_default_and_midpoint():
     assert np.allclose(seeds[0], default)
     assert np.allclose(seeds[1], midpoint)
     assert not np.allclose(seeds[0], seeds[1])
+
+
+def test_ik_bootstrap_joint_q_candidates_support_large_max_seeds():
+    from apple_pick_sim.robot.fr3_robot.paths import fr3_assets_available
+
+    if not fr3_assets_available():
+        pytest.skip("Requires bundled assets/fr3 and usd-core")
+
+    from apple_pick_sim.robot.fr3_robot.setup import build_fr3_robot_model_from_usd
+
+    robot_model, _, _ = build_fr3_robot_model_from_usd(device="cpu")
+    seeds = ik_bootstrap_joint_q_candidates(robot_model, max_seeds=40)
+    assert len(seeds) == 40
+    for i, seed in enumerate(seeds):
+        for j in range(i):
+            assert not np.allclose(seeds[i], seeds[j], atol=1e-4, rtol=0.0)
+
+
+def test_ik_bootstrap_default_max_seeds_exceeds_legacy_four():
+    assert IK_BOOTSTRAP_DEFAULT_MAX_SEEDS > 4
 
 
 def test_bootstrap_tcp_ik_retries_alternate_joint_q_when_first_seed_poor(capsys):

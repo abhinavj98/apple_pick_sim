@@ -13,6 +13,10 @@ import newton
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.robot.fr3_robot.batched_template_ik import BatchedTemplateIK
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity, integrate_tcp_target
+from apple_pick_sim.robot.fr3_robot.placement import (
+    IK_BOOTSTRAP_POS_TOL_M,
+    IK_BOOTSTRAP_ROT_TOL_RAD,
+)
 from apple_pick_sim.robot.fr3_robot.controllers.ee_velocity_batched import (
     Fr3BatchedEEVelocityController,
 )
@@ -281,6 +285,110 @@ def test_advance_targets_batch_matches_sequential():
     )
     np.testing.assert_allclose(pos_batch.numpy(), pos_seq, atol=1e-5)
     np.testing.assert_allclose(rot_batch.numpy(), rot_seq, atol=1e-5)
+
+
+def _tcp_world_target_from_joint_q(
+    template_model: newton.Model,
+    layout: BatchedEnvLayout,
+    world: int,
+    joint_q: np.ndarray,
+) -> wp.transform:
+    jc = int(template_model.joint_coord_count)
+    tpl_jq = template_model.joint_q.numpy().copy()
+    tpl_jq[:jc] = np.asarray(joint_q, dtype=tpl_jq.dtype).reshape(-1)[:jc]
+    tpl_jqd = np.zeros(int(template_model.joint_dof_count), dtype=np.float32)
+    template_model.joint_q.assign(tpl_jq)
+    template_model.joint_qd.assign(tpl_jqd)
+    tpl_state = template_model.state()
+    newton.eval_fk(template_model, template_model.joint_q, template_model.joint_qd, tpl_state)
+    bq = tpl_state.body_q.numpy().reshape(-1, 7)[layout.template_tcp_body]
+    ox, oy, oz = layout.world_origin(world)
+    return wp.transform(
+        wp.vec3(float(bq[0]) + ox, float(bq[1]) + oy, float(bq[2]) + oz),
+        wp.quat(float(bq[3]), float(bq[4]), float(bq[5]), float(bq[6])),
+    )
+
+
+def test_multi_seed_bootstrap_converges():
+    template_model, batched_model, layout = _build_two_world_arm_pair()
+    state = batched_model.state()
+    ik_engine = BatchedTemplateIK(
+        ik_model=template_model,
+        sim_model=batched_model,
+        layout=layout,
+        tcp_body_index=layout.template_tcp_body,
+        n_seeds=4,
+        sampler="gauss",
+    )
+    jq_target = np.array([0.45, -0.35], dtype=np.float32)
+    jq = batched_model.joint_q.numpy().copy()
+    for w in range(layout.num_envs):
+        jq[layout.joint_q_slice(w)] = jq_target
+    batched_model.joint_q.assign(jq)
+    state.joint_q.assign(jq)
+    newton.eval_fk(batched_model, state.joint_q, state.joint_qd, state)
+
+    ik_engine.seed_from_state(state)
+    ik_engine.set_target_from_fk(state)
+    ik_engine.step(iterations=32)
+
+    targets_world = []
+    for w in range(layout.num_envs):
+        tpl = ik_engine.tcp_template_pose_from_model(w)
+        targets_world.append(ik_engine.template_to_world(tpl, w))
+    for w in range(layout.num_envs):
+        pos_err, rot_err = ik_engine.pose_error(w, targets_world[w])
+        assert pos_err < IK_BOOTSTRAP_POS_TOL_M, f"world {w} pos_err={pos_err}"
+        assert rot_err < IK_BOOTSTRAP_ROT_TOL_RAD, f"world {w} rot_err={rot_err}"
+
+    ik_engine.scatter_to_model(state, eval_fk=False)
+
+    ik_engine.scatter_to_model(state, eval_fk=False)
+
+
+def test_rotation_mismatch_penalized_by_multi_seed_cost():
+    template_model, batched_model, layout = _build_two_world_arm_pair()
+    n_seeds = 4
+    ik_engine = BatchedTemplateIK(
+        ik_model=template_model,
+        sim_model=batched_model,
+        layout=layout,
+        tcp_body_index=layout.template_tcp_body,
+        n_seeds=n_seeds,
+        sampler="roberts",
+    )
+    target_world = _tcp_world_target_from_joint_q(
+        template_model, layout, 0, np.array([0.55, 0.25], dtype=np.float32)
+    )
+    ik_engine.set_target_world(0, target_world)
+
+    upper = template_model.joint_limit_upper.numpy().reshape(-1)[: ik_engine.n_coords]
+    seed_rows = np.zeros((layout.num_envs, ik_engine.n_coords), dtype=np.float32)
+    seed_rows[0] = upper.astype(np.float32)
+    ik_engine.joint_q.assign(seed_rows)
+    ik_engine.step(iterations=64)
+
+    costs = ik_engine.solver_costs_expanded().numpy().reshape(layout.num_envs, n_seeds)
+    best_seed = int(np.argmin(costs[0]))
+    pos_err, rot_err = ik_engine.pose_error(0, target_world)
+    assert pos_err < IK_BOOTSTRAP_POS_TOL_M
+    assert rot_err < IK_BOOTSTRAP_ROT_TOL_RAD
+
+    jq_expanded = ik_engine.solver_joint_q_expanded().numpy().reshape(
+        layout.num_envs, n_seeds, ik_engine.n_coords
+    )
+    best_cost = float(costs[0, best_seed])
+    for seed_idx in range(n_seeds):
+        if seed_idx == best_seed:
+            continue
+        alt_pos, alt_rot = ik_engine.pose_error_from_joint_coords(
+            jq_expanded[0, seed_idx], 0, target_world
+        )
+        if alt_pos < pos_err and alt_rot > rot_err:
+            assert best_cost < float(costs[0, seed_idx])
+            break
+    else:
+        assert best_cost <= float(np.min(costs[0]))
 
 
 def test_different_velocity_per_world_diverges_targets():

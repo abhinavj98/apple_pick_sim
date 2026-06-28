@@ -30,6 +30,17 @@ from apple_pick_sim.coupled_fruiting.scene import (
     DEFAULT_STEM_TORQUE_CAP_NM,
     CoupledFruitingScene,
 )
+from apple_pick_sim.coupled_fruiting.settle_quasi_static import (
+    SettleQuasiStaticReport,
+    SettleStabilityReport,
+    count_apples_outside_envelope,
+    count_non_quasi_static_from_cable,
+    nominal_spur_stem_apple_length_m,
+    print_envelope_coverage_report,
+    print_settle_quasi_static_summary,
+    print_settle_stability_report,
+    settle_stability_reports_from_cable,
+)
 from apple_pick_sim.coupled_fruiting.settle_then_weld import (
     seed_fix_to_apple_from_settled,
     settle_vbd_substeps,
@@ -56,6 +67,15 @@ __all__ = [
     "build_heterogeneous_coupled_fruiting_fr3",
     "build_heterogeneous_coupled_fruiting_placeholder",
     "build_placeholder_tcp_robot_model",
+    "SettleQuasiStaticReport",
+    "SettleStabilityReport",
+    "count_apples_outside_envelope",
+    "count_non_quasi_static_from_cable",
+    "nominal_spur_stem_apple_length_m",
+    "print_envelope_coverage_report",
+    "print_settle_quasi_static_summary",
+    "print_settle_stability_report",
+    "settle_stability_reports_from_cable",
     "seed_fix_to_apple_from_settled",
     "settle_vbd_substeps",
 ]

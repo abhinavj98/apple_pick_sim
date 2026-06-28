@@ -501,6 +501,30 @@ def sample_heterogeneous_params_list(
     ]
 
 
+def resample_heterogeneous_params_for_worlds(
+    ranges: dict,
+    topology_seed: int,
+    params_list: list[FruitingSystemParams],
+    worlds: Collection[int],
+    *,
+    resample_seed: int,
+    omit: Collection[str] | None = None,
+) -> list[FruitingSystemParams]:
+    """Return a copy of ``params_list`` with DR re-drawn for the listed env indices."""
+    if not worlds:
+        return list(params_list)
+    topo = sample_params(ranges, topology_seed, omit=omit)
+    out = list(params_list)
+    for i, world in enumerate(sorted(int(w) for w in worlds)):
+        if world < 0 or world >= len(out):
+            raise ValueError(f"world index {world} out of range for params_list len {len(out)}")
+        out[world] = _fix_topology(
+            sample_params(ranges, int(resample_seed) + i, omit=omit),
+            topo,
+        )
+    return out
+
+
 def copy_fruiting_params(params: FruitingSystemParams) -> FruitingSystemParams:
     """Deep-copy sampled params (geometry and stiffness scalars)."""
     def _rod(r: RodParams | None) -> RodParams | None:

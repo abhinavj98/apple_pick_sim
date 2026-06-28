@@ -17,6 +17,10 @@ from apple_pick_sim.robot.fr3_robot.setup import np_zeros_like_joint_qd
 IK_BOOTSTRAP_POS_TOL_M = 0.05
 IK_BOOTSTRAP_ROT_TOL_RAD = 0.05
 
+# Default bootstrap search: more joint_q seeds, fewer iterations per seed (vs legacy 4×256).
+IK_BOOTSTRAP_DEFAULT_MAX_SEEDS = 5
+IK_BOOTSTRAP_DEFAULT_ITERATIONS = 128
+
 # Per-frame teleop: IK solution vs integrated TCP target (after one velocity step from FK).
 IK_TELEOP_POS_TOL_M = 0.005
 IK_TELEOP_ROT_TOL_RAD = 0.005
@@ -243,10 +247,31 @@ def placement_xform_for_proxy(
     return wp.transform(wp.vec3(float(p[0]), float(p[1]), base_z), wp.quat_identity())
 
 
+def _ik_bootstrap_joint_q_span_fracs(max_seeds: int) -> tuple[float, ...]:
+    """Limit-span fractions for bootstrap retries: legacy recipes, then a uniform grid."""
+    seen: set[float] = set()
+    fracs: list[float] = []
+    for frac in _IK_BOOTSTRAP_JOINT_Q_SEED_FRACS:
+        key = round(float(frac), 6)
+        if key in seen:
+            continue
+        seen.add(key)
+        fracs.append(float(frac))
+    n_grid = max(int(max_seeds) * 2, 8)
+    for i in range(1, n_grid + 1):
+        frac = i / (n_grid + 1)
+        key = round(frac, 6)
+        if key in seen:
+            continue
+        seen.add(key)
+        fracs.append(frac)
+    return tuple(fracs)
+
+
 def ik_bootstrap_joint_q_candidates(
     robot_model: newton.Model,
     *,
-    max_seeds: int = 4,
+    max_seeds: int = IK_BOOTSTRAP_DEFAULT_MAX_SEEDS,
 ) -> list[np.ndarray]:
     """Return deterministic initial ``joint_q`` configs for TCP IK bootstrap retries."""
     if max_seeds < 1:
@@ -263,7 +288,7 @@ def ik_bootstrap_joint_q_candidates(
     span = upper - lower
 
     recipes: list[np.ndarray] = [default.copy()]
-    recipes.extend(lower + frac * span for frac in _IK_BOOTSTRAP_JOINT_Q_SEED_FRACS)
+    recipes.extend(lower + frac * span for frac in _ik_bootstrap_joint_q_span_fracs(max_seeds))
 
     out: list[np.ndarray] = []
     for cand in recipes:
@@ -309,7 +334,7 @@ def bootstrap_tcp_ik_from_proxy(
     robot_state_0: Any,
     *,
     ik_iterations: int = 48,
-    max_joint_q_seeds: int = 4,
+    max_joint_q_seeds: int = IK_BOOTSTRAP_DEFAULT_MAX_SEEDS,
     raise_on_failure: bool = True,
 ) -> None:
     """Place the arm so ``tcp`` matches the cable gripper proxy pose (position + orientation).

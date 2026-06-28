@@ -45,7 +45,10 @@ from apple_pick_sim.coupled_fruiting import (
     broadcast_joint_q_from_world0,
     build_heterogeneous_coupled_fruiting_fr3,
     build_heterogeneous_coupled_fruiting_placeholder,
+    print_envelope_coverage_report,
+    print_settle_stability_report,
     seed_fix_to_apple_from_settled,
+    settle_stability_reports_from_cable,
     settle_vbd_substeps,
 )
 from apple_pick_sim.fruiting_system import (
@@ -63,7 +66,7 @@ from apple_pick_sim.coupled_fruiting.batched_robot_status import print_batched_r
 
 
 # Batched heterogeneous teleop: smaller steps than 1.0 m/s so template IK keeps up at 30 Hz.
-_FR3_TELEOP_LINEAR_SPEED = 0.2
+_FR3_TELEOP_LINEAR_SPEED = 0.5
 _FR3_TELEOP_ANGULAR_SPEED = 1.0
 _FR3_TELEOP_IK_ITERATIONS = 128
 
@@ -142,7 +145,7 @@ def _make_parser() -> argparse.ArgumentParser:
         type=float,
         nargs=3,
         metavar=("X", "Y", "Z"),
-        default=[2.5, 2.5, 0.0],
+        default=[2.0, 2.0, 2.0],
         help="Viewer grid spacing [m] (sim worlds are co-located).",
     )
     parser.add_argument("--enable-self-collision", action="store_true")
@@ -160,7 +163,26 @@ def _make_parser() -> argparse.ArgumentParser:
         default=True,
         help="Settle-then-weld (default: on). Use --no-fix-to-apple for velocity-delta harvest.",
     )
-    parser.add_argument("--settle-substeps", type=int, default=1000)
+    parser.add_argument("--settle-substeps", type=int, default=5000)
+    parser.add_argument(
+        "--inspect-settle",
+        action="store_true",
+        help=(
+            "After settling, render the free-proxy settled cable in the viewer and wait "
+            "for SPACE before building the welded scene and starting teleop."
+        ),
+    )
+    parser.add_argument(
+        "--settle-report-brief",
+        action="store_true",
+        help="Only print per-env settle lines for unstable worlds (default: all envs).",
+    )
+    parser.add_argument(
+        "--settle-max-speed",
+        type=float,
+        default=0.05,
+        help="Residual branch speed threshold [m/s] for post-settle stability.",
+    )
     parser.add_argument(
         "--scripted-ee-vel",
         type=float,
@@ -206,10 +228,12 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
 
         self.fps = float(getattr(args, "hz", 30.0)) if args else 30.0
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 30
+        self.sim_substeps = 15
         self.sim_dt = (1.0 / 60.0) / self.sim_substeps
         self.sim_time = 0.0
         self._frame = 0
+        self._settled_scene: CoupledFruitingScene | None = None
+        self._settle_ik_envelope_results: list[tuple[float, float, bool]] = []
 
         json_path = getattr(args, "json", None) if args else None
         ranges_path = Path(json_path) if json_path else _default_ranges_path()
@@ -221,7 +245,7 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         self._seed = int(seed)
 
         self.num_envs = int(getattr(args, "num_envs", 4))
-        env_spacing_raw = getattr(args, "env_spacing", [2.5, 2.5, 0.0]) if args else [2.5, 2.5, 0.0]
+        env_spacing_raw = getattr(args, "env_spacing", [2.0, 2.0, 2.0]) if args else [2.0, 2.0, 2.0]
         self.env_spacing = tuple(float(v) for v in env_spacing_raw)
 
         sim_device = resolve_sim_device(getattr(args, "device", None) if args else None)
@@ -229,7 +253,7 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         controller_mode = str(getattr(args, "controller", "direct"))
         fix_to_apple = _fix_to_apple_from_args(args)
         enable_self = _enable_self_collisions_from_args(args)
-        settle_substeps = int(getattr(args, "settle_substeps", 1000))
+        settle_substeps = int(getattr(args, "settle_substeps", 5000))
 
         self.per_env_params = sample_heterogeneous_params_list(
             self.ranges, topology_seed=self._seed, num_envs=self.num_envs
@@ -272,6 +296,17 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 },
             )
             settle_vbd_substeps(settled, substeps=settle_substeps, dt=self.sim_dt)
+            stability_reports = settle_stability_reports_from_cable(
+                settled.cable,
+                self.per_env_params,
+                max_branch_speed_m_s=float(getattr(args, "settle_max_speed", 0.05)),
+            )
+            print_settle_stability_report(
+                stability_reports,
+                verbose=not bool(getattr(args, "settle_report_brief", False)),
+            )
+            if bool(getattr(args, "inspect_settle", False)):
+                self._settled_scene = settled
             self.scene = build_fn(
                 self.ranges,
                 self.per_env_params,
@@ -291,6 +326,10 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 per_env_ik=True,
                 per_world_proxy_offsets=self.scene.per_world_proxy_offsets,
             )
+            ik_results = getattr(self.scene, "settle_ik_envelope_results", None)
+            self._settle_ik_envelope_results = ik_results or []
+            if ik_results:
+                print_envelope_coverage_report(ik_results)
         else:
             self.scene: CoupledFruitingScene = build_fn(
                 self.ranges, self.per_env_params, **build_kw
@@ -603,6 +642,48 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         if self._mujoco_viewer and self.scene.mj_solver is not None:
             self.scene.mj_solver.close_mujoco_viewer()
 
+    def inspect_settled_scene(self) -> None:
+        """Render settled free-proxy cable until SPACE (GL viewer) or viewer closes."""
+        settled = self._settled_scene
+        if settled is None:
+            return
+        import time
+
+        import newton
+
+        cable = settled.cable
+        self.viewer.set_model(cable.model)
+        graphical = isinstance(self.viewer, newton.viewer.ViewerGL)
+        if graphical and self.num_envs > 1:
+            self.viewer.set_world_offsets(self.env_spacing)
+        print(
+            "Settled-scene inspection: review stability report above; "
+            "press SPACE to continue to welded build + teleop.",
+            flush=True,
+        )
+        while self.viewer.is_running():
+            if graphical and hasattr(self.viewer, "is_key_down") and self.viewer.is_key_down(" "):
+                break
+            viz_contacts = cable.model.collide(
+                cable.state_0,
+                collision_pipeline=settled.cable_collision_pipeline,
+            )
+            self.viewer.begin_frame(0.0)
+            self.viewer.log_state(cable.state_0)
+            self.viewer.log_contacts(viz_contacts, cable.state_0)
+            if self._mark_endpoints and self.layout is not None:
+                log_batched_endpoints(
+                    self.viewer,
+                    settled,
+                    self.layout,
+                    radius=self._endpoint_radius,
+                )
+            self.viewer.end_frame()
+            time.sleep(max(0.0, self.frame_dt))
+        self.viewer.set_model(self.scene.cable.model)
+        if graphical and self.num_envs > 1:
+            self.viewer.set_world_offsets(self.env_spacing)
+
     def test_final(self, tolerance: float = 0.05) -> None:
         layout = self.layout
         if layout is None:
@@ -613,6 +694,8 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 continue
             z = float(body_q[apple_idx, 2])
             assert z > -tolerance, f"world {w} apple fell: z={z}"
+        if self._settle_ik_envelope_results:
+            print_envelope_coverage_report(self._settle_ik_envelope_results)
 
 
 if __name__ == "__main__":
@@ -629,6 +712,9 @@ if __name__ == "__main__":
 
     if hasattr(viewer, "hide_loading_splash"):
         viewer.hide_loading_splash()
+
+    if bool(getattr(args, "inspect_settle", False)):
+        example.inspect_settled_scene()
 
     print("Starting heterogeneous batched coupled simulation…")
     try:

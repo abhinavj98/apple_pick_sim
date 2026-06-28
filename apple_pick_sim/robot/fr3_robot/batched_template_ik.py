@@ -120,6 +120,9 @@ class BatchedTemplateIK:
         *,
         joint_limit_weight: float = 10.0,
         lambda_initial: float = 0.1,
+        n_seeds: int = 1,
+        sampler: str = "none",
+        rng_seed: int = 12345,
     ) -> None:
         import newton.ik as ik
 
@@ -131,6 +134,7 @@ class BatchedTemplateIK:
         self.n_problems = int(layout.num_envs)
         self.n_coords = int(ik_model.joint_coord_count)
         self.n_dofs = int(ik_model.joint_dof_count)
+        self.n_seeds = int(n_seeds)
 
         dev = self.device
         n = self.n_problems
@@ -171,6 +175,9 @@ class BatchedTemplateIK:
             objectives=[self._pos_obj, self._rot_obj, self._limits],
             lambda_initial=lambda_initial,
             jacobian_mode=ik.IKJacobianType.ANALYTIC,
+            n_seeds=self.n_seeds,
+            sampler=sampler,
+            rng_seed=rng_seed,
         )
 
     def _world_origin_offset(self, world: int) -> tuple[float, float, float]:
@@ -324,7 +331,32 @@ class BatchedTemplateIK:
     def step(self, iterations: int) -> None:
         self._solver.step(self.joint_q, self.joint_q, iterations=iterations)
 
-    def scatter_to_model(self, state: Any, *, eval_fk: bool = True) -> np.ndarray:
+    def solver_costs_expanded(self) -> wp.array:
+        """Per-seed objective costs from the most recent :meth:`step` call."""
+        return self._solver.costs
+
+    def solver_joint_q_expanded(self) -> wp.array:
+        """Expanded joint coordinates for all sampled seeds."""
+        return self._solver.joint_q
+
+    def pose_error_from_joint_coords(
+        self,
+        joint_coords: np.ndarray,
+        world: int,
+        target_tf_world: wp.transform,
+    ) -> tuple[float, float]:
+        """TCP pose error for ``joint_coords`` vs a world-frame target."""
+        target_tpl = self.world_to_template(target_tf_world, world)
+        tpl_state = self.ik_model.state()
+        return tcp_ik_target_pose_errors(
+            self.ik_model,
+            tpl_state,
+            tcp_body_index=self.tcp_body_index,
+            target_tf=target_tpl,
+            joint_q=joint_coords,
+        )
+
+    def scatter_to_model(self, state: Any, *, eval_fk: bool = True) -> None:
         """Write IK rows into batched ``sim_model`` / ``state`` joint arrays."""
         sim_jq_2d = self.sim_model.joint_q.reshape((self.n_problems, self.n_coords))
         wp.copy(sim_jq_2d, self.joint_q)
@@ -335,7 +367,6 @@ class BatchedTemplateIK:
         state.joint_qd.assign(jqd)
         if eval_fk:
             newton.eval_fk(self.sim_model, state.joint_q, state.joint_qd, state)
-        return self.sim_model.joint_q.numpy().copy()
 
     def pose_error(self, world: int, target_tf_world: wp.transform) -> tuple[float, float]:
         """TCP pose error for one problem row vs a world-frame ``target_tf_world``."""

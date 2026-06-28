@@ -354,25 +354,65 @@ def count_apples_outside_envelope(
 def print_envelope_coverage_report(
     ik_results: Sequence[tuple[float, float, bool]],
     *,
+    stability_reports: Sequence[SettleStabilityReport] | None = None,
     prefix: str = "",
+    verbose: bool = True,
 ) -> None:
-    """Print per-env IK reachability and summary % outside FR3 working envelope."""
-    outside_count, pct_outside = count_apples_outside_envelope(ik_results)
-    total = len(ik_results)
-    print(
-        f"{prefix}Post-settle working envelope "
-        f"(FR3 IK bootstrap vs settled gripper proxy):",
-        flush=True,
-    )
-    for world, (pos_err, rot_err, inside) in enumerate(ik_results):
-        status = "INSIDE" if inside else "OUTSIDE"
-        print(
-            f"{prefix}  env{world}: {status}  "
-            f"pos_err={pos_err:.4f} m  rot_err={rot_err:.4f} rad",
-            flush=True,
+    """Print per-env settle stability and IK reachability with summary percentages."""
+    stab_list = list(stability_reports) if stability_reports is not None else []
+    ik_list = list(ik_results)
+    n = max(len(stab_list), len(ik_list))
+    if n == 0:
+        return
+
+    has_stability = len(stab_list) > 0
+    has_envelope = len(ik_list) > 0
+    if has_stability and has_envelope:
+        title = "Post-settle summary (physics stability + FR3 working envelope)"
+    elif has_stability:
+        title = "Post-settle stability (branch path vs rest length, apple z, residual speed)"
+    else:
+        title = "Post-settle working envelope (FR3 IK bootstrap vs settled gripper proxy)"
+    print(f"{prefix}{title}:", flush=True)
+
+    for world in range(n):
+        stab = stab_list[world] if world < len(stab_list) else None
+        ik = ik_list[world] if world < len(ik_list) else None
+        if stab is not None and not verbose and stab.is_stable and ik is None:
+            continue
+        if stab is not None and not verbose and stab.is_stable and ik is not None and ik[2]:
+            continue
+
+        parts: list[str] = []
+        if stab is not None:
+            stab_status = "STABLE" if stab.is_stable else "UNSTABLE"
+            parts.append(stab_status)
+            parts.append(
+                f"path={stab.path_length_m:.4f}/{stab.nominal_length_m:.4f} m "
+                f"({stab.path_over_nominal:.2f}×)"
+            )
+            parts.append(f"apple_z={stab.apple_z_m:.3f} m")
+            parts.append(f"|v|_max={stab.max_branch_speed_m_s:.4f} m/s")
+            if stab.issues:
+                parts.append(f"issues: {', '.join(stab.issues)}")
+        if ik is not None:
+            pos_err, rot_err, inside = ik
+            env_status = "INSIDE" if inside else "OUTSIDE"
+            parts.append(env_status)
+            parts.append(f"ik_pos_err={pos_err:.4f} m")
+            parts.append(f"ik_rot_err={rot_err:.4f} rad")
+        print(f"{prefix}  env{world}: {'  '.join(parts)}", flush=True)
+
+    summary_parts: list[str] = []
+    if has_stability:
+        stable_count = sum(1 for report in stab_list if report.is_stable)
+        stab_pct = 100.0 * stable_count / max(len(stab_list), 1)
+        summary_parts.append(
+            f"{stable_count}/{len(stab_list)} envs stable ({stab_pct:.1f}%)"
         )
-    print(
-        f"{prefix}Summary: {outside_count}/{total} envs outside working envelope "
-        f"({pct_outside:.1f}%)",
-        flush=True,
-    )
+    if has_envelope:
+        outside_count, pct_outside = count_apples_outside_envelope(ik_list)
+        summary_parts.append(
+            f"{outside_count}/{len(ik_list)} envs outside envelope ({pct_outside:.1f}%)"
+        )
+    print(f"{prefix}Summary: {', '.join(summary_parts)}", flush=True)

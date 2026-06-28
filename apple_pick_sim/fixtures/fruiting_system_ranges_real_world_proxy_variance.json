@@ -2,7 +2,7 @@
   "_comment": "Domain-randomization variant for real-world bench proxy. Active placeholders: primary.bend_stiffness tier bands 210–736 N/m (not yet sys-ID calibrated); stem.bend_stiffness interim until torsion API; rod radius from example_variance until measured; apple density 700 kg/m³ until measured.",
   "spur_attach_fraction": 0.5,
   "args": {
-    "fruiting_base_pos": [0.0, 0.5, 0.75],
+    "fruiting_base_pos": [0.0, 0.4, 0.75],
     "robot_base_pos": [0.0, 0.0, 0.0]
   },
   "primary": {

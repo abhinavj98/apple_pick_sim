@@ -209,4 +209,36 @@ def test_print_envelope_coverage_report_output(capsys):
     assert "env0: INSIDE" in out
     assert "env1: OUTSIDE" in out
     assert "50.0%" in out
-    assert "1/2 envs outside" in out
+    assert "1/2 envs outside envelope" in out
+
+
+def test_print_envelope_coverage_report_includes_stability(capsys):
+    params = _params(spur_len=0.10, stem_len=0.05, apple_r=0.04)
+    body_q = np.zeros((6, 7), dtype=np.float64)
+    body_q[0, :3] = (0.0, 0.0, 1.0)
+    body_q[1, :3] = (0.0, 0.0, 0.90)
+    body_q[2, :3] = (0.0, 0.0, 0.85)
+    body_q[3, :3] = (0.0, 0.0, 1.0)
+    body_q[4, :3] = (0.0, 0.0, 0.90)
+    body_q[5, :3] = (0.0, 0.0, 0.40)
+    body_qd = np.zeros((6, 6), dtype=np.float64)
+    stability = per_env_settle_stability_reports(
+        body_q,
+        body_qd,
+        params_list=[params, params],
+        spur_bodies=[0],
+        stem_bodies=[1],
+        apple_body=2,
+        bodies_per_world=3,
+        apple_z_min_m=0.0,
+    )
+    ik_results = [(0.01, 0.01, True), (0.10, 0.10, False)]
+    print_envelope_coverage_report(ik_results, stability_reports=stability)
+    out = capsys.readouterr().out
+    assert "stability" in out.lower()
+    assert "env0: STABLE" in out
+    assert "env1: UNSTABLE" in out
+    assert "INSIDE" in out
+    assert "OUTSIDE" in out
+    assert "1/2 envs stable" in out
+    assert "1/2 envs outside envelope" in out

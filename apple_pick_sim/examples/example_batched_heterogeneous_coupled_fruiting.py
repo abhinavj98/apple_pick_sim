@@ -46,7 +46,6 @@ from apple_pick_sim.coupled_fruiting import (
     build_heterogeneous_coupled_fruiting_fr3,
     build_heterogeneous_coupled_fruiting_placeholder,
     print_envelope_coverage_report,
-    print_settle_stability_report,
     seed_fix_to_apple_from_settled,
     settle_stability_reports_from_cable,
     settle_vbd_substeps,
@@ -233,6 +232,7 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         self.sim_time = 0.0
         self._frame = 0
         self._settled_scene: CoupledFruitingScene | None = None
+        self._settle_stability_reports: list = []
         self._settle_ik_envelope_results: list[tuple[float, float, bool]] = []
 
         json_path = getattr(args, "json", None) if args else None
@@ -301,10 +301,7 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 self.per_env_params,
                 max_branch_speed_m_s=float(getattr(args, "settle_max_speed", 0.05)),
             )
-            print_settle_stability_report(
-                stability_reports,
-                verbose=not bool(getattr(args, "settle_report_brief", False)),
-            )
+            self._settle_stability_reports = stability_reports
             if bool(getattr(args, "inspect_settle", False)):
                 self._settled_scene = settled
             self.scene = build_fn(
@@ -328,8 +325,11 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
             )
             ik_results = getattr(self.scene, "settle_ik_envelope_results", None)
             self._settle_ik_envelope_results = ik_results or []
-            if ik_results:
-                print_envelope_coverage_report(ik_results)
+            print_envelope_coverage_report(
+                self._settle_ik_envelope_results,
+                stability_reports=self._settle_stability_reports,
+                verbose=not bool(getattr(args, "settle_report_brief", False)),
+            )
         else:
             self.scene: CoupledFruitingScene = build_fn(
                 self.ranges, self.per_env_params, **build_kw
@@ -694,8 +694,11 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 continue
             z = float(body_q[apple_idx, 2])
             assert z > -tolerance, f"world {w} apple fell: z={z}"
-        if self._settle_ik_envelope_results:
-            print_envelope_coverage_report(self._settle_ik_envelope_results)
+        if self._settle_stability_reports or self._settle_ik_envelope_results:
+            print_envelope_coverage_report(
+                self._settle_ik_envelope_results,
+                stability_reports=self._settle_stability_reports,
+            )
 
 
 if __name__ == "__main__":

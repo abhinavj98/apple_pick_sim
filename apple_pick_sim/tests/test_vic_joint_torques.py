@@ -63,7 +63,11 @@ def _build_mujoco_only_fr3():
     return scene
 
 
-def _configure_joint_torque_vic(scene) -> Fr3EEImpedanceController:
+def _configure_joint_torque_vic(
+    scene,
+    *,
+    vic_joint_damping: float = 1.0,
+) -> Fr3EEImpedanceController:
     scene.vic_use_joint_torques = True
     ctrl = Fr3EEImpedanceController(tcp_body_index=int(scene.tcp_body_index))
     scene.vic_controller = ctrl
@@ -74,9 +78,35 @@ def _configure_joint_torque_vic(scene) -> Fr3EEImpedanceController:
         scene.robot_control,
         scene.mj_solver,
         scene=scene,
+        vic_joint_damping=vic_joint_damping,
     )
     ctrl.sync_target_from_state(scene.robot_state_0)
     return ctrl
+
+
+def test_configure_vic_sets_passive_joint_damping():
+    scene = _build_mujoco_only_fr3()
+    _configure_joint_torque_vic(scene, vic_joint_damping=1.5)
+    model_d = scene.robot_model.joint_damping.numpy().reshape(-1)[:_N_ARM_DOF]
+    np.testing.assert_allclose(model_d, 1.5, rtol=0.0, atol=1e-6)
+    mj_solver = scene.mj_solver
+    if mj_solver.use_mujoco_cpu:
+        mj_d = np.asarray(mj_solver.mj_model.dof_damping).reshape(-1)[:_N_ARM_DOF]
+    else:
+        mj_d = mj_solver.mjw_model.dof_damping.numpy()[0][:_N_ARM_DOF]
+    np.testing.assert_allclose(mj_d, 1.5, rtol=0.0, atol=1e-6)
+
+
+def test_configure_vic_joint_damping_defaults_and_opt_out():
+    scene = _build_mujoco_only_fr3()
+    _configure_joint_torque_vic(scene)
+    default_d = scene.robot_model.joint_damping.numpy().reshape(-1)[:_N_ARM_DOF]
+    np.testing.assert_allclose(default_d, 1.0, rtol=0.0, atol=1e-6)
+
+    scene2 = _build_mujoco_only_fr3()
+    _configure_joint_torque_vic(scene2, vic_joint_damping=0.0)
+    zero_d = scene2.robot_model.joint_damping.numpy().reshape(-1)[:_N_ARM_DOF]
+    np.testing.assert_allclose(zero_d, 0.0, rtol=0.0, atol=1e-6)
 
 
 def _eval_arm_kinematics(model, state):

@@ -24,7 +24,9 @@ from apple_pick_sim.fruiting_system.params import (
     TOPOLOGY_T_JUNCTION,
 )
 
-FRUITING_VBD_RIGID_JOINT_KD = 5.0e-4
+# Absolute VBD damping (Newton #2877): kd_new = kd_old × k_paired.
+FRUITING_VBD_RIGID_JOINT_LINEAR_KD = 5.0e4  # 5.0e-4 × rigid_joint_linear_k_start(1.0e8)
+FRUITING_VBD_RIGID_JOINT_ANGULAR_KD = 500.0  # 5.0e-4 × rigid_joint_angular_k_start(1.0e6)
 
 
 def _prescribe_body_vbd_integration(builder: newton.ModelBuilder, body_id: int) -> None:
@@ -122,7 +124,7 @@ def _apply_all_chain_collision_filters(
 def _new_fruiting_builder() -> newton.ModelBuilder:
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
-    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.kd = 1.0e3  # 1.0e1 × ke(1.0e2), absolute VBD damping (#2877)
     builder.default_shape_cfg.mu = 0.8
     return builder
 
@@ -197,6 +199,7 @@ def _build_linear_chain_into_builder(
             stretch_stiffness=rod.stretch_stiffness,
             stretch_damping=0.0,
             wrap_in_articulation=False,
+            body_frame_origin="start",
             label=name,
         )
         all_joints.extend(joints)
@@ -328,6 +331,7 @@ def _build_t_junction_into_builder(
         stretch_stiffness=primary.stretch_stiffness,
         stretch_damping=0.0,
         wrap_in_articulation=False,
+        body_frame_origin="start",
         label="primary",
     )
     all_joints.extend(primary_joints)
@@ -368,6 +372,7 @@ def _build_t_junction_into_builder(
             stretch_stiffness=rod.stretch_stiffness,
             stretch_damping=0.0,
             wrap_in_articulation=False,
+            body_frame_origin="start",
             label=name,
         )
         all_joints.extend(joints)
@@ -844,8 +849,8 @@ def make_fruiting_solver_vbd(model: newton.Model, **overrides: Any) -> newton.so
         "rigid_contact_k_start": 1.0e4,
         "rigid_joint_linear_k_start": 1.0e8,
         "rigid_joint_angular_k_start": 1.0e6,
-        "rigid_joint_linear_kd": FRUITING_VBD_RIGID_JOINT_KD,
-        "rigid_joint_angular_kd": FRUITING_VBD_RIGID_JOINT_KD,
+        "rigid_joint_linear_kd": FRUITING_VBD_RIGID_JOINT_LINEAR_KD,
+        "rigid_joint_angular_kd": FRUITING_VBD_RIGID_JOINT_ANGULAR_KD,
     }
     kwargs.update(overrides)
     return newton.solvers.SolverVBD(model, **kwargs)

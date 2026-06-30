@@ -50,7 +50,6 @@ DEFAULT_MUJOCO_SOLVER_KWARGS: dict[str, Any] = {
     "cone": "elliptic",
     "iterations": 20,
     "ls_iterations": 10,
-    "ls_parallel": True,
     "impratio": 1000.0,
     "use_mujoco_contacts": False,
     "use_mujoco_cpu": False,

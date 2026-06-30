@@ -13,7 +13,10 @@ from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 from apple_pick_sim.sim_device import resolve_sim_device
-from apple_pick_sim.coupled_fruiting.vic_joint_torques import allocate_vic_joint_torque_buffers
+from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
+    _N_ARM_DOF,
+    allocate_vic_joint_torque_buffers,
+)
 from apple_pick_sim.coupled_fruiting.vic_joint_torques_batched import (
     allocate_vic_joint_torque_buffers_batched,
 )
@@ -172,7 +175,6 @@ def build_fr3_robot_model_from_usd(
         "cone": "elliptic",
         "iterations": 20,
         "ls_iterations": 10,
-        "ls_parallel": True,
         "impratio": 1000.0,
         "use_mujoco_contacts": False,
         "use_mujoco_cpu": True,
@@ -234,6 +236,25 @@ def zero_mujoco_joint_pd(robot_model: newton.Model) -> None:
     robot_model.joint_target_kd.assign(np.zeros(n, dtype=np.float32))
 
 
+def _set_vic_passive_joint_damping(
+    robot_model: newton.Model,
+    vic_joint_damping: float,
+    *,
+    num_arm_dofs: int = _N_ARM_DOF,
+) -> None:
+    """Assign ``Model.joint_damping`` on arm DOFs (synced to ``mj_model.dof_damping`` on notify).
+
+    Passive viscous damping absorbs cable-coupling disturbances in null-space modes that
+    task-space VIC ``K_d`` cannot see. Matches real FR3 bearing friction (~0.5–2 N·m·s/rad).
+    """
+    if robot_model.joint_damping is None:
+        return
+    damping = robot_model.joint_damping.numpy().copy()
+    n_arm = min(int(num_arm_dofs), int(damping.shape[0]))
+    damping[:n_arm] = float(vic_joint_damping)
+    robot_model.joint_damping.assign(damping)
+
+
 def scale_mujoco_joint_pd(robot_model: newton.Model, scale: float) -> None:
     """Scale existing ``joint_target_ke`` / ``kd`` (e.g. tests that need weak joint holding)."""
     ke = robot_model.joint_target_ke.numpy().astype(np.float32) * float(scale)
@@ -265,9 +286,11 @@ def configure_vic_joint_torques_arm(
     kp_null: float = 10.0,
     kd_null: float = 6.3246,
     singularity_damping: float = 0.0,
+    vic_joint_damping: float = 1.0,
 ) -> None:
     """One-shot setup for post-grasp VIC via ``control.joint_f`` (J^T Λ wrench mapping)."""
     zero_mujoco_joint_pd(robot_model)
+    _set_vic_passive_joint_damping(robot_model, vic_joint_damping)
     mj_solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
     hold_mujoco_actuator_targets_at_state(robot_model, state, control)
     if control.joint_f is None:
@@ -301,9 +324,11 @@ def configure_vic_joint_torques_arm_batched(
     kp_null: float = 10.0,
     kd_null: float = 6.3246,
     singularity_damping: float = 0.0,
+    vic_joint_damping: float = 1.0,
 ) -> None:
     """One-shot batched VIC setup: zero PD, ``joint_f`` for all worlds, batched J/H buffers."""
     zero_mujoco_joint_pd(robot_model)
+    _set_vic_passive_joint_damping(robot_model, vic_joint_damping)
     mj_solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
     hold_mujoco_actuator_targets_at_state(robot_model, state, control)
     if control.joint_f is None:

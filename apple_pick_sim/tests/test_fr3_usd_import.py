@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import warnings
 from pathlib import Path
 
 import newton
@@ -47,6 +48,18 @@ class TestFr3UsdImport(unittest.TestCase):
     def test_mujoco_solver_constructs(self):
         _model, _tcp, solver = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
         self.assertIsInstance(solver, SolverMuJoCo)
+
+    def test_mujoco_solver_constructs_without_deprecation_warnings(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            _model, _tcp, solver = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")
+        self.assertIsInstance(solver, SolverMuJoCo)
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        self.assertEqual(
+            deprecations,
+            [],
+            msg="; ".join(str(w.message) for w in deprecations),
+        )
 
     def test_joint_coord_and_dof_counts_positive(self):
         model, _tcp, _ = fr3_robot.build_fr3_robot_model_from_usd(device="cpu")

@@ -378,6 +378,8 @@ class ExampleAppleStem:
             rigid_contact_k_start=1.0e4,
             rigid_joint_linear_k_start=1.0e8,
             rigid_joint_angular_k_start=1.0e6,
+            rigid_joint_linear_kd=5.0e4,
+            rigid_joint_angular_kd=500.0,
         )
 
         # Cache solver constraint starts for breakable joint logic

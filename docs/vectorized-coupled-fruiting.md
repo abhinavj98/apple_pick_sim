@@ -1,8 +1,10 @@
 # Vectorized batched coupled fruiting
 
-**Last updated:** 2026-06-25 (V.1 done; V.2 independent-envs scope)
+**Last updated:** 2026-06-30 (V.2.1 done; V.2.1.1 Newton bump next; sim-to-real gravity-comp contract)
 
 **This document is the single source of truth** for batched coupled fruiting: build, settle, weld, and interactive run. Do not duplicate or contradict this flow in examples, README, or tests—link here instead.
+
+**Related:** arm/plant gravity split and RL training assumptions — `docs/mujoco-vbd-coupling-architecture.md` §2.5.
 
 ---
 
@@ -250,13 +252,34 @@ Debug overlays in `apple_pick_sim/batched_viz.py` add the same per-world viewer 
 
 ---
 
+## Sim-to-real and RL training contract
+
+Batched coupled fruiting is the intended backend for **parallel RL** ([V.3]) and build-time **domain randomization** ([V.2.2] heterogeneous builds). The sim assumes the same control contract as the target real stack:
+
+| Assumption | Simulation | Real robot (target) |
+|------------|------------|---------------------|
+| Arm link gravity | **Off** on Model A (`robot_model.gravity = 0`) | Gravity compensation from arm model only (**zero payload** in feedforward) |
+| Apple / stem load | **On** via VBD + lagged TCP harvest (`body_f`); explicit `-m_apple · g` when welded | Unmodeled external wrench at EE after grasp (not in gravity-comp feedforward) |
+| Policy objective | Learn reactions to **DR apples** (mass, stiffness, geometry) | Same — comp does not hide variable fruit weight |
+
+**Training checklist** (full detail: `docs/mujoco-vbd-coupling-architecture.md` §2.5):
+
+1. **Dynamic arm** — `robot_kinematic_mode=False` for post-grasp pull/twist; kinematic Gym smoke (M2.1) does not exercise payload.
+2. **Settle → weld** — canonical batched flow (§ Canonical runtime flow); per-env `sample_heterogeneous_params_list` for build-time DR (`example_batched_heterogeneous_coupled_fruiting.py`).
+3. **Randomize plant θ, not arm gravity** — vary `apple_mass_kg` / density / stem stiffness per env; keep Model A at zero-g; do not add apple mass to real gravity-comp feedforward while training for payload robustness.
+4. **Observations** — TCP wrench and related load cues in `apple_pick_gym` (see `docs/gym-observation-contract.md`).
+
+**Do not** treat perfect gravity compensation with the true apple mass as the training default — that hides the variable-payload problem the policy should learn.
+
+---
+
 ## θ application
 
 | Parameter class | Sys-ID (V.2) | RL (V.3) | When to apply |
 | --------------- | ------------ | -------- | ------------- |
 | `bend_stiffness`, `stretch_stiffness`, `bend_damping` | Primary CEM targets | DR | **Runtime scatter** into VBD joint/material arrays per world |
 | `length`, `radius`, `direction` | Usually fixed (twin) | DR | **Reset-time** kinematics per world (V.3) |
-| Apple `radius`, `density` | Optional | Optional | Build or reset per policy (V.3) |
+| Apple `radius`, `density` | Optional | **DR (primary)** | Build or reset per policy (V.3); scales `apple_mass_kg` → explicit harvest wrench when welded |
 
 Per-env sampling uses `sample_params(ranges, seed_w)` with distinct seeds; topology (`omit`, segment counts) stays fixed per batch.
 
@@ -268,10 +291,15 @@ Per-env sampling uses `sample_params(ranges, seed_w)` with distinct seeds; topol
 | ----- | ------ | ----------- | -------- |
 | **V.1** | **Done** | Canonical settle→weld batched init; `BatchedTemplateIK` scatter teleop; homogeneous example keyboard; co-located physics + viewer spacing doc; tests | Batched interactive smoke |
 | **V.2.1** | **Done** | Per-env IK bootstrap after settle→weld (heterogeneous path); all worlds' TCP at own proxy | Correct weld when θ differs per env |
-| **V.2.2** | **Done (build-time)** | `add_world` heterogeneous cable build; `sample_heterogeneous_params_list` | M3.2 batched CEM candidates (build-time DR) |
+| **V.2.1.1** | **Next** | `newton/` submodule bump to latest upstream; parity fixes across coupling, VIC, batched paths | Stable base for fixture + batched gym work |
+| **V.2.1.2** | Planned | Fixture catalog refresh for settle stability and real-world likeness | Credible sim-sim GT before [S] |
+| **V.2.2** | **Done (build-time)** | `add_world` heterogeneous cable build; `sample_heterogeneous_params_list` | Build-time DR per env |
 | **V.2.3** | Planned | Per-env runtime actions in example/API; placeholder broadcast only for homogeneous smoke | Parallel policy / recorded replay |
-| **V.2.4** | Planned | Recorded-action replay; `gather_transitions()` per world | M3.2 CEM without subprocess grid |
-| **V.3** | Planned | Per-env geometry DR on reset; batched gym `(N, act_dim)` → scatter | M2 RL training |
+| **V.2.4** | Planned | Recorded-action replay; `gather_transitions()` per world | [S].1 batched MMD |
+| **V.3.1** | Planned | Per-env geometry DR on reset | RL domain randomization |
+| **V.3.2** | Planned | Batched `(N, act_dim)` → IK scatter | Policy-scale rollouts |
+| **V.3.3** | Planned | `--tcp-force-arrow`, `--mark-endpoints` on all batched examples; public vectorized APIs for TCP pose/wrench, joint state, woody endpoint poses | Debug + obs readout without host loops |
+| **V.3.4** | Planned | Batched `apple_pick_gym` env; parallel sys-ID trajectory collection (`num_envs > 1`) | [S] sim-sim transfer |
 
 Deferred: batched VIC, heterogeneous topology within one batch.
 

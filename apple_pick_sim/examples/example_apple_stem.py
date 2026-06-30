@@ -256,8 +256,8 @@ class ExampleAppleStem:
         lateral_spacing = 0.35
         self.stem_variants = [
             {"label": "soft", "y_offset": -lateral_spacing, "bend_stiffness": 1.0e0, "bend_damping": 2.0e-1},
-            {"label": "medium", "y_offset": 0.0, "bend_stiffness": 1.0e2, "bend_damping": 2.0e-1},
-            {"label": "stiff", "y_offset": lateral_spacing, "bend_stiffness": 1.0e4, "bend_damping": 2.0e-1},
+            {"label": "medium", "y_offset": 0.0, "bend_stiffness": 1.0e2, "bend_damping": 2.0e1},
+            {"label": "stiff", "y_offset": lateral_spacing, "bend_stiffness": 1.0e4, "bend_damping": 2.0e3},
         ]
         self.stem_stretch_stiffness = 1.0e9
         
@@ -279,7 +279,7 @@ class ExampleAppleStem:
         builder = AppleModelBuilder()
 
         builder.default_shape_cfg.ke = 1.0e2
-        builder.default_shape_cfg.kd = 1.0e1
+        builder.default_shape_cfg.kd = 1.0e3  # 1.0e1 × ke; absolute VBD contact damping (Newton #2877)
         builder.default_shape_cfg.mu = 0.8
 
         self.stem_tip_bodies: list[int] = []
@@ -378,8 +378,6 @@ class ExampleAppleStem:
             rigid_contact_k_start=1.0e4,
             rigid_joint_linear_k_start=1.0e8,
             rigid_joint_angular_k_start=1.0e6,
-            rigid_joint_linear_kd=5.0e4,
-            rigid_joint_angular_kd=500.0,
         )
 
         # Cache solver constraint starts for breakable joint logic

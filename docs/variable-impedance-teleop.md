@@ -14,6 +14,8 @@ Design and implementation reference for **grasped-apple pulling** with a **varia
 
 **"Tight grasp" in sim** is a **FIXED** proxy↔apple weld plus **kinematic co-teleport** of the apple from the TCP each substep — not finger contact or slip. See **`docs/mujoco-vbd-coupling-architecture.md`** §2.2.
 
+**Arm gravity:** Model A uses **`robot_model.gravity = 0`**, modelling a real FR3 with **gravity compensation and zero payload** in feedforward. Stem/apple load reaches the arm via lagged **`body_f[tcp]`** (harvest), not MuJoCo link gravity. RL should randomize fruit parameters and train dynamic policies to react to that external load — see **`docs/mujoco-vbd-coupling-architecture.md`** §2.5 and **`docs/vectorized-coupled-fruiting.md`** § Sim-to-real and RL training contract.
+
 ---
 
 ## Control law (total wrench at TCP)

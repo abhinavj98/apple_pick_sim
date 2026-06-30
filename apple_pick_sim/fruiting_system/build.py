@@ -24,9 +24,13 @@ from apple_pick_sim.fruiting_system.params import (
     TOPOLOGY_T_JUNCTION,
 )
 
-# Absolute VBD damping (Newton #2877): kd_new = kd_old × k_paired.
-FRUITING_VBD_RIGID_JOINT_LINEAR_KD = 5.0e4  # 5.0e-4 × rigid_joint_linear_k_start(1.0e8)
-FRUITING_VBD_RIGID_JOINT_ANGULAR_KD = 500.0  # 5.0e-4 × rigid_joint_angular_k_start(1.0e6)
+# Newton PR #2877 changed the *documentation* for joint kd from "Rayleigh coefficient"
+# to "absolute damping", but the solver has always stored rigid_joint_linear/angular_kd
+# directly into joint_penalty_kd without any multiplication by k (see solver_vbd.py
+# _init_joint_penalty_k).  The migration factor was therefore not needed for rigid joints;
+# keep the original values that the wrench-equilibrium tests were calibrated against.
+FRUITING_VBD_RIGID_JOINT_LINEAR_KD = 5.0e-4  # N·s/m, absolute (no Rayleigh scaling)
+FRUITING_VBD_RIGID_JOINT_ANGULAR_KD = 5.0e-4  # N·m·s/rad, absolute (no Rayleigh scaling)
 
 
 def _prescribe_body_vbd_integration(builder: newton.ModelBuilder, body_id: int) -> None:

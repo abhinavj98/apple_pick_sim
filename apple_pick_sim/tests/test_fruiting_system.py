@@ -940,7 +940,7 @@ def test_example_fruiting_system_default_ranges_path_is_real_world_proxy_varianc
     assert path.name == "fruiting_system_ranges_real_world_proxy_variance.json"
     ranges = fs.load_ranges(path)
     assert ranges["secondary"] is None
-    assert fs.parse_fixture_args(ranges).fruiting_base_pos == pytest.approx((0.0, 0.5, 0.95))
+    assert fs.parse_fixture_args(ranges).fruiting_base_pos == pytest.approx((0.0, 0.4, 0.75))
 
 
 def test_example_coupled_fruiting_default_ranges_path_is_real_world_proxy_variance():

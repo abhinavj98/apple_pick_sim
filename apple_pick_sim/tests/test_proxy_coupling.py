@@ -701,7 +701,10 @@ def test_mirror_robot_tcp_to_proxy_offset_and_apple_kernel():
         rtol=1e-5,
         atol=1e-5,
     )
-    np.testing.assert_allclose(dst_qd_np[apple_a], dst_qd_np[proxy_a], rtol=1e-5, atol=1e-5)
+    # Angular velocity ω=(0,0.2,0), lever arm r=(0,0,0.08) → ω×r=(0.016,0,0)
+    expected_apple_lin = np.array([0.05 + 0.016, 0.0, 0.0], dtype=np.float32)
+    np.testing.assert_allclose(dst_qd_np[apple_a, :3], expected_apple_lin, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(dst_qd_np[apple_a, 3:], dst_qd_np[proxy_a, 3:], rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(dst_np[apple_b, :3], sentinel, rtol=0.0, atol=0.0)
 
 

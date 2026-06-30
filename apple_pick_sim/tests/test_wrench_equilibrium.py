@@ -62,7 +62,7 @@ NOTE ON JOINT DAMPING
 ---------------------
 Inter-segment FIXED joints use a **small** default ``rigid_joint_linear_kd`` /
 ``rigid_joint_angular_kd`` in :func:`apple_pick_sim.fruiting_system.make_fruiting_solver_vbd`
-(see ``FRUITING_VBD_RIGID_JOINT_KD`` in ``fruiting_system.py``): enough to damp
+(see ``FRUITING_VBD_RIGID_JOINT_LINEAR_KD`` / ``FRUITING_VBD_RIGID_JOINT_ANGULAR_KD`` in ``fruiting_system/build.py``): enough to damp
 oscillations within the settling horizon without the huge effective stiffness that a
 large ``kd`` produces together with ``rigid_joint_linear_k_start ~ 1e8``.
 

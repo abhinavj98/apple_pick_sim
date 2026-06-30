@@ -4,7 +4,7 @@
 
 | Field | Value |
 |--------|--------|
-| **Last reviewed** | 2026-06-18 |
+| **Last reviewed** | 2026-06-30 |
 | **Owner** | Abhinav |
 | **Related** | `./ROADMAP.md` |
 
@@ -66,6 +66,7 @@ Explicit boundaries so work does not expand by default.
 - **Technical:** The `newton/` submodule remains the vendored physics engine; prefer new simulation logic in `apple_pick_sim/`. Python environment and runs follow project `uv` conventions (see `README.md` and `.cursor/rules/`).
 - **Dependencies:** Upstream Newton APIs and licenses apply; do not assume unavailable proprietary assets unless provided.
 - **Performance / quality:** Tests and CI-facing paths should be deterministic where practical (seeded randomness, no undeclared network dependencies). Real-time visualization is desirable but not a substitute for reproducible metrics.
+- **Arm vs plant gravity (sim-to-real):** The coupled stack models a **gravity-compensated arm with zero payload** (Model A zero-g) and transfers **variable apple/plant load** through the lagged TCP wrench path (Model B gravity + stem harvest). RL policies are trained to be **robust to domain-randomized fruit**, not to balance link gravity. See `docs/mujoco-vbd-coupling-architecture.md` §2.5 and `docs/vectorized-coupled-fruiting.md` § Sim-to-real and RL training contract.
 
 ## Guiding principles (architecture and process)
 
@@ -83,6 +84,7 @@ Explicit boundaries so work does not expand by default.
 | **AVBD** | A solver / formulation class in Newton suited to stiff multibody and contact-heavy models; referenced when discussing stable stiff simulation. |
 | **Fruiting system** | The branch, stem, leaf, and fruit arrangement treated as one configurable scene or asset family. |
 | **Sim-to-real** | Closing the gap between simulated and physical behavior (forces, timing, contacts, sensing). |
+| **Zero-payload gravity compensation** | Arm feedforward cancels link gravity only; fruit mass is treated as an external EE load (sim: Model A zero-g + stem harvest; real: no apple term in gravity comp). |
 | **Fisher information** | In this vision, a quantitative notion of how informative trajectories are for estimating parameters or reducing uncertainty; used to shape learning objectives, not as a one-line substitute for task success. |
 
 ## For agents: ambiguity defaults

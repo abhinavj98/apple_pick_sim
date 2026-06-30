@@ -234,7 +234,13 @@ def mirror_robot_tcp_to_proxy_offset_and_apple_kernel(
             proxy_tf, wp.transform_inverse(proxy_offset_in_apple[i])
         )
         dst_body_q[aid] = apple_tf
-        dst_body_qd[aid] = qd_corr
+
+        r_local = wp.transform_get_translation(wp.transform_inverse(proxy_offset_in_apple[i]))
+        r_world = wp.quat_rotate(tcp_rot, r_local)
+        v_proxy = wp.spatial_top(qd_corr)
+        w_proxy = wp.spatial_bottom(qd_corr)
+        v_apple = v_proxy + wp.cross(w_proxy, r_world)
+        dst_body_qd[aid] = wp.spatial_vector(v_apple, w_proxy)
 
 
 @wp.kernel

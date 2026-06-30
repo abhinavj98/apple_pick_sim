@@ -24,8 +24,8 @@ Newton’s **single-model, two-solver** pattern (e.g. Featherstone + VBD on one 
 
 | Model | Solver | Role | Apple on this model? |
 |-------|--------|------|----------------------|
-| **Model A** — `robot_model` | `SolverMuJoCo` | Articulated robot (today: placeholder free-floating TCP box; target: FR3 + custom EE) | **No** |
-| **Model B** — `cable_model` | `SolverVBD` | Fruiting rod tree, apple, gripper proxy, ground | **Yes** |
+| **Model A** — `robot_model` | `SolverMuJoCo` | Articulated robot (FR3 + custom EE); **`gravity = 0`** (see §2.5) | **No** |
+| **Model B** — `cable_model` | `SolverVBD` | Fruiting rod tree, apple, gripper proxy, ground; **`gravity ≈ −9.81 m/s²`** | **Yes** |
 
 Forces **never** cross `Model` boundaries as shared joints. All cross-model interaction goes through:
 
@@ -79,6 +79,35 @@ After each MuJoCo substep, the TCP state on `robot_state_0` is the **kinematic a
 | Rod backbone motion | **VBD** |
 | External load on robot TCP from fruit | **Lagged harvest** → `body_f[tcp]` next substep |
 | EE–apple contact impulses (on cable) | **VBD** collision solve on proxy/apple shapes |
+
+### 2.5 Sim-to-real: zero-payload gravity compensation
+
+**Contract:** Model A models a **gravity-compensated Franka FR3 with zero payload** in feedforward. Apple and plant weight are **not** integrated as MuJoCo link gravity on the arm; they enter as **external wrenches** on the TCP from the lagged stem-harvest path (plus optional explicit apple weight; see `docs/explicit-apple-load-tcp-harvest.md`).
+
+| Load | Model A (MuJoCo arm) | Model B (VBD plant) | How the arm feels it |
+|------|----------------------|---------------------|----------------------|
+| FR3 link masses under gravity | **Off** — `robot_model.set_gravity((0,0,0))` in `build_fr3_robot_model_from_usd` | — | Not simulated (matches ideal gravity comp on hardware) |
+| Rod / stem / branch gravity | — | **On** — `cable.model` + `gravity_vec` | Indirectly via stem deformation and harvest |
+| Apple weight when welded (`fix_to_apple`) | — | Prescribed apple (`inv_mass = 0`); VBD does not integrate apple gravity | **`body_f[tcp]`** via stem harvest + **`-m_apple · g`** when `stem_harvest_explicit_apple_weight=True` |
+| Apple weight when free proxy | — | VBD integrates apple gravity | **`body_f[tcp]`** via velocity-delta or stem harvest (no explicit load — avoids double-count) |
+
+**Real robot analogue:** joint-level gravity compensation using the arm URDF only (no apple mass in feedforward). After grasp, fruit weight appears as an **unmodeled external disturbance** at the EE — the policy or impedance loop must reject it.
+
+**Proxy sync `gravity * dt` (§5.1) does not cancel load on the arm.** That subtraction applies only when mirroring robot TCP velocity onto the VBD proxy so the cable side does not double-count gravity on the next VBD substep. Harvest still transfers plant gravity effects back to `body_f[tcp]` on the following MuJoCo step.
+
+#### RL and domain randomization
+
+Train controllers that are **robust to randomized apples** under this contract:
+
+1. **Dynamic arm** — `robot_kinematic_mode=False`. Kinematic mode zeros coupling wrenches; the policy never sees payload.
+2. **Settle → weld** — post-grasp episodes with `fix_to_apple=True` and explicit apple weight on, so load appears at the TCP after grasp (not from t = 0).
+3. **DR on plant parameters** — per-env `apple_mass_kg`, density, stem stiffness, etc. (`sample_heterogeneous_params_list`, batched builds). Explicit harvest scales TCP wrench with sampled mass; do **not** put apple mass into Model A gravity or into real gravity-comp feedforward during training.
+4. **Observations** — include load cues (TCP wrench, joint torques, velocity errors). Pose-only policies cannot learn mass-dependent reactions.
+5. **Action interface** — match deploy: VIC/impedance under the policy (`vic_use_joint_torques`, plant load on TCP `body_f`) if that is the real stack.
+
+**Out of scope for this contract:** imperfect arm gravity-comp model error, reflected apple inertia during fast swings, and exact real finger contact vs lagged stem harvest — address via sys-id, extra DR, or observation noise as needed.
+
+**Consumers:** batched DR and RL — `docs/vectorized-coupled-fruiting.md` § [Sim-to-real and RL training contract](vectorized-coupled-fruiting.md#sim-to-real-and-rl-training-contract). Code: `apple_pick_sim/robot/fr3_robot/setup.py` (`set_gravity((0,0,0))`), `coupled_fruiting/explicit_load.py`, `coupled_fruiting/proxy_coupling.py` (`harvest_stem_tension_for_tcp`).
 
 ---
 
@@ -235,7 +264,7 @@ MuJoCo already applied the **lagged coupling wrench** to the TCP in step (1)–(
   - `Δω_coupling` from lagged torque and proxy inertia
   - `gravity * dt` on the linear part (world gravity on cable model)
 
-The `gravity` argument is `CoupledFruitingScene.gravity_vec` (Model B / VBD, default −9.81 m/s²), **not** `robot_model.gravity` (Model A is zero-g for teleop).
+The `gravity` argument is `CoupledFruitingScene.gravity_vec` (Model B / VBD, default −9.81 m/s²), **not** `robot_model.gravity` (Model A is zero-g; see §2.5). This adjustment is **proxy bookkeeping only** — it does not remove apple or stem load from the arm; those arrive via harvest → `body_f[tcp]`.
 
 The same `coupling_forces_cache` used for `body_f` is passed into the kernel as `proxy_forces`.
 

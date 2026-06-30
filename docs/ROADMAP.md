@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-06-25 (M3 active: MMD grid-search diagnostic; [V] V.1 done, V.2 next) |
+| **Last updated** | 2026-06-30 ([V] V.2.1 done; V.2.1.1 Newton bump next; [S] sim-sim transfer after batched gym) |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 
@@ -24,10 +24,11 @@
 ## Sequencing
 
 1. **Done — [P0]:** Variational fruiting geometry, JSON fixtures, fixed-joint force readouts (`measure_fruiting_forces`), standalone viewer (`example_fruiting_system.py`).
-2. **Done — [M1]:** Two-`Model` `SolverMuJoCo` + `SolverVBD` staggered coupling, FR3 + gripper proxy, VIC joint-torque teleop (default in `example_coupled_fruiting.py`), settle-then-weld, explicit apple load. Architecture: `docs/mujoco-vbd-coupling-architecture.md`.
+2. **Done — [M1]:** Two-`Model` `SolverMuJoCo` + `SolverVBD` staggered coupling, FR3 + gripper proxy, VIC joint-torque teleop (default in `example_coupled_fruiting.py`), settle-then-weld, explicit apple load. Architecture: `docs/mujoco-vbd-coupling-architecture.md` (§2.5: zero-payload gravity-comp sim-to-real contract for RL).
 3. **Done (partial) — [M2]:** `ApplePickCoupled-v0` with real observations shipped (M2.1). Remaining RL/FID slices deferred to backlog.
-4. **Now — [M3]:** Simulation parameter identification — excitation trajectories, field replay, CEM + MMD calibration (`docs/system_identification.md`).
-5. **In parallel — [V]:** Batched coupled vectorization via `replicate(N)` — same topology per batch, per-env numeric θ; feeds M3.2 CEM and M2 RL (`docs/vectorized-coupled-fruiting.md`).
+4. **Done (infra) — [M3]:** Sys-ID excitation trajectories, Parquet recording, observation-only replay, subprocess MMD grid diagnostic (`docs/system_identification.md`). CEM and batched sim-sim calibration move to **[S]** after **[V].3.4**.
+5. **Now — [V]:** Batched coupled vectorization via `replicate(N)` — Newton parity, fixture hardening, independent envs, batched viz/state APIs, then batched gym + parallel collection (`docs/vectorized-coupled-fruiting.md`).
+6. **Next — [S]:** Sim-sim transfer — MMD objective on batched rollouts, CEM over θ, held-out validation (exclusive focus once [V].3.4 lands).
 
 Later: real-data collection [M4], final pick policy [M5].
 
@@ -35,18 +36,20 @@ Later: real-data collection [M4], final pick policy [M5].
 
 ## Current focus
 
-**Active milestone:** [M3] — Simulation parameter identification (MMD diagnostics now; CEM later).
+**Active milestone:** [V] — Batched coupled vectorization (Newton parity + fixtures, then batched gym).
 
-**Goal:** Use the shipped observation-only replay path to build the first objective diagnostic before tuning. Collect "ground-truth" trajectories from a known simulator parameter set, replay the same recorded EE actions over a grid of alternate fruiting-system parameters, compute MMD loss between GT and candidate transition distributions, and plot the loss landscape. This is a diagnostic grid search only: do **not** update simulator parameters or run CEM yet.
+**Goal:** Finish the batched coupled stack on latest Newton with real-world-like fixtures, expose vectorized robot/woody state query APIs and debug viz (`--tcp-force-arrow`, `--mark-endpoints`), wrap a batched Gymnasium env, and parallelize sys-ID trajectory collection. **[S] sim-sim transfer** (MMD + CEM) starts only after that foundation is in place.
 
-**Specs:** `docs/system_identification.md`, `docs/observation-replay-digital-twin.md`
+**Specs:** `docs/vectorized-coupled-fruiting.md`, `docs/system_identification.md`, `docs/observation-replay-digital-twin.md`
 
-**Parallel track — [V] batched vectorization** (branch `apple-pick-sim-vecorization`, spec `docs/vectorized-coupled-fruiting.md`):
+**Track — [V] batched vectorization** (spec `docs/vectorized-coupled-fruiting.md`):
 
 - **Batch contract:** fixed `num_segments` and `omit` set per batch; only numeric `FruitingSystemParams` vary (stiffness, lengths, directions, etc.).
 - **V.1 (done):** `replicate(N)` cable + robot, batched settle→weld init, `BatchedEnvLayout`, multi-TCP wrench apply, `BatchedTemplateIK` per-env scatter teleop (example: homogeneous keyboard), co-located physics + viewer grid, `example_batched_coupled_fruiting.py` + `test_vectorized_coupled_fruiting.py`. Spec: [independent env semantics — V.1 limitations](vectorized-coupled-fruiting.md#v1-shipped-vs-v2-independent-envs).
-- **V.2 (next):** Fully **independent envs** within a batch — per-env DR (numeric θ / seeds), per-env settle→weld→**IK bootstrap** (no `broadcast_joint_q_from_world0` on FR3), per-env actions at runtime; then K/B runtime scatter, recorded-action replay, `gather_transitions()` for M3.2 CEM.
-- **V.3:** Per-env geometry DR on reset; batched gym `(N, act_dim)` → IK scatter; batched `apple_pick_gym` adapter → M2 RL.
+- **V.2:** Independent envs within a batch — per-env IK bootstrap (V.2.1), Newton bump (V.2.1.1), fixture hardening (V.2.1.2), build-time θ DR (V.2.2), runtime actions (V.2.3), recorded replay + `gather_transitions()` (V.2.4).
+- **V.3:** Per-env geometry DR on reset (V.3.1); batched `(N, act_dim)` scatter (V.3.2); vectorized viz + state-query APIs (V.3.3); batched gym + parallel sys-ID collection (V.3.4). Train under **zero-payload gravity-comp** arm model + DR apples (`docs/vectorized-coupled-fruiting.md` § Sim-to-real and RL training contract).
+
+**Next track — [S] sim-sim transfer:** MMD on batched candidate rollouts, CEM θ update loop, held-out validation — replaces the former M3.2 scope once [V].3.4 ships.
 
 **Build on (do not reimplement):**
 
@@ -55,14 +58,34 @@ Later: real-data collection [M4], final pick policy [M5].
 
 **Next up (ordered):**
 
-1. [x] **M3.0.1 — Quasi-static §2.1 trajectory + gym replay (shipped):** Fibonacci forward-hemisphere directions, stepped push–hold–return phase machine, `ApplePickSysId-v0`, `example_gym_sysid.py` smoke. Spec: `docs/system-id-quasi-static-implementation.md`.
-2. [x] **M3.0.2 — Recording + privileged-state replay (shipped):** `example_gym_sysid.py --output` writes observation-first Parquet frames and metadata; `--save-snapshot` also writes opt-in initial-state snapshots for privileged baseline comparisons. `ApplePickReplay-v0` restores saved Newton state when present and applies recorded EE velocity actions open-loop. Docs: `docs/sysid-trajectory-storage.md`.
-3. [x] **M3.0.3 — Observation-only replay initialization (shipped):** Reconstructs a plausible Newton initial state/equilibrium from recorded observations and calibration metadata only. The default replay path avoids privileged saved simulator arrays (`body_q`, `body_qd`, `joint_q`, solver previous-state buffers, controller target transforms); `--use-snapshot` remains opt-in for privileged sim-to-sim debugging.
-4. [ ] **M3.1.1 — MMD grid-search diagnostic (next):** Extend `apple_pick_gym/examples/run_system_identification.py` from replay-error summaries into a GT-vs-candidate diagnostic. Collect GT trajectories from a known parameter set, replay the same trajectories over a grid of alternate `primary` / `secondary` / `spur` / `stem` parameters, build per-direction transition features $[s_t, \Delta s_t]$, z-score them using GT/candidate pooled statistics, compute MMD loss, rank grid candidates, and emit a plot/table of the loss landscape. This slice must not update simulator parameters or run CEM.
-5. [ ] **M3.0.4 — Digital-twin geometry reconstruction + fixtures:** Define the observable geometry bundle (topology/junction labels, tracked woody endpoints, apple pose, stem/apple frame, robot/camera/F/T calibration transforms, grasp/weld transform, base poses), rebuild a named fixture from those observations, and verify excitation directions relative to stem attachment and fixture `fruiting_base_pos` / `robot_base_pos` (forward hemisphere toward apple, robot-facing weld framing, no sign/frame mix-ups). Deliver a small **named fixture catalog** under `apple_pick_sim/fixtures/` (e.g. straight-rod test baseline + field-twin candidate) with documented base poses, range bounds, and per-fixture sys-id smoke (`example_gym_sysid.py` + pytest). Use `apple_pick_gym/examples/visualize_pull_directions.py` for live geometry checks.
-6. [ ] **M3.0.5 — Remaining excitation trajectories (§2.2–2.3):** Translational **log chirps** ($A \propto 1/f$), torsional quasi-static + chirp; trajectory type + instantaneous $f(t)$ in logged state; wrench force-limit guard; §2.1 amplitude bounds feed 2.2/2.3. Deliver: trajectory generators + sim replay smoke (recorded $v_{ee}$ drives VBD).
-7. [ ] **M3.1.2 — General MMD feature pipeline:** Harden the MMD objective for broader datasets: configurable observable state fields, per-direction pooling, anisotropic RBF bandwidths, missing-signal handling, and reusable tests outside the diagnostic CLI.
-8. [ ] **M3.2 — CEM loop:** Sample $\theta$, subprocess rollouts, elite update; validate on held-out discrete-frequency trajectories.
+**[V] batched vectorization**
+
+1. [x] **V.2.1 — Per-env IK bootstrap (shipped):** Heterogeneous path: each world's TCP at its own settled proxy after settle→weld; no `broadcast_joint_q_from_world0` on FR3. `example_batched_heterogeneous_coupled_fruiting.py` + `test_heterogeneous_coupled_fruiting.py`.
+2. [ ] **V.2.1.1 — Newton submodule bump (next):** Update `newton/` to latest upstream; fix parity regressions (coupling, VIC, batched paths); full fast + coupled test gate green. Branch: `feature/newton-parity`.
+3. [ ] **V.2.1.2 — Fixture stability + real-world likeness:** Refresh named fixtures under `apple_pick_sim/fixtures/` for settle stability, plausible geometry/compliance, and field-twin alignment; per-fixture smoke (`example_gym_sysid.py`, heterogeneous batched example, pytest). Overlaps M3.0.4 digital-twin catalog goals — deliver stability-first fixture set here.
+4. [x] **V.2.2 — Build-time per-env θ DR (shipped):** `add_world` heterogeneous cable build; `sample_heterogeneous_params_list`; stiffness baked at `finalize()`.
+5. [ ] **V.2.3 — Per-env runtime actions:** Example + API for per-env actions (`velocity_for_world`, action buffer); placeholder broadcast only for homogeneous smoke.
+6. [ ] **V.2.4 — Recorded-action replay + `gather_transitions()`:** Per-world transition extraction for batched MMD/CEM (replaces subprocess grid for [S]).
+7. [ ] **V.3.1 — Per-env geometry DR on reset:** Runtime kinematics scatter per world (lengths, directions) without rebuilding batch topology.
+8. [ ] **V.3.2 — Batched `(N, act_dim)` → IK scatter:** Policy-scale action tensor path for parallel rollouts.
+9. [ ] **V.3.3 — Vectorized viz + state-query APIs:** Ship `--tcp-force-arrow` and `--mark-endpoints` on all batched coupled examples; expose public APIs for querying robot TCP pose/wrench, joint state, and woody endpoint poses via vectorized (GPU) paths — no host `.numpy()` loops in the hot readout path.
+10. [ ] **V.3.4 — Batched gym + parallel sys-ID collection:** `apple_pick_gym` env over batched coupled stack; extend `example_gym_sysid.py` / trajectory writer for `num_envs > 1` parallel excitation collection.
+
+**[S] sim-sim transfer** (starts after V.3.4)
+
+11. [ ] **S.1 — Batched MMD objective:** GT vs candidate transition distributions from `gather_transitions()`; per-direction features, z-score, rank — generalize `run_system_identification.py` MMD path to batched rollouts.
+12. [ ] **S.2 — CEM loop:** Sample $\theta$, batched elite rollouts, refit $\mu$/$\Sigma$; no Newton autodiff through coupled stack.
+13. [ ] **S.3 — Held-out sim-sim validation:** Alternate trajectories / amplitudes; report MMD and pose/force drift metrics.
+
+**[M3] remaining infra** (can run in parallel with [V] where independent)
+
+14. [x] **M3.0.1 — Quasi-static §2.1 trajectory + gym replay (shipped).**
+15. [x] **M3.0.2 — Recording + privileged-state replay (shipped).**
+16. [x] **M3.0.3 — Observation-only replay initialization (shipped).**
+17. [x] **M3.1.1 — Subprocess MMD grid-search diagnostic (shipped):** `run_system_identification.py --mmd-output`; superseded for scale by [S].1 batched path.
+18. [ ] **M3.0.4 — Digital-twin geometry reconstruction:** Observable geometry bundle → named fixture rebuild; largely absorbed by V.2.1.2 unless field-twin-specific tooling remains.
+19. [ ] **M3.0.5 — Remaining excitation trajectories (§2.2–2.3):** Log chirps, torsional quasi-static + chirp; wrench force-limit guard.
+20. [ ] **M3.1.2 — General MMD feature pipeline:** Configurable observable fields, anisotropic bandwidths, missing-signal handling — feeds [S].1.
 
 ---
 
@@ -88,45 +111,61 @@ Key docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md`, 
 | M2.2c | Deferred | SKRL subprocess smoke — see backlog |
 | M2.3 | Deferred | π_exp training smoke — see backlog |
 
-### [M3] Active
+### [M3] Infra (mostly done; CEM → [S])
 
-Sim parameter identification from field trajectories: CEM + MMD over transition distributions (`docs/system_identification.md`). Reuses M2 θ packing and subprocess rollout patterns where applicable; **no** Newton autodiff through the coupled stack.
+Sys-ID recording, replay, and subprocess MMD diagnostic (`docs/system_identification.md`). Batched calibration moves to **[S]** after [V].3.4.
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
 | M3.0.1 | Done | §2.1 quasi-static trajectory + `ApplePickSysId-v0` gym replay |
 | M3.0.2 | Done | Parquet recording + `ApplePickReplay-v0` privileged-state action replay |
 | M3.0.3 | Done | Observation-only replay initialization; no privileged simulator state by default |
-| M3.1.1 | **Next** | GT trajectory collection, grid replay, MMD loss ranking + plot via `run_system_identification.py` |
-| M3.0.4 | Planned | Digital-twin geometry reconstruction + fixture catalog; sim-to-sim transfer validation |
+| M3.1.1 | Done | Subprocess MMD grid via `run_system_identification.py --mmd-output` |
+| M3.0.4 | Planned | Digital-twin geometry reconstruction (overlaps V.2.1.2 fixtures) |
 | M3.0.5 | Planned | §2.2–2.3 log chirp + torsional trajectories + sim replay smoke |
-| M3.1.2 | Planned | General MMD feature pipeline per direction |
-| M3.2 | Planned | CEM calibration + held-out validation |
+| M3.1.2 | Planned | General MMD feature pipeline — feeds [S].1 |
+| M3.2 | **Moved → [S].2** | CEM calibration |
 
-### [V] Batched vectorization (parallel)
+### [V] Batched vectorization (active)
 
 Homogeneous multi-world coupled rollouts: `ModelBuilder.replicate()` on cable + robot models, fixed topology per batch, per-env θ. Spec: `docs/vectorized-coupled-fruiting.md`.
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
-| V.1 | **Done** | `replicate(N)`, batched settle→weld, `BatchedTemplateIK` scatter, homogeneous example teleop, layout + tests, co-located physics / viewer spacing doc |
-| V.2 | **Next** | Independent envs: per-env seeds/θ DR, per-env IK weld bootstrap, per-env actions; K/B scatter; recorded-action replay; `gather_transitions` for MMD/CEM |
-| V.2.1 | Planned (within V.2) | Per-env IK bootstrap after settle→weld (replace joint broadcast); tests for all-world TCP at proxy |
-| V.2.2 | Planned (within V.2) | Per-env `sample_params` / stiffness scatter at build or reset |
-| V.2.3 | Planned (within V.2) | Example + API for per-env actions (`velocity_for_world`, action buffer); drop placeholder broadcast on independent path |
-| V.3 | Planned | Per-env geometry DR on reset; gym `(N, act_dim)` → scatter; batched `apple_pick_gym` adapter |
+| V.1 | **Done** | `replicate(N)`, batched settle→weld, `BatchedTemplateIK` scatter, homogeneous example teleop, layout + tests |
+| V.2.1 | **Done** | Per-env IK bootstrap after settle→weld (heterogeneous path) |
+| V.2.1.1 | **Next** | `newton/` bump to latest upstream; parity fixes; full test gate |
+| V.2.1.2 | Planned | Fixture catalog refresh — stability + real-world likeness |
+| V.2.2 | **Done** | Build-time per-env `sample_params` / stiffness via `add_world` |
+| V.2.3 | Planned | Per-env runtime actions (`velocity_for_world`, action buffer) |
+| V.2.4 | Planned | Recorded-action replay; `gather_transitions()` per world |
+| V.3.1 | Planned | Per-env geometry DR on reset |
+| V.3.2 | Planned | Batched `(N, act_dim)` → IK scatter |
+| V.3.3 | Planned | `--tcp-force-arrow`, `--mark-endpoints`; vectorized robot/woody state query APIs |
+| V.3.4 | Planned | Batched `apple_pick_gym` env; parallel sys-ID data collection |
 
-**Consumers:** M3.2 (batched CEM rollouts), M2.3 / M2.2c (parallel RL envs).
+**Consumers:** [S] sim-sim transfer, M2.3 / M2.2c (parallel RL envs).
+
+### [S] Sim-sim transfer (next track)
+
+Exclusive focus after [V].3.4: MMD + CEM over batched rollouts — no field data required.
+
+| Slice | Status | Deliverable |
+| ----- | ------ | ----------- |
+| S.1 | Planned | Batched MMD objective from `gather_transitions()` |
+| S.2 | Planned | CEM θ loop with batched elite rollouts |
+| S.3 | Planned | Held-out trajectory validation; sim-sim drift metrics |
 
 ---
 
 ## Backlog
 
-- **[M2] remaining:** M2.0 (interface ADR), M2.2a (`ApplePickFID-v0`), M2.2c (SKRL smoke), M2.3 (π_exp training) — resume after M3 or in parallel if maintainer directs; batched env backend depends on **[V].3**.
-- **[V] remaining:** V.2 (independent envs + CEM gather) and V.3 after V.1; batched VIC deferred.
+- **[M2] remaining:** M2.0 (interface ADR), M2.2a (`ApplePickFID-v0`), M2.2c (SKRL smoke), M2.3 (π_exp training) — resume after [S] or [V].3.4 if maintainer directs; batched env backend depends on **[V].3.4**.
+- **[V] remaining:** V.2.3–V.2.4, V.3.1–V.3.4 after V.2.1.1/V.2.1.2; batched VIC deferred.
+- **[S] remaining:** Full sim-sim CEM track — see Current focus items 11–13.
 - Additional manipulators or crops — explicit scope change only.
 - Triangle mesh import/export — P0 stays capsule primitives.
-- Real-data pipeline [M4], final pick policy [M5] — after M3 contracts exist.
+- Real-data pipeline [M4], final pick policy [M5] — after [S] contracts exist.
 
 ---
 
@@ -191,7 +230,7 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --viewer null --n-directions 1 --max-steps 200 --save-snapshot \
   --output /tmp/apple_pick_sysid_with_snapshot
 
-# [V] Batched coupled fruiting (V.1 done; V.2 next — see docs/vectorized-coupled-fruiting.md)
+# [V] Batched coupled fruiting (V.2.1.1 Newton bump next — see docs/ROADMAP.md)
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_vectorized_coupled_fruiting.py -q
 uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
@@ -202,7 +241,12 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py -q
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
-# M3.1.1 MMD grid diagnostic inputs: collect GT trajectories
+
+# V.3.3 viz smoke (when shipped on all batched examples)
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \
+  --viewer null --num-frames 60 --num-envs 2 --tcp-force-arrow --mark-endpoints
+
+# M3.1.1 / [S] subprocess MMD grid diagnostic inputs: collect GT trajectories
 uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --viewer null --n-directions 1 --max-steps 200 \
   --output /tmp/apple_pick_sysid_gt

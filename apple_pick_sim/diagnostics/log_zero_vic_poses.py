@@ -101,6 +101,7 @@ class ZeroVicHoldConfig:
     settle_max_speed: float = 0.05
     quiet_settle: bool = True
     duration: float = 30.0
+    hold_warmup_s: float = 0.0
     log_interval: float = 1.0
     hz: float = 30.0
     sim_substeps: int = 15
@@ -153,7 +154,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--settle-substeps", type=int, default=5000)
     parser.add_argument("--settle-max-speed", type=float, default=0.05)
     parser.add_argument("--quiet-settle", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--duration", type=float, default=30.0, help="Sim duration [s].")
+    parser.add_argument("--duration", type=float, default=30.0, help="Observation window [s].")
+    parser.add_argument(
+        "--hold-warmup",
+        type=float,
+        default=0.0,
+        help="Post-weld VIC hold [s] before observation (excluded from metrics).",
+    )
     parser.add_argument(
         "--log-interval",
         type=float,
@@ -206,6 +213,7 @@ def config_from_args(args: argparse.Namespace) -> ZeroVicHoldConfig:
         settle_max_speed=float(args.settle_max_speed),
         quiet_settle=bool(args.quiet_settle),
         duration=float(args.duration),
+        hold_warmup_s=float(args.hold_warmup),
         log_interval=float(args.log_interval),
         hz=float(args.hz),
         sim_substeps=int(args.sim_substeps),
@@ -384,6 +392,8 @@ def run_zero_vic_hold(config: ZeroVicHoldConfig) -> ZeroVicHoldResult:
     sim_dt = (1.0 / 60.0) / sim_substeps
     log_interval = float(config.log_interval)
     duration = float(config.duration)
+    hold_warmup = float(config.hold_warmup_s)
+    total_duration = hold_warmup + duration
     build_kw = _build_kw(config, device=device, mujoco_use_cpu=mujoco_use_cpu)
 
     gripper_welded = _gripper_for_robot(fix_to_apple=True)
@@ -442,11 +452,16 @@ def run_zero_vic_hold(config: ZeroVicHoldConfig) -> ZeroVicHoldResult:
     )
     vic = _configure_vic(scene, gains=gains)
     if config.print_settle_report:
+        warmup_note = (
+            f"warmup {hold_warmup:g}s (excluded), observe {duration:g}s"
+            if hold_warmup > 0.0
+            else f"log every {log_interval:g}s for {duration:g}s sim time"
+        )
         print(
             f"VIC zero-action hold: stem_gain={config.stem_coupling_gain:g} "
             f"K=({gains.linear_k:g}, {gains.angular_k:g}) "
             f"D=({gains.linear_d:g}, {gains.angular_d:g}); "
-            f"log every {log_interval:g}s for {duration:g}s sim time",
+            f"{warmup_note}",
             flush=True,
         )
 
@@ -483,11 +498,29 @@ def run_zero_vic_hold(config: ZeroVicHoldConfig) -> ZeroVicHoldResult:
                 scene.coupled_substep(sim_dt)
             sim_time += frame_dt
 
+    time_series: list[dict[str, float | int]] = []
+    sim_time = 0.0
+    if hold_warmup > 0.0:
+        _advance_hold(hold_warmup)
+
+    next_log_t = hold_warmup
+    while sim_time <= total_duration + 1e-9:
+        for w in range(layout.num_envs):
+            time_series.append(
+                pose_row(t_s=sim_time, env=w, layout=layout, scene=scene, vic=vic)
+            )
+
+        if sim_time >= total_duration - 1e-9:
+            break
+        next_log_t += log_interval
+        _advance_hold(min(next_log_t, total_duration))
+
     per_env_metrics = [
         compute_env_stability_metrics(
             time_series,
             env=w,
-            duration_max=duration,
+            duration_max=total_duration,
+            metrics_start_t=hold_warmup,
             thresholds=config.thresholds,
         )
         for w in range(layout.num_envs)
@@ -519,7 +552,7 @@ def _print_vic_stability_summary(
 ) -> None:
     stable_count = sum(1 for m in metrics if m.is_stable)
     print(
-        f"Zero-VIC hold stability (apple drift + secondary gates): "
+        f"Zero-VIC hold stability (post-warmup speed/force gates): "
         f"{stable_count}/{len(metrics)} envs stable "
         f"({100.0 * summary.vic_pass_rate:.1f}%)",
         flush=True,

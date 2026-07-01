@@ -146,6 +146,23 @@ def test_nan_row_fails_finite():
     assert not m.is_stable
 
 
+def test_metrics_start_t_excludes_warmup_transient():
+    rows = [
+        _row(t_s=0.0, env=0, tcp_v=(0.2, 0.0, 0.0), apple_xyz=(0.0, 0.0, 0.5)),
+        _row(t_s=1.0, env=0, tcp_v=(0.0, 0.0, 0.0), apple_xyz=(0.0, 0.0, 0.5)),
+        _row(t_s=3.0, env=0, tcp_v=(0.0, 0.0, 0.0), apple_xyz=(0.0, 0.0, 0.5)),
+        _row(t_s=5.0, env=0, tcp_v=(0.0, 0.0, 0.0), apple_xyz=(0.01, 0.0, 0.5)),
+    ]
+    without_warmup = compute_env_stability_metrics(rows, env=0, duration_max=5.0)
+    with_warmup = compute_env_stability_metrics(
+        rows, env=0, duration_max=5.0, metrics_start_t=2.0
+    )
+    assert not without_warmup.is_stable
+    assert "tcp_speed" in without_warmup.issues
+    assert with_warmup.is_stable
+    assert with_warmup.max_apple_drift_m == pytest.approx(0.01)
+
+
 def test_summarize_hold_metrics_pass_rate():
     metrics = [
         compute_env_stability_metrics([_row(t_s=0.0, env=0)], env=0, duration_max=5.0),

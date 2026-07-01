@@ -136,15 +136,22 @@ def compute_env_stability_metrics(
     *,
     env: int,
     duration_max: float,
+    metrics_start_t: float = 0.0,
     thresholds: StabilityThresholds | None = None,
 ) -> EnvStabilityMetrics:
-    """Aggregate stability metrics for one env over ``t_s <= duration_max``."""
+    """Aggregate stability metrics for one env over the observation window.
+
+    Rows with ``metrics_start_t <= t_s <= duration_max`` are included. Apple
+    drift and sag are measured relative to the first row in that window.
+    """
     th = thresholds if thresholds is not None else StabilityThresholds()
+    t0 = float(metrics_start_t)
+    t1 = float(duration_max)
     env_rows = sorted(
         (
             r
             for r in rows
-            if int(r["env"]) == int(env) and float(r["t_s"]) <= float(duration_max) + 1e-9
+            if int(r["env"]) == int(env) and t0 - 1e-9 <= float(r["t_s"]) <= t1 + 1e-9
         ),
         key=lambda r: float(r["t_s"]),
     )

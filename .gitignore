@@ -41,3 +41,5 @@ tmp/
 *~
 .DS_Store
 Thumbs.db
+scripts
+sweep_runs

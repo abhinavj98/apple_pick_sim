@@ -50,6 +50,7 @@ def _make_settle_then_weld(cf, fs, ranges, seed: int, *, settle_substeps: int):
                 ),
             )
             cf.settle_vbd_substeps(settled, substeps=settle_substeps, dt=SUB_DT)
+            cf.quiet_all_cable_bodies(settled.cable)
             welded = cf.build_coupled_fruiting_fr3(
                 ranges,
                 try_seed,
@@ -105,6 +106,72 @@ def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
     w = welded.proxy_forces.numpy().reshape(-1, 6)[tcp]
     assert float(np.linalg.norm(w[:3])) <= 1000.0 + 1e-3
     assert float(np.linalg.norm(w[3:])) <= 1000.0 + 1e-3
+
+
+def test_quiet_all_cable_bodies_zeros_twists_preserves_poses_and_aligns_q_prev():
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    settled = cf.build_coupled_fruiting_fr3(
+        ranges,
+        2,
+        vbd_only=True,
+        **_BUILD_KW,
+        gripper_proxy=fs.GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            fix_to_apple=False,
+        ),
+    )
+    cf.settle_vbd_substeps(settled, substeps=40, dt=SUB_DT)
+    cable = settled.cable
+    n = int(cable.model.body_count)
+    bq_before = cable.state_0.body_q.numpy().reshape(n, 7).copy()
+
+    cf.quiet_all_cable_bodies(cable)
+
+    bq_after = cable.state_0.body_q.numpy().reshape(n, 7)
+    np.testing.assert_allclose(bq_after, bq_before, rtol=1e-6, atol=1e-6)
+    for state in (cable.state_0, cable.state_1):
+        bqd = state.body_qd.numpy().reshape(n, 6)
+        np.testing.assert_allclose(bqd, 0.0, atol=1e-9)
+    bqp = cable.solver.body_q_prev.numpy().reshape(n, 7)
+    np.testing.assert_allclose(bqp, bq_after, rtol=1e-6, atol=1e-6)
+
+
+def test_quiet_all_cable_bodies_before_seed_zeros_welded_chain_twists():
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    settled = cf.build_coupled_fruiting_fr3(
+        ranges,
+        2,
+        vbd_only=True,
+        **_BUILD_KW,
+        gripper_proxy=fs.GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            fix_to_apple=False,
+        ),
+    )
+    cf.settle_vbd_substeps(settled, substeps=30, dt=SUB_DT)
+    cf.quiet_all_cable_bodies(settled.cable)
+    welded = cf.build_coupled_fruiting_fr3(
+        ranges,
+        2,
+        **_BUILD_KW,
+        skip_ik_bootstrap=True,
+        gripper_proxy=fs.GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            fix_to_apple=True,
+        ),
+    )
+    cf.seed_fix_to_apple_from_settled(
+        welded_scene=welded, settled_scene=settled, quiet_apple_proxy=True
+    )
+    n = int(welded.cable.model.body_count)
+    bqd = welded.cable.state_0.body_qd.numpy().reshape(n, 6)
+    np.testing.assert_allclose(bqd, 0.0, atol=1e-9)
 
 
 def test_seed_quiet_zeros_apple_and_proxy_twists():

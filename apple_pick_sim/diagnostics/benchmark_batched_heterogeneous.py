@@ -31,6 +31,7 @@ from apple_pick_sim.coupled_fruiting import (
     build_coupled_fruiting_placeholder,
     build_heterogeneous_coupled_fruiting_fr3,
     build_heterogeneous_coupled_fruiting_placeholder,
+    quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
     settle_vbd_substeps,
 )
@@ -214,6 +215,7 @@ def run_profile(
 
     with _phase("settle", timings, resolved_device):
         settle_vbd_substeps(settled, substeps=int(settle_substeps), dt=sim_dt)
+        quiet_all_cable_bodies(settled.cable)
 
     with _phase("build_welded", timings, resolved_device):
         scene = _build_scene(

@@ -46,6 +46,7 @@ from apple_pick_sim.coupled_fruiting import (
     build_heterogeneous_coupled_fruiting_fr3,
     build_heterogeneous_coupled_fruiting_placeholder,
     print_envelope_coverage_report,
+    quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
     settle_stability_reports_from_cable,
     settle_vbd_substeps,
@@ -65,8 +66,8 @@ from apple_pick_sim.coupled_fruiting.batched_robot_status import print_batched_r
 
 
 # Batched heterogeneous teleop: smaller steps than 1.0 m/s so template IK keeps up at 30 Hz.
-_FR3_TELEOP_LINEAR_SPEED = 0.5
-_FR3_TELEOP_ANGULAR_SPEED = 1.0
+_FR3_TELEOP_LINEAR_SPEED = 0.2
+_FR3_TELEOP_ANGULAR_SPEED = 0.2
 _FR3_TELEOP_IK_ITERATIONS = 128
 
 
@@ -123,6 +124,22 @@ def _print_per_env_params(params_list: list[FruitingSystemParams]) -> None:
             f"  env{w}: primary_bend={bend:.4g}  apple_r={radius:.4g} m  "
             f"apple_rho={density:.4g} kg/m³"
         )
+
+
+def _settle_inspect_continue_requested(
+    viewer,
+    *,
+    graphical: bool,
+    paused_before: bool,
+) -> bool:
+    """Return True when the user pressed SPACE to leave settled-scene inspection."""
+    if not graphical:
+        return False
+    if hasattr(viewer, "is_key_down") and viewer.is_key_down("space"):
+        return True
+    if hasattr(viewer, "is_paused") and not paused_before and viewer.is_paused():
+        return True
+    return False
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -210,9 +227,9 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mark-endpoints", action="store_true")
     parser.add_argument("--endpoint-radius", type=float, default=0.05)
     parser.add_argument("--mujoco-viewer", action="store_true")
-    parser.add_argument("--vic-linear-k", type=float, default=8000.0, help="VIC linear K [N/m].")
-    parser.add_argument("--vic-linear-d", type=float, default=80.0, help="VIC linear D [N·s/m].")
-    parser.add_argument("--vic-angular-k", type=float, default=40.0, help="VIC angular K [N·m/rad].")
+    parser.add_argument("--vic-linear-k", type=float, default=600.0, help="VIC linear K [N/m].")
+    parser.add_argument("--vic-linear-d", type=float, default=200.0, help="VIC linear D [N·s/m].")
+    parser.add_argument("--vic-angular-k", type=float, default=20.0, help="VIC angular K [N·m/rad].")
     parser.add_argument("--vic-angular-d", type=float, default=4.0, help="VIC angular D [N·m·s/rad].")
     return parser
 
@@ -302,6 +319,7 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 max_branch_speed_m_s=float(getattr(args, "settle_max_speed", 0.05)),
             )
             self._settle_stability_reports = stability_reports
+            quiet_all_cable_bodies(settled.cable)
             if bool(getattr(args, "inspect_settle", False)):
                 self._settled_scene = settled
             self.scene = build_fn(
@@ -661,9 +679,10 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
             "press SPACE to continue to welded build + teleop.",
             flush=True,
         )
+        paused_before = (
+            graphical and hasattr(self.viewer, "is_paused") and self.viewer.is_paused()
+        )
         while self.viewer.is_running():
-            if graphical and hasattr(self.viewer, "is_key_down") and self.viewer.is_key_down(" "):
-                break
             viz_contacts = cable.model.collide(
                 cable.state_0,
                 collision_pipeline=settled.cable_collision_pipeline,
@@ -679,6 +698,12 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                     radius=self._endpoint_radius,
                 )
             self.viewer.end_frame()
+            if _settle_inspect_continue_requested(
+                self.viewer, graphical=graphical, paused_before=paused_before
+            ):
+                if hasattr(self.viewer, "_paused"):
+                    self.viewer._paused = False
+                break
             time.sleep(max(0.0, self.frame_dt))
         self.viewer.set_model(self.scene.cable.model)
         if graphical and self.num_envs > 1:

@@ -42,6 +42,7 @@ from apple_pick_sim.coupled_fruiting.settle_quasi_static import (
     settle_stability_reports_from_cable,
 )
 from apple_pick_sim.coupled_fruiting.settle_then_weld import (
+    quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
     settle_vbd_substeps,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "print_settle_quasi_static_summary",
     "print_settle_stability_report",
     "settle_stability_reports_from_cable",
+    "quiet_all_cable_bodies",
     "seed_fix_to_apple_from_settled",
     "settle_vbd_substeps",
 ]

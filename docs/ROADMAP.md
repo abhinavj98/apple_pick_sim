@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-06-30 ([V] V.2.1 done; V.2.1.1 Newton bump next; [S] sim-sim transfer after batched gym) |
+| **Last updated** | 2026-07-01 ([V] V.2.1.2 fixture hardening in progress; intra-cable collisions disabled by default) |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 
@@ -61,8 +61,8 @@ Later: real-data collection [M4], final pick policy [M5].
 **[V] batched vectorization**
 
 1. [x] **V.2.1 — Per-env IK bootstrap (shipped):** Heterogeneous path: each world's TCP at its own settled proxy after settle→weld; no `broadcast_joint_q_from_world0` on FR3. `example_batched_heterogeneous_coupled_fruiting.py` + `test_heterogeneous_coupled_fruiting.py`.
-2. [ ] **V.2.1.1 — Newton submodule bump (next):** Update `newton/` to latest upstream; fix parity regressions (coupling, VIC, batched paths); full fast + coupled test gate green. Branch: `feature/newton-parity`.
-3. [ ] **V.2.1.2 — Fixture stability + real-world likeness:** Refresh named fixtures under `apple_pick_sim/fixtures/` for settle stability, plausible geometry/compliance, and field-twin alignment; per-fixture smoke (`example_gym_sysid.py`, heterogeneous batched example, pytest). Overlaps M3.0.4 digital-twin catalog goals — deliver stability-first fixture set here.
+2. [x] **V.2.1.1 — Newton submodule bump (shipped):** Update `newton/` to latest upstream; fix parity regressions (coupling, VIC, batched paths); full fast + coupled test gate green. Branch: `feature/newton-parity`.
+3. [ ] **V.2.1.2 — Fixture stability + real-world likeness (next):** Refresh named fixtures under `apple_pick_sim/fixtures/` for settle stability, plausible geometry/compliance, and field-twin alignment; per-fixture smoke (`example_gym_sysid.py`, heterogeneous batched example, pytest). Overlaps M3.0.4 digital-twin catalog goals — deliver stability-first fixture set here.
 4. [x] **V.2.2 — Build-time per-env θ DR (shipped):** `add_world` heterogeneous cable build; `sample_heterogeneous_params_list`; stiffness baked at `finalize()`.
 5. [ ] **V.2.3 — Per-env runtime actions:** Example + API for per-env actions (`velocity_for_world`, action buffer); placeholder broadcast only for homogeneous smoke.
 6. [ ] **V.2.4 — Recorded-action replay + `gather_transitions()`:** Per-world transition extraction for batched MMD/CEM (replaces subprocess grid for [S]).
@@ -134,8 +134,8 @@ Homogeneous multi-world coupled rollouts: `ModelBuilder.replicate()` on cable + 
 | ----- | ------ | ----------- |
 | V.1 | **Done** | `replicate(N)`, batched settle→weld, `BatchedTemplateIK` scatter, homogeneous example teleop, layout + tests |
 | V.2.1 | **Done** | Per-env IK bootstrap after settle→weld (heterogeneous path) |
-| V.2.1.1 | **Next** | `newton/` bump to latest upstream; parity fixes; full test gate |
-| V.2.1.2 | Planned | Fixture catalog refresh — stability + real-world likeness |
+| V.2.1.1 | **Done** | `newton/` bump to latest upstream; parity fixes; full test gate |
+| V.2.1.2 | **Next** | Fixture catalog refresh — stability + real-world likeness |
 | V.2.2 | **Done** | Build-time per-env `sample_params` / stiffness via `add_world` |
 | V.2.3 | Planned | Per-env runtime actions (`velocity_for_world`, action buffer) |
 | V.2.4 | Planned | Recorded-action replay; `gather_transitions()` per world |
@@ -161,7 +161,7 @@ Exclusive focus after [V].3.4: MMD + CEM over batched rollouts — no field data
 ## Backlog
 
 - **[M2] remaining:** M2.0 (interface ADR), M2.2a (`ApplePickFID-v0`), M2.2c (SKRL smoke), M2.3 (π_exp training) — resume after [S] or [V].3.4 if maintainer directs; batched env backend depends on **[V].3.4**.
-- **[V] remaining:** V.2.3–V.2.4, V.3.1–V.3.4 after V.2.1.1/V.2.1.2; batched VIC deferred.
+- **[V] remaining:** V.2.3–V.2.4, V.3.1–V.3.4 after V.2.1.2; batched VIC deferred.
 - **[S] remaining:** Full sim-sim CEM track — see Current focus items 11–13.
 - Additional manipulators or crops — explicit scope change only.
 - Triangle mesh import/export — P0 stays capsule primitives.
@@ -170,6 +170,8 @@ Exclusive focus after [V].3.4: MMD + CEM over batched rollouts — no field data
 ---
 
 ## Agent execution notes
+
+> **Warning — intra-cable collisions are disabled.** Default fruiting builds set `enable_self_collisions=False`, which filters woody↔woody, woody↔apple, stem↔woody, apple↔gripper-proxy, and related intra-cable pairs. Ground contact only. See `docs/vectorized-coupled-fruiting.md` (warning at top) and `apple_pick_sim/fruiting_system/build.py::_apply_default_fruiting_collision_filters`. Re-enable only with an explicit stability/contact study — do not assume apple–branch contact in current examples or fixtures.
 
 **Repository layout:**
 
@@ -230,7 +232,7 @@ uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --viewer null --n-directions 1 --max-steps 200 --save-snapshot \
   --output /tmp/apple_pick_sysid_with_snapshot
 
-# [V] Batched coupled fruiting (V.2.1.1 Newton bump next — see docs/ROADMAP.md)
+# [V] Batched coupled fruiting (V.2.1.2 fixture hardening next — see docs/ROADMAP.md)
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_vectorized_coupled_fruiting.py -q
 uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \

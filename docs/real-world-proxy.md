@@ -321,6 +321,9 @@ migrating to this fixture if metadata base poses are updated consistently.
    separate spring stiffness on `primary_support_*` until measured.
 6. **Support-joint wrench balance** — full analytic load split at `primary_support_*`
    under asymmetric branch loading is not validated (branch cut `primary_spur` is tested).
+7. **Intra-cable collisions** — default builds disable all fruiting-chain shape contacts
+   (`enable_self_collisions=False`): woody, stem, apple, and gripper proxy do not collide
+   with each other. Ground contact only. See `docs/vectorized-coupled-fruiting.md` (warning).
 
 ---
 

@@ -18,7 +18,10 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from apple_pick_sim.coupled_fruiting.proxy_coupling import align_proxy_body_q_prev_for_vbd
+from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+    align_proxy_body_q_prev_for_vbd,
+    sync_solver_body_q_prev_from_state,
+)
 from apple_pick_sim.coupled_fruiting.batched_build import (
     broadcast_settled_cable_state_to_batched_worlds,
 )
@@ -50,6 +53,28 @@ def _proxy_world_pose_from_apple(
     pos = np.array([proxy_pos[0], proxy_pos[1], proxy_pos[2]], dtype=np.float32)
     quat = np.array([proxy_rot[0], proxy_rot[1], proxy_rot[2], proxy_rot[3]], dtype=np.float32)
     return pos, quat
+
+
+def quiet_all_cable_bodies(cable: Any) -> None:
+    """Zero all cable body twists and align VBD ``body_q_prev`` with ``state_0.body_q``.
+
+    Call after settle (and after any settle stability diagnostics that need residual
+    ``body_qd``) so the plant starts kinematically static without stale warm-start
+    velocity from AVBD integration.
+    """
+    body_count = int(cable.model.body_count)
+    if body_count <= 0:
+        return
+    bqd_zero = np.zeros((body_count, 6), dtype=np.float32)
+    flat = bqd_zero.ravel()
+    cable.state_0.body_qd.assign(flat)
+    cable.state_1.body_qd.assign(flat)
+    sync_solver_body_q_prev_from_state(
+        cable,
+        cable.state_0.body_q,
+        tuple(range(body_count)),
+    )
+    wp.synchronize()
 
 
 def settle_vbd_substeps(scene: Any, *, substeps: int, dt: float) -> None:

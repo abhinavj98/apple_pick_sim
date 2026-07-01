@@ -1,12 +1,12 @@
 {
-  "_comment": "Domain-randomization variant for real-world bench proxy. Active placeholders: primary.bend_stiffness tier bands 210–736 N/m (not yet sys-ID calibrated); stem.bend_stiffness interim until torsion API; rod radius from example_variance until measured; apple density 700 kg/m³ until measured.",
+  "_comment": "Domain-randomization variant for real-world bench proxy. Active placeholders: primary.bend_stiffness tier bands 210–736 N/m (not yet sys-ID calibrated); stem.bend_stiffness interim until torsion API; rod radius from example_variance until measured; apple density 350 kg/m³ (half of 700 placeholder until measured).",
   "spur_attach_fraction": 0.5,
   "args": {
-    "fruiting_base_pos": [0.0, 0.4, 0.75],
+    "fruiting_base_pos": [0.0, 0.4, 0.65],
     "robot_base_pos": [0.0, 0.0, 0.0]
   },
   "primary": {
-    "num_segments": { "min": 2, "max": 4 },
+    "num_segments": { "min": 2, "max": 2 },
     "length": { "min": 0.30, "max": 0.40 },
     "radius": { "min": 0.02, "max": 0.025 },
     "bend_stiffness": { "min": 100.0, "max": 200.0 },
@@ -18,7 +18,7 @@
   },
   "secondary": null,
   "spur": {
-    "num_segments": { "min": 4, "max": 6 },
+    "num_segments": { "min": 4, "max": 4 },
     "length": { "min": 0.06, "max": 0.12 },
     "radius": { "min": 0.006, "max": 0.012 },
     "bend_stiffness": { "min": 5.0, "max": 10.0 },
@@ -29,18 +29,18 @@
     "lateral_delta_deg": { "min": -180.0, "max": 180.0 }
   },
   "stem": {
-    "num_segments": { "min": 4, "max": 6 },
+    "num_segments": { "min": 4, "max": 4 },
     "length": { "min": 0.04, "max": 0.08 },
-    "radius": { "min": 0.001, "max": 0.002 },
-    "bend_stiffness": { "min": 0.01, "max": 0.5 },
-    "bend_damping": { "min": 0.0015, "max": 0.15 },
+    "radius": { "min": 0.0015, "max": 0.003 },
+    "bend_stiffness": { "min": 0.05, "max": 0.5 },
+    "bend_damping": { "min": 0.15, "max": 0.30 },
     "stretch_stiffness": { "min": 1.0e5, "max": 1.0e6 },
     "density": { "min": 150.0, "max": 300.0 },
     "elevation_delta_deg": { "min": -90.0, "max": 90.0 },
     "lateral_delta_deg": { "min": -180.0, "max": 180.0 }
   },
   "apple": {
-    "radius": { "min": 0.04, "max": 0.08 },
-    "density": { "min": 700.0, "max": 700.0 }
+    "radius": { "min": 0.03, "max": 0.05 },
+    "density": { "min": 350.0, "max": 450.0 }
   }
 }

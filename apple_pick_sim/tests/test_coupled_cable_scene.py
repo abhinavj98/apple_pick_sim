@@ -127,6 +127,35 @@ def test_gripper_proxy_near_apple_surface():
     assert dist <= r * 3.0
 
 
+def _shape_pairs_filtered(model, body_a: int, body_b: int) -> bool:
+    shapes_a = model.body_shapes.get(body_a, [])
+    shapes_b = model.body_shapes.get(body_b, [])
+    if not shapes_a or not shapes_b:
+        return False
+    pairs = set(model.shape_collision_filter_pairs)
+    for s1 in shapes_a:
+        for s2 in shapes_b:
+            if (s1, s2) in pairs or (s2, s1) in pairs:
+                return True
+    return False
+
+
+def test_default_collision_filters_proxy_apple_and_woody_isolated():
+    """Apple↔proxy and woody↔(apple, proxy) shape pairs are filtered by default."""
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = fs.generate_coupled_cable_scene(ranges, seed=42, **NO_SELF_COLLISION_KW)
+    assert scene.apple_body is not None
+    model = scene.model
+    apple = scene.apple_body
+    proxy = scene.gripper_proxy_body
+    primary = scene.primary_bodies[0]
+
+    assert _shape_pairs_filtered(model, apple, proxy)
+    assert _shape_pairs_filtered(model, apple, primary)
+    assert _shape_pairs_filtered(model, proxy, primary)
+
+
 def test_gripper_proxy_has_collision_shape():
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)

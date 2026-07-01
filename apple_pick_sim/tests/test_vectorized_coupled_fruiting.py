@@ -26,6 +26,7 @@ from apple_pick_sim.coupled_fruiting import (
     build_batched_coupled_fruiting_placeholder,
     build_coupled_fruiting_placeholder,
     seed_fix_to_apple_from_settled,
+    quiet_all_cable_bodies,
     settle_vbd_substeps,
 )
 from apple_pick_sim.coupled_fruiting.settle_then_weld import _proxy_world_pose_from_apple
@@ -90,6 +91,7 @@ def _make_batched_settle_then_weld(ranges, seed: int, *, settle_substeps: int = 
                 **build_kw,
             )
             settle_vbd_substeps(settled, substeps=settle_substeps, dt=SUB_DT)
+            quiet_all_cable_bodies(settled.cable)
             welded = build_batched_coupled_fruiting_fr3(
                 ranges,
                 try_seed,

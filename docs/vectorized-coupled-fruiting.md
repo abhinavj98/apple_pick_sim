@@ -1,10 +1,12 @@
 # Vectorized batched coupled fruiting
 
-**Last updated:** 2026-06-30 (V.2.1 done; V.2.1.1 Newton bump next; sim-to-real gravity-comp contract)
+**Last updated:** 2026-07-01 (V.2.1.2 fixture hardening; intra-cable collisions disabled by default)
 
 **This document is the single source of truth** for batched coupled fruiting: build, settle, weld, and interactive run. Do not duplicate or contradict this flow in examples, README, or tests—link here instead.
 
 **Related:** arm/plant gravity split and RL training assumptions — `docs/mujoco-vbd-coupling-architecture.md` §2.5.
+
+> **Warning — intra-cable collisions are disabled (current default).** All coupled and standalone fruiting builds use `enable_self_collisions=False` unless explicitly overridden. `_apply_default_fruiting_collision_filters` in `apple_pick_sim/fruiting_system/build.py` filters shape pairs so woody segments, stem, apple, and gripper proxy **do not collide with each other** (only adjacent joint parent/child filters remain). Ground contact is unchanged. Do not assume apple↔branch, apple↔proxy, or woody self-contact until this is re-enabled deliberately — settle stability work (V.2.1.2) depends on the filtered default.
 
 ---
 
@@ -291,8 +293,8 @@ Per-env sampling uses `sample_params(ranges, seed_w)` with distinct seeds; topol
 | ----- | ------ | ----------- | -------- |
 | **V.1** | **Done** | Canonical settle→weld batched init; `BatchedTemplateIK` scatter teleop; homogeneous example keyboard; co-located physics + viewer spacing doc; tests | Batched interactive smoke |
 | **V.2.1** | **Done** | Per-env IK bootstrap after settle→weld (heterogeneous path); all worlds' TCP at own proxy | Correct weld when θ differs per env |
-| **V.2.1.1** | **Next** | `newton/` submodule bump to latest upstream; parity fixes across coupling, VIC, batched paths | Stable base for fixture + batched gym work |
-| **V.2.1.2** | Planned | Fixture catalog refresh for settle stability and real-world likeness | Credible sim-sim GT before [S] |
+| **V.2.1.1** | **Done** | `newton/` submodule bump to latest upstream; parity fixes across coupling, VIC, batched paths | Stable base for fixture + batched gym work |
+| **V.2.1.2** | **Next** | Fixture catalog refresh for settle stability and real-world likeness | Credible sim-sim GT before [S] |
 | **V.2.2** | **Done (build-time)** | `add_world` heterogeneous cable build; `sample_heterogeneous_params_list` | Build-time DR per env |
 | **V.2.3** | Planned | Per-env runtime actions in example/API; placeholder broadcast only for homogeneous smoke | Parallel policy / recorded replay |
 | **V.2.4** | Planned | Recorded-action replay; `gather_transitions()` per world | [S].1 batched MMD |

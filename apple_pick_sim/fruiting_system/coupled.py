@@ -167,8 +167,8 @@ def generate_coupled_cable_scene(
         params: Pre-sampled parameters; when ``None``, :func:`sample_params` runs from
             ``(ranges, seed, omit)``.
         omit: Forwarded to :func:`sample_params` when ``params`` is ``None``.
-        enable_self_collisions: Same semantics as :func:`generate_scene` (proxy is excluded
-            from intra-chain filter pairs so it can contact the apple).
+        enable_self_collisions: Same semantics as :func:`generate_scene`; apple↔proxy shape
+            pairs are filtered when ``enable_self_collisions`` is ``False``.
         gripper_proxy: Proxy mass/shape/placement options; defaults to :class:`GripperProxyConfig`.
         robot_base_pos: World translation of the robot base; required when
             ``gripper_proxy.robot_facing_weld`` is ``True``.
@@ -270,6 +270,7 @@ def _build_coupled_cable_scene(
         device=device,
         enable_self_collisions=enable_self_collisions,
         gripper_proxy_joint=proxy_free_joint,
+        gripper_proxy_body=proxy_body,
     )
     if gripper_proxy.fix_to_apple:
         from apple_pick_sim.fruiting_system.build import prescribe_body_vbd_on_model

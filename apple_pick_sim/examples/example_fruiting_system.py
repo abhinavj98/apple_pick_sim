@@ -32,10 +32,9 @@ Optional arguments (Newton example parser + extras)::
     uv run --directory newton python ../apple_pick_sim/examples/example_fruiting_system.py \\
         --json ../apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy.json --seed 123
 
-    Default collision policy (``enable_self_collisions=False``): woody segments and the stem do
-    not collide with each other or with the apple; **apple↔woody** (primary/secondary/spur)
-    contacts stay enabled. Pass ``--enable-self-collision`` for full intra-chain contacts.
-    Ground contact is unchanged.
+    Default collision policy (``enable_self_collisions=False``): woody segments, stem, apple,
+    and gripper proxy (coupled builds) do not collide with each other. Pass
+    ``--enable-self-collision`` for full intra-chain contacts. Ground contact is unchanged.
 """
 
 from __future__ import annotations

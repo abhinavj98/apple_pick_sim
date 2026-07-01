@@ -93,10 +93,11 @@ def generate_scene(
             :func:`~apple_pick_sim.sim_device.default_sim_device` (``cuda:0`` when CUDA is available).
         omit: Forwarded to :func:`sample_params` to force segments off without editing JSON.
         enable_self_collisions: If ``False`` (default), register shape collision filter pairs
-            so woody segments (primary/secondary/spur) and the stem do not collide with each
-            other or with the apple; apple↔woody contacts remain enabled. Ground contact is
-            unchanged. If ``True``, only Newton joint parent/child filters apply, so
-            non-adjacent chain links may collide.
+            so woody segments (primary/secondary/spur), the stem, the apple, and the gripper
+            proxy (when present) do not collide with each other except as allowed by Newton
+            joint parent/child filters on adjacent links. Ground contact is unchanged. If
+            ``True``, only Newton joint parent/child filters apply, so non-adjacent chain
+            links may collide.
 
     Returns:
         A :class:`FruitingSystemScene` ready to simulate.

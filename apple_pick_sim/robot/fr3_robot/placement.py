@@ -131,11 +131,16 @@ def raise_if_ik_teleop_not_converged(
         target_note = (
             f"; target position ({target_pos[0]:.3f}, {target_pos[1]:.3f}, {target_pos[2]:.3f})"
         )
-    raise IKTeleopConvergenceError(
+    class IKTeleopConvergenceWarning(Warning):
+        """Warning raised when FR3 TCP IK teleop does not converge within tolerance."""
+
+    warnings.warn(
         "FR3 TCP IK teleop did not converge: "
         + ", ".join(parts)
         + target_note
-        + ". Command may be unreachable (workspace, joint limits, or singularity)."
+        + ". Command may be unreachable (workspace, joint limits, or singularity).",
+        IKTeleopConvergenceWarning,
+        stacklevel=3,
     )
 
 

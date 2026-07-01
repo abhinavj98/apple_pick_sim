@@ -62,6 +62,7 @@ from apple_pick_sim.coupled_fruiting import (
     build_coupled_fruiting_fr3,
     build_coupled_fruiting_placeholder,
     seed_fix_to_apple_from_settled,
+    quiet_all_cable_bodies,
     settle_vbd_substeps,
 )
 from apple_pick_sim.fruiting_system import (
@@ -431,6 +432,7 @@ class ExampleCoupledFruiting:
                         },
                     )
                     settle_vbd_substeps(settled, substeps=1000, dt=self.sim_dt)
+                    quiet_all_cable_bodies(settled.cable)
                     self.scene = build_fn(
                         self.ranges,
                         try_seed,

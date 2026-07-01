@@ -18,6 +18,7 @@ from conftest import COUPLED_SCENE_KW, RANGES_FIXTURE, SUB_DT, requires_fr3
 from apple_pick_sim.coupled_fruiting import (
     build_heterogeneous_coupled_fruiting_fr3,
     seed_fix_to_apple_from_settled,
+    quiet_all_cable_bodies,
     settle_vbd_substeps,
 )
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
@@ -75,6 +76,7 @@ def _make_hetero_welded_scene(ranges, seed: int, *, settle_substeps: int = _SETT
         **build_kw,
     )
     settle_vbd_substeps(settled, substeps=settle_substeps, dt=SUB_DT)
+    quiet_all_cable_bodies(settled.cable)
     welded = build_heterogeneous_coupled_fruiting_fr3(
         gripper_proxy=_gripper_welded(),
         skip_ik_bootstrap=True,

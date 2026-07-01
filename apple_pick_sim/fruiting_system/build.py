@@ -80,12 +80,13 @@ def _apply_default_fruiting_collision_filters(
     builder: newton.ModelBuilder,
     seg_bodies: dict[str, list[int]],
     apple_body: int | None,
+    gripper_proxy_body: int | None = None,
 ) -> None:
-    """Filter intra-chain contacts except apple↔woody (primary/secondary/spur).
+    """Filter intra-chain contacts on the fruiting cable (default ``enable_self_collisions=False``).
 
-    Woody segments do not collide with each other or with the stem. The stem is
-    isolated from woody bodies and the apple. Apple↔woody collisions remain enabled
-    so the fruit can contact the branch structure.
+    Woody segments do not collide with each other, the stem, the apple, or the gripper
+    proxy. The stem is isolated from woody bodies and the apple. Apple↔proxy shape pairs
+    are filtered when a gripper proxy is present.
     """
     woody = (
         list(seg_bodies.get("primary", []))
@@ -102,13 +103,21 @@ def _apply_default_fruiting_collision_filters(
 
     if woody:
         _apply_all_chain_collision_filters(builder, woody)
+        _apply_collision_filters_between_chain_groups(builder, woody, [apple_body])
+        if gripper_proxy_body is not None:
+            _apply_collision_filters_between_chain_groups(
+                builder, woody, [gripper_proxy_body]
+            )
     if stem:
         _apply_all_chain_collision_filters(builder, stem)
     if stem and woody:
         _apply_collision_filters_between_chain_groups(builder, stem, woody)
     if stem:
         _apply_collision_filters_between_chain_groups(builder, stem, [apple_body])
-    # Apple ↔ woody: intentionally not filtered.
+    if gripper_proxy_body is not None:
+        _apply_collision_filters_between_chain_groups(
+            builder, [apple_body], [gripper_proxy_body]
+        )
 
 
 def _apply_all_chain_collision_filters(
@@ -530,6 +539,7 @@ def _register_fruiting_articulations(
     enable_self_collisions: bool,
     seg_bodies: dict[str, list[int]] | None = None,
     apple_body: int | None = None,
+    gripper_proxy_body: int | None = None,
     gripper_proxy_joints: tuple[int, ...] = (),
     world_root_joints: tuple[int, ...] = (),
     extra_chain_groups_for_filters: tuple[list[int], ...] = (),
@@ -547,7 +557,12 @@ def _register_fruiting_articulations(
         builder.add_articulation(joint_list)
     if not enable_self_collisions:
         if seg_bodies is not None:
-            _apply_default_fruiting_collision_filters(builder, seg_bodies, apple_body)
+            _apply_default_fruiting_collision_filters(
+                builder,
+                seg_bodies,
+                apple_body,
+                gripper_proxy_body=gripper_proxy_body,
+            )
         else:
             _apply_all_chain_collision_filters(builder, chain_bodies)
     for other in extra_chain_groups_for_filters:
@@ -563,6 +578,7 @@ def _finalize_fruiting_builder_joints(
     enable_self_collisions: bool,
     seg_bodies: dict[str, list[int]] | None = None,
     apple_body: int | None = None,
+    gripper_proxy_body: int | None = None,
     gripper_proxy_joints: tuple[int, ...] = (),
     world_root_joints: tuple[int, ...] = (),
     extra_chain_groups_for_filters: tuple[list[int], ...] = (),
@@ -575,6 +591,7 @@ def _finalize_fruiting_builder_joints(
         enable_self_collisions=enable_self_collisions,
         seg_bodies=seg_bodies,
         apple_body=apple_body,
+        gripper_proxy_body=gripper_proxy_body,
         gripper_proxy_joints=gripper_proxy_joints,
         world_root_joints=world_root_joints,
         extra_chain_groups_for_filters=extra_chain_groups_for_filters,
@@ -593,6 +610,7 @@ def _finalize_fruiting_builder(
     device: str,
     enable_self_collisions: bool,
     gripper_proxy_joint: int | None = None,
+    gripper_proxy_body: int | None = None,
 ) -> newton.Model:
     """Finalize the cable model; keep world-root proxy FREE joints out of the tree articulation."""
     proxy_joints = (gripper_proxy_joint,) if gripper_proxy_joint is not None else ()
@@ -604,6 +622,7 @@ def _finalize_fruiting_builder(
         enable_self_collisions=enable_self_collisions,
         seg_bodies=artifacts.seg_bodies,
         apple_body=artifacts.apple_body,
+        gripper_proxy_body=gripper_proxy_body,
         gripper_proxy_joints=proxy_joints,
         world_root_joints=artifacts.world_root_joints,
     )

@@ -338,8 +338,8 @@ def _shape_pairs_filtered(model, body_a: int, body_b: int) -> bool:
     return False
 
 
-def test_default_collision_filters_apple_woody_enabled_stem_isolated():
-    """Apple may contact woody segments; stem is filtered from woody bodies and apple."""
+def test_default_collision_filters_apple_woody_and_stem_isolated():
+    """Apple and woody segments do not collide; stem is filtered from woody and apple."""
     fs = _import_module()
     ranges = fs.load_ranges(REAL_WORLD_PROXY_FIXTURE)
     scene = fs.generate_scene(ranges, seed=42, device="cpu", enable_self_collisions=False)
@@ -354,8 +354,8 @@ def test_default_collision_filters_apple_woody_enabled_stem_isolated():
     spur = scene.spur_bodies[0]
     stem = scene.stem_bodies[0]
 
-    assert not _shape_pairs_filtered(model, apple, primary)
-    assert not _shape_pairs_filtered(model, apple, spur)
+    assert _shape_pairs_filtered(model, apple, primary)
+    assert _shape_pairs_filtered(model, apple, spur)
     assert _shape_pairs_filtered(model, apple, stem)
     assert _shape_pairs_filtered(model, stem, primary)
     assert _shape_pairs_filtered(model, stem, spur)

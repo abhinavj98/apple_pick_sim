@@ -31,6 +31,7 @@ def _prepare_cable_template_builder_for_replicate(
     *,
     enable_self_collisions: bool,
     proxy_free_joint: int | None,
+    proxy_body: int,
 ) -> None:
     """Add articulations and collision filters on the template before ``replicate()``."""
     proxy_joints = (int(proxy_free_joint),) if proxy_free_joint is not None else ()
@@ -41,6 +42,7 @@ def _prepare_cable_template_builder_for_replicate(
         enable_self_collisions=enable_self_collisions,
         seg_bodies=artifacts.seg_bodies,
         apple_body=artifacts.apple_body,
+        gripper_proxy_body=proxy_body,
         gripper_proxy_joints=proxy_joints,
         world_root_joints=artifacts.world_root_joints,
     )
@@ -73,6 +75,7 @@ def build_replicated_coupled_cable_scene(
         populated.artifacts,
         enable_self_collisions=enable_self_collisions,
         proxy_free_joint=populated.proxy_free_joint,
+        proxy_body=populated.proxy_body,
     )
     bodies_per_world = int(tpl_builder.body_count)
 
@@ -211,6 +214,7 @@ def build_heterogeneous_coupled_cable_scene(
             pop.artifacts,
             enable_self_collisions=enable_self_collisions,
             proxy_free_joint=pop.proxy_free_joint,
+            proxy_body=pop.proxy_body,
         )
         outer.add_world(sub)
         populate_results.append(pop)

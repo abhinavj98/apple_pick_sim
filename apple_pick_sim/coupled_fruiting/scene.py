@@ -290,30 +290,14 @@ def _harvest_coupling_wrenches(
                 gravity=scene.gravity_vec,
                 robot_body_q=scene.robot_state_0.body_q,
                 device=str(scene.proxy_forces.device),
+                out_f=scene.stem_harvest_wrench_f_scratch,
+                out_t=scene.stem_harvest_wrench_t_scratch,
             )
         elif layout is not None and layout.num_envs > 1 and tpl_stem is not None:
-            for w in range(layout.num_envs):
-                apple_idx = int(layout.apple_body_indices[w])
-                harvest_stem_tension_for_tcp(
-                    cable_model=cable.model,
-                    cable_solver=cable.solver,
-                    body_q_post=cable.state_0.body_q,
-                    body_q_prev=cable.state_1.body_q,
-                    dt=dt,
-                    stem_apple_joint_index=layout.joint_index(w, tpl_stem),
-                    tcp_body_index=int(layout.tcp_body_indices[w]),
-                    out_robot_wrenches=scene.proxy_forces,
-                    coupling_gain=scene.stem_coupling_gain,
-                    force_cap_N=scene.stem_force_cap_N,
-                    torque_cap_Nm=scene.stem_torque_cap_Nm,
-                    explicit_apple_weight=scene.stem_harvest_explicit_apple_weight,
-                    apple_body_index=apple_idx if apple_idx >= 0 else None,
-                    apple_mass_kg=scene.apple_mass_kg,
-                    gravity=scene.gravity_vec,
-                    robot_body_q=scene.robot_state_0.body_q,
-                    grasp_offset_in_apple_frame=offset,
-                    clear_wrenches=(w == 0),
-                )
+            raise RuntimeError(
+                "stem_harvest_joint_indices_wp is None for a batched multi-env scene; "
+                "call prepare_batched_stem_harvest_arrays(scene, layout) at build time."
+            )
         else:
             apple_bid = apple_body_index if apple_body_index is not None else cable.apple_body
             grasp_off = (

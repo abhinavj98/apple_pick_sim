@@ -2,6 +2,8 @@
 
 Runs settle-then-weld, configures batched VIC joint torques, applies zero
 ``EEVelocity`` each frame, and writes one CSV row per env per log interval.
+Apple linear velocity is finite-differenced from successive log samples because
+prescribed (VBD-welded) apples report ``body_qd == 0`` while ``body_q`` moves.
 
 Run from repository root::
 
@@ -261,6 +263,26 @@ def _configure_vic(scene: Any, *, gains: ImpedanceGains) -> fr3_robot.Fr3Batched
     return vic
 
 
+def apple_vel_from_position_delta(
+    apple_pos: np.ndarray,
+    *,
+    apple_pos_prev: np.ndarray | None,
+    t_s: float,
+    t_s_prev: float | None,
+) -> np.ndarray:
+    """Observed apple linear velocity from successive log samples.
+
+    Prescribed (VBD-welded) apples have ``body_qd == 0`` at log time while
+    ``body_q`` still moves; finite differencing position matches drift metrics.
+    """
+    if apple_pos_prev is None or t_s_prev is None:
+        return np.zeros(3, dtype=np.float64)
+    dt = float(t_s) - float(t_s_prev)
+    if dt <= 0.0:
+        return np.zeros(3, dtype=np.float64)
+    return (apple_pos - apple_pos_prev) / dt
+
+
 def pose_row(
     *,
     t_s: float,
@@ -268,6 +290,8 @@ def pose_row(
     layout: Any,
     scene: Any,
     vic: fr3_robot.Fr3BatchedEEImpedanceController,
+    apple_pos_prev: np.ndarray | None = None,
+    t_s_prev: float | None = None,
 ) -> dict[str, float | int]:
     """One CSV/log row for env ``env`` at sim time ``t_s``."""
     tcp_idx = int(layout.tcp_body_indices[env])
@@ -276,7 +300,6 @@ def pose_row(
     robot_bq = scene.robot_state_0.body_q.numpy().reshape(-1, 7)
     robot_bqd = scene.robot_state_0.body_qd.numpy().reshape(-1, 6)
     cable_bq = scene.cable.state_0.body_q.numpy().reshape(-1, 7)
-    cable_bqd = scene.cable.state_0.body_qd.numpy().reshape(-1, 6)
 
     tcp = robot_bq[tcp_idx]
     tcp_qd = robot_bqd[tcp_idx]
@@ -292,7 +315,12 @@ def pose_row(
     apple_vel = np.zeros(3, dtype=np.float64)
     if apple_idx >= 0:
         apple_pos = cable_bq[apple_idx, :3]
-        apple_vel = cable_bqd[apple_idx, :3]
+        apple_vel = apple_vel_from_position_delta(
+            apple_pos,
+            apple_pos_prev=apple_pos_prev,
+            t_s=t_s,
+            t_s_prev=t_s_prev,
+        )
 
     return {
         "t_s": float(t_s),
@@ -423,13 +451,28 @@ def run_zero_vic_hold(config: ZeroVicHoldConfig) -> ZeroVicHoldResult:
         )
 
     time_series: list[dict[str, float | int]] = []
+    prev_apple_pos: dict[int, np.ndarray] = {}
+    prev_log_t: float | None = None
     sim_time = 0.0
     next_log_t = 0.0
     while sim_time <= duration + 1e-9:
         for w in range(layout.num_envs):
             time_series.append(
-                pose_row(t_s=sim_time, env=w, layout=layout, scene=scene, vic=vic)
+                pose_row(
+                    t_s=sim_time,
+                    env=w,
+                    layout=layout,
+                    scene=scene,
+                    vic=vic,
+                    apple_pos_prev=prev_apple_pos.get(w),
+                    t_s_prev=prev_log_t,
+                )
             )
+            row = time_series[-1]
+            prev_apple_pos[w] = np.array(
+                [row["apple_x"], row["apple_y"], row["apple_z"]], dtype=np.float64
+            )
+        prev_log_t = sim_time
 
         if sim_time >= duration - 1e-9:
             break

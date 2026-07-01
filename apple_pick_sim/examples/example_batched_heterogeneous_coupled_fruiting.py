@@ -31,6 +31,7 @@ import math
 import os
 import secrets
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -61,7 +62,13 @@ from apple_pick_sim.fruiting_system import (
 )
 
 # Real-world bench proxy EE: 50 mm radius, 140 mm length (docs/real-world-proxy.md).
-from apple_pick_sim.batched_viz import log_batched_endpoints, log_batched_tcp_force_arrows
+from apple_pick_sim.batched_obs import gather_batched_obs, make_batched_obs_buffers
+from apple_pick_sim.batched_viz import (
+    log_batched_endpoints,
+    log_batched_tcp_force_arrows,
+    print_batched_obs_debug,
+    print_mark_endpoints_startup,
+)
 from apple_pick_sim.coupled_fruiting.batched_robot_status import print_batched_robot_status
 
 
@@ -224,8 +231,15 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tcp-force-arrow-gain", type=float, default=1.0)
     parser.add_argument("--tcp-force-min-length", type=float, default=0.08)
     parser.add_argument("--tcp-force-max-length", type=float, default=1.5)
-    parser.add_argument("--mark-endpoints", action="store_true")
-    parser.add_argument("--endpoint-radius", type=float, default=0.05)
+    parser.add_argument(
+        "--mark-endpoints",
+        action="store_true",
+        help=(
+            "Debug endpoint viz + console obs: apple COM→grasp arrow; "
+            "colored woody start points + junction force arrows; "
+            "prints color→label map and gather_batched_obs on --status-every interval."
+        ),
+    )
     parser.add_argument("--mujoco-viewer", action="store_true")
     parser.add_argument("--vic-linear-k", type=float, default=600.0, help="VIC linear K [N/m].")
     parser.add_argument("--vic-linear-d", type=float, default=200.0, help="VIC linear D [N·s/m].")
@@ -244,7 +258,7 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
 
         self.fps = float(getattr(args, "hz", 30.0)) if args else 30.0
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 15
+        self.sim_substeps = 30
         self.sim_dt = (1.0 / 60.0) / self.sim_substeps
         self.sim_time = 0.0
         self._frame = 0
@@ -267,6 +281,15 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
 
         sim_device = resolve_sim_device(getattr(args, "device", None) if args else None)
         robot_kind = _resolve_robot_kind(args or argparse.Namespace())
+        if robot_kind == "placeholder":
+            warnings.warn(
+                "Placeholder robot uses .numpy() host round-trips in simulate() "
+                "(broadcast_joint_q_from_world0, _nudge_placeholder_world0); "
+                "GPU parallelism is not fully utilized. "
+                "Switch to --robot fr3 for a fully GPU hot path.",
+                UserWarning,
+                stacklevel=2,
+            )
         controller_mode = str(getattr(args, "controller", "direct"))
         fix_to_apple = _fix_to_apple_from_args(args)
         enable_self = _enable_self_collisions_from_args(args)
@@ -409,7 +432,16 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         self._tcp_force_min_length = float(getattr(args, "tcp_force_min_length", 0.08))
         self._tcp_force_max_length = float(getattr(args, "tcp_force_max_length", 1.5))
         self._mark_endpoints = bool(getattr(args, "mark_endpoints", False))
-        self._endpoint_radius = float(getattr(args, "endpoint_radius", 0.05))
+
+        need_obs_bufs = self._tcp_force_arrow or self._mark_endpoints
+        if need_obs_bufs and self.layout is not None:
+            self._obs_bufs = make_batched_obs_buffers(
+                self.layout,
+                self.scene.cable,
+                str(self.scene.cable.model.device),
+            )
+        else:
+            self._obs_bufs = None
 
         self.viewer.set_model(self.scene.cable.model)
         graphical = isinstance(viewer, newton.viewer.ViewerGL)
@@ -418,6 +450,20 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
             and bool(getattr(args, "mujoco_viewer", False))
             and graphical
         )
+        if self._tcp_force_arrow and graphical:
+            cap = (
+                f"{self._tcp_force_max_length:.2f} m max"
+                if self._tcp_force_max_length > 0.0
+                else "no max"
+            )
+            print(
+                "TCP force arrows: yellow at each env's robot TCP; "
+                f"scale={self._tcp_force_scale:.4f} m/N × gain {self._tcp_force_gain:g}, "
+                f"min {self._tcp_force_min_length:.2f} m, {cap}.",
+                flush=True,
+            )
+        if self._mark_endpoints:
+            print_mark_endpoints_startup(self.scene.cable, status_every=self._status_every)
         if graphical and self.num_envs > 1:
             self.viewer.set_world_offsets(self.env_spacing)
 
@@ -598,6 +644,20 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 f"tcp=({tx:.3f},{ty:.3f},{tz:.3f}) m",
                 flush=True,
             )
+        if self._mark_endpoints and self._obs_bufs is not None:
+            gather_batched_obs(
+                self._obs_bufs,
+                self.scene,
+                self.sim_dt,
+                include_robot=self.scene.robot_state_0 is not None,
+                include_forces=self.scene.proxy_forces is not None,
+            )
+            print_batched_obs_debug(
+                self._obs_bufs,
+                frame=self._frame,
+                sim_time=self.sim_time,
+                cable=self.scene.cable,
+            )
 
     def _command_velocity_for_world(self, world: int) -> fr3_robot.EEVelocity:
         if self._ee_ctrl is not None:
@@ -630,6 +690,14 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.scene.cable.state_0)
         self.viewer.log_contacts(self._viz_contacts, self.scene.cable.state_0)
+        if self._obs_bufs is not None:
+            gather_batched_obs(
+                self._obs_bufs,
+                self.scene,
+                self.sim_dt,
+                include_robot=self.scene.robot_state_0 is not None,
+                include_forces=self.scene.proxy_forces is not None,
+            )
         if self._tcp_force_arrow:
             log_batched_tcp_force_arrows(
                 self.viewer,
@@ -639,13 +707,18 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 gain=self._tcp_force_gain,
                 min_length=self._tcp_force_min_length,
                 max_length=self._tcp_force_max_length,
+                bufs=self._obs_bufs,
             )
         if self._mark_endpoints:
             log_batched_endpoints(
                 self.viewer,
                 self.scene,
                 self.layout,
-                radius=self._endpoint_radius,
+                bufs=self._obs_bufs,
+                woody_force_scale=self._tcp_force_scale,
+                woody_force_gain=self._tcp_force_gain,
+                woody_force_min_length=self._tcp_force_min_length,
+                woody_force_max_length=self._tcp_force_max_length,
             )
         self.viewer.end_frame()
         if self._mujoco_viewer and self.scene.mj_solver is not None:
@@ -691,11 +764,24 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
             self.viewer.log_state(cable.state_0)
             self.viewer.log_contacts(viz_contacts, cable.state_0)
             if self._mark_endpoints and self.layout is not None:
+                inspect_bufs = self._obs_bufs
+                if inspect_bufs is not None:
+                    gather_batched_obs(
+                        inspect_bufs,
+                        settled,
+                        self.sim_dt,
+                        include_robot=False,
+                        include_forces=False,
+                    )
                 log_batched_endpoints(
                     self.viewer,
                     settled,
                     self.layout,
-                    radius=self._endpoint_radius,
+                    bufs=inspect_bufs,
+                    woody_force_scale=self._tcp_force_scale,
+                    woody_force_gain=self._tcp_force_gain,
+                    woody_force_min_length=self._tcp_force_min_length,
+                    woody_force_max_length=self._tcp_force_max_length,
                 )
             self.viewer.end_frame()
             if _settle_inspect_continue_requested(

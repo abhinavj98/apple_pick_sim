@@ -113,9 +113,11 @@ def gather_joint_wrench_child_com_device(
     *,
     body_q: Any,
     body_q_prev: Any,
-    joint_indices: Sequence[int] | np.ndarray,
+    joint_indices: Sequence[int] | np.ndarray | wp.array,
     dt: float,
     control: newton.Control | None = None,
+    out_f: wp.array | None = None,
+    out_t: wp.array | None = None,
 ) -> tuple[wp.array, wp.array]:
     """Device-resident joint wrenches (mirrors :meth:`SolverVBD.gather_joint_wrench_child_com`).
 
@@ -126,7 +128,10 @@ def gather_joint_wrench_child_com_device(
     if model.body_count == 0 or solver.integrate_with_external_rigid_solver:
         raise ValueError("gather_joint_wrench_child_com_device requires VBD-integrated rigid bodies.")
 
-    n = len(joint_indices)
+    if isinstance(joint_indices, wp.array):
+        n = int(joint_indices.shape[0])
+    else:
+        n = len(joint_indices)
     if n == 0:
         z = wp.zeros(0, dtype=wp.vec3, device=solver.device)
         return z, z
@@ -137,9 +142,14 @@ def gather_joint_wrench_child_com_device(
     device = solver.device
     body_q_d = _as_body_q_on_solver_device(solver, body_q)
     body_q_prev_d = _as_body_q_on_solver_device(solver, body_q_prev)
-    j_idx = wp.array(np.asarray(joint_indices, dtype=np.int32), dtype=wp.int32, device=device)
-    out_f = wp.zeros(n, dtype=wp.vec3, device=device)
-    out_t = wp.zeros(n, dtype=wp.vec3, device=device)
+    if isinstance(joint_indices, wp.array):
+        j_idx = joint_indices.to(device) if joint_indices.device != device else joint_indices
+    else:
+        j_idx = wp.array(np.asarray(joint_indices, dtype=np.int32), dtype=wp.int32, device=device)
+    if out_f is None:
+        out_f = wp.zeros(n, dtype=wp.vec3, device=device)
+    if out_t is None:
+        out_t = wp.zeros(n, dtype=wp.vec3, device=device)
 
     from newton._src.solvers.vbd.rigid_vbd_kernels import (  # noqa: PLC0415
         gather_joint_wrench_child_at_com_kernel,

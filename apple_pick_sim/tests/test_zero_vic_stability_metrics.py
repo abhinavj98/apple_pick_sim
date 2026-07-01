@@ -117,6 +117,13 @@ def test_high_tcp_speed_fails():
     assert "tcp_speed" in m.issues
 
 
+def test_high_apple_speed_fails():
+    rows = [_row(t_s=0.0, env=0, apple_v=(0.2, 0.0, 0.0))]
+    m = compute_env_stability_metrics(rows, env=0, duration_max=5.0)
+    assert not m.is_stable
+    assert "apple_speed" in m.issues
+
+
 def test_harvest_spike_fails():
     rows = [_row(t_s=0.0, env=0, harvest_f=(250.0, 0.0, 0.0))]
     m = compute_env_stability_metrics(rows, env=0, duration_max=5.0)
@@ -160,6 +167,8 @@ def test_run_zero_vic_hold_smoke():
     if not fr3_assets_available():
         pytest.skip("FR3 assets not available")
 
+    import numpy as np
+
     from apple_pick_sim.diagnostics.log_zero_vic_poses import ZeroVicHoldConfig, run_zero_vic_hold
 
     config = ZeroVicHoldConfig(
@@ -176,3 +185,27 @@ def test_run_zero_vic_hold_smoke():
     assert len(result.time_series) >= 2
     assert all(math.isfinite(m.max_apple_drift_m) for m in result.per_env_metrics)
     assert result.summary.num_envs == 2
+
+    for env in {int(r["env"]) for r in result.time_series}:
+        env_rows = sorted(
+            (r for r in result.time_series if int(r["env"]) == env),
+            key=lambda r: float(r["t_s"]),
+        )
+        assert env_rows[0]["apple_vx"] == pytest.approx(0.0)
+        assert env_rows[0]["apple_vy"] == pytest.approx(0.0)
+        assert env_rows[0]["apple_vz"] == pytest.approx(0.0)
+        for prev, curr in zip(env_rows, env_rows[1:]):
+            dt = float(curr["t_s"]) - float(prev["t_s"])
+            assert dt > 0.0
+            expected = np.array(
+                [
+                    (curr["apple_x"] - prev["apple_x"]) / dt,
+                    (curr["apple_y"] - prev["apple_y"]) / dt,
+                    (curr["apple_z"] - prev["apple_z"]) / dt,
+                ],
+                dtype=np.float64,
+            )
+            actual = np.array(
+                [curr["apple_vx"], curr["apple_vy"], curr["apple_vz"]], dtype=np.float64
+            )
+            assert actual == pytest.approx(expected)

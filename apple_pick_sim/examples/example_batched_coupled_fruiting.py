@@ -42,7 +42,13 @@ from apple_pick_sim.coupled_fruiting import (
     settle_vbd_substeps,
 )
 from apple_pick_sim.fruiting_system import GripperProxyConfig, default_ranges_fixture_path, load_ranges
-from apple_pick_sim.batched_viz import log_batched_endpoints, log_batched_tcp_force_arrows
+from apple_pick_sim.batched_obs import gather_batched_obs, make_batched_obs_buffers
+from apple_pick_sim.batched_viz import (
+    log_batched_endpoints,
+    log_batched_tcp_force_arrows,
+    print_batched_obs_debug,
+    print_mark_endpoints_startup,
+)
 from apple_pick_sim.coupled_fruiting.batched_robot_status import print_batched_robot_status
 
 
@@ -252,16 +258,10 @@ def _make_parser() -> argparse.ArgumentParser:
         "--mark-endpoints",
         action="store_true",
         help=(
-            "Draw red XYZ crosses at each env's apple and gripper-proxy markers, "
-            "plus red spheres at woody fixed-joint parent anchors "
-            "(requires --viewer gl or viser; use --endpoint-radius for cross half-size / dot radius)."
+            "Debug endpoint viz + console obs: apple COM→grasp arrow; "
+            "colored woody start points + junction force arrows; "
+            "prints color→label map and gather_batched_obs on --status-every interval."
         ),
-    )
-    parser.add_argument(
-        "--endpoint-radius",
-        type=float,
-        default=0.05,
-        help="Sphere radius [m] for --mark-endpoints (default: 0.05).",
     )
     parser.add_argument(
         "--mujoco-viewer",
@@ -445,10 +445,15 @@ class ExampleBatchedCoupledFruiting:
         self._tcp_force_max_length = tcp_force_max_len
 
         self._mark_endpoints = bool(getattr(args, "mark_endpoints", False))
-        endpoint_radius = float(getattr(args, "endpoint_radius", 0.05))
-        if endpoint_radius <= 0.0:
-            raise ValueError("--endpoint-radius must be positive")
-        self._endpoint_radius = endpoint_radius
+
+        if self._tcp_force_arrow or self._mark_endpoints:
+            self._obs_bufs = make_batched_obs_buffers(
+                self.layout,
+                self.scene.cable,
+                str(self.scene.cable.model.device),
+            )
+        else:
+            self._obs_bufs = None
 
         self.viewer.set_model(self.scene.cable.model)
         graphical = isinstance(viewer, newton.viewer.ViewerGL)
@@ -475,12 +480,8 @@ class ExampleBatchedCoupledFruiting:
                 f"scale={self._tcp_force_scale:.4f} m/N × gain {self._tcp_force_gain:g}, "
                 f"min {self._tcp_force_min_length:.2f} m, {cap}."
             )
-        if self._mark_endpoints and graphical:
-            print(
-                f"Endpoint markers: red XYZ crosses at apple + proxy; "
-                f"red dots at woody parent anchors "
-                f"(radius/half-size={self._endpoint_radius:.3f} m)."
-            )
+        if self._mark_endpoints:
+            print_mark_endpoints_startup(self.scene.cable, status_every=self._status_every)
         if graphical and self.num_envs > 1:
             self.viewer.set_world_offsets(self.env_spacing)
 
@@ -632,6 +633,20 @@ class ExampleBatchedCoupledFruiting:
                 layout,
                 prefix=f"t={self.sim_time:6.2f}s ",
             )
+        if self._mark_endpoints and self._obs_bufs is not None:
+            gather_batched_obs(
+                self._obs_bufs,
+                self.scene,
+                self.sim_dt,
+                include_robot=self.scene.robot_state_0 is not None,
+                include_forces=self.scene.proxy_forces is not None,
+            )
+            print_batched_obs_debug(
+                self._obs_bufs,
+                frame=self._frame,
+                sim_time=self.sim_time,
+                cable=self.scene.cable,
+            )
 
     def _command_velocity_for_world(self, world: int) -> fr3_robot.EEVelocity:
         if self._ee_ctrl is not None:
@@ -664,6 +679,14 @@ class ExampleBatchedCoupledFruiting:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.scene.cable.state_0)
         self.viewer.log_contacts(self._viz_contacts, self.scene.cable.state_0)
+        if self._obs_bufs is not None:
+            gather_batched_obs(
+                self._obs_bufs,
+                self.scene,
+                self.sim_dt,
+                include_robot=self.scene.robot_state_0 is not None,
+                include_forces=self.scene.proxy_forces is not None,
+            )
         if self._tcp_force_arrow:
             log_batched_tcp_force_arrows(
                 self.viewer,
@@ -673,13 +696,18 @@ class ExampleBatchedCoupledFruiting:
                 gain=self._tcp_force_gain,
                 min_length=self._tcp_force_min_length,
                 max_length=self._tcp_force_max_length,
+                bufs=self._obs_bufs,
             )
         if self._mark_endpoints:
             log_batched_endpoints(
                 self.viewer,
                 self.scene,
                 self.layout,
-                radius=self._endpoint_radius,
+                bufs=self._obs_bufs,
+                woody_force_scale=self._tcp_force_scale,
+                woody_force_gain=self._tcp_force_gain,
+                woody_force_min_length=self._tcp_force_min_length,
+                woody_force_max_length=self._tcp_force_max_length,
             )
         self.viewer.end_frame()
         if self._mujoco_viewer and self.scene.robot_model is not None:

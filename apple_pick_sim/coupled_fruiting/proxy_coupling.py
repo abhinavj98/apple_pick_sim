@@ -560,6 +560,8 @@ def harvest_batched_stem_tension(
     gravity: wp.vec3 | None = None,
     robot_body_q: wp.array | None = None,
     device: str | None = None,
+    out_f: wp.array | None = None,
+    out_t: wp.array | None = None,
 ) -> None:
     """Batched stem harvest for ``N`` envs: one gather + one write kernel launch."""
     from apple_pick_sim.vbd_fixed_joint_wrenches import gather_joint_wrench_child_com_device
@@ -576,9 +578,11 @@ def harvest_batched_stem_tension(
         cable_solver,
         body_q=body_q_post,
         body_q_prev=body_q_prev,
-        joint_indices=stem_joint_indices_wp.numpy(),
+        joint_indices=stem_joint_indices_wp,
         dt=dt,
         control=cable_model.control(clone_variables=False),
+        out_f=out_f,
+        out_t=out_t,
     )
     g = gravity if gravity is not None else wp.vec3(0.0, 0.0, -9.81)
     robot_bq = robot_body_q if robot_body_q is not None else body_q_post
@@ -652,6 +656,8 @@ def prepare_batched_stem_harvest_arrays(scene: Any, layout: Any) -> None:
     scene.stem_harvest_grasp_offsets_wp = wp.array(grasp_list, dtype=wp.transform, device=dev)
     scene.stem_harvest_apple_masses_wp = wp.array(apple_masses, dtype=float, device=dev)
     scene.stem_harvest_use_grasp_offset_wp = wp.array(use_grasp, dtype=int, device=dev)
+    scene.stem_harvest_wrench_f_scratch = wp.zeros(n, dtype=wp.vec3, device=dev)
+    scene.stem_harvest_wrench_t_scratch = wp.zeros(n, dtype=wp.vec3, device=dev)
 
 
 def _harvest_stem_tension_for_tcp_cpu(

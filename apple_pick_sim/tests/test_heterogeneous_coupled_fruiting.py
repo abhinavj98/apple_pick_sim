@@ -265,3 +265,60 @@ def test_robot_base_from_proxy_raises(ranges):
             gripper_proxy=_gripper_free(),
             **COUPLED_SCENE_KW,
         )
+
+
+def test_placeholder_multienv_warns_at_init():
+    """Placeholder robot must warn that simulate() is not fully GPU-resident."""
+    import argparse
+    import sys
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+    if str(_EXAMPLES_DIR) not in sys.path:
+        sys.path.insert(0, str(_EXAMPLES_DIR))
+
+    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
+        ExampleBatchedHeterogeneousCoupledFruiting,
+    )
+
+    viewer = MagicMock()
+    args = argparse.Namespace(
+        hz=30.0,
+        json=None,
+        seed=42,
+        num_envs=2,
+        env_spacing=[2.0, 2.0, 2.0],
+        enable_self_collision=False,
+        robot="placeholder",
+        controller="direct",
+        fr3_keyboard=False,
+        fix_to_apple=False,
+        settle_substeps=0,
+        inspect_settle=False,
+        settle_report_brief=False,
+        settle_max_speed=0.05,
+        scripted_ee_vel=[0.05, 0.0, 0.0],
+        demo_per_env_actions=False,
+        status_every=0,
+        print_robot_state=False,
+        noisy_action=False,
+        noisy_action_std=0.02,
+        tcp_force_arrow=False,
+        tcp_force_scale=0.02,
+        tcp_force_arrow_gain=1.0,
+        tcp_force_min_length=0.08,
+        tcp_force_max_length=1.5,
+        mark_endpoints=False,
+        mujoco_viewer=False,
+        vic_linear_k=600.0,
+        vic_linear_d=200.0,
+        vic_angular_k=20.0,
+        vic_angular_d=4.0,
+        device="cpu",
+        only_vbd=False,
+        only_mjc=False,
+    )
+
+    with pytest.warns(UserWarning, match="GPU parallelism is not fully utilized"):
+        ExampleBatchedHeterogeneousCoupledFruiting(viewer, args)

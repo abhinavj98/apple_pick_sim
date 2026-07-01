@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -94,6 +95,90 @@ def _make_hetero_welded_scene(ranges, seed: int, *, settle_substeps: int = _SETT
     return welded, params_list
 
 
+def test_harvest_batched_stem_tension_no_numpy_on_joint_indices():
+    """Batched stem harvest must pass device joint indices without .numpy()."""
+    n = 2
+    dev = "cpu"
+    stem_joint_indices_wp = wp.array([10, 19], dtype=wp.int32, device=dev)
+    tcp_indices_wp = wp.array([7, 15], dtype=wp.int32, device=dev)
+    apple_indices_wp = wp.array([5, 15], dtype=wp.int32, device=dev)
+    grasp_offsets_wp = wp.array(
+        [wp.transform_identity(), wp.transform_identity()],
+        dtype=wp.transform,
+        device=dev,
+    )
+    apple_masses_wp = wp.array([0.1, 0.2], dtype=float, device=dev)
+    use_grasp_offset_wp = wp.array([0, 0], dtype=int, device=dev)
+    out_robot_wrenches = wp.zeros(16, dtype=wp.spatial_vector, device=dev)
+    out_f = wp.zeros(n, dtype=wp.vec3, device=dev)
+    out_t = wp.zeros(n, dtype=wp.vec3, device=dev)
+    body_q = wp.zeros(20, dtype=wp.transform, device=dev)
+    captured: dict[str, object] = {}
+
+    def _fake_gather(*_args, **kwargs):
+        captured["joint_indices"] = kwargs.get("joint_indices")
+        captured["out_f"] = kwargs.get("out_f")
+        captured["out_t"] = kwargs.get("out_t")
+        return out_f, out_t
+
+    class _CableModel:
+        def control(self, clone_variables: bool = False):
+            del clone_variables
+            return object()
+
+    with patch(
+        "apple_pick_sim.vbd_fixed_joint_wrenches.gather_joint_wrench_child_com_device",
+        side_effect=_fake_gather,
+    ):
+        harvest_batched_stem_tension(
+            stem_joint_indices_wp=stem_joint_indices_wp,
+            tcp_indices_wp=tcp_indices_wp,
+            apple_indices_wp=apple_indices_wp,
+            grasp_offsets_wp=grasp_offsets_wp,
+            apple_masses_wp=apple_masses_wp,
+            use_grasp_offset_wp=use_grasp_offset_wp,
+            cable_model=_CableModel(),
+            cable_solver=object(),
+            body_q_post=body_q,
+            body_q_prev=body_q,
+            dt=0.01,
+            out_robot_wrenches=out_robot_wrenches,
+            out_f=out_f,
+            out_t=out_t,
+            device=dev,
+        )
+
+    assert isinstance(captured["joint_indices"], wp.array)
+    assert captured["out_f"] is out_f
+    assert captured["out_t"] is out_t
+
+
+def test_prepare_batched_stem_harvest_arrays_allocates_wrench_scratch():
+    """prepare_batched_stem_harvest_arrays pre-allocates wrench scratch buffers."""
+    layout = SimpleNamespace(
+        num_envs=2,
+        joint_index=lambda w, j: w * 9 + j,
+        tcp_body_indices=(7, 16),
+        apple_body_indices=(2, 4),
+    )
+    scene = SimpleNamespace(
+        stem_apple_joint_index=3,
+        cable=SimpleNamespace(
+            model=SimpleNamespace(
+                device="cpu",
+                body_mass=wp.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6], dtype=float, device="cpu"),
+            ),
+            gripper_proxy_offset_in_apple_frame=None,
+        ),
+        per_world_proxy_offsets=None,
+    )
+    prepare_batched_stem_harvest_arrays(scene, layout)
+    assert scene.stem_harvest_wrench_f_scratch is not None
+    assert scene.stem_harvest_wrench_t_scratch is not None
+    assert int(scene.stem_harvest_wrench_f_scratch.shape[0]) == 2
+    assert int(scene.stem_harvest_wrench_t_scratch.shape[0]) == 2
+
+
 @requires_fr3
 @pytest.mark.slow
 def test_batched_stem_harvest_output_matches_serial_loop(ranges):
@@ -170,6 +255,18 @@ def test_batched_stem_harvest_output_matches_serial_loop(ranges):
             atol=0.5,
             err_msg=f"world {w} batched vs serial stem harvest mismatch",
         )
+
+
+@requires_fr3
+@pytest.mark.slow
+def test_harvest_fallback_raises_when_no_wp_arrays(ranges):
+    """Batched multi-env stem harvest must not silently fall back to a CPU loop."""
+    scene, _params = _make_hetero_welded_scene(ranges, seed=35)
+    assert scene.stem_harvest_joint_indices_wp is not None
+    scene.stem_harvest_joint_indices_wp = None
+
+    with pytest.raises(RuntimeError, match="prepare_batched_stem_harvest_arrays"):
+        scene.coupled_substep(SUB_DT)
 
 
 @requires_fr3

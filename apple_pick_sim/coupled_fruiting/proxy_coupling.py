@@ -938,16 +938,40 @@ def _align_body_q_prev_kernel(
     body_q_prev[bid] = body_q[bid]
 
 
+def sync_cable_body_q_prev_from_state(
+    cable_scene,
+    *,
+    body_ids: tuple[int, ...] | wp.array | None = None,
+) -> None:
+    """Align ``SolverVBD.body_q_prev`` with ``state_0.body_q`` after ``eval_fk`` or kinematic sync.
+
+    When ``body_ids`` is omitted, every cable body is updated. Call this after any
+    ``newton.eval_fk`` that writes ``state_0.body_q`` but leaves ``body_q_prev`` at the
+    solver's construction-time snapshot (avoids a spurious first-substep velocity spike).
+    """
+    sync_solver_body_q_prev_from_state(
+        cable_scene,
+        cable_scene.state_0.body_q,
+        body_ids,
+    )
+
+
+def eval_fk_cable_state_0(cable_scene) -> None:
+    """Run FK on ``state_0`` and refresh ``SolverVBD.body_q_prev`` to match."""
+    import newton
+
+    model = cable_scene.model
+    newton.eval_fk(model, model.joint_q, model.joint_qd, cable_scene.state_0)
+    sync_cable_body_q_prev_from_state(cable_scene)
+    wp.synchronize()
+
+
 def align_proxy_body_q_prev_for_vbd(
     cable_scene,
     proxy_body_ids: tuple[int, ...] | wp.array,
 ) -> None:
     """Align ``SolverVBD.body_q_prev`` with ``state_0.body_q`` on listed bodies after kinematic sync."""
-    sync_solver_body_q_prev_from_state(
-        cable_scene,
-        cable_scene.state_0.body_q,
-        proxy_body_ids,
-    )
+    sync_cable_body_q_prev_from_state(cable_scene, body_ids=proxy_body_ids)
 
 
 def sync_solver_body_q_prev_from_state(

@@ -94,7 +94,7 @@ def test_t_junction_rejects_secondary():
     ranges = fs.load_ranges(PROXY_PATH)
     params = fs.sample_params(ranges, seed=0)
     assert params.primary is not None
-    secondary = fs.RodParams(
+    secondary = fs.rod_params_from_vbd_targets(
         num_segments=2,
         length=0.05,
         radius=0.01,

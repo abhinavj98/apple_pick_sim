@@ -93,6 +93,47 @@ class BatchedEnvLayout:
             env_spacing=tuple(float(v) for v in env_spacing),
         )
 
+    @classmethod
+    def from_cable_only(
+        cls,
+        template_cable: CoupledCableScene,
+        cable_model: newton.Model,
+        *,
+        env_spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> BatchedEnvLayout:
+        """Build layout for batched cable-only (``vbd_only``) scenes without a robot model."""
+        num_envs = int(cable_model.world_count)
+        if num_envs < 1:
+            raise ValueError("batched layout requires world_count >= 1")
+        bodies_per = _per_world_count(cable_model.body_world_start, num_envs)
+        joints_per = _per_world_count(cable_model.joint_world_start, num_envs)
+        tpl_proxy = int(template_cable.gripper_proxy_body)
+        tpl_apple = template_cable.apple_body
+        proxy_indices = tuple(
+            _global_body_index(w, tpl_proxy, bodies_per) for w in range(num_envs)
+        )
+        if tpl_apple is not None:
+            apple_indices = tuple(
+                _global_body_index(w, int(tpl_apple), bodies_per) for w in range(num_envs)
+            )
+        else:
+            apple_indices = tuple(-1 for _ in range(num_envs))
+        return cls(
+            num_envs=num_envs,
+            bodies_per_world=bodies_per,
+            robot_bodies_per_world=0,
+            joints_per_world=joints_per,
+            joint_coord_count_per_world=0,
+            joint_dof_count_per_world=0,
+            template_tcp_body=-1,
+            template_proxy_body=tpl_proxy,
+            template_apple_body=tpl_apple,
+            tcp_body_indices=tuple(-1 for _ in range(num_envs)),
+            proxy_body_indices=proxy_indices,
+            apple_body_indices=apple_indices,
+            env_spacing=tuple(float(v) for v in env_spacing),
+        )
+
     def body_index(self, world: int, template_body: int) -> int:
         """Global cable body index for ``template_body`` in ``world``."""
         return _global_body_index(world, template_body, self.bodies_per_world)

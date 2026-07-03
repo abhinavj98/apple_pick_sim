@@ -2,7 +2,7 @@
 
 ## 1. Objective
 
-Develop a high-fidelity, tunable simulation model of an apple-branch system. The physical system is modeled as a topological network of spatial springs and masses (primary branch, secondary branch, spur, stem), solved via VBD (Variational Body Dynamics). Parameters (stiffness, damping, mass) are identified from real-world kinematic and force/torque (F/T) telemetry.
+Develop a high-fidelity, tunable simulation model of an apple-branch system. The physical system is modeled as a topological network of spatial springs and masses (primary branch, secondary branch, spur, stem), solved via VBD (Variational Body Dynamics). Rod **material** parameters (Young's modulus \(E\), damping ratio \(\zeta\)) and geometry are identified from real-world kinematic and force/torque (F/T) telemetry; VBD stiffness/damping are **derived** at sample time (`docs/material-parameter-sampling.md`).
 
 Optimization uses the **Cross-Entropy Method (CEM)** against field data, with **Maximum Mean Discrepancy (MMD)** as the objective so we avoid strict time-pairing requirements of L2 regression. Before optimizer selection is finalized, M3 must verify observation-only replay in sim-to-sim: treat a differently tuned simulator as ground truth, reconstruct the tunable simulator from collectable observations, replay the same recorded actions, and measure the reconstruction error floor.
 
@@ -121,7 +121,7 @@ Run CEM **per excitation direction** first (separate $P$, $Q$ per $\hat{u}$). Af
 
 ## 4. Optimization: Cross-Entropy Method (CEM)
 
-Tune simulation parameters $\theta$ (masses, spring constants $K$, damping $B$).
+Tune simulation parameters $\theta$ (geometry where free, rod \(E\), \(\zeta\), apple mass scalars). Derived VBD knobs are not independent CEM dimensions unless legacy fixtures are in use.
 
 1. **Initialize:** $\mathcal{N}(\mu_0, \Sigma_0)$ with broad $\Sigma_0$.
 2. **Sample:** $N \approx 50$–$100$ candidate $\theta_i$.

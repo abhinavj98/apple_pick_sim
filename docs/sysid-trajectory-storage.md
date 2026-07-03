@@ -50,7 +50,7 @@ Per-junction woody columns are dynamic (one start/end pair per entry in `junctio
 | `excitation_type` | `"quasi_static"` \| `"translational_chirp"` \| `"torsional"` |
 | `n_woody_parts` | Number of woody fixed joints |
 | `junction_names` | Ordered junction labels for woody parquet columns |
-| `params_fingerprint` | JSON stiffness/damping summary of `FruitingSystemParams` θ |
+| `params_fingerprint` | JSON material/geometry summary of `FruitingSystemParams` θ (includes derived stiffness and, from schema v2, \(E\)/\(\zeta\); see `docs/material-parameter-sampling.md`) |
 | `fruiting_system_params` | Lossless JSON for the sampled `FruitingSystemParams` used to build the episode; nullable for legacy or real-data rows |
 | `control_hz` | Env step rate |
 
@@ -76,7 +76,7 @@ For M3.0.3, datasets must be usable when `initial_states/<episode_id>.npz` is ab
 
 Per-step frame 0 remains the observation after replay action 0 has been applied, so replay can compare action 0 against recorded frame 0 after one `env.step(action_0)`. Observation-only reset initialization prefers the metadata reset fields above and falls back to frame-0 `robot_joint_q`, `tcp_pos`, and `tcp_quat` only for legacy datasets that predate reset metadata.
 
-`fruiting_system_params` is not a privileged dynamic state snapshot: it stores the episode's realized physical parameters (geometry, stiffness/damping, density, segment counts, apple scalars), not Newton body transforms, velocities, solver buffers, or controller internals. No-snapshot replay prefers this exact θ when present, then falls back to observation-derived geometry plus fixture midpoint dynamics for legacy datasets. The `.npz` snapshot may continue to be written for privileged replay baselines, but it must be optional. Replay code should treat the absence of `.npz` as the normal real-data path, not as a corrupted dataset.
+`fruiting_system_params` is not a privileged dynamic state snapshot: it stores the episode's realized physical parameters (geometry, sampled \(E\)/\(\zeta\) and derived stiffness/damping, density, segment counts, apple scalars), not Newton body transforms, velocities, solver buffers, or controller internals. No-snapshot replay prefers this exact θ when present, then falls back to observation-derived geometry plus fixture midpoint dynamics for legacy datasets. The `.npz` snapshot may continue to be written for privileged replay baselines, but it must be optional. Replay code should treat the absence of `.npz` as the normal real-data path, not as a corrupted dataset.
 
 ## Displacement convention
 

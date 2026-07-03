@@ -186,6 +186,12 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--settle-gravity-ramp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Linear 0→−9.81 m/s² gravity ramp over all settle substeps (default: off).",
+    )
+    parser.add_argument(
         "--scripted-ee-vel",
         type=float,
         nargs=3,
@@ -307,6 +313,7 @@ class ExampleBatchedCoupledFruiting:
         fix_to_apple = _fix_to_apple_from_args(args)
         enable_self = _enable_self_collisions_from_args(args)
         settle_substeps = int(getattr(args, "settle_substeps", 1000))
+        settle_gravity_ramp = bool(getattr(args, "settle_gravity_ramp", False))
 
         print(f"Batched coupled fruiting ranges: {ranges_path}")
         print(f"Initial seed: {seed}")
@@ -347,7 +354,12 @@ class ExampleBatchedCoupledFruiting:
                     ),
                 },
             )
-            settle_vbd_substeps(settled, substeps=settle_substeps, dt=self.sim_dt)
+            settle_vbd_substeps(
+                settled,
+                substeps=settle_substeps,
+                dt=self.sim_dt,
+                gravity_ramp=settle_gravity_ramp,
+            )
             quiet_all_cable_bodies(settled.cable)
             self.scene = build_fn(
                 self.ranges,

@@ -22,7 +22,10 @@ from apple_pick_sim.fruiting_system.coupled import (
     _populate_coupled_cable_builder,
 )
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams, GripperProxyConfig
-from apple_pick_sim.coupled_fruiting.proxy_coupling import align_proxy_body_q_prev_for_vbd
+from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+    eval_fk_cable_state_0,
+    sync_cable_body_q_prev_from_state,
+)
 
 
 def _prepare_cable_template_builder_for_replicate(
@@ -122,11 +125,8 @@ def build_replicated_coupled_cable_scene(
     )
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_1)
+    sync_cable_body_q_prev_from_state(scene)
     wp.synchronize()
-    tpl_proxy_ids = tuple(
-        int(tpl.gripper_proxy_body) + w * bodies_per_world for w in range(num_envs)
-    )
-    align_proxy_body_q_prev_for_vbd(scene, tpl_proxy_ids)
     return scene
 
 
@@ -259,11 +259,8 @@ def build_heterogeneous_coupled_cable_scene(
     )
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_1)
+    sync_cable_body_q_prev_from_state(scene)
     wp.synchronize()
-    proxy_ids = tuple(
-        int(tpl.proxy_body) + w * bodies_per_world for w in range(num_envs)
-    )
-    align_proxy_body_q_prev_for_vbd(scene, proxy_ids)
 
     per_world_offsets = tuple(pop.proxy_offset_in_apple for pop in populate_results)
     return scene, per_world_offsets

@@ -134,7 +134,7 @@ def _make_minimal_scene(apple_radius: float, apple_density: float, device: str =
         primary=None,
         secondary=None,
         spur=None,
-        stem=fs.RodParams(
+        stem=fs.rod_params_from_vbd_targets(
             num_segments=2,
             length=0.20,
             radius=0.005,
@@ -165,7 +165,7 @@ def _make_full_chain_scene(device: str = "cpu"):
     """
     fs = _import_fs()
     params = fs.FruitingSystemParams(
-        primary=fs.RodParams(
+        primary=fs.rod_params_from_vbd_targets(
             num_segments=2,
             length=0.15,
             radius=0.008,
@@ -175,7 +175,7 @@ def _make_full_chain_scene(device: str = "cpu"):
             density=300.0,
             direction=(0.0, 0.0, -1.0),
         ),
-        secondary=fs.RodParams(
+        secondary=fs.rod_params_from_vbd_targets(
             num_segments=2,
             length=0.12,
             radius=0.006,
@@ -185,7 +185,7 @@ def _make_full_chain_scene(device: str = "cpu"):
             density=200.0,
             direction=(0.0, 0.0, -1.0),
         ),
-        spur=fs.RodParams(
+        spur=fs.rod_params_from_vbd_targets(
             num_segments=2,
             length=0.08,
             radius=0.004,
@@ -195,7 +195,7 @@ def _make_full_chain_scene(device: str = "cpu"):
             density=150.0,
             direction=(0.0, 0.0, -1.0),
         ),
-        stem=fs.RodParams(
+        stem=fs.rod_params_from_vbd_targets(
             num_segments=2,
             length=0.10,
             radius=0.003,
@@ -778,7 +778,7 @@ def _make_t_junction_scene(device: str = "cpu"):
     """Deterministic T topology: stiff horizontal primary, vertical spur→stem→apple."""
     fs = _import_fs()
     params = fs.FruitingSystemParams(
-        primary=fs.RodParams(
+        primary=fs.rod_params_from_vbd_targets(
             num_segments=2,
             length=0.20,
             radius=0.008,
@@ -789,7 +789,7 @@ def _make_t_junction_scene(device: str = "cpu"):
             direction=(1.0, 0.0, 0.0),
         ),
         secondary=None,
-        spur=fs.RodParams(
+        spur=fs.rod_params_from_vbd_targets(
             num_segments=2,
             length=0.08,
             radius=0.004,
@@ -799,7 +799,7 @@ def _make_t_junction_scene(device: str = "cpu"):
             density=150.0,
             direction=(0.0, 0.0, -1.0),
         ),
-        stem=fs.RodParams(
+        stem=fs.rod_params_from_vbd_targets(
             num_segments=2,
             length=0.06,
             radius=0.003,

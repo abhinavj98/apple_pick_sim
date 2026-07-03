@@ -7,7 +7,7 @@ import json
 import math
 from collections.abc import Collection
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from apple_pick_sim.fruiting_system.gripper_proxy_shape import (
     GRIPPER_PROXY_CYLINDER_HALF_HEIGHT,
@@ -23,6 +23,7 @@ TOPOLOGY_LINEAR_CHAIN = "linear_chain"
 ALLOWED_TOPOLOGIES = frozenset({TOPOLOGY_T_JUNCTION, TOPOLOGY_LINEAR_CHAIN})
 DEFAULT_TOPOLOGY = TOPOLOGY_T_JUNCTION
 DEFAULT_SPUR_ATTACH_FRACTION = 0.5
+OVERLAP_DIRECTION_THRESHOLD: float = 0.75
 REAL_WORLD_PROXY_VARIANCE_FIXTURE = "fruiting_system_ranges_real_world_proxy_variance.json"
 
 @dataclasses.dataclass
@@ -32,11 +33,21 @@ class RodParams:
     num_segments: int
     length: float
     radius: float
+    youngs_modulus_pa: float
+    damping_ratio: float
     bend_stiffness: float
     bend_damping: float
     stretch_stiffness: float
+    stretch_damping: float
     density: float
     direction: tuple[float, float, float]  # unit vector in world space
+
+
+_LEGACY_ROD_STIFFNESS_RANGE_KEYS = frozenset(
+    {"bend_stiffness", "bend_damping", "stretch_stiffness"}
+)
+
+_VBD_STRETCH_FIXED_KEYS = frozenset({"stretch_stiffness", "stretch_damping"})
 
 
 @dataclasses.dataclass
@@ -62,7 +73,150 @@ class FruitingSystemParams:
     spur_attach_fraction: float = DEFAULT_SPUR_ATTACH_FRACTION
 
 
-FRUITING_SYSTEM_PARAMS_SCHEMA = "fruiting_system_params_v1"
+FRUITING_SYSTEM_PARAMS_SCHEMA = "fruiting_system_params_v2"
+FRUITING_SYSTEM_PARAMS_SCHEMA_V1 = "fruiting_system_params_v1"
+
+
+def _segment_material_geometry(
+    radius: float, length: float, num_segments: int, density: float
+) -> tuple[float, float, float, float, float]:
+    """Return ``(A, I, L_seg, m_seg, J_seg)`` for a circular rod segment."""
+    r = float(radius)
+    n = max(2, int(num_segments))
+    l_seg = float(length) / n
+    area = math.pi * r * r
+    inertia = math.pi * r**4 / 4.0
+    m_seg = float(density) * area * l_seg
+    j_seg = m_seg * (3.0 * r * r + l_seg * l_seg) / 12.0
+    return area, inertia, l_seg, m_seg, j_seg
+
+
+# Grain-direction axial modulus for ``vbd_stretch_fixed`` (wood is effectively
+# inextensible in simulation). Decoupled from proxy *bend* ``youngs_modulus_pa``.
+WOOD_AXIAL_YOUNGS_MODULUS_PA: float = 5e4
+VBD_AXIAL_DAMPING_RATIO: float = 0.5
+VBD_AXIAL_STRETCH_STIFFNESS_FLOOR_N_PER_M: float = 5e2
+
+
+def inextensible_wood_stretch_knobs(
+    length: float,
+    radius: float,
+    density: float,
+    num_segments: int,
+    *,
+    youngs_modulus_axial_pa: float = WOOD_AXIAL_YOUNGS_MODULUS_PA,
+    damping_ratio_axial: float = VBD_AXIAL_DAMPING_RATIO,
+    stretch_stiffness_floor_n_per_m: float = VBD_AXIAL_STRETCH_STIFFNESS_FLOOR_N_PER_M,
+) -> tuple[float, float]:
+    """Axial VBD knobs for inextensible wood (``vbd_stretch_fixed`` policy).
+
+    Uses ``E_axial * A / L_seg`` with a wood-scale axial modulus, not the proxy
+    bend ``youngs_modulus_pa`` tier. ``stretch_stiffness`` is floored so joints
+    stay stiff enough that branch weight does not produce visible extension.
+    """
+    area, _inertia, l_seg, m_seg, _j_seg = _segment_material_geometry(
+        radius, length, num_segments, density
+    )
+    k_stretch = max(
+        float(youngs_modulus_axial_pa) * area / l_seg,
+        float(stretch_stiffness_floor_n_per_m),
+    )
+    c_stretch = 2.0 * float(damping_ratio_axial) * math.sqrt(k_stretch * m_seg)
+    return k_stretch, c_stretch
+
+
+def rod_params_from_material(
+    youngs_modulus_pa: float,
+    damping_ratio: float,
+    length: float,
+    radius: float,
+    density: float,
+    num_segments: int,
+    direction: tuple[float, float, float],
+    *,
+    stretch_stiffness: float | None = None,
+    stretch_damping: float | None = None,
+) -> RodParams:
+    """Build :class:`RodParams` from material properties and geometry.
+
+    Derives VBD stiffness/damping from circular-rod beam theory (see
+    ``docs/material-parameter-sampling.md``). Optional ``stretch_stiffness`` and
+    ``stretch_damping`` override the axial knobs (e.g. from JSON ``vbd_stretch_fixed``);
+    bend knobs always follow sampled ``youngs_modulus_pa`` and ``damping_ratio``.
+    """
+    if youngs_modulus_pa <= 0.0:
+        raise ValueError("youngs_modulus_pa must be positive")
+    if damping_ratio < 0.0:
+        raise ValueError("damping_ratio must be non-negative")
+    n = max(2, int(num_segments))
+    area, inertia, l_seg, m_seg, j_seg = _segment_material_geometry(
+        radius, length, n, density
+    )
+    e = float(youngs_modulus_pa)
+    zeta = float(damping_ratio)
+    bend_stiffness = e * inertia / l_seg
+    if stretch_stiffness is None:
+        stretch_stiffness = e * area / l_seg
+    if stretch_damping is None:
+        stretch_damping = 2.0 * zeta * math.sqrt(stretch_stiffness * m_seg)
+    bend_damping = 2.0 * zeta * math.sqrt(bend_stiffness * j_seg) 
+    return RodParams(
+        num_segments=n,
+        length=float(length),
+        radius=float(radius),
+        youngs_modulus_pa=e,
+        damping_ratio=zeta,
+        bend_stiffness=bend_stiffness,
+        bend_damping=bend_damping,
+        stretch_stiffness=float(stretch_stiffness),
+        stretch_damping=float(stretch_damping),
+        density=float(density),
+        direction=direction,
+    )
+
+
+def rod_params_from_vbd_targets(
+    *,
+    num_segments: int,
+    length: float,
+    radius: float,
+    bend_stiffness: float,
+    bend_damping: float,
+    stretch_stiffness: float,
+    density: float,
+    direction: tuple[float, float, float],
+    stretch_damping: float | None = None,
+) -> RodParams:
+    """Build :class:`RodParams` from explicit VBD targets (tests, legacy tooling).
+
+    Back-computes ``youngs_modulus_pa`` and ``damping_ratio`` for storage; preserves
+    the supplied bend/stretch stiffness and damping values exactly.
+    """
+    n = max(2, int(num_segments))
+    area, inertia, l_seg, m_seg, j_seg = _segment_material_geometry(
+        radius, length, n, density
+    )
+    e = bend_stiffness * l_seg / inertia if inertia > 0.0 else 0.0
+    zeta = (
+        bend_damping / (2.0 * math.sqrt(bend_stiffness * j_seg))
+        if bend_stiffness > 0.0 and j_seg > 0.0
+        else 0.0
+    )
+    if stretch_damping is None:
+        stretch_damping = 2.0 * zeta * math.sqrt(stretch_stiffness * m_seg)
+    return RodParams(
+        num_segments=n,
+        length=float(length),
+        radius=float(radius),
+        youngs_modulus_pa=e,
+        damping_ratio=zeta,
+        bend_stiffness=float(bend_stiffness),
+        bend_damping=float(bend_damping),
+        stretch_stiffness=float(stretch_stiffness),
+        stretch_damping=float(stretch_damping),
+        density=float(density),
+        direction=direction,
+    )
 
 
 def analytic_apple_mass_kg(params: FruitingSystemParams) -> float | None:
@@ -81,9 +235,12 @@ def _rod_params_to_row(rod: RodParams | None) -> dict[str, Any] | None:
         "num_segments": int(rod.num_segments),
         "length": float(rod.length),
         "radius": float(rod.radius),
+        "youngs_modulus_pa": float(rod.youngs_modulus_pa),
+        "damping_ratio": float(rod.damping_ratio),
         "bend_stiffness": float(rod.bend_stiffness),
         "bend_damping": float(rod.bend_damping),
         "stretch_stiffness": float(rod.stretch_stiffness),
+        "stretch_damping": float(rod.stretch_damping),
         "density": float(rod.density),
         "direction": [float(x) for x in rod.direction],
     }
@@ -115,6 +272,31 @@ def _expect_mapping(value: Any, *, field: str) -> dict[str, Any]:
     return value
 
 
+def _infer_material_from_vbd_row(row: dict[str, Any]) -> tuple[float, float, float]:
+    """Back-compute ``(E, zeta, stretch_damping)`` from stored VBD scalars (v1 episodes)."""
+    n = max(2, int(row["num_segments"]))
+    r = float(row["radius"])
+    length = float(row["length"])
+    rho = float(row["density"])
+    bend_stiffness = float(row["bend_stiffness"])
+    bend_damping = float(row["bend_damping"])
+    stretch_stiffness = float(row["stretch_stiffness"])
+    if "youngs_modulus_pa" in row and "damping_ratio" in row:
+        e = float(row["youngs_modulus_pa"])
+        zeta = float(row["damping_ratio"])
+        stretch_damping = float(row.get("stretch_damping", 0.0))
+        return e, zeta, stretch_damping
+    area, inertia, l_seg, m_seg, j_seg = _segment_material_geometry(r, length, n, rho)
+    e = bend_stiffness * l_seg / inertia if inertia > 0.0 else 0.0
+    zeta = (
+        bend_damping / (2.0 * math.sqrt(bend_stiffness * j_seg))
+        if bend_stiffness > 0.0 and j_seg > 0.0
+        else 0.0
+    )
+    stretch_damping = float(row.get("stretch_damping", 2.0 * zeta * math.sqrt(stretch_stiffness * m_seg)))
+    return e, zeta, stretch_damping
+
+
 def _rod_params_from_row(value: Any, *, field: str) -> RodParams | None:
     if value is None:
         return None
@@ -122,13 +304,17 @@ def _rod_params_from_row(value: Any, *, field: str) -> RodParams | None:
     direction = row.get("direction")
     if not isinstance(direction, (list, tuple)) or len(direction) != 3:
         raise ValueError(f"{field}.direction must be [x, y, z]")
+    e, zeta, stretch_damping = _infer_material_from_vbd_row(row)
     return RodParams(
         num_segments=int(row["num_segments"]),
         length=float(row["length"]),
         radius=float(row["radius"]),
+        youngs_modulus_pa=e,
+        damping_ratio=zeta,
         bend_stiffness=float(row["bend_stiffness"]),
         bend_damping=float(row["bend_damping"]),
         stretch_stiffness=float(row["stretch_stiffness"]),
+        stretch_damping=stretch_damping,
         density=float(row["density"]),
         direction=(float(direction[0]), float(direction[1]), float(direction[2])),
     )
@@ -138,10 +324,11 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
     """Deserialize :func:`fruiting_params_to_dict` output."""
     row = _expect_mapping(data, field="fruiting_system_params")
     schema = row.get("schema")
-    if schema != FRUITING_SYSTEM_PARAMS_SCHEMA:
+    if schema not in (FRUITING_SYSTEM_PARAMS_SCHEMA, FRUITING_SYSTEM_PARAMS_SCHEMA_V1):
         raise ValueError(
             f"unsupported fruiting params schema {schema!r}; "
-            f"expected {FRUITING_SYSTEM_PARAMS_SCHEMA!r}"
+            f"expected {FRUITING_SYSTEM_PARAMS_SCHEMA!r} or "
+            f"{FRUITING_SYSTEM_PARAMS_SCHEMA_V1!r}"
         )
     topology = row.get("topology", DEFAULT_TOPOLOGY)
     if topology not in ALLOWED_TOPOLOGIES:
@@ -331,7 +518,7 @@ def sample_params(
     ``null``).
 
     When both **primary** and **secondary** are enabled, enforces
-    ``primary.bend_stiffness >= secondary.bend_stiffness``.
+    ``primary.youngs_modulus_pa >= secondary.youngs_modulus_pa``.
 
     Args:
         ranges: Range dict as returned by :func:`load_ranges`.
@@ -362,16 +549,15 @@ def sample_params(
         primary_az = _s(pr, "azimuth_deg")
         primary_el = _s(pr, "elevation_deg")
         primary_dir = _direction_from_angles(primary_az, primary_el)
-        primary_bend = _s(pr, "bend_stiffness")
-        primary = RodParams(
-            num_segments=max(2, _si(pr, "num_segments")),
-            length=_s(pr, "length"),
-            radius=_s(pr, "radius"),
-            bend_stiffness=primary_bend,
-            bend_damping=_s(pr, "bend_damping"),
-            stretch_stiffness=_s(pr, "stretch_stiffness"),
-            density=_s(pr, "density"),
-            direction=primary_dir,
+        primary = rod_params_from_material(
+            _s(pr, "youngs_modulus_pa"),
+            _s(pr, "damping_ratio"),
+            _s(pr, "length"),
+            _s(pr, "radius"),
+            _s(pr, "density"),
+            max(2, _si(pr, "num_segments")),
+            primary_dir,
+            **_stretch_kw_from_seg_ranges(pr),
         )
         parent_dir = primary.direction
 
@@ -379,25 +565,29 @@ def sample_params(
     sr = ranges.get("secondary")
     if sr is not None and "secondary" not in omit_set:
         if primary is not None:
-            secondary_bend_max = min(sr["bend_stiffness"]["max"], primary.bend_stiffness)
-            secondary_bend_min = min(sr["bend_stiffness"]["min"], secondary_bend_max)
-            secondary_bend = float(rng.uniform(secondary_bend_min, secondary_bend_max))
+            secondary_e_max = min(
+                sr["youngs_modulus_pa"]["max"], primary.youngs_modulus_pa
+            )
+            secondary_e_min = min(sr["youngs_modulus_pa"]["min"], secondary_e_max)
+            secondary_e = float(rng.uniform(secondary_e_min, secondary_e_max))
         else:
-            secondary_bend = float(
-                rng.uniform(sr["bend_stiffness"]["min"], sr["bend_stiffness"]["max"])
+            secondary_e = float(
+                rng.uniform(
+                    sr["youngs_modulus_pa"]["min"], sr["youngs_modulus_pa"]["max"]
+                )
             )
         secondary_el_delta = _s(sr, "elevation_delta_deg")
         secondary_lat_delta = _s(sr, "lateral_delta_deg")
         secondary_dir = _deflect_direction(parent_dir, secondary_el_delta, secondary_lat_delta)
-        secondary = RodParams(
-            num_segments=max(2, _si(sr, "num_segments")),
-            length=_s(sr, "length"),
-            radius=_s(sr, "radius"),
-            bend_stiffness=secondary_bend,
-            bend_damping=_s(sr, "bend_damping"),
-            stretch_stiffness=_s(sr, "stretch_stiffness"),
-            density=_s(sr, "density"),
-            direction=secondary_dir,
+        secondary = rod_params_from_material(
+            secondary_e,
+            _s(sr, "damping_ratio"),
+            _s(sr, "length"),
+            _s(sr, "radius"),
+            _s(sr, "density"),
+            max(2, _si(sr, "num_segments")),
+            secondary_dir,
+            **_stretch_kw_from_seg_ranges(sr),
         )
         parent_dir = secondary.direction
 
@@ -407,15 +597,15 @@ def sample_params(
         spur_el_delta = _s(spr, "elevation_delta_deg")
         spur_lat_delta = _s(spr, "lateral_delta_deg")
         spur_dir = _deflect_direction(parent_dir, spur_el_delta, spur_lat_delta)
-        spur = RodParams(
-            num_segments=max(2, _si(spr, "num_segments")),
-            length=_s(spr, "length"),
-            radius=_s(spr, "radius"),
-            bend_stiffness=_s(spr, "bend_stiffness"),
-            bend_damping=_s(spr, "bend_damping"),
-            stretch_stiffness=_s(spr, "stretch_stiffness"),
-            density=_s(spr, "density"),
-            direction=spur_dir,
+        spur = rod_params_from_material(
+            _s(spr, "youngs_modulus_pa"),
+            _s(spr, "damping_ratio"),
+            _s(spr, "length"),
+            _s(spr, "radius"),
+            _s(spr, "density"),
+            max(2, _si(spr, "num_segments")),
+            spur_dir,
+            **_stretch_kw_from_seg_ranges(spr),
         )
         parent_dir = spur.direction
 
@@ -425,15 +615,15 @@ def sample_params(
         stem_el_delta = _s(stem_r, "elevation_delta_deg")
         stem_lat_delta = _s(stem_r, "lateral_delta_deg")
         stem_dir = _deflect_direction(parent_dir, stem_el_delta, stem_lat_delta)
-        stem = RodParams(
-            num_segments=max(2, _si(stem_r, "num_segments")),
-            length=_s(stem_r, "length"),
-            radius=_s(stem_r, "radius"),
-            bend_stiffness=_s(stem_r, "bend_stiffness"),
-            bend_damping=_s(stem_r, "bend_damping"),
-            stretch_stiffness=_s(stem_r, "stretch_stiffness"),
-            density=_s(stem_r, "density"),
-            direction=stem_dir,
+        stem = rod_params_from_material(
+            _s(stem_r, "youngs_modulus_pa"),
+            _s(stem_r, "damping_ratio"),
+            _s(stem_r, "length"),
+            _s(stem_r, "radius"),
+            _s(stem_r, "density"),
+            max(2, _si(stem_r, "num_segments")),
+            stem_dir,
+            **_stretch_kw_from_seg_ranges(stem_r),
         )
 
     apple_radius: float | None = None
@@ -463,6 +653,90 @@ def sample_params(
     )
 
 
+def _dot3(
+    a: tuple[float, float, float],
+    b: tuple[float, float, float],
+) -> float:
+    return float(a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
+
+
+def branches_overlap_by_direction(
+    params: FruitingSystemParams,
+    threshold: float = OVERLAP_DIRECTION_THRESHOLD,
+) -> bool:
+    """Return True when any child branch direction risks growing into its parent body.
+
+    T-junction:
+      spur vs primary — ``|dot| > threshold`` (parallel or anti-parallel both bad at mid-span)
+      stem vs spur — ``dot < -threshold`` (anti-parallel only)
+
+    Linear chain:
+      each consecutive enabled pair — ``dot(child, parent) < -threshold`` only
+    """
+    thr = float(threshold)
+
+    if params.topology == TOPOLOGY_T_JUNCTION:
+        primary = params.primary
+        spur = params.spur
+        stem = params.stem
+        if primary is not None and spur is not None:
+            if abs(_dot3(spur.direction, primary.direction)) > thr:
+                return True
+        if spur is not None and stem is not None:
+            if _dot3(stem.direction, spur.direction) < -thr:
+                return True
+        return False
+
+    if params.topology != TOPOLOGY_LINEAR_CHAIN:
+        raise ValueError(
+            f"unsupported topology {params.topology!r}; expected one of "
+            f"{sorted(ALLOWED_TOPOLOGIES)}"
+        )
+
+    parent: RodParams | None = None
+    for name in ("primary", "secondary", "spur", "stem"):
+        child = getattr(params, name)
+        if child is None:
+            continue
+        if parent is not None and _dot3(child.direction, parent.direction) < -thr:
+            return True
+        parent = child
+    return False
+
+
+def sample_params_no_overlap(
+    ranges: dict,
+    seed: int,
+    *,
+    threshold: float = OVERLAP_DIRECTION_THRESHOLD,
+    max_retries: int = 20,
+    omit: Collection[str] | None = None,
+) -> FruitingSystemParams:
+    """Sample fruiting params, retrying with shifted seeds until directions do not overlap."""
+    if max_retries < 1:
+        raise ValueError("max_retries must be >= 1")
+    for attempt in range(max_retries):
+        candidate = sample_params(ranges, seed + attempt * 997, omit=omit)
+        if not branches_overlap_by_direction(candidate, threshold=threshold):
+            return candidate
+    raise RuntimeError(
+        f"Could not sample non-overlapping fruiting geometry in {max_retries} attempts "
+        f"(seed={seed}, threshold={threshold})"
+    )
+
+
+def _sample_params_for_heterogeneous(
+    ranges: dict,
+    seed: int,
+    *,
+    omit: Collection[str] | None,
+    overlap_threshold: float | None,
+) -> FruitingSystemParams:
+    if overlap_threshold is None:
+        return sample_params(ranges, seed, omit=omit)
+    return sample_params_no_overlap(ranges, seed, threshold=overlap_threshold, omit=omit)
+
+
 def _fix_topology(
     p: FruitingSystemParams, topo: FruitingSystemParams
 ) -> FruitingSystemParams:
@@ -490,13 +764,22 @@ def sample_heterogeneous_params_list(
     num_envs: int,
     *,
     omit: Collection[str] | None = None,
+    overlap_threshold: float | None = None,
 ) -> list[FruitingSystemParams]:
     """Sample ``num_envs`` param sets with segment topology fixed to ``topology_seed``."""
     if num_envs < 1:
         raise ValueError("num_envs must be >= 1")
     topo = sample_params(ranges, topology_seed, omit=omit)
     return [
-        _fix_topology(sample_params(ranges, topology_seed + 1 + w, omit=omit), topo)
+        _fix_topology(
+            _sample_params_for_heterogeneous(
+                ranges,
+                topology_seed + 1 + w,
+                omit=omit,
+                overlap_threshold=overlap_threshold,
+            ),
+            topo,
+        )
         for w in range(num_envs)
     ]
 
@@ -509,6 +792,7 @@ def resample_heterogeneous_params_for_worlds(
     *,
     resample_seed: int,
     omit: Collection[str] | None = None,
+    overlap_threshold: float | None = None,
 ) -> list[FruitingSystemParams]:
     """Return a copy of ``params_list`` with DR re-drawn for the listed env indices."""
     if not worlds:
@@ -519,7 +803,12 @@ def resample_heterogeneous_params_for_worlds(
         if world < 0 or world >= len(out):
             raise ValueError(f"world index {world} out of range for params_list len {len(out)}")
         out[world] = _fix_topology(
-            sample_params(ranges, int(resample_seed) + i, omit=omit),
+            _sample_params_for_heterogeneous(
+                ranges,
+                int(resample_seed) + i,
+                omit=omit,
+                overlap_threshold=overlap_threshold,
+            ),
             topo,
         )
     return out
@@ -635,17 +924,21 @@ def params_fingerprint(params: FruitingSystemParams) -> dict:
         "primary_num_segments": None if p is None else p.num_segments,
         "primary_length": None if p is None else round(p.length, 9),
         "primary_radius": None if p is None else round(p.radius, 9),
-        "primary_bend_stiffness": None if p is None else round(p.bend_stiffness, 6),
+        "primary_youngs_modulus_pa": None if p is None else round(p.youngs_modulus_pa, 6),
+        "primary_damping_ratio": None if p is None else round(p.damping_ratio, 8),
         "secondary_num_segments": None if s is None else s.num_segments,
         "secondary_length": None if s is None else round(s.length, 9),
         "secondary_radius": None if s is None else round(s.radius, 9),
-        "secondary_bend_stiffness": None if s is None else round(s.bend_stiffness, 6),
+        "secondary_youngs_modulus_pa": None if s is None else round(s.youngs_modulus_pa, 6),
+        "secondary_damping_ratio": None if s is None else round(s.damping_ratio, 8),
         "spur_num_segments": None if sp is None else sp.num_segments,
         "spur_length": None if sp is None else round(sp.length, 9),
-        "spur_bend_stiffness": None if sp is None else round(sp.bend_stiffness, 6),
+        "spur_youngs_modulus_pa": None if sp is None else round(sp.youngs_modulus_pa, 6),
+        "spur_damping_ratio": None if sp is None else round(sp.damping_ratio, 8),
         "stem_num_segments": None if st is None else st.num_segments,
         "stem_length": None if st is None else round(st.length, 9),
-        "stem_bend_stiffness": None if st is None else round(st.bend_stiffness, 6),
+        "stem_youngs_modulus_pa": None if st is None else round(st.youngs_modulus_pa, 6),
+        "stem_damping_ratio": None if st is None else round(st.damping_ratio, 8),
         "apple_radius": None if params.apple_radius is None else round(params.apple_radius, 9),
         "apple_density": None if params.apple_density is None else round(params.apple_density, 6),
         "primary_dir_x": None if p is None else round(p.direction[0], 6),
@@ -702,6 +995,47 @@ def _deflect_direction(
     return (cos_el * math.cos(az), cos_el * math.sin(az), math.sin(el_new))
 
 
+def _parse_vbd_stretch_fixed(seg_data: dict) -> tuple[float, float] | None:
+    """Return fixed stretch knobs from a segment's ``vbd_stretch_fixed`` block, if present."""
+    block = seg_data.get("vbd_stretch_fixed")
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise ValueError("vbd_stretch_fixed must be a JSON object")
+    missing = _VBD_STRETCH_FIXED_KEYS - block.keys()
+    if missing:
+        raise ValueError(
+            f"vbd_stretch_fixed missing required keys: {sorted(missing)}"
+        )
+    extra = set(block.keys()) - _VBD_STRETCH_FIXED_KEYS
+    if extra:
+        raise ValueError(
+            f"vbd_stretch_fixed has unknown keys: {sorted(extra)}"
+        )
+    k_stretch = float(block["stretch_stiffness"])
+    c_stretch = float(block["stretch_damping"])
+    if k_stretch <= 0.0:
+        raise ValueError("vbd_stretch_fixed.stretch_stiffness must be positive")
+    if c_stretch <= 0.0:
+        raise ValueError("vbd_stretch_fixed.stretch_damping must be positive")
+    return k_stretch, c_stretch
+
+
+def _stretch_kw_from_seg_ranges(seg_data: dict) -> dict[str, float]:
+    """Keyword args for :func:`rod_params_from_material` stretch overrides."""
+    fixed = _parse_vbd_stretch_fixed(seg_data)
+    if fixed is None:
+        return {}
+    return {"stretch_stiffness": fixed[0], "stretch_damping": fixed[1]}
+
+
+def _validate_vbd_stretch_fixed(seg: str, seg_data: dict) -> None:
+    """Validate optional ``vbd_stretch_fixed`` on a rod segment (raises on bad shape)."""
+    if "vbd_stretch_fixed" not in seg_data:
+        return
+    _parse_vbd_stretch_fixed(seg_data)
+
+
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
@@ -718,9 +1052,8 @@ def _validate_ranges(data: dict) -> None:
         "num_segments",
         "length",
         "radius",
-        "bend_stiffness",
-        "bend_damping",
-        "stretch_stiffness",
+        "youngs_modulus_pa",
+        "damping_ratio",
         "density",
     )
     for seg in ("primary", "secondary", "spur", "stem"):
@@ -729,16 +1062,24 @@ def _validate_ranges(data: dict) -> None:
             continue
         if not isinstance(seg_data, dict):
             raise ValueError(f"Segment '{seg}' must be a JSON object or null")
+        legacy = _LEGACY_ROD_STIFFNESS_RANGE_KEYS.intersection(seg_data)
+        if legacy:
+            raise ValueError(
+                f"Segment '{seg}' uses deprecated keys {sorted(legacy)}; "
+                "use youngs_modulus_pa and damping_ratio instead"
+            )
         for key in rod_required:
             if key not in seg_data:
                 raise ValueError(f"Missing key '{key}' in segment '{seg}'")
             rng = seg_data[key]
             if "min" not in rng or "max" not in rng:
                 raise ValueError(f"Range {seg}.{key} must have 'min' and 'max'")
-            if rng["min"] > rng["max"]:
-                raise ValueError(
-                    f"Range {seg}.{key}: min ({rng['min']}) > max ({rng['max']})"
-                )
+                if rng["min"] > rng["max"]:
+                    raise ValueError(
+                        f"Range {seg}.{key}: min ({rng['min']}) > max ({rng['max']})"
+                    )
+
+        _validate_vbd_stretch_fixed(seg, seg_data)
 
         if seg == "primary":
             for key in ("azimuth_deg", "elevation_deg"):

@@ -17,7 +17,9 @@ from apple_pick_sim.fruiting_system.params import (
     TOPOLOGY_T_JUNCTION,
     load_ranges,
     parse_fixture_args,
+    rod_params_from_material,
     _spur_attach_fraction_from_ranges,
+    _stretch_kw_from_seg_ranges,
     _topology_from_ranges,
 )
 
@@ -71,16 +73,16 @@ def _median_range_int(block: dict, key: str) -> int:
 
 
 def _rod_params_from_range_median(seg_ranges: dict) -> RodParams:
-    """Sample non-geometric rod scalars at range midpoints with a placeholder direction."""
-    return RodParams(
-        num_segments=max(2, _median_range_int(seg_ranges, "num_segments")),
-        length=_median_range_scalar(seg_ranges, "length"),
-        radius=_median_range_scalar(seg_ranges, "radius"),
-        bend_stiffness=_median_range_scalar(seg_ranges, "bend_stiffness"),
-        bend_damping=_median_range_scalar(seg_ranges, "bend_damping"),
-        stretch_stiffness=_median_range_scalar(seg_ranges, "stretch_stiffness"),
-        density=_median_range_scalar(seg_ranges, "density"),
-        direction=(1.0, 0.0, 0.0),
+    """Sample geometry/material at range midpoints with a placeholder direction."""
+    return rod_params_from_material(
+        _median_range_scalar(seg_ranges, "youngs_modulus_pa"),
+        _median_range_scalar(seg_ranges, "damping_ratio"),
+        _median_range_scalar(seg_ranges, "length"),
+        _median_range_scalar(seg_ranges, "radius"),
+        _median_range_scalar(seg_ranges, "density"),
+        max(2, _median_range_int(seg_ranges, "num_segments")),
+        (1.0, 0.0, 0.0),
+        **_stretch_kw_from_seg_ranges(seg_ranges),
     )
 
 
@@ -186,15 +188,14 @@ def infer_params_from_obs(
             if obs.rod_radii is not None and name in obs.rod_radii
             else ref.radius
         )
-        return RodParams(
-            num_segments=ref.num_segments,
-            length=length,
-            radius=radius,
-            bend_stiffness=ref.bend_stiffness,
-            bend_damping=ref.bend_damping,
-            stretch_stiffness=ref.stretch_stiffness,
-            density=ref.density,
-            direction=direction,
+        return rod_params_from_material(
+            ref.youngs_modulus_pa,
+            ref.damping_ratio,
+            length,
+            radius,
+            ref.density,
+            ref.num_segments,
+            direction,
         )
 
     apple_radius = _resolve_apple_radius(obs, ranges) if has_apple else None

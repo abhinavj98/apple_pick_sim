@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from apple_pick_sim.coupled_fruiting.settle_then_weld import settle_gravity_z_for_substep
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.placement import (
     IK_BOOTSTRAP_POS_TOL_M,
@@ -362,3 +363,64 @@ def test_build_raises_when_proxy_unreachable_from_specified_robot_base():
                 fix_to_apple=True,
             ),
         )
+
+
+def test_settle_gravity_z_for_substep_schedule():
+    """Linear ramp: first substep near target/N, last substep at full target."""
+    target = -9.81
+    n = 100
+    values = [settle_gravity_z_for_substep(i, n, target_z=target) for i in range(n)]
+    assert values[0] == pytest.approx(target / n, rel=0, abs=1e-12)
+    assert values[-1] == pytest.approx(target, rel=0, abs=1e-12)
+    for a, b in zip(values, values[1:], strict=False):
+        assert a >= b - 1e-15  # target_z negative: ramp toward more negative g_z
+    assert settle_gravity_z_for_substep(0, 1, target_z=target) == pytest.approx(target)
+    assert settle_gravity_z_for_substep(0, 0, target_z=target) == pytest.approx(target)
+
+
+def test_settle_vbd_substeps_gravity_ramp_updates_model():
+    """After ramp settle, cable model gravity ends at full −9.81 m/s² on z."""
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    settled = cf.build_coupled_fruiting_fr3(
+        ranges,
+        2,
+        vbd_only=True,
+        **_BUILD_KW,
+        gripper_proxy=fs.GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            fix_to_apple=False,
+        ),
+    )
+    cf.settle_vbd_substeps(settled, substeps=10, dt=SUB_DT, gravity_ramp=True)
+    g = settled.cable.model.gravity.numpy()
+    if g.ndim == 1:
+        g_z = float(g[2])
+    else:
+        g_z = float(g[0, 2])
+        np.testing.assert_allclose(g[:, 2], g_z, rtol=0, atol=1e-9)
+    assert g_z == pytest.approx(-9.81, rel=0, abs=1e-5)
+
+
+def test_settle_vbd_substeps_gravity_ramp_false_unchanged():
+    """Instant-g settle leaves model.gravity at build-time values."""
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    settled = cf.build_coupled_fruiting_fr3(
+        ranges,
+        2,
+        vbd_only=True,
+        **_BUILD_KW,
+        gripper_proxy=fs.GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            fix_to_apple=False,
+        ),
+    )
+    g_before = settled.cable.model.gravity.numpy().copy()
+    cf.settle_vbd_substeps(settled, substeps=5, dt=SUB_DT, gravity_ramp=False)
+    g_after = settled.cable.model.gravity.numpy()
+    np.testing.assert_array_equal(g_after, g_before)

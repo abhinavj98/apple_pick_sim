@@ -1,46 +1,55 @@
 {
-  "_comment": "Domain-randomization variant for real-world bench proxy. Active placeholders: primary.bend_stiffness tier bands 210–736 N/m (not yet sys-ID calibrated); stem.bend_stiffness interim until torsion API; rod radius from example_variance until measured; apple density 350 kg/m³ (half of 700 placeholder until measured).",
-  "spur_attach_fraction": 0.5,
+  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). vbd_stretch_fixed holds axial VBD knobs constant for SolverVBD settling stability; bend DR remains youngs_modulus_pa + damping_ratio. See docs/material-parameter-sampling.md and docs/real-world-proxy.md.",
   "args": {
-    "fruiting_base_pos": [0.0, 0.4, 0.65],
+    "spur_attach_fraction": 0.5,
+    "fruiting_base_pos": [0.0, 0.5, 0.65],
     "robot_base_pos": [0.0, 0.0, 0.0]
   },
   "primary": {
-    "num_segments": { "min": 2, "max": 2 },
-    "length": { "min": 0.30, "max": 0.40 },
-    "radius": { "min": 0.02, "max": 0.025 },
-    "bend_stiffness": { "min": 100.0, "max": 200.0 },
-    "bend_damping": { "min": 8.0, "max": 28.0 },
-    "stretch_stiffness": { "min": 1.0e7, "max": 1.0e8 },
-    "density": { "min": 300.0, "max": 500.0 },
-    "azimuth_deg": { "min": 0.0, "max": 0.0 },
-    "elevation_deg": { "min": 0.0, "max": 0.0 }
+    "num_segments": {"min": 4, "max": 4},
+    "length": {"min": 0.3, "max": 0.4},
+    "radius": {"min": 0.012, "max": 0.025},
+    "density": {"min": 300.0, "max": 500.0},
+    "azimuth_deg": {"min": 0.0, "max": 0.0},
+    "elevation_deg": {"min": 0.0, "max": 0.0},
+    "youngs_modulus_pa": {"min": 2560008.0, "max": 9000009.0},
+    "damping_ratio": {"min": 0.1, "max": 0.2},
+    "vbd_stretch_fixed": {
+      "stretch_stiffness": 500000.0,
+      "stretch_damping": 500.0
+    }
   },
   "secondary": null,
   "spur": {
-    "num_segments": { "min": 4, "max": 4 },
-    "length": { "min": 0.06, "max": 0.12 },
-    "radius": { "min": 0.006, "max": 0.012 },
-    "bend_stiffness": { "min": 5.0, "max": 10.0 },
-    "bend_damping": { "min": 0.4, "max": 1.4 },
-    "stretch_stiffness": { "min": 1.0e6, "max": 1.0e7 },
-    "density": { "min": 200.0, "max": 400.0 },
+    "num_segments": {"min": 3, "max": 3},
+    "length": {"min": 0.05, "max": 0.1},
+    "radius": {"min": 0.008, "max": 0.014},
+    "density": {"min": 200.0, "max": 400.0},
     "elevation_delta_deg": { "min": -90.0, "max": 90.0 },
-    "lateral_delta_deg": { "min": -180.0, "max": 180.0 }
+    "lateral_delta_deg": { "min": -180.0, "max": 180.0 },
+    "youngs_modulus_pa": {"min": 141200.0, "max": 423700.0},
+    "damping_ratio": {"min": 0.1, "max": 0.2},
+    "vbd_stretch_fixed": {
+      "stretch_stiffness": 50000.0,
+      "stretch_damping": 30.0
+    }
   },
   "stem": {
-    "num_segments": { "min": 4, "max": 4 },
-    "length": { "min": 0.04, "max": 0.08 },
-    "radius": { "min": 0.0015, "max": 0.003 },
-    "bend_stiffness": { "min": 0.05, "max": 0.5 },
-    "bend_damping": { "min": 0.15, "max": 0.30 },
-    "stretch_stiffness": { "min": 1.0e5, "max": 1.0e6 },
-    "density": { "min": 150.0, "max": 300.0 },
+    "num_segments": {"min": 3, "max": 3},
+    "length": {"min": 0.03, "max": 0.06},
+    "radius": {"min": 0.006, "max": 0.008},
+    "density": {"min": 200.0, "max": 400.0},
     "elevation_delta_deg": { "min": -90.0, "max": 90.0 },
-    "lateral_delta_deg": { "min": -180.0, "max": 180.0 }
+    "lateral_delta_deg": { "min": -180.0, "max": 180.0 },
+    "youngs_modulus_pa": {"min": 14120.0, "max": 42370.0},
+   "damping_ratio": {"min": 0.1, "max": 0.2},
+    "vbd_stretch_fixed": {
+      "stretch_stiffness": 1000.0,
+      "stretch_damping": 30.0
+    }
   },
   "apple": {
-    "radius": { "min": 0.03, "max": 0.05 },
-    "density": { "min": 350.0, "max": 450.0 }
+    "radius": {"min": 0.04, "max": 0.06},
+    "density": {"min": 400.0, "max": 600.0}
   }
 }

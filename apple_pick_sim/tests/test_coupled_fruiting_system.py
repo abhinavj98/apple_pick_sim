@@ -122,6 +122,47 @@ def test_build_vbd_only_skips_robot():
     assert scene.mj_solver is None
 
 
+def _branch_body_indices(cable) -> list[int]:
+    return [*cable.spur_bodies, *cable.stem_bodies, int(cable.apple_body)]
+
+
+def _max_branch_linear_speed_m_s(cable) -> float:
+    bqd = cable.state_0.body_qd.numpy().reshape(-1, 6)
+    branch = _branch_body_indices(cable)
+    return float(max(np.linalg.norm(bqd[i, :3]) for i in branch))
+
+
+def test_vbd_only_build_syncs_body_q_prev_with_state_on_fruiting_chain():
+    """Post-build eval_fk must refresh SolverVBD.body_q_prev on the whole cable."""
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = cf.build_coupled_fruiting_placeholder(
+        ranges,
+        43,
+        vbd_only=True,
+        enable_self_collisions=False,
+    )
+    cable = scene.cable
+    bq = cable.state_0.body_q.numpy().reshape(-1, 7)
+    bqp = cable.solver.body_q_prev.numpy().reshape(-1, 7)
+    for idx in range(int(cable.model.body_count)):
+        np.testing.assert_allclose(
+            bqp[idx, :3],
+            bq[idx, :3],
+            rtol=1e-6,
+            atol=1e-6,
+            err_msg=f"body {idx} body_q_prev position stale after build",
+        )
+
+    cable.model.set_gravity((0.0, 0.0, 0.0))
+    scene.vbd_substep(SUB_DT)
+    speed = _max_branch_linear_speed_m_s(cable)
+    assert speed < 25.0, (
+        f"first substep branch speed {speed:.2f} m/s suggests stale body_q_prev"
+    )
+
+
 def test_build_mujoco_only_includes_robot():
     cf = _import_cf()
     fs = _import_fs()

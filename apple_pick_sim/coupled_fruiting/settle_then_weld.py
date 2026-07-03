@@ -5,6 +5,7 @@ the proxy↔apple FIXED joint (``joint_apple_gripper_proxy``) cannot be toggled 
 runtime. This module provides a robust two-build workflow:
 
 1) Build a free-apple scene (``fix_to_apple=False``) and run VBD substeps to settle.
+   Optionally use a linear gravity ramp via :func:`settle_vbd_substeps` (``gravity_ramp=True``).
 2) Build a welded scene (``fix_to_apple=True``) and seed its cable state from the
    settled configuration so the welded constraint starts near zero violation.
 3) Re-run FR3 IK bootstrap at the scene's fixed robot base (from fixture
@@ -77,21 +78,81 @@ def quiet_all_cable_bodies(cable: Any) -> None:
     wp.synchronize()
 
 
-def settle_vbd_substeps(scene: Any, *, substeps: int, dt: float) -> None:
+def settle_gravity_z_for_substep(
+    step_index: int,
+    substeps: int,
+    *,
+    target_z: float = -9.81,
+) -> float:
+    """Linear gravity ramp: substep ``i`` uses ``target_z * (i + 1) / N``."""
+    n = int(substeps)
+    if n <= 0:
+        return float(target_z)
+    return float(target_z) * (int(step_index) + 1) / n
+
+
+def _apply_settle_gravity(scene: Any, g_xyz: tuple[float, float, float]) -> None:
+    scene.cable.model.set_gravity(g_xyz)
+    if hasattr(scene, "gravity_vec"):
+        scene.gravity_vec = wp.vec3(float(g_xyz[0]), float(g_xyz[1]), float(g_xyz[2]))
+
+
+def settle_vbd_substeps(
+    scene: Any,
+    *,
+    substeps: int,
+    dt: float,
+    gravity_ramp: bool = False,
+    gravity_target: tuple[float, float, float] = (0.0, 0.0, -9.81),
+) -> None:
     """Advance ``scene`` by ``substeps`` VBD-only substeps.
+
+    When ``gravity_ramp`` is True, gravity on the cable model ramps linearly
+    from zero to ``gravity_target`` over all substeps before each ``vbd_substep`` call.
+    Full target magnitude applies only on the final substep; increase ``substeps`` if
+    post-settle stability reports still show residual motion.
 
     Args:
         scene: A :class:`~apple_pick_sim.coupled_fruiting.scene.CoupledFruitingScene`
-            or any object exposing ``vbd_substep(dt)``.
+            or any object exposing ``vbd_substep(dt)`` and ``cable.model``.
         substeps: Number of VBD substeps to advance.
         dt: Step size [s] per VBD substep.
+        gravity_ramp: If True, linearly ramp cable gravity over substeps; if False,
+            leave build-time gravity unchanged (instant full g throughout).
+        gravity_target: World-frame gravity vector at the end of the ramp (default −9.81 z).
     """
     n = int(substeps)
     if n <= 0:
         return
     h = float(dt)
-    for _ in range(n):
+    for i in range(n):
+        apply_settle_gravity_for_substep(
+            scene,
+            i,
+            n,
+            gravity_ramp=gravity_ramp,
+            gravity_target=gravity_target,
+        )
         scene.vbd_substep(h)
+
+
+def apply_settle_gravity_for_substep(
+    scene: Any,
+    step_index: int,
+    substeps: int,
+    *,
+    gravity_ramp: bool,
+    gravity_target: tuple[float, float, float] = (0.0, 0.0, -9.81),
+) -> None:
+    """Set cable gravity for one settle substep (no-op when ``gravity_ramp`` is False)."""
+    if not gravity_ramp:
+        return
+    target_z = float(gravity_target[2])
+    gz = settle_gravity_z_for_substep(step_index, substeps, target_z=target_z)
+    _apply_settle_gravity(
+        scene,
+        (float(gravity_target[0]), float(gravity_target[1]), gz),
+    )
 
 
 def _nominal_cable_view(scene: Any) -> Any:

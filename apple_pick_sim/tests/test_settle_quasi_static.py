@@ -19,6 +19,7 @@ from apple_pick_sim.coupled_fruiting.settle_quasi_static import (
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     RodParams,
+    rod_params_from_vbd_targets,
 )
 
 
@@ -33,10 +34,10 @@ def _params(*, spur_len: float, stem_len: float, apple_r: float) -> FruitingSyst
         direction=(0.0, 0.0, -1.0),
     )
     return FruitingSystemParams(
-        primary=RodParams(length=0.3, **rod_kw),
+        primary=rod_params_from_vbd_targets(length=0.3, **rod_kw),
         secondary=None,
-        spur=RodParams(length=spur_len, **rod_kw),
-        stem=RodParams(length=stem_len, **rod_kw),
+        spur=rod_params_from_vbd_targets(length=spur_len, **rod_kw),
+        stem=rod_params_from_vbd_targets(length=stem_len, **rod_kw),
         apple_radius=apple_r,
         apple_density=700.0,
     )

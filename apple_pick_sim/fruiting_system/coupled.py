@@ -210,7 +210,7 @@ def _align_coupled_scene_chain_from_reference(
     A world-root FREE proxy in the same articulation as the fruiting tree skews Newton FK at
     finalize; this copies the reference P0 kinematics for shared bodies before coupling.
     """
-    from apple_pick_sim.coupled_fruiting.proxy_coupling import align_proxy_body_q_prev_for_vbd
+    from apple_pick_sim.coupled_fruiting.proxy_coupling import sync_cable_body_q_prev_from_state
 
     ref = _build_scene(
         coupled.params,
@@ -238,7 +238,7 @@ def _align_coupled_scene_chain_from_reference(
     coupled.model.joint_qd.assign(jqd)
 
     # Do not run full-model eval_fk here: the world-root proxy articulation skews the tree.
-    align_proxy_body_q_prev_for_vbd(coupled, tuple(range(n)))
+    sync_cable_body_q_prev_from_state(coupled)
 
 
 def _build_coupled_cable_scene(

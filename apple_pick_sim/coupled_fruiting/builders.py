@@ -41,6 +41,7 @@ from apple_pick_sim.fruiting_system import (
 )
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     ProxyBodyRegistry,
+    eval_fk_cable_state_0,
     prepare_batched_stem_harvest_arrays,
 )
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
@@ -338,8 +339,7 @@ def build_coupled_fruiting_placeholder(
         robot_base_pos=resolve_robot_base_pos(ranges, override=robot_base_pos),
     )
 
-    newton.eval_fk(cable.model, cable.model.joint_q, cable.model.joint_qd, cable.state_0)
-    wp.synchronize()
+    eval_fk_cable_state_0(cable)
 
     pipe = (
         cable_collision_pipeline
@@ -440,8 +440,7 @@ def build_coupled_fruiting_fr3(
         gripper_proxy=gripper_proxy,
         robot_base_pos=resolve_robot_base_pos(ranges, override=robot_base_pos),
     )
-    newton.eval_fk(cable.model, cable.model.joint_q, cable.model.joint_qd, cable.state_0)
-    wp.synchronize()
+    eval_fk_cable_state_0(cable)
 
     pipe = (
         cable_collision_pipeline
@@ -586,13 +585,7 @@ def build_batched_coupled_fruiting_placeholder(
         gripper_proxy=gripper_proxy,
         robot_base_pos=resolved_robot_base,
     )
-    newton.eval_fk(
-        template_cable.model,
-        template_cable.model.joint_q,
-        template_cable.model.joint_qd,
-        template_cable.state_0,
-    )
-    wp.synchronize()
+    eval_fk_cable_state_0(template_cable)
 
     cable = build_replicated_coupled_cable_scene(
         template_cable,
@@ -769,13 +762,7 @@ def build_batched_coupled_fruiting_fr3(
         gripper_proxy=gripper_proxy,
         robot_base_pos=resolved_robot_base,
     )
-    newton.eval_fk(
-        template_cable.model,
-        template_cable.model.joint_q,
-        template_cable.model.joint_qd,
-        template_cable.state_0,
-    )
-    wp.synchronize()
+    eval_fk_cable_state_0(template_cable)
 
     cable = build_replicated_coupled_cable_scene(
         template_cable,
@@ -973,12 +960,16 @@ def build_heterogeneous_coupled_fruiting_placeholder(
     )
     gravity_vec = wp.vec3(0.0, 0.0, -9.81)
     if vbd_only:
+        layout = BatchedEnvLayout.from_cable_only(
+            cable, cable.model, env_spacing=(0.0, 0.0, 0.0)
+        )
         return CoupledFruitingScene(
             cable=cable,
             cable_collision_pipeline=pipe,
             vbd_only=True,
             gravity_vec=gravity_vec,
             env_spacing=env_spacing,
+            layout=layout,
             per_env_params=params,
             per_world_proxy_offsets=per_world_offsets,
         )
@@ -1140,12 +1131,16 @@ def build_heterogeneous_coupled_fruiting_fr3(
     )
     gravity_vec = wp.vec3(0.0, 0.0, -9.81)
     if vbd_only:
+        layout = BatchedEnvLayout.from_cable_only(
+            cable, cable.model, env_spacing=(0.0, 0.0, 0.0)
+        )
         return CoupledFruitingScene(
             cable=cable,
             cable_collision_pipeline=pipe,
             vbd_only=True,
             gravity_vec=gravity_vec,
             env_spacing=env_spacing,
+            layout=layout,
             per_env_params=params,
             per_world_proxy_offsets=per_world_offsets,
         )

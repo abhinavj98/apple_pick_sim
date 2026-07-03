@@ -200,18 +200,21 @@ Physical proxy targets (spring constant at branch joint):
 | High | 711 | 736 |
 
 **Fixture policy:** **continuous tier bands** in variance JSON, not three separate
-preset files. Map proxy **210 – 736 N/m** onto `primary.bend_stiffness` min/max.
+preset files. Map proxy **210 – 736 N/m** onto **`youngs_modulus_pa`** min/max at
+nominal primary geometry (see `docs/material-parameter-sampling.md`); legacy
+`primary.bend_stiffness` bands are deprecated.
 
 **Calibration note:** VBD `bend_stiffness` on discretized rods is not literally
-N/m. Treat the table as **tier centers**; validate with quasi-static holds and
+N/m. Treat the table as **tier centers**; derive from sampled \(E\) and geometry,
+then validate with quasi-static holds and
 `apple_pick_gym/examples/run_system_identification.py` grid search before
 treating numbers as ground truth.
 
 ### Spur stiffness
 
-Vary `spur.bend_stiffness` in the variance fixture (short segment, compliant
-shoot). Exact N/m mapping is TBD; keep order-of-magnitude below primary and above
-stem unless sys-ID dictates otherwise.
+Vary spur **`youngs_modulus_pa`** (and \(\zeta\)) in the variance fixture (short
+segment, compliant shoot). Exact N/m mapping is TBD; keep order-of-magnitude below
+primary and above stem unless sys-ID dictates otherwise.
 
 ### Stem detach / magnet strength
 
@@ -240,12 +243,14 @@ Document in code comments and tests when the torsion API lands.
 
 `fruiting_system_ranges_real_world_proxy_variance.json` should randomize:
 
-- Primary `bend_stiffness` (branch tier band)
+- Primary **`youngs_modulus_pa`** and **`damping_ratio`** (branch tier band → \(E\))
 - Spur length
 - Spur yaw / roll off the nominal **−Z** hang (`elevation_delta_deg`, `lateral_delta_deg`)
-- Spur `bend_stiffness`
-- Stem stiffness (pending torsion API; interim bend range allowed)
+- Spur **`youngs_modulus_pa`** / **`damping_ratio`**
+- Stem material (\(\zeta\), \(E\); pending torsion API; interim bend-derived range allowed)
 - Apple `radius` and `density` (see placeholders)
+
+Material sampling contract: `docs/material-parameter-sampling.md`.
 
 Mid-span spur attach fraction stays **0.5** in variance (fixed topology per batch).
 Nominal fixture may use fixed angles for reproducible IK smoke tests.

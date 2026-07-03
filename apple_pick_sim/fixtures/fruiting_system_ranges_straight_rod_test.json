@@ -26,18 +26,6 @@
       "min": 0.01,
       "max": 0.02
     },
-    "bend_stiffness": {
-      "min": 20.0,
-      "max": 40.0
-    },
-    "bend_damping": {
-      "min": 1.6,
-      "max": 5.6
-    },
-    "stretch_stiffness": {
-      "min": 4000000.0,
-      "max": 9000000.0
-    },
     "density": {
       "min": 220.0,
       "max": 360.0
@@ -49,6 +37,14 @@
     "elevation_deg": {
       "min": 0.0,
       "max": 0.0
+    },
+    "youngs_modulus_pa": {
+      "min": 18862808.070151,
+      "max": 37725616.140301
+    },
+    "damping_ratio": {
+      "min": 154.92541157,
+      "max": 383.42083184
     }
   },
   "secondary": {
@@ -64,18 +60,6 @@
       "min": 0.008,
       "max": 0.016
     },
-    "bend_stiffness": {
-      "min": 20.0,
-      "max": 40.0
-    },
-    "bend_damping": {
-      "min": 2.0,
-      "max": 6.4
-    },
-    "stretch_stiffness": {
-      "min": 1500000.0,
-      "max": 4000000.0
-    },
     "density": {
       "min": 200.0,
       "max": 340.0
@@ -87,6 +71,14 @@
     "lateral_delta_deg": {
       "min": -0.5,
       "max": 0.5
+    },
+    "youngs_modulus_pa": {
+      "min": 23025888.757508,
+      "max": 46051777.515016
+    },
+    "damping_ratio": {
+      "min": 578.22931151,
+      "max": 1308.3835752
     }
   },
   "spur": {
@@ -102,18 +94,6 @@
       "min": 0.006,
       "max": 0.014
     },
-    "bend_stiffness": {
-      "min": 2.0,
-      "max": 5.0
-    },
-    "bend_damping": {
-      "min": 0.18,
-      "max": 0.75
-    },
-    "stretch_stiffness": {
-      "min": 2000000.0,
-      "max": 5500000.0
-    },
     "density": {
       "min": 200.0,
       "max": 340.0
@@ -125,6 +105,14 @@
     "lateral_delta_deg": {
       "min": -0.5,
       "max": 0.5
+    },
+    "youngs_modulus_pa": {
+      "min": 3819718.634205,
+      "max": 9549296.585514
+    },
+    "damping_ratio": {
+      "min": 269.73421254,
+      "max": 710.81206208
     }
   },
   "stem": {
@@ -140,18 +128,6 @@
       "min": 0.002,
       "max": 0.006
     },
-    "bend_stiffness": {
-      "min": 0.8,
-      "max": 1
-    },
-    "bend_damping": {
-      "min": 0.04,
-      "max": 0.1
-    },
-    "stretch_stiffness": {
-      "min": 2500000.0,
-      "max": 6000000.0
-    },
     "density": {
       "min": 200.0,
       "max": 340.0
@@ -163,6 +139,14 @@
     "lateral_delta_deg": {
       "min": -0.5,
       "max": 0.5
+    },
+    "youngs_modulus_pa": {
+      "min": 129313391.262165,
+      "max": 161641739.077706
+    },
+    "damping_ratio": {
+      "min": 110.98989256,
+      "max": 248.18094457
     }
   },
   "apple": {

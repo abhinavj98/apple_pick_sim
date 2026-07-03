@@ -11,6 +11,7 @@ Validates:
 """
 
 import dataclasses
+import math
 from pathlib import Path
 
 import numpy as np
@@ -66,8 +67,8 @@ def test_load_ranges_segment_keys():
         "num_segments",
         "length",
         "radius",
-        "bend_stiffness",
-        "bend_damping",
+        "youngs_modulus_pa",
+        "damping_ratio",
         "density",
     }
     for seg in ("primary", "secondary", "spur", "stem"):
@@ -116,7 +117,7 @@ def test_soft_variance_fixture_uses_tenth_stiffness_ranges():
     soft = fs.load_ranges(SOFT_VARIANCE_FIXTURE)
 
     for segment in ("primary", "secondary", "spur", "stem"):
-        for key in ("bend_stiffness", "stretch_stiffness"):
+        for key in ("youngs_modulus_pa",):
             assert soft[segment][key]["min"] == pytest.approx(
                 baseline[segment][key]["min"] * 0.1
             )
@@ -154,6 +155,239 @@ def test_invalid_fixture_args_rejected():
         path = f.name
     with pytest.raises(ValueError, match="fruiting_base_pos"):
         fs.load_ranges(path)
+
+
+# ---------------------------------------------------------------------------
+# Material-parameter sampling (E, ζ)
+# ---------------------------------------------------------------------------
+
+
+def test_rod_params_from_material_derivation():
+    fs = _import_module()
+    rod = fs.rod_params_from_material(
+        youngs_modulus_pa=1.0e7,
+        damping_ratio=0.05,
+        length=0.10,
+        radius=0.01,
+        density=300.0,
+        num_segments=4,
+        direction=(1.0, 0.0, 0.0),
+    )
+    area = math.pi * 0.01**2
+    inertia = math.pi * 0.01**4 / 4.0
+    l_seg = 0.10 / 4.0
+    m_seg = 300.0 * area * l_seg
+    j_seg = m_seg * (3.0 * 0.01**2 + l_seg**2) / 12.0
+    assert rod.stretch_stiffness == pytest.approx(1.0e7 * area / l_seg)
+    assert rod.bend_stiffness == pytest.approx(1.0e7 * inertia / l_seg)
+    assert rod.stretch_damping == pytest.approx(
+        2.0 * 0.05 * math.sqrt(rod.stretch_stiffness * m_seg)
+    )
+    assert rod.bend_damping == pytest.approx(
+        2.0 * 0.05 * math.sqrt(rod.bend_stiffness * j_seg)
+    )
+
+
+def test_sample_params_stores_E_and_zeta_on_rod():
+    fs = _import_module()
+    params = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=0)
+    assert params.primary is not None
+    assert params.primary.youngs_modulus_pa > 0.0
+    assert params.primary.damping_ratio >= 0.0
+
+
+def test_sample_params_primary_E_ge_secondary():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    for seed in range(20):
+        params = fs.sample_params(ranges, seed=seed)
+        if params.primary is None or params.secondary is None:
+            continue
+        assert params.primary.youngs_modulus_pa >= params.secondary.youngs_modulus_pa
+
+
+def test_load_ranges_rejects_bend_stiffness_key():
+    fs = _import_module()
+    import copy
+    import json
+    import tempfile
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    bad = copy.deepcopy(ranges)
+    bad["primary"]["bend_stiffness"] = {"min": 1.0, "max": 2.0}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(bad, f)
+        path = f.name
+    with pytest.raises(ValueError, match="deprecated keys"):
+        fs.load_ranges(path)
+
+
+def test_load_ranges_requires_youngs_modulus_pa():
+    fs = _import_module()
+    import copy
+    import json
+    import tempfile
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    bad = copy.deepcopy(ranges)
+    del bad["primary"]["youngs_modulus_pa"]
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(bad, f)
+        path = f.name
+    with pytest.raises(ValueError, match="youngs_modulus_pa"):
+        fs.load_ranges(path)
+
+
+def test_fruiting_params_v2_roundtrip():
+    fs = _import_module()
+    params = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=42)
+    encoded = fs.fruiting_params_to_dict(params)
+    assert encoded["schema"] == fs.FRUITING_SYSTEM_PARAMS_SCHEMA
+    assert encoded["primary"]["youngs_modulus_pa"] == pytest.approx(
+        params.primary.youngs_modulus_pa
+    )
+    decoded = fs.fruiting_params_from_dict(encoded)
+    assert decoded.primary.youngs_modulus_pa == pytest.approx(params.primary.youngs_modulus_pa)
+    assert decoded.primary.damping_ratio == pytest.approx(params.primary.damping_ratio)
+
+
+def test_fruiting_params_v1_deserialization():
+    fs = _import_module()
+    params = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=7)
+    v1 = fs.fruiting_params_to_dict(params)
+    v1["schema"] = fs.FRUITING_SYSTEM_PARAMS_SCHEMA_V1
+    for seg in ("primary", "secondary", "spur", "stem"):
+        if v1.get(seg) is None:
+            continue
+        v1[seg].pop("youngs_modulus_pa", None)
+        v1[seg].pop("damping_ratio", None)
+        v1[seg].pop("stretch_damping", None)
+    decoded = fs.fruiting_params_from_dict(v1)
+    assert decoded.primary.bend_stiffness == pytest.approx(params.primary.bend_stiffness)
+
+
+# ---------------------------------------------------------------------------
+# vbd_stretch_fixed override (stability tuning for batched VBD settling)
+# ---------------------------------------------------------------------------
+
+
+def test_rod_params_from_material_stretch_override():
+    fs = _import_module()
+    rod = fs.rod_params_from_material(
+        youngs_modulus_pa=1.0e7,
+        damping_ratio=0.05,
+        length=0.10,
+        radius=0.01,
+        density=300.0,
+        num_segments=4,
+        direction=(1.0, 0.0, 0.0),
+        stretch_stiffness=500000.0,
+        stretch_damping=30.0,
+    )
+    assert rod.stretch_stiffness == pytest.approx(500000.0)
+    assert rod.stretch_damping == pytest.approx(30.0)
+    area = math.pi * 0.01**2
+    inertia = math.pi * 0.01**4 / 4.0
+    l_seg = 0.10 / 4.0
+    j_seg = 300.0 * area * l_seg * (3.0 * 0.01**2 + l_seg**2) / 12.0
+    assert rod.bend_stiffness == pytest.approx(1.0e7 * inertia / l_seg)
+    assert rod.bend_damping == pytest.approx(
+        2.0 * 0.05 * math.sqrt(rod.bend_stiffness * j_seg)
+    )
+
+
+def test_load_ranges_vbd_stretch_fixed_validates():
+    fs = _import_module()
+    import copy
+    import json
+    import tempfile
+
+    ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
+    ranges["primary"]["vbd_stretch_fixed"] = {
+        "stretch_stiffness": 500000.0,
+        "stretch_damping": 30.0,
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(ranges, f)
+        path = f.name
+    loaded = fs.load_ranges(path)
+    assert loaded["primary"]["vbd_stretch_fixed"]["stretch_stiffness"] == 500000.0
+
+
+def test_load_ranges_vbd_stretch_fixed_rejects_partial_or_nonpositive():
+    fs = _import_module()
+    import copy
+    import json
+    import tempfile
+
+    ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
+
+    bad_partial = copy.deepcopy(ranges)
+    bad_partial["primary"]["vbd_stretch_fixed"] = {"stretch_stiffness": 500000.0}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(bad_partial, f)
+        path = f.name
+    with pytest.raises(ValueError, match="stretch_damping"):
+        fs.load_ranges(path)
+
+    bad_nonpositive = copy.deepcopy(ranges)
+    bad_nonpositive["primary"]["vbd_stretch_fixed"] = {
+        "stretch_stiffness": 500000.0,
+        "stretch_damping": 0.0,
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(bad_nonpositive, f)
+        path = f.name
+    with pytest.raises(ValueError, match="stretch_damping"):
+        fs.load_ranges(path)
+
+
+def test_sample_params_stretch_fixed_constant_across_seeds():
+    fs = _import_module()
+    import copy
+    import json
+    import tempfile
+
+    ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
+    ranges["primary"]["vbd_stretch_fixed"] = {
+        "stretch_stiffness": 500000.0,
+        "stretch_damping": 30.0,
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(ranges, f)
+        path = f.name
+    loaded = fs.load_ranges(path)
+    p0 = fs.sample_params(loaded, seed=0)
+    p1 = fs.sample_params(loaded, seed=99)
+    assert p0.primary is not None and p1.primary is not None
+    assert p0.primary.stretch_stiffness == pytest.approx(500000.0)
+    assert p1.primary.stretch_stiffness == pytest.approx(500000.0)
+    assert p0.primary.stretch_damping == pytest.approx(30.0)
+    assert p1.primary.stretch_damping == pytest.approx(30.0)
+    assert p0.primary.bend_stiffness != pytest.approx(p1.primary.bend_stiffness)
+
+
+def test_params_from_ranges_median_honors_vbd_stretch_fixed():
+    from apple_pick_sim.digital_twin.from_obs import params_from_ranges_median
+
+    fs = _import_module()
+    import copy
+    import json
+    import tempfile
+
+    ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
+    ranges["primary"]["vbd_stretch_fixed"] = {
+        "stretch_stiffness": 500000.0,
+        "stretch_damping": 30.0,
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(ranges, f)
+        path = f.name
+    loaded = fs.load_ranges(path)
+    params = params_from_ranges_median(loaded)
+    assert params.primary is not None
+    assert params.primary.stretch_stiffness == pytest.approx(500000.0)
+    assert params.primary.stretch_damping == pytest.approx(30.0)
 
 
 # ---------------------------------------------------------------------------
@@ -262,16 +496,16 @@ def test_sample_params_varies_with_seed():
 
 
 def test_primary_stiffer_than_secondary():
-    """Primary bend stiffness must be >= secondary when both segments are enabled."""
+    """Primary Young's modulus must be >= secondary when both segments are enabled."""
     fs = _import_module()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     for seed in range(20):
         params = fs.sample_params(ranges, seed=seed)
         if params.primary is None or params.secondary is None:
             continue
-        assert params.primary.bend_stiffness >= params.secondary.bend_stiffness, (
-            f"seed={seed}: primary.bend_stiffness ({params.primary.bend_stiffness}) "
-            f"< secondary.bend_stiffness ({params.secondary.bend_stiffness})"
+        assert params.primary.youngs_modulus_pa >= params.secondary.youngs_modulus_pa, (
+            f"seed={seed}: primary.youngs_modulus_pa ({params.primary.youngs_modulus_pa}) "
+            f"< secondary.youngs_modulus_pa ({params.secondary.youngs_modulus_pa})"
         )
 
 
@@ -286,7 +520,7 @@ def test_params_within_bounds():
             seg_ranges = ranges.get(seg_name)
             if seg_params is None or seg_ranges is None:
                 continue
-            for attr in ("length", "radius", "bend_stiffness", "bend_damping", "density"):
+            for attr in ("length", "radius", "youngs_modulus_pa", "damping_ratio", "density"):
                 v = getattr(seg_params, attr)
                 lo = seg_ranges[attr]["min"]
                 hi = seg_ranges[attr]["max"]
@@ -580,10 +814,10 @@ def test_fingerprint_primary_stiffer_than_secondary():
         fp = fs.geometry_fingerprint(
             fs.generate_scene(ranges, seed=seed, **NO_SELF_COLLISION_KW)
         )
-        pb, sb = fp.get("primary_bend_stiffness"), fp.get("secondary_bend_stiffness")
-        if pb is None or sb is None:
+        pe, se = fp.get("primary_youngs_modulus_pa"), fp.get("secondary_youngs_modulus_pa")
+        if pe is None or se is None:
             continue
-        assert pb >= sb, f"seed={seed}: fingerprint stiffness ordering violated"
+        assert pe >= se, f"seed={seed}: fingerprint E ordering violated"
 
 
 # ---------------------------------------------------------------------------
@@ -659,6 +893,302 @@ def test_fruiting_fixed_joints_matches_label_heuristic():
     ranges = fs.load_ranges(RANGES_FIXTURE)
     scene = fs.generate_scene(ranges, seed=3, device="cpu", **NO_SELF_COLLISION_KW)
     assert list(scene.fruiting_fixed_joints) == fs.iter_fixed_joint_indices(scene.model)
+
+
+def _scene_for_joint_kd_tests():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    return fs.generate_scene(ranges, seed=3, device="cpu", **NO_SELF_COLLISION_KW)
+
+
+def _angular_kd_for_joint(solver, joint_index: int) -> float:
+    import newton
+
+    jc_start = solver.joint_constraint_start.numpy()
+    kd = solver.joint_penalty_kd.numpy()
+    c0 = int(jc_start[joint_index])
+    return float(kd[c0 + newton.solvers.SolverVBD.JointSlot.ANGULAR])
+
+
+def _joint_index_by_label(fruiting_fixed_joints, label_substr: str) -> int:
+    matches = [j for j, lab in fruiting_fixed_joints if label_substr in lab]
+    assert len(matches) == 1, f"expected one joint for {label_substr!r}, got {matches}"
+    return matches[0]
+
+
+def _run_fruiting_vbd_substeps(scene, *, num_substeps: int, sim_dt: float) -> None:
+    fs = _import_module()
+    pipe = fs.example_collision_pipeline(scene.model, args=None)
+    for _ in range(num_substeps):
+        scene.state_0.clear_forces()
+        contacts = scene.model.collide(scene.state_0, collision_pipeline=pipe)
+        scene.solver.step(
+            scene.state_0, scene.state_1, scene.control, contacts, sim_dt
+        )
+        scene.state_0, scene.state_1 = scene.state_1, scene.state_0
+
+
+def test_set_fruiting_joint_angular_kd_persists_through_solver_step():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+    fs.set_fruiting_joint_angular_kd(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"stem_apple": 2.5},
+    )
+    _run_fruiting_vbd_substeps(scene, num_substeps=8, sim_dt=(1.0 / 60.0) / 10.0)
+    assert _angular_kd_for_joint(scene.solver, j_stem_apple) == pytest.approx(2.5)
+
+
+def test_set_fruiting_joint_angular_kd_changes_trajectory_after_steps():
+    fs = _import_module()
+    sim_dt = (1.0 / 60.0) / 10.0
+    substeps = 120
+
+    scene_default = _scene_for_joint_kd_tests()
+    _run_fruiting_vbd_substeps(scene_default, num_substeps=substeps, sim_dt=sim_dt)
+    q_default = scene_default.state_0.body_q.numpy().copy()
+
+    scene_patched = _scene_for_joint_kd_tests()
+    fs.set_fruiting_joint_angular_kd(
+        scene_patched.solver,
+        scene_patched.fruiting_fixed_joints,
+        {"stem_apple": 50.0},
+    )
+    _run_fruiting_vbd_substeps(scene_patched, num_substeps=substeps, sim_dt=sim_dt)
+    q_patched = scene_patched.state_0.body_q.numpy().copy()
+
+    assert not np.allclose(q_default, q_patched, rtol=0.0, atol=1.0e-4), (
+        "patched stem_apple angular kd should change integrated trajectory"
+    )
+
+
+def test_set_fruiting_joint_angular_kd_patches_matching_slots():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_primary = _joint_index_by_label(scene.fruiting_fixed_joints, "primary_secondary")
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+
+    fs.set_fruiting_joint_angular_kd(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 2.5, "stem_apple": 0.25},
+    )
+
+    assert _angular_kd_for_joint(scene.solver, j_primary) == pytest.approx(2.5)
+    assert _angular_kd_for_joint(scene.solver, j_stem_apple) == pytest.approx(0.25)
+
+
+def test_set_fruiting_joint_angular_kd_leaves_unmatched_joints_at_default():
+    from apple_pick_sim.fruiting_system.build import FRUITING_VBD_RIGID_JOINT_ANGULAR_KD
+
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_spur_stem = _joint_index_by_label(scene.fruiting_fixed_joints, "spur_stem")
+    default_kd = _angular_kd_for_joint(scene.solver, j_spur_stem)
+    assert default_kd == pytest.approx(FRUITING_VBD_RIGID_JOINT_ANGULAR_KD)
+
+    fs.set_fruiting_joint_angular_kd(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 3.0},
+    )
+
+    assert _angular_kd_for_joint(scene.solver, j_spur_stem) == pytest.approx(
+        FRUITING_VBD_RIGID_JOINT_ANGULAR_KD
+    )
+
+
+def test_set_fruiting_joint_angular_kd_raises_on_unmatched_key():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="nonexistent_key_xyz"):
+        fs.set_fruiting_joint_angular_kd(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"nonexistent_key_xyz": 1.0},
+        )
+
+
+def test_set_fruiting_joint_angular_kd_raises_on_ambiguous_multi_key_match():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        fs.set_fruiting_joint_angular_kd(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"apple": 0.5, "stem_apple": 0.25},
+        )
+
+
+def test_set_fruiting_joint_angular_kd_raises_on_negative_kd():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="negative"):
+        fs.set_fruiting_joint_angular_kd(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"stem_apple": -0.1},
+        )
+
+
+def test_set_fruiting_joint_angular_kd_returns_matched_indices_per_key():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_primary = _joint_index_by_label(scene.fruiting_fixed_joints, "primary_secondary")
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+
+    matched = fs.set_fruiting_joint_angular_kd(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 2.0, "stem_apple": 0.2},
+    )
+
+    assert matched == {"primary_secondary": [j_primary], "stem_apple": [j_stem_apple]}
+
+
+def _angular_kp_triple_for_joint(solver, joint_index: int) -> tuple[float, float, float]:
+    import newton
+
+    jc_start = solver.joint_constraint_start.numpy()
+    k = solver.joint_penalty_k.numpy()
+    k_min = solver.joint_penalty_k_min.numpy()
+    k_max = solver.joint_penalty_k_max.numpy()
+    c0 = int(jc_start[joint_index])
+    slot = c0 + newton.solvers.SolverVBD.JointSlot.ANGULAR
+    return float(k[slot]), float(k_min[slot]), float(k_max[slot])
+
+
+def test_set_fruiting_joint_angular_kp_persists_through_solver_step():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+    kp_set = 2.5e5
+    substeps = 8
+    fs.set_fruiting_joint_angular_kp(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"stem_apple": kp_set},
+    )
+    _run_fruiting_vbd_substeps(scene, num_substeps=substeps, sim_dt=(1.0 / 60.0) / 10.0)
+    k, _k_min, k_max = _angular_kp_triple_for_joint(scene.solver, j_stem_apple)
+    expected_k = kp_set * (scene.solver.rigid_avbd_gamma**substeps)
+    assert k == pytest.approx(expected_k)
+    assert k_max >= kp_set
+
+
+def test_set_fruiting_joint_angular_kp_changes_trajectory_after_steps():
+    fs = _import_module()
+    sim_dt = (1.0 / 60.0) / 10.0
+    substeps = 120
+
+    scene_default = _scene_for_joint_kd_tests()
+    _run_fruiting_vbd_substeps(scene_default, num_substeps=substeps, sim_dt=sim_dt)
+    q_default = scene_default.state_0.body_q.numpy().copy()
+
+    scene_patched = _scene_for_joint_kd_tests()
+    fs.set_fruiting_joint_angular_kp(
+        scene_patched.solver,
+        scene_patched.fruiting_fixed_joints,
+        {"stem_apple": 1.0e4},
+    )
+    _run_fruiting_vbd_substeps(scene_patched, num_substeps=substeps, sim_dt=sim_dt)
+    q_patched = scene_patched.state_0.body_q.numpy().copy()
+
+    assert not np.allclose(q_default, q_patched, rtol=0.0, atol=1.0e-4), (
+        "patched stem_apple angular kp should change integrated trajectory"
+    )
+
+
+def test_set_fruiting_joint_angular_kp_patches_matching_slots():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_primary = _joint_index_by_label(scene.fruiting_fixed_joints, "primary_secondary")
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+
+    fs.set_fruiting_joint_angular_kp(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 2.0e5, "stem_apple": 5.0e4},
+    )
+
+    k_primary, _, kmax_primary = _angular_kp_triple_for_joint(scene.solver, j_primary)
+    k_stem, _, kmax_stem = _angular_kp_triple_for_joint(scene.solver, j_stem_apple)
+    assert k_primary == pytest.approx(2.0e5)
+    assert k_stem == pytest.approx(5.0e4)
+    assert kmax_primary >= 2.0e5
+    assert kmax_stem >= 5.0e4
+
+
+def test_set_fruiting_joint_angular_kp_leaves_unmatched_joints_at_default():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_spur_stem = _joint_index_by_label(scene.fruiting_fixed_joints, "spur_stem")
+    default_k, _, _ = _angular_kp_triple_for_joint(scene.solver, j_spur_stem)
+
+    fs.set_fruiting_joint_angular_kp(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 2.0e5},
+    )
+
+    k_spur, _, _ = _angular_kp_triple_for_joint(scene.solver, j_spur_stem)
+    assert k_spur == pytest.approx(default_k)
+
+
+def test_set_fruiting_joint_angular_kp_raises_on_unmatched_key():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="nonexistent_key_xyz"):
+        fs.set_fruiting_joint_angular_kp(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"nonexistent_key_xyz": 1.0e5},
+        )
+
+
+def test_set_fruiting_joint_angular_kp_raises_on_ambiguous_multi_key_match():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        fs.set_fruiting_joint_angular_kp(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"apple": 1.0e5, "stem_apple": 5.0e4},
+        )
+
+
+def test_set_fruiting_joint_angular_kp_raises_on_negative_kp():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="negative"):
+        fs.set_fruiting_joint_angular_kp(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"stem_apple": -1.0},
+        )
+
+
+def test_set_fruiting_joint_angular_kp_returns_matched_indices_per_key():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_primary = _joint_index_by_label(scene.fruiting_fixed_joints, "primary_secondary")
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+
+    matched = fs.set_fruiting_joint_angular_kp(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 2.0e5, "stem_apple": 5.0e4},
+    )
+
+    assert matched == {"primary_secondary": [j_primary], "stem_apple": [j_stem_apple]}
 
 
 def test_measure_fruiting_forces_returns_fixed_and_cable_indices():
@@ -827,7 +1357,7 @@ def test_variance_fixture_loads_and_samples_in_bounds():
     for seg_name in ("primary", "secondary", "spur", "stem"):
         seg_params = getattr(params, seg_name)
         seg_ranges = ranges[seg_name]
-        for attr in ("length", "radius", "bend_stiffness", "bend_damping", "density"):
+        for attr in ("length", "radius", "youngs_modulus_pa", "damping_ratio", "density"):
             v = getattr(seg_params, attr)
             lo = seg_ranges[attr]["min"]
             hi = seg_ranges[attr]["max"]
@@ -969,3 +1499,153 @@ def test_example_fruiting_system_enable_self_collision_parser_enabled():
 
     args = ex._make_parser().parse_args(["--enable-self-collision"])
     assert ex._enable_self_collisions_from_args(args) is True
+
+
+# ---------------------------------------------------------------------------
+# Directional overlap check
+# ---------------------------------------------------------------------------
+
+
+def _rod(fs, direction: tuple[float, float, float]):
+    return fs.rod_params_from_material(
+        youngs_modulus_pa=1.0e7,
+        damping_ratio=0.05,
+        length=0.10,
+        radius=0.01,
+        density=300.0,
+        num_segments=3,
+        direction=direction,
+    )
+
+
+def _t_junction_params(fs, *, primary_dir, spur_dir, stem_dir):
+    return fs.FruitingSystemParams(
+        primary=_rod(fs, primary_dir),
+        secondary=None,
+        spur=_rod(fs, spur_dir),
+        stem=_rod(fs, stem_dir),
+        apple_radius=0.04,
+        apple_density=400.0,
+        topology=fs.TOPOLOGY_T_JUNCTION,
+    )
+
+
+def _linear_chain_params(fs, *, primary_dir, spur_dir, stem_dir):
+    return fs.FruitingSystemParams(
+        primary=_rod(fs, primary_dir),
+        secondary=None,
+        spur=_rod(fs, spur_dir),
+        stem=_rod(fs, stem_dir),
+        apple_radius=0.04,
+        apple_density=400.0,
+        topology=fs.TOPOLOGY_LINEAR_CHAIN,
+    )
+
+
+def test_overlap_parallel_spur_primary_t_junction():
+    fs = _import_module()
+    params = _t_junction_params(
+        fs,
+        primary_dir=(1.0, 0.0, 0.0),
+        spur_dir=(1.0, 0.0, 0.0),
+        stem_dir=(0.0, 0.0, 1.0),
+    )
+    assert fs.branches_overlap_by_direction(params) is True
+
+
+def test_overlap_antiparallel_spur_primary_t_junction():
+    fs = _import_module()
+    params = _t_junction_params(
+        fs,
+        primary_dir=(1.0, 0.0, 0.0),
+        spur_dir=(-1.0, 0.0, 0.0),
+        stem_dir=(0.0, 0.0, 1.0),
+    )
+    assert fs.branches_overlap_by_direction(params) is True
+
+
+def test_no_overlap_perpendicular_spur_primary():
+    fs = _import_module()
+    params = _t_junction_params(
+        fs,
+        primary_dir=(1.0, 0.0, 0.0),
+        spur_dir=(0.0, 0.0, 1.0),
+        stem_dir=(0.0, 1.0, 0.0),
+    )
+    assert fs.branches_overlap_by_direction(params) is False
+
+
+def test_overlap_antiparallel_stem_spur():
+    fs = _import_module()
+    params = _t_junction_params(
+        fs,
+        primary_dir=(1.0, 0.0, 0.0),
+        spur_dir=(0.0, 0.0, -1.0),
+        stem_dir=(0.0, 0.0, 1.0),
+    )
+    assert fs.branches_overlap_by_direction(params) is True
+
+
+def test_no_overlap_parallel_stem_spur_linear():
+    fs = _import_module()
+    params = _linear_chain_params(
+        fs,
+        primary_dir=(1.0, 0.0, 0.0),
+        spur_dir=(0.0, 0.0, -1.0),
+        stem_dir=(0.0, 0.0, -1.0),
+    )
+    assert fs.branches_overlap_by_direction(params) is False
+
+
+def test_overlap_threshold_respected():
+    fs = _import_module()
+    params = _t_junction_params(
+        fs,
+        primary_dir=(1.0, 0.0, 0.0),
+        spur_dir=(0.707, 0.707, 0.0),
+        stem_dir=(0.0, 0.0, 1.0),
+    )
+    assert fs.branches_overlap_by_direction(params, threshold=0.75) is False
+    assert fs.branches_overlap_by_direction(params, threshold=0.5) is True
+
+
+def test_sample_params_no_overlap_result_passes_check():
+    fs = _import_module()
+    ranges = fs.load_ranges(VARIANCE_FIXTURE)
+    params = fs.sample_params_no_overlap(ranges, seed=42)
+    assert fs.branches_overlap_by_direction(params) is False
+
+
+def test_sample_params_no_overlap_deterministic():
+    fs = _import_module()
+    ranges = fs.load_ranges(VARIANCE_FIXTURE)
+    p1 = fs.sample_params_no_overlap(ranges, seed=99)
+    p2 = fs.sample_params_no_overlap(ranges, seed=99)
+    assert fs.params_fingerprint(p1) == fs.params_fingerprint(p2)
+
+
+def test_sample_params_no_overlap_exhaustion_raises(monkeypatch):
+    fs = _import_module()
+    ranges = fs.load_ranges(VARIANCE_FIXTURE)
+
+    def _always_overlap(params, threshold=0.75):
+        del params, threshold
+        return True
+
+    monkeypatch.setattr(
+        "apple_pick_sim.fruiting_system.params.branches_overlap_by_direction",
+        _always_overlap,
+    )
+    with pytest.raises(RuntimeError, match="non-overlapping"):
+        fs.sample_params_no_overlap(ranges, seed=0, max_retries=3)
+
+
+def test_hetero_list_with_overlap_threshold_all_clean():
+    fs = _import_module()
+    ranges = fs.load_ranges(VARIANCE_FIXTURE)
+    params_list = fs.sample_heterogeneous_params_list(
+        ranges, topology_seed=42, num_envs=8, overlap_threshold=0.75
+    )
+    assert len(params_list) == 8
+    for params in params_list:
+        assert fs.branches_overlap_by_direction(params, threshold=0.75) is False

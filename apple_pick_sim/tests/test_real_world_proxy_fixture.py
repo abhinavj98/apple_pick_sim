@@ -50,9 +50,9 @@ def test_nominal_primary_direction(nominal_ranges):
 
 
 def test_nominal_stiffness_tier(nominal_ranges):
-    bs = nominal_ranges["primary"]["bend_stiffness"]
-    assert bs["min"] >= 210.0
-    assert bs["max"] <= 736.0
+    e = nominal_ranges["primary"]["youngs_modulus_pa"]
+    assert e["min"] > 0.0
+    assert e["max"] > e["min"]
 
 
 def test_nominal_spur_hang_angle(nominal_ranges):
@@ -81,21 +81,111 @@ def test_variance_loads_and_topology(variance_ranges):
 
 
 def test_variance_stiffness_ordering(variance_ranges):
-    spur_max = variance_ranges["spur"]["bend_stiffness"]["max"]
-    primary_min = variance_ranges["primary"]["bend_stiffness"]["min"]
+    spur_max = variance_ranges["spur"]["youngs_modulus_pa"]["max"]
+    primary_min = variance_ranges["primary"]["youngs_modulus_pa"]["min"]
+    assert spur_max < primary_min
+
+
+def _variance_segment_midpoint(row: dict) -> tuple[float, float, float, int]:
+    def _mid(band: dict) -> float:
+        return 0.5 * (float(band["min"]) + float(band["max"]))
+
+    return (
+        _mid(row["length"]),
+        _mid(row["radius"]),
+        _mid(row["density"]),
+        int(_mid(row["num_segments"])),
+    )
+
+
+def test_variance_vbd_stretch_fixed_inextensible_wood(variance_ranges):
+    """Axial knobs follow wood-scale E_axial, decoupled from bend youngs_modulus_pa."""
+    from apple_pick_sim.fruiting_system.params import inextensible_wood_stretch_knobs
+
+    for seg in ("primary", "spur", "stem"):
+        row = variance_ranges[seg]
+        length, radius, density, num_segments = _variance_segment_midpoint(row)
+        expected = inextensible_wood_stretch_knobs(
+            length, radius, density, num_segments
+        )
+        fixed = row["vbd_stretch_fixed"]
+        assert fixed["stretch_stiffness"] == pytest.approx(expected[0], rel=0.01)
+        assert fixed["stretch_damping"] == pytest.approx(expected[1], rel=0.02)
+
+
+def test_variance_stretch_stiffness_decoupled_from_bend_e(variance_ranges):
+    """Spur/stem axial k must not track compliant bend E (wood does not stretch)."""
+    from apple_pick_sim.fruiting_system.params import _segment_material_geometry
+
+    for seg in ("spur", "stem"):
+        row = variance_ranges[seg]
+        length, radius, density, num_segments = _variance_segment_midpoint(row)
+        e_bend = 0.5 * (
+            float(row["youngs_modulus_pa"]["min"])
+            + float(row["youngs_modulus_pa"]["max"])
+        )
+        area, _inertia, l_seg, _m_seg, _j_seg = _segment_material_geometry(
+            radius, length, num_segments, density
+        )
+        k_from_bend_e = e_bend * area / l_seg
+        k_stretch = float(row["vbd_stretch_fixed"]["stretch_stiffness"])
+        assert k_stretch >= 10.0 * k_from_bend_e
+
+
+def test_variance_youngs_modulus_hits_proxy_tip_tier_at_midpoint_geometry(variance_ranges):
+    """E bands map to proxy k_tip=3EI/L^3 tiers at segment midpoint L,r."""
+    import math
+
+    def _I(r: float) -> float:
+        return math.pi * r**4 / 4.0
+
+    def _k_tip(e: float, length: float, radius: float) -> float:
+        return 3.0 * e * _I(radius) / length**3
+
+    def _mid(band: dict) -> float:
+        return 0.5 * (float(band["min"]) + float(band["max"]))
+
+    tiers = {
+        "primary": (210.0, 736.0),
+        "spur": (0.2, 0.6),
+        "stem": (0.05, 0.5),
+    }
+    for seg, (k_lo, k_hi) in tiers.items():
+        row = variance_ranges[seg]
+        length = _mid(row["length"])
+        radius = _mid(row["radius"])
+        e_lo = float(row["youngs_modulus_pa"]["min"])
+        e_hi = float(row["youngs_modulus_pa"]["max"])
+        assert _k_tip(e_lo, length, radius) == pytest.approx(k_lo, rel=0.01)
+        assert _k_tip(e_hi, length, radius) == pytest.approx(k_hi, rel=0.01)
+
+
+def test_proxy_material_damping_ratio_is_fraction_of_critical(nominal_ranges, variance_ranges):
+    """Apple-branch ζ bands are dimensionless fractions of critical damping."""
+    for ranges in (nominal_ranges, variance_ranges):
+        for seg in ("primary", "spur", "stem"):
+            zeta = ranges[seg]["damping_ratio"]
+            assert zeta["min"] <= zeta["max"]
+            assert 0.0 <= zeta["min"] <= 1.0
+            assert 0.0 <= zeta["max"] <= 1.0
+
+
+def test_nominal_spur_E_below_primary(nominal_ranges):
+    spur_max = nominal_ranges["spur"]["youngs_modulus_pa"]["max"]
+    primary_min = nominal_ranges["primary"]["youngs_modulus_pa"]["min"]
     assert spur_max < primary_min
 
 
 def test_variance_spur_angular_ranges(variance_ranges):
     spur = variance_ranges["spur"]
-    assert spur["elevation_delta_deg"] == {"min": -90.0, "max": 90.0}
-    assert spur["lateral_delta_deg"] == {"min": -180.0, "max": 180.0}
+    assert spur["elevation_delta_deg"] == {"min": -90.0, "max": -90.0}
+    assert spur["lateral_delta_deg"] == {"min": 0.0, "max": 0.0}
 
 
 def test_variance_stem_angular_ranges(variance_ranges):
     stem = variance_ranges["stem"]
-    assert stem["elevation_delta_deg"] == {"min": -90.0, "max": 90.0}
-    assert stem["lateral_delta_deg"] == {"min": -180.0, "max": 180.0}
+    assert stem["elevation_delta_deg"] == {"min": -90.0, "max": -90.0}
+    assert stem["lateral_delta_deg"] == {"min": 0.0, "max": 0.0}
 
 
 def test_placeholder_ee_mass():

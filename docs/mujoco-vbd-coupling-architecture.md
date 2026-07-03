@@ -101,7 +101,7 @@ Train controllers that are **robust to randomized apples** under this contract:
 
 1. **Dynamic arm** — `robot_kinematic_mode=False`. Kinematic mode zeros coupling wrenches; the policy never sees payload.
 2. **Settle → weld** — post-grasp episodes with `fix_to_apple=True` and explicit apple weight on, so load appears at the TCP after grasp (not from t = 0).
-3. **DR on plant parameters** — per-env `apple_mass_kg`, density, stem stiffness, etc. (`sample_heterogeneous_params_list`, batched builds). Explicit harvest scales TCP wrench with sampled mass; do **not** put apple mass into Model A gravity or into real gravity-comp feedforward during training.
+3. **DR on plant parameters** — per-env `apple_mass_kg`, density, rod \(E\)/\(\zeta\) (→ stiffness), etc. (`sample_heterogeneous_params_list`, batched builds). Explicit harvest scales TCP wrench with sampled mass; do **not** put apple mass into Model A gravity or into real gravity-comp feedforward during training.
 4. **Observations** — include load cues (TCP wrench, joint torques, velocity errors). Pose-only policies cannot learn mass-dependent reactions.
 5. **Action interface** — match deploy: VIC/impedance under the policy (`vic_use_joint_torques`, plant load on TCP `body_f`) if that is the real stack.
 

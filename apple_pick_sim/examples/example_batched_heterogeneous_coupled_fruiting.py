@@ -20,7 +20,15 @@ Variable-impedance teleop (requires PyTorch; ``uv sync --extra vic``)::
       --num-envs 4 --viewer gl --controller vic --seed 42
 
 Default ranges: ``fruiting_system_ranges_real_world_proxy_variance.json`` (real-world
-bench proxy with per-env DR). Robot base at origin; fruiting chain at (0, 0.5, 0.95) m.
+bench proxy with per-env DR). Stretch axial VBD knobs are fixed via per-segment
+``vbd_stretch_fixed`` in that fixture; per-env variation is ``youngs_modulus_pa`` and
+``damping_ratio`` (bend stiffness and bend damping). Robot base at origin; fruiting
+chain at (0, 0.5, 0.95) m.
+
+Cable-only stepping (no MuJoCo robot)::
+
+    uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \\
+      --num-envs 4 --viewer gl --only-vbd --seed 42
 """
 
 from __future__ import annotations
@@ -41,6 +49,19 @@ import newton.examples
 
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.robot import fr3_robot
+from apple_pick_sim.coupled_fruiting.settle_quasi_static import print_settle_stability_report
+from apple_pick_sim.coupled_fruiting.settle_ke_decay import (
+    DEFAULT_KE_ANALYSIS_TAIL_FRACTION,
+    DEFAULT_KE_MIN_PEAKS,
+    DEFAULT_KE_PEAK_DECAY_RTOL,
+    DEFAULT_KE_SAMPLE_EVERY,
+    SettleKeAnalysisConfig,
+    SettleKeRecorder,
+    per_env_branch_ke_j_from_cable,
+    print_settle_checkpoint_report,
+    print_settle_ke_decay_report,
+)
+from apple_pick_sim.coupled_fruiting.settle_then_weld import apply_settle_gravity_for_substep
 from apple_pick_sim.coupled_fruiting import (
     CoupledFruitingScene,
     broadcast_joint_q_from_world0,
@@ -50,8 +71,12 @@ from apple_pick_sim.coupled_fruiting import (
     quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
     settle_stability_reports_from_cable,
-    settle_vbd_substeps,
 )
+
+_SETTLE_REPORT_INTERVAL = 1000
+# Sag under gravity can exceed straight rest sum; stable when path ≤ 1.05× nominal.
+_SETTLE_PATH_MAX_OVER_NOMINAL = 1.05
+_SETTLE_PATH_RTOL = _SETTLE_PATH_MAX_OVER_NOMINAL - 1.0
 from apple_pick_sim.fruiting_system import (
     FruitingSystemParams,
     GripperProxyConfig,
@@ -59,6 +84,8 @@ from apple_pick_sim.fruiting_system import (
     default_ranges_fixture_path,
     load_ranges,
     sample_heterogeneous_params_list,
+    set_fruiting_joint_angular_kd_batched,
+    set_fruiting_joint_angular_kp_batched,
 )
 
 # Real-world bench proxy EE: 50 mm radius, 140 mm length (docs/real-world-proxy.md).
@@ -73,9 +100,22 @@ from apple_pick_sim.coupled_fruiting.batched_robot_status import print_batched_r
 
 
 # Batched heterogeneous teleop: smaller steps than 1.0 m/s so template IK keeps up at 30 Hz.
-_FR3_TELEOP_LINEAR_SPEED = 0.2
-_FR3_TELEOP_ANGULAR_SPEED = 0.2
+_FR3_TELEOP_LINEAR_SPEED = 0.02
+_FR3_TELEOP_ANGULAR_SPEED = 0.02
 _FR3_TELEOP_IK_ITERATIONS = 128
+
+# Per-role FIXED-joint angular kd overrides (see docs/damping-tuning.md §3)
+# Later divided by dt
+_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES: dict[str, float] = {
+    "support": 1.0,
+    "primary_spur": 1.0,
+    "stem_apple": 5e-2,
+}
+
+VIC_DEFAULT_LINEAR_K = 600.0
+VIC_DEFAULT_LINEAR_D = 200.0
+VIC_DEFAULT_ANGULAR_K = 20.0
+VIC_DEFAULT_ANGULAR_D = 4.0
 
 
 def _default_ranges_path() -> Path:
@@ -105,9 +145,208 @@ def _gripper_proxy_from_args(
     return GripperProxyConfig(fix_to_apple=fix, robot_facing_weld=fix)
 
 
-def _reject_unsupported_flags(args: argparse.Namespace) -> None:
-    if bool(getattr(args, "only_vbd", False)) or bool(getattr(args, "only_mjc", False)):
-        raise SystemExit("--only-vbd and --only-mjc are not supported.")
+def _print_vbd_settle_start(
+    *,
+    substeps: int,
+    sim_dt: float,
+    gravity_ramp: bool,
+) -> None:
+    """Log settle plan to the terminal (including gravity-ramp mode)."""
+    if substeps <= 0:
+        return
+    sim_time_s = int(substeps) * float(sim_dt)
+    if gravity_ramp:
+        print(
+            f"VBD settle: {substeps} substeps ({sim_time_s:.3f} s sim), "
+            "gravity ramp 0 → −9.81 m/s² over all substeps",
+            flush=True,
+        )
+    else:
+        print(
+            f"VBD settle: {substeps} substeps ({sim_time_s:.3f} s sim), "
+            "instant full gravity (ramp disabled)",
+            flush=True,
+        )
+
+
+def _print_settle_checkpoint(
+    scene: CoupledFruitingScene,
+    per_env_params,
+    *,
+    substep_idx: int,
+    sim_dt: float,
+    settle_max_speed: float,
+    brief: bool = False,
+    include_ke: bool = True,
+) -> None:
+    """Log per-env settle stability (+ optional branch KE) at a substep boundary."""
+    reports = settle_stability_reports_from_cable(
+        scene.cable,
+        per_env_params,
+        max_branch_speed_m_s=float(settle_max_speed),
+        path_rtol=_SETTLE_PATH_RTOL,
+    )
+    sim_time_s = int(substep_idx) * float(sim_dt)
+    if include_ke:
+        branch_ke_j = per_env_branch_ke_j_from_cable(scene.cable)
+        print_settle_checkpoint_report(
+            reports,
+            branch_ke_j,
+            substep_idx=substep_idx,
+            sim_time_s=sim_time_s,
+            prefix="  ",
+            verbose=not brief,
+        )
+        return
+    print(
+        f"Settle checkpoint @ substep {substep_idx} ({sim_time_s:.3f} s sim):",
+        flush=True,
+    )
+    print_settle_stability_report(reports, prefix="  ", verbose=not brief)
+
+
+def _settle_ke_enabled(args: argparse.Namespace | None) -> bool:
+    return bool(getattr(args, "settle_ke_decay", True)) if args else True
+
+
+def _settle_ke_analysis_config(
+    args: argparse.Namespace | None,
+    *,
+    settle_max_speed: float,
+) -> SettleKeAnalysisConfig:
+    threshold_raw = getattr(args, "ke_peak_threshold_j", None) if args else None
+    return SettleKeAnalysisConfig(
+        analysis_tail_fraction=float(
+            getattr(args, "ke_analysis_tail_fraction", DEFAULT_KE_ANALYSIS_TAIL_FRACTION)
+            if args
+            else DEFAULT_KE_ANALYSIS_TAIL_FRACTION
+        ),
+        min_peaks=int(getattr(args, "ke_min_peaks", DEFAULT_KE_MIN_PEAKS) if args else DEFAULT_KE_MIN_PEAKS),
+        peak_decay_rtol=float(
+            getattr(args, "ke_peak_decay_rtol", DEFAULT_KE_PEAK_DECAY_RTOL)
+            if args
+            else DEFAULT_KE_PEAK_DECAY_RTOL
+        ),
+        speed_threshold_m_s=float(settle_max_speed),
+        ke_peak_threshold_j=float(threshold_raw) if threshold_raw is not None else None,
+    )
+
+
+def _settle_ke_sample_every(args: argparse.Namespace | None) -> int:
+    return int(getattr(args, "ke_sample_every", DEFAULT_KE_SAMPLE_EVERY) if args else DEFAULT_KE_SAMPLE_EVERY)
+
+
+def _print_post_settle_diagnostics(
+    *,
+    stability_reports: list,
+    ke_decay_reports: list,
+    ik_results: list[tuple[float, float, bool]] | None = None,
+    brief: bool = False,
+) -> None:
+    """Print instant-speed stability, optional KE decay, and IK envelope summary."""
+    print_envelope_coverage_report(
+        ik_results or [],
+        stability_reports=stability_reports,
+        verbose=not brief,
+    )
+    if ke_decay_reports:
+        print_settle_ke_decay_report(ke_decay_reports, prefix="  ", verbose=not brief)
+
+
+def _run_vbd_settle_on_scene(
+    scene: CoupledFruitingScene,
+    *,
+    substeps: int,
+    sim_dt: float,
+    gravity_ramp: bool,
+    per_env_params,
+    settle_max_speed: float,
+    report_brief: bool = False,
+    num_envs: int = 1,
+    ke_enabled: bool = True,
+    ke_config: SettleKeAnalysisConfig | None = None,
+    ke_sample_every: int = DEFAULT_KE_SAMPLE_EVERY,
+) -> tuple[list, list]:
+    """Run VBD settle (+ optional stability report) on an existing scene."""
+    n = int(substeps)
+    if n <= 0:
+        return [], []
+    _print_vbd_settle_start(substeps=n, sim_dt=sim_dt, gravity_ramp=gravity_ramp)
+    h = float(sim_dt)
+    analysis = ke_config if ke_config is not None else SettleKeAnalysisConfig(
+        speed_threshold_m_s=float(settle_max_speed),
+    )
+    recorder = (
+        SettleKeRecorder(num_envs=int(num_envs), sample_every=int(ke_sample_every))
+        if ke_enabled
+        else None
+    )
+    for substep_idx in range(n):
+        apply_settle_gravity_for_substep(
+            scene,
+            substep_idx,
+            n,
+            gravity_ramp=gravity_ramp,
+        )
+        scene.vbd_substep(h)
+        if recorder is not None:
+            recorder.record_substep(
+                scene.cable,
+                per_env_params,
+                substep_idx,
+                h,
+                sample_every=int(ke_sample_every),
+            )
+        completed = substep_idx + 1
+        if completed % _SETTLE_REPORT_INTERVAL == 0:
+            _print_settle_checkpoint(
+                scene,
+                per_env_params,
+                substep_idx=completed,
+                sim_dt=h,
+                settle_max_speed=settle_max_speed,
+                brief=report_brief,
+                include_ke=ke_enabled,
+            )
+    stability_reports = settle_stability_reports_from_cable(
+        scene.cable,
+        per_env_params,
+        max_branch_speed_m_s=float(settle_max_speed),
+        path_rtol=_SETTLE_PATH_RTOL,
+    )
+    ke_decay_reports = recorder.reports(config=analysis) if recorder is not None else []
+    quiet_all_cable_bodies(scene.cable)
+    return stability_reports, ke_decay_reports
+
+
+def _defer_settle_to_viewer(
+    viewer,
+    *,
+    fix_to_apple: bool,
+    settle_substeps: int,
+) -> bool:
+    """True when settle should animate in the GL viewer instead of during __init__."""
+    if fix_to_apple or int(settle_substeps) <= 0:
+        return False
+    import newton
+
+    return isinstance(viewer, newton.viewer.ViewerGL)
+
+
+def _resolve_step_mode(args: argparse.Namespace | None) -> str:
+    """Return ``"coupled"``, ``"vbd"``, or ``"mjc"`` from CLI flags."""
+    only_vbd = bool(getattr(args, "only_vbd", False)) if args else False
+    only_mjc = bool(getattr(args, "only_mjc", False)) if args else False
+    if only_vbd and only_mjc:
+        raise SystemExit("--only-vbd and --only-mjc are mutually exclusive")
+    if only_mjc:
+        raise SystemExit(
+            "--only-mjc is not supported in the heterogeneous batched example "
+            "(num_envs > 1 does not support mujoco_only)."
+        )
+    if only_vbd:
+        return "vbd"
+    return "coupled"
 
 
 def _resolve_robot_kind(args: argparse.Namespace) -> str:
@@ -124,13 +363,22 @@ def _resolve_robot_kind(args: argparse.Namespace) -> str:
 def _print_per_env_params(params_list: list[FruitingSystemParams]) -> None:
     print("Per-env fruiting params (topology shared, continuous θ differs):")
     for w, p in enumerate(params_list):
-        bend = p.primary.bend_stiffness if p.primary is not None else float("nan")
+        print(f"  env{w}:")
+        for seg_name in ("primary", "secondary", "spur", "stem"):
+            rod = getattr(p, seg_name)
+            if rod is None:
+                continue
+            print(
+                f"    {seg_name}: E={rod.youngs_modulus_pa:.4g} Pa  "
+                f"zeta={rod.damping_ratio:.4g}  "
+                f"k_bend={rod.bend_stiffness:.4g} N·m/rad  "
+                f"c_bend={rod.bend_damping:.4g} N·m·s/rad  "
+                f"k_stretch={rod.stretch_stiffness:.4g} N/m  "
+                f"c_stretch={rod.stretch_damping:.4g} N·s/m"
+            )
         radius = float(p.apple_radius) if p.apple_radius is not None else float("nan")
         density = float(p.apple_density) if p.apple_density is not None else float("nan")
-        print(
-            f"  env{w}: primary_bend={bend:.4g}  apple_r={radius:.4g} m  "
-            f"apple_rho={density:.4g} kg/m³"
-        )
+        print(f"    apple: r={radius:.4g} m  rho={density:.4g} kg/m³")
 
 
 def _settle_inspect_continue_requested(
@@ -172,6 +420,16 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Viewer grid spacing [m] (sim worlds are co-located).",
     )
     parser.add_argument("--enable-self-collision", action="store_true")
+    parser.add_argument(
+        "--only-vbd",
+        action="store_true",
+        help="Cable SolverVBD only (gripper proxy at spawn; no MuJoCo robot).",
+    )
+    parser.add_argument(
+        "--only-mjc",
+        action="store_true",
+        help="Not supported for heterogeneous batched builds (num_envs > 1).",
+    )
     parser.add_argument("--robot", type=str, choices=("placeholder", "fr3"), default="fr3")
     parser.add_argument(
         "--controller",
@@ -186,7 +444,21 @@ def _make_parser() -> argparse.ArgumentParser:
         default=True,
         help="Settle-then-weld (default: on). Use --no-fix-to-apple for velocity-delta harvest.",
     )
-    parser.add_argument("--settle-substeps", type=int, default=5000)
+    parser.add_argument(
+        "--settle-substeps",
+        type=int,
+        default=5000,
+        help=(
+            "VBD substeps before runtime (default: 5000). Runs in all modes when > 0 "
+            "(settle-then-weld, --no-fix-to-apple, and --only-vbd)."
+        ),
+    )
+    parser.add_argument(
+        "--settle-gravity-ramp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Linear 0→−9.81 m/s² gravity ramp over all settle substeps (default: off).",
+    )
     parser.add_argument(
         "--inspect-settle",
         action="store_true",
@@ -205,6 +477,42 @@ def _make_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.05,
         help="Residual branch speed threshold [m/s] for post-settle stability.",
+    )
+    parser.add_argument(
+        "--settle-ke-decay",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Print branch KE envelope decay report after settle (default: on).",
+    )
+    parser.add_argument(
+        "--ke-sample-every",
+        type=int,
+        default=DEFAULT_KE_SAMPLE_EVERY,
+        help="Sample branch KE every N VBD substeps during settle.",
+    )
+    parser.add_argument(
+        "--ke-analysis-tail-fraction",
+        type=float,
+        default=DEFAULT_KE_ANALYSIS_TAIL_FRACTION,
+        help="Analyze KE decay over the last fraction of settle samples.",
+    )
+    parser.add_argument(
+        "--ke-min-peaks",
+        type=int,
+        default=DEFAULT_KE_MIN_PEAKS,
+        help="Minimum KE peaks required for envelope decay gate.",
+    )
+    parser.add_argument(
+        "--ke-peak-decay-rtol",
+        type=float,
+        default=DEFAULT_KE_PEAK_DECAY_RTOL,
+        help="Relative drop first→last KE peak required for decay gate.",
+    )
+    parser.add_argument(
+        "--ke-peak-threshold-j",
+        type=float,
+        default=None,
+        help="Override peak KE threshold [J]; default derives from branch mass and settle-max-speed.",
     )
     parser.add_argument(
         "--scripted-ee-vel",
@@ -241,10 +549,24 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--mujoco-viewer", action="store_true")
-    parser.add_argument("--vic-linear-k", type=float, default=600.0, help="VIC linear K [N/m].")
-    parser.add_argument("--vic-linear-d", type=float, default=200.0, help="VIC linear D [N·s/m].")
-    parser.add_argument("--vic-angular-k", type=float, default=20.0, help="VIC angular K [N·m/rad].")
-    parser.add_argument("--vic-angular-d", type=float, default=4.0, help="VIC angular D [N·m·s/rad].")
+    parser.add_argument(
+        "--vic-linear-k", type=float, default=VIC_DEFAULT_LINEAR_K, help="VIC linear K [N/m]."
+    )
+    parser.add_argument(
+        "--vic-linear-d", type=float, default=VIC_DEFAULT_LINEAR_D, help="VIC linear D [N·s/m]."
+    )
+    parser.add_argument(
+        "--vic-angular-k",
+        type=float,
+        default=VIC_DEFAULT_ANGULAR_K,
+        help="VIC angular K [N·m/rad].",
+    )
+    parser.add_argument(
+        "--vic-angular-d",
+        type=float,
+        default=VIC_DEFAULT_ANGULAR_D,
+        help="VIC angular D [N·m·s/rad].",
+    )
     return parser
 
 
@@ -254,17 +576,22 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
     def __init__(self, viewer, args: argparse.Namespace | None = None):
         self.viewer = viewer
         self.args = args
-        _reject_unsupported_flags(args or argparse.Namespace())
+        self._step_mode = _resolve_step_mode(args)
 
         self.fps = float(getattr(args, "hz", 30.0)) if args else 30.0
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 30
-        self.sim_dt = (1.0 / 60.0) / self.sim_substeps
+        self.sim_substeps = 60
+        self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
         self._frame = 0
         self._settled_scene: CoupledFruitingScene | None = None
         self._settle_stability_reports: list = []
+        self._settle_ke_decay_reports: list = []
         self._settle_ik_envelope_results: list[tuple[float, float, bool]] = []
+        self._pending_settle_substeps = 0
+        self._pending_settle_gravity_ramp = False
+        self._pending_settle_max_speed = 0.05
+        self._pending_settle_ke_enabled = True
 
         json_path = getattr(args, "json", None) if args else None
         ranges_path = Path(json_path) if json_path else _default_ranges_path()
@@ -294,6 +621,17 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         fix_to_apple = _fix_to_apple_from_args(args)
         enable_self = _enable_self_collisions_from_args(args)
         settle_substeps = int(getattr(args, "settle_substeps", 5000))
+        settle_gravity_ramp = bool(getattr(args, "settle_gravity_ramp", False))
+        settle_max_speed = float(getattr(args, "settle_max_speed", 0.05))
+        settle_ke_enabled = _settle_ke_enabled(args)
+        settle_ke_config = _settle_ke_analysis_config(args, settle_max_speed=settle_max_speed)
+        settle_ke_sample_every = _settle_ke_sample_every(args)
+        report_brief = bool(getattr(args, "settle_report_brief", False))
+        defer_settle_to_viewer = _defer_settle_to_viewer(
+            viewer,
+            fix_to_apple=fix_to_apple,
+            settle_substeps=settle_substeps,
+        )
 
         self.per_env_params = sample_heterogeneous_params_list(
             self.ranges, topology_seed=self._seed, num_envs=self.num_envs
@@ -302,10 +640,24 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         print(f"Heterogeneous batched fruiting ranges: {ranges_path}")
         print(f"Topology seed: {self._seed}")
         print(f"Warp device: {sim_device}")
+        if self._step_mode == "coupled":
+            label = "FR3+EE" if robot_kind == "fr3" else "placeholder TCP"
+            print(
+                f"M1 cable + {label} MuJoCo (staggered coupling); "
+                "Newton viewer shows cable model."
+            )
+        else:
+            print("Cable SolverVBD only (--only-vbd).")
         _print_per_env_params(self.per_env_params)
+        coupling_label = (
+            "stem-harvest / settle-then-weld"
+            if fix_to_apple and self._step_mode != "vbd"
+            else "velocity-delta"
+            if not fix_to_apple
+            else "ignored with --only-vbd"
+        )
         print(
-            f"Gripper proxy fix_to_apple={fix_to_apple} "
-            f"({'stem-harvest / settle-then-weld' if fix_to_apple else 'velocity-delta'} coupling)."
+            f"Gripper proxy fix_to_apple={fix_to_apple} ({coupling_label} coupling)."
         )
 
         build_fn = (
@@ -319,11 +671,12 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
             env_spacing=self.env_spacing,
             enable_self_collisions=enable_self,
             gripper_proxy=gripper,
+            vbd_only=(self._step_mode == "vbd"),
         )
         if robot_kind == "fr3":
             fr3_robot.enable_ik_bootstrap_warnings_for_examples()
 
-        if fix_to_apple:
+        if fix_to_apple and self._step_mode != "vbd":
             settled = build_fn(
                 self.ranges,
                 self.per_env_params,
@@ -335,14 +688,19 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                     ),
                 },
             )
-            settle_vbd_substeps(settled, substeps=settle_substeps, dt=self.sim_dt)
-            stability_reports = settle_stability_reports_from_cable(
-                settled.cable,
-                self.per_env_params,
-                max_branch_speed_m_s=float(getattr(args, "settle_max_speed", 0.05)),
+            self._settle_stability_reports, self._settle_ke_decay_reports = _run_vbd_settle_on_scene(
+                settled,
+                substeps=settle_substeps,
+                sim_dt=self.sim_dt,
+                gravity_ramp=settle_gravity_ramp,
+                per_env_params=self.per_env_params,
+                settle_max_speed=settle_max_speed,
+                report_brief=report_brief,
+                num_envs=self.num_envs,
+                ke_enabled=settle_ke_enabled,
+                ke_config=settle_ke_config,
+                ke_sample_every=settle_ke_sample_every,
             )
-            self._settle_stability_reports = stability_reports
-            quiet_all_cable_bodies(settled.cable)
             if bool(getattr(args, "inspect_settle", False)):
                 self._settled_scene = settled
             self.scene = build_fn(
@@ -366,25 +724,68 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
             )
             ik_results = getattr(self.scene, "settle_ik_envelope_results", None)
             self._settle_ik_envelope_results = ik_results or []
-            print_envelope_coverage_report(
-                self._settle_ik_envelope_results,
+            _print_post_settle_diagnostics(
                 stability_reports=self._settle_stability_reports,
-                verbose=not bool(getattr(args, "settle_report_brief", False)),
+                ke_decay_reports=self._settle_ke_decay_reports,
+                ik_results=self._settle_ik_envelope_results,
+                brief=report_brief,
             )
         else:
             self.scene: CoupledFruitingScene = build_fn(
                 self.ranges, self.per_env_params, **build_kw
             )
+            if settle_substeps > 0:
+                if defer_settle_to_viewer:
+                    self._pending_settle_substeps = settle_substeps
+                    self._pending_settle_gravity_ramp = settle_gravity_ramp
+                    self._pending_settle_max_speed = settle_max_speed
+                    self._pending_settle_ke_enabled = settle_ke_enabled
+                    print(
+                        "Settle deferred to GL viewer (nominal geometry → sag under gravity ramp).",
+                        flush=True,
+                    )
+                else:
+                    self._settle_stability_reports, self._settle_ke_decay_reports = _run_vbd_settle_on_scene(
+                        self.scene,
+                        substeps=settle_substeps,
+                        sim_dt=self.sim_dt,
+                        gravity_ramp=settle_gravity_ramp,
+                        per_env_params=self.per_env_params,
+                        settle_max_speed=settle_max_speed,
+                        report_brief=report_brief,
+                        num_envs=self.num_envs,
+                        ke_enabled=settle_ke_enabled,
+                        ke_config=settle_ke_config,
+                        ke_sample_every=settle_ke_sample_every,
+                    )
+                    _print_post_settle_diagnostics(
+                        stability_reports=self._settle_stability_reports,
+                        ke_decay_reports=self._settle_ke_decay_reports,
+                        brief=report_brief,
+                    )
 
         self.layout = self.scene.layout
         if self.layout is None:
             raise RuntimeError("batched scene missing layout")
 
+        set_fruiting_joint_angular_kd_batched(
+            self.scene.cable.solver,
+            self.scene.cable.fruiting_fixed_joints,
+            _DEFAULT_JOINT_ANGULAR_KD_OVERRIDES,
+            num_envs=self.layout.num_envs,
+            joints_per_world=self.layout.joints_per_world,
+        )
+
+        robot_world_count = (
+            self.scene.robot_model.world_count
+            if self.scene.robot_model is not None
+            else 0
+        )
         print(
             f"Heterogeneous batched fruiting: num_envs={self.layout.num_envs} "
             f"spacing={self.env_spacing} "
             f"cable_world_count={self.scene.cable.model.world_count} "
-            f"robot_world_count={self.scene.robot_model.world_count}"
+            f"robot_world_count={robot_world_count}"
         )
 
         self._controller_mode = controller_mode
@@ -405,10 +806,15 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         self._noisy_action = noisy_requested and robot_kind == "fr3"
         self._demo_per_env_actions = bool(getattr(args, "demo_per_env_actions", False))
 
-        if robot_kind == "fr3" and self.scene.robot_model is not None:
+        if robot_kind == "fr3" and self.scene.robot_model is not None and self._step_mode != "vbd":
             self._ee_ctrl = self._configure_fr3_controller(controller_mode)
         elif controller_mode == "ee":
             print("Note: --controller ee requires FR3; running without teleop.", file=sys.stderr)
+        elif self._step_mode == "vbd" and controller_mode != "direct":
+            print(
+                "Note: --only-vbd skips robot teleop; --controller is ignored.",
+                file=sys.stderr,
+            )
 
         if self._use_keyboard and robot_kind == "fr3" and hasattr(self.viewer, "is_key_down"):
             fr3_robot.print_fr3_keyboard_bindings()
@@ -450,7 +856,13 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
             and bool(getattr(args, "mujoco_viewer", False))
             and graphical
         )
-        if self._tcp_force_arrow and graphical:
+        if self._tcp_force_arrow and self._step_mode != "coupled":
+            print(
+                "Note: --tcp-force-arrow needs full coupled stepping "
+                "(omit --only-vbd).",
+                flush=True,
+            )
+        elif self._tcp_force_arrow and graphical:
             cap = (
                 f"{self._tcp_force_max_length:.2f} m max"
                 if self._tcp_force_max_length > 0.0
@@ -528,10 +940,10 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         )
         self.scene.vic_controller = vic
         self.scene.vic_gains = fr3_robot.ImpedanceGains(
-            linear_k=float(getattr(self.args, "vic_linear_k", 8000.0)),
-            linear_d=float(getattr(self.args, "vic_linear_d", 80.0)),
-            angular_k=float(getattr(self.args, "vic_angular_k", 40.0)),
-            angular_d=float(getattr(self.args, "vic_angular_d", 4.0)),
+            linear_k=float(getattr(self.args, "vic_linear_k", VIC_DEFAULT_LINEAR_K)),
+            linear_d=float(getattr(self.args, "vic_linear_d", VIC_DEFAULT_LINEAR_D)),
+            angular_k=float(getattr(self.args, "vic_angular_k", VIC_DEFAULT_ANGULAR_K)),
+            angular_d=float(getattr(self.args, "vic_angular_d", VIC_DEFAULT_ANGULAR_D)),
         )
         fr3_robot.configure_vic_joint_torques_arm_batched(
             self.scene.robot_model,
@@ -611,11 +1023,15 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         self.scene.robot_state_0.joint_q.assign(jq)
 
     def simulate(self) -> None:
-        self._teleop_world0()
-        if self._robot_kind == "placeholder":
-            broadcast_joint_q_from_world0(self.scene, self.layout)
+        if self._step_mode != "vbd":
+            self._teleop_world0()
+            if self._robot_kind == "placeholder":
+                broadcast_joint_q_from_world0(self.scene, self.layout)
         for _ in range(self.sim_substeps):
-            self.scene.coupled_substep(self.sim_dt)
+            if self._step_mode == "vbd":
+                self.scene.vbd_substep(self.sim_dt)
+            else:
+                self.scene.coupled_substep(self.sim_dt)
 
     def step(self) -> None:
         self.simulate()
@@ -733,6 +1149,87 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         if self._mujoco_viewer and self.scene.mj_solver is not None:
             self.scene.mj_solver.close_mujoco_viewer()
 
+    def run_visible_settle(self) -> None:
+        """Animate VBD settle in the GL viewer (``--no-fix-to-apple`` path)."""
+        import time
+
+        n = int(self._pending_settle_substeps)
+        if n <= 0:
+            return
+        _print_vbd_settle_start(
+            substeps=n,
+            sim_dt=self.sim_dt,
+            gravity_ramp=self._pending_settle_gravity_ramp,
+        )
+        print(
+            "Settle animation: cable sag under gravity in the viewer, then teleop starts.",
+            flush=True,
+        )
+        brief = bool(getattr(self.args, "settle_report_brief", False)) if self.args else False
+        ke_enabled = bool(self._pending_settle_ke_enabled)
+        settle_max_speed = float(self._pending_settle_max_speed)
+        ke_config = _settle_ke_analysis_config(
+            self.args,
+            settle_max_speed=settle_max_speed,
+        )
+        ke_sample_every = _settle_ke_sample_every(self.args)
+        recorder = (
+            SettleKeRecorder(num_envs=int(self.num_envs), sample_every=int(ke_sample_every))
+            if ke_enabled
+            else None
+        )
+        substep_idx = 0
+        while substep_idx < n and self.viewer.is_running():
+            for _ in range(self.sim_substeps):
+                if substep_idx >= n:
+                    break
+                apply_settle_gravity_for_substep(
+                    self.scene,
+                    substep_idx,
+                    n,
+                    gravity_ramp=self._pending_settle_gravity_ramp,
+                )
+                self.scene.vbd_substep(self.sim_dt)
+                if recorder is not None:
+                    recorder.record_substep(
+                        self.scene.cable,
+                        self.per_env_params,
+                        substep_idx,
+                        self.sim_dt,
+                        sample_every=int(ke_sample_every),
+                    )
+                substep_idx += 1
+                if substep_idx % _SETTLE_REPORT_INTERVAL == 0:
+                    _print_settle_checkpoint(
+                        self.scene,
+                        self.per_env_params,
+                        substep_idx=substep_idx,
+                        sim_dt=self.sim_dt,
+                        settle_max_speed=settle_max_speed,
+                        brief=brief,
+                        include_ke=ke_enabled,
+                    )
+            self.sim_time = substep_idx * self.sim_dt
+            self.render()
+            time.sleep(max(0.0, self.frame_dt))
+
+        self._pending_settle_substeps = 0
+        self._settle_stability_reports = settle_stability_reports_from_cable(
+            self.scene.cable,
+            self.per_env_params,
+            max_branch_speed_m_s=settle_max_speed,
+            path_rtol=_SETTLE_PATH_RTOL,
+        )
+        self._settle_ke_decay_reports = (
+            recorder.reports(config=ke_config) if recorder is not None else []
+        )
+        quiet_all_cable_bodies(self.scene.cable)
+        _print_post_settle_diagnostics(
+            stability_reports=self._settle_stability_reports,
+            ke_decay_reports=self._settle_ke_decay_reports,
+            brief=brief,
+        )
+
     def inspect_settled_scene(self) -> None:
         """Render settled free-proxy cable until SPACE (GL viewer) or viewer closes."""
         settled = self._settled_scene
@@ -805,10 +1302,11 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
                 continue
             z = float(body_q[apple_idx, 2])
             assert z > -tolerance, f"world {w} apple fell: z={z}"
-        if self._settle_stability_reports or self._settle_ik_envelope_results:
-            print_envelope_coverage_report(
-                self._settle_ik_envelope_results,
+        if self._settle_stability_reports or self._settle_ke_decay_reports or self._settle_ik_envelope_results:
+            _print_post_settle_diagnostics(
                 stability_reports=self._settle_stability_reports,
+                ke_decay_reports=self._settle_ke_decay_reports,
+                ik_results=self._settle_ik_envelope_results,
             )
 
 
@@ -826,6 +1324,9 @@ if __name__ == "__main__":
 
     if hasattr(viewer, "hide_loading_splash"):
         viewer.hide_loading_splash()
+
+    if example._pending_settle_substeps > 0:
+        example.run_visible_settle()
 
     if bool(getattr(args, "inspect_settle", False)):
         example.inspect_settled_scene()

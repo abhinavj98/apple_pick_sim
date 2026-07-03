@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import random
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 import warp as wp
@@ -30,7 +30,8 @@ from apple_pick_sim.fruiting_system.params import (
 # _init_joint_penalty_k).  The migration factor was therefore not needed for rigid joints;
 # keep the original values that the wrench-equilibrium tests were calibrated against.
 FRUITING_VBD_RIGID_JOINT_LINEAR_KD = 5.0e-4  # N·s/m, absolute (no Rayleigh scaling)
-FRUITING_VBD_RIGID_JOINT_ANGULAR_KD = 5.0e-4  # N·m·s/rad, absolute (no Rayleigh scaling)
+# Junction angular drag (world/spur/stem/apple FIXED joints); drains bend energy at supports.
+FRUITING_VBD_RIGID_JOINT_ANGULAR_KD = 5.0e-4 # N·m·s/rad, absolute (no Rayleigh scaling)
 
 
 def _prescribe_body_vbd_integration(builder: newton.ModelBuilder, body_id: int) -> None:
@@ -210,7 +211,7 @@ def _build_linear_chain_into_builder(
             bend_stiffness=rod.bend_stiffness,
             bend_damping=rod.bend_damping,
             stretch_stiffness=rod.stretch_stiffness,
-            stretch_damping=0.0,
+            stretch_damping=rod.stretch_damping,
             wrap_in_articulation=False,
             body_frame_origin="start",
             label=name,
@@ -342,7 +343,7 @@ def _build_t_junction_into_builder(
         bend_stiffness=primary.bend_stiffness,
         bend_damping=primary.bend_damping,
         stretch_stiffness=primary.stretch_stiffness,
-        stretch_damping=0.0,
+        stretch_damping=primary.stretch_damping,
         wrap_in_articulation=False,
         body_frame_origin="start",
         label="primary",
@@ -383,7 +384,7 @@ def _build_t_junction_into_builder(
             bend_stiffness=rod.bend_stiffness,
             bend_damping=rod.bend_damping,
             stretch_stiffness=rod.stretch_stiffness,
-            stretch_damping=0.0,
+            stretch_damping=rod.stretch_damping,
             wrap_in_articulation=False,
             body_frame_origin="start",
             label=name,
@@ -867,8 +868,8 @@ def _add_gripper_proxy(
 
 def make_fruiting_solver_vbd(model: newton.Model, **overrides: Any) -> newton.solvers.SolverVBD:
     kwargs: dict[str, Any] = {
-        "iterations": 50,
-        "friction_epsilon": 0.1,
+        "iterations": 25,
+        "friction_epsilon": 1e-2,
         "rigid_contact_k_start": 1.0e4,
         "rigid_joint_linear_k_start": 1.0e8,
         "rigid_joint_angular_k_start": 1.0e6,
@@ -877,6 +878,455 @@ def make_fruiting_solver_vbd(model: newton.Model, **overrides: Any) -> newton.so
     }
     kwargs.update(overrides)
     return newton.solvers.SolverVBD(model, **kwargs)
+
+
+def _match_fruiting_joint_labels(
+    fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_values: dict[str, float],
+    *,
+    param_name: str = "label_kd",
+    value_label: str = "angular kd",
+) -> dict[str, list[int]]:
+    """Match label override keys to template joint indices; validate inputs."""
+    if not label_values:
+        return {}
+
+    for key, val in label_values.items():
+        if val < 0.0:
+            raise ValueError(
+                f"{param_name}[{key!r}]={val} is negative; {value_label} must be >= 0."
+            )
+
+    joint_pairs = list(fruiting_fixed_joints)
+    keys = list(label_values.keys())
+
+    joint_match: dict[int, tuple[str, str]] = {}
+    for joint_index, label in joint_pairs:
+        matching_keys = [k for k in keys if k in label]
+        if len(matching_keys) > 1:
+            raise ValueError(
+                f"ambiguous {param_name} match for joint_index={joint_index} "
+                f"label={label!r}: keys {matching_keys!r} all match."
+            )
+        if len(matching_keys) == 1:
+            joint_match[joint_index] = (label, matching_keys[0])
+
+    unmatched_keys = [k for k in keys if k not in {m[1] for m in joint_match.values()}]
+    if unmatched_keys:
+        raise ValueError(
+            f"{param_name} key(s) matched no fruiting fixed joint: {unmatched_keys!r}."
+        )
+
+    matched_by_key: dict[str, list[int]] = {k: [] for k in keys}
+    for joint_index, (_label, key) in joint_match.items():
+        matched_by_key[key].append(joint_index)
+
+    return {k: sorted(v) for k, v in matched_by_key.items() if v}
+
+
+def _patch_angular_k_constraint_slot(
+    k_np: np.ndarray,
+    k_min_np: np.ndarray,
+    k_max_np: np.ndarray,
+    constraint_index: int,
+    kp_val: float,
+) -> None:
+    """Write one angular penalty-k slot and widen AVBD k bounds to include ``kp_val``."""
+    k_np[constraint_index] = kp_val
+    k_min_np[constraint_index] = min(float(k_min_np[constraint_index]), kp_val)
+    k_max_np[constraint_index] = max(float(k_max_np[constraint_index]), kp_val)
+
+
+def _validate_template_joint_angular_slots(
+    solver: newton.solvers.SolverVBD,
+    template_joint_indices: Iterable[int],
+) -> None:
+    """Ensure each template joint has an angular constraint slot."""
+    ang_slot = newton.solvers.SolverVBD.JointSlot.ANGULAR
+    jc_dim = solver.joint_constraint_dim.numpy()
+    for joint_index in template_joint_indices:
+        cdim = int(jc_dim[joint_index])
+        if cdim <= ang_slot:
+            raise ValueError(
+                f"joint_index={joint_index} has constraint dimension {cdim}; "
+                f"cannot set angular kd (slot {ang_slot})."
+            )
+
+
+@wp.kernel(enable_backward=False)
+def _apply_batched_joint_angular_kd_kernel(
+    joint_constraint_start: wp.array(dtype=wp.int32),
+    template_joint_indices: wp.array(dtype=wp.int32),
+    kd_values: wp.array(dtype=wp.float32),
+    joints_per_world: int,
+    angular_slot: int,
+    joint_penalty_kd: wp.array(dtype=wp.float32),
+):
+    """Patch angular kd for one (env, matched-template-joint) pair."""
+    w, k = wp.tid()
+    global_joint = w * joints_per_world + template_joint_indices[k]
+    c0 = joint_constraint_start[global_joint]
+    joint_penalty_kd[c0 + angular_slot] = kd_values[k]
+
+
+def set_fruiting_joint_angular_kd(
+    solver: newton.solvers.SolverVBD,
+    fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kd: dict[str, float],
+) -> dict[str, list[int]]:
+    """Patch per-joint angular AVBD damping on an existing ``SolverVBD``.
+
+    ``SolverVBD`` seeds one global ``rigid_joint_angular_kd`` into every
+    structural angular constraint slot at construction time.  Child-body inertia
+    varies ~1000× across the fruiting chain, so a single scalar is often wrong
+    everywhere at once.  This helper overwrites ``solver.joint_penalty_kd`` at
+    the angular slot (``JointSlot.ANGULAR``) for selected FIXED joints.
+
+    Each ``label_kd`` key is matched as a **substring** of the joint label
+    recorded in ``fruiting_fixed_joints`` (e.g. ``"stem_apple"`` matches
+    ``"joint_stem_apple"``).  One key may match multiple joints (e.g.
+    ``"support"`` matches both T-junction world supports).  Joints not matched
+    by any key retain the solver's default ``rigid_joint_angular_kd``.
+
+    Call after ``make_fruiting_solver_vbd(model)`` and before ``solver.step()``.
+    The solver must have rigid-joint state initialized (``model.body_count > 0``,
+    not ``integrate_with_external_rigid_solver``).
+
+    Args:
+        solver: Constructed VBD solver whose ``joint_penalty_kd`` array will be
+            patched in place.
+        fruiting_fixed_joints: ``(joint_index, label)`` pairs from scene build
+            (``FruitingSystemScene.fruiting_fixed_joints``).
+        label_kd: Substring label -> absolute angular damping [N·m·s/rad].
+
+    Returns:
+        ``{label_kd_key: [joint_index, ...]}`` with sorted joint indices per key.
+
+    Raises:
+        ValueError: Negative ``kd``, ambiguous multi-key match on one joint,
+            or a key that matches no joint.
+    """
+    matched_by_key = _match_fruiting_joint_labels(fruiting_fixed_joints, label_kd)
+    if not matched_by_key:
+        return {}
+
+    if not hasattr(solver, "joint_penalty_kd"):
+        raise RuntimeError(
+            "SolverVBD joint_penalty_kd is not initialized; "
+            "ensure the solver was constructed with rigid bodies present."
+        )
+
+    template_indices = sorted(
+        {j for indices in matched_by_key.values() for j in indices}
+    )
+    _validate_template_joint_angular_slots(solver, template_indices)
+
+    jc_start = solver.joint_constraint_start.numpy()
+    kd_np = solver.joint_penalty_kd.numpy().copy()
+    ang_slot = newton.solvers.SolverVBD.JointSlot.ANGULAR
+
+    for key, joint_indices in matched_by_key.items():
+        kd_val = float(label_kd[key])
+        for joint_index in joint_indices:
+            c0 = int(jc_start[joint_index])
+            kd_np[c0 + ang_slot] = kd_val
+
+    solver.joint_penalty_kd.assign(kd_np)
+    return matched_by_key
+
+
+def set_fruiting_joint_angular_kd_batched(
+    solver: newton.solvers.SolverVBD,
+    template_fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kd: dict[str, float],
+    *,
+    num_envs: int,
+    joints_per_world: int,
+) -> dict[str, list[int]]:
+    """Vectorized per-role angular kd patch across every env of a batched SolverVBD.
+
+    Same substring-match semantics as :func:`set_fruiting_joint_angular_kd`, applied to
+    ``template_fruiting_fixed_joints`` (world-0 labels) and broadcast to every env via
+    a single ``wp.launch`` — no per-env Python loop, no full ``joint_penalty_kd`` host
+    round trip. Requires uniform topology across envs (already asserted by
+    ``build_heterogeneous_coupled_cable_scene`` / replicate builds).
+
+    Args:
+        solver: Constructed VBD solver whose ``joint_penalty_kd`` array will be patched.
+        template_fruiting_fixed_joints: World-0 ``(joint_index, label)`` pairs.
+        label_kd: Substring label -> absolute angular damping [N·m·s/rad].
+        num_envs: Number of VBD worlds in the batched model.
+        joints_per_world: Joint count per world (from ``BatchedEnvLayout.joints_per_world``
+            or ``model.joint_world_start`` gap).
+
+    Returns:
+        ``{label_kd_key: [global_joint_index, ...]}`` with sorted indices per key
+        (includes every env's copy of each matched template joint).
+
+    Raises:
+        ValueError: Negative ``kd``, ambiguous/unmatched keys, wrong batch dimensions,
+            or joints without an angular constraint slot.
+    """
+    matched_by_key = _match_fruiting_joint_labels(
+        template_fruiting_fixed_joints, label_kd
+    )
+    if not matched_by_key:
+        return {}
+
+    if num_envs < 1:
+        raise ValueError(f"num_envs must be >= 1, got {num_envs}.")
+    if joints_per_world < 1:
+        raise ValueError(f"joints_per_world must be >= 1, got {joints_per_world}.")
+
+    model = solver.model
+    if num_envs * joints_per_world != int(model.joint_count):
+        raise ValueError(
+            f"batched joint layout mismatch: num_envs={num_envs} * "
+            f"joints_per_world={joints_per_world} != model.joint_count="
+            f"{model.joint_count}."
+        )
+
+    if not hasattr(solver, "joint_penalty_kd"):
+        raise RuntimeError(
+            "SolverVBD joint_penalty_kd is not initialized; "
+            "ensure the solver was constructed with rigid bodies present."
+        )
+
+    template_indices = sorted(
+        {j for indices in matched_by_key.values() for j in indices}
+    )
+    _validate_template_joint_angular_slots(solver, template_indices)
+
+    template_idx_np = np.asarray(template_indices, dtype=np.int32)
+    kd_by_template = {
+        j: float(label_kd[key])
+        for key, indices in matched_by_key.items()
+        for j in indices
+    }
+    kd_np = np.asarray(
+        [kd_by_template[int(j)] for j in template_idx_np], dtype=np.float32
+    )
+
+    device = solver.joint_penalty_kd.device
+    ang_slot = newton.solvers.SolverVBD.JointSlot.ANGULAR
+    template_idx_wp = wp.array(template_idx_np, dtype=wp.int32, device=device)
+    kd_wp = wp.array(kd_np, dtype=wp.float32, device=device)
+
+    wp.launch(
+        _apply_batched_joint_angular_kd_kernel,
+        dim=(int(num_envs), int(len(template_idx_np))),
+        inputs=[
+            solver.joint_constraint_start,
+            template_idx_wp,
+            kd_wp,
+            int(joints_per_world),
+            int(ang_slot),
+            solver.joint_penalty_kd,
+        ],
+        device=device,
+    )
+
+    global_matched: dict[str, list[int]] = {}
+    for key, indices in matched_by_key.items():
+        global_indices: list[int] = []
+        for w in range(int(num_envs)):
+            base = w * int(joints_per_world)
+            global_indices.extend(base + int(j) for j in indices)
+        global_matched[key] = sorted(global_indices)
+
+    return global_matched
+
+
+@wp.kernel(enable_backward=False)
+def _apply_batched_joint_angular_kp_kernel(
+    joint_constraint_start: wp.array(dtype=wp.int32),
+    template_joint_indices: wp.array(dtype=wp.int32),
+    kp_values: wp.array(dtype=wp.float32),
+    joints_per_world: int,
+    angular_slot: int,
+    joint_penalty_k: wp.array(dtype=wp.float32),
+    joint_penalty_k_min: wp.array(dtype=wp.float32),
+    joint_penalty_k_max: wp.array(dtype=wp.float32),
+):
+    """Patch angular kp (and AVBD k bounds) for one (env, matched-template-joint) pair."""
+    w, k = wp.tid()
+    global_joint = w * joints_per_world + template_joint_indices[k]
+    c0 = joint_constraint_start[global_joint]
+    idx = c0 + angular_slot
+    kp = kp_values[k]
+    joint_penalty_k[idx] = kp
+    joint_penalty_k_min[idx] = wp.min(joint_penalty_k_min[idx], kp)
+    joint_penalty_k_max[idx] = wp.max(joint_penalty_k_max[idx], kp)
+
+
+def set_fruiting_joint_angular_kp(
+    solver: newton.solvers.SolverVBD,
+    fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kp: dict[str, float],
+) -> dict[str, list[int]]:
+    """Patch per-joint angular AVBD stiffness on an existing ``SolverVBD``.
+
+    Same substring-match semantics as :func:`set_fruiting_joint_angular_kd`, but
+    overwrites ``solver.joint_penalty_k`` at the angular slot and widens
+    ``joint_penalty_k_min`` / ``joint_penalty_k_max`` so AVBD maintenance does not
+    immediately clamp the new value back to the constructor ceiling.
+
+    Call after ``make_fruiting_solver_vbd(model)`` and before ``solver.step()``.
+
+    Args:
+        solver: Constructed VBD solver whose joint penalty-k arrays will be patched.
+        fruiting_fixed_joints: ``(joint_index, label)`` pairs from scene build.
+        label_kp: Substring label -> absolute angular penalty stiffness [N·m/rad].
+
+    Returns:
+        ``{label_kp_key: [joint_index, ...]}`` with sorted joint indices per key.
+
+    Raises:
+        ValueError: Negative ``kp``, ambiguous multi-key match on one joint,
+            or a key that matches no joint.
+    """
+    matched_by_key = _match_fruiting_joint_labels(
+        fruiting_fixed_joints,
+        label_kp,
+        param_name="label_kp",
+        value_label="angular kp",
+    )
+    if not matched_by_key:
+        return {}
+
+    for name in ("joint_penalty_k", "joint_penalty_k_min", "joint_penalty_k_max"):
+        if not hasattr(solver, name):
+            raise RuntimeError(
+                f"SolverVBD {name} is not initialized; "
+                "ensure the solver was constructed with rigid bodies present."
+            )
+
+    template_indices = sorted(
+        {j for indices in matched_by_key.values() for j in indices}
+    )
+    _validate_template_joint_angular_slots(solver, template_indices)
+
+    jc_start = solver.joint_constraint_start.numpy()
+    k_np = solver.joint_penalty_k.numpy().copy()
+    k_min_np = solver.joint_penalty_k_min.numpy().copy()
+    k_max_np = solver.joint_penalty_k_max.numpy().copy()
+    ang_slot = newton.solvers.SolverVBD.JointSlot.ANGULAR
+
+    for key, joint_indices in matched_by_key.items():
+        kp_val = float(label_kp[key])
+        for joint_index in joint_indices:
+            c0 = int(jc_start[joint_index])
+            _patch_angular_k_constraint_slot(
+                k_np, k_min_np, k_max_np, c0 + ang_slot, kp_val
+            )
+
+    solver.joint_penalty_k.assign(k_np)
+    solver.joint_penalty_k_min.assign(k_min_np)
+    solver.joint_penalty_k_max.assign(k_max_np)
+    return matched_by_key
+
+
+def set_fruiting_joint_angular_kp_batched(
+    solver: newton.solvers.SolverVBD,
+    template_fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kp: dict[str, float],
+    *,
+    num_envs: int,
+    joints_per_world: int,
+) -> dict[str, list[int]]:
+    """Vectorized per-role angular kp patch across every env of a batched SolverVBD.
+
+    Same substring-match semantics as :func:`set_fruiting_joint_angular_kp`, applied to
+    world-0 template labels and broadcast via a single ``wp.launch``.
+
+    Args:
+        solver: Constructed VBD solver whose joint penalty-k arrays will be patched.
+        template_fruiting_fixed_joints: World-0 ``(joint_index, label)`` pairs.
+        label_kp: Substring label -> absolute angular penalty stiffness [N·m/rad].
+        num_envs: Number of VBD worlds in the batched model.
+        joints_per_world: Joint count per world.
+
+    Returns:
+        ``{label_kp_key: [global_joint_index, ...]}`` with sorted indices per key.
+
+    Raises:
+        ValueError: Negative ``kp``, ambiguous/unmatched keys, wrong batch dimensions,
+            or joints without an angular constraint slot.
+    """
+    matched_by_key = _match_fruiting_joint_labels(
+        template_fruiting_fixed_joints,
+        label_kp,
+        param_name="label_kp",
+        value_label="angular kp",
+    )
+    if not matched_by_key:
+        return {}
+
+    if num_envs < 1:
+        raise ValueError(f"num_envs must be >= 1, got {num_envs}.")
+    if joints_per_world < 1:
+        raise ValueError(f"joints_per_world must be >= 1, got {joints_per_world}.")
+
+    model = solver.model
+    if num_envs * joints_per_world != int(model.joint_count):
+        raise ValueError(
+            f"batched joint layout mismatch: num_envs={num_envs} * "
+            f"joints_per_world={joints_per_world} != model.joint_count="
+            f"{model.joint_count}."
+        )
+
+    for name in ("joint_penalty_k", "joint_penalty_k_min", "joint_penalty_k_max"):
+        if not hasattr(solver, name):
+            raise RuntimeError(
+                f"SolverVBD {name} is not initialized; "
+                "ensure the solver was constructed with rigid bodies present."
+            )
+
+    template_indices = sorted(
+        {j for indices in matched_by_key.values() for j in indices}
+    )
+    _validate_template_joint_angular_slots(solver, template_indices)
+
+    template_idx_np = np.asarray(template_indices, dtype=np.int32)
+    kp_by_template = {
+        j: float(label_kp[key])
+        for key, indices in matched_by_key.items()
+        for j in indices
+    }
+    kp_np = np.asarray(
+        [kp_by_template[int(j)] for j in template_idx_np], dtype=np.float32
+    )
+
+    device = solver.joint_penalty_k.device
+    ang_slot = newton.solvers.SolverVBD.JointSlot.ANGULAR
+    template_idx_wp = wp.array(template_idx_np, dtype=wp.int32, device=device)
+    kp_wp = wp.array(kp_np, dtype=wp.float32, device=device)
+
+    wp.launch(
+        _apply_batched_joint_angular_kp_kernel,
+        dim=(int(num_envs), int(len(template_idx_np))),
+        inputs=[
+            solver.joint_constraint_start,
+            template_idx_wp,
+            kp_wp,
+            int(joints_per_world),
+            int(ang_slot),
+            solver.joint_penalty_k,
+            solver.joint_penalty_k_min,
+            solver.joint_penalty_k_max,
+        ],
+        device=device,
+    )
+
+    global_matched: dict[str, list[int]] = {}
+    for key, indices in matched_by_key.items():
+        global_indices: list[int] = []
+        for w in range(int(num_envs)):
+            base = w * int(joints_per_world)
+            global_indices.extend(base + int(j) for j in indices)
+        global_matched[key] = sorted(global_indices)
+
+    return global_matched
 
 
 def _scene_states_from_model(model: newton.Model) -> tuple[Any, Any, Any, newton.solvers.SolverVBD]:

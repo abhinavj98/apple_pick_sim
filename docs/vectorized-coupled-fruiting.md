@@ -34,9 +34,10 @@ flowchart LR
 
 ### 2. Settle all worlds in parallel
 
-- Run **`settle_vbd_substeps(scene, substeps, dt)`** on the free batched scene.
+- Run **`settle_vbd_substeps(scene, substeps, dt)`** on the free batched scene (or on the built scene when not using settle-then-weld).
 - All **N** worlds advance together on the GPU; each fruiting system relaxes under gravity with a free proxy.
-- Default settle length matches single-env coupled fruiting (`--settle-substeps`, typically 1000).
+- Optional linear gravity ramp (0 → −9.81 m/s² over all settle substeps) via `gravity_ramp=True` or `--settle-gravity-ramp` on examples (default: off). In `example_batched_heterogeneous_coupled_fruiting.py`, any `--settle-substeps > 0` runs settle in all modes (`--fix-to-apple`, `--no-fix-to-apple`, `--only-vbd`). With `--no-fix-to-apple` and `--viewer gl`, settle is **animated** in the viewer before teleop (headless/null viewers still settle during build).
+- Default settle length matches single-env coupled fruiting (`--settle-substeps`, typically 1000). Soft DR fixtures may need more substeps: full g applies only on the final substep of the ramp.
 
 ### 3. Build batched welded scene and seed from settled state
 
@@ -120,7 +121,7 @@ Run **N independent coupled stacks** (VBD cable + MuJoCo FR3 per env) in one GPU
 **V.2 — independent envs (next):**
 
 - Same topology constraints as V.1 (fixed `omit`, fixed segment counts — `replicate()` requires identical body/joint counts).
-- **Different numeric θ per env:** `seeds: int | Sequence[int]` (e.g. `seed + w`) and/or runtime scatter of `bend_stiffness`, `stretch_stiffness`, `bend_damping` into per-world VBD arrays.
+- **Different numeric θ per env:** `seeds: int | Sequence[int]` (e.g. `seed + w`) and/or runtime scatter of material-derived `bend_stiffness`, `stretch_stiffness`, `bend_damping` into per-world VBD arrays (sampled from \(E\), \(\zeta\); see `docs/material-parameter-sampling.md`).
 - **Different actions per env** at runtime via `velocity_for_world` or action buffer → `BatchedTemplateIK.scatter_to_model`.
 - **No cross-env state/command coupling** after init (except explicit homogeneous-smoke flags).
 
@@ -129,7 +130,7 @@ Run **N independent coupled stacks** (VBD cable + MuJoCo FR3 per env) in one GPU
 | Use case | θ per env | Actions | Collection |
 | -------- | --------- | ------- | ---------- |
 | **V.1 interactive / smoke** | Identical | Same EE vel all envs (example default); IK scatter per env | Stability, IK convergence |
-| **V.2 sys-id / CEM** | Different stiffness/damping per env | Per-env or recorded `v_ee(t)` via scatter | Per-world `gather_transitions()` for MMD |
+| **V.2 sys-id / CEM** | Different \(E\), \(\zeta\) (→ stiffness/damping) per env | Per-env or recorded `v_ee(t)` via scatter | Per-world `gather_transitions()` for MMD |
 | **V.2 / V.3 RL** | Domain randomization | Per-env `(N, act_dim)` from policy → scatter | Per-world obs / reward / done |
 
 `replicate()` remains the build strategy; consumers differ in θ content, init bootstrap, action path, and gather API.
@@ -279,11 +280,11 @@ Batched coupled fruiting is the intended backend for **parallel RL** ([V.3]) and
 
 | Parameter class | Sys-ID (V.2) | RL (V.3) | When to apply |
 | --------------- | ------------ | -------- | ------------- |
-| `bend_stiffness`, `stretch_stiffness`, `bend_damping` | Primary CEM targets | DR | **Runtime scatter** into VBD joint/material arrays per world |
+| `youngs_modulus_pa`, `damping_ratio` → derived `bend_stiffness`, `stretch_stiffness`, `bend_damping` | Primary CEM targets | DR | **Build-time** (V.2.2) or **runtime scatter** into VBD arrays per world |
 | `length`, `radius`, `direction` | Usually fixed (twin) | DR | **Reset-time** kinematics per world (V.3) |
 | Apple `radius`, `density` | Optional | **DR (primary)** | Build or reset per policy (V.3); scales `apple_mass_kg` → explicit harvest wrench when welded |
 
-Per-env sampling uses `sample_params(ranges, seed_w)` with distinct seeds; topology (`omit`, segment counts) stays fixed per batch.
+Per-env sampling uses `sample_params(ranges, seed_w)` with distinct seeds; topology (`omit`, segment counts) stays fixed per batch. Material keys and derivation: `docs/material-parameter-sampling.md`.
 
 ---
 
@@ -294,7 +295,8 @@ Per-env sampling uses `sample_params(ranges, seed_w)` with distinct seeds; topol
 | **V.1** | **Done** | Canonical settle→weld batched init; `BatchedTemplateIK` scatter teleop; homogeneous example keyboard; co-located physics + viewer spacing doc; tests | Batched interactive smoke |
 | **V.2.1** | **Done** | Per-env IK bootstrap after settle→weld (heterogeneous path); all worlds' TCP at own proxy | Correct weld when θ differs per env |
 | **V.2.1.1** | **Done** | `newton/` submodule bump to latest upstream; parity fixes across coupling, VIC, batched paths | Stable base for fixture + batched gym work |
-| **V.2.1.2** | **Next** | Fixture catalog refresh for settle stability and real-world likeness | Credible sim-sim GT before [S] |
+| **V.2.1.2** | Planned | Fixture catalog refresh for settle stability and real-world likeness | Credible sim-sim GT before [S] |
+| **V.2.1.3** | **Active** | Material-parameter sampling ($E$, $\zeta$) → derived VBD knobs | `docs/material-parameter-sampling.md` |
 | **V.2.2** | **Done (build-time)** | `add_world` heterogeneous cable build; `sample_heterogeneous_params_list` | Build-time DR per env |
 | **V.2.3** | Planned | Per-env runtime actions in example/API; placeholder broadcast only for homogeneous smoke | Parallel policy / recorded replay |
 | **V.2.4** | Planned | Recorded-action replay; `gather_transitions()` per world | [S].1 batched MMD |

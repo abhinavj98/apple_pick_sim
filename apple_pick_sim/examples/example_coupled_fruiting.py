@@ -314,6 +314,12 @@ def _make_parser() -> argparse.ArgumentParser:
             "Default: off (velocity-delta harvest, proxy-only sync)."
         ),
     )
+    parser.add_argument(
+        "--settle-gravity-ramp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Linear 0→−9.81 m/s² gravity ramp over all settle substeps (default: off).",
+    )
     parser.add_argument("--vic-linear-k", type=float, default=8000.0, help="VIC linear K [N/m].")
     parser.add_argument("--vic-linear-d", type=float, default=80.0, help="VIC linear D [N·s/m].")
     parser.add_argument("--vic-angular-k", type=float, default=40.0, help="VIC angular K [N·m/rad].")
@@ -431,7 +437,12 @@ class ExampleCoupledFruiting:
                             ),
                         },
                     )
-                    settle_vbd_substeps(settled, substeps=1000, dt=self.sim_dt)
+                    settle_vbd_substeps(
+                        settled,
+                        substeps=1000,
+                        dt=self.sim_dt,
+                        gravity_ramp=bool(getattr(args, "settle_gravity_ramp", False)),
+                    )
                     quiet_all_cable_bodies(settled.cable)
                     self.scene = build_fn(
                         self.ranges,

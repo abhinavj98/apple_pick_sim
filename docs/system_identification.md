@@ -123,6 +123,14 @@ Run CEM **per excitation direction** first (separate $P$, $Q$ per $\hat{u}$). Af
 
 Tune simulation parameters $\theta$ (geometry where free, rod \(E\), \(\zeta\), apple mass scalars). Derived VBD knobs are not independent CEM dimensions unless legacy fixtures are in use.
 
+**Proposed reframing of $\theta$:** rather than fitting raw, geometry-entangled
+$K$/$B$ per segment, fit Young's modulus $E$, damping ratio $\zeta$, and density
+$\rho$ — geometry-invariant quantities that transfer correctly across domain-randomized
+`radius`/`length`/`num_segments`, and which the §2.1/§2.2 excitation phases already
+separate cleanly (quasi-static → $E$; chirp resonance peak location vs. width/decay →
+$\rho$ vs. $\zeta$). Derivation, formulas, and a numerical `ω_n·dt` stability guard for
+the resulting domain randomization: `docs/fixture-stiffness-damping-stability.md`.
+
 1. **Initialize:** $\mathcal{N}(\mu_0, \Sigma_0)$ with broad $\Sigma_0$.
 2. **Sample:** $N \approx 50$–$100$ candidate $\theta_i$.
 3. **Simulate:** VBD with each $\theta_i$, initialized from the observation-derived digital twin, driven by **identical** recorded $v_{ee}(t)$; extract transition samples.

@@ -208,7 +208,11 @@ nominal primary geometry (see `docs/material-parameter-sampling.md`); legacy
 N/m. Treat the table as **tier centers**; derive from sampled \(E\) and geometry,
 then validate with quasi-static holds and
 `apple_pick_gym/examples/run_system_identification.py` grid search before
-treating numbers as ground truth.
+treating numbers as ground truth. Proposed conversion to a geometry-invariant
+Young's modulus `E` (and a derived, geometry-consistent `bend_stiffness` per env),
+plus the matching damping-ratio (`ζ`) and density (`ρ`) sys-ID targets and a
+numerical stability guard for domain randomization:
+`docs/fixture-stiffness-damping-stability.md`.
 
 ### Spur stiffness
 
@@ -288,8 +292,15 @@ fixture `_comment` and this table.
 | Stem torsional stiffness | Interim `stem.bend_stiffness` band only | Magnet-tier → torsion [N·m/rad] mapping | Follow-up slice: expose torsion in VBD |
 | Rod `radius` (primary/spur/stem) | Midpoints from `example_variance` until measured | Caliper / CAD on proxy | Measurement |
 | `bend_stiffness` ↔ N/m | JSON bands centered on proxy table | Sys-ID identified coefficients | M3 grid / CEM |
+| Rod `density` (`ρ`) | Sampled independently of stiffness; not measured on these specimens | Paired `(E, ρ)` measurement per specimen, or a regime-matched literature range (real wood vs. rigid-link proxy material) | Measurement or literature source — see `docs/fixture-stiffness-damping-stability.md` §6 |
 
 When editing fixtures, add a `_comment` field listing active placeholders.
+
+**See also:** `docs/fixture-stiffness-damping-stability.md` — analysis of why
+independent sampling of `bend_stiffness`/`bend_damping`/`radius`/`length`/`density`
+produces unstable domain-randomization draws, and a proposed derived-sampling scheme
+(`E`, `ζ`, `ρ` as the sys-ID/DR targets instead) plus a numerical `ω_n·dt` stability
+guard.
 
 ---
 

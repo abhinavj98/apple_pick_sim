@@ -15,6 +15,8 @@ from apple_pick_sim.fruiting_system.coupled import (
     geometry_fingerprint_coupled,
 )
 from apple_pick_sim.fruiting_system.params import (
+    FRUITING_SYSTEM_PARAMS_SCHEMA,
+    FRUITING_SYSTEM_PARAMS_SCHEMA_V1,
     FruitingSystemParams,
     FixtureArgs,
     GripperProxyConfig,
@@ -64,6 +66,8 @@ from apple_pick_sim.vbd_fixed_joint_wrenches import (
 )
 
 __all__ = [
+    "FRUITING_SYSTEM_PARAMS_SCHEMA",
+    "FRUITING_SYSTEM_PARAMS_SCHEMA_V1",
     "CoupledCableScene",
     "FruitingSystemParams",
     "FruitingSystemScene",

@@ -211,6 +211,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
                 weld_direction=self._pending_weld_direction,
                 weld_reference_pos=self._pending_weld_reference_pos,
                 weld_reference_quat=self._pending_weld_reference_quat,
+                weld_reference_stem_dir=self._pending_weld_reference_stem_dir,
             )
         return cfg
 
@@ -234,6 +235,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             self._last_weld_direction = None
             self._pending_weld_reference_pos = None
             self._pending_weld_reference_quat = None
+            self._pending_weld_reference_stem_dir = None
             return None
 
         from apple_pick_sim.system_id import sample_fibonacci_hemisphere, stem_perpendicular_robot_pole
@@ -245,6 +247,7 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
             self._last_weld_direction = None
             self._pending_weld_reference_pos = None
             self._pending_weld_reference_quat = None
+            self._pending_weld_reference_stem_dir = None
             return None
 
         apple_q7 = probe_scene.cable.state_0.body_q.numpy().reshape(-1, 7)[int(apple_body)]
@@ -279,6 +282,11 @@ class ApplePickSysIdEnv(ApplePickVicEnv):
         stem_base = body_q[int(stem_bodies[-2]), :3]
         physical_stem = stem_tip - stem_base
         physical_stem /= np.linalg.norm(physical_stem)
+        self._pending_weld_reference_stem_dir = (
+            float(physical_stem[0]),
+            float(physical_stem[1]),
+            float(physical_stem[2]),
+        )
 
         pole = stem_perpendicular_robot_pole(physical_stem, robot_vec)
 

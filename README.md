@@ -2,6 +2,8 @@
 
 This repository contains simulation code for robotic apple picking using the [Newton](https://github.com/newton-physics/newton) physics engine.
 
+**New to this codebase?** Start with [`docs/CODEBASE_GUIDE.md`](docs/CODEBASE_GUIDE.md) for a map of the packages, the doc set, and where to read code first. For project intent and current priorities, see [`docs/VISION.md`](docs/VISION.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 ## Installation
 
 ### 1. Clone the repository
@@ -55,9 +57,13 @@ This runs the apple simulation with three branch stiffness presets. The terminal
 
 ### `example_fruiting_system.py` (variational fruiting)
 
-Default fixture: **`fruiting_system_ranges_real_world_proxy.json`** — T-junction bench layout
-(primary simply supported along **±X**, spur/stem/apple from the **T center** at `(0, 0.5, 0.95)` m;
-see `docs/real-world-proxy.md`). Each run draws a new sample unless you pass `--seed`. Pass
+Default fixture: **`fruiting_system_ranges_real_world_proxy.json`**. This fixture is the bench-proxy
+geometry described in `docs/real-world-proxy.md`, but its JSON currently sets
+`"topology": "linear_chain"` (serial primary → … → apple), **not** the T-junction topology
+(primary simply supported along ±X, spur/stem/apple from the **T center**) that document
+specifies — see the topology caveat in `docs/real-world-proxy.md`. The companion
+`fruiting_system_ranges_real_world_proxy_variance.json` (no explicit `"topology"` key) does
+default to the T-junction builder. Each run draws a new sample unless you pass `--seed`. Pass
 `--json apple_pick_sim/fixtures/fruiting_system_ranges_example_variance.json` for the wide-angle
 procedural variance chain. Unit tests use `fruiting_system_ranges_straight_rod_test.json` for
 deterministic, nearly vertical chains. Uses the same Newton viewer pattern as the stem example.
@@ -82,7 +88,8 @@ From Python, call `ExampleFruitingSystem.regenerate()` (optional seed) to rebuil
 ## P0 variational fruiting (JSON + seed)
 
 Range fixtures live under `apple_pick_sim/fixtures/`: **`fruiting_system_ranges_real_world_proxy.json`**
-(T-junction bench proxy; default for `example_fruiting_system.py` and `example_coupled_fruiting.py`),
+(bench proxy geometry, `linear_chain` topology — see topology note above; default for
+`example_fruiting_system.py` and `example_coupled_fruiting.py`),
 **`fruiting_system_ranges_example_variance.json`** (wide-angle procedural variance), and
 **`fruiting_system_ranges_straight_rod_test.json`** (nearly −Z chain; default for tests). The
 generator is the **`apple_pick_sim/fruiting_system/`** package (`params.py`, `build.py`, `scene.py`,
@@ -169,9 +176,9 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py --robot placeholder --viewer null --num-frames 60
 ```
 
-### `example_batched_coupled_fruiting.py` (V.1 shipped; V.2 independent envs next)
+### `example_batched_coupled_fruiting.py` (homogeneous batches)
 
-Batched coupled fruiting: **N** worlds via ``replicate()``, settle→weld init, then FR3 teleop via ``BatchedTemplateIK`` per-env scatter. **V.1:** reference example uses the same keyboard velocity on all envs; **V.2 (next):** per-env seeds, weld bootstrap, and actions. Full flow: **`docs/vectorized-coupled-fruiting.md`**.
+Batched coupled fruiting: **N** worlds via ``replicate()``, settle→weld init, then FR3 teleop via ``BatchedTemplateIK`` per-env scatter. This reference example uses the same keyboard velocity on all envs (homogeneous smoke). For **independent** per-env seeds, per-env material θ, and per-env actions (shipped), see ``example_batched_heterogeneous_coupled_fruiting.py`` and **`docs/vectorized-coupled-fruiting.md`**. Current active work (batched sim API extraction + gym migration) is tracked in **`docs/ROADMAP.md`**.
 
 ```bash
 # Headless smoke (settle→weld)
@@ -186,6 +193,10 @@ uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
 # Fast robot for CI
 uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
   --viewer null --num-frames 120 --robot placeholder --num-envs 2 --fix-to-apple
+
+# Heterogeneous batches: independent per-env material θ, per-env IK bootstrap, per-env actions
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \
+  --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 ```
 
 **FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):
@@ -281,7 +292,7 @@ The root `pyproject.toml` installs `apple_pick_sim` and `apple_pick_gym` editabl
 
 ### M3.0 §2.1 quasi-static sys-ID (`ApplePickSysId-v0`)
 
-Stepped push–hold excitation along Fibonacci-hemisphere pull directions. Spec: `docs/system-id-quasi-static-implementation.md`.
+Stepped push–hold excitation along Fibonacci-hemisphere pull directions. Spec: `docs/system_identification.md` (see "Implementation notes: §2.1 quasi-static stepped mapping").
 
 ```bash
 # One-direction smoke (2 cm steps, 10 cm total)
@@ -303,7 +314,7 @@ uv run --env-file pytest.env python -m pytest \
 
 ### M3 replay and digital-twin setup
 
-Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Parquet recordings are observation-first; privileged `.npz` snapshots are opt-in (`--save-snapshot`) for exact sim-to-sim baseline comparisons. Digital-twin fixture names, base poses, observation fixtures, and smoke commands are listed in `apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`. Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md), [`docs/observation-replay-digital-twin.md`](docs/observation-replay-digital-twin.md), and [`docs/digital-twin-from-obs-implementation.md`](docs/digital-twin-from-obs-implementation.md).
+Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Parquet recordings are observation-first; privileged `.npz` snapshots are opt-in (`--save-snapshot`) for exact sim-to-sim baseline comparisons. A named digital-twin fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) is planned to list fixture names, base poses, observation fixtures, and smoke commands, but **that catalog file is not committed yet** — see the "Known gap" in `docs/digital-twin.md` before relying on it. Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md) and [`docs/digital-twin.md`](docs/digital-twin.md).
 
 ```bash
 # Collect a short observation-only dataset (no privileged snapshot by default)
@@ -346,7 +357,7 @@ uv run python apple_pick_gym/examples/run_system_identification.py \
   --stem-bend-stiffness-values 10,25,50 \
   --mmd-output /tmp/apple_pick_mmd_grid
 
-# Digital-twin catalog and reconstruction tests
+# Digital-twin reconstruction tests (2 known failures pending catalog fixture files — see docs/digital-twin.md)
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
 
 # Pull-direction geometry figure

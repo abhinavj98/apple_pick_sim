@@ -301,7 +301,7 @@ Kinematic overwrite of `body_q` without updating `SolverVBD.body_q_prev` makes V
 | `--only-vbd` | `vbd_substep` | VBD only | Cable tree (proxy not mirrored from robot) |
 | `--only-mjc` | `mujoco_substep` | MuJoCo → sync (no VBD, no harvest update) | Cable tree static except proxy pose from sync |
 
-**FR3 keyboard teleop** (`--robot fr3 --fr3-keyboard`): `update_fr3_ee_teleop` runs once per **frame** (IK → `joint_target_*`), then substeps call `mujoco_substep` or `coupled_substep`. As of 2026-05-19, interactive arm motion is **verified** only with **`--only-mjc`** and default **`fix_to_apple=False`**; full coupled teleop is not yet confirmed in the viewer.
+**FR3 keyboard teleop** (`--robot fr3 --fr3-keyboard`): `update_fr3_ee_teleop` runs once per **frame** (IK → `joint_target_*`), then substeps call `mujoco_substep` or `coupled_substep`. Full coupled teleop with a **dynamic** arm (`--dynamic-arm --vic`, joint-torque VIC) is the current default path for post-grasp pulling — see `docs/variable-impedance-teleop.md` — and is covered by `test_vic_joint_torques_moves_arm` / `test_vic_stem_deflection_under_load`. `--only-mjc` remains available for isolating MuJoCo-only motion when debugging the coupling loop.
 
 ---
 

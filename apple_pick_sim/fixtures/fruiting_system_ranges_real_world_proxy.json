@@ -1,9 +1,8 @@
 {
-  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). The original fruiting_system_ranges_real_world_proxy.json youngs_modulus_pa bounds were computed inconsistently with these targets (100x-1500x too wide/high), producing numerically stiff, underdamped samples that never settle under SolverVBD. See docs/material-parameter-sampling.md and docs/real-world-proxy.md.",
+  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). See docs/material-parameter-sampling.md and docs/real-world-proxy.md.",
   "args": {
-    "fruiting_base_pos": [0.0, 0.5, 0.65],
-    "robot_base_pos": [0.0, 0.0, 0.0],
-    "topology": "linear_chain"
+    "fruiting_base_pos": [0.0, 0.5, 0.95],
+    "robot_base_pos": [0.0, 0.0, 0.0]
   },
   "primary": {
     "num_segments": {"min": 2, "max": 4},
@@ -18,7 +17,7 @@
   "secondary": null,
   "spur": {
     "num_segments": {"min": 4, "max": 6},
-    "length": {"min": 0.05, "max": 0.1},
+    "length": {"min": 0.01, "max": 0.1},
     "radius": {"min": 0.006, "max": 0.014},
     "density": {"min": 200.0, "max": 400.0},
     "elevation_delta_deg": {"min": -90.0, "max": -90.0},

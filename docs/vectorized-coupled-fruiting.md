@@ -1,8 +1,8 @@
 # Vectorized batched coupled fruiting
 
-**Last updated:** 2026-07-01 (V.2.1.2 fixture hardening; intra-cable collisions disabled by default)
+**Last updated:** 2026-07-02
 
-**This document is the single source of truth** for batched coupled fruiting: build, settle, weld, and interactive run. Do not duplicate or contradict this flow in examples, README, or tests—link here instead.
+**This document is the single source of truth for *how* batched coupled fruiting works** — build, settle, weld, and interactive run. It is **not** the source of truth for slice status or sequencing: that is **`docs/ROADMAP.md`** ([V] track). Where this document used to carry its own "V.1/V.2/V.3" phase table, it now points at ROADMAP instead — do not duplicate or contradict either flow in examples, README, or tests.
 
 **Related:** arm/plant gravity split and RL training assumptions — `docs/mujoco-vbd-coupling-architecture.md` §2.5.
 
@@ -47,7 +47,7 @@ flowchart LR
   - When both scenes have `N` worlds: copy world *i* settled cable `body_q` / `body_qd` into welded world *i*.
   - Legacy (single-world settled → `N` welded): broadcast settled state with `env_spacing` offsets.
   - Align each proxy to its apple grasp offset; zero apple/proxy twists for a quiet weld start.
-  - Bootstrap FR3 IK at the fixed robot base. **V.1 (shipped):** solve on the single-world template, copy world-0 `joint_q`, **broadcast** to all envs. **V.2 (next):** per-env IK bootstrap via `BatchedTemplateIK` — each world's TCP at its own settled proxy; **no joint broadcast** on FR3.
+  - Bootstrap FR3 IK at the fixed robot base. **Homogeneous batches** (`replicate()`, one shared seed): solve on the single-world template, copy world-0 `joint_q`, **broadcast** to all envs. **Heterogeneous batches** (`add_world`, per-env θ — shipped): per-env IK bootstrap via `BatchedTemplateIK` — each world's TCP at its own settled proxy; **no joint broadcast** on FR3.
 - Topology is fixed at build time; the proxy↔apple FIXED joint cannot be toggled at runtime—hence the two-build workflow (`settle_then_weld.py`).
 
 ### 4. Run with teleop or per-env actions
@@ -87,7 +87,7 @@ ctrl = fr3_robot.Fr3BatchedEEDirectJointController(
 scene.update_fr3_ee_teleop_direct(frame_dt, ctrl)  # scatter, no broadcast
 ```
 
-Gym / RL **(planned, V.3)** will pass **`(N, act_dim)`** policy outputs into the same scatter path instead of `velocity_for_world`.
+A batched Gym / RL adapter (planned — see `docs/ROADMAP.md` [V] track) will pass **`(N, act_dim)`** policy outputs into the same scatter path instead of `velocity_for_world`.
 
 ---
 
@@ -97,43 +97,43 @@ Run **N independent coupled stacks** (VBD cable + MuJoCo FR3 per env) in one GPU
 
 **Physics isolation:** worlds do not collide across env indices; coupling (TCP↔proxy↔apple) is **within** each env only. See [Co-located physics vs viewer spacing](#co-located-physics-vs-viewer-spacing).
 
-### V.1 shipped vs V.2 independent envs
+### Homogeneous vs heterogeneous batches (both shipped)
 
-| Layer | V.1 (shipped) | V.2 (next) |
+| Layer | Homogeneous (`replicate()`) | Heterogeneous (`add_world`, per-env θ) |
 | ----- | ------------- | ----------- |
-| **Fruiting θ / geometry** | One `seed` → one `sample_params` → `replicate(N)` | Per-env seeds / numeric θ scatter (same topology per batch) |
-| **VBD settle → weld (cable)** | World *i* settled → world *i* welded ✓ | Unchanged |
-| **FR3 IK after weld** | Template solve + **`broadcast_joint_q_from_world0`** | Per-env IK row; **`scatter_to_model`** only |
-| **Runtime actions (FR3)** | Example: same keyboard/scripted vel; IK scatter per row | **`velocity_for_world(w)`** or `(N, act_dim)`; per-env noise RNG |
+| **Fruiting θ / geometry** | One `seed` → one `sample_params` → `replicate(N)` | Per-env seeds / numeric θ via `sample_heterogeneous_params_list` (same topology per batch) |
+| **VBD settle → weld (cable)** | World *i* settled → world *i* welded ✓ | Same |
+| **FR3 IK after weld** | Template solve + **`broadcast_joint_q_from_world0`** | Per-env IK row; **`scatter_to_model`** only, no broadcast |
+| **Runtime actions (FR3)** | Example: same keyboard/scripted vel; IK scatter per row | **`velocity_for_world(w)`** or per-env action buffer |
 | **Runtime actions (placeholder)** | World 0 nudge + broadcast every frame | Independent path drops broadcast (homogeneous smoke only) |
 
-**What stays shared in V.2:** batch orchestration (`coupled_substep`), co-located sim origin, viewer grid (`--env-spacing`), homogeneous body/joint counts per batch.
+**What stays shared across both:** batch orchestration (`coupled_substep`), co-located sim origin, viewer grid (`--env-spacing`), homogeneous body/joint counts per batch (topology is always fixed per batch — see below).
 
 ### Batch contract
 
-**V.1 — homogeneous builds (shipped):**
+**Homogeneous builds:**
 
 - Same enabled rod segments (`omit` set frozen).
 - Same `num_segments` per rod.
 - Same apple on/off.
 - Same `FruitingSystemParams` across envs (identical seed / replicate).
 
-**V.2 — independent envs (next):**
+**Heterogeneous builds (independent envs):**
 
-- Same topology constraints as V.1 (fixed `omit`, fixed segment counts — `replicate()` requires identical body/joint counts).
+- Same topology constraints as homogeneous builds (fixed `omit`, fixed segment counts — a shared `Model` requires identical body/joint counts per batch).
 - **Different numeric θ per env:** `seeds: int | Sequence[int]` (e.g. `seed + w`) and/or runtime scatter of material-derived `bend_stiffness`, `stretch_stiffness`, `bend_damping` into per-world VBD arrays (sampled from \(E\), \(\zeta\); see `docs/material-parameter-sampling.md`).
 - **Different actions per env** at runtime via `velocity_for_world` or action buffer → `BatchedTemplateIK.scatter_to_model`.
 - **No cross-env state/command coupling** after init (except explicit homogeneous-smoke flags).
 
-**V.3+:** geometry DR on reset (lengths, directions, apple radius); batched gym adapter.
+**Not yet shipped** (see `docs/ROADMAP.md` [V] track for current sequencing): geometry DR on reset without a rebuild (lengths, directions, apple radius); a batched `apple_pick_gym` adapter; policy-scale `(N, act_dim)` action tensors beyond the current `velocity_for_world` scatter.
 
 | Use case | θ per env | Actions | Collection |
 | -------- | --------- | ------- | ---------- |
-| **V.1 interactive / smoke** | Identical | Same EE vel all envs (example default); IK scatter per env | Stability, IK convergence |
-| **V.2 sys-id / CEM** | Different \(E\), \(\zeta\) (→ stiffness/damping) per env | Per-env or recorded `v_ee(t)` via scatter | Per-world `gather_transitions()` for MMD |
-| **V.2 / V.3 RL** | Domain randomization | Per-env `(N, act_dim)` from policy → scatter | Per-world obs / reward / done |
+| **Interactive / smoke** | Identical (homogeneous) | Same EE vel all envs (example default); IK scatter per env | Stability, IK convergence |
+| **Sys-ID / CEM** | Different \(E\), \(\zeta\) (→ stiffness/damping) per env (heterogeneous) | Per-env or recorded `v_ee(t)` via scatter | Per-world transition gathering for MMD (planned — see ROADMAP [V].4) |
+| **RL (planned)** | Domain randomization | Per-env `(N, act_dim)` from policy → scatter | Per-world obs / reward / done |
 
-`replicate()` remains the build strategy; consumers differ in θ content, init bootstrap, action path, and gather API.
+Both `replicate()` and `add_world` remain the build strategies; consumers differ in θ content, init bootstrap, action path, and gather API.
 
 ---
 
@@ -257,7 +257,7 @@ Debug overlays in `apple_pick_sim/batched_viz.py` add the same per-world viewer 
 
 ## Sim-to-real and RL training contract
 
-Batched coupled fruiting is the intended backend for **parallel RL** ([V.3]) and build-time **domain randomization** ([V.2.2] heterogeneous builds). The sim assumes the same control contract as the target real stack:
+Batched coupled fruiting is the intended backend for **parallel RL** (planned, see `docs/ROADMAP.md`) and build-time **domain randomization** (shipped heterogeneous builds). The sim assumes the same control contract as the target real stack:
 
 | Assumption | Simulation | Real robot (target) |
 |------------|------------|---------------------|
@@ -278,42 +278,23 @@ Batched coupled fruiting is the intended backend for **parallel RL** ([V.3]) and
 
 ## θ application
 
-| Parameter class | Sys-ID (V.2) | RL (V.3) | When to apply |
+| Parameter class | Sys-ID (shipped) | RL (planned) | When to apply |
 | --------------- | ------------ | -------- | ------------- |
-| `youngs_modulus_pa`, `damping_ratio` → derived `bend_stiffness`, `stretch_stiffness`, `bend_damping` | Primary CEM targets | DR | **Build-time** (V.2.2) or **runtime scatter** into VBD arrays per world |
-| `length`, `radius`, `direction` | Usually fixed (twin) | DR | **Reset-time** kinematics per world (V.3) |
-| Apple `radius`, `density` | Optional | **DR (primary)** | Build or reset per policy (V.3); scales `apple_mass_kg` → explicit harvest wrench when welded |
+| `youngs_modulus_pa`, `damping_ratio` → derived `bend_stiffness`, `stretch_stiffness`, `bend_damping` | Primary CEM targets | DR | **Build-time** (shipped) or **runtime scatter** into VBD arrays per world |
+| `length`, `radius`, `direction` | Usually fixed (twin) | DR | **Reset-time** kinematics per world (planned, needs rebuild-free reset support) |
+| Apple `radius`, `density` | Optional | **DR (primary)** | Build or reset per policy (planned); scales `apple_mass_kg` → explicit harvest wrench when welded |
 
-Per-env sampling uses `sample_params(ranges, seed_w)` with distinct seeds; topology (`omit`, segment counts) stays fixed per batch. Material keys and derivation: `docs/material-parameter-sampling.md`.
+Per-env sampling uses `sample_params(ranges, seed_w)` with distinct seeds; topology (`omit`, segment counts) stays fixed per batch. Material keys and derivation: `docs/material-parameter-sampling.md`. Status/sequencing for the "planned" rows: `docs/ROADMAP.md`.
 
 ---
 
-## Phased delivery
+## Status and sequencing
 
-| Slice | Status | Deliverable | Unblocks |
-| ----- | ------ | ----------- | -------- |
-| **V.1** | **Done** | Canonical settle→weld batched init; `BatchedTemplateIK` scatter teleop; homogeneous example keyboard; co-located physics + viewer spacing doc; tests | Batched interactive smoke |
-| **V.2.1** | **Done** | Per-env IK bootstrap after settle→weld (heterogeneous path); all worlds' TCP at own proxy | Correct weld when θ differs per env |
-| **V.2.1.1** | **Done** | `newton/` submodule bump to latest upstream; parity fixes across coupling, VIC, batched paths | Stable base for fixture + batched gym work |
-| **V.2.1.2** | Planned | Fixture catalog refresh for settle stability and real-world likeness | Credible sim-sim GT before [S] |
-| **V.2.1.3** | **Active** | Material-parameter sampling ($E$, $\zeta$) → derived VBD knobs | `docs/material-parameter-sampling.md` |
-| **V.2.2** | **Done (build-time)** | `add_world` heterogeneous cable build; `sample_heterogeneous_params_list` | Build-time DR per env |
-| **V.2.3** | Planned | Per-env runtime actions in example/API; placeholder broadcast only for homogeneous smoke | Parallel policy / recorded replay |
-| **V.2.4** | Planned | Recorded-action replay; `gather_transitions()` per world | [S].1 batched MMD |
-| **V.3.1** | Planned | Per-env geometry DR on reset | RL domain randomization |
-| **V.3.2** | Planned | Batched `(N, act_dim)` → IK scatter | Policy-scale rollouts |
-| **V.3.3** | Planned | `--tcp-force-arrow`, `--mark-endpoints` on all batched examples; public vectorized APIs for TCP pose/wrench, joint state, woody endpoint poses | Debug + obs readout without host loops |
-| **V.3.4** | Planned | Batched `apple_pick_gym` env; parallel sys-ID trajectory collection (`num_envs > 1`) | [S] sim-sim transfer |
+Everything described above (homogeneous `replicate()` batches, heterogeneous `add_world` batches, per-env IK bootstrap, material-parameter sampling, build-time θ domain randomization, per-env runtime actions) is **shipped**. This document intentionally does not keep its own phase/slice table — the previous version's "V.1/V.2.x/V.3.x" table drifted out of sync with, and used different slice numbers than, the canonical one.
 
-Deferred: batched VIC, heterogeneous topology within one batch.
+For **current status, active slice, and what's next** (sim API extraction, batched gym migration, batched sys-ID, geometry DR on reset, policy-scale action tensors, batched VIC), see the **`[V]` track in `docs/ROADMAP.md`** — that is the single source of truth for sequencing.
 
-### V.2 implementation notes (for agents)
-
-1. **Tests first:** extend `test_vectorized_coupled_fruiting.py` — all worlds' TCP align to proxy after bootstrap; joint slices differ when per-env seeds differ.
-2. **`settle_then_weld.py`:** replace template-only bootstrap + broadcast with `BatchedTemplateIK` per-row proxy targets → `scatter_to_model`.
-3. **`builders.py`:** accept `seeds: int | Sequence[int]`; scatter stiffness into per-world VBD joint arrays after `replicate()`.
-4. **`example_batched_coupled_fruiting.py`:** flags for independent envs (per-env seed offset, `velocity_for_world` demo); keep V.1 homogeneous path behind explicit flag for smoke tests.
-5. **`broadcast_joint_q_from_world0`:** retain for placeholder homogeneous smoke and unit tests only — not canonical V.2+ FR3 path.
+Deferred (tracked in `docs/ROADMAP.md` backlog, not here): batched VIC as the default gym controller, heterogeneous topology within one batch.
 
 ---
 
@@ -357,7 +338,7 @@ Module: `apple_pick_sim/tests/test_vectorized_coupled_fruiting.py`
 | `test_batched_fr3_fix_to_apple_substep_stable` | Welded batched substeps stay stable |
 | `test_batched_fr3_per_env_velocity_diverges` | `velocity_for_world(w)` diverges integrated targets |
 
-**V.2 (planned):**
+**Not yet written** (candidates for the next batched-vectorization test slice — check `docs/ROADMAP.md` before assuming these are still needed, code may have since covered them under different names):
 
 | Test | Intent |
 | ---- | ------ |
@@ -420,5 +401,5 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --viewer null 
 | FR3 + `replicate` + MuJoCo validation | Placeholder TCP in fast tests; FR3 smoke after settle→weld |
 | `separate_worlds` on CPU pytest | `separate_worlds=True` when `num_envs > 1` |
 | IK / settle drift across worlds | Per-world settled copy; co-located replicate; V.2 per-env IK bootstrap; runtime per-env IK scatter |
-| Per-env actions vs broadcast confusion | FR3 teleop uses `BatchedTemplateIK.scatter_to_model`; `broadcast_joint_q_from_world0` is V.1 bootstrap / placeholder only — removed from V.2 FR3 path |
-| CEM wants fast θ sweeps | Per-env K/B scatter in V.2.2; `gather_transitions` in V.2.4 |
+| Per-env actions vs broadcast confusion | FR3 teleop uses `BatchedTemplateIK.scatter_to_model`; `broadcast_joint_q_from_world0` is homogeneous bootstrap / placeholder only — not used on the heterogeneous FR3 path |
+| CEM wants fast θ sweeps | Per-env K/B scatter is shipped (build-time); `gather_transitions()` on the batched backend is planned — see `docs/ROADMAP.md` [V].4 |

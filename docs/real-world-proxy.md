@@ -18,8 +18,8 @@ for implementing:
 2. Match the physical proxy layout closely enough for M3 sys-ID and digital-twin
    work.
 
-Related docs: `docs/observation-replay-digital-twin.md`,
-`docs/gym-observation-contract.md`, `docs/system-id-quasi-static-implementation.md`.
+Related docs: `docs/digital-twin.md`,
+`docs/gym-observation-contract.md`, `docs/system_identification.md`.
 
 ---
 
@@ -208,11 +208,11 @@ nominal primary geometry (see `docs/material-parameter-sampling.md`); legacy
 N/m. Treat the table as **tier centers**; derive from sampled \(E\) and geometry,
 then validate with quasi-static holds and
 `apple_pick_gym/examples/run_system_identification.py` grid search before
-treating numbers as ground truth. Proposed conversion to a geometry-invariant
+treating numbers as ground truth. Conversion to a geometry-invariant
 Young's modulus `E` (and a derived, geometry-consistent `bend_stiffness` per env),
 plus the matching damping-ratio (`ζ`) and density (`ρ`) sys-ID targets and a
-numerical stability guard for domain randomization:
-`docs/fixture-stiffness-damping-stability.md`.
+numerical stability guard for domain randomization, is shipped — see
+`docs/material-parameter-sampling.md` ("Derivation" section).
 
 ### Spur stiffness
 
@@ -292,13 +292,13 @@ fixture `_comment` and this table.
 | Stem torsional stiffness | Interim `stem.bend_stiffness` band only | Magnet-tier → torsion [N·m/rad] mapping | Follow-up slice: expose torsion in VBD |
 | Rod `radius` (primary/spur/stem) | Midpoints from `example_variance` until measured | Caliper / CAD on proxy | Measurement |
 | `bend_stiffness` ↔ N/m | JSON bands centered on proxy table | Sys-ID identified coefficients | M3 grid / CEM |
-| Rod `density` (`ρ`) | Sampled independently of stiffness; not measured on these specimens | Paired `(E, ρ)` measurement per specimen, or a regime-matched literature range (real wood vs. rigid-link proxy material) | Measurement or literature source — see `docs/fixture-stiffness-damping-stability.md` §6 |
+| Rod `density` (`ρ`) | Sampled independently of stiffness; not measured on these specimens | Paired `(E, ρ)` measurement per specimen, or a regime-matched literature range (real wood vs. rigid-link proxy material) | Measurement or literature source — see `docs/material-parameter-sampling.md` ("Derivation" section) |
 
 When editing fixtures, add a `_comment` field listing active placeholders.
 
-**See also:** `docs/fixture-stiffness-damping-stability.md` — analysis of why
+**See also:** `docs/material-parameter-sampling.md` ("Derivation" section) — analysis of why
 independent sampling of `bend_stiffness`/`bend_damping`/`radius`/`length`/`density`
-produces unstable domain-randomization draws, and a proposed derived-sampling scheme
+produces unstable domain-randomization draws, and the shipped derived-sampling scheme
 (`E`, `ζ`, `ρ` as the sys-ID/DR targets instead) plus a numerical `ω_n·dt` stability
 guard.
 
@@ -365,11 +365,11 @@ Before marking the fixture slice done:
 
 ## Implementation checklist
 
-- [ ] Add `fruiting_system_ranges_real_world_proxy.json`
-- [ ] Add `fruiting_system_ranges_real_world_proxy_variance.json`
-- [ ] Add `real_world_proxy` to `digital_twin_fixture_catalog.json`
-- [ ] Wire gym/sys-ID default or explicit `--ranges` path to proxy fixture where intended
-- [ ] Disable `robot_base_from_proxy` for builds using this fixture
+- [x] Add `fruiting_system_ranges_real_world_proxy.json` — **shipped, but see topology caveat below**
+- [x] Add `fruiting_system_ranges_real_world_proxy_variance.json`
+- [ ] Add `real_world_proxy` to `digital_twin_fixture_catalog.json` — blocked; catalog file itself is not committed yet, see `docs/digital-twin.md` ("Known gap")
+- [x] Wire gym/sys-ID default or explicit `--ranges` path to proxy fixture where intended
+- [ ] Disable `robot_base_from_proxy` for builds using this fixture — not re-verified since this doc was written
 - [ ] Update `assets/testfr3_resolved.usda` (140 mm × Ø200 mm, TCP at +Z tip)
 - [ ] Sync `GripperProxyConfig` with EE mass placeholder
 - [ ] Align `COUPLED_*` defaults or document override when proxy fixture is active
@@ -377,6 +377,16 @@ Before marking the fixture slice done:
       mid-span spur attach, junction labels `primary_support_left` /
       `primary_support_right` / `primary_spur`; wrench smoke on `primary_spur`
 - [ ] **Follow-up:** stem torsional stiffness API + magnet-tier mapping
+
+**Topology caveat (found during 2026-07 doc audit):** the shipped
+`fruiting_system_ranges_real_world_proxy.json` sets `"topology": "linear_chain"`
+— it opts **out** of the T-junction builder this document specifies. The
+*variance* fixture (`fruiting_system_ranges_real_world_proxy_variance.json`)
+omits `"topology"` and so **does** default to `t_junction`. This means the
+nominal and variance fixtures for the same physical proxy currently build
+**different topologies**. This is a code/fixture-data question, not something
+this doc audit resolved — flag to the maintainer before relying on
+`real_world_proxy.json` (non-variance) as a T-junction bench twin.
 
 ---
 

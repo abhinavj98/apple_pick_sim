@@ -45,10 +45,11 @@ def test_junction_names_after_reset():
     names = unwrapped.junction_names
     assert isinstance(names, list)
     assert len(names) == int(info["n_woody_parts"])
-    assert "primary_secondary" in names
-    assert "secondary_spur" in names
+    assert "primary_spur" in names
     assert "spur_stem" in names
     assert "stem_apple" in names
+    assert "primary_support_left" in names
+    assert "primary_support_right" in names
     assert names == list(info["fruiting_link_forces"].keys())
     env.close()
 
@@ -95,5 +96,6 @@ def test_junction_forces_dict_matches_flat_obs():
         np.testing.assert_array_equal(jf[name], flat[i * 6 : (i + 1) * 6])
 
     assert "stem_apple" in jf
-    np.testing.assert_array_equal(jf["stem_apple"], flat[-6:])
+    stem_i = names.index("stem_apple")
+    np.testing.assert_array_equal(jf["stem_apple"], flat[stem_i * 6 : (stem_i + 1) * 6])
     env.close()

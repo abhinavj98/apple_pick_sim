@@ -77,6 +77,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
         self._pending_weld_direction: tuple[float, float, float] | None = None
         self._pending_weld_reference_pos: tuple[float, float, float] | None = None
         self._pending_weld_reference_quat: tuple[float, float, float, float] | None = None
+        self._pending_weld_reference_stem_dir: tuple[float, float, float] | None = None
         self._reset_fruiting_base_pos: tuple[float, float, float] | None = None
         self._reset_robot_base_pos: tuple[float, float, float] | None = None
         self._device = device
@@ -396,6 +397,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
             self._pending_weld_direction = None
             self._pending_weld_reference_pos = None
             self._pending_weld_reference_quat = None
+            self._pending_weld_reference_stem_dir = None
             cf.seed_fix_to_apple_from_settled(
                 welded_scene=self._scene,
                 settled_scene=settled,
@@ -420,6 +422,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
             self._pending_weld_direction = None
             self._pending_weld_reference_pos = None
             self._pending_weld_reference_quat = None
+            self._pending_weld_reference_stem_dir = None
 
         self._finalize_scene()
 

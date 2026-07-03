@@ -404,6 +404,12 @@ class GripperProxyConfig:
     """
     weld_reference_quat: tuple[float, float, float, float] | None = None
     """Apple orientation ``(x, y, z, w)`` paired with ``weld_reference_pos`` for apple-frame offset."""
+    weld_reference_stem_dir: tuple[float, float, float] | None = None
+    """Optional settled stem direction for hemisphere checks with ``weld_reference_pos``.
+
+    When set, robot-facing weld validation uses this unit vector instead of the
+  nominal build-time ``proxy_placement_dir`` (settle-then-weld workflows).
+    """
 
 @dataclasses.dataclass(frozen=True)
 class FixtureArgs:

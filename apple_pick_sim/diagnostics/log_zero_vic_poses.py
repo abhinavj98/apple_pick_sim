@@ -469,8 +469,20 @@ def run_zero_vic_hold(config: ZeroVicHoldConfig) -> ZeroVicHoldResult:
     prev_apple_pos: dict[int, np.ndarray] = {}
     prev_log_t: float | None = None
     sim_time = 0.0
-    next_log_t = 0.0
-    while sim_time <= duration + 1e-9:
+
+    def _advance_hold(target_t: float) -> None:
+        nonlocal sim_time
+        while sim_time < target_t - 1e-9:
+            scene.update_fr3_ee_teleop(frame_dt, vic, velocity=_ZERO_VELOCITY)
+            for _ in range(sim_substeps):
+                scene.coupled_substep(sim_dt)
+            sim_time += frame_dt
+
+    if hold_warmup > 0.0:
+        _advance_hold(hold_warmup)
+
+    next_log_t = hold_warmup
+    while sim_time <= total_duration + 1e-9:
         for w in range(layout.num_envs):
             time_series.append(
                 pose_row(
@@ -488,27 +500,6 @@ def run_zero_vic_hold(config: ZeroVicHoldConfig) -> ZeroVicHoldResult:
                 [row["apple_x"], row["apple_y"], row["apple_z"]], dtype=np.float64
             )
         prev_log_t = sim_time
-
-        if sim_time >= duration - 1e-9:
-            break
-        next_log_t += log_interval
-        while sim_time < next_log_t - 1e-9 and sim_time < duration - 1e-9:
-            scene.update_fr3_ee_teleop(frame_dt, vic, velocity=_ZERO_VELOCITY)
-            for _ in range(sim_substeps):
-                scene.coupled_substep(sim_dt)
-            sim_time += frame_dt
-
-    time_series: list[dict[str, float | int]] = []
-    sim_time = 0.0
-    if hold_warmup > 0.0:
-        _advance_hold(hold_warmup)
-
-    next_log_t = hold_warmup
-    while sim_time <= total_duration + 1e-9:
-        for w in range(layout.num_envs):
-            time_series.append(
-                pose_row(t_s=sim_time, env=w, layout=layout, scene=scene, vic=vic)
-            )
 
         if sim_time >= total_duration - 1e-9:
             break

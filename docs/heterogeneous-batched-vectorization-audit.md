@@ -1,21 +1,21 @@
 # Heterogeneous batched vectorization audit
 
-**Last updated:** 2026-06-26
+**Last updated:** 2026-07-02 (re-verified against current code; both original P0 items are now fixed — see status column)
 
-Audit of `apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py` and its dependency chain against the goal of **fully vectorized** GPU stepping. Canonical batched flow and phased delivery live in [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md).
+Audit of `apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py` and its dependency chain against the goal of **fully vectorized** GPU stepping. Canonical batched flow lives in [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md); current slice status/sequencing lives in `docs/ROADMAP.md`.
 
 ---
 
 ## Executive summary
 
-The heterogeneous example is **mostly vectorized** for the main physics loop (VBD + MuJoCo + batched IK scatter), but it is **not completely vectorized**.
+The heterogeneous example's substep hot path is now **fully vectorized**; the remaining gaps are one-time init cost and frame-rate teleop staging, both acceptable per `.cursor/rules/gpu-warp-parallelism.mdc`.
 
-| Priority | Gap | Impact |
-| -------- | --- | ------ |
-| **P0** | Stem harvest runs a Python loop over envs every substep | Performance; violates hot-path hygiene |
-| **P0** | Per-env grasp offsets and apple mass not wired into runtime coupling | Correctness for heterogeneous DR |
-| **P1** | Teleop velocity staging uses per-env Python loops | Frame-rate only; acceptable per project GPU rules |
-| **P2** | Init/build uses sequential `add_world`, per-env IK bootstrap | One-time cost; lower priority |
+| Priority | Gap | Status | Impact |
+| -------- | --- | ------ | ------ |
+| ~~P0~~ | Stem harvest ran a Python loop over envs every substep | **Fixed** — `harvest_batched_stem_tension` (single batched launch, `proxy_coupling.py`) is used whenever `layout.num_envs > 1` | — |
+| ~~P0~~ | Per-env grasp offsets and apple mass not wired into runtime coupling | **Fixed** — `prepare_batched_stem_harvest_arrays` bakes per-env `stem_harvest_grasp_offsets_wp` / `stem_harvest_apple_masses_wp` at build time, consumed by the batched harvest launch above; covered by `test_batched_stem_harvest.py` | — |
+| **P1** | Teleop velocity staging uses per-env Python loops | Still true | Frame-rate only; acceptable per project GPU rules |
+| **P2** | Init/build uses sequential `add_world`, per-env IK bootstrap | Still true | One-time cost; lower priority |
 
 ---
 
@@ -29,6 +29,7 @@ The heterogeneous example is **mostly vectorized** for the main physics loop (VB
 | Wrench apply to robot | Registry-based multi-TCP write | `coupled_fruiting/apply_wrench.py` |
 | FR3 teleop IK | `IKSolver(n_problems=N)` + GPU gather / advance / scatter | `robot/fr3_robot/batched_template_ik.py` |
 | Velocity-delta harvest | Fully batched via registry (not used when `fix_to_apple=True`) | `proxy_coupling.py` → `harvest_proxy_wrenches` |
+| Stem harvest (multi-env) | Single batched launch over per-env stem/TCP/apple index arrays and per-env grasp offset / apple mass arrays (baked at build time) | `proxy_coupling.py` → `harvest_batched_stem_tension`, `prepare_batched_stem_harvest_arrays`; dispatched from `coupled_fruiting/scene.py` → `_harvest_coupling_wrenches` when `layout.num_envs > 1` |
 
 The example inner loop structure is correct: teleop once per viewer frame, then `sim_substeps` calls to `CoupledFruitingScene.coupled_substep`:
 
@@ -43,38 +44,17 @@ def simulate(self) -> None:
 
 ---
 
-## Not vectorized — runtime hot path (substep loop)
+## Resolved since original audit (2026-06-26)
 
-### 1. Stem harvest: per-env Python loop (P0)
+### 1. Stem harvest: per-env Python loop — **fixed**
 
-When `fix_to_apple=True` (the heterogeneous example default), `_harvest_coupling_wrenches` in `coupled_fruiting/scene.py` loops over worlds and calls `harvest_stem_tension_for_tcp` once per env per substep. Each call launches a **`dim=1`** Warp kernel.
+`_harvest_coupling_wrenches` in `coupled_fruiting/scene.py` now dispatches a **single** batched launch (`harvest_batched_stem_tension`, `dim=num_envs`) whenever `layout is not None and layout.num_envs > 1`, using precomputed per-env index/offset/mass arrays (`scene.stem_harvest_*_wp`, populated by `prepare_batched_stem_harvest_arrays` at build time). The single-env `harvest_stem_tension_for_tcp` path remains for `num_envs == 1` / non-batched scenes only. Test: `apple_pick_sim/tests/test_batched_stem_harvest.py`.
 
-With `--num-envs 4`, `sim_substeps=30`, and 30 Hz, that is roughly **3,600 sequential harvest invocations per second**.
+### 2. Heterogeneous per-env offsets and mass not used at runtime — **fixed**
 
-The main vectorization spec states that mirror and stem harvest launch with `dim = len(registry)`. That holds for **velocity-delta** harvest (`harvest_proxy_wrenches`) but **not** for stem harvest on the welded path.
+The per-env grasp offset and apple mass arrays prepared at build time (`prepare_batched_stem_harvest_arrays` → `stem_harvest_grasp_offsets_wp`, `stem_harvest_apple_masses_wp`, `stem_harvest_use_grasp_offset_wp`) are consumed directly by `harvest_batched_stem_tension` above, so heterogeneous per-env grasp geometry and apple mass now do feed runtime stem-harvest coupling, not just settle→weld init.
 
-**Owner:** `apple_pick_sim/coupled_fruiting/scene.py` (`_harvest_coupling_wrenches`), `proxy_coupling.py` (`harvest_stem_tension_for_tcp`).
-
-### 2. Heterogeneous per-env offsets and mass not used at runtime (P0)
-
-Build stores per-env weld geometry on the scene:
-
-- `CoupledFruitingScene.per_env_params`
-- `CoupledFruitingScene.per_world_proxy_offsets`
-
-Runtime coupling ignores these after settle→weld init:
-
-| Runtime path | Current behavior | Heterogeneous need |
-| ------------ | ---------------- | ------------------ |
-| `welded_co_teleport_arrays_for_layout` | Repeats template (world-0) grasp offset for all envs | Per-env offset from `per_world_proxy_offsets` |
-| Stem harvest | Single `cable.gripper_proxy_offset_in_apple_frame` | Per-env offset array |
-| Explicit apple weight | Single `scene.apple_mass_kg` from world-0 apple via `_cached_apple_mass_kg` | Per-env mass when apple radius/density differ |
-
-`per_world_proxy_offsets` is consumed only in `settle_then_weld.py` → `seed_fix_to_apple_from_settled` during init, not in `coupled_substep`.
-
-A per-instance pattern already exists in `proxy_coupling.py` → `mega_welded_co_teleport_arrays_wp` and can be adapted for batched layouts.
-
-**Owner:** `coupled_fruiting/proxy_coupling.py`, `coupled_fruiting/scene.py`, `coupled_fruiting/builders.py`.
+**If re-auditing:** confirm `welded_co_teleport_arrays_for_layout` (the co-teleport/mirror path, as opposed to the harvest path audited here) also uses per-env offsets before declaring this fully closed — this document only re-verified the harvest side.
 
 ---
 
@@ -150,7 +130,7 @@ So init deliberately uses the template model one env at a time rather than `Batc
 4. One `solver.step(joint_q, joint_q, iterations=256)` with `n_problems=N`.
 5. `scatter_to_model` into the batched `robot_model`.
 
-This matches the V.2 note in [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md) (“replace template-only bootstrap + broadcast with `BatchedTemplateIK` per-row target”).
+This matches the per-env IK bootstrap approach already shipped for the batched teleop path — see "Per-env robot actions (IK)" in [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md).
 
 **Owner:** `coupled_fruiting/settle_then_weld.py` (`_bootstrap_tcp_per_env`), `robot/fr3_robot/placement.py` (`bootstrap_tcp_ik_from_proxy`).
 
@@ -164,30 +144,17 @@ This matches the V.2 note in [`vectorized-coupled-fruiting.md`](vectorized-coupl
 
 ---
 
-## Planned but not yet implemented
+## Still planned (not yet implemented)
 
-From [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md):
-
-| Slice | Status | Remaining work |
-| ----- | ------ | -------------- |
-| **V.2.3** | Planned | Per-env runtime actions as first-class example/API default |
-| **V.2.4** | Planned | `gather_transitions()` per world |
-| **V.3** | Planned | Runtime geometry DR on reset; gym `(N, act_dim)` scatter |
-| Runtime K/stiffness scatter | Planned | Heterogeneous build bakes θ at `finalize()` only today |
+Runtime K/stiffness scatter: the heterogeneous build still bakes θ at `finalize()` only — there is no runtime re-scatter of stiffness without a rebuild. Per-env runtime actions, recorded-transition gathering, geometry DR on reset, and a batched gym adapter are tracked with current slice numbers in the **`[V]` track of `docs/ROADMAP.md`** (not duplicated here to avoid drift — see the "why" note at the top of `vectorized-coupled-fruiting.md`).
 
 ---
 
-## Recommended implementation order
+## Recommended implementation order (remaining items)
 
-1. **Batch stem harvest** — Replace the `for w in range(num_envs)` loop with one launch (`dim=N`) taking arrays of stem joint indices, TCP indices, apple indices, per-env grasp offsets, and per-env apple masses. Mirror the registry pattern used by `harvest_proxy_wrenches`.
+1. **Vectorize teleop velocity staging** — When actions are already `(N, 6)`, upload directly; reserve `velocity_for_world` callbacks for interactive/debug only.
 
-2. **Wire heterogeneous offsets/mass into runtime coupling** — Feed `scene.per_world_proxy_offsets` and per-env apple mass into `welded_co_teleport_arrays_for_layout` and stem harvest. Cache per-env masses at build time (no `.numpy()` in the hot path).
-
-3. **Vectorize teleop velocity staging** — When actions are already `(N, 6)`, upload directly; reserve `velocity_for_world` callbacks for interactive/debug only.
-
-4. **Optional: vectorize per-env IK bootstrap** — Replace `_bootstrap_tcp_per_env` sequential loop with `BatchedTemplateIK` + per-env settled-proxy target rows (see [Initial per-env IK bootstrap](#initial-per-env-ik-bootstrap-after-settleweld-p0--often-the-slowest-startup-step)).
-
-5. **Example flags (V.2.3)** — Clarify or default per-env action scatter in the heterogeneous example.
+2. **Optional: vectorize per-env IK bootstrap** — Replace `_bootstrap_tcp_per_env` sequential loop with `BatchedTemplateIK` + per-env settled-proxy target rows (see [Initial per-env IK bootstrap](#initial-per-env-ik-bootstrap-after-settleweld-p0--often-the-slowest-startup-step)).
 
 ---
 
@@ -201,11 +168,8 @@ Existing coverage:
 | `test_vectorized_coupled_fruiting.py` | Batched settle→weld, IK scatter, substep stability, per-env velocity divergence |
 | `test_batched_template_ik.py` | GPU gather/advance/scatter unit tests |
 
-Suggested tests after P0 fixes:
+The original P0 fixes are covered by `test_batched_stem_harvest.py` (batched launch, per-env grasp offset, per-env apple mass). Suggested test for the remaining P2 item:
 
-- `test_batched_stem_harvest_no_per_env_python_loop` — assert single launch / no per-substep host sync (or parity vs reference loop)
-- `test_heterogeneous_per_env_grasp_offset_used_at_runtime` — different offsets → different mirror/harvest lever arms per env
-- `test_heterogeneous_per_env_apple_mass_in_stem_harvest` — explicit weight matches per-env baked mass
 - `test_batched_ik_bootstrap_aligns_all_proxy_targets` — one batched init IK pass; all TCPs within bootstrap tolerance at their per-env proxies
 
 Run:

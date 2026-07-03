@@ -1,6 +1,8 @@
 # GPU coupling architecture and optimization
 
-**Last updated:** 2026-06-09
+**Last updated:** 2026-06-09 (single-env / non-batched hot path only)
+
+**Scope note:** this document predates the batched heterogeneous vectorization work and does not cover the multi-env GPU hot path (batched stem harvest, batched IK, batched teleop). For that, see `docs/vectorized-coupled-fruiting.md` and `docs/heterogeneous-batched-vectorization-audit.md`.
 
 ## Behavior summary
 

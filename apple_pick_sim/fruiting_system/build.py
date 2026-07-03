@@ -717,6 +717,8 @@ def _resolve_robot_facing_approach_dir(
     stem_dir: wp.vec3,
 ) -> wp.vec3:
     """Approach direction for robot-facing weld (stem⊥ pole or explicit ``weld_direction``)."""
+    if config.weld_reference_stem_dir is not None:
+        stem_dir = wp.normalize(wp.vec3(*config.weld_reference_stem_dir))
     robot_vec = wp.vec3(*robot_base_pos) - apple_pos
     pole = _stem_perpendicular_robot_pole(stem_dir, robot_vec)
     if config.weld_direction is None:

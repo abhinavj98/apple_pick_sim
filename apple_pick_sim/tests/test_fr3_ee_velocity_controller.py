@@ -350,7 +350,7 @@ class TestFr3EEVelocityController(unittest.TestCase):
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
         ctrl = fr3_robot.Fr3EEVelocityController(model, tcp_idx)
         _warmup_ik_consistent_state(ctrl, state)
-        with self.assertRaises(fr3_robot.IKTeleopConvergenceError):
+        with self.assertWarns(fr3_robot.IKTeleopConvergenceWarning):
             ctrl.run_ik_teleop_frame(
                 1.0 / 60.0,
                 state,

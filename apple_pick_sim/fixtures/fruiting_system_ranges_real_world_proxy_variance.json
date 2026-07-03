@@ -1,8 +1,8 @@
 {
-  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). vbd_stretch_fixed holds axial VBD knobs constant for SolverVBD settling stability; bend DR remains youngs_modulus_pa + damping_ratio. See docs/material-parameter-sampling.md and docs/real-world-proxy.md.",
+  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). vbd_stretch_fixed holds wood-scale axial VBD knobs for SolverVBD settling stability; bend DR remains youngs_modulus_pa + damping_ratio. See docs/material-parameter-sampling.md and docs/real-world-proxy.md.",
   "args": {
     "spur_attach_fraction": 0.5,
-    "fruiting_base_pos": [0.0, 0.5, 0.65],
+    "fruiting_base_pos": [0.0, 0.4, 0.75],
     "robot_base_pos": [0.0, 0.0, 0.0]
   },
   "primary": {
@@ -12,11 +12,11 @@
     "density": {"min": 300.0, "max": 500.0},
     "azimuth_deg": {"min": 0.0, "max": 0.0},
     "elevation_deg": {"min": 0.0, "max": 0.0},
-    "youngs_modulus_pa": {"min": 2560008.0, "max": 9000009.0},
+    "youngs_modulus_pa": {"min": 32623111.3, "max": 114336237.8},
     "damping_ratio": {"min": 0.1, "max": 0.2},
     "vbd_stretch_fixed": {
-      "stretch_stiffness": 500000.0,
-      "stretch_damping": 500.0
+      "stretch_stiffness": 614.405763,
+      "stretch_damping": 4.808486
     }
   },
   "secondary": null,
@@ -25,13 +25,13 @@
     "length": {"min": 0.05, "max": 0.1},
     "radius": {"min": 0.008, "max": 0.014},
     "density": {"min": 200.0, "max": 400.0},
-    "elevation_delta_deg": { "min": -90.0, "max": 90.0 },
-    "lateral_delta_deg": { "min": -180.0, "max": 180.0 },
-    "youngs_modulus_pa": {"min": 141200.0, "max": 423700.0},
+    "elevation_delta_deg": {"min": -90.0, "max": -90.0},
+    "lateral_delta_deg": {"min": 0.0, "max": 0.0},
+    "youngs_modulus_pa": {"min": 2445.9, "max": 7337.6},
     "damping_ratio": {"min": 0.1, "max": 0.2},
     "vbd_stretch_fixed": {
-      "stretch_stiffness": 50000.0,
-      "stretch_damping": 30.0
+      "stretch_stiffness": 760.265422,
+      "stretch_damping": 1.472248
     }
   },
   "stem": {
@@ -39,13 +39,13 @@
     "length": {"min": 0.03, "max": 0.06},
     "radius": {"min": 0.006, "max": 0.008},
     "density": {"min": 200.0, "max": 400.0},
-    "elevation_delta_deg": { "min": -90.0, "max": 90.0 },
-    "lateral_delta_deg": { "min": -180.0, "max": 180.0 },
-    "youngs_modulus_pa": {"min": 14120.0, "max": 42370.0},
-   "damping_ratio": {"min": 0.1, "max": 0.2},
+    "elevation_delta_deg": {"min": -90.0, "max": -90.0},
+    "lateral_delta_deg": {"min": 0.0, "max": 0.0},
+    "youngs_modulus_pa": {"min": 805.4, "max": 8053.9},
+    "damping_ratio": {"min": 0.1, "max": 0.2},
     "vbd_stretch_fixed": {
-      "stretch_stiffness": 1000.0,
-      "stretch_damping": 30.0
+      "stretch_stiffness": 513.1268,
+      "stretch_damping": 0.596199
     }
   },
   "apple": {

@@ -4,9 +4,9 @@ Parquet persistence for quasi-static (and future) sysID rollouts, plus dataset-b
 
 ## Status
 
-Recording and replaying are complete for sim-to-sim datasets. Collection writes per-frame observations/actions, reset observable state in episode metadata, and an optional privileged initial-state snapshot. Replay loads the dataset, restores the saved Newton state when available, and applies the recorded EE velocity actions open-loop while recomputing observations from the live simulation.
+Recording and replaying are complete for sim-to-sim datasets, **and observation-only replay initialization is the shipped default** (M3.0.3 — see `docs/ROADMAP.md`). Collection writes per-frame observations/actions, reset observable state in episode metadata, and an optional privileged initial-state snapshot. Replay loads the dataset and, by default, rebuilds its initial state from recorded observations and calibration metadata rather than privileged simulator arrays (body poses, velocities, solver previous-state buffers, saved controller internals). It applies the recorded EE velocity actions open-loop while recomputing observations from the live simulation. Pass `--use-snapshot` only to opt into the privileged `.npz` path for sim-to-sim debugging. Observation and digital-twin requirements are specified in `docs/digital-twin.md`.
 
-The next sysID step is **observation-only replay initialization**: replay should initialize from recorded observations and calibration metadata, not from privileged simulator arrays such as body poses, velocities, solver previous-state buffers, or saved controller internals. The first validation target is sim-to-sim replay with the `.npz` snapshot withheld, so we can measure how close an observation-derived initial state gets before using real-world data. Observation and digital-twin requirements are specified in `docs/observation-replay-digital-twin.md`.
+Digital-twin fixture-catalog reconstruction (M3.0.4) is a separate, still-partially-blocked slice — see `docs/digital-twin.md` ("Known gap").
 
 ## Layout
 

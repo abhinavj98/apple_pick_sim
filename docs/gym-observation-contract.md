@@ -62,7 +62,7 @@ M3.0.3 uses a reset-time subset of the observation contract to initialize replay
 | `woody_part_start_pos`, `woody_part_end_pos` | Reconstruct or validate branch/stem geometry by junction name |
 | `excitation_type`, `excitation_f_inst`, `excitation_direction` | Replay the same excitation context and feature labels |
 
-Additional calibration metadata (`robot_base_pos`, `fruiting_base_pos`, camera/F/T transforms, grasp/weld transform, fixture identity) belongs in episode metadata or a named digital-twin fixture, not as per-step observation keys unless it changes during an episode. See `docs/observation-replay-digital-twin.md`.
+Additional calibration metadata (`robot_base_pos`, `fruiting_base_pos`, camera/F/T transforms, grasp/weld transform, fixture identity) belongs in episode metadata or a named digital-twin fixture, not as per-step observation keys unless it changes during an episode. See `docs/digital-twin.md`.
 
 ## Env-specific keys
 

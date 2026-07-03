@@ -524,6 +524,13 @@ def test_params_within_bounds():
                 v = getattr(seg_params, attr)
                 lo = seg_ranges[attr]["min"]
                 hi = seg_ranges[attr]["max"]
+                if (
+                    seg_name == "secondary"
+                    and attr == "youngs_modulus_pa"
+                    and params.primary is not None
+                ):
+                    hi = min(hi, params.primary.youngs_modulus_pa)
+                    lo = min(lo, hi)
                 assert lo <= v <= hi, (
                     f"seed={seed}: {seg_name}.{attr}={v} out of [{lo}, {hi}]"
                 )

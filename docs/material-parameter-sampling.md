@@ -129,3 +129,62 @@ uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_heteroge
 - `docs/vectorized-coupled-fruiting.md` — batched DR still varies per-env θ; material keys replace raw stiffness bands
 - `docs/system_identification.md` — CEM search space moves to \(E\), \(\zeta\) (plus geometry when fixed)
 - `docs/sysid-trajectory-storage.md` — episode `fruiting_system_params` schema v2
+
+## Derivation: why sample E and ζ instead of raw stiffness/damping
+
+This section records the reasoning behind the contract above — why independent sampling of `bend_stiffness` / `bend_damping` / `radius` / `length` / `density` is unstable, and why deriving those VBD knobs from material properties (`E`, `ζ`) plus geometry fixes it. The scheme below is **implemented** (`sample_params` in `apple_pick_sim/fruiting_system/params.py`); this section is the "why," not a proposal.
+
+### Problem statement
+
+`apple_pick_sim/fixtures/*.json` specifies independent `[min, max]` ranges for each rod segment's stiffness, damping, radius, length, density, and `num_segments`. Sampling each of these independently via `rng.uniform`/`rng.integers` is what produces unstable draws (apple drift/sag, non-convergent settle, blown-up velocities — see `apple_pick_sim/diagnostics/sweep_zero_vic_stability.py` and `apple_pick_sim/coupled_fruiting/settle_quasi_static.py`).
+
+The root cause: these quantities are **not physically independent**. Whether a given damping value is "enough" depends on stiffness and on the segment's mass/inertia (set by radius, length, density, `num_segments`). Sampling them from independent boxes covers a hyperrectangle in parameter space, but the physically stable region is a curved manifold that cuts diagonally through that box — many corners of the box are guaranteed-unstable regardless of how "reasonable" each individual range looks in isolation.
+
+### Rod-level params vs. joint-level params
+
+`RodParams` is **one scalar tuple per rod segment** (`primary`/`secondary`/`spur`/`stem`). `build.py` passes that tuple straight into `newton.ModelBuilder.add_rod`, which creates `num_segments` capsule bodies and `num_segments - 1` internal cable joints, and broadcasts the *same* stiffness/damping/radius/density to **every** joint in that segment. There is no per-joint variation within one sampled segment — homogeneity within a segment is structural, not sampled.
+
+This means `num_segments` is itself a hidden multiplier on stability, not just a topology knob: more segments in series over the same physical `length` requires each joint to be *stiffer* to represent the same overall compliance (springs in series), and it also changes each joint's *effective inertia* far more steeply (see below).
+
+### Deriving damping from a target damping ratio
+
+Model each joint as a torsional spring-damper acting on its segment's rotational inertia. For one rod segment (radius \(r\), density \(\rho\), `length`, split into `num_segments` \(N\)):
+
+- Segment length: \(L_{seg} = \text{length}/N\)
+- Segment mass: \(m_{seg} = \rho \cdot \pi r^2 \cdot L_{seg}\)
+- Effective bending inertia (cantilevered slender-segment approximation): \(I_{eff} \approx \tfrac13 m_{seg} L_{seg}^2 = \tfrac{\pi}{3}\rho r^2 L_{seg}^3\)
+- Natural frequency: \(\omega_n = \sqrt{k_{bend}/I_{eff}}\)
+- Damping ratio: \(\zeta = \dfrac{c_{bend}}{2\sqrt{k_{bend}\cdot I_{eff}}}\)
+
+Sampling a dimensionless damping ratio \(\zeta\) and deriving \(c_{bend} = \zeta \cdot 2\sqrt{k_{bend}\cdot I_{eff}}\) from that env's already-sampled stiffness/radius/density/length/`num_segments` makes every draw land at a controlled, geometry-consistent damping ratio instead of an absolute number that means something different for every geometry combination.
+
+### Deriving stiffness from Young's modulus
+
+Bending stiffness is not a free material parameter — it decomposes as \(k_{bend} \propto E \cdot I_{area}\), where \(E\) is an intrinsic material property and \(I_{area} = \pi r^4/4\) is the cross-section's second moment of area. The per-joint discretized bending stiffness is:
+
+$$k_{bend,joint} = \frac{E\, I_{area}}{L_{seg}} = \frac{E\cdot \pi r^4/4 \cdot N}{\text{length}}$$
+
+Combining with the damping-ratio derivation above:
+
+$$\omega_n = \sqrt{\frac{3E}{4\rho}}\cdot \frac{r\cdot N^2}{\text{length}^2}$$
+
+Practical implication: sample `E` (and derive per-env `bend_stiffness` from that env's own geometry), not `bend_stiffness` directly — the same physical material needs different `bend_stiffness` at different radii (by \(r^4\)!). Sampling `E` keeps material and geometry properly decoupled and matches the CEM sys-ID target directly (θ becomes lower-dimensional and geometry-invariant).
+
+**Units caveat:** the proxy stiffness table in `docs/real-world-proxy.md` (210–736 "N/m") is a **cantilever tip force/deflection** measurement (\(k_{cantilever} = 3EI_{area}/L^3\)), not the solver's per-joint torque/radian quantity. Converting requires the bench geometry used for that measurement: \(E = \frac{3\,k_{cantilever}\cdot L^3}{\pi r^4}\).
+
+### The ω_n · dt numerical guard
+
+Even with damping correctly derived from a target \(\zeta\), a draw can still be **numerically** unstable: if the fixed simulation substep `dt` isn't small relative to the joint's oscillation period \(T = 2\pi/\omega_n\), the discrete-time integrator can't represent the continuous-time system the \(\zeta\) formula assumed.
+
+- **Aliasing:** rule of thumb, want \(T/dt \gtrsim 10\text{–}20\) samples per period, i.e. \(\omega_n \cdot dt \lesssim 0.3\text{–}0.6\).
+- **Iterative solver non-convergence:** `make_fruiting_solver_vbd` runs a fixed iteration budget per substep; a joint whose local stiffness is very high relative to `dt` can fail to converge regardless of its analytical damping.
+- **Why `num_segments` matters more than expected:** \(\omega_n \propto N^2\) — natural frequency scales with the *square* of segment count, independent of whether `E`/`ρ` are "correct." A max-segment draw can be far faster in \(\omega_n\) than a min-segment draw from the same fixture, purely from discretization.
+
+Fixture authors should validate new ranges against their worst corner (max `num_segments`, max `E`, min `ρ`, min `radius`) using the settle-stability sweep tooling (`apple_pick_sim/diagnostics/sweep_zero_vic_stability.py`, `apple_pick_sim/coupled_fruiting/settle_quasi_static.py`) before locking them in — the closed-form formulas above are single-joint/SDOF approximations of a coupled multi-body VBD system.
+
+### If density can't be measured directly
+
+- Don't fix `ρ` to a single point — real branches vary in density (species, moisture, age); collapsing to one value understates real branch-to-branch variance.
+- Source a range from literature matching the correct regime: real wood-species density (green/living-wood, not seasoned-lumber) if the physical rig is literal wood; the material spec sheet if the bench proxy is a mechanical rig with rigid links (confirm which applies via `docs/real-world-proxy.md`).
+- `E` and `ρ` are physically linked through moisture content in real wood — an independently chosen `ρ` range could combine with a sys-ID'd `E` to produce an unphysical combination. Measure `ρ` on the same specimens used for the `E` sys-ID when possible.
+- Document assumed/placeholder density in the fixture `_comment` field so it can be revisited if CEM/MMD replay validation shows a systematic mismatch consistent with a wrong density assumption.

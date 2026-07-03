@@ -2,7 +2,7 @@
 
 Design and implementation reference for **grasped-apple pulling** with a **variable-impedance controller (VIC)** on the FR3, using the existing staggered **MuJoCo + VBD** coupling. Complements **`docs/mujoco-vbd-coupling-architecture.md`** (staggered loop) and **`docs/ROADMAP.md`** (M2 \(\pi_{\mathrm{exp}}\) / FD modes).
 
-**Status:** Implemented for physics + `example_coupled_fruiting.py` (`--dynamic-arm`, `--vic`). M2.1 Gym remains **kinematic** direct-joint teleop.
+**Status:** Implemented for physics + `example_coupled_fruiting.py` (`--dynamic-arm`, `--vic`), and for gym: `ApplePickVicEnv` (and its subclasses `ApplePickSysIdEnv`, `ApplePickReplayEnv`) default to **dynamic**, joint-torque VIC (`robot_kinematic_mode=False`, `vic_use_joint_torques=True`). Only the base `ApplePickCoupledEnv` (`ApplePickCoupled-v0`) uses **kinematic** direct-joint teleop.
 
 ---
 
@@ -69,7 +69,7 @@ Implementation hook: **`CoupledFruitingScene._mujoco_and_sync_proxy`** (dynamic 
 
 ### Required mode switch
 
-| Setting | Kinematic (M2.1 Gym) | Dynamic (VIC) |
+| Setting | Kinematic (`ApplePickCoupledEnv` only) | Dynamic (VIC — `ApplePickVicEnv` and subclasses) |
 |---------|----------------------------------------------|-----------------|
 | `robot_kinematic_mode` | `True` (builders default) | **`False`** |
 | Teleop | `Fr3EEDirectJointController` + `update_fr3_ee_teleop_direct` | `Fr3EEImpedanceController` (`scene.vic_controller`) + `update_fr3_ee_teleop` |

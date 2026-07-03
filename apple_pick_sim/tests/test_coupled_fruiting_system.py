@@ -1372,7 +1372,7 @@ def test_coupled_stem_vertical_force_matches_apple_weight():
     # High anchor (same as ``test_wrench_equilibrium``) so the chain clears z=0 while settling.
     scene = fs.generate_scene(
         fs.load_ranges(RANGES_FIXTURE),
-        seed=31,
+        seed=32,
         device="cpu",
         enable_self_collisions=False,
         base_pos=(0.0, 0.0, 4.0),

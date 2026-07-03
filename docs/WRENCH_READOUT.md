@@ -173,10 +173,13 @@ the cut** (i.e. descendants of the child of joint j).
 every cut, so it never enters any subtree sum.  The remaining primary bodies
 also sit above the cut for `joint_primary_secondary`.
 
-### T-junction (`real_world_proxy` default)
+### T-junction (builder default when fixture omits `"topology"`)
 
-Simply supported primary with mid-span branch. Rod–rod subtree cuts still obey the
-theorem above:
+Simply supported primary with mid-span branch. **Note:** `fruiting_system_ranges_real_world_proxy.json`
+itself currently opts out of this via an explicit `"topology": "linear_chain"` — see the topology
+caveat in `docs/real-world-proxy.md`. The T-junction rows below apply to fixtures that omit
+`"topology"` (e.g. `fruiting_system_ranges_real_world_proxy_variance.json`). Rod–rod subtree cuts
+still obey the theorem above:
 
 | Joint | Bodies in subtree | Expected `force_world[Z]` (quasi-static) |
 |---|---|---|

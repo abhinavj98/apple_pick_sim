@@ -98,4 +98,4 @@ If something is unspecified:
 3. Prefer **project-local code** (`apple_pick_sim/`) over edits to vendored submodules unless the task explicitly requires upstream changes.
 4. Follow **`.cursor/rules/`** and **TDD** (tests first) for implementation work.
 
-**Next doc to read:** `docs/ROADMAP.md` for phased work and current focus.
+**Next doc to read:** `docs/ROADMAP.md` for phased work and current focus, then `docs/CODEBASE_GUIDE.md` for a map of the codebase and documentation set.

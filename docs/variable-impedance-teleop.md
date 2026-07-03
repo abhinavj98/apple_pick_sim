@@ -120,6 +120,8 @@ fr3_robot.configure_vic_joint_torques_arm(
 
 Teleop sets `vic_target_tf` / `vic_target_twist` each frame; substeps call `apply_vic_joint_torques_to_scene`.
 
+**Batched joint-torque path** (`layout.num_envs > 1`): `Fr3BatchedEEImpedanceController.stage_targets_to_scene` wires per-env device buffers — `vic_target_positions_wp`, `vic_target_rotations_wp`, **`vic_target_linear_vels_wp`**, **`vic_target_angular_vels_wp`** — updated each frame from `velocity_for_world(w)`. The batched wrench kernel indexes `v_des[w]` / `w_des[w]` per world. Single-env callers may still set `vic_target_twist` only; the launcher broadcasts that twist when per-env velocity arrays are absent.
+
 **PyTorch dependency:** Install from the Newton submodule (`cd newton && uv sync --extra torch-cu12`). Integration tests call `pytest.importorskip("torch")` and skip when PyTorch is absent.
 
 ---
@@ -148,7 +150,9 @@ Typical post-grasp VIC (this repo's `--vic` default): teleop advances `target_tf
 | VIC → spatial wrench (legacy) | `coupled_fruiting/vic_wrench.py` — `apply_vic_to_coupling_cache`, `launch_apply_vic_to_coupling_cache` |
 | Wrench sum at TCP | `coupled_fruiting/apply_wrench.py` — `_apply_spatial_wrench_to_body_f`, `_add_tcp_spatial_wrench_inplace` |
 | Dynamic substep gate | `coupled_fruiting/scene.py` → `_mujoco_robot_substep_prefix`; `--vic` uses `vic_joint_torques.apply_vic_joint_torques_to_scene` |
-| Scene fields | `CoupledFruitingScene.vic_controller`, `vic_gains`, `vic_target_tf`, `vic_target_twist`, `vic_use_joint_torques` |
+| Batched VIC joint torques | `coupled_fruiting/vic_joint_torques_batched.py` — per-env wrench kernel + `launch_apply_vic_joint_torques_batched` |
+| Batched VIC teleop | `robot/fr3_robot/controllers/ee_impedance_batched.py` — `Fr3BatchedEEImpedanceController.stage_targets_to_scene` |
+| Scene fields | `CoupledFruitingScene.vic_controller`, `vic_gains`, `vic_target_tf`, `vic_target_twist`, `vic_target_positions_wp`, `vic_target_linear_vels_wp`, `vic_use_joint_torques` |
 | Joint-torque arm setup | `robot/fr3_robot/setup.py` — `configure_vic_joint_torques_arm` (zeros PD, allocates J/H buffers, `joint_f`) |
 | Lagged plant wrench | `coupled_fruiting/proxy_coupling.py` — `harvest_stem_tension_for_tcp`, `explicit_load.explicit_apple_wrench_for_stem_harvest` |
 | Settle → weld | `coupled_fruiting/settle_then_weld.py` |
@@ -188,6 +192,8 @@ See **`docs/ROADMAP.md`** — *Dual envs, FD modes, SKRL*.
 | `test_apply_vic_joint_torques_writes_joint_f` | Launcher writes non-zero `joint_f` |
 | `test_launch_joint_torques_match_numpy_reference` | End-to-end launcher vs NumPy |
 | `test_vic_joint_torques_moves_arm` | Integration: teleop peak TCP +X displacement `max_dx > 0.05` |
+| `test_batched_vic.py` | Batched VIC buffers, per-env wrenches/torques, **`test_per_env_twist_affects_wrench_damping`** |
+| `test_batched_heterogeneous_coupled_sim.py::test_vic_per_env_actions_differ_wrench_damping` | End-to-end per-env actions through `BatchedHeterogeneousCoupledSim` VIC path |
 
 ## How to verify
 

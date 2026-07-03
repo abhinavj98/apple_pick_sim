@@ -148,3 +148,27 @@ def test_zero_wrench_at_target():
     wrenches = scene.vic_jt_wrench_buf.numpy()
     for w in range(_NUM_ENVS):
         assert float(np.linalg.norm(wrenches[w])) < 1e-3, f"world {w} nonzero wrench at target"
+
+
+@requires_fr3
+@pytest.mark.slow
+def test_per_env_twist_affects_wrench_damping():
+    """D-term uses per-env v_des; worlds with different twists get different wrenches at zero pose error."""
+    scene = _build_batched_scene()
+    ctrl = _configure_batched_vic(scene)
+    ctrl.sync_target_from_state(scene.robot_state_0)
+
+    lin = np.zeros((_NUM_ENVS, 3), dtype=np.float32)
+    lin[0, 0] = 0.05
+    lin[1, 0] = 0.0
+    ctrl._lin_vels_wp.assign(lin)
+    ang = np.zeros((_NUM_ENVS, 3), dtype=np.float32)
+    ctrl._ang_vels_wp.assign(ang)
+    ctrl.stage_targets_to_scene(scene)
+
+    launch_compute_vic_wrenches_batched(scene)
+    wp.synchronize()
+    wrenches = scene.vic_jt_wrench_buf.numpy()
+    assert float(wrenches[0, 0]) > 1.0, "world 0 expected D-term force from v_des"
+    assert abs(float(wrenches[1, 0])) < 1e-3, "world 1 expected zero D-term at v_des=0"
+    assert not np.allclose(wrenches[0, :3], wrenches[1, :3], atol=1e-3)

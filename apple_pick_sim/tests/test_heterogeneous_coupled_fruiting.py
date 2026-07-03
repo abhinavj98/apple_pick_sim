@@ -745,115 +745,12 @@ def test_robot_base_from_proxy_raises(ranges):
         )
 
 
-def test_batched_heterogeneous_example_timing_matches_frame_dt():
-    """Physics substep count must advance exactly one frame_dt per simulate()."""
-    import argparse
-    import sys
-    from pathlib import Path
-    from unittest.mock import MagicMock
-
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
-        ExampleBatchedHeterogeneousCoupledFruiting,
-    )
-
-    viewer = MagicMock()
-    args = argparse.Namespace(
-        hz=30.0,
-        json=None,
-        seed=42,
-        num_envs=2,
-        env_spacing=[2.0, 2.0, 2.0],
-        enable_self_collision=False,
-        robot="placeholder",
-        controller="direct",
-        fr3_keyboard=False,
-        fix_to_apple=False,
-        settle_substeps=0,
-        settle_gravity_ramp=True,
-        inspect_settle=False,
-        settle_report_brief=False,
-        settle_max_speed=0.05,
-        scripted_ee_vel=[0.05, 0.0, 0.0],
-        demo_per_env_actions=False,
-        status_every=0,
-        print_robot_state=False,
-        noisy_action=False,
-        noisy_action_std=0.02,
-        tcp_force_arrow=False,
-        tcp_force_scale=0.02,
-        tcp_force_arrow_gain=1.0,
-        tcp_force_min_length=0.08,
-        tcp_force_max_length=1.5,
-        mark_endpoints=False,
-        mujoco_viewer=False,
-        vic_linear_k=600.0,
-        vic_linear_d=200.0,
-        vic_angular_k=20.0,
-        vic_angular_d=4.0,
-        device="cpu",
-        only_vbd=False,
-        only_mjc=False,
-    )
-
-    with pytest.warns(UserWarning, match="GPU parallelism is not fully utilized"):
-        example = ExampleBatchedHeterogeneousCoupledFruiting(viewer, args)
-
-    assert example.sim_dt * example.sim_substeps == pytest.approx(example.frame_dt)
-    assert example.sim_dt == pytest.approx(1.0 / 1800.0)
-
-
-def test_batched_heterogeneous_only_vbd_parser_flag():
-    import sys
-    from pathlib import Path
-
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
-        _make_parser,
-        _resolve_step_mode,
-    )
-
-    args = _make_parser().parse_args(["--only-vbd"])
-    assert _resolve_step_mode(args) == "vbd"
-    assert args.only_vbd is True
-    assert args.only_mjc is False
-
-
-def test_batched_heterogeneous_only_vbd_and_only_mjc_mutually_exclusive():
-    import sys
-    from pathlib import Path
-
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import _resolve_step_mode  # noqa: E402
-
-    import argparse
-
-    with pytest.raises(SystemExit, match="mutually exclusive"):
-        _resolve_step_mode(argparse.Namespace(only_vbd=True, only_mjc=True))
-
-
 def test_print_per_env_params_includes_all_rod_stiffnesses(capsys):
-    import sys
-    from pathlib import Path
-
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import _print_per_env_params  # noqa: E402
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_build import print_per_env_params
 
     ranges = load_ranges(RANGES_FIXTURE)
     params_list = sample_heterogeneous_params_list(ranges, topology_seed=0, num_envs=2)
-    _print_per_env_params(params_list)
+    print_per_env_params(params_list)
 
     out = capsys.readouterr().out
     for seg in ("primary", "spur", "stem"):
@@ -867,87 +764,47 @@ def test_print_per_env_params_includes_all_rod_stiffnesses(capsys):
             assert f"{rod.stretch_stiffness:.4g}" in out
 
 
-def test_batched_heterogeneous_only_mjc_rejected():
-    import sys
-    from pathlib import Path
+def test_batched_heterogeneous_only_vbd_builds_cable_only_scene(ranges):
+    """vbd_only CoupledSim builds cable-only scene and steps VBD substeps only."""
+    import dataclasses
 
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import _resolve_step_mode  # noqa: E402
-
-    import argparse
-
-    with pytest.raises(SystemExit, match="--only-mjc"):
-        _resolve_step_mode(argparse.Namespace(only_vbd=False, only_mjc=True))
-
-
-def test_batched_heterogeneous_only_vbd_builds_cable_only_scene():
-    import argparse
-    import sys
-    from pathlib import Path
-    from unittest.mock import MagicMock
-
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
-        ExampleBatchedHeterogeneousCoupledFruiting,
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
+        BatchedHeterogeneousCoupledSimConfig,
+        ObsConfig,
+        RobotConfig,
+        SceneSettleCollisionConfig,
+    )
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_coupled_sim import (
+        BatchedHeterogeneousCoupledSim,
     )
 
-    viewer = MagicMock()
-    args = argparse.Namespace(
-        hz=30.0,
-        json=None,
-        seed=42,
-        num_envs=2,
-        env_spacing=[2.0, 2.0, 2.0],
-        enable_self_collision=False,
-        robot="placeholder",
-        controller="direct",
-        fr3_keyboard=False,
-        fix_to_apple=True,
-        settle_substeps=0,
-        inspect_settle=False,
-        settle_report_brief=False,
-        settle_max_speed=0.05,
-        scripted_ee_vel=[0.05, 0.0, 0.0],
-        demo_per_env_actions=False,
-        status_every=0,
-        print_robot_state=False,
-        noisy_action=False,
-        noisy_action_std=0.02,
-        tcp_force_arrow=False,
-        tcp_force_scale=0.02,
-        tcp_force_arrow_gain=1.0,
-        tcp_force_min_length=0.08,
-        tcp_force_max_length=1.5,
-        mark_endpoints=False,
-        mujoco_viewer=False,
-        vic_linear_k=600.0,
-        vic_linear_d=200.0,
-        vic_angular_k=20.0,
-        vic_angular_d=4.0,
-        device="cpu",
-        only_vbd=True,
-        only_mjc=False,
+    params_list = sample_heterogeneous_params_list(
+        ranges, topology_seed=42, num_envs=_NUM_ENVS
     )
+    cfg = dataclasses.replace(
+        BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),
+        robot=RobotConfig(
+            kind="placeholder",
+            step_mode="vbd_only",
+            fix_to_apple=False,
+        ),
+        scene=SceneSettleCollisionConfig(settle_substeps=0),
+        obs=ObsConfig(allocate_buffers=False),
+    )
+    with pytest.warns(UserWarning, match="host round-trips"):
+        sim = BatchedHeterogeneousCoupledSim(
+            cfg, params_list, ranges, use_settle_cache=False
+        )
 
-    with pytest.warns(UserWarning, match="GPU parallelism is not fully utilized"):
-        example = ExampleBatchedHeterogeneousCoupledFruiting(viewer, args)
-
-    assert example.scene.vbd_only
-    assert example.scene.robot_model is None
-    assert example._ee_ctrl is None
-    assert example.layout is not None
-    assert example.layout.num_envs == 2
+    assert sim.scene.vbd_only
+    assert sim.scene.robot_model is None
+    assert sim.layout is not None
+    assert sim.layout.num_envs == _NUM_ENVS
 
     vbd_calls = 0
     coupled_calls = 0
-    original_vbd = example.scene.vbd_substep
-    original_coupled = example.scene.coupled_substep
+    original_vbd = sim.scene.vbd_substep
+    original_coupled = sim.scene.coupled_substep
 
     def _track_vbd(dt, **kw):
         nonlocal vbd_calls
@@ -959,105 +816,52 @@ def test_batched_heterogeneous_only_vbd_builds_cable_only_scene():
         coupled_calls += 1
         return original_coupled(dt, **kw)
 
-    example.scene.vbd_substep = _track_vbd
-    example.scene.coupled_substep = _track_coupled
-    example.simulate()
-    assert vbd_calls == example.sim_substeps
+    sim.scene.vbd_substep = _track_vbd
+    sim.scene.coupled_substep = _track_coupled
+    sim.step(None)
+    assert vbd_calls == cfg.runtime.substeps_per_step
     assert coupled_calls == 0
 
 
-def test_defer_settle_to_viewer_only_without_fix_to_apple_and_gl():
-    import sys
-    from pathlib import Path
-    from unittest.mock import MagicMock
+def test_batched_heterogeneous_only_vbd_runs_settle_with_gravity_ramp(ranges):
+    """vbd_only with settle_substeps>0 and gravity ramp finishes at full gravity."""
+    import dataclasses
 
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
-        _defer_settle_to_viewer,
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
+        BatchedHeterogeneousCoupledSimConfig,
+        RobotConfig,
+        SceneSettleCollisionConfig,
+        SettleDiagnosticsConfig,
+    )
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_coupled_sim import (
+        BatchedHeterogeneousCoupledSim,
     )
 
-    import newton
-
-    assert not _defer_settle_to_viewer(MagicMock(), fix_to_apple=True, settle_substeps=100)
-    assert not _defer_settle_to_viewer(MagicMock(), fix_to_apple=False, settle_substeps=0)
-    gl_viewer = MagicMock()
-    gl_viewer.__class__ = newton.viewer.ViewerGL
-    assert _defer_settle_to_viewer(gl_viewer, fix_to_apple=False, settle_substeps=100)
-
-
-def test_batched_heterogeneous_only_vbd_runs_settle_with_gravity_ramp(capsys):
-    """--only-vbd with settle_substeps>0 runs in-place settle and logs the ramp."""
-    import argparse
-    import sys
-    from pathlib import Path
-    from unittest.mock import MagicMock
-
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
-        ExampleBatchedHeterogeneousCoupledFruiting,
+    params_list = sample_heterogeneous_params_list(
+        ranges, topology_seed=42, num_envs=_NUM_ENVS
     )
-
-    viewer = MagicMock()
-    args = argparse.Namespace(
-        hz=30.0,
-        json=None,
-        seed=42,
-        num_envs=2,
-        env_spacing=[2.0, 2.0, 2.0],
-        enable_self_collision=False,
-        robot="placeholder",
-        controller="direct",
-        fr3_keyboard=False,
-        fix_to_apple=False,
-        settle_substeps=8,
-        settle_gravity_ramp=True,
-        inspect_settle=False,
-        settle_report_brief=True,
-        settle_max_speed=0.05,
-        settle_ke_decay=True,
-        ke_sample_every=1,
-        ke_analysis_tail_fraction=0.5,
-        ke_min_peaks=3,
-        ke_peak_decay_rtol=0.10,
-        ke_peak_threshold_j=None,
-        scripted_ee_vel=[0.05, 0.0, 0.0],
-        demo_per_env_actions=False,
-        status_every=0,
-        print_robot_state=False,
-        noisy_action=False,
-        noisy_action_std=0.02,
-        tcp_force_arrow=False,
-        tcp_force_scale=0.02,
-        tcp_force_arrow_gain=1.0,
-        tcp_force_min_length=0.08,
-        tcp_force_max_length=1.5,
-        mark_endpoints=False,
-        mujoco_viewer=False,
-        vic_linear_k=600.0,
-        vic_linear_d=200.0,
-        vic_angular_k=20.0,
-        vic_angular_d=4.0,
-        device="cpu",
-        only_vbd=True,
-        only_mjc=False,
+    cfg = dataclasses.replace(
+        BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),
+        robot=RobotConfig(
+            kind="placeholder",
+            step_mode="vbd_only",
+            fix_to_apple=False,
+        ),
+        scene=SceneSettleCollisionConfig(
+            settle_substeps=8,
+            settle_gravity_ramp=True,
+        ),
+        settle_diagnostics=SettleDiagnosticsConfig(report_brief=True),
     )
+    with pytest.warns(UserWarning, match="host round-trips"):
+        sim = BatchedHeterogeneousCoupledSim(
+            cfg, params_list, ranges, use_settle_cache=False
+        )
 
-    with pytest.warns(UserWarning, match="GPU parallelism is not fully utilized"):
-        example = ExampleBatchedHeterogeneousCoupledFruiting(viewer, args)
-
-    assert example._pending_settle_substeps == 0
-    out = capsys.readouterr().out
-    assert "VBD settle: 8 substeps" in out
-    assert "gravity ramp 0 → −9.81 m/s²" in out
-    assert "Post-settle KE decay" in out
-    assert len(example._settle_ke_decay_reports) == 2
-    g = example.scene.cable.model.gravity.numpy()
+    br = sim.build_result
+    assert br.settle_stability_reports is not None
+    assert len(br.settle_ke_decay_reports or ()) == _NUM_ENVS
+    g = sim.scene.cable.model.gravity.numpy()
     g_z = float(g[2]) if g.ndim == 1 else float(g[0, 2])
     assert g_z == pytest.approx(-9.81, abs=1e-5)
 
@@ -1126,106 +930,30 @@ def test_heterogeneous_proxy_woody_collision_toggle(ranges):
     assert _shape_pairs_filtered(cable_off.model, proxy, primary)
 
 
-def test_batched_heterogeneous_collision_parser_defaults():
-    import sys
-    from pathlib import Path
+def test_placeholder_multienv_warns_at_init(ranges):
+    """Placeholder robot must warn that step() is not fully GPU-resident."""
+    import dataclasses
 
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
-        _enable_apple_woody_collisions_from_args,
-        _enable_proxy_woody_collisions_from_args,
-        _make_parser,
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
+        BatchedHeterogeneousCoupledSimConfig,
+        RobotConfig,
+        SceneSettleCollisionConfig,
+    )
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_coupled_sim import (
+        BatchedHeterogeneousCoupledSim,
     )
 
-    args = _make_parser().parse_args([])
-    assert _enable_apple_woody_collisions_from_args(args) is True
-    assert _enable_proxy_woody_collisions_from_args(args) is True
-
-    args_off = _make_parser().parse_args(
-        ["--no-apple-woody-collision", "--no-proxy-woody-collision"]
+    params_list = sample_heterogeneous_params_list(
+        ranges, topology_seed=42, num_envs=_NUM_ENVS
     )
-    assert _enable_apple_woody_collisions_from_args(args_off) is False
-    assert _enable_proxy_woody_collisions_from_args(args_off) is False
-
-
-def test_batched_heterogeneous_vic_defaults_match_parser():
-    import sys
-    from pathlib import Path
-
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
-        VIC_DEFAULT_ANGULAR_D,
-        VIC_DEFAULT_ANGULAR_K,
-        VIC_DEFAULT_LINEAR_D,
-        VIC_DEFAULT_LINEAR_K,
-        _make_parser,
+    cfg = dataclasses.replace(
+        BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),
+        robot=RobotConfig(
+            kind="placeholder",
+            step_mode="coupled",
+            fix_to_apple=False,
+        ),
+        scene=SceneSettleCollisionConfig(settle_substeps=0),
     )
-
-    args = _make_parser().parse_args([])
-    assert args.vic_linear_k == VIC_DEFAULT_LINEAR_K == 600.0
-    assert args.vic_linear_d == VIC_DEFAULT_LINEAR_D == 200.0
-    assert args.vic_angular_k == VIC_DEFAULT_ANGULAR_K == 20.0
-    assert args.vic_angular_d == VIC_DEFAULT_ANGULAR_D == 4.0
-
-
-def test_placeholder_multienv_warns_at_init():
-    """Placeholder robot must warn that simulate() is not fully GPU-resident."""
-    import argparse
-    import sys
-    from pathlib import Path
-    from unittest.mock import MagicMock
-
-    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-    if str(_EXAMPLES_DIR) not in sys.path:
-        sys.path.insert(0, str(_EXAMPLES_DIR))
-
-    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
-        ExampleBatchedHeterogeneousCoupledFruiting,
-    )
-
-    viewer = MagicMock()
-    args = argparse.Namespace(
-        hz=30.0,
-        json=None,
-        seed=42,
-        num_envs=2,
-        env_spacing=[2.0, 2.0, 2.0],
-        enable_self_collision=False,
-        robot="placeholder",
-        controller="direct",
-        fr3_keyboard=False,
-        fix_to_apple=False,
-        settle_substeps=0,
-        inspect_settle=False,
-        settle_report_brief=False,
-        settle_max_speed=0.05,
-        scripted_ee_vel=[0.05, 0.0, 0.0],
-        demo_per_env_actions=False,
-        status_every=0,
-        print_robot_state=False,
-        noisy_action=False,
-        noisy_action_std=0.02,
-        tcp_force_arrow=False,
-        tcp_force_scale=0.02,
-        tcp_force_arrow_gain=1.0,
-        tcp_force_min_length=0.08,
-        tcp_force_max_length=1.5,
-        mark_endpoints=False,
-        mujoco_viewer=False,
-        vic_linear_k=600.0,
-        vic_linear_d=200.0,
-        vic_angular_k=20.0,
-        vic_angular_d=4.0,
-        device="cpu",
-        only_vbd=False,
-        only_mjc=False,
-    )
-
-    with pytest.warns(UserWarning, match="GPU parallelism is not fully utilized"):
-        ExampleBatchedHeterogeneousCoupledFruiting(viewer, args)
+    with pytest.warns(UserWarning, match="host round-trips"):
+        BatchedHeterogeneousCoupledSim(cfg, params_list, ranges, use_settle_cache=False)

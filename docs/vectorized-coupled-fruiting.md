@@ -36,7 +36,7 @@ flowchart LR
 
 - Run **`settle_vbd_substeps(scene, substeps, dt)`** on the free batched scene (or on the built scene when not using settle-then-weld).
 - All **N** worlds advance together on the GPU; each fruiting system relaxes under gravity with a free proxy.
-- Optional linear gravity ramp (0 → −9.81 m/s² over all settle substeps) via `gravity_ramp=True` or `--settle-gravity-ramp` on examples (default: off). In `example_batched_heterogeneous_coupled_fruiting.py`, any `--settle-substeps > 0` runs settle in all modes (`--fix-to-apple`, `--no-fix-to-apple`, `--only-vbd`). With `--no-fix-to-apple` and `--viewer gl`, settle is **animated** in the viewer before teleop (headless/null viewers still settle during build).
+- Optional linear gravity ramp (0 → −9.81 m/s² over all settle substeps) via `gravity_ramp=True` or `--settle-gravity-ramp` on examples (default: off). In the legacy monolith (`legacy/example_batched_heterogeneous_coupled_fruiting.py`), any `--settle-substeps > 0` runs settle in all modes (`--fix-to-apple`, `--no-fix-to-apple`, `--only-vbd`). With `--no-fix-to-apple` and `--viewer gl`, settle is **animated** in the viewer before teleop (headless/null viewers still settle during build). The canonical thin example (`example_batched_heterogeneous_coupled_sim.py`) settles during build only.
 - Default settle length matches single-env coupled fruiting (`--settle-substeps`, typically 1000). Soft DR fixtures may need more substeps: full g applies only on the final substep of the ramp.
 
 ### 3. Build batched welded scene and seed from settled state
@@ -184,11 +184,11 @@ When continuous parameters differ per env but **topology stays uniform** (same `
 Reference example (default `--fix-to-apple` on):
 
 ```bash
-uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --num-envs 4 --viewer gl --seed 42 --mark-endpoints --tcp-force-arrow
 
 # Per-env action scatter demo (RL prep)
-uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --num-envs 4 --viewer gl --demo-per-env-actions --seed 42
 ```
 
@@ -268,7 +268,7 @@ Batched coupled fruiting is the intended backend for **parallel RL** (planned, s
 **Training checklist** (full detail: `docs/mujoco-vbd-coupling-architecture.md` §2.5):
 
 1. **Dynamic arm** — `robot_kinematic_mode=False` for post-grasp pull/twist; kinematic Gym smoke (M2.1) does not exercise payload.
-2. **Settle → weld** — canonical batched flow (§ Canonical runtime flow); per-env `sample_heterogeneous_params_list` for build-time DR (`example_batched_heterogeneous_coupled_fruiting.py`).
+2. **Settle → weld** — canonical batched flow (§ Canonical runtime flow); per-env `sample_heterogeneous_params_list` for build-time DR (`example_batched_heterogeneous_coupled_sim.py` / `BatchedHeterogeneousCoupledSim`).
 3. **Randomize plant θ, not arm gravity** — vary `apple_mass_kg` / density / stem stiffness per env; keep Model A at zero-g; do not add apple mass to real gravity-comp feedforward while training for payload robustness.
 4. **Observations** — TCP wrench and related load cues in `apple_pick_gym` (see `docs/gym-observation-contract.md`).
 
@@ -298,11 +298,39 @@ Deferred (tracked in `docs/ROADMAP.md` backlog, not here): batched VIC as the de
 
 ---
 
+## Batched heterogeneous sim config and runtime (V.3.1)
+
+Library build settings and runtime for `BatchedHeterogeneousCoupledSim` live under
+`apple_pick_sim/coupled_fruiting/`. The root config type
+`BatchedHeterogeneousCoupledSimConfig` composes:
+
+| Sub-config | Role |
+| ---------- | ---- |
+| `RuntimeConfig` | `num_envs`, `env_spacing`, device, `control_hz`, `sub_dt` |
+| `RobotConfig` | FR3/placeholder, `fix_to_apple`, gripper proxy, IK bootstrap |
+| `SceneSettleCollisionConfig` | Fruiting base, settle substeps, AVBD collision flags |
+| `DomainRandomizationConfig` | Ranges fixture, topology seed, optional `per_env_params` inject |
+| `FruitingSystemConfig` | Stem harvest caps, joint angular kd overrides |
+| `ControllerConfig` | direct / ee / vic teleop and VIC gains |
+| `MujocoConfig` | MuJoCo solver kwargs |
+| `SettleDiagnosticsConfig` | Optional KE decay reporting (examples/CI) |
+| `ObsConfig` | Optional batched obs buffer allocation (gym default on) |
+
+Presets: `defaults()` (heterogeneous example), `gym_defaults(num_envs)`, `test_minimal(num_envs)`.
+Call `validate()` before build. Runtime: `BatchedHeterogeneousCoupledSim.build()` → `step(actions)` → `gather_obs()`.
+Settled-state cache: `settled_checkpoint.py`. Tests: `test_batched_heterogeneous_config.py`, `test_batched_heterogeneous_build.py`, `test_batched_heterogeneous_coupled_sim.py`.
+
+---
+
 ## Code map
 
 | Module | Role |
 | ------ | ---- |
 | `apple_pick_sim/coupled_fruiting/builders.py` | `num_envs`, `env_spacing`, replicate pipeline |
+| `apple_pick_sim/coupled_fruiting/batched_heterogeneous_config.py` | Frozen config dataclasses for batched heterogeneous sim (V.3.1) |
+| `apple_pick_sim/coupled_fruiting/batched_heterogeneous_build.py` | Config-driven heterogeneous build orchestration; `print_per_env_params` |
+| `apple_pick_sim/coupled_fruiting/batched_heterogeneous_coupled_sim.py` | `BatchedHeterogeneousCoupledSim` runtime API (V.3.1) |
+| `apple_pick_sim/coupled_fruiting/settled_checkpoint.py` | Deterministic settle cache load/save/validate |
 | `apple_pick_sim/coupled_fruiting/batched_build.py` | `replicate(N)` + `eval_fk`; legacy 1→N settled broadcast |
 | `apple_pick_sim/coupled_fruiting/batched_layout.py` | `BatchedEnvLayout` |
 | `apple_pick_sim/coupled_fruiting/settle_then_weld.py` | Settle + seed + IK bootstrap |
@@ -311,13 +339,19 @@ Deferred (tracked in `docs/ROADMAP.md` backlog, not here): batched VIC as the de
 | `apple_pick_sim/coupled_fruiting/scene.py` | `coupled_substep` ordering |
 | `apple_pick_sim/robot/fr3_robot/batched_template_ik.py` | Batched template IK |
 | `apple_pick_sim/robot/fr3_robot/controllers/*_batched.py` | Batched teleop controllers |
-| `apple_pick_sim/examples/example_batched_coupled_fruiting.py` | Reference implementation of the canonical flow |
-| `apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py` | Heterogeneous build-time DR + per-env weld/IK |
-| `apple_pick_sim/coupled_fruiting/batched_build.py` | `build_heterogeneous_coupled_cable_scene` (`add_world`) |
+| `apple_pick_sim/examples/example_batched_coupled_fruiting.py` | Reference implementation of the canonical homogeneous flow |
+| `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py` | Canonical batched heterogeneous entry point (thin CLI + `BatchedHeterogeneousCoupledSim`) |
+| `apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py` | Deprecated pre–V.3.2 monolith (`--inspect-settle`, animated settle, unmigrated flags) |
 
 ---
 
 ## Tests
+
+Module: `apple_pick_sim/tests/test_batched_heterogeneous_config.py` — config presets, validation, timing helpers.
+
+Module: `apple_pick_sim/tests/test_batched_heterogeneous_build.py` — config-driven build orchestration.
+
+Module: `apple_pick_sim/tests/test_batched_heterogeneous_coupled_sim.py` — runtime API, settle cache, FR3 per-env actions.
 
 Module: `apple_pick_sim/tests/test_vectorized_coupled_fruiting.py`
 
@@ -381,7 +415,7 @@ uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
 # Heterogeneous batched (build-time DR; default settle→weld)
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py -q
-uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 ```
 

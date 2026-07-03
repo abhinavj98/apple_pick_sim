@@ -352,6 +352,52 @@ def _bootstrap_tcp_per_env(
     return results
 
 
+def seed_fix_to_apple_from_settled_body_q(
+    *,
+    welded_scene: Any,
+    settled_body_q: np.ndarray,
+    quiet_apple_proxy: bool = True,
+    per_env_ik: bool = False,
+    per_world_proxy_offsets: tuple[tuple | None, ...] | None = None,
+) -> None:
+    """Seed welded scene cable poses from settled ``body_q`` (checkpoint path)."""
+    bq = np.asarray(settled_body_q, dtype=np.float32).reshape(-1, 7)
+    bqd = np.zeros((bq.shape[0], 6), dtype=np.float32)
+
+    class _ArrayView:
+        def __init__(self, arr: np.ndarray):
+            self._arr = arr
+
+        def numpy(self) -> np.ndarray:
+            return self._arr
+
+    settled_view = type(
+        "_SettledScene",
+        (),
+        {
+            "cable": type(
+                "_SettledCable",
+                (),
+                {
+                    "model": welded_scene.cable.model,
+                    "state_0": type(
+                        "_State",
+                        (),
+                        {"body_q": _ArrayView(bq), "body_qd": _ArrayView(bqd)},
+                    )(),
+                },
+            )()
+        },
+    )()
+    seed_fix_to_apple_from_settled(
+        welded_scene=welded_scene,
+        settled_scene=settled_view,
+        quiet_apple_proxy=quiet_apple_proxy,
+        per_env_ik=per_env_ik,
+        per_world_proxy_offsets=per_world_proxy_offsets,
+    )
+
+
 def seed_fix_to_apple_from_settled(
     *,
     welded_scene: Any,

@@ -239,13 +239,13 @@ set_fruiting_joint_angular_kd_batched(
 )
 ```
 
-`example_batched_heterogeneous_coupled_fruiting.py` calls this after scene construction
+`legacy/example_batched_heterogeneous_coupled_fruiting.py` calls this after scene construction
 via `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES`. Returns global joint indices
 (`world * joints_per_world + template_index`) per matched key.
 
 ### Damping-ratio check against the current script values
 
-`_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` in `example_batched_heterogeneous_coupled_fruiting.py`
+`_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` in `legacy/example_batched_heterogeneous_coupled_fruiting.py`
 currently sets `{"support": 1.0, "primary_spur": 1.0, "stem_apple": 5e-2}`, with **no**
 `kp` override applied (see §4) — so every matched joint's `k` is Newton's default
 `rigid_joint_angular_ke = 1e5`, matching the §2 inertia table exactly (no rescaling
@@ -307,7 +307,7 @@ After patching, expect `k ≈ kp × gamma^N` after `N` substeps — unlike `kd`,
 constant. Raising `kp` above the default `1e5` requires the helper to bump
 `joint_penalty_k_max`; lowering below the initial `k_min` widens `k_min` accordingly.
 
-**Not currently applied in the batched example.** `example_batched_heterogeneous_coupled_fruiting.py`
+**Not currently applied in the batched example.** `legacy/example_batched_heterogeneous_coupled_fruiting.py`
 imports `set_fruiting_joint_angular_kp_batched` but does not call it — there is no
 `_DEFAULT_JOINT_ANGULAR_KP_OVERRIDES` dict in that file today, so every `FIXED` joint's
 angular `kp` stays at the uniform Newton default (`1e5`). This differs from an earlier
@@ -341,8 +341,8 @@ damping-responsive; don't spend a damping sweep chasing `branch_path>nominal`.
 | `rigid_joint_linear_ke` / `rigid_joint_angular_ke` | `1e5` (Newton default, not overridden) | `newton/newton/_src/solvers/vbd/solver_vbd.py` |
 | `rigid_joint_*_k_start` | `1e8` / `1e6` passed but **inert** (ramping disabled) | `make_fruiting_solver_vbd` |
 | VBD `iterations` | 25 | `make_fruiting_solver_vbd` |
-| `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` (batched example) | `{"support": 1.0, "primary_spur": 1.0, "stem_apple": 5e-2}` | `example_batched_heterogeneous_coupled_fruiting.py` |
-| `_DEFAULT_JOINT_ANGULAR_KP_OVERRIDES` (batched example) | **none** — `kp` stays uniform `1e5`; `set_fruiting_joint_angular_kp_batched` import is currently unused | `example_batched_heterogeneous_coupled_fruiting.py` |
+| `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` (batched example) | `{"support": 1.0, "primary_spur": 1.0, "stem_apple": 5e-2}` | `legacy/example_batched_heterogeneous_coupled_fruiting.py` |
+| `_DEFAULT_JOINT_ANGULAR_KP_OVERRIDES` (batched example) | **none** — `kp` stays uniform `1e5`; `set_fruiting_joint_angular_kp_batched` import is currently unused | `legacy/example_batched_heterogeneous_coupled_fruiting.py` |
 
 Update this table when any of these values change so it stays a reliable snapshot.
 

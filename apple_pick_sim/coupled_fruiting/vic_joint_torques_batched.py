@@ -35,8 +35,8 @@ def _compute_vic_wrenches_batched_kernel(
     tcp_indices: wp.array(dtype=int),
     target_positions: wp.array(dtype=wp.vec3),
     target_rotations: wp.array(dtype=wp.vec4),
-    v_des: wp.vec3,
-    w_des: wp.vec3,
+    v_des: wp.array(dtype=wp.vec3),
+    w_des: wp.array(dtype=wp.vec3),
     linear_k: float,
     linear_d: float,
     angular_k: float,
@@ -51,8 +51,8 @@ def _compute_vic_wrenches_batched_kernel(
         body_q[tcp_idx],
         body_qd[tcp_idx],
         target_tf,
-        v_des,
-        w_des,
+        v_des[w],
+        w_des[w],
         linear_k,
         linear_d,
         angular_k,
@@ -152,6 +152,19 @@ def allocate_vic_joint_torque_buffers_batched(
     scene.vic_jt_singularity_damping = float(singularity_damping)
 
 
+def _resolve_batched_vic_desired_twists(scene: Any, num_envs: int, dev: Any):
+    """Return per-env ``(v_des, w_des)`` device arrays for the wrench kernel."""
+    lin = getattr(scene, "vic_target_linear_vels_wp", None)
+    ang = getattr(scene, "vic_target_angular_vels_wp", None)
+    if lin is not None and ang is not None:
+        return lin, ang
+
+    twist: EEVelocity = getattr(scene, "vic_target_twist", None) or EEVelocity()
+    v_broadcast = wp.full(num_envs, wp.vec3(*twist.linear), dtype=wp.vec3, device=dev)
+    w_broadcast = wp.full(num_envs, wp.vec3(*twist.angular), dtype=wp.vec3, device=dev)
+    return v_broadcast, w_broadcast
+
+
 def launch_compute_vic_wrenches_batched(
     scene: Any,
     *,
@@ -169,9 +182,9 @@ def launch_compute_vic_wrenches_batched(
     if target_positions is None or target_rotations is None:
         return
     g = gains if gains is not None else ImpedanceGains()
-    twist: EEVelocity = getattr(scene, "vic_target_twist", None) or EEVelocity()
     num_envs = int(scene.vic_jt_num_envs)
     dev = scene.robot_state_0.body_q.device
+    v_des_wp, w_des_wp = _resolve_batched_vic_desired_twists(scene, num_envs, dev)
     wp.launch(
         _compute_vic_wrenches_batched_kernel,
         dim=num_envs,
@@ -181,8 +194,8 @@ def launch_compute_vic_wrenches_batched(
             scene.vic_jt_tcp_indices_wp,
             target_positions,
             target_rotations,
-            wp.vec3(*twist.linear),
-            wp.vec3(*twist.angular),
+            v_des_wp,
+            w_des_wp,
             float(g.linear_k),
             float(g.linear_d),
             float(g.angular_k),

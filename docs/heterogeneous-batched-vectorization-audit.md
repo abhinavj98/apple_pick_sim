@@ -1,8 +1,8 @@
 # Heterogeneous batched vectorization audit
 
-**Last updated:** 2026-07-02 (re-verified against current code; both original P0 items are now fixed — see status column)
+**Last updated:** 2026-07-03 (V.3.2 close-out — canonical API is `BatchedHeterogeneousCoupledSim`; this audit covers the legacy monolith hot path)
 
-Audit of `apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py` and its dependency chain against the goal of **fully vectorized** GPU stepping. Canonical batched flow lives in [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md); current slice status/sequencing lives in `docs/ROADMAP.md`.
+Audit of `apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py` and its dependency chain against the goal of **fully vectorized** GPU stepping. Canonical batched heterogeneous API: `apple_pick_sim.coupled_fruiting.BatchedHeterogeneousCoupledSim` (thin example: `example_batched_heterogeneous_coupled_sim.py`). Flow reference: [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md); slice status: `docs/ROADMAP.md`.
 
 ---
 
@@ -71,7 +71,7 @@ Per `.cursor/rules/gpu-warp-parallelism.mdc`, frame-rate teleop on CPU is accept
 
 Default example behavior (without `--demo-per-env-actions`) applies the **same** scripted velocity to all envs. IK still scatters one row per env; only the velocity **input** is homogeneous.
 
-**Owner:** `robot/fr3_robot/controllers/ee_velocity_batched.py`, `example_batched_heterogeneous_coupled_fruiting.py`.
+**Owner:** `robot/fr3_robot/controllers/ee_velocity_batched.py`, `legacy/example_batched_heterogeneous_coupled_fruiting.py` (and `BatchedHeterogeneousCoupledSim` for the canonical path).
 
 ---
 
@@ -179,7 +179,7 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py \
   apple_pick_sim/tests/test_vectorized_coupled_fruiting.py -q
 
-uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 ```
 
@@ -187,9 +187,11 @@ uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_frui
 
 ## Code map (audit scope)
 
-| Module | Role in heterogeneous example |
-| ------ | ----------------------------- |
-| `examples/example_batched_heterogeneous_coupled_fruiting.py` | Entry point; settle→weld + teleop loop |
+| Module | Role in heterogeneous batched sim |
+| ------ | --------------------------------- |
+| `coupled_fruiting/batched_heterogeneous_coupled_sim.py` | Canonical library API (`BatchedHeterogeneousCoupledSim`) |
+| `examples/example_batched_heterogeneous_coupled_sim.py` | Canonical thin CLI + viewer entry point |
+| `examples/legacy/example_batched_heterogeneous_coupled_fruiting.py` | Legacy monolith; settle→weld + teleop loop (unmigrated flags) |
 | `coupled_fruiting/batched_build.py` | `add_world` heterogeneous cable build |
 | `coupled_fruiting/builders.py` | `build_heterogeneous_coupled_fruiting_{fr3,placeholder}` |
 | `coupled_fruiting/scene.py` | `coupled_substep`; stem harvest dispatch |

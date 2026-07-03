@@ -60,7 +60,7 @@ Default constitutive mapping (segment-local):
 
 ### Optional `vbd_stretch_fixed` override (batched VBD settling)
 
-For stability-sensitive batched simulations (e.g. `example_batched_heterogeneous_coupled_fruiting.py` with `--only-vbd`), fixtures may pin the **axial** VBD knobs while bend DR stays on material keys:
+For stability-sensitive batched simulations (e.g. `legacy/example_batched_heterogeneous_coupled_fruiting.py` with `--only-vbd`), fixtures may pin the **axial** VBD knobs while bend DR stays on material keys:
 
 ```json
 "vbd_stretch_fixed": {

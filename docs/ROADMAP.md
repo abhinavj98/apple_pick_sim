@@ -4,10 +4,10 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-07-02 |
+| **Last updated** | 2026-07-03 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[V].3** — batched heterogeneous sim API + gym migration (V.1–V.2 done) |
+| **Active work**  | **[V].3** — batched gym migration (V.3.1–V.3.2 done; V.1–V.2 done) |
 
 ---
 
@@ -42,7 +42,7 @@
 
 ## Current focus
 
-**Next slice:** **V.3.1** — extract `BatchedHeterogeneousCoupledSim` from `example_batched_heterogeneous_coupled_fruiting.py` into `apple_pick_sim/coupled_fruiting/`.
+**Next slice:** **V.3.3** — `ApplePickBatchedBaseEnv`; `num_envs` + `gather_batched_obs`; `num_envs=1` obs v3 parity.
 
 **Goal:** Finish **[V].3** (library API + gym migration) → **[V].4** (batched sys-ID) → **[V].5** (CEM + held-out sim-sim validation). Closes the no-field-data calibration loop before **[M4]**.
 
@@ -57,8 +57,8 @@
 
 **[V].3 — sim API + gym migration**
 
-- [ ] **V.3.1 — Extract batched heterogeneous sim API:** `BatchedHeterogeneousCoupledSim` + config dataclass in `apple_pick_sim/coupled_fruiting/`. Surface: `build()`, `step(per_env_actions)`, `gather_obs()`, layout/scene accessors. No `argparse` / viewer in library; tests import library, not `examples/`.
-- [ ] **V.3.2 — Thin heterogeneous example:** `example_batched_heterogeneous_coupled_fruiting.py` → CLI + viewer wrapper; port `test_heterogeneous_coupled_fruiting.py` off example imports.
+- [x] **V.3.1 — Extract batched heterogeneous sim API:** `BatchedHeterogeneousCoupledSim` + config dataclass in `apple_pick_sim/coupled_fruiting/`. Surface: `build()`, `step(per_env_actions)`, `gather_obs()`, layout/scene accessors. No `argparse` / viewer in library; tests import library, not `examples/`.
+- [x] **V.3.2 — Thin heterogeneous example:** `example_batched_heterogeneous_coupled_sim.py` (canonical entry point); `test_heterogeneous_coupled_fruiting.py` imports library, not monolith example.
 - [ ] **V.3.3 — Batched gym base env:** `ApplePickBatchedBaseEnv`; `num_envs` + `gather_batched_obs`; `num_envs=1` obs v3 parity.
 - [ ] **V.3.4 — Migrate gym envs:** `ApplePickCoupledEnv`, `ApplePickVicEnv`, `ApplePickSysIdEnv`, `ApplePickReplayEnv` on batched backend; retire single-world gym build path.
 - [ ] **V.3.5 — Migrate gym examples:** `example_gym_sysid.py`, `example_gym_replay.py`, `example_gym_keyboard.py` + parity tests at `num_envs=1`.
@@ -115,9 +115,9 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.2.1.3** | Done | Material \(E\), \(\zeta\) sampling (`docs/material-parameter-sampling.md`) |
 | **V.2.2** | Done | Build-time per-env θ DR via `add_world` |
 | **V.2.3** | Done | Per-env runtime actions (`velocity_for_world`, action buffer) |
-| **V.3.1** | **Next** | `BatchedHeterogeneousCoupledSim` library API |
-| **V.3.2** | Planned | Thin heterogeneous example |
-| **V.3.3** | Planned | `ApplePickBatchedBaseEnv` |
+| **V.3.1** | Done | `BatchedHeterogeneousCoupledSim` library API |
+| **V.3.2** | Done | Thin heterogeneous example (`example_batched_heterogeneous_coupled_sim.py`) |
+| **V.3.3** | **Next** | `ApplePickBatchedBaseEnv` |
 | **V.3.4** | Planned | Migrate gym envs |
 | **V.3.5** | Planned | Migrate gym examples (`num_envs=1` parity) |
 | **V.4.1** | Planned | `gather_transitions()` + recorded replay |
@@ -128,7 +128,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.5.2** | Planned | CEM θ loop |
 | **V.5.3** | Planned | Held-out validation; [M4] handoff |
 
-Reference implementation (pre–V.3.1): `apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py`.
+Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Legacy monolith (deprecated): `apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py`.
 
 **Consumers after V.5:** [M4] real-data validation; M2.3 / M2.2c parallel RL envs.
 
@@ -154,7 +154,7 @@ Reference implementation (pre–V.3.1): `apple_pick_sim/examples/example_batched
 | Path | Role |
 | ---- | ---- |
 | `apple_pick_sim/` | Simulation (`fruiting_system/`, `coupled_fruiting/`, `examples/`, tests) |
-| `apple_pick_sim/coupled_fruiting/` | Coupled sim; **V.3.1** adds `BatchedHeterogeneousCoupledSim` |
+| `apple_pick_sim/coupled_fruiting/` | Coupled sim; `BatchedHeterogeneousCoupledSim` + `batched_heterogeneous_config.py` (V.3.1) |
 | `apple_pick_gym/` | Gymnasium adapter; depends on `apple_pick_sim`, not vice versa |
 | `newton/` | Upstream physics submodule (vendored) |
 | `docs/` | Vision, roadmap, architecture notes — start at `docs/CODEBASE_GUIDE.md` for a map of the codebase and this directory |
@@ -177,10 +177,11 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --viewer null 
 # Coupling verification
 uv run python apple_pick_sim/diagnostics/verify_coupling.py --num-substeps 600 --max-force 5 --max-torque 1
 
-# [V].2 heterogeneous batched coupled (current reference; V.3.1 extracts API from here)
+# [V].3 heterogeneous batched coupled (library API + thin example)
 uv run --env-file pytest.env python -m pytest \
-  apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py -q
-uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \
+  apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py \
+  apple_pick_sim/tests/test_example_batched_heterogeneous_coupled_sim.py -q
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 
 # [V].1 homogeneous batched smoke

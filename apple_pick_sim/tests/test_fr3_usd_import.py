@@ -84,5 +84,57 @@ class TestFr3UsdImport(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(g).reshape(3), 0.0, atol=1e-9)
 
 
+class TestInitMujocoActuatorTargets(unittest.TestCase):
+    """``init_mujoco_actuator_targets_from_model`` must respect coord vs DOF target layout."""
+
+    def _ball_revolute_model(self) -> newton.Model:
+        builder = newton.ModelBuilder()
+        b0 = builder.add_link(mass=1.0)
+        j_ball = builder.add_joint_ball(parent=-1, child=b0)
+        b1 = builder.add_link(mass=1.0)
+        j_rev = builder.add_joint_revolute(parent=b0, child=b1, axis=newton.Axis.Z)
+        builder.add_articulation([j_ball, j_rev])
+        return builder.finalize(device="cpu")
+
+    def test_legacy_dof_targets_when_coord_count_exceeds_dof_count(self):
+        import numpy as np
+
+        prev = newton.use_coord_layout_targets
+        newton.use_coord_layout_targets = False
+        try:
+            model = self._ball_revolute_model()
+            control = model.control()
+            self.assertGreater(model.joint_coord_count, model.joint_dof_count)
+            self.assertEqual(control.joint_target_q.shape[0], model.joint_dof_count)
+            fr3_robot.init_mujoco_actuator_targets_from_model(model, control)
+            np.testing.assert_allclose(
+                control.joint_target_q.numpy(),
+                model.joint_q.numpy().reshape(-1)[: model.joint_dof_count],
+                rtol=0,
+                atol=0,
+            )
+        finally:
+            newton.use_coord_layout_targets = prev
+
+    def test_coord_targets_when_use_coord_layout_targets(self):
+        import numpy as np
+
+        prev = newton.use_coord_layout_targets
+        newton.use_coord_layout_targets = True
+        try:
+            model = self._ball_revolute_model()
+            control = model.control()
+            self.assertEqual(control.joint_target_q.shape[0], model.joint_coord_count)
+            fr3_robot.init_mujoco_actuator_targets_from_model(model, control)
+            np.testing.assert_allclose(
+                control.joint_target_q.numpy(),
+                model.joint_q.numpy().reshape(-1),
+                rtol=0,
+                atol=0,
+            )
+        finally:
+            newton.use_coord_layout_targets = prev
+
+
 if __name__ == "__main__":
     unittest.main()

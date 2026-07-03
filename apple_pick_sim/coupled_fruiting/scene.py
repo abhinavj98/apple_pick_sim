@@ -480,6 +480,8 @@ class CoupledFruitingScene:
     vic_target_twist: fr3_robot.EEVelocity | None = None
     vic_target_positions_wp: wp.array | None = None
     vic_target_rotations_wp: wp.array | None = None
+    vic_target_linear_vels_wp: wp.array | None = None
+    vic_target_angular_vels_wp: wp.array | None = None
     layout: Any | None = None
     """Optional :class:`~apple_pick_sim.coupled_fruiting.batched_layout.BatchedEnvLayout`."""
     env_spacing: tuple[float, float, float] | None = None

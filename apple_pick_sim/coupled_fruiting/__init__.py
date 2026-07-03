@@ -20,6 +20,26 @@ from apple_pick_sim.coupled_fruiting.builders import (
     build_heterogeneous_coupled_fruiting_placeholder,
     build_placeholder_tcp_robot_model,
 )
+from apple_pick_sim.coupled_fruiting.batched_heterogeneous_build import (
+    BatchedHeterogeneousBuildResult,
+    build_batched_heterogeneous_scene,
+    print_per_env_params,
+)
+from apple_pick_sim.coupled_fruiting.batched_heterogeneous_coupled_sim import (
+    BatchedHeterogeneousCoupledSim,
+)
+from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
+    BatchedHeterogeneousCoupledSimConfig,
+    ControllerConfig,
+    DomainRandomizationConfig,
+    FruitingSystemConfig,
+    MujocoConfig,
+    ObsConfig,
+    RobotConfig,
+    RuntimeConfig,
+    SceneSettleCollisionConfig,
+    SettleDiagnosticsConfig,
+)
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
 from apple_pick_sim.coupled_fruiting.scene import (
@@ -29,6 +49,10 @@ from apple_pick_sim.coupled_fruiting.scene import (
     DEFAULT_STEM_FORCE_CAP_N,
     DEFAULT_STEM_TORQUE_CAP_NM,
     CoupledFruitingScene,
+)
+from apple_pick_sim.coupled_fruiting.settled_checkpoint import (
+    SettledCheckpoint,
+    settle_cache_path_for,
 )
 from apple_pick_sim.coupled_fruiting.settle_ke_decay import (
     SettleKeAnalysisConfig,
@@ -52,11 +76,28 @@ from apple_pick_sim.coupled_fruiting.settle_quasi_static import (
 from apple_pick_sim.coupled_fruiting.settle_then_weld import (
     quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
+    seed_fix_to_apple_from_settled_body_q,
     settle_vbd_substeps,
 )
 
 __all__ = [
     "BatchedEnvLayout",
+    "BatchedHeterogeneousBuildResult",
+    "BatchedHeterogeneousCoupledSim",
+    "BatchedHeterogeneousCoupledSimConfig",
+    "SettledCheckpoint",
+    "build_batched_heterogeneous_scene",
+    "print_per_env_params",
+    "settle_cache_path_for",
+    "ControllerConfig",
+    "DomainRandomizationConfig",
+    "FruitingSystemConfig",
+    "MujocoConfig",
+    "ObsConfig",
+    "RobotConfig",
+    "RuntimeConfig",
+    "SceneSettleCollisionConfig",
+    "SettleDiagnosticsConfig",
     "CoupledFruitingScene",
     "DEFAULT_FR3_MUJOCO_SOLVER_KWARGS",
     "DEFAULT_MUJOCO_SOLVER_KWARGS",

@@ -1,13 +1,13 @@
-"""SPACE-to-continue detection for --inspect-settle settled-scene preview."""
+"""Tests legacy ``--inspect-settle`` helper only (``examples/legacy/`` monolith)."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-_EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
-if str(_EXAMPLES_DIR) not in sys.path:
-    sys.path.insert(0, str(_EXAMPLES_DIR))
+_LEGACY_EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples" / "legacy"
+if str(_LEGACY_EXAMPLES_DIR) not in sys.path:
+    sys.path.insert(0, str(_LEGACY_EXAMPLES_DIR))
 
 from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
     _settle_inspect_continue_requested,

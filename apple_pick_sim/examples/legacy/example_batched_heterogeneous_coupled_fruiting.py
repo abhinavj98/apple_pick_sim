@@ -1,22 +1,24 @@
-"""Heterogeneous batched coupled fruiting — per-env physics DR, vectorized GPU stepping.
+"""DEPRECATED — pre–V.3.2 monolith retained for unmigrated CLI flags.
 
-Each env shares topology (``num_segments``) but has independently sampled stiffness,
-damping, rod geometry, and apple size. Default path: settle all worlds in parallel,
-then weld with per-env robot-facing grasp direction and per-env IK bootstrap.
+Canonical entry point: ``example_batched_heterogeneous_coupled_sim.py`` (sibling of
+``legacy/``). Library API: ``apple_pick_sim.coupled_fruiting.BatchedHeterogeneousCoupledSim``.
+
+This script remains for ``--inspect-settle`` and other flags not yet ported to the thin
+example. Do not extend; new work belongs in the library + thin example.
 
 Run from the repository root::
 
-    uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \\
+    uv run python apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py \\
       --num-envs 4 --viewer gl --seed 42 --mark-endpoints --tcp-force-arrow
 
 Per-env scripted actions (RL scatter-path demo)::
 
-    uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \\
+    uv run python apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py \\
       --num-envs 4 --viewer gl --demo-per-env-actions --seed 42
 
 Variable-impedance teleop (requires PyTorch; ``uv sync --extra vic``)::
 
-    uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \\
+    uv run python apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py \\
       --num-envs 4 --viewer gl --controller vic --seed 42
 
 Default ranges: ``fruiting_system_ranges_real_world_proxy_variance.json`` (real-world
@@ -27,7 +29,7 @@ chain at (0, 0.5, 0.95) m.
 
 Cable-only stepping (no MuJoCo robot)::
 
-    uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py \\
+    uv run python apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py \\
       --num-envs 4 --viewer gl --only-vbd --seed 42
 """
 

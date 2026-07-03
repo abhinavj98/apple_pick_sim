@@ -128,6 +128,8 @@ class Fr3BatchedEEImpedanceController:
         """Wire device target buffers into ``scene`` for batched VIC substeps."""
         scene.vic_target_positions_wp = self._target_pos_wp
         scene.vic_target_rotations_wp = self._target_rot_wp
+        scene.vic_target_linear_vels_wp = self._lin_vels_wp
+        scene.vic_target_angular_vels_wp = self._ang_vels_wp
 
     def run_coupled_teleop_frame(
         self,

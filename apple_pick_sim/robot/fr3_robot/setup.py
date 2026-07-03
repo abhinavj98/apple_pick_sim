@@ -198,6 +198,34 @@ def np_zeros_like_joint_qd(robot_model: newton.Model):
     return np.zeros(int(robot_model.joint_dof_count), dtype=np.float32)
 
 
+def _assign_joint_target_q_from_coords(
+    robot_model: newton.Model,
+    control: Any,
+    joint_q_src: Any,
+) -> None:
+    """Write ``joint_q``-shaped coords into ``control.joint_target_q`` (coord- or DOF-sized)."""
+    import numpy as np
+
+    if control.joint_target_q is None:
+        return
+    jq = np.asarray(joint_q_src, dtype=np.float32).reshape(-1)
+    tgt = control.joint_target_q
+    tgt_size = int(tgt.shape[0])
+    n_coord = int(robot_model.joint_coord_count)
+    n_dof = int(robot_model.joint_dof_count)
+    if tgt_size == n_coord:
+        tgt.assign(jq[:n_coord])
+    elif tgt_size == n_dof:
+        tgt.assign(jq[:n_dof])
+    else:
+        raise RuntimeError(
+            f"control.joint_target_q size ({tgt_size}) does not match "
+            f"robot joint_coord_count ({n_coord}) or joint_dof_count ({n_dof})"
+        )
+    if control.joint_target_qd is not None:
+        control.joint_target_qd.assign(np_zeros_like_joint_qd(robot_model))
+
+
 def sync_mujoco_visual_state(
     mj_solver: SolverMuJoCo,
     robot_model: newton.Model,
@@ -225,8 +253,7 @@ def init_mujoco_actuator_targets_from_model(
     control: Any,
 ) -> None:
     """Align MuJoCo position actuators with the model's current ``joint_q`` (post-bootstrap)."""
-    control.joint_target_pos.assign(robot_model.joint_q.numpy())
-    control.joint_target_vel.assign(np_zeros_like_joint_qd(robot_model))
+    _assign_joint_target_q_from_coords(robot_model, control, robot_model.joint_q.numpy())
 
 
 def zero_mujoco_joint_pd(robot_model: newton.Model) -> None:
@@ -269,10 +296,7 @@ def hold_mujoco_actuator_targets_at_state(
     control: Any,
 ) -> None:
     """Hold position actuators at the simulated ``joint_q`` with zero target velocity."""
-    n_dof = int(robot_model.joint_dof_count)
-    q_cur = state.joint_q.numpy().reshape(-1).astype(np.float32)[:n_dof]
-    control.joint_target_pos.assign(q_cur)
-    control.joint_target_vel.assign(np_zeros_like_joint_qd(robot_model))
+    _assign_joint_target_q_from_coords(robot_model, control, state.joint_q.numpy())
 
 
 def configure_vic_joint_torques_arm(
@@ -395,5 +419,24 @@ def sync_mujoco_actuator_targets_from_joint_q(
         qd_tgt = (q_tgt - q_cur) / float(frame_dt)
     else:
         qd_tgt = np.zeros(n_dof, dtype=np.float32)
+    target_q = getattr(control, "joint_target_q", None)
+    if target_q is not None:
+        tgt_size = int(target_q.shape[0])
+        n_coord = int(robot_model.joint_coord_count)
+        if tgt_size == n_coord:
+            q_tgt = np.asarray(target_joint_q, dtype=np.float32).reshape(-1)[:n_coord]
+            q_cur = state.joint_q.numpy().reshape(-1).astype(np.float32)[:n_coord]
+            if command_velocity is not None and command_velocity.is_zero():
+                if float(np.linalg.norm(q_tgt - q_cur)) < 0.02:
+                    q_tgt = q_cur.copy()
+            elif frame_dt > 1e-9:
+                qd_tgt = (
+                    np.asarray(target_joint_q, dtype=np.float32).reshape(-1)[:n_dof]
+                    - state.joint_q.numpy().reshape(-1).astype(np.float32)[:n_dof]
+                ) / float(frame_dt)
+        target_q.assign(q_tgt)
+        if control.joint_target_qd is not None:
+            control.joint_target_qd.assign(qd_tgt.astype(np.float32))
+        return
     control.joint_target_pos.assign(q_tgt)
     control.joint_target_vel.assign(qd_tgt.astype(np.float32))

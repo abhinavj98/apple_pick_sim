@@ -572,8 +572,8 @@ def _shape_pairs_filtered(model, body_a: int, body_b: int) -> bool:
     return False
 
 
-def test_default_collision_filters_apple_woody_and_stem_isolated():
-    """Apple and woody segments do not collide; stem is filtered from woody and apple."""
+def test_default_collision_filters_self_and_within_chain_only():
+    """Self and within-chain cable pairs filtered; apple/proxy can contact the chain."""
     fs = _import_module()
     ranges = fs.load_ranges(REAL_WORLD_PROXY_FIXTURE)
     scene = fs.generate_scene(ranges, seed=42, device="cpu", enable_self_collisions=False)
@@ -588,12 +588,17 @@ def test_default_collision_filters_apple_woody_and_stem_isolated():
     spur = scene.spur_bodies[0]
     stem = scene.stem_bodies[0]
 
-    assert _shape_pairs_filtered(model, apple, primary)
-    assert _shape_pairs_filtered(model, apple, spur)
-    assert _shape_pairs_filtered(model, apple, stem)
+    # Case 1: self-collision within segment groups.
+    assert _shape_pairs_filtered(model, primary, spur)
+
+    # Case 2: within-chain cross-segment (stem ↔ woody).
     assert _shape_pairs_filtered(model, stem, primary)
     assert _shape_pairs_filtered(model, stem, spur)
-    assert _shape_pairs_filtered(model, primary, spur)
+
+    # Case 3: apple ↔ chain — collidable.
+    assert not _shape_pairs_filtered(model, apple, primary)
+    assert not _shape_pairs_filtered(model, apple, spur)
+    assert not _shape_pairs_filtered(model, apple, stem)
 
 
 def test_generate_scene_self_collision_off_by_default():

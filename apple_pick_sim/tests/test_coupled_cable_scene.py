@@ -140,8 +140,8 @@ def _shape_pairs_filtered(model, body_a: int, body_b: int) -> bool:
     return False
 
 
-def test_default_collision_filters_proxy_apple_and_woody_isolated():
-    """Apple↔proxy and woody↔(apple, proxy) shape pairs are filtered by default."""
+def test_default_collision_filters_self_and_within_chain_apple_proxy_free():
+    """Self/within-chain filtered; apple and proxy can contact woody and each other."""
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     scene = fs.generate_coupled_cable_scene(ranges, seed=42, **NO_SELF_COLLISION_KW)
@@ -150,10 +150,25 @@ def test_default_collision_filters_proxy_apple_and_woody_isolated():
     apple = scene.apple_body
     proxy = scene.gripper_proxy_body
     primary = scene.primary_bodies[0]
+    spur = scene.spur_bodies[0]
+    stem = scene.stem_bodies[0]
 
-    assert _shape_pairs_filtered(model, apple, proxy)
-    assert _shape_pairs_filtered(model, apple, primary)
-    assert _shape_pairs_filtered(model, proxy, primary)
+    # Case 1: woody self-collision.
+    assert _shape_pairs_filtered(model, primary, spur)
+
+    # Case 2: within-chain stem ↔ woody.
+    assert _shape_pairs_filtered(model, stem, primary)
+
+    # Case 3: apple ↔ chain — collidable.
+    assert not _shape_pairs_filtered(model, apple, primary)
+    assert not _shape_pairs_filtered(model, apple, stem)
+
+    # Case 4: proxy ↔ chain — collidable.
+    assert not _shape_pairs_filtered(model, proxy, primary)
+    assert not _shape_pairs_filtered(model, proxy, stem)
+
+    # Apple ↔ proxy also unfiltered (free proxy; welded builds add joint filters).
+    assert not _shape_pairs_filtered(model, apple, proxy)
 
 
 def test_gripper_proxy_has_collision_shape():

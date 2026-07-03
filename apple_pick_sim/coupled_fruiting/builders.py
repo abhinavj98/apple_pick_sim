@@ -898,6 +898,8 @@ def build_heterogeneous_coupled_fruiting_placeholder(
     device: str | None = None,
     omit: Any | None = None,
     enable_self_collisions: bool = False,
+    enable_apple_woody_collisions: bool = True,
+    enable_proxy_woody_collisions: bool = True,
     gripper_proxy: GripperProxyConfig | None = None,
     cable_collision_pipeline: Any | None = None,
     mujoco_solver_kwargs: dict[str, Any] | None = None,
@@ -952,6 +954,8 @@ def build_heterogeneous_coupled_fruiting_placeholder(
         base_pos=resolved_base,
         robot_base_pos=resolved_robot_base,
         gripper_proxy=gripper_proxy,
+        enable_apple_woody_collisions=enable_apple_woody_collisions,
+        enable_proxy_woody_collisions=enable_proxy_woody_collisions,
     )
     pipe = (
         cable_collision_pipeline
@@ -1053,6 +1057,8 @@ def build_heterogeneous_coupled_fruiting_fr3(
     device: str | None = None,
     omit: Any | None = None,
     enable_self_collisions: bool = False,
+    enable_apple_woody_collisions: bool = True,
+    enable_proxy_woody_collisions: bool = True,
     gripper_proxy: GripperProxyConfig | None = None,
     cable_collision_pipeline: Any | None = None,
     mujoco_solver_kwargs: dict[str, Any] | None = None,

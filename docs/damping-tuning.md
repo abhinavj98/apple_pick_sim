@@ -89,6 +89,25 @@ in `newton/newton/_src/solvers/vbd/rigid_vbd_kernels.py`). This is why joint `kd
 the constraint numerically stiffer than the AVBD iteration count can resolve, producing
 bounce/jitter rather than smooth settling.
 
+**`solver.joint_penalty_kd` stores the raw `kd`, not `kd/Δt`.** The `1/Δt` factor is
+applied fresh, every substep, inside the force/Hessian evaluator (`k_damp = damping *
+inv_dt`) — it is never baked into the stored array. Concretely:
+
+```python
+# _apply_batched_joint_angular_kd_kernel (apple_pick_sim/fruiting_system/build.py)
+joint_penalty_kd[c0 + angular_slot] = kd_values[k]   # raw kd, verbatim
+
+# evaluate_angular_constraint_force_hessian (newton/_src/solvers/vbd/rigid_vbd_kernels.py)
+k_damp = damping * inv_dt                            # divided live, per substep
+```
+
+So `kd` (and any override you pass to `set_fruiting_joint_angular_kd[_batched]`) is a
+`Δt`-independent physical quantity — units N·m·s/rad, comparable directly against
+`kd_crit = 2√(k·I)` below without any manual `× dt` or `/ dt` conversion. If the
+per-substep `Δt` changes (different `--hz` / substep count), the same `kd` value keeps
+the same physical damping ratio; only its numerical-stiffening margin (`kd/Δt` vs. `k`,
+see above) shifts.
+
 ### Why one global scalar is a poor fit for this chain
 
 Critical joint damping scales with the **child body's rotational inertia** at that
@@ -143,13 +162,20 @@ matched = set_fruiting_joint_angular_kd(
     solver,
     scene.fruiting_fixed_joints,
     {
-        "support": 5.0,           # T-junction world anchors (both ends)
-        "primary_secondary": 3.0, # heavy primary welds
-        "stem_apple": 0.3,        # light apple hang
+        "support": 5.0,       # T-junction world anchors (both ends)
+        "primary_spur": 3.0,  # T-junction branch (primary -> spur base)
+        "stem_apple": 0.3,    # light apple hang
     },
 )
-# matched == {"support": [j_left, j_right], "primary_secondary": [...], ...}
+# matched == {"support": [j_left, j_right], "primary_spur": [...], ...}
 ```
+
+Role-name substrings are **topology-dependent** (they come straight from the
+`f"joint_{prev_name}_{name}"` labels `build.py` assigns while walking the chain):
+T-junction (`DEFAULT_TOPOLOGY`) produces `support` (×2), `primary_spur`, `spur_stem`,
+`stem_apple`; a linear chain without a spur would instead produce e.g.
+`primary_secondary`, `secondary_stem`. Check `scene.fruiting_fixed_joints` for the
+actual labels of the topology you built before choosing keys.
 
 Behavior:
 
@@ -160,6 +186,18 @@ Behavior:
   from `make_fruiting_solver_vbd`.
 - Raises `ValueError` on negative `kd`, ambiguous multi-key match on one joint, or a
   key that matches no joint.
+- **Angular slot only.** There is no `set_fruiting_joint_linear_kd` — linear `kd` stays
+  at the single global `FRUITING_VBD_RIGID_JOINT_LINEAR_KD` for every `FIXED` joint,
+  with no per-role override today. This matters because a `FIXED` joint constrains
+  **both** translation and rotation: e.g. the T-junction `support` welds are a
+  fixed-fixed beam boundary condition (primary is clamped at both ends, loaded by the
+  spur/stem/apple subtree at midspan per `spur_attach_fraction`), which reacts with
+  **both** a shear force (linear) *and* a clamping moment (angular) — a fixed-fixed
+  beam's end moment from a midspan point load is the same order as the midspan moment
+  (`PL/8` vs. `PL/4`), not negligible. Angular `kd` tiering therefore only damps half of
+  a support joint's possible ringing modes; if residual jitter there turns out to be
+  dominantly translational (the anchor point bouncing, not "nodding"), only a future
+  per-joint **linear** `kd`/`kp` helper (not yet implemented) would address it.
 
 Suggested tiering (starting point, to validate against settle-time and bounce
 observations, not a final answer):
@@ -193,7 +231,7 @@ set_fruiting_joint_angular_kd_batched(
     scene.cable.fruiting_fixed_joints,  # template (world-0) labels
     {
         "support": 5.0,
-        "primary_secondary": 3.0,
+        "primary_spur": 3.0,
         "stem_apple": 0.3,
     },
     num_envs=scene.layout.num_envs,
@@ -204,6 +242,30 @@ set_fruiting_joint_angular_kd_batched(
 `example_batched_heterogeneous_coupled_fruiting.py` calls this after scene construction
 via `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES`. Returns global joint indices
 (`world * joints_per_world + template_index`) per matched key.
+
+### Damping-ratio check against the current script values
+
+`_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` in `example_batched_heterogeneous_coupled_fruiting.py`
+currently sets `{"support": 1.0, "primary_spur": 1.0, "stem_apple": 5e-2}`, with **no**
+`kp` override applied (see §4) — so every matched joint's `k` is Newton's default
+`rigid_joint_angular_ke = 1e5`, matching the §2 inertia table exactly (no rescaling
+needed). Plugging into `ζ = kd / kd_crit = kd / (2√(k·I_child))`:
+
+| Joint | `I_child` (§2 estimate) | `kd_crit` at `k=1e5` | current `kd` | ζ |
+| ----- | ------------------------ | --------------------- | ------------- | --- |
+| support | ~1.1×10⁻⁴ | ~6.6 | 1.0 | **~0.15** (underdamped) |
+| primary_spur | ~1.8×10⁻⁶ | ~0.85 | 1.0 | **~1.18** (slightly overdamped) |
+| stem_apple | ~1.0×10⁻⁶ | ~0.63 | 0.05 | **~0.08** (underdamped) |
+| spur_stem (unmatched) | ~1.3×10⁻⁷ | ~0.23 | 5e-4 (global default) | ~0.002 (effectively undamped, expected) |
+
+Read with the same caveat as §2: `I_child` is from a representative build and may not
+exactly match `fruiting_system_ranges_real_world_proxy_variance.json`'s geometry, so
+treat ζ as order-of-magnitude, not exact. Numerical over-stiffening (`kd/Δt` vs. `k`) is
+a non-issue for all three (`≤1.8%` of `k=1e5` at this script's `sim_dt ≈ 5.56e-4 s`), so
+there's headroom to raise `support` and `stem_apple` well before hitting that failure
+mode — `support` toward `~4–7` and `stem_apple` toward `~0.3–0.6` would bring both closer
+to `primary_spur`'s current (healthy) ζ. Validate any change with the KE-decay diagnostic
+in Verification below rather than trusting ζ alone.
 
 ## 4. Per-joint `kp` (`set_fruiting_joint_angular_kp`)
 
@@ -225,7 +287,7 @@ set_fruiting_joint_angular_kp(
     scene.fruiting_fixed_joints,
     {
         "support": 2.0e5,
-        "primary_secondary": 1.0e5,
+        "primary_spur": 1.0e5,
         "stem_apple": 5.0e4,
     },
 )
@@ -245,8 +307,13 @@ After patching, expect `k ≈ kp × gamma^N` after `N` substeps — unlike `kd`,
 constant. Raising `kp` above the default `1e5` requires the helper to bump
 `joint_penalty_k_max`; lowering below the initial `k_min` widens `k_min` accordingly.
 
-`example_batched_heterogeneous_coupled_fruiting.py` also applies
-`_DEFAULT_JOINT_ANGULAR_KP_OVERRIDES` alongside the kd dict.
+**Not currently applied in the batched example.** `example_batched_heterogeneous_coupled_fruiting.py`
+imports `set_fruiting_joint_angular_kp_batched` but does not call it — there is no
+`_DEFAULT_JOINT_ANGULAR_KP_OVERRIDES` dict in that file today, so every `FIXED` joint's
+angular `kp` stays at the uniform Newton default (`1e5`). This differs from an earlier
+iteration of the script that did tier `kp` per role; if that tiering is reinstated,
+update the damping-ratio check above (it currently assumes uniform `k=1e5`). The unused
+import is dead code worth pruning if `kp` tiering stays off.
 
 ## Diagnosing which knob to change
 
@@ -274,6 +341,8 @@ damping-responsive; don't spend a damping sweep chasing `branch_path>nominal`.
 | `rigid_joint_linear_ke` / `rigid_joint_angular_ke` | `1e5` (Newton default, not overridden) | `newton/newton/_src/solvers/vbd/solver_vbd.py` |
 | `rigid_joint_*_k_start` | `1e8` / `1e6` passed but **inert** (ramping disabled) | `make_fruiting_solver_vbd` |
 | VBD `iterations` | 25 | `make_fruiting_solver_vbd` |
+| `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` (batched example) | `{"support": 1.0, "primary_spur": 1.0, "stem_apple": 5e-2}` | `example_batched_heterogeneous_coupled_fruiting.py` |
+| `_DEFAULT_JOINT_ANGULAR_KP_OVERRIDES` (batched example) | **none** — `kp` stays uniform `1e5`; `set_fruiting_joint_angular_kp_batched` import is currently unused | `example_batched_heterogeneous_coupled_fruiting.py` |
 
 Update this table when any of these values change so it stays a reliable snapshot.
 

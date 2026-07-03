@@ -35,6 +35,8 @@ def _prepare_cable_template_builder_for_replicate(
     enable_self_collisions: bool,
     proxy_free_joint: int | None,
     proxy_body: int,
+    enable_apple_woody_collisions: bool = True,
+    enable_proxy_woody_collisions: bool = True,
 ) -> None:
     """Add articulations and collision filters on the template before ``replicate()``."""
     proxy_joints = (int(proxy_free_joint),) if proxy_free_joint is not None else ()
@@ -48,6 +50,8 @@ def _prepare_cable_template_builder_for_replicate(
         gripper_proxy_body=proxy_body,
         gripper_proxy_joints=proxy_joints,
         world_root_joints=artifacts.world_root_joints,
+        enable_apple_woody_collisions=enable_apple_woody_collisions,
+        enable_proxy_woody_collisions=enable_proxy_woody_collisions,
     )
 
 
@@ -190,6 +194,8 @@ def build_heterogeneous_coupled_cable_scene(
     base_pos: tuple[float, float, float],
     robot_base_pos: tuple[float, float, float] | None,
     gripper_proxy: GripperProxyConfig,
+    enable_apple_woody_collisions: bool = True,
+    enable_proxy_woody_collisions: bool = True,
 ) -> tuple[CoupledCableScene, tuple[tuple[float, float, float, float, float, float, float] | None, ...]]:
     """Build ``len(params_list)`` heterogeneous VBD worlds via ``add_world`` (co-located)."""
     del env_spacing  # viewer-only; physics worlds share the origin
@@ -215,6 +221,8 @@ def build_heterogeneous_coupled_cable_scene(
             enable_self_collisions=enable_self_collisions,
             proxy_free_joint=pop.proxy_free_joint,
             proxy_body=pop.proxy_body,
+            enable_apple_woody_collisions=enable_apple_woody_collisions,
+            enable_proxy_woody_collisions=enable_proxy_woody_collisions,
         )
         outer.add_world(sub)
         populate_results.append(pop)

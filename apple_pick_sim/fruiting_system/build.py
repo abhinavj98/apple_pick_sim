@@ -77,17 +77,49 @@ class _FruitingChainArtifacts:
     proxy_placement_dir: wp.vec3
     world_root_joints: tuple[int, ...] = ()
     t_junction_support_ctx: tuple[list[wp.vec3], list[int], float] | None = None
+
+def _filter_shape_collisions_within_group(
+    builder: newton.ModelBuilder,
+    bodies: list[int],
+) -> None:
+    """Add collision filter pairs for every distinct body pair in ``bodies``."""
+    for i, body_a in enumerate(bodies):
+        for body_b in bodies[i + 1 :]:
+            for shape_a in builder.body_shapes.get(body_a, []):
+                for shape_b in builder.body_shapes.get(body_b, []):
+                    builder.add_shape_collision_filter_pair(shape_a, shape_b)
+
+
+def _filter_shape_collisions_between_groups(
+    builder: newton.ModelBuilder,
+    group_a: list[int],
+    group_b: list[int],
+) -> None:
+    """Add collision filter pairs for every body in ``group_a`` vs every body in ``group_b``."""
+    for body_a in group_a:
+        for body_b in group_b:
+            for shape_a in builder.body_shapes.get(body_a, []):
+                for shape_b in builder.body_shapes.get(body_b, []):
+                    builder.add_shape_collision_filter_pair(shape_a, shape_b)
+
+
 def _apply_default_fruiting_collision_filters(
     builder: newton.ModelBuilder,
     seg_bodies: dict[str, list[int]],
     apple_body: int | None,
     gripper_proxy_body: int | None = None,
+    *,
+    enable_apple_woody_collisions: bool = True,
+    enable_proxy_woody_collisions: bool = True,
 ) -> None:
-    """Filter intra-chain contacts on the fruiting cable (default ``enable_self_collisions=False``).
+    """Apply default cable collision filters (``enable_self_collisions=False``).
 
-    Woody segments do not collide with each other, the stem, the apple, or the gripper
-    proxy. The stem is isolated from woody bodies and the apple. Apple↔proxy shape pairs
-    are filtered when a gripper proxy is present.
+    Four cases:
+
+    1. **Self** — filter same-segment contacts (woody↔woody, stem↔stem).
+    2. **Within chain** — filter cross-segment cable contacts (stem↔woody).
+    3. **Apple ↔ woody** — collidable when ``enable_apple_woody_collisions`` (default on).
+    4. **Proxy ↔ woody** — collidable when ``enable_proxy_woody_collisions`` (default on).
     """
     woody = (
         list(seg_bodies.get("primary", []))
@@ -96,29 +128,23 @@ def _apply_default_fruiting_collision_filters(
     )
     stem = list(seg_bodies.get("stem", []))
 
-    if apple_body is None:
-        chain = woody + stem
-        if chain:
-            _apply_all_chain_collision_filters(builder, chain)
-        return
-
+    # 1. Self-collision within each segment group.
     if woody:
-        _apply_all_chain_collision_filters(builder, woody)
-        _apply_collision_filters_between_chain_groups(builder, woody, [apple_body])
-        if gripper_proxy_body is not None:
-            _apply_collision_filters_between_chain_groups(
-                builder, woody, [gripper_proxy_body]
-            )
+        _filter_shape_collisions_within_group(builder, woody)
     if stem:
-        _apply_all_chain_collision_filters(builder, stem)
-    if stem and woody:
-        _apply_collision_filters_between_chain_groups(builder, stem, woody)
-    if stem:
-        _apply_collision_filters_between_chain_groups(builder, stem, [apple_body])
-    if gripper_proxy_body is not None:
-        _apply_collision_filters_between_chain_groups(
-            builder, [apple_body], [gripper_proxy_body]
-        )
+        _filter_shape_collisions_within_group(builder, stem)
+
+    # 2. Within-chain cross-segment collision (cable bodies only).
+    if woody and stem:
+        _filter_shape_collisions_between_groups(builder, woody, stem)
+
+    # 3. Apple ↔ woody — optional filter when disabled.
+    if not enable_apple_woody_collisions and apple_body is not None and woody:
+        _filter_shape_collisions_between_groups(builder, [apple_body], woody)
+
+    # 4. Proxy ↔ woody — optional filter when disabled.
+    if not enable_proxy_woody_collisions and gripper_proxy_body is not None and woody:
+        _filter_shape_collisions_between_groups(builder, [gripper_proxy_body], woody)
 
 
 def _apply_all_chain_collision_filters(
@@ -126,12 +152,7 @@ def _apply_all_chain_collision_filters(
     chain_body_indices: list[int],
 ) -> None:
     """Add shape collision filter pairs for every distinct pair of chain bodies."""
-    bodies = chain_body_indices
-    for i, body1 in enumerate(bodies):
-        for body2 in bodies[i + 1 :]:
-            for shape1 in builder.body_shapes.get(body1, []):
-                for shape2 in builder.body_shapes.get(body2, []):
-                    builder.add_shape_collision_filter_pair(shape1, shape2)
+    _filter_shape_collisions_within_group(builder, chain_body_indices)
 
 
 
@@ -525,11 +546,7 @@ def _apply_collision_filters_between_chain_groups(
     chain_b: list[int],
 ) -> None:
     """Disable collisions between every body in ``chain_a`` and every body in ``chain_b``."""
-    for body1 in chain_a:
-        for body2 in chain_b:
-            for shape1 in builder.body_shapes.get(body1, []):
-                for shape2 in builder.body_shapes.get(body2, []):
-                    builder.add_shape_collision_filter_pair(shape1, shape2)
+    _filter_shape_collisions_between_groups(builder, chain_a, chain_b)
 
 
 def _register_fruiting_articulations(
@@ -544,6 +561,8 @@ def _register_fruiting_articulations(
     gripper_proxy_joints: tuple[int, ...] = (),
     world_root_joints: tuple[int, ...] = (),
     extra_chain_groups_for_filters: tuple[list[int], ...] = (),
+    enable_apple_woody_collisions: bool = True,
+    enable_proxy_woody_collisions: bool = True,
 ) -> None:
     """Register articulations and optional collision filters (no ``finalize``)."""
     joint_list = sorted(all_joints)
@@ -563,6 +582,8 @@ def _register_fruiting_articulations(
                 seg_bodies,
                 apple_body,
                 gripper_proxy_body=gripper_proxy_body,
+                enable_apple_woody_collisions=enable_apple_woody_collisions,
+                enable_proxy_woody_collisions=enable_proxy_woody_collisions,
             )
         else:
             _apply_all_chain_collision_filters(builder, chain_bodies)
@@ -583,6 +604,8 @@ def _finalize_fruiting_builder_joints(
     gripper_proxy_joints: tuple[int, ...] = (),
     world_root_joints: tuple[int, ...] = (),
     extra_chain_groups_for_filters: tuple[list[int], ...] = (),
+    enable_apple_woody_collisions: bool = True,
+    enable_proxy_woody_collisions: bool = True,
 ) -> newton.Model:
     """Finalize a cable ``Model``; world-root and FREE proxy joints use separate articulations."""
     _register_fruiting_articulations(
@@ -596,6 +619,8 @@ def _finalize_fruiting_builder_joints(
         gripper_proxy_joints=gripper_proxy_joints,
         world_root_joints=world_root_joints,
         extra_chain_groups_for_filters=extra_chain_groups_for_filters,
+        enable_apple_woody_collisions=enable_apple_woody_collisions,
+        enable_proxy_woody_collisions=enable_proxy_woody_collisions,
     )
     # builder.add_ground_plane()
     builder.color()
@@ -612,6 +637,8 @@ def _finalize_fruiting_builder(
     enable_self_collisions: bool,
     gripper_proxy_joint: int | None = None,
     gripper_proxy_body: int | None = None,
+    enable_apple_woody_collisions: bool = True,
+    enable_proxy_woody_collisions: bool = True,
 ) -> newton.Model:
     """Finalize the cable model; keep world-root proxy FREE joints out of the tree articulation."""
     proxy_joints = (gripper_proxy_joint,) if gripper_proxy_joint is not None else ()
@@ -626,6 +653,8 @@ def _finalize_fruiting_builder(
         gripper_proxy_body=gripper_proxy_body,
         gripper_proxy_joints=proxy_joints,
         world_root_joints=artifacts.world_root_joints,
+        enable_apple_woody_collisions=enable_apple_woody_collisions,
+        enable_proxy_woody_collisions=enable_proxy_woody_collisions,
     )
 def _approach_dir_from_robot_base(
     apple_pos: wp.vec3,

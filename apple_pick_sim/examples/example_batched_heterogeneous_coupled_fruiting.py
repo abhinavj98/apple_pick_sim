@@ -100,8 +100,8 @@ from apple_pick_sim.coupled_fruiting.batched_robot_status import print_batched_r
 
 
 # Batched heterogeneous teleop: smaller steps than 1.0 m/s so template IK keeps up at 30 Hz.
-_FR3_TELEOP_LINEAR_SPEED = 0.02
-_FR3_TELEOP_ANGULAR_SPEED = 0.02
+_FR3_TELEOP_LINEAR_SPEED = 0.1
+_FR3_TELEOP_ANGULAR_SPEED = 0.1
 _FR3_TELEOP_IK_ITERATIONS = 128
 
 # Per-role FIXED-joint angular kd overrides (see docs/damping-tuning.md §3)
@@ -128,6 +128,14 @@ def _fix_to_apple_from_args(args: argparse.Namespace | None) -> bool:
 
 def _enable_self_collisions_from_args(args: argparse.Namespace | None) -> bool:
     return bool(getattr(args, "enable_self_collision", False)) if args else False
+
+
+def _enable_apple_woody_collisions_from_args(args: argparse.Namespace | None) -> bool:
+    return bool(getattr(args, "apple_woody_collision", True)) if args else True
+
+
+def _enable_proxy_woody_collisions_from_args(args: argparse.Namespace | None) -> bool:
+    return bool(getattr(args, "proxy_woody_collision", True)) if args else True
 
 
 def _gripper_proxy_from_args(
@@ -421,6 +429,18 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--enable-self-collision", action="store_true")
     parser.add_argument(
+        "--apple-woody-collision",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="AVBD contact between apple and woody segments (default: on).",
+    )
+    parser.add_argument(
+        "--proxy-woody-collision",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="AVBD contact between gripper proxy and woody segments (default: on).",
+    )
+    parser.add_argument(
         "--only-vbd",
         action="store_true",
         help="Cable SolverVBD only (gripper proxy at spawn; no MuJoCo robot).",
@@ -620,6 +640,8 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         controller_mode = str(getattr(args, "controller", "direct"))
         fix_to_apple = _fix_to_apple_from_args(args)
         enable_self = _enable_self_collisions_from_args(args)
+        enable_apple_woody = _enable_apple_woody_collisions_from_args(args)
+        enable_proxy_woody = _enable_proxy_woody_collisions_from_args(args)
         settle_substeps = int(getattr(args, "settle_substeps", 5000))
         settle_gravity_ramp = bool(getattr(args, "settle_gravity_ramp", False))
         settle_max_speed = float(getattr(args, "settle_max_speed", 0.05))
@@ -659,6 +681,13 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
         print(
             f"Gripper proxy fix_to_apple={fix_to_apple} ({coupling_label} coupling)."
         )
+        print(
+            "AVBD cable collisions: "
+            f"self_collision={enable_self} "
+            f"apple↔woody={enable_apple_woody} "
+            f"proxy↔woody={enable_proxy_woody}",
+            flush=True,
+        )
 
         build_fn = (
             build_heterogeneous_coupled_fruiting_fr3
@@ -670,6 +699,8 @@ class ExampleBatchedHeterogeneousCoupledFruiting:
             device=sim_device,
             env_spacing=self.env_spacing,
             enable_self_collisions=enable_self,
+            enable_apple_woody_collisions=enable_apple_woody,
+            enable_proxy_woody_collisions=enable_proxy_woody,
             gripper_proxy=gripper,
             vbd_only=(self._step_mode == "vbd"),
         )

@@ -1062,6 +1062,95 @@ def test_batched_heterogeneous_only_vbd_runs_settle_with_gravity_ramp(capsys):
     assert g_z == pytest.approx(-9.81, abs=1e-5)
 
 
+def _shape_pairs_filtered(model, body_a: int, body_b: int) -> bool:
+    shapes_a = model.body_shapes.get(body_a, [])
+    shapes_b = model.body_shapes.get(body_b, [])
+    if not shapes_a or not shapes_b:
+        return False
+    pairs = set(model.shape_collision_filter_pairs)
+    for s1 in shapes_a:
+        for s2 in shapes_b:
+            if (s1, s2) in pairs or (s2, s1) in pairs:
+                return True
+    return False
+
+
+def test_heterogeneous_apple_woody_collision_toggle(ranges):
+    """``enable_apple_woody_collisions`` controls apple↔woody AVBD filter pairs."""
+    params_list = sample_heterogeneous_params_list(
+        ranges, topology_seed=7, num_envs=_NUM_ENVS
+    )
+    base_kw = dict(
+        env_spacing=(2.5, 2.5, 0.0),
+        device="cpu",
+        enable_self_collisions=False,
+        base_pos=COUPLED_SCENE_KW["base_pos"],
+        robot_base_pos=COUPLED_SCENE_KW["robot_base_pos"],
+        gripper_proxy=_gripper_free(),
+    )
+    cable_on, _ = build_heterogeneous_coupled_cable_scene(
+        params_list, enable_apple_woody_collisions=True, **base_kw
+    )
+    cable_off, _ = build_heterogeneous_coupled_cable_scene(
+        params_list, enable_apple_woody_collisions=False, **base_kw
+    )
+    apple = cable_on.apple_body
+    primary = cable_on.primary_bodies[0]
+    assert apple is not None
+    assert not _shape_pairs_filtered(cable_on.model, apple, primary)
+    assert _shape_pairs_filtered(cable_off.model, apple, primary)
+
+
+def test_heterogeneous_proxy_woody_collision_toggle(ranges):
+    """``enable_proxy_woody_collisions`` controls proxy↔woody AVBD filter pairs."""
+    params_list = sample_heterogeneous_params_list(
+        ranges, topology_seed=9, num_envs=_NUM_ENVS
+    )
+    base_kw = dict(
+        env_spacing=(2.5, 2.5, 0.0),
+        device="cpu",
+        enable_self_collisions=False,
+        base_pos=COUPLED_SCENE_KW["base_pos"],
+        robot_base_pos=COUPLED_SCENE_KW["robot_base_pos"],
+        gripper_proxy=_gripper_free(),
+    )
+    cable_on, _ = build_heterogeneous_coupled_cable_scene(
+        params_list, enable_proxy_woody_collisions=True, **base_kw
+    )
+    cable_off, _ = build_heterogeneous_coupled_cable_scene(
+        params_list, enable_proxy_woody_collisions=False, **base_kw
+    )
+    proxy = cable_on.gripper_proxy_body
+    primary = cable_on.primary_bodies[0]
+    assert not _shape_pairs_filtered(cable_on.model, proxy, primary)
+    assert _shape_pairs_filtered(cable_off.model, proxy, primary)
+
+
+def test_batched_heterogeneous_collision_parser_defaults():
+    import sys
+    from pathlib import Path
+
+    _EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+    if str(_EXAMPLES_DIR) not in sys.path:
+        sys.path.insert(0, str(_EXAMPLES_DIR))
+
+    from example_batched_heterogeneous_coupled_fruiting import (  # noqa: E402
+        _enable_apple_woody_collisions_from_args,
+        _enable_proxy_woody_collisions_from_args,
+        _make_parser,
+    )
+
+    args = _make_parser().parse_args([])
+    assert _enable_apple_woody_collisions_from_args(args) is True
+    assert _enable_proxy_woody_collisions_from_args(args) is True
+
+    args_off = _make_parser().parse_args(
+        ["--no-apple-woody-collision", "--no-proxy-woody-collision"]
+    )
+    assert _enable_apple_woody_collisions_from_args(args_off) is False
+    assert _enable_proxy_woody_collisions_from_args(args_off) is False
+
+
 def test_batched_heterogeneous_vic_defaults_match_parser():
     import sys
     from pathlib import Path

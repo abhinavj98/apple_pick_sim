@@ -128,7 +128,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.5.2** | Planned | CEM θ loop |
 | **V.5.3** | Planned | Held-out validation; [M4] handoff |
 
-Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`.
+Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Public API reference: `docs/coupled-sim-api.md`.
 
 **Consumers after V.5:** [M4] real-data validation; M2.3 / M2.2c parallel RL envs.
 
@@ -177,16 +177,21 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --viewer null 
 # Coupling verification
 uv run python apple_pick_sim/diagnostics/verify_coupling.py --num-substeps 600 --max-force 5 --max-torque 1
 
-# [V].3 heterogeneous batched coupled (library API + thin example)
+# [V].3 heterogeneous batched coupled (library API + thin example; FR3 required)
 uv run --env-file pytest.env python -m pytest \
-  apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py \
-  apple_pick_sim/tests/test_example_batched_heterogeneous_coupled_sim.py -q
+  apple_pick_sim/tests/test_batched_heterogeneous_build.py \
+  apple_pick_sim/tests/test_batched_heterogeneous_coupled_sim.py \
+  apple_pick_sim/tests/test_batched_heterogeneous_config.py \
+  apple_pick_sim/tests/test_example_batched_heterogeneous_coupled_sim.py \
+  apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py -q
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 
-# [V].1 homogeneous batched (builders/tests only; no standalone example)
+# Pre-gym cleanup regression (batched FR3 builders + broadcast helpers)
 uv run --env-file pytest.env python -m pytest \
-  apple_pick_sim/tests/test_vectorized_coupled_fruiting.py -q
+  apple_pick_sim/tests/test_vectorized_coupled_fruiting.py \
+  apple_pick_sim/tests/test_broadcast_actions.py \
+  apple_pick_sim/tests/test_package_layout.py -q
 
 # Material-parameter sampling (V.2.1.3)
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_fruiting_system.py -q \

@@ -28,7 +28,7 @@ flowchart LR
 - `num_envs = N`; cable + robot via `ModelBuilder.replicate(N, spacing=(0,0,0))` (all worlds co-located in physics).
 - **`env_spacing`** is for **viewer** separation only — see [Co-located physics vs viewer spacing](#co-located-physics-vs-viewer-spacing).
 - **`GripperProxyConfig(fix_to_apple=False)`** — gripper proxy is **not** welded to the apple.
-- Each world is a full stack: **VBD fruiting system + MuJoCo FR3** (or placeholder TCP for smoke).
+- Each world is a full stack: **VBD fruiting system + MuJoCo FR3** (FR3 assets required).
 - Build with **`vbd_only=True`** when this scene exists only for settling (no MuJoCo step during settle).
 - Attach `BatchedEnvLayout` and `ProxyBodyRegistry` `{(tcp_w, proxy_w) for w in 0..N-1}`.
 
@@ -55,7 +55,7 @@ flowchart LR
 - **`Fr3BatchedEEDirectJointController`** or **`Fr3BatchedEEVelocityController`** (`--controller direct` or `ee`).
 - **FR3 runtime IK** follows Newton **`example_ik_cube_stacking.py`**: `BatchedTemplateIK` on `ik_template_robot_model` with **`n_problems = N`**, per-world TCP targets, then **`scatter_to_model`** into each world's `joint_q` slice. This is **not** “solve one IK and broadcast `joint_q`.”
 - **`--fr3-keyboard --viewer gl`**: the reference example feeds the **same** keyboard/scripted velocity to every env (homogeneous smoke). For **different** actions per arm, pass **`velocity_for_world=lambda w: …`** to the batched controller (see `test_batched_fr3_per_env_velocity_diverges`).
-- **Placeholder TCP** (`--robot placeholder`) still nudges world 0 and calls **`broadcast_joint_q_from_world0`** each frame — homogeneous only.
+- **FR3 teleop** uses per-env IK scatter via `BatchedTemplateIK`; `broadcast_joint_q_from_world0` remains for bootstrap/tests only — not the heterogeneous FR3 step path.
 - Inner loop: `coupled_substep` (MuJoCo → mirror TCP→proxy+apple → VBD → stem harvest).
 
 **Not in this flow:** batched VIC, `--only-vbd` / `--only-mjc`, free-proxy velocity-delta harvest as the batched default, or building welded without a prior free settle.

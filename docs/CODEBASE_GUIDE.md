@@ -8,7 +8,7 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-07-03 (V.3.2 close-out — see `docs/ROADMAP.md` for slice numbering conventions used below) |
+| **Last reviewed** | 2026-07-04 (pre-gym scope narrowing — see `docs/coupled-sim-api.md`, `docs/ROADMAP.md`) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
@@ -63,7 +63,7 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | Path | Role |
 | ---- | ---- |
 | `apple_pick_sim/fruiting_system/` | `params.py` (sampling, `RodParams`/`FruitingSystemParams`), `build.py` (ModelBuilder geometry, collision filters, VBD solver setup), `scene.py`/`coupled.py` (P0 scene + M1 cable-only scene) |
-| `apple_pick_sim/coupled_fruiting/` | `scene.py` (`CoupledFruitingScene.coupled_substep` — the authoritative loop), `builders.py`/`batched_build.py` (homogeneous `replicate()` + heterogeneous `add_world` builds), `proxy_coupling.py` (Warp mirror/harvest kernels, incl. batched stem harvest), `settle_then_weld.py` (two-build init), `vic_joint_torques*.py` (VIC control), `batched_layout.py` (`BatchedEnvLayout`) |
+| `apple_pick_sim/coupled_fruiting/` | `scene.py` (`CoupledFruitingScene.coupled_substep` — the authoritative loop), `builders.py` (`build_coupled_fruiting_fr3`, `build_heterogeneous_coupled_fruiting_fr3`), `batched_heterogeneous_*` (config-driven batched API), `proxy_coupling.py`, `settle_then_weld.py`, `vic_joint_torques*.py`, `batched_layout.py` |
 | `apple_pick_sim/robot/fr3_robot/` | FR3 USD import, controllers (direct-joint, EE velocity, impedance), `batched_template_ik.py` |
 | `apple_pick_sim/system_id/` | Fibonacci-hemisphere excitation, `quasi_static_trajectory.py`, `trajectory_store.py` (Parquet), `mmd*.py` |
 | `apple_pick_sim/digital_twin/` | `obs_io.py`, `from_obs.py` — rebuild scene geometry from observation JSON |
@@ -85,6 +85,7 @@ Organized by question, not by filename — each doc listed once, under its prima
 
 ### "How does the core plant + arm coupling work?"
 
+- **`docs/coupled-sim-api.md`** — **canonical public API** after pre-gym cleanup: runtime exports, builders, examples, FR3 requirements.
 - `docs/mujoco-vbd-coupling-architecture.md` — the two-`Model` split, ownership table, staggered substep protocol, sim-to-real gravity contract (M1). Read this first for any coupling work.
 - `docs/variable-impedance-teleop.md` — post-grasp VIC: total TCP wrench, joint-torque control, which gym envs are kinematic vs. dynamic.
 - `docs/WRENCH_READOUT.md` — fixed-joint wrench semantics, sign conventions, subtree cuts.

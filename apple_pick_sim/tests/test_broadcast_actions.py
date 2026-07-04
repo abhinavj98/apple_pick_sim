@@ -11,8 +11,7 @@ _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
-from conftest import COUPLED_SCENE_KW, RANGES_FIXTURE
-from apple_pick_sim.coupled_fruiting.builders import build_batched_coupled_fruiting_placeholder
+from conftest import RANGES_FIXTURE, build_two_env_fr3_batched, requires_fr3
 from apple_pick_sim.coupled_fruiting.broadcast_actions import (
     _broadcast_joint_q_host,
     broadcast_joint_q_from_world0,
@@ -20,18 +19,10 @@ from apple_pick_sim.coupled_fruiting.broadcast_actions import (
 from apple_pick_sim.fruiting_system import load_ranges
 
 
-def _two_env_placeholder_scene():
-    return build_batched_coupled_fruiting_placeholder(
-        load_ranges(RANGES_FIXTURE),
-        42,
-        num_envs=2,
-        device="cpu",
-        **COUPLED_SCENE_KW,
-    )
-
-
+@requires_fr3
 def test_broadcast_joint_q_device_path_matches_host_reference():
-    scene = _two_env_placeholder_scene()
+    ranges = load_ranges(RANGES_FIXTURE)
+    scene = build_two_env_fr3_batched(ranges, 42)
     layout = scene.layout
     assert layout is not None
     jq = scene.robot_model.joint_q.numpy().copy()
@@ -45,7 +36,7 @@ def test_broadcast_joint_q_device_path_matches_host_reference():
     scene.robot_state_0.joint_q.assign(jq)
     scene.robot_state_0.joint_qd.assign(jqd)
 
-    ref_scene = _two_env_placeholder_scene()
+    ref_scene = build_two_env_fr3_batched(ranges, 42)
     ref_jq = ref_scene.robot_model.joint_q.numpy().copy()
     ref_jqd = ref_scene.robot_model.joint_qd.numpy().copy()
     ref_jq[w0_slice] += 0.1

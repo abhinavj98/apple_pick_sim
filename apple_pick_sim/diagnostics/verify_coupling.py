@@ -20,8 +20,9 @@ import numpy as np
 import warp as wp
 
 from apple_pick_sim.coupling_force_debug import read_tcp_wrench, wrench_magnitudes
-from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_placeholder
+from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 from apple_pick_sim.fruiting_system import load_ranges
+from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.sim_device import resolve_sim_device
 
 
@@ -63,8 +64,10 @@ def run_verification(
     preview_rows: int,
 ) -> tuple[list[CouplingStepRecord], bool]:
     wp.init()
+    if not fr3_robot.fr3_assets_available():
+        raise SystemExit("FR3 assets missing; see assets/fr3/README.md")
     ranges = load_ranges(ranges_path)
-    scene = build_coupled_fruiting_placeholder(
+    scene = build_coupled_fruiting_fr3(
         ranges,
         seed=seed,
         device=resolve_sim_device(None),

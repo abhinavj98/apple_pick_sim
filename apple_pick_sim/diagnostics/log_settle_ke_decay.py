@@ -22,7 +22,7 @@ from apple_pick_sim.coupled_fruiting import (
     print_settle_stability_report,
     settle_stability_reports_from_cable,
 )
-from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_placeholder
+from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_fr3
 from apple_pick_sim.coupled_fruiting.settle_ke_decay import (
     DEFAULT_KE_ANALYSIS_TAIL_FRACTION,
     DEFAULT_KE_MIN_PEAKS,
@@ -107,7 +107,7 @@ def run_settle_ke_log(config: SettleKeLogConfig):
         fix_to_apple=False,
         robot_facing_weld=False,
     )
-    scene = build_heterogeneous_coupled_fruiting_placeholder(
+    scene = build_heterogeneous_coupled_fruiting_fr3(
         ranges,
         per_env_params,
         device=device,

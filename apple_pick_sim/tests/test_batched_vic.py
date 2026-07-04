@@ -15,7 +15,6 @@ import warp as wp
 
 pytest.importorskip("torch")
 
-from apple_pick_sim.coupled_fruiting.builders import build_batched_coupled_fruiting_fr3
 from apple_pick_sim.coupled_fruiting.vic_joint_torques_batched import (
     launch_apply_vic_joint_torques_batched,
     launch_compute_vic_wrenches_batched,
@@ -27,7 +26,7 @@ from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance_batched import (
     Fr3BatchedEEImpedanceController,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
-from conftest import COUPLED_SCENE_KW, RANGES_FIXTURE, requires_fr3
+from conftest import COUPLED_SCENE_KW, RANGES_FIXTURE, build_homogeneous_batched_fr3, requires_fr3
 
 _NUM_ENVS = 2
 _N_ARM_DOF = 7
@@ -35,12 +34,11 @@ _N_ARM_DOF = 7
 
 def _build_batched_scene():
     ranges = load_ranges(RANGES_FIXTURE)
-    return build_batched_coupled_fruiting_fr3(
+    return build_homogeneous_batched_fr3(
         ranges,
         42,
         device="cpu",
         num_envs=_NUM_ENVS,
-        robot_base_from_proxy=True,
         **COUPLED_SCENE_KW,
     )
 

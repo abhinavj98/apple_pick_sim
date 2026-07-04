@@ -81,6 +81,34 @@ def build_vbd_only(cf, ranges, seed: int, **kwargs):
     return build_coupled_fruiting_fr3(ranges, seed, vbd_only=True, **kwargs)
 
 
+def build_two_env_fr3_batched(ranges, seed: int, *, num_envs: int = 2, **kwargs):
+    """Two (or N) identical FR3 batched worlds via heterogeneous builder."""
+    return build_homogeneous_batched_fr3(ranges, seed, num_envs=num_envs, **kwargs)
+
+
+def build_homogeneous_batched_fr3(ranges, seed: int, *, num_envs: int = 2, **kwargs):
+    """Identical batched FR3 worlds (homogeneous topology from seed)."""
+    from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_fr3
+    from apple_pick_sim.fruiting_system import FruitingSystemParams, sample_params
+
+    kwargs.setdefault("enable_self_collisions", False)
+    kwargs.setdefault("base_pos", COUPLED_BASE_POS)
+    kwargs.setdefault("robot_base_pos", COUPLED_ROBOT_BASE_POS)
+    kwargs.setdefault("device", "cpu")
+    kwargs.setdefault("skip_ik_bootstrap", True)
+    kwargs.setdefault("defer_template_robot_bootstrap", True)
+    kwargs.pop("robot_base_from_proxy", None)
+    params = kwargs.pop("params", None)
+    if params is None:
+        params = sample_params(ranges, seed=seed)
+    elif isinstance(params, FruitingSystemParams):
+        pass
+    else:
+        raise TypeError(f"params must be FruitingSystemParams, got {type(params)}")
+    params_list = [params] * num_envs
+    return build_heterogeneous_coupled_fruiting_fr3(ranges, params_list, **kwargs)
+
+
 def new_direct_controller(scene, fr3_robot):
     """Kinematic FR3 arm: direct ``joint_q`` writes (accurate for force tests)."""
     scene.robot_kinematic_mode = True

@@ -40,9 +40,7 @@ from apple_pick_sim.coupled_fruiting import (
 )
 from apple_pick_sim.coupled_fruiting.builders import (
     build_coupled_fruiting_fr3,
-    build_coupled_fruiting_placeholder,
     build_heterogeneous_coupled_fruiting_fr3,
-    build_heterogeneous_coupled_fruiting_placeholder,
 )
 from apple_pick_sim.coupled_fruiting.settle_quasi_static import SettleStabilityReport
 from apple_pick_sim.fruiting_system import (
@@ -147,32 +145,18 @@ def _max_branch_speed(reports: tuple[SettleStabilityReport, ...]) -> float:
     return max(report.max_branch_speed_m_s for report in reports)
 
 
-def _gripper_for_robot(robot: str, *, fix_to_apple: bool) -> GripperProxyConfig:
-    if robot == "fr3":
-        return GripperProxyConfig(
-            mass=fr3_robot.EE_MASS_KG,
-            fix_to_apple=fix_to_apple,
-            robot_facing_weld=fix_to_apple,
-        )
+def _gripper_for_robot(*, fix_to_apple: bool) -> GripperProxyConfig:
     return GripperProxyConfig(
-        mass=PLACEHOLDER_EE_MASS_KG,
+        mass=fr3_robot.EE_MASS_KG,
         fix_to_apple=fix_to_apple,
         robot_facing_weld=fix_to_apple,
     )
 
 
-def _build_fn(robot: str, *, num_envs: int):
+def _build_fn(*, num_envs: int):
     if int(num_envs) == 1:
-        return (
-            build_coupled_fruiting_fr3
-            if robot == "fr3"
-            else build_coupled_fruiting_placeholder
-        )
-    return (
-        build_heterogeneous_coupled_fruiting_fr3
-        if robot == "fr3"
-        else build_heterogeneous_coupled_fruiting_placeholder
-    )
+        return build_coupled_fruiting_fr3
+    return build_heterogeneous_coupled_fruiting_fr3
 
 
 def _build_scene(
@@ -227,7 +211,7 @@ def run_settle_weld_trial(
     """Settle → weld → post-weld hold for one settle_substeps value."""
     t0 = time.perf_counter()
     num_envs = int(config.num_envs)
-    gripper_welded = _gripper_for_robot(config.robot, fix_to_apple=True)
+    gripper_welded = _gripper_for_robot(fix_to_apple=True)
     gripper_free = dataclasses.replace(
         gripper_welded, fix_to_apple=False, robot_facing_weld=False
     )
@@ -274,7 +258,7 @@ def run_settle_weld_trial(
         welded_scene=scene,
         settled_scene=settled,
         quiet_apple_proxy=True,
-        per_env_ik=config.robot == "fr3" and num_envs > 1,
+        per_env_ik=int(num_envs) > 1,
         per_world_proxy_offsets=getattr(scene, "per_world_proxy_offsets", None),
     )
     ik_results = tuple(getattr(scene, "settle_ik_envelope_results", None) or [])
@@ -349,7 +333,7 @@ def run_settle_weld_sweep(config: SettleWeldSweepConfig) -> list[SettleWeldTrial
     )
     sim_substeps = int(config.sim_substeps)
     sim_dt = (1.0 / 60.0) / sim_substeps
-    build_fn = _build_fn(config.robot, num_envs=num_envs)
+    build_fn = _build_fn(num_envs=num_envs)
     build_kw = dict(
         device=device,
         env_spacing=config.env_spacing,
@@ -361,7 +345,7 @@ def run_settle_weld_sweep(config: SettleWeldSweepConfig) -> list[SettleWeldTrial
     if config.verbose:
         print(f"ranges: {ranges_path}", flush=True)
         print(
-            f"robot={config.robot} device={device} num_envs={num_envs} seed={config.seed}",
+            f"robot=fr3 device={device} num_envs={num_envs} seed={config.seed}",
             flush=True,
         )
         print(
@@ -486,8 +470,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     robot = str(args.robot)
-    if robot == "fr3" and not fr3_robot.fr3_assets_available():
-        print("FR3 assets missing; use --robot placeholder or install assets/fr3.", file=sys.stderr)
+    if not fr3_robot.fr3_assets_available():
+        print("FR3 assets missing; see assets/fr3/README.md", file=sys.stderr)
         return 1
 
     config = SettleWeldSweepConfig(

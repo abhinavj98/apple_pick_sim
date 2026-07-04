@@ -16,10 +16,7 @@ from pathlib import Path
 
 import warp as wp
 
-from apple_pick_sim.coupled_fruiting.builders import (
-    build_coupled_fruiting_fr3,
-    build_coupled_fruiting_placeholder,
-)
+from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 from apple_pick_sim.fruiting_system import GripperProxyConfig, load_ranges
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.sim_device import resolve_sim_device
@@ -40,7 +37,6 @@ def _sync_device(device: str) -> None:
 
 
 def _build_scene(
-    robot: str,
     ranges: dict,
     seed: int,
     device: str,
@@ -50,18 +46,9 @@ def _build_scene(
 ):
     mj_kw: dict = {"disable_contacts": True, "use_mujoco_cpu": mujoco_use_cpu}
     gripper = GripperProxyConfig(fix_to_apple=fix_to_apple)
-    if robot == "fr3":
-        if not fr3_robot.fr3_assets_available():
-            raise SystemExit("FR3 assets missing; see assets/fr3/README.md")
-        return build_coupled_fruiting_fr3(
-            ranges,
-            seed,
-            device=device,
-            gripper_proxy=gripper,
-            mujoco_solver_kwargs=mj_kw,
-            mujoco_use_cpu=mujoco_use_cpu,
-        )
-    return build_coupled_fruiting_placeholder(
+    if not fr3_robot.fr3_assets_available():
+        raise SystemExit("FR3 assets missing; see assets/fr3/README.md")
+    return build_coupled_fruiting_fr3(
         ranges,
         seed,
         device=device,
@@ -73,7 +60,6 @@ def _build_scene(
 
 def run_benchmark(
     *,
-    robot: str,
     device: str,
     seed: int,
     warmup_substeps: int,
@@ -85,7 +71,6 @@ def run_benchmark(
     wp.init()
     ranges = load_ranges(_default_ranges_path())
     scene = _build_scene(
-        robot,
         ranges,
         seed,
         device,
@@ -121,12 +106,6 @@ def run_benchmark(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Benchmark coupled_substep throughput.")
-    parser.add_argument(
-        "--robot",
-        choices=("placeholder", "fr3"),
-        default="placeholder",
-        help="Robot model to build (default: placeholder).",
-    )
     parser.add_argument(
         "--device",
         default=None,
@@ -164,7 +143,6 @@ def main(argv: list[str] | None = None) -> int:
     mujoco_use_cpu = resolve_mujoco_use_cpu(device, mujoco_override)
 
     stats = run_benchmark(
-        robot=args.robot,
         device=device,
         seed=args.seed,
         warmup_substeps=args.warmup_substeps,
@@ -177,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     harvest = "stem" if args.fix_to_apple else "velocity-delta"
     mj_backend = "cpu" if mujoco_use_cpu else "warp"
     print(
-        f"robot={args.robot} device={device} seed={args.seed} "
+        f"robot=fr3 device={device} seed={args.seed} "
         f"mujoco={mj_backend} harvest={harvest}"
     )
     print(f"warmup={args.warmup_substeps} bench={args.bench_substeps} dt={stats['dt']:.6f} s")

@@ -200,7 +200,7 @@ def test_kinetic_energy_bounded_quiescent():
 @pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA not available")
 def test_fr3_coupled_substep_mujoco_gpu_finite():
     """Long horizon with MuJoCo Warp on CUDA (opt-in GPU backend)."""
-    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_fr3"])
+    import apple_pick_sim.coupled_fruiting as cf
     fs = __import__("apple_pick_sim.fruiting_system", fromlist=["load_ranges"])
     fr3_robot = __import__("apple_pick_sim.robot", fromlist=["fr3_robot"]).fr3_robot
     from conftest import RANGES_FIXTURE, build_coupled_fr3, run_coupled_substeps_direct_hold

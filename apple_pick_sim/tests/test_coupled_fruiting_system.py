@@ -135,9 +135,11 @@ def _max_branch_linear_speed_m_s(cable) -> float:
 def test_vbd_only_build_syncs_body_q_prev_with_state_on_fruiting_chain():
     """Post-build eval_fk must refresh SolverVBD.body_q_prev on the whole cable."""
     cf = _import_cf()
+    from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_placeholder
+
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = cf.build_coupled_fruiting_placeholder(
+    scene = build_coupled_fruiting_placeholder(
         ranges,
         43,
         vbd_only=True,

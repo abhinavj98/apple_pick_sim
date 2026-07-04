@@ -128,7 +128,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.5.2** | Planned | CEM θ loop |
 | **V.5.3** | Planned | Held-out validation; [M4] handoff |
 
-Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Legacy monolith (deprecated): `apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py`.
+Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`.
 
 **Consumers after V.5:** [M4] real-data validation; M2.3 / M2.2c parallel RL envs.
 
@@ -184,11 +184,9 @@ uv run --env-file pytest.env python -m pytest \
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 
-# [V].1 homogeneous batched smoke
+# [V].1 homogeneous batched (builders/tests only; no standalone example)
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_vectorized_coupled_fruiting.py -q
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --viewer null --num-frames 500 --num-envs 4 --fix-to-apple --controller direct --seed 42
 
 # Material-parameter sampling (V.2.1.3)
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_fruiting_system.py -q \

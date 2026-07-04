@@ -18,11 +18,11 @@ from pathlib import Path
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting import (
-    build_heterogeneous_coupled_fruiting_placeholder,
     print_settle_ke_decay_report,
     print_settle_stability_report,
     settle_stability_reports_from_cable,
 )
+from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_placeholder
 from apple_pick_sim.coupled_fruiting.settle_ke_decay import (
     DEFAULT_KE_ANALYSIS_TAIL_FRACTION,
     DEFAULT_KE_MIN_PEAKS,

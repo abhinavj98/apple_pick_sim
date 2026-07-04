@@ -16,7 +16,7 @@ from pathlib import Path
 
 import warp as wp
 
-from apple_pick_sim.coupled_fruiting import (
+from apple_pick_sim.coupled_fruiting.builders import (
     build_coupled_fruiting_fr3,
     build_coupled_fruiting_placeholder,
 )

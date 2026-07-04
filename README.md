@@ -176,30 +176,20 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py --robot placeholder --viewer null --num-frames 60
 ```
 
-### `example_batched_coupled_fruiting.py` (homogeneous batches)
+### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Batched coupled fruiting: **N** worlds via ``replicate()``, settle→weld init, then FR3 teleop via ``BatchedTemplateIK`` per-env scatter. This reference example uses the same keyboard velocity on all envs (homogeneous smoke). For **independent** per-env seeds, per-env material θ, and per-env actions, use ``example_batched_heterogeneous_coupled_sim.py`` (canonical) and **`docs/vectorized-coupled-fruiting.md`**. Gym migration on the batched backend is tracked in **`docs/ROADMAP.md`** ([V].3.3+).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. See **`docs/vectorized-coupled-fruiting.md`**; gym migration is tracked in **`docs/ROADMAP.md`** ([V].3.3+).
 
 ```bash
 # Headless smoke (settle→weld)
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --viewer null --num-frames 500 --num-envs 4 --fix-to-apple --seed 42
-
-# Interactive keyboard teleop
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --num-envs 4 --env-spacing 2.5 2.5 0 --fix-to-apple --controller direct \
-  --fr3-keyboard --viewer gl --seed 42
-
-# Fast robot for CI
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --viewer null --num-frames 120 --robot placeholder --num-envs 2 --fix-to-apple
-
-# Canonical heterogeneous batched entry point (independent per-env material θ, IK, actions)
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
-```
 
-Unmigrated CLI flags (including ``--inspect-settle``) remain on scripts under ``apple_pick_sim/examples/legacy/``.
+# Interactive keyboard teleop
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
+  --num-envs 4 --env-spacing 2.0 2.0 2.0 --controller direct \
+  --fr3-keyboard --viewer gl --seed 42
+```
 
 **FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):
 

@@ -15,7 +15,7 @@ import warp as wp
 
 pytest.importorskip("torch")
 
-from apple_pick_sim.coupled_fruiting import build_batched_coupled_fruiting_fr3
+from apple_pick_sim.coupled_fruiting.builders import build_batched_coupled_fruiting_fr3
 from apple_pick_sim.coupled_fruiting.vic_joint_torques_batched import (
     launch_apply_vic_joint_torques_batched,
     launch_compute_vic_wrenches_batched,

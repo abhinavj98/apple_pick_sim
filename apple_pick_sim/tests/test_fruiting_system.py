@@ -1492,11 +1492,14 @@ def test_example_coupled_fruiting_default_ranges_path_is_real_world_proxy_varian
     assert ex._default_ranges_path() == default_ranges_fixture_path()
 
 
-def test_example_batched_coupled_fruiting_default_ranges_path_is_real_world_proxy_variance():
-    from apple_pick_sim.examples import example_batched_coupled_fruiting as ex
+def test_example_batched_heterogeneous_coupled_sim_default_ranges_path_is_real_world_proxy_variance():
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
+        BatchedHeterogeneousCoupledSimConfig,
+    )
     from apple_pick_sim.fruiting_system import default_ranges_fixture_path
 
-    assert ex._default_ranges_path() == default_ranges_fixture_path()
+    cfg = BatchedHeterogeneousCoupledSimConfig.defaults()
+    assert cfg.domain_randomization.resolved_ranges_path() == default_ranges_fixture_path()
 
 
 def test_example_fruiting_system_enable_self_collision_parser_default():

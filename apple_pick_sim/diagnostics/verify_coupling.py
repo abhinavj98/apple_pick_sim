@@ -20,7 +20,7 @@ import numpy as np
 import warp as wp
 
 from apple_pick_sim.coupling_force_debug import read_tcp_wrench, wrench_magnitudes
-from apple_pick_sim.coupled_fruiting import build_coupled_fruiting_placeholder
+from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_placeholder
 from apple_pick_sim.fruiting_system import load_ranges
 from apple_pick_sim.sim_device import resolve_sim_device
 

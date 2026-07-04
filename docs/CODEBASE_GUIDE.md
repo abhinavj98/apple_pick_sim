@@ -68,8 +68,7 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | `apple_pick_sim/system_id/` | Fibonacci-hemisphere excitation, `quasi_static_trajectory.py`, `trajectory_store.py` (Parquet), `mmd*.py` |
 | `apple_pick_sim/digital_twin/` | `obs_io.py`, `from_obs.py` — rebuild scene geometry from observation JSON |
 | `apple_pick_sim/diagnostics/` | `verify_coupling.py`, `benchmark_coupling.py`, `sweep_zero_vic_stability.py` — standalone checks, not pytest |
-| `apple_pick_sim/examples/` | One runnable script per capability; `example_batched_heterogeneous_coupled_sim.py` is the canonical batched heterogeneous example; `legacy/` holds the deprecated pre–V.3.2 monolith |
-| `apple_pick_sim/examples/inspect_batched_heterogeneous_coupled_sim.py` | Dev-only visual inspector for `BatchedHeterogeneousCoupledSim`; not a user entry point |
+| `apple_pick_sim/examples/` | One runnable script per capability; `example_batched_heterogeneous_coupled_sim.py` is the canonical batched heterogeneous example |
 | `apple_pick_sim/fixtures/` | `fruiting_system_ranges_*.json` range files. **Missing:** `digital_twin_fixture_catalog.json` and its example obs JSON — see `docs/digital-twin.md` |
 | `apple_pick_gym/envs/` | `apple_pick_base_env.py` → `apple_pick_coupled_env.py` (kinematic) → `apple_pick_vic_env.py` (dynamic, joint-torque VIC) → `apple_pick_sysid_env.py`, `apple_pick_replay_env.py` |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |

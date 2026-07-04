@@ -145,12 +145,13 @@ def test_bootstrap_tcp_ik_retries_alternate_joint_q_when_first_seed_poor(capsys)
 
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
+    from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 
     ranges_fixture = (
         Path(__file__).resolve().parent.parent / "fixtures" / "fruiting_system_ranges_straight_rod_test.json"
     )
     ranges = fs.load_ranges(ranges_fixture)
-    scene = cf.build_coupled_fruiting_fr3(
+    scene = build_coupled_fruiting_fr3(
         ranges,
         7,
         enable_self_collisions=False,

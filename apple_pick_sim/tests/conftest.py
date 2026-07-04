@@ -53,6 +53,7 @@ def pytest_configure(config) -> None:
 
 def build_coupled_fr3(cf, ranges, seed: int, **kwargs):
     """Build FR3 coupled scene; intra-chain self-collision off unless overridden."""
+    from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
     from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
 
     kwargs.setdefault("enable_self_collisions", False)
@@ -65,7 +66,7 @@ def build_coupled_fr3(cf, ranges, seed: int, **kwargs):
     last_exc: Exception | None = None
     for try_seed in seeds:
         try:
-            return cf.build_coupled_fruiting_fr3(ranges, try_seed, **kwargs)
+            return build_coupled_fruiting_fr3(ranges, try_seed, **kwargs)
         except IKBootstrapConvergenceError as exc:
             last_exc = exc
     if last_exc is not None:
@@ -74,8 +75,10 @@ def build_coupled_fr3(cf, ranges, seed: int, **kwargs):
 
 
 def build_vbd_only(cf, ranges, seed: int, **kwargs):
+    from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
+
     kwargs.setdefault("enable_self_collisions", False)
-    return cf.build_coupled_fruiting_fr3(ranges, seed, vbd_only=True, **kwargs)
+    return build_coupled_fruiting_fr3(ranges, seed, vbd_only=True, **kwargs)
 
 
 def new_direct_controller(scene, fr3_robot):

@@ -59,11 +59,13 @@ from apple_pick_sim.coupling_force_debug import CouplingForceDebugRecorder
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.coupled_fruiting import (
     CoupledFruitingScene,
-    build_coupled_fruiting_fr3,
-    build_coupled_fruiting_placeholder,
     seed_fix_to_apple_from_settled,
     quiet_all_cable_bodies,
     settle_vbd_substeps,
+)
+from apple_pick_sim.coupled_fruiting.builders import (
+    build_coupled_fruiting_fr3,
+    build_coupled_fruiting_placeholder,
 )
 from apple_pick_sim.fruiting_system import (
     GripperProxyConfig,

@@ -17,11 +17,11 @@ if str(_TESTS_DIR) not in sys.path:
 
 from conftest import COUPLED_SCENE_KW, RANGES_FIXTURE, SUB_DT, requires_fr3
 from apple_pick_sim.coupled_fruiting import (
-    build_heterogeneous_coupled_fruiting_fr3,
     seed_fix_to_apple_from_settled,
     quiet_all_cable_bodies,
     settle_vbd_substeps,
 )
+from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_fr3
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     harvest_batched_stem_tension,
     harvest_stem_tension_for_tcp,

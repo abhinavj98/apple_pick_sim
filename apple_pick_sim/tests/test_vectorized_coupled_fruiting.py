@@ -20,11 +20,13 @@ from conftest import (
     requires_fr3,
 )
 from apple_pick_sim.fruiting_system import CoupledCableScene, GripperProxyConfig, load_ranges
-from apple_pick_sim.coupled_fruiting import (
-    broadcast_joint_q_from_world0,
+from apple_pick_sim.coupled_fruiting.builders import (
     build_batched_coupled_fruiting_fr3,
     build_batched_coupled_fruiting_placeholder,
     build_coupled_fruiting_placeholder,
+)
+from apple_pick_sim.coupled_fruiting import (
+    broadcast_joint_q_from_world0,
     seed_fix_to_apple_from_settled,
     quiet_all_cable_bodies,
     settle_vbd_substeps,

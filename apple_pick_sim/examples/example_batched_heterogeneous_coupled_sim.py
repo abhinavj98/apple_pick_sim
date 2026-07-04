@@ -4,9 +4,6 @@ Per-env heterogeneous DR, settle-then-weld, and vectorized coupled stepping live
 ``apple_pick_sim.coupled_fruiting``. This script wires argparse, teleop, and the
 Newton viewer loop only.
 
-The legacy monolith lives at ``legacy/example_batched_heterogeneous_coupled_fruiting.py``
-(deprecated; ``--inspect-settle`` only).
-
 Run from the repository root::
 
     uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \\

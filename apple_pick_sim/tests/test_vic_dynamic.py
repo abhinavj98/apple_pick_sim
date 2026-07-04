@@ -231,10 +231,12 @@ def _build_welded_direct(seed: int = 0):
 
 def _build_welded_scene(seed: int = 0):
     cf = _import_cf()
+    from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
+
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     gripper_kw = dict(mass=fr3_robot.EE_MASS_KG)
-    settled = cf.build_coupled_fruiting_fr3(
+    settled = build_coupled_fruiting_fr3(
         ranges,
         seed,
         vbd_only=True,
@@ -242,7 +244,7 @@ def _build_welded_scene(seed: int = 0):
         gripper_proxy=fs.GripperProxyConfig(fix_to_apple=False, **gripper_kw),
     )
     cf.settle_vbd_substeps(settled, substeps=60, dt=SUB_DT)
-    welded = cf.build_coupled_fruiting_fr3(
+    welded = build_coupled_fruiting_fr3(
         ranges,
         seed,
         **_BUILD_KW,

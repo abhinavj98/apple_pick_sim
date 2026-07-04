@@ -14,7 +14,7 @@ if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
 from conftest import COUPLED_SCENE_KW, RANGES_FIXTURE
-from apple_pick_sim.coupled_fruiting import build_batched_coupled_fruiting_placeholder
+from apple_pick_sim.coupled_fruiting.builders import build_batched_coupled_fruiting_placeholder
 from apple_pick_sim.coupled_fruiting.broadcast_actions import (
     _broadcast_joint_q_host,
     broadcast_joint_q_from_world0,

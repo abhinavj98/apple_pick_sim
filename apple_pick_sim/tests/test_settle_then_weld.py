@@ -11,6 +11,7 @@ from apple_pick_sim.robot.fr3_robot.placement import (
     IK_BOOTSTRAP_POS_TOL_M,
     IKBootstrapConvergenceError,
 )
+from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 from apple_pick_sim.tests.conftest import (
     COUPLED_BASE_POS,
     COUPLED_ROBOT_BASE_POS,
@@ -40,7 +41,7 @@ def _make_settle_then_weld(cf, fs, ranges, seed: int, *, settle_substeps: int):
     last_exc: Exception | None = None
     for try_seed in (seed, seed + 1, seed + 2, seed + 3):
         try:
-            settled = cf.build_coupled_fruiting_fr3(
+            settled = build_coupled_fruiting_fr3(
                 ranges,
                 try_seed,
                 vbd_only=True,
@@ -52,7 +53,7 @@ def _make_settle_then_weld(cf, fs, ranges, seed: int, *, settle_substeps: int):
             )
             cf.settle_vbd_substeps(settled, substeps=settle_substeps, dt=SUB_DT)
             cf.quiet_all_cable_bodies(settled.cable)
-            welded = cf.build_coupled_fruiting_fr3(
+            welded = build_coupled_fruiting_fr3(
                 ranges,
                 try_seed,
                 **_BUILD_KW,
@@ -114,7 +115,7 @@ def test_quiet_all_cable_bodies_zeros_twists_preserves_poses_and_aligns_q_prev()
     import apple_pick_sim.fruiting_system as fs
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    settled = cf.build_coupled_fruiting_fr3(
+    settled = build_coupled_fruiting_fr3(
         ranges,
         2,
         vbd_only=True,
@@ -145,7 +146,7 @@ def test_quiet_all_cable_bodies_before_seed_zeros_welded_chain_twists():
     import apple_pick_sim.fruiting_system as fs
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    settled = cf.build_coupled_fruiting_fr3(
+    settled = build_coupled_fruiting_fr3(
         ranges,
         2,
         vbd_only=True,
@@ -157,7 +158,7 @@ def test_quiet_all_cable_bodies_before_seed_zeros_welded_chain_twists():
     )
     cf.settle_vbd_substeps(settled, substeps=30, dt=SUB_DT)
     cf.quiet_all_cable_bodies(settled.cable)
-    welded = cf.build_coupled_fruiting_fr3(
+    welded = build_coupled_fruiting_fr3(
         ranges,
         2,
         **_BUILD_KW,
@@ -212,7 +213,7 @@ def test_seed_bootstrap_clears_proxy_forces():
     last_exc: Exception | None = None
     for try_seed in (2, 3, 4, 5):
         try:
-            settled = cf.build_coupled_fruiting_fr3(
+            settled = build_coupled_fruiting_fr3(
                 ranges,
                 try_seed,
                 vbd_only=True,
@@ -223,7 +224,7 @@ def test_seed_bootstrap_clears_proxy_forces():
                 ),
             )
             cf.settle_vbd_substeps(settled, substeps=20, dt=SUB_DT)
-            welded = cf.build_coupled_fruiting_fr3(
+            welded = build_coupled_fruiting_fr3(
                 ranges,
                 try_seed,
                 **_BUILD_KW,
@@ -254,7 +255,7 @@ def test_seed_raises_when_settled_proxy_unreachable_from_specified_origin():
     import apple_pick_sim.fruiting_system as fs
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    settled = cf.build_coupled_fruiting_fr3(
+    settled = build_coupled_fruiting_fr3(
         ranges,
         0,
         vbd_only=True,
@@ -268,7 +269,7 @@ def test_seed_raises_when_settled_proxy_unreachable_from_specified_origin():
     )
     cf.settle_vbd_substeps(settled, substeps=40, dt=SUB_DT)
 
-    welded = cf.build_coupled_fruiting_fr3(
+    welded = build_coupled_fruiting_fr3(
         ranges,
         0,
         **_BUILD_KW,
@@ -290,7 +291,7 @@ def test_welded_build_skip_ik_bootstrap_defers_tcp_alignment_to_seed():
     import apple_pick_sim.fruiting_system as fs
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    welded = cf.build_coupled_fruiting_fr3(
+    welded = build_coupled_fruiting_fr3(
         ranges,
         2,
         **_BUILD_KW,
@@ -314,7 +315,7 @@ def test_welded_build_skip_ik_bootstrap_defers_tcp_alignment_to_seed():
     last_seed_exc: Exception | None = None
     seeded = False
     for try_seed in (2, 3, 4, 5):
-        settled = cf.build_coupled_fruiting_fr3(
+        settled = build_coupled_fruiting_fr3(
             ranges,
             try_seed,
             vbd_only=True,
@@ -351,7 +352,7 @@ def test_build_raises_when_proxy_unreachable_from_specified_robot_base():
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
     with pytest.raises(IKBootstrapConvergenceError, match="did not converge"):
-        cf.build_coupled_fruiting_fr3(
+        build_coupled_fruiting_fr3(
             ranges,
             0,
             base_pos=(0.0, 5.0, 0.5),
@@ -384,7 +385,7 @@ def test_settle_vbd_substeps_gravity_ramp_updates_model():
     import apple_pick_sim.fruiting_system as fs
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    settled = cf.build_coupled_fruiting_fr3(
+    settled = build_coupled_fruiting_fr3(
         ranges,
         2,
         vbd_only=True,
@@ -410,7 +411,7 @@ def test_settle_vbd_substeps_gravity_ramp_false_unchanged():
     import apple_pick_sim.fruiting_system as fs
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    settled = cf.build_coupled_fruiting_fr3(
+    settled = build_coupled_fruiting_fr3(
         ranges,
         2,
         vbd_only=True,

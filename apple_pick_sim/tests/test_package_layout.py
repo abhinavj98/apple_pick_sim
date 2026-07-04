@@ -48,10 +48,11 @@ def test_examples_coupled_fruiting_importable():
     assert hasattr(ex, "_make_parser")
 
 
-def test_coupled_fruiting_public_build_api():
+def test_coupled_fruiting_public_runtime_api():
     from apple_pick_sim import coupled_fruiting as cf
 
-    assert callable(cf.build_coupled_fruiting_fr3)
+    assert callable(cf.build_batched_heterogeneous_scene)
+    assert callable(cf.BatchedHeterogeneousCoupledSim)
     assert callable(cf.settle_vbd_substeps)
 
 

@@ -25,11 +25,11 @@ from apple_pick_sim.fruiting_system import (
 from apple_pick_sim.fruiting_system.build import FRUITING_VBD_RIGID_JOINT_ANGULAR_KD
 from apple_pick_sim.fruiting_system.params import _fix_topology
 from apple_pick_sim.coupled_fruiting import (
-    build_heterogeneous_coupled_fruiting_fr3,
     seed_fix_to_apple_from_settled,
     quiet_all_cable_bodies,
     settle_vbd_substeps,
 )
+from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_fr3
 from apple_pick_sim.coupled_fruiting.batched_build import build_heterogeneous_coupled_cable_scene
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_POS_TOL_M

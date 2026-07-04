@@ -9,7 +9,7 @@ from apple_pick_sim.coupled_fruiting.batched_robot_status import (
     batched_robot_diagnostics,
     format_batched_robot_status_line,
 )
-from apple_pick_sim.coupled_fruiting import build_batched_coupled_fruiting_placeholder
+from apple_pick_sim.coupled_fruiting.builders import build_batched_coupled_fruiting_placeholder
 from apple_pick_sim.fruiting_system import load_ranges
 from apple_pick_sim.tests.conftest import COUPLED_SCENE_KW
 

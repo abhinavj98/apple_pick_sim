@@ -31,16 +31,18 @@ from typing import Any
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting import (
-    build_coupled_fruiting_fr3,
-    build_coupled_fruiting_placeholder,
-    build_heterogeneous_coupled_fruiting_fr3,
-    build_heterogeneous_coupled_fruiting_placeholder,
     print_envelope_coverage_report,
     print_settle_stability_report,
     quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
     settle_stability_reports_from_cable,
     settle_vbd_substeps,
+)
+from apple_pick_sim.coupled_fruiting.builders import (
+    build_coupled_fruiting_fr3,
+    build_coupled_fruiting_placeholder,
+    build_heterogeneous_coupled_fruiting_fr3,
+    build_heterogeneous_coupled_fruiting_placeholder,
 )
 from apple_pick_sim.coupled_fruiting.settle_quasi_static import SettleStabilityReport
 from apple_pick_sim.fruiting_system import (

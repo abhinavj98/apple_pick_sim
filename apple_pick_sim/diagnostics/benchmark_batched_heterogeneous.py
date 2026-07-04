@@ -27,13 +27,15 @@ from typing import Any
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting import (
+    quiet_all_cable_bodies,
+    seed_fix_to_apple_from_settled,
+    settle_vbd_substeps,
+)
+from apple_pick_sim.coupled_fruiting.builders import (
     build_coupled_fruiting_fr3,
     build_coupled_fruiting_placeholder,
     build_heterogeneous_coupled_fruiting_fr3,
     build_heterogeneous_coupled_fruiting_placeholder,
-    quiet_all_cable_bodies,
-    seed_fix_to_apple_from_settled,
-    settle_vbd_substeps,
 )
 from apple_pick_sim.fruiting_system import (
     PLACEHOLDER_EE_MASS_KG,

@@ -1,8 +1,8 @@
 # GPU coupling architecture and optimization
 
-**Last updated:** 2026-06-09 (single-env / non-batched hot path only)
+**Last updated:** 2026-07-03 (adds batched heterogeneous hot-path notes; single-env sections unchanged)
 
-**Scope note:** this document predates the batched heterogeneous vectorization work and does not cover the multi-env GPU hot path (batched stem harvest, batched IK, batched teleop). For that, see `docs/vectorized-coupled-fruiting.md` and `docs/heterogeneous-batched-vectorization-audit.md`.
+**Scope note:** Single-env sections below describe the original coupled picking path. For the **multi-env batched heterogeneous** GPU hot path (`BatchedHeterogeneousCoupledSim`), see `docs/vectorized-coupled-fruiting.md`, `docs/heterogeneous-batched-vectorization-audit.md`, and design spec `docs/superpowers/specs/2026-07-03-batched-gpu-hot-path-design.md`.
 
 ## Behavior summary
 
@@ -11,6 +11,26 @@ Apple Pick Sim runs on **Newton + NVIDIA Warp**. The **coupled picking hot path*
 Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → mirror TCP to proxy (± apple) → VBD cable step → harvest wrench at TCP**.
 
 **Default device:** `cuda:0` when available (`apple_pick_sim/sim_device.py`). Override with `--device cpu` or `APPLE_PICK_SIM_DEVICE=cpu`.
+
+---
+
+## Batched heterogeneous hot path (PR2, CUDA + FR3)
+
+`BatchedHeterogeneousCoupledSim.step()` with `defaults()` and FR3 assets keeps the substep loop fully on device. Frame-rate teleop reads batched actions from a Torch buffer and uploads twists without per-env host round-trips.
+
+| Stage | Module | Mechanism |
+|-------|--------|-----------|
+| Action clip | `batched_action_twists.clip_action_tensor` | Torch vectorized clamp |
+| Action→twist | `batched_action_twists.upload_batched_twists_from_actions` | `wp.from_torch` + `wp.copy` |
+| Teleop frame | `ee_*_batched.run_coupled_teleop_frame_from_actions` | Batched IK + scatter |
+| VIC torques | `vic_joint_torques_batched.py` | `wp.to_torch(joint_q)` |
+| Settle seed | `settle_seed_device.py` | Proxy alignment, cable copy, zero twists |
+| Joint broadcast | `broadcast_device.py` | Warp scatter (init + placeholder) |
+| Physics substep | `scene.coupled_substep` | Unchanged — GPU |
+
+**Still CPU (acceptable):** keyboard teleop, `velocity_for_world` callbacks, placeholder world-0 nudge on CPU device, debug/viewer `.numpy()` readouts, checkpoint `body_q` capture (once at build).
+
+**Placeholder robot:** test-only / explicit `robot.kind='placeholder'` or FR3 asset fallback; not used in production `defaults()` when assets are present.
 
 ---
 
@@ -37,7 +57,7 @@ Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → 
 | `example_coupled_fruiting.py` viewer / plots | Debug; `.numpy()` after step |
 | `ApplePickCoupledEnv` observations | `measure_fruiting_forces` + `.numpy()` readouts each step |
 | `CouplingForceDebugRecorder` | Opt-in debug |
-| `settle_then_weld.seed_fix_to_apple_from_settled` | Copies cable state via NumPy between two builds |
+| `settle_then_weld.seed_fix_to_apple_from_settled` | Copies cable state via NumPy between two builds (CPU builds); CUDA uses `settle_seed_device.py` |
 | Tests (most) | Correctness checks; parity tests compare CPU reference vs GPU |
 
 **Build note:** `build_coupled_fruiting_fr3` calls `wp.synchronize()` after cable FK before reading proxy pose for FR3 placement (avoids stale GPU reads).
@@ -158,9 +178,17 @@ Pattern: `example_apple_stem.py` — capture `simulate()` loop, host readouts **
 | `test_explicit_apple_load.py` | Explicit apple weight force/torque |
 | `test_cuda_graph.py` | Headless graph smoke (CUDA only) |
 | `test_settle_then_weld.py` | Two-build initialization |
+| `test_batched_action_twists.py` | Device action upload + clip |
+| `test_broadcast_device.py` | GPU joint broadcast parity |
+| `test_batched_heterogeneous_coupled_sim.py` | Batched sim smoke, FR3 per-env actions, settle cache |
 | `apple_pick_gym/tests/` | Env API + observation shapes |
 
 ```bash
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_batched_heterogeneous_coupled_sim.py \
+  apple_pick_sim/tests/test_batched_action_twists.py \
+  apple_pick_sim/tests/test_broadcast_device.py -q
+
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/ -q -m "not slow"
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/ -m slow -q
 ```

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -38,6 +39,7 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
         ranges_path: Path | str | None = None,
         topology_seed: int = 42,
         use_settle_cache: bool = True,
+        per_env_params: Sequence[Any] | None = None,
     ) -> None:
         if render_mode not in (None, "none"):
             raise ValueError("Only headless operation is supported (render_mode=None).")
@@ -71,15 +73,23 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
         cfg.validate()
 
         ranges = load_ranges(self._ranges_path)
-        per_env_params = sample_heterogeneous_params_list(
-            ranges,
-            topology_seed=self._topology_seed,
-            num_envs=int(num_envs),
-        )
+        if per_env_params is not None:
+            params_list = list(per_env_params)
+            if len(params_list) != int(num_envs):
+                raise ValueError(
+                    f"per_env_params length ({len(params_list)}) must match "
+                    f"num_envs ({num_envs})"
+                )
+        else:
+            params_list = sample_heterogeneous_params_list(
+                ranges,
+                topology_seed=self._topology_seed,
+                num_envs=int(num_envs),
+            )
 
         self._sim = BatchedHeterogeneousCoupledSim(
             cfg,
-            per_env_params,
+            params_list,
             ranges,
             use_settle_cache=use_settle_cache,
         )

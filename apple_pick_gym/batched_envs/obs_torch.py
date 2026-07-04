@@ -74,3 +74,42 @@ def legacy_v3_numpy_from_batched(obs: dict[str, Any], junction_names: list[str])
         "tcp_velocity": obs["tcp_velocity"][n].detach().cpu().numpy(),
         "ft_wrist": obs["ft_wrist"][n].detach().cpu().numpy(),
     }
+
+def sysid_numpy_obs_from_batched(
+    obs: dict[str, Any],
+    junction_names: list[str],
+    env_idx: int,
+) -> dict[str, Any]:
+    """Map batched sys-ID torch obs to legacy v3 numpy dict for one env index."""
+    import numpy as np
+
+    n = int(env_idx)
+    out = legacy_v3_numpy_from_batched(obs, junction_names)
+    # legacy helper always reads env 0; rebuild for arbitrary index.
+    woody_start: dict[str, np.ndarray] = {}
+    woody_end: dict[str, np.ndarray] = {}
+    woody_force_parts: list[np.ndarray] = []
+    for name in junction_names:
+        anchors = obs["woody_part_info"][name]["anchors_pos"][n].detach().cpu().numpy()
+        woody_start[name] = np.asarray(anchors[:3], dtype=np.float32)
+        woody_end[name] = np.asarray(anchors[3:], dtype=np.float32)
+        woody_force_parts.append(
+            obs["woody_part_info"][name]["anchor_force"][n].detach().cpu().numpy()
+        )
+    out["woody_part_start_pos"] = woody_start
+    out["woody_part_end_pos"] = woody_end
+    out["woody_part_force"] = np.concatenate(woody_force_parts, dtype=np.float32)
+    out["apple_pos"] = obs["apple_pos"][n].detach().cpu().numpy()
+    out["tcp_force"] = obs["tcp_force"][n].detach().cpu().numpy()
+    out["tcp_velocity"] = obs["tcp_velocity"][n].detach().cpu().numpy()
+    out["ft_wrist"] = obs["ft_wrist"][n].detach().cpu().numpy()
+    out["raw_ft_wrist"] = obs["raw_ft_wrist"][n].detach().cpu().numpy()
+    out["tcp_pos"] = obs["tcp_pos"][n].detach().cpu().numpy()
+    out["tcp_quat"] = obs["tcp_quat"][n].detach().cpu().numpy()
+    out["apple_quat"] = obs["apple_quat"][n].detach().cpu().numpy()
+    out["robot_joint_q"] = obs["robot_joint_q"][n].detach().cpu().numpy()
+    out["excitation_type"] = int(obs["excitation_type"][n].detach().cpu().item())
+    out["excitation_f_inst"] = float(obs["excitation_f_inst"][n].detach().cpu().item())
+    out["excitation_direction"] = obs["excitation_direction"][n].detach().cpu().numpy()
+    return out
+

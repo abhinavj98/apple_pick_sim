@@ -11,15 +11,6 @@ from apple_pick_sim.coupled_fruiting.bootstrap import (
     bootstrap_articulated_tcp_from_proxy,
     bootstrap_tcp_joint_from_proxy,
 )
-from apple_pick_sim.coupled_fruiting.builders import (
-    build_batched_coupled_fruiting_fr3,
-    build_batched_coupled_fruiting_placeholder,
-    build_coupled_fruiting_fr3,
-    build_coupled_fruiting_placeholder,
-    build_heterogeneous_coupled_fruiting_fr3,
-    build_heterogeneous_coupled_fruiting_placeholder,
-    build_placeholder_tcp_robot_model,
-)
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_build import (
     BatchedHeterogeneousBuildResult,
     build_batched_heterogeneous_scene,
@@ -110,13 +101,6 @@ __all__ = [
     "bootstrap_articulated_tcp_from_proxy",
     "bootstrap_tcp_joint_from_proxy",
     "broadcast_joint_q_from_world0",
-    "build_batched_coupled_fruiting_fr3",
-    "build_batched_coupled_fruiting_placeholder",
-    "build_coupled_fruiting_fr3",
-    "build_coupled_fruiting_placeholder",
-    "build_heterogeneous_coupled_fruiting_fr3",
-    "build_heterogeneous_coupled_fruiting_placeholder",
-    "build_placeholder_tcp_robot_model",
     "SettleKeAnalysisConfig",
     "SettleKeDecayReport",
     "SettleKeRecorder",

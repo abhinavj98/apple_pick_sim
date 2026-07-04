@@ -28,7 +28,7 @@ flowchart LR
 - `num_envs = N`; cable + robot via `ModelBuilder.replicate(N, spacing=(0,0,0))` (all worlds co-located in physics).
 - **`env_spacing`** is for **viewer** separation only — see [Co-located physics vs viewer spacing](#co-located-physics-vs-viewer-spacing).
 - **`GripperProxyConfig(fix_to_apple=False)`** — gripper proxy is **not** welded to the apple.
-- Each world is a full stack: **VBD fruiting system + MuJoCo FR3** (or placeholder TCP for smoke).
+- Each world is a full stack: **VBD fruiting system + MuJoCo FR3** (FR3 assets required).
 - Build with **`vbd_only=True`** when this scene exists only for settling (no MuJoCo step during settle).
 - Attach `BatchedEnvLayout` and `ProxyBodyRegistry` `{(tcp_w, proxy_w) for w in 0..N-1}`.
 
@@ -36,7 +36,7 @@ flowchart LR
 
 - Run **`settle_vbd_substeps(scene, substeps, dt)`** on the free batched scene (or on the built scene when not using settle-then-weld).
 - All **N** worlds advance together on the GPU; each fruiting system relaxes under gravity with a free proxy.
-- Optional linear gravity ramp (0 → −9.81 m/s² over all settle substeps) via `gravity_ramp=True` or `--settle-gravity-ramp` on examples (default: off). In the legacy monolith (`legacy/example_batched_heterogeneous_coupled_fruiting.py`), any `--settle-substeps > 0` runs settle in all modes (`--fix-to-apple`, `--no-fix-to-apple`, `--only-vbd`). With `--no-fix-to-apple` and `--viewer gl`, settle is **animated** in the viewer before teleop (headless/null viewers still settle during build). The canonical thin example (`example_batched_heterogeneous_coupled_sim.py`) settles during build only.
+- Optional linear gravity ramp (0 → −9.81 m/s² over all settle substeps) via `gravity_ramp=True` or `--settle-gravity-ramp` (default: off). The canonical example (`example_batched_heterogeneous_coupled_sim.py`) runs settle during build via `build_batched_heterogeneous_scene`.
 - Default settle length matches single-env coupled fruiting (`--settle-substeps`, typically 1000). Soft DR fixtures may need more substeps: full g applies only on the final substep of the ramp.
 
 ### 3. Build batched welded scene and seed from settled state
@@ -55,7 +55,7 @@ flowchart LR
 - **`Fr3BatchedEEDirectJointController`** or **`Fr3BatchedEEVelocityController`** (`--controller direct` or `ee`).
 - **FR3 runtime IK** follows Newton **`example_ik_cube_stacking.py`**: `BatchedTemplateIK` on `ik_template_robot_model` with **`n_problems = N`**, per-world TCP targets, then **`scatter_to_model`** into each world's `joint_q` slice. This is **not** “solve one IK and broadcast `joint_q`.”
 - **`--fr3-keyboard --viewer gl`**: the reference example feeds the **same** keyboard/scripted velocity to every env (homogeneous smoke). For **different** actions per arm, pass **`velocity_for_world=lambda w: …`** to the batched controller (see `test_batched_fr3_per_env_velocity_diverges`).
-- **Placeholder TCP** (`--robot placeholder`) still nudges world 0 and calls **`broadcast_joint_q_from_world0`** each frame — homogeneous only.
+- **FR3 teleop** uses per-env IK scatter via `BatchedTemplateIK`; `broadcast_joint_q_from_world0` remains for bootstrap/tests only — not the heterogeneous FR3 step path.
 - Inner loop: `coupled_substep` (MuJoCo → mirror TCP→proxy+apple → VBD → stem harvest).
 
 **Not in this flow:** batched VIC, `--only-vbd` / `--only-mjc`, free-proxy velocity-delta harvest as the batched default, or building welded without a prior free settle.
@@ -200,7 +200,7 @@ Runtime stepping remains vectorized: `settle_vbd_substeps`, `coupled_substep`, a
 
 ---
 
-In the batched example (`example_batched_coupled_fruiting.py`), all **N** worlds occupy the **same physical coordinates** in simulation, but the Newton GL / Viser viewer arranges them in a **grid** so they are easy to inspect. This is intentional and matches Newton’s multi-world guidance ([`newton/docs/concepts/worlds.rst`](../newton/docs/concepts/worlds.rst), `ModelBuilder.replicate` docstring).
+In batched coupled runs (`example_batched_heterogeneous_coupled_sim.py`), all **N** worlds occupy the **same physical coordinates** in simulation, but the Newton GL / Viser viewer arranges them in a **grid** so they are easy to inspect. This is intentional and matches Newton’s multi-world guidance ([`newton/docs/concepts/worlds.rst`](../newton/docs/concepts/worlds.rst), `ModelBuilder.replicate` / `add_world` docstrings).
 
 #### Physics build (co-located)
 
@@ -339,9 +339,7 @@ Settled-state cache: `settled_checkpoint.py`. Tests: `test_batched_heterogeneous
 | `apple_pick_sim/coupled_fruiting/scene.py` | `coupled_substep` ordering |
 | `apple_pick_sim/robot/fr3_robot/batched_template_ik.py` | Batched template IK |
 | `apple_pick_sim/robot/fr3_robot/controllers/*_batched.py` | Batched teleop controllers |
-| `apple_pick_sim/examples/example_batched_coupled_fruiting.py` | Reference implementation of the canonical homogeneous flow |
 | `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py` | Canonical batched heterogeneous entry point (thin CLI + `BatchedHeterogeneousCoupledSim`) |
-| `apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py` | Deprecated pre–V.3.2 monolith (`--inspect-settle`, animated settle, unmigrated flags) |
 
 ---
 
@@ -400,19 +398,15 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_vectorized_coupled_fruiting.py -q
 
 # Headless multi-env smoke (settle→weld)
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --viewer null --num-frames 500 --num-envs 4 --fix-to-apple --controller direct --seed 42
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
+  --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 
-# Interactive keyboard teleop (canonical flow)
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --num-envs 4 --env-spacing 2.5 2.5 0 --fix-to-apple --controller direct \
+# Interactive keyboard teleop
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
+  --num-envs 4 --env-spacing 2.0 2.0 2.0 --controller direct \
   --fr3-keyboard --viewer gl --seed 42
 
-# Fast robot for CI
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --viewer null --num-frames 120 --robot placeholder --num-envs 2 --fix-to-apple
-
-# Heterogeneous batched (build-time DR; default settle→weld)
+# Heterogeneous batched tests (build-time DR; default settle→weld)
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py -q
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \

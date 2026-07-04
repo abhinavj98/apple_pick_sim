@@ -9,26 +9,14 @@ from apple_pick_sim.coupled_fruiting.batched_robot_status import (
     batched_robot_diagnostics,
     format_batched_robot_status_line,
 )
-from apple_pick_sim.coupled_fruiting import build_batched_coupled_fruiting_placeholder
 from apple_pick_sim.fruiting_system import load_ranges
-from apple_pick_sim.tests.conftest import COUPLED_SCENE_KW
+from apple_pick_sim.tests.conftest import RANGES_FIXTURE, build_two_env_fr3_batched, requires_fr3
 
 
-def _two_env_placeholder_scene():
-    ranges = load_ranges(
-        "apple_pick_sim/fixtures/fruiting_system_ranges_example_variance_soft.json"
-    )
-    return build_batched_coupled_fruiting_placeholder(
-        ranges,
-        42,
-        num_envs=2,
-        device="cpu",
-        **COUPLED_SCENE_KW,
-    )
-
-
+@requires_fr3
 def test_batched_robot_diagnostics_per_world_joint_q():
-    scene = _two_env_placeholder_scene()
+    ranges = load_ranges(RANGES_FIXTURE)
+    scene = build_two_env_fr3_batched(ranges, 42)
     layout = scene.layout
     assert layout is not None
 

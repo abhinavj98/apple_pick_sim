@@ -27,12 +27,12 @@ import warp as wp
 
 from apple_pick_sim.coupled_fruiting.scene import DEFAULT_STEM_COUPLING_GAIN
 from apple_pick_sim.coupled_fruiting import (
-    build_heterogeneous_coupled_fruiting_fr3,
     quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
     settle_stability_reports_from_cable,
     settle_vbd_substeps,
 )
+from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_fr3
 from apple_pick_sim.coupled_fruiting.settle_quasi_static import (
     SettleStabilityReport,
     print_settle_stability_report,

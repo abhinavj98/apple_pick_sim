@@ -48,10 +48,24 @@ def test_examples_coupled_fruiting_importable():
     assert hasattr(ex, "_make_parser")
 
 
-def test_coupled_fruiting_public_build_api():
+def test_removed_placeholder_builders_not_exported():
+    import apple_pick_sim.coupled_fruiting.builders as builders
+
+    for name in (
+        "build_coupled_fruiting_placeholder",
+        "build_batched_coupled_fruiting_fr3",
+        "build_batched_coupled_fruiting_placeholder",
+        "build_heterogeneous_coupled_fruiting_placeholder",
+        "build_placeholder_tcp_robot_model",
+    ):
+        assert not hasattr(builders, name), f"{name} should be removed"
+
+
+def test_coupled_fruiting_public_runtime_api():
     from apple_pick_sim import coupled_fruiting as cf
 
-    assert callable(cf.build_coupled_fruiting_fr3)
+    assert callable(cf.build_batched_heterogeneous_scene)
+    assert callable(cf.BatchedHeterogeneousCoupledSim)
     assert callable(cf.settle_vbd_substeps)
 
 

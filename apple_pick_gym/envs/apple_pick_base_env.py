@@ -356,8 +356,9 @@ class ApplePickBaseEnv(gym.Env, ABC):
     ) -> Any:
         """Lightweight cable-only scene for apple pose before welded rebuild."""
         import apple_pick_sim.coupled_fruiting as cf
+        from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 
-        return cf.build_coupled_fruiting_fr3(
+        return build_coupled_fruiting_fr3(
             ranges,
             scene_seed,
             vbd_only=True,
@@ -373,6 +374,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
         injected_params: Any | None = None,
     ) -> None:
         import apple_pick_sim.coupled_fruiting as cf
+        from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 
         build_kw = self._coupled_build_kwargs(params=injected_params)
 
@@ -387,7 +389,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
             self._pending_weld_direction = self._weld_direction_before_fix_to_apple_build(
                 settled
             )
-            self._scene = cf.build_coupled_fruiting_fr3(
+            self._scene = build_coupled_fruiting_fr3(
                 ranges,
                 scene_seed,
                 **build_kw,
@@ -411,7 +413,7 @@ class ApplePickBaseEnv(gym.Env, ABC):
                 self._pending_weld_direction = self._weld_direction_before_fix_to_apple_build(
                     probe
                 )
-            self._scene = cf.build_coupled_fruiting_fr3(
+            self._scene = build_coupled_fruiting_fr3(
                 ranges,
                 scene_seed,
                 **build_kw,

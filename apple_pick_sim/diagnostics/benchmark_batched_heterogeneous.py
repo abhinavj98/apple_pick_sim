@@ -27,16 +27,15 @@ from typing import Any
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting import (
-    build_coupled_fruiting_fr3,
-    build_coupled_fruiting_placeholder,
-    build_heterogeneous_coupled_fruiting_fr3,
-    build_heterogeneous_coupled_fruiting_placeholder,
     quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
     settle_vbd_substeps,
 )
+from apple_pick_sim.coupled_fruiting.builders import (
+    build_coupled_fruiting_fr3,
+    build_heterogeneous_coupled_fruiting_fr3,
+)
 from apple_pick_sim.fruiting_system import (
-    PLACEHOLDER_EE_MASS_KG,
     GripperProxyConfig,
     default_ranges_fixture_path,
     load_ranges,
@@ -86,32 +85,18 @@ def _phase(name: str, results: dict[str, float], device: str):
             _nvtx.pop_range()
 
 
-def _gripper_for_robot(robot: str, *, fix_to_apple: bool) -> GripperProxyConfig:
-    if robot == "fr3":
-        return GripperProxyConfig(
-            mass=fr3_robot.EE_MASS_KG,
-            fix_to_apple=fix_to_apple,
-            robot_facing_weld=fix_to_apple,
-        )
+def _gripper_for_robot(*, fix_to_apple: bool) -> GripperProxyConfig:
     return GripperProxyConfig(
-        mass=PLACEHOLDER_EE_MASS_KG,
+        mass=fr3_robot.EE_MASS_KG,
         fix_to_apple=fix_to_apple,
         robot_facing_weld=fix_to_apple,
     )
 
 
-def _build_fn(robot: str, *, num_envs: int):
+def _build_fn(*, num_envs: int):
     if int(num_envs) == 1:
-        return (
-            build_coupled_fruiting_fr3
-            if robot == "fr3"
-            else build_coupled_fruiting_placeholder
-        )
-    return (
-        build_heterogeneous_coupled_fruiting_fr3
-        if robot == "fr3"
-        else build_heterogeneous_coupled_fruiting_placeholder
-    )
+        return build_coupled_fruiting_fr3
+    return build_heterogeneous_coupled_fruiting_fr3
 
 
 def _build_scene(
@@ -165,7 +150,7 @@ def run_profile(
     ranges_path: Path | str | None = None,
     seed: int = 42,
     num_envs: int = 4,
-    robot: str = "placeholder",
+    robot: str = "fr3",
     device: str | None = None,
     env_spacing: tuple[float, float, float] = (2.0, 2.0, 2.0),
     settle_substeps: int = 5000,
@@ -186,8 +171,8 @@ def run_profile(
         ranges, topology_seed=int(seed), num_envs=int(num_envs)
     )
 
-    build_fn = _build_fn(robot, num_envs=int(num_envs))
-    gripper_welded = _gripper_for_robot(robot, fix_to_apple=True)
+    build_fn = _build_fn(num_envs=int(num_envs))
+    gripper_welded = _gripper_for_robot(fix_to_apple=True)
     gripper_free = dataclasses.replace(gripper_welded, fix_to_apple=False, robot_facing_weld=False)
     build_kw = dict(
         device=resolved_device,
@@ -236,7 +221,7 @@ def run_profile(
             welded_scene=scene,
             settled_scene=settled,
             quiet_apple_proxy=True,
-            per_env_ik=robot == "fr3" and int(num_envs) > 1,
+            per_env_ik=int(num_envs) > 1,
             per_world_proxy_offsets=getattr(scene, "per_world_proxy_offsets", None),
         )
 
@@ -339,7 +324,6 @@ def main(argv: list[str] | None = None) -> int:
         default=[2.0, 2.0, 2.0],
     )
     parser.add_argument("--device", default=None, help="Warp device (default: cuda:0 when available).")
-    parser.add_argument("--robot", choices=("placeholder", "fr3"), default="fr3")
     parser.add_argument("--settle-substeps", type=int, default=5000)
     parser.add_argument("--sim-substeps", type=int, default=15)
     parser.add_argument("--warmup-frames", type=int, default=30)
@@ -354,8 +338,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mujoco_cpu and args.mujoco_gpu:
         raise SystemExit("--mujoco-cpu and --mujoco-gpu are mutually exclusive")
 
-    robot = str(args.robot)
-    if robot == "fr3" and not fr3_robot.fr3_assets_available():
+    if not fr3_robot.fr3_assets_available():
         raise SystemExit("FR3 assets missing; see assets/fr3/README.md")
 
     device = resolve_sim_device(args.device)
@@ -366,7 +349,6 @@ def main(argv: list[str] | None = None) -> int:
         ranges_path=args.json,
         seed=int(args.seed),
         num_envs=int(args.num_envs),
-        robot=robot,
         device=device,
         env_spacing=tuple(float(v) for v in args.env_spacing),
         settle_substeps=int(args.settle_substeps),

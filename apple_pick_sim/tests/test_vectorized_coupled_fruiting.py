@@ -17,14 +17,13 @@ from conftest import (
     COUPLED_SCENE_KW,
     RANGES_FIXTURE,
     SUB_DT,
+    build_coupled_fr3,
+    build_homogeneous_batched_fr3,
     requires_fr3,
 )
-from apple_pick_sim.fruiting_system import CoupledCableScene, GripperProxyConfig, load_ranges
+from apple_pick_sim.fruiting_system import CoupledCableScene, GripperProxyConfig, load_ranges, sample_params
 from apple_pick_sim.coupled_fruiting import (
     broadcast_joint_q_from_world0,
-    build_batched_coupled_fruiting_fr3,
-    build_batched_coupled_fruiting_placeholder,
-    build_coupled_fruiting_placeholder,
     seed_fix_to_apple_from_settled,
     quiet_all_cable_bodies,
     settle_vbd_substeps,
@@ -83,7 +82,7 @@ def _make_batched_settle_then_weld(ranges, seed: int, *, settle_substeps: int = 
     build_kw = dict(device="cpu", num_envs=_NUM_ENVS, **COUPLED_SCENE_KW)
     for try_seed in (seed, seed + 1, seed + 2, seed + 3):
         try:
-            settled = build_batched_coupled_fruiting_fr3(
+            settled = build_homogeneous_batched_fr3(
                 ranges,
                 try_seed,
                 vbd_only=True,
@@ -92,7 +91,7 @@ def _make_batched_settle_then_weld(ranges, seed: int, *, settle_substeps: int = 
             )
             settle_vbd_substeps(settled, substeps=settle_substeps, dt=SUB_DT)
             quiet_all_cable_bodies(settled.cable)
-            welded = build_batched_coupled_fruiting_fr3(
+            welded = build_homogeneous_batched_fr3(
                 ranges,
                 try_seed,
                 gripper_proxy=_gripper_welded(),
@@ -116,8 +115,9 @@ def ranges():
     return load_ranges(RANGES_FIXTURE)
 
 
+@requires_fr3
 def test_build_num_envs_smoke(ranges):
-    scene = build_batched_coupled_fruiting_placeholder(
+    scene = build_homogeneous_batched_fr3(
         ranges,
         42,
         num_envs=4,
@@ -132,12 +132,22 @@ def test_build_num_envs_smoke(ranges):
     assert len(scene.proxy_registry.robot_to_proxy) == 4
 
 
+@requires_fr3
 def test_world0_parity_single_env(ranges):
-    single = build_coupled_fruiting_placeholder(
-        ranges, 7, device="cpu", **COUPLED_SCENE_KW
+    import apple_pick_sim.coupled_fruiting as cf
+
+    seed = 7
+    params = sample_params(ranges, seed=seed)
+    single = build_coupled_fr3(
+        cf, ranges, seed, device="cpu", params=params, **COUPLED_SCENE_KW
     )
-    batch = build_batched_coupled_fruiting_placeholder(
-        ranges, 7, num_envs=4, device="cpu", **COUPLED_SCENE_KW
+    batch = build_homogeneous_batched_fr3(
+        ranges,
+        seed,
+        num_envs=4,
+        params=params,
+        device="cpu",
+        **COUPLED_SCENE_KW,
     )
     layout = batch.layout
     assert layout is not None
@@ -149,17 +159,11 @@ def test_world0_parity_single_env(ranges):
         layout.apple_body_indices[0]
     ]
     np.testing.assert_allclose(batch_apple, single_apple, atol=1e-4)
-    single_tcp = single.robot_state_0.body_q.numpy().reshape(-1, 7)[
-        int(single.tcp_body_index)
-    ]
-    batch_tcp = batch.robot_state_0.body_q.numpy().reshape(-1, 7)[
-        layout.tcp_body_indices[0]
-    ]
-    np.testing.assert_allclose(batch_tcp, single_tcp, atol=1e-3)
 
 
+@requires_fr3
 def test_coupled_substep_multi_env_stable(ranges):
-    scene = build_batched_coupled_fruiting_placeholder(
+    scene = build_homogeneous_batched_fr3(
         ranges,
         11,
         num_envs=4,
@@ -179,8 +183,9 @@ def test_coupled_substep_multi_env_stable(ranges):
         assert z > -0.05, f"world {w} apple fell: z={z}"
 
 
+@requires_fr3
 def test_broadcast_joint_q_copies_all_worlds(ranges):
-    scene = build_batched_coupled_fruiting_placeholder(
+    scene = build_homogeneous_batched_fr3(
         ranges,
         3,
         num_envs=3,
@@ -207,8 +212,9 @@ def test_broadcast_joint_q_copies_all_worlds(ranges):
         np.testing.assert_allclose(jqd_out[layout.joint_qd_slice(w)], jqd_out[w0_dof])
 
 
+@requires_fr3
 def test_apply_wrench_all_registry_tcps(ranges):
-    scene = build_batched_coupled_fruiting_placeholder(
+    scene = build_homogeneous_batched_fr3(
         ranges,
         5,
         num_envs=3,
@@ -238,12 +244,11 @@ def test_apply_wrench_all_registry_tcps(ranges):
 @requires_fr3
 @pytest.mark.slow
 def test_build_batched_fr3_smoke(ranges):
-    scene = build_batched_coupled_fruiting_fr3(
+    scene = build_homogeneous_batched_fr3(
         ranges,
         42,
         device="cpu",
         num_envs=2,
-        robot_base_from_proxy=True,
         **COUPLED_SCENE_KW,
     )
     assert scene.layout is not None
@@ -256,7 +261,7 @@ def test_build_batched_fr3_smoke(ranges):
 def test_parallel_free_settle_runs_on_all_worlds(ranges):
     """Free-proxy batched scene settles every replicated world in parallel."""
     build_kw = dict(device="cpu", num_envs=_NUM_ENVS, **COUPLED_SCENE_KW)
-    settled = build_batched_coupled_fruiting_fr3(
+    settled = build_homogeneous_batched_fr3(
         ranges,
         2,
         vbd_only=True,

@@ -353,6 +353,7 @@ def test_coupled_substep_explicit_flag_delta_matches_explicit_wrench():
 def test_settle_weld_hold_explicit_support_matches_mg():
     """Quiet settle→weld + hold: stem-harvest explicit term adds ≈ ``m·g`` upward support."""
     import apple_pick_sim.coupled_fruiting as cf
+    from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 
     from apple_pick_sim.robot import fr3_robot
     from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
@@ -363,7 +364,7 @@ def test_settle_weld_hold_explicit_support_matches_mg():
     last_exc: Exception | None = None
     for try_seed in (2, 3, 4, 5):
         try:
-            settled = cf.build_coupled_fruiting_fr3(
+            settled = build_coupled_fruiting_fr3(
                 ranges,
                 try_seed,
                 vbd_only=True,
@@ -374,7 +375,7 @@ def test_settle_weld_hold_explicit_support_matches_mg():
                 ),
             )
             cf.settle_vbd_substeps(settled, substeps=40, dt=SUB_DT)
-            scene = cf.build_coupled_fruiting_fr3(
+            scene = build_coupled_fruiting_fr3(
                 ranges,
                 try_seed,
                 skip_ik_bootstrap=True,

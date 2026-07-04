@@ -56,11 +56,11 @@ def per_env_params(ranges):
     )
 
 
-def _placeholder_vbd_config(*, settle_substeps: int = 0) -> BatchedHeterogeneousCoupledSimConfig:
+def _vbd_only_config(*, settle_substeps: int = 0) -> BatchedHeterogeneousCoupledSimConfig:
     return dataclasses.replace(
         BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),
         robot=RobotConfig(
-            kind="placeholder",
+            kind="fr3",
             step_mode="vbd_only",
             fix_to_apple=False,
         ),
@@ -68,8 +68,9 @@ def _placeholder_vbd_config(*, settle_substeps: int = 0) -> BatchedHeterogeneous
     )
 
 
+@requires_fr3
 def test_build_minimal_smoke(ranges, per_env_params):
-    cfg = _placeholder_vbd_config()
+    cfg = _vbd_only_config()
     result = build_batched_heterogeneous_scene(cfg, per_env_params, ranges)
     assert isinstance(result, BatchedHeterogeneousBuildResult)
     assert result.scene.layout is not None
@@ -83,23 +84,26 @@ def test_build_minimal_smoke(ranges, per_env_params):
         assert z > -0.05, f"world {w} apple fell: z={z}"
 
 
+@requires_fr3
 def test_build_raises_on_params_length_mismatch(ranges, per_env_params):
-    cfg = _placeholder_vbd_config()
+    cfg = _vbd_only_config()
     with pytest.raises(ValueError, match="per_env_params"):
         build_batched_heterogeneous_scene(cfg, per_env_params[:1], ranges)
 
 
+@requires_fr3
 def test_diagnostics_gated_off(ranges, per_env_params):
-    cfg = _placeholder_vbd_config()
+    cfg = _vbd_only_config()
     result = build_batched_heterogeneous_scene(cfg, per_env_params, ranges)
     assert result.settle_stability_reports is None
     assert result.settle_ke_decay_reports is None
     assert result.ik_envelope_results is None
 
 
+@requires_fr3
 def test_diagnostics_gated_on(ranges, per_env_params):
     cfg = dataclasses.replace(
-        _placeholder_vbd_config(settle_substeps=10),
+        _vbd_only_config(settle_substeps=10),
         settle_diagnostics=SettleDiagnosticsConfig(),
     )
     result = build_batched_heterogeneous_scene(cfg, per_env_params, ranges)
@@ -108,12 +112,13 @@ def test_diagnostics_gated_on(ranges, per_env_params):
     assert result.settle_ke_decay_reports is not None
 
 
+@requires_fr3
 def test_kd_overrides_on_result_and_applied(ranges, per_env_params):
     overrides = {"secondary_spur": 1.5, "stem_apple": 0.03}
     cfg = dataclasses.replace(
-        _placeholder_vbd_config(),
+        _vbd_only_config(),
         fruiting_system=dataclasses.replace(
-            _placeholder_vbd_config().fruiting_system,
+            _vbd_only_config().fruiting_system,
             joint_angular_kd_overrides=overrides,
         ),
     )
@@ -198,10 +203,11 @@ def test_build_parity_with_manual_settle_then_weld(ranges):
     _assert_per_env_tcp_proxy_alignment(manual_welded)
 
 
+@requires_fr3
 def test_kd_overrides_filtered_to_matching_joint_labels(ranges, per_env_params):
     """Default kd keys for branched topology are dropped on straight-rod fixture."""
     cfg = dataclasses.replace(
-        _placeholder_vbd_config(),
+        _vbd_only_config(),
         fruiting_system=BatchedHeterogeneousCoupledSimConfig.defaults().fruiting_system,
     )
     result = build_batched_heterogeneous_scene(cfg, per_env_params, ranges)
@@ -228,11 +234,12 @@ def test_diagnostics_populated_on_weld_path(ranges, per_env_params):
     assert len(result.ik_envelope_results) == _NUM_ENVS
 
 
+@requires_fr3
 def test_mock_viewer_render_hooks_called_during_settle(ranges, per_env_params):
     viewer = MagicMock()
     viewer.is_running.return_value = True
     settle_substeps = 4
-    cfg = _placeholder_vbd_config(settle_substeps=settle_substeps)
+    cfg = _vbd_only_config(settle_substeps=settle_substeps)
     build_batched_heterogeneous_scene(cfg, per_env_params, ranges, viewer=viewer)
     assert viewer.begin_frame.call_count == settle_substeps
     assert viewer.log_state.call_count == settle_substeps

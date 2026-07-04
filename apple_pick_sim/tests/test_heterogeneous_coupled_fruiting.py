@@ -25,11 +25,11 @@ from apple_pick_sim.fruiting_system import (
 from apple_pick_sim.fruiting_system.build import FRUITING_VBD_RIGID_JOINT_ANGULAR_KD
 from apple_pick_sim.fruiting_system.params import _fix_topology
 from apple_pick_sim.coupled_fruiting import (
-    build_heterogeneous_coupled_fruiting_fr3,
     seed_fix_to_apple_from_settled,
     quiet_all_cable_bodies,
     settle_vbd_substeps,
 )
+from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_fr3
 from apple_pick_sim.coupled_fruiting.batched_build import build_heterogeneous_coupled_cable_scene
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_POS_TOL_M
@@ -764,6 +764,7 @@ def test_print_per_env_params_includes_all_rod_stiffnesses(capsys):
             assert f"{rod.stretch_stiffness:.4g}" in out
 
 
+@requires_fr3
 def test_batched_heterogeneous_only_vbd_builds_cable_only_scene(ranges):
     """vbd_only CoupledSim builds cable-only scene and steps VBD substeps only."""
     import dataclasses
@@ -784,17 +785,16 @@ def test_batched_heterogeneous_only_vbd_builds_cable_only_scene(ranges):
     cfg = dataclasses.replace(
         BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),
         robot=RobotConfig(
-            kind="placeholder",
+            kind="fr3",
             step_mode="vbd_only",
             fix_to_apple=False,
         ),
         scene=SceneSettleCollisionConfig(settle_substeps=0),
         obs=ObsConfig(allocate_buffers=False),
     )
-    with pytest.warns(UserWarning, match="CPU host nudge"):
-        sim = BatchedHeterogeneousCoupledSim(
-            cfg, params_list, ranges, use_settle_cache=False
-        )
+    sim = BatchedHeterogeneousCoupledSim(
+        cfg, params_list, ranges, use_settle_cache=False
+    )
 
     assert sim.scene.vbd_only
     assert sim.scene.robot_model is None
@@ -823,6 +823,7 @@ def test_batched_heterogeneous_only_vbd_builds_cable_only_scene(ranges):
     assert coupled_calls == 0
 
 
+@requires_fr3
 def test_batched_heterogeneous_only_vbd_runs_settle_with_gravity_ramp(ranges):
     """vbd_only with settle_substeps>0 and gravity ramp finishes at full gravity."""
     import dataclasses
@@ -843,7 +844,7 @@ def test_batched_heterogeneous_only_vbd_runs_settle_with_gravity_ramp(ranges):
     cfg = dataclasses.replace(
         BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),
         robot=RobotConfig(
-            kind="placeholder",
+            kind="fr3",
             step_mode="vbd_only",
             fix_to_apple=False,
         ),
@@ -853,10 +854,9 @@ def test_batched_heterogeneous_only_vbd_runs_settle_with_gravity_ramp(ranges):
         ),
         settle_diagnostics=SettleDiagnosticsConfig(report_brief=True),
     )
-    with pytest.warns(UserWarning, match="CPU host nudge"):
-        sim = BatchedHeterogeneousCoupledSim(
-            cfg, params_list, ranges, use_settle_cache=False
-        )
+    sim = BatchedHeterogeneousCoupledSim(
+        cfg, params_list, ranges, use_settle_cache=False
+    )
 
     br = sim.build_result
     assert br.settle_stability_reports is not None
@@ -928,32 +928,3 @@ def test_heterogeneous_proxy_woody_collision_toggle(ranges):
     primary = cable_on.primary_bodies[0]
     assert not _shape_pairs_filtered(cable_on.model, proxy, primary)
     assert _shape_pairs_filtered(cable_off.model, proxy, primary)
-
-
-def test_placeholder_multienv_warns_at_init(ranges):
-    """Placeholder robot must warn that step() is not fully GPU-resident."""
-    import dataclasses
-
-    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
-        BatchedHeterogeneousCoupledSimConfig,
-        RobotConfig,
-        SceneSettleCollisionConfig,
-    )
-    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_coupled_sim import (
-        BatchedHeterogeneousCoupledSim,
-    )
-
-    params_list = sample_heterogeneous_params_list(
-        ranges, topology_seed=42, num_envs=_NUM_ENVS
-    )
-    cfg = dataclasses.replace(
-        BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),
-        robot=RobotConfig(
-            kind="placeholder",
-            step_mode="coupled",
-            fix_to_apple=False,
-        ),
-        scene=SceneSettleCollisionConfig(settle_substeps=0),
-    )
-    with pytest.warns(UserWarning, match="CPU host nudge"):
-        BatchedHeterogeneousCoupledSim(cfg, params_list, ranges, use_settle_cache=False)

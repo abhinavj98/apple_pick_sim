@@ -128,31 +128,31 @@ import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 
 ### M1 two-model coupling (FR3 + VBD cable)
 
-Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via the **`apple_pick_sim/coupled_fruiting/`** package (``scene.py``, ``builders.py``, …; import ``apple_pick_sim.coupled_fruiting``). Gripper proxy defaults to **`fix_to_apple=False`** (velocity-delta harvest + proxy-only sync); pass ``GripperProxyConfig(fix_to_apple=True)`` in code for stem-harvest / apple co-teleport tests.
+Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via the **`apple_pick_sim/coupled_fruiting/`** package. See **[`docs/coupled-sim-api.md`](docs/coupled-sim-api.md)** for the canonical public API. Gripper proxy defaults to **`fix_to_apple=False`** (velocity-delta harvest); pass ``GripperProxyConfig(fix_to_apple=True)`` for stem-harvest / apple co-teleport.
 
-- **FR3 + custom EE (default):** ``build_coupled_fruiting_fr3`` imports ``assets/testfr3_resolved.usda`` (Isaac **`testfr3`** EE/tcp + bundled ``assets/fr3/omniverse_fr3/fr3.usd``); see ``assets/fr3/README.md``.
-- **Placeholder:** ``build_coupled_fruiting_placeholder`` — free-floating TCP box; use ``--robot placeholder`` if FR3 assets are missing.
-- **Control:** ``example_coupled_fruiting.py`` defaults to **FR3 + VIC joint-torque teleop** (dynamic arm, plant wrenches on TCP ``body_f``). Requires PyTorch: ``uv sync --extra vic``. Tune with ``--vic-linear-k``, ``--vic-linear-d``, ``--vic-angular-k``, ``--vic-angular-d``.
+- **FR3 + custom EE (required):** ``build_coupled_fruiting_fr3`` — import from ``apple_pick_sim.coupled_fruiting.builders``; see ``assets/fr3/README.md``.
+- **Batched heterogeneous (canonical):** ``BatchedHeterogeneousCoupledSim`` + ``example_batched_heterogeneous_coupled_sim.py``.
+- **Control:** ``example_coupled_fruiting.py`` defaults to **FR3 + VIC joint-torque teleop**. Requires PyTorch: ``uv sync --extra vic``.
 - **Step modes:** default = full coupled loop; ``--only-vbd`` = cable only; ``--only-mjc`` = MuJoCo robot + proxy sync.
 
 ```bash
 uv run python -m unittest apple_pick_sim.tests.test_fr3_usd_import -v
 ```
 
-Smoke:
+Smoke (requires FR3 assets):
 
 ```bash
 uv run python -c "
 from apple_pick_sim.fruiting_system import load_ranges
-from apple_pick_sim.coupled_fruiting import build_coupled_fruiting_placeholder
+from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 ranges = load_ranges('apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json')
-scene = build_coupled_fruiting_placeholder(ranges, seed=0)
-scene.coupled_substep(1e-4)
-print('coupled_substep_ok')
+scene = build_coupled_fruiting_fr3(ranges, seed=0, vbd_only=True)
+scene.vbd_substep(1e-4)
+print('vbd_substep_ok')
 "
 ```
 
-Interactive **Newton viewer** (shows the **cable** scene: rods + apple + gripper proxy, which mirrors the coupling). Optional **`--mujoco-viewer`** opens MuJoCo’s passive viewer for the **TCP placeholder** rigid body (**second window**).
+Interactive **Newton viewer** (cable scene: rods + apple + gripper proxy). Optional **`--mujoco-viewer`** opens MuJoCo’s passive viewer for the **FR3 robot** (**second window**).
 
 ```bash
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py
@@ -170,36 +170,24 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py \
 # Optional second window for the MuJoCo robot model
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py \
   --fr3-keyboard --mujoco-viewer --viewer gl
-# Stem-harvest path: weld proxy to apple (default is --no-fix-to-apple / velocity-delta)
+# Stem-harvest path: weld proxy to apple (default is --no-fix-to-apple)
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple --seed 42
-# Placeholder TCP (no FR3 assets)
-uv run python apple_pick_sim/examples/example_coupled_fruiting.py --robot placeholder --viewer null --num-frames 60
 ```
 
-### `example_batched_coupled_fruiting.py` (homogeneous batches)
+### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Batched coupled fruiting: **N** worlds via ``replicate()``, settle→weld init, then FR3 teleop via ``BatchedTemplateIK`` per-env scatter. This reference example uses the same keyboard velocity on all envs (homogeneous smoke). For **independent** per-env seeds, per-env material θ, and per-env actions, use ``example_batched_heterogeneous_coupled_sim.py`` (canonical) and **`docs/vectorized-coupled-fruiting.md`**. Gym migration on the batched backend is tracked in **`docs/ROADMAP.md`** ([V].3.3+).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`**; gym migration is tracked in **`docs/ROADMAP.md`** ([V].3.3+).
 
 ```bash
 # Headless smoke (settle→weld)
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --viewer null --num-frames 500 --num-envs 4 --fix-to-apple --seed 42
-
-# Interactive keyboard teleop
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --num-envs 4 --env-spacing 2.5 2.5 0 --fix-to-apple --controller direct \
-  --fr3-keyboard --viewer gl --seed 42
-
-# Fast robot for CI
-uv run python apple_pick_sim/examples/example_batched_coupled_fruiting.py \
-  --viewer null --num-frames 120 --robot placeholder --num-envs 2 --fix-to-apple
-
-# Canonical heterogeneous batched entry point (independent per-env material θ, IK, actions)
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
-```
 
-Unmigrated CLI flags (including ``--inspect-settle``) remain on scripts under ``apple_pick_sim/examples/legacy/``.
+# Interactive keyboard teleop
+uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
+  --num-envs 4 --env-spacing 2.0 2.0 2.0 --controller direct \
+  --fr3-keyboard --viewer gl --seed 42
+```
 
 **FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):
 
@@ -258,10 +246,10 @@ M1 coupling benchmark (ms/substep; see ``docs/gpu-coupling-optimization.md``):
 
 ```bash
 uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
-  --robot placeholder --device cuda:0 --mujoco-gpu --warmup-substeps 30 --bench-substeps 300
+  --device cuda:0 --mujoco-gpu --warmup-substeps 30 --bench-substeps 300
 # CPU MuJoCo baseline:
 uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
-  --robot placeholder --device cpu --mujoco-cpu --warmup-substeps 30 --bench-substeps 300
+  --device cpu --mujoco-cpu --warmup-substeps 30 --bench-substeps 300
 ```
 
 Headless CUDA graph (coupled example):

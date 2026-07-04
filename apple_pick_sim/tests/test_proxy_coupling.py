@@ -269,7 +269,7 @@ def test_align_proxy_body_q_prev_for_vbd_clears_finalize_spurious_velocity():
     """Stale ``body_q_prev`` inflates post-step proxy twist; align removes the pose gap."""
     pc = _import_pc()
     fs = _import_fs()
-    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_fr3"])
+    import apple_pick_sim.coupled_fruiting as cf
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
     dt = SUB_DT
@@ -738,7 +738,7 @@ def test_proxy_registry_ids_wp_cached_per_device():
 def test_coupled_substep_reuses_cached_proxy_ids():
     """Two coupled substeps use the same cached robot/proxy id arrays."""
     pc = _import_pc()
-    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_fr3"])
+    import apple_pick_sim.coupled_fruiting as cf
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
     scene = build_coupled_fr3(
@@ -759,7 +759,7 @@ def test_align_proxy_body_q_prev_with_multiple_bodies():
     """align_proxy_body_q_prev_for_vbd updates every listed proxy body slot."""
     pc = _import_pc()
     fs = _import_fs()
-    cf = __import__("apple_pick_sim.coupled_fruiting", fromlist=["build_coupled_fruiting_fr3"])
+    import apple_pick_sim.coupled_fruiting as cf
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
     scene = build_coupled_fr3(

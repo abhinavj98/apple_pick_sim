@@ -132,17 +132,13 @@ def _max_branch_linear_speed_m_s(cable) -> float:
     return float(max(np.linalg.norm(bqd[i, :3]) for i in branch))
 
 
+@requires_fr3
 def test_vbd_only_build_syncs_body_q_prev_with_state_on_fruiting_chain():
     """Post-build eval_fk must refresh SolverVBD.body_q_prev on the whole cable."""
     cf = _import_cf()
     fs = _import_fs()
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    scene = cf.build_coupled_fruiting_placeholder(
-        ranges,
-        43,
-        vbd_only=True,
-        enable_self_collisions=False,
-    )
+    scene = build_vbd_only(cf, ranges, 43, enable_self_collisions=False)
     cable = scene.cable
     bq = cable.state_0.body_q.numpy().reshape(-1, 7)
     bqp = cable.solver.body_q_prev.numpy().reshape(-1, 7)

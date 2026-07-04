@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-03 (PR2 GPU hot path — `feature/batched-gpu-hot-path`; canonical API is `BatchedHeterogeneousCoupledSim`)
 
-Audit of `apple_pick_sim/examples/legacy/example_batched_heterogeneous_coupled_fruiting.py` and its dependency chain against the goal of **fully vectorized** GPU stepping. Canonical batched heterogeneous API: `apple_pick_sim.coupled_fruiting.BatchedHeterogeneousCoupledSim` (thin example: `example_batched_heterogeneous_coupled_sim.py`). Flow reference: [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md); slice status: `docs/ROADMAP.md`.
+Audit of the batched heterogeneous coupled stack and its dependency chain against the goal of **fully vectorized** GPU stepping. Canonical batched heterogeneous API: `apple_pick_sim.coupled_fruiting.BatchedHeterogeneousCoupledSim` (thin example: `example_batched_heterogeneous_coupled_sim.py`). Flow reference: [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md); slice status: `docs/ROADMAP.md`.
 
 ---
 
@@ -96,7 +96,7 @@ Per `.cursor/rules/gpu-warp-parallelism.mdc`, frame-rate teleop on CPU is accept
 
 Default **library** behavior (`BatchedHeterogeneousCoupledSim` with `allocate_action_buffer=True`) uploads batched actions on device. Keyboard teleop in examples still uses scalar paths.
 
-**Owner:** `robot/fr3_robot/controllers/ee_velocity_batched.py`, `legacy/example_batched_heterogeneous_coupled_fruiting.py`.
+**Owner:** `robot/fr3_robot/controllers/ee_velocity_batched.py`, `BatchedHeterogeneousCoupledSim`.
 
 ---
 
@@ -223,7 +223,7 @@ uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.
 | ------ | --------------------------------- |
 | `coupled_fruiting/batched_heterogeneous_coupled_sim.py` | Canonical library API (`BatchedHeterogeneousCoupledSim`) |
 | `examples/example_batched_heterogeneous_coupled_sim.py` | Canonical thin CLI + viewer entry point |
-| `examples/legacy/example_batched_heterogeneous_coupled_fruiting.py` | Legacy monolith; settle→weld + teleop loop (unmigrated flags) |
+| `examples/example_batched_heterogeneous_coupled_sim.py` | Canonical batched heterogeneous CLI + viewer |
 | `coupled_fruiting/batched_build.py` | `add_world` heterogeneous cable build |
 | `coupled_fruiting/builders.py` | `build_heterogeneous_coupled_fruiting_{fr3,placeholder}` |
 | `coupled_fruiting/scene.py` | `coupled_substep`; stem harvest dispatch |

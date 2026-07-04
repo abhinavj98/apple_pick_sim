@@ -12,6 +12,9 @@ import newton
 
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.robot.fr3_robot.batched_template_ik import BatchedTemplateIK
+from apple_pick_sim.robot.fr3_robot.controllers.batched_action_twists import (
+    upload_batched_twists_from_actions,
+)
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import (
     EEVelocity,
     _KeyViewer,
@@ -101,6 +104,57 @@ class Fr3BatchedEEVelocityController:
 
     def seed_ik_from_state(self, state: Any) -> None:
         self._ik.seed_from_state(state)
+
+    def advance_target_from_actions(
+        self,
+        dt: float,
+        actions,
+        *,
+        lock_angular: bool = False,
+    ) -> None:
+        """Integrate per-env twists from a device ``(N, 6)`` action tensor."""
+        upload_batched_twists_from_actions(
+            self._lin_vels_wp,
+            self._ang_vels_wp,
+            actions,
+            lock_angular=lock_angular,
+        )
+        self._ik.advance_targets_batch(
+            self._target_pos_wp,
+            self._target_rot_wp,
+            self._lin_vels_wp,
+            self._ang_vels_wp,
+            dt,
+        )
+        self._sync_target_tf_from_device()
+
+    def run_coupled_teleop_frame_from_actions(
+        self,
+        state: Any,
+        control: Any,
+        mj_solver: Any,
+        dt: float,
+        actions,
+        *,
+        lock_angular: bool = False,
+    ) -> EEVelocity:
+        """Frame-rate teleop driven by batched action tensor (no per-env CPU callback)."""
+        self.sync_target_from_state(state)
+        self.advance_target_from_actions(dt, actions, lock_angular=lock_angular)
+        self.solve_ik(state)
+        pos_err: float | None = None
+        rot_err: float | None = None
+        if self.print_ik_teleop_error_each_step:
+            pos_err, rot_err = self.measure_ik_target_error(state)
+        if self.print_ik_teleop_error_each_step and pos_err is not None and rot_err is not None:
+            self._print_ik_teleop_error(pos_err, rot_err, velocity=EEVelocity())
+        self.apply_ik_to_mujoco_control(
+            state,
+            control,
+            frame_dt=dt,
+            command_velocity=None,
+        )
+        return EEVelocity()
 
     def advance_target(
         self,

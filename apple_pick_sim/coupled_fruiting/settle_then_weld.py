@@ -29,6 +29,11 @@ from apple_pick_sim.coupled_fruiting.batched_build import (
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
 from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
+from apple_pick_sim.coupled_fruiting.settle_seed_device import (
+    align_batched_proxy_poses_device,
+    copy_cable_state_device,
+    zero_all_body_qd_device,
+)
 
 
 def _proxy_world_pose_from_apple(
@@ -66,10 +71,8 @@ def quiet_all_cable_bodies(cable: Any) -> None:
     body_count = int(cable.model.body_count)
     if body_count <= 0:
         return
-    bqd_zero = np.zeros((body_count, 6), dtype=np.float32)
-    flat = bqd_zero.ravel()
-    cable.state_0.body_qd.assign(flat)
-    cable.state_1.body_qd.assign(flat)
+    zero_all_body_qd_device(cable.state_0.body_qd)
+    zero_all_body_qd_device(cable.state_1.body_qd)
     sync_solver_body_q_prev_from_state(
         cable,
         cable.state_0.body_q,
@@ -443,11 +446,7 @@ def seed_fix_to_apple_from_settled(
             cable_s, cable_w, layout, env_spacing
         )
     else:
-        # Copy state for all bodies that exist in both models (body_count is expected to match).
-        bq = cable_s.state_0.body_q.numpy().reshape(-1, 7)
-        bqd = cable_s.state_0.body_qd.numpy().reshape(-1, 6)
-        cable_w.state_0.body_q.assign(bq)
-        cable_w.state_0.body_qd.assign(bqd)
+        copy_cable_state_device(cable_s, cable_w)
 
     apple = cable_w.apple_body
     proxy = cable_w.gripper_proxy_body
@@ -455,35 +454,27 @@ def seed_fix_to_apple_from_settled(
     if apple is None or default_offset is None:
         return
 
-    bq_w = cable_w.state_0.body_q.numpy().reshape(-1, 7).copy()
-    bqd_w = cable_w.state_0.body_qd.numpy().reshape(-1, 6).copy()
-    if layout is not None:
-        apple_proxy_pairs = [
-            (layout.apple_body_indices[w], layout.proxy_body_indices[w])
-            for w in range(layout.num_envs)
-            if layout.apple_body_indices[w] >= 0
-        ]
+    if layout is not None and layout.num_envs >= 1:
+        align_batched_proxy_poses_device(
+            cable_w,
+            layout,
+            per_world_proxy_offsets=per_world_proxy_offsets,
+            default_offset=default_offset,
+            quiet_apple_proxy=quiet_apple_proxy,
+        )
     else:
-        apple_proxy_pairs = [(apple, proxy)] if apple is not None else []
-
-    for i, (apple_idx, proxy_idx) in enumerate(apple_proxy_pairs):
-        if per_world_proxy_offsets is not None:
-            offset = per_world_proxy_offsets[i]
-        else:
-            offset = default_offset
-        if offset is None:
-            continue
-        proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq_w[apple_idx], offset)
-        bq_w[proxy_idx, :3] = proxy_pos
-        bq_w[proxy_idx, 3:] = proxy_quat
+        bq_w = cable_w.state_0.body_q.numpy().reshape(-1, 7).copy()
+        bqd_w = cable_w.state_0.body_qd.numpy().reshape(-1, 6).copy()
+        proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq_w[apple], default_offset)
+        bq_w[proxy, :3] = proxy_pos
+        bq_w[proxy, 3:] = proxy_quat
         if quiet_apple_proxy:
-            bqd_w[apple_idx] = 0.0
-            bqd_w[proxy_idx] = 0.0
-
-    cable_w.state_0.body_q.assign(bq_w.reshape(-1, 7))
-    cable_w.state_0.body_qd.assign(bqd_w.reshape(-1, 6))
-    cable_w.state_1.body_q.assign(bq_w.reshape(-1, 7))
-    cable_w.state_1.body_qd.assign(bqd_w.reshape(-1, 6))
+            bqd_w[apple] = 0.0
+            bqd_w[proxy] = 0.0
+        cable_w.state_0.body_q.assign(bq_w.reshape(-1, 7))
+        cable_w.state_0.body_qd.assign(bqd_w.reshape(-1, 6))
+        cable_w.state_1.body_q.assign(bq_w.reshape(-1, 7))
+        cable_w.state_1.body_qd.assign(bqd_w.reshape(-1, 6))
 
     # Do not call eval_fk() here: the welded and settled models do not share joint-space
     # coordinates (free proxy vs fixed proxy↔apple), so FK from welded joint_q would

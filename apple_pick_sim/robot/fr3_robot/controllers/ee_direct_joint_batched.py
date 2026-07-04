@@ -32,6 +32,38 @@ class Fr3BatchedEEDirectJointController(Fr3BatchedEEVelocityController):
         if mj_solver is not None:
             sync_mujoco_visual_state(mj_solver, self.robot_model, state)
 
+    def run_coupled_teleop_frame_from_actions(
+        self,
+        state: Any,
+        control: Any,
+        mj_solver: Any,
+        dt: float,
+        actions,
+        *,
+        lock_angular: bool = False,
+    ) -> EEVelocity:
+        velocity = self.run_ik_teleop_frame_from_actions(
+            dt,
+            state,
+            actions,
+            lock_angular=lock_angular,
+        )
+        self.apply_direct_joints(state, control, mj_solver=mj_solver)
+        return velocity
+
+    def run_ik_teleop_frame_from_actions(
+        self,
+        dt: float,
+        state: Any,
+        actions,
+        *,
+        lock_angular: bool = False,
+    ) -> EEVelocity:
+        self.sync_target_from_state(state)
+        self.advance_target_from_actions(dt, actions, lock_angular=lock_angular)
+        self.solve_ik(state)
+        return EEVelocity()
+
     def run_coupled_teleop_frame(
         self,
         state: Any,

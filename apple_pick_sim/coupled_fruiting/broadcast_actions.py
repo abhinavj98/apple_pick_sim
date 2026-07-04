@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import newton
 
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
+from apple_pick_sim.coupled_fruiting.broadcast_device import (
+    broadcast_joint_q_from_world0_device,
+)
 
 
-def broadcast_joint_q_from_world0(scene: Any, layout: BatchedEnvLayout) -> None:
-    """Copy world-0 ``joint_q`` / ``joint_qd`` to every env on model and ``robot_state_0``."""
-    warnings.warn(
-        "broadcast_joint_q_from_world0 uses .numpy() host round-trips per frame "
-        "and is not GPU-resident. For parallel GPU broadcast use a Warp scatter kernel.",
-        UserWarning,
-        stacklevel=2,
-    )
+def _broadcast_joint_q_host(scene: Any, layout: BatchedEnvLayout) -> None:
+    """Host reference path for parity tests."""
     if layout.num_envs < 2:
         return
     if scene.robot_model is None or scene.robot_state_0 is None:
@@ -44,3 +40,8 @@ def broadcast_joint_q_from_world0(scene: Any, layout: BatchedEnvLayout) -> None:
         scene.robot_state_0.joint_qd,
         scene.robot_state_0,
     )
+
+
+def broadcast_joint_q_from_world0(scene: Any, layout: BatchedEnvLayout) -> None:
+    """Copy world-0 ``joint_q`` / ``joint_qd`` to every env on model and ``robot_state_0``."""
+    broadcast_joint_q_from_world0_device(scene, layout)

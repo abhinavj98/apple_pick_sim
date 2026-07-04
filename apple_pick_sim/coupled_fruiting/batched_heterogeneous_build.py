@@ -26,6 +26,7 @@ from apple_pick_sim.coupled_fruiting.settle_quasi_static import (
     SettleStabilityReport,
     settle_stability_reports_from_cable,
 )
+from apple_pick_sim.coupled_fruiting.settle_seed_device import capture_body_q_numpy
 from apple_pick_sim.coupled_fruiting.settle_then_weld import (
     apply_settle_gravity_for_substep,
     quiet_all_cable_bodies,
@@ -129,7 +130,7 @@ def build_batched_heterogeneous_scene(
                 viewer=viewer,
                 collect_diagnostics=collect_diag,
             )
-            settled_body_q = settled.cable.state_0.body_q.numpy().reshape(-1, 7).copy()
+            settled_body_q = capture_body_q_numpy(settled.cable.state_0.body_q)
             weld_kw = _builder_kwargs(
                 config, gripper=gripper_weld, vbd_only=False, robot_kind=robot_kind
             )

@@ -286,6 +286,20 @@ def broadcast_settled_cable_state_to_batched_worlds(
     has ``num_envs > 1``. The canonical batched path settles all N worlds in parallel
     and copies world *i* → world *i* directly (see ``seed_fix_to_apple_from_settled``).
     """
+    from apple_pick_sim.coupled_fruiting.broadcast_device import (
+        broadcast_settled_cable_state_to_batched_worlds_device,
+    )
+
+    device = str(getattr(settled_cable.state_0.body_q, "device", "cpu"))
+    if device != "cpu":
+        broadcast_settled_cable_state_to_batched_worlds_device(
+            settled_cable,
+            welded_cable,
+            layout,
+            env_spacing,
+        )
+        return
+
     tpl_bq = settled_cable.state_0.body_q.numpy().reshape(-1, 7)
     tpl_bqd = settled_cable.state_0.body_qd.numpy().reshape(-1, 6)
     tpl_n = int(tpl_bq.shape[0])
@@ -354,6 +368,23 @@ def _broadcast_robot_state_from_template(
     batched_model: newton.Model,
 ) -> None:
     """Copy template robot ``joint_q`` / ``joint_qd`` into every world."""
+    device = str(getattr(batched_model, "device", "cpu"))
+    if device != "cpu":
+        from apple_pick_sim.coupled_fruiting.broadcast_device import (
+            broadcast_robot_state_from_template_device,
+        )
+
+        broadcast_robot_state_from_template_device(template_model, batched_model)
+        return
+
+    _broadcast_robot_state_from_template_host(template_model, batched_model)
+
+
+def _broadcast_robot_state_from_template_host(
+    template_model: newton.Model,
+    batched_model: newton.Model,
+) -> None:
+    """Host reference for CPU builds and tests."""
     num_envs = int(batched_model.world_count)
     jcs = batched_model.joint_coord_world_start.numpy()
     coord_per = int(jcs[1] - jcs[0])

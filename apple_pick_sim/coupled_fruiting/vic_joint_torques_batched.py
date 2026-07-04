@@ -250,10 +250,10 @@ def launch_apply_vic_joint_torques_batched(
         device=torch_device, dtype=torch.float64
     )
 
-    jq_np = state.joint_q.numpy().reshape(num_envs, dof_per)[:, :_N_ARM_DOF]
-    qd_np = state.joint_qd.numpy().reshape(num_envs, dof_per)[:, :_N_ARM_DOF]
-    q_th = torch.as_tensor(jq_np, device=torch_device, dtype=torch.float64)
-    qd_th = torch.as_tensor(qd_np, device=torch_device, dtype=torch.float64)
+    q_flat = wp.to_torch(state.joint_q).to(device=torch_device, dtype=torch.float64)
+    qd_flat = wp.to_torch(state.joint_qd).to(device=torch_device, dtype=torch.float64)
+    q_th = q_flat.reshape(num_envs, dof_per)[:, :_N_ARM_DOF]
+    qd_th = qd_flat.reshape(num_envs, dof_per)[:, :_N_ARM_DOF]
     default_q_th = wp.to_torch(scene.vic_jt_default_dof_pos_batched).to(
         device=torch_device, dtype=torch.float64
     )

@@ -106,7 +106,7 @@ def test_init_minimal_smoke(ranges, per_env_params):
 
 def test_placeholder_kind_warns(ranges, per_env_params):
     cfg = _vbd_placeholder_config()
-    with pytest.warns(UserWarning, match="host round-trips"):
+    with pytest.warns(UserWarning, match="CPU host nudge"):
         BatchedHeterogeneousCoupledSim(cfg, per_env_params, ranges, use_settle_cache=False)
 
 
@@ -121,7 +121,7 @@ def test_fr3_missing_assets_warns_and_builds(ranges, per_env_params):
         return_value=False,
     ):
         with pytest.warns(UserWarning, match="placeholder TCP"):
-            with pytest.warns(UserWarning, match="host round-trips"):
+            with pytest.warns(UserWarning, match="CPU host nudge"):
                 sim = BatchedHeterogeneousCoupledSim(
                     cfg, per_env_params, ranges, use_settle_cache=False
                 )

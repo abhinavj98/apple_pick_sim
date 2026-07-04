@@ -17,6 +17,7 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
 )
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
+from apple_pick_sim.coupled_fruiting.broadcast_device import nudge_joint_q_coord_device
 from apple_pick_sim.coupled_fruiting.scene import CoupledFruitingScene
 from apple_pick_sim.coupled_fruiting.settled_checkpoint import (
     SettledCheckpoint,
@@ -24,13 +25,12 @@ from apple_pick_sim.coupled_fruiting.settled_checkpoint import (
 )
 from apple_pick_sim.fruiting_system import FruitingSystemParams
 from apple_pick_sim.robot import fr3_robot
+from apple_pick_sim.robot.fr3_robot.controllers.batched_action_twists import clip_action_tensor
 
 
 _PLACEHOLDER_HOT_PATH_WARNING = (
-    "Placeholder robot uses .numpy() host round-trips in step() "
-    "(broadcast_joint_q_from_world0, placeholder world-0 nudge); "
-    "GPU parallelism is not fully utilized. "
-    "Use robot.kind='fr3' when FR3 assets are available for a fully GPU hot path."
+    "Placeholder robot uses CPU host nudge in step() on CPU devices; "
+    "use robot.kind='fr3' with FR3 assets for a fully GPU hot path."
 )
 
 
@@ -95,7 +95,23 @@ class BatchedHeterogeneousCoupledSim:
 
         robot_kind = self._resolved_robot_kind()
         if robot_kind == "placeholder":
-            warnings.warn(_PLACEHOLDER_HOT_PATH_WARNING, UserWarning, stacklevel=2)
+            if config.robot.kind != "placeholder" and str(self._device) != "cpu":
+                warnings.warn(
+                    "FR3 assets unavailable; placeholder step path active on "
+                    f"{self._device}. Install FR3 assets or set robot.kind='placeholder' "
+                    "for explicit test-only placeholder mode.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            elif str(self._device) == "cpu":
+                warnings.warn(_PLACEHOLDER_HOT_PATH_WARNING, UserWarning, stacklevel=2)
+            elif config.robot.kind == "placeholder":
+                warnings.warn(
+                    "Explicit robot.kind='placeholder' on a CUDA device; "
+                    "joint broadcast uses GPU kernels but placeholder teleop remains test-only.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         if (
             loaded_checkpoint is None
@@ -281,21 +297,26 @@ class BatchedHeterogeneousCoupledSim:
         return fr3_robot.EEVelocity(linear=linear, angular=angular)
 
     def _clip_actions(self, actions):
-        import torch
+        return clip_action_tensor(
+            actions,
+            linear_speed=float(self._config.controller.linear_speed),
+            angular_speed=float(self._config.controller.angular_speed),
+        )
 
-        linear_speed = float(self._config.controller.linear_speed)
-        angular_speed = float(self._config.controller.angular_speed)
-        clipped = actions.clone()
-        for i in range(clipped.shape[0]):
-            lin = clipped[i, :3]
-            lin_norm = torch.linalg.norm(lin)
-            if lin_norm > linear_speed and lin_norm > 0:
-                clipped[i, :3] = lin * (linear_speed / lin_norm)
-            ang = clipped[i, 3:6]
-            ang_norm = torch.linalg.norm(ang)
-            if ang_norm > angular_speed and ang_norm > 0:
-                clipped[i, 3:6] = ang * (angular_speed / ang_norm)
-        return clipped
+    def _run_fr3_teleop_from_actions(self) -> None:
+        cfg = self._config
+        assert self._ee_ctrl is not None
+        velocity = self._ee_ctrl.run_coupled_teleop_frame_from_actions(
+            self._scene.robot_state_0,
+            self._scene.robot_control,
+            self._scene.mj_solver,
+            self.frame_dt,
+            self._action_buffer,
+        )
+        if getattr(self._scene, "vic_controller", None) is not None:
+            if isinstance(self._ee_ctrl, fr3_robot.Fr3BatchedEEImpedanceController):
+                self._ee_ctrl.stage_targets_to_scene(self._scene)
+                self._scene.vic_target_twist = velocity
 
     def step(self, actions=None) -> None:
         """Advance one control frame."""
@@ -329,20 +350,22 @@ class BatchedHeterogeneousCoupledSim:
 
         robot_kind = self._resolved_robot_kind()
         if robot_kind == "fr3" and self._ee_ctrl is not None:
-            # Per-env velocities come from _velocity_for_world callback; world-0 arg is ignored.
-            velocity = self._velocity_for_world(0)
-            if cfg.controller.mode == "direct":
-                self._scene.update_fr3_ee_teleop_direct(
-                    self.frame_dt,
-                    self._ee_ctrl,
-                    velocity=velocity,
-                )
+            if self._action_buffer is not None:
+                self._run_fr3_teleop_from_actions()
             else:
-                self._scene.update_fr3_ee_teleop(
-                    self.frame_dt,
-                    self._ee_ctrl,
-                    velocity=velocity,
-                )
+                velocity = self._velocity_for_world(0)
+                if cfg.controller.mode == "direct":
+                    self._scene.update_fr3_ee_teleop_direct(
+                        self.frame_dt,
+                        self._ee_ctrl,
+                        velocity=velocity,
+                    )
+                else:
+                    self._scene.update_fr3_ee_teleop(
+                        self.frame_dt,
+                        self._ee_ctrl,
+                        velocity=velocity,
+                    )
         elif robot_kind == "placeholder":
             self._nudge_placeholder_world0(actions)
 
@@ -361,9 +384,15 @@ class BatchedHeterogeneousCoupledSim:
         if model is None or self._scene.robot_state_0 is None:
             return
         vx = float(actions[0, 0].item())
+        delta = vx * self.frame_dt
+        coord_index = int(layout.joint_q_slice(0).start)
+        if str(getattr(model, "device", "cpu")) != "cpu":
+            nudge_joint_q_coord_device(model.joint_q, coord_index, delta)
+            nudge_joint_q_coord_device(self._scene.robot_state_0.joint_q, coord_index, delta)
+            return
         jq = model.joint_q.numpy().copy()
         sl = layout.joint_q_slice(0)
-        jq[sl][0] += vx * self.frame_dt
+        jq[sl][0] += delta
         model.joint_q.assign(jq)
         self._scene.robot_state_0.joint_q.assign(jq)
 

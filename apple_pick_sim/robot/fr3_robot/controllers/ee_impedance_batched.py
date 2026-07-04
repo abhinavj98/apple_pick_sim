@@ -12,6 +12,9 @@ import newton
 
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.robot.fr3_robot.batched_template_ik import BatchedTemplateIK
+from apple_pick_sim.robot.fr3_robot.controllers.batched_action_twists import (
+    upload_batched_twists_from_actions,
+)
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import (
     EEVelocity,
     _KeyViewer,
@@ -130,6 +133,33 @@ class Fr3BatchedEEImpedanceController:
         scene.vic_target_rotations_wp = self._target_rot_wp
         scene.vic_target_linear_vels_wp = self._lin_vels_wp
         scene.vic_target_angular_vels_wp = self._ang_vels_wp
+
+    def run_coupled_teleop_frame_from_actions(
+        self,
+        state: Any,
+        control: Any,
+        mj_solver: Any,
+        dt: float,
+        actions,
+        *,
+        lock_angular: bool = False,
+    ) -> EEVelocity:
+        del control, mj_solver
+        self.sync_target_from_state(state)
+        upload_batched_twists_from_actions(
+            self._lin_vels_wp,
+            self._ang_vels_wp,
+            actions,
+            lock_angular=lock_angular,
+        )
+        self._ik.advance_targets_batch(
+            self._target_pos_wp,
+            self._target_rot_wp,
+            self._lin_vels_wp,
+            self._ang_vels_wp,
+            dt,
+        )
+        return EEVelocity()
 
     def run_coupled_teleop_frame(
         self,

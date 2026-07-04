@@ -791,7 +791,7 @@ def test_batched_heterogeneous_only_vbd_builds_cable_only_scene(ranges):
         scene=SceneSettleCollisionConfig(settle_substeps=0),
         obs=ObsConfig(allocate_buffers=False),
     )
-    with pytest.warns(UserWarning, match="host round-trips"):
+    with pytest.warns(UserWarning, match="CPU host nudge"):
         sim = BatchedHeterogeneousCoupledSim(
             cfg, params_list, ranges, use_settle_cache=False
         )
@@ -853,7 +853,7 @@ def test_batched_heterogeneous_only_vbd_runs_settle_with_gravity_ramp(ranges):
         ),
         settle_diagnostics=SettleDiagnosticsConfig(report_brief=True),
     )
-    with pytest.warns(UserWarning, match="host round-trips"):
+    with pytest.warns(UserWarning, match="CPU host nudge"):
         sim = BatchedHeterogeneousCoupledSim(
             cfg, params_list, ranges, use_settle_cache=False
         )
@@ -955,5 +955,5 @@ def test_placeholder_multienv_warns_at_init(ranges):
         ),
         scene=SceneSettleCollisionConfig(settle_substeps=0),
     )
-    with pytest.warns(UserWarning, match="host round-trips"):
+    with pytest.warns(UserWarning, match="CPU host nudge"):
         BatchedHeterogeneousCoupledSim(cfg, params_list, ranges, use_settle_cache=False)

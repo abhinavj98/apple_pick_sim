@@ -42,12 +42,8 @@ from apple_pick_sim.batched_viz import (
 from apple_pick_sim.coupled_fruiting import print_envelope_coverage_report
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
-    ControllerConfig,
-    DomainRandomizationConfig,
-    RobotConfig,
     ObsConfig,
     RuntimeConfig,
-    SceneSettleCollisionConfig,
     SettleDiagnosticsConfig,
 )
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_build import print_per_env_params
@@ -284,45 +280,48 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
     settle_substeps = int(args.settle_substeps)
     viz = _viz_settings_from_args(args)
 
-    controller_mode = str(args.controller)
-    vic_gains = ImpedanceGains(
-        linear_k=float(args.vic_linear_k),
-        linear_d=float(args.vic_linear_d),
-        angular_k=float(args.vic_angular_k),
-        angular_d=float(args.vic_angular_d),
-    )
-
     ranges_path = Path(args.json) if args.json else default_ranges_fixture_path()
     seed = getattr(args, "_resolved_seed", None)
 
+    base = BatchedHeterogeneousCoupledSimConfig.defaults()
     config = dataclasses.replace(
-        BatchedHeterogeneousCoupledSimConfig.defaults(),
-        runtime=RuntimeConfig(
+        base,
+        runtime=dataclasses.replace(
+            base.runtime,
             num_envs=int(args.num_envs),
             env_spacing=tuple(float(v) for v in args.env_spacing),
             device=resolve_sim_device(getattr(args, "device", None)),
             control_hz=float(args.hz),
             sub_dt=_PHYSICS_SUB_DT,
         ),
-        robot=RobotConfig(
+        robot=dataclasses.replace(
+            base.robot,
             kind=robot_kind,  # type: ignore[arg-type]
             step_mode="vbd_only" if step_mode == "vbd" else "coupled",
             fix_to_apple=fix_to_apple,
         ),
-        scene=SceneSettleCollisionConfig(
+        scene=dataclasses.replace(
+            base.scene,
             settle_substeps=settle_substeps,
             settle_gravity_ramp=bool(args.settle_gravity_ramp),
             enable_self_collisions=bool(args.enable_self_collision),
             enable_apple_woody_collisions=bool(args.apple_woody_collision),
             enable_proxy_woody_collisions=bool(args.proxy_woody_collision),
         ),
-        domain_randomization=DomainRandomizationConfig(
+        domain_randomization=dataclasses.replace(
+            base.domain_randomization,
             ranges_path=ranges_path,
             topology_seed=int(seed) if seed is not None else None,
         ),
-        controller=ControllerConfig(
-            mode=controller_mode,  # type: ignore[arg-type]
-            vic_gains=vic_gains,
+        controller=dataclasses.replace(
+            base.controller,
+            mode=str(args.controller),  # type: ignore[arg-type]
+            vic_gains=ImpedanceGains(
+                linear_k=float(args.vic_linear_k),
+                linear_d=float(args.vic_linear_d),
+                angular_k=float(args.vic_angular_k),
+                angular_d=float(args.vic_angular_d),
+            ),
         ),
         settle_diagnostics=SettleDiagnosticsConfig() if settle_substeps > 0 else None,
         obs=(

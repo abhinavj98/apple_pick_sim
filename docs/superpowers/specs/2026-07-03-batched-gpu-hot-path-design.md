@@ -196,3 +196,50 @@ uv run python apple_pick_sim/diagnostics/benchmark_batched_heterogeneous.py \
 - `docs/gpu-coupling-optimization.md` — single-env GPU doc (needs batched section)
 - `docs/ROADMAP.md` — V.3.3+ sequencing
 - `apple_pick_sim/coupled_fruiting/batched_heterogeneous_coupled_sim.py` — runtime API
+
+---
+
+## Follow-up: `GripperGeometryConfig` (post–PR 1)
+
+**Problem:** `RobotConfig` nests full `GripperProxyConfig`, which includes `fix_to_apple` and `robot_facing_weld`. Those weld flags are owned by `robot.fix_to_apple` and applied in `_gripper_proxy()` at build time, so two knobs expose the same concept and confuse readers.
+
+**Target shape:**
+
+```python
+@dataclasses.dataclass(frozen=True)
+class GripperGeometryConfig:
+    """Gripper proxy shape/mass/placement only — no weld topology."""
+    mass: float = PLACEHOLDER_EE_MASS_KG
+    # ... other non-weld GripperProxyConfig fields (weld_direction, etc.) as needed
+
+@dataclasses.dataclass(frozen=True)
+class RobotConfig:
+    fix_to_apple: bool = True  # canonical weld / settle→weld mode
+    gripper: GripperGeometryConfig = dataclasses.field(default_factory=GripperGeometryConfig)
+```
+
+**Build helper** (replaces ad-hoc `_gripper_proxy` flag patching):
+
+```python
+def gripper_proxy_for_build(
+    config: BatchedHeterogeneousCoupledSimConfig,
+    *,
+    fix_to_apple: bool | None = None,
+) -> GripperProxyConfig:
+    fix = config.robot.fix_to_apple if fix_to_apple is None else fix_to_apple
+    return GripperProxyConfig(
+        **dataclasses.asdict(config.robot.gripper),
+        fix_to_apple=fix,
+        robot_facing_weld=fix,
+    )
+```
+
+**Migration (single PR after PR 2 or alongside V.3.3 gym):**
+
+1. Add `GripperGeometryConfig` in `batched_heterogeneous_config.py`.
+2. Change `RobotConfig.gripper` type; remove gripper weld `validate()` warning (no duplicate field).
+3. Update `_gripper_proxy` → `gripper_proxy_for_build`.
+4. Update tests and any `dataclasses.replace(..., gripper=GripperProxyConfig(...))` call sites.
+5. Keep `GripperProxyConfig` unchanged in `fruiting_system/` (builders still consume it).
+
+**Non-goals:** Do not split or rename `GripperProxyConfig` in the fruiting-system layer; only the batched sim config surface changes.

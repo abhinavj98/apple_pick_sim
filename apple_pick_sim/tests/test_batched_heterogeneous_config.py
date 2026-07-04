@@ -26,16 +26,23 @@ from apple_pick_sim.fruiting_system import (
     sample_heterogeneous_params_list,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
+from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 
 _TESTS_DIR = Path(__file__).resolve().parent
 RANGES_FIXTURE = _TESTS_DIR.parent / "fixtures" / "fruiting_system_ranges_straight_rod_test.json"
 SUB_DT = 1.0 / 1800.0
 
 
-def test_runtime_substeps_per_step_matches_gym_formula():
+def test_runtime_substeps_per_step_at_60hz():
     runtime = RuntimeConfig(control_hz=60.0, sub_dt=SUB_DT)
     assert runtime.substeps_per_step == 30
     assert runtime.frame_dt == pytest.approx(30 * SUB_DT)
+
+
+def test_runtime_substeps_per_step_at_example_default_30hz():
+    runtime = RuntimeConfig(control_hz=30.0, sub_dt=SUB_DT)
+    assert runtime.substeps_per_step == 60
+    assert runtime.frame_dt == pytest.approx(60 * SUB_DT)
 
 
 def test_defaults_preset_constructs_and_validates():
@@ -43,19 +50,21 @@ def test_defaults_preset_constructs_and_validates():
     cfg.validate()
     assert cfg.runtime.num_envs == 4
     assert cfg.runtime.env_spacing == (2.0, 2.0, 2.0)
-    assert cfg.runtime.control_hz == 60.0
+    assert cfg.runtime.control_hz == 30.0
     assert cfg.runtime.sub_dt == pytest.approx(SUB_DT)
     assert cfg.domain_randomization.ranges_path == default_ranges_fixture_path()
     assert cfg.robot.fix_to_apple is True
     assert cfg.robot.kind == "fr3"
+    assert cfg.robot.per_env_ik is True
+    assert cfg.robot.ik_bootstrap_iterations == IK_BOOTSTRAP_DEFAULT_ITERATIONS
     assert cfg.scene.settle_substeps == 5000
     assert cfg.fruiting_system.stem_coupling_gain == DEFAULT_STEM_COUPLING_GAIN
     assert cfg.controller.mode == "direct"
     assert cfg.controller.linear_speed == pytest.approx(0.1)
     assert cfg.controller.ik_iterations == 128
-    assert cfg.settle_diagnostics is None
-    assert cfg.obs is not None
-    assert cfg.obs.allocate_buffers is True
+    assert cfg.settle_diagnostics is not None
+    assert cfg.settle_diagnostics.enabled is True
+    assert cfg.obs is None
 
 
 def test_gym_defaults_preset():
@@ -167,6 +176,22 @@ def test_settle_diagnostics_optional_fields():
     diag = cfg.settle_diagnostics
     assert diag is not None
     assert diag.ke_sample_every == DEFAULT_KE_SAMPLE_EVERY
+
+
+def test_validate_warns_when_gripper_weld_true_but_robot_weld_false():
+    cfg = BatchedHeterogeneousCoupledSimConfig.defaults()
+    from apple_pick_sim.fruiting_system.params import GripperProxyConfig
+
+    cfg = dataclasses.replace(
+        cfg,
+        robot=dataclasses.replace(
+            cfg.robot,
+            fix_to_apple=False,
+            gripper=GripperProxyConfig(mass=1.0, fix_to_apple=True, robot_facing_weld=True),
+        ),
+    )
+    with pytest.warns(UserWarning, match="fix_to_apple"):
+        cfg.validate()
 
 
 def test_inject_mode_validate_passes_with_matching_params():

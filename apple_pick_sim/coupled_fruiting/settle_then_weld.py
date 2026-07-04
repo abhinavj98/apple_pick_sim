@@ -359,6 +359,7 @@ def seed_fix_to_apple_from_settled_body_q(
     quiet_apple_proxy: bool = True,
     per_env_ik: bool = False,
     per_world_proxy_offsets: tuple[tuple | None, ...] | None = None,
+    ik_bootstrap_iterations: int | None = None,
 ) -> None:
     """Seed welded scene cable poses from settled ``body_q`` (checkpoint path)."""
     bq = np.asarray(settled_body_q, dtype=np.float32).reshape(-1, 7)
@@ -395,6 +396,7 @@ def seed_fix_to_apple_from_settled_body_q(
         quiet_apple_proxy=quiet_apple_proxy,
         per_env_ik=per_env_ik,
         per_world_proxy_offsets=per_world_proxy_offsets,
+        ik_bootstrap_iterations=ik_bootstrap_iterations,
     )
 
 
@@ -405,6 +407,7 @@ def seed_fix_to_apple_from_settled(
     quiet_apple_proxy: bool = True,
     per_env_ik: bool = False,
     per_world_proxy_offsets: tuple[tuple | None, ...] | None = None,
+    ik_bootstrap_iterations: int | None = None,
 ) -> None:
     """Seed a welded (``fix_to_apple=True``) scene from a settled free-apple scene.
 
@@ -492,15 +495,24 @@ def seed_fix_to_apple_from_settled(
 
     wp.synchronize()
     if per_env_ik and layout is not None and layout.num_envs > 1:
-        _bootstrap_tcp_per_env(welded_scene, layout)
+        _bootstrap_tcp_per_env(
+            welded_scene,
+            layout,
+            ik_iterations=ik_bootstrap_iterations,
+        )
         from apple_pick_sim.coupled_fruiting.proxy_coupling import prepare_batched_stem_harvest_arrays
 
         prepare_batched_stem_harvest_arrays(welded_scene, layout)
     else:
         from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 
+        bootstrap_iters = (
+            int(ik_bootstrap_iterations)
+            if ik_bootstrap_iterations is not None
+            else IK_BOOTSTRAP_DEFAULT_ITERATIONS
+        )
         _bootstrap_tcp_at_fixed_origin(
-            welded_scene, ik_iterations=IK_BOOTSTRAP_DEFAULT_ITERATIONS
+            welded_scene, ik_iterations=bootstrap_iters
         )
         if layout is not None:
             broadcast_joint_q_from_world0(welded_scene, layout)

@@ -7,6 +7,7 @@ Viewer, argparse, and keyboard teleop do not belong here.
 from __future__ import annotations
 
 import dataclasses
+import warnings
 from pathlib import Path
 from typing import Any, Literal
 
@@ -27,6 +28,7 @@ from apple_pick_sim.fruiting_system.params import (
     PLACEHOLDER_EE_MASS_KG,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
+from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 from apple_pick_sim.sim_device import resolve_sim_device
 
 # Per-role FIXED-joint angular kd overrides (see docs/damping-tuning.md §3).
@@ -88,7 +90,8 @@ class RobotConfig:
     fix_to_apple: bool = True
     gripper: GripperProxyConfig = dataclasses.field(default_factory=_default_gripper_proxy_config)
     robot_base_pos: tuple[float, float, float] | None = None
-    ik_bootstrap_iterations: int = 96
+    per_env_ik: bool = True
+    ik_bootstrap_iterations: int = IK_BOOTSTRAP_DEFAULT_ITERATIONS
     skip_ik_bootstrap: bool = True
     defer_template_robot_bootstrap: bool = True
 
@@ -297,13 +300,24 @@ class BatchedHeterogeneousCoupledSimConfig:
                 "controller.allocate_action_buffer=True so per-env actions reach teleop"
             )
 
+        if self.robot.gripper.fix_to_apple and not self.robot.fix_to_apple:
+            warnings.warn(
+                "robot.gripper.fix_to_apple=True but robot.fix_to_apple=False; "
+                "build applies robot.fix_to_apple to the gripper proxy at weld time",
+                UserWarning,
+                stacklevel=2,
+            )
+
     @classmethod
     def defaults(cls) -> BatchedHeterogeneousCoupledSimConfig:
         """Heterogeneous example physics: 4 envs, variance fixture, example settle/collision."""
         return cls(
+            runtime=RuntimeConfig(control_hz=30.0),
             domain_randomization=DomainRandomizationConfig(
                 ranges_path=default_ranges_fixture_path(),
             ),
+            settle_diagnostics=SettleDiagnosticsConfig(),
+            obs=None,
         )
 
     @classmethod

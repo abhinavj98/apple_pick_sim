@@ -105,8 +105,9 @@ def build_batched_heterogeneous_scene(
                 welded_scene=scene,
                 settled_body_q=settled_checkpoint.body_q,
                 quiet_apple_proxy=True,
-                per_env_ik=True,
+                per_env_ik=config.robot.per_env_ik, #REMOVE THIS
                 per_world_proxy_offsets=scene.per_world_proxy_offsets,
+                ik_bootstrap_iterations=config.robot.ik_bootstrap_iterations,
             )
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None
@@ -140,8 +141,9 @@ def build_batched_heterogeneous_scene(
                 welded_scene=scene,
                 settled_scene=settled,
                 quiet_apple_proxy=True,
-                per_env_ik=True,
+                per_env_ik=config.robot.per_env_ik,
                 per_world_proxy_offsets=scene.per_world_proxy_offsets,
+                ik_bootstrap_iterations=config.robot.ik_bootstrap_iterations,
             )
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None

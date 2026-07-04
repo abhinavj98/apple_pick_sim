@@ -89,6 +89,28 @@ def test_collision_parser_defaults():
     assert cfg_off.scene.enable_proxy_woody_collisions is False
 
 
+def test_config_from_args_matches_defaults_without_cli_overrides():
+    from example_batched_heterogeneous_coupled_sim import _config_from_args  # noqa: E402
+
+    args = _make_parser().parse_args([])
+    cfg = _config_from_args(args)
+    base = BatchedHeterogeneousCoupledSimConfig.defaults()
+
+    assert cfg.runtime.num_envs == base.runtime.num_envs
+    assert cfg.runtime.control_hz == base.runtime.control_hz
+    assert cfg.runtime.env_spacing == base.runtime.env_spacing
+    assert cfg.scene.settle_substeps == base.scene.settle_substeps
+    assert cfg.robot.kind == base.robot.kind
+    assert cfg.robot.fix_to_apple == base.robot.fix_to_apple
+    assert cfg.robot.per_env_ik == base.robot.per_env_ik
+    assert cfg.robot.ik_bootstrap_iterations == base.robot.ik_bootstrap_iterations
+    assert cfg.controller.mode == base.controller.mode
+    assert cfg.settle_diagnostics is not None
+    assert cfg.obs is None
+    assert cfg.domain_randomization.ranges_path == base.domain_randomization.ranges_path
+    assert cfg.domain_randomization.topology_seed is None
+
+
 def test_vic_defaults_match_parser():
     args = _make_parser().parse_args([])
     assert args.vic_linear_k == _VIC_DEFAULT_LINEAR_K == 600.0

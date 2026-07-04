@@ -609,7 +609,7 @@ class CoupledFruitingScene:
                 "coupled_substep requires mujoco_only=False; use mujoco_substep for robot-only stepping"
             )
 
-        self.mujoco_substep(dt)
+        self.mujoco_substep(dt) #Move robot model to the next substep
         use_stem_harvest = self.stem_apple_joint_index is not None
         if not use_stem_harvest:
             if self.qd_synced is None:

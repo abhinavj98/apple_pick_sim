@@ -54,6 +54,7 @@ def test_defaults_preset_constructs_and_validates():
     assert cfg.runtime.sub_dt == pytest.approx(SUB_DT)
     assert cfg.domain_randomization.ranges_path == default_ranges_fixture_path()
     assert cfg.robot.fix_to_apple is True
+    assert cfg.robot.force_batched_layout is False
     assert cfg.robot.kind == "fr3"
     assert cfg.robot.per_env_ik is True
     assert cfg.robot.ik_bootstrap_iterations == IK_BOOTSTRAP_DEFAULT_ITERATIONS
@@ -73,6 +74,9 @@ def test_gym_defaults_preset():
     assert cfg.runtime.num_envs == 1
     assert cfg.settle_diagnostics is None
     assert cfg.obs is not None
+    assert cfg.controller.mode == "vic"
+    assert cfg.robot.fix_to_apple is True
+    assert cfg.robot.force_batched_layout is True
 
 
 def test_test_minimal_preset():

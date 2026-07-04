@@ -408,6 +408,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
     skip_ik_bootstrap: bool = True,
     vbd_only: bool = False,
     defer_template_robot_bootstrap: bool = False,
+    force_batched_layout: bool = False,
 ) -> CoupledFruitingScene:
     """Build heterogeneous FR3 coupled scenes via ``add_world`` (uniform topology)."""
     if not fr3_robot.fr3_assets_available():
@@ -430,7 +431,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
     _validate_batched_options(
         num_envs=num_envs, fix_to_apple=fix, vbd_only=vbd_only, mujoco_only=False
     )
-    if num_envs == 1:
+    if num_envs == 1 and not force_batched_layout:
         return build_coupled_fruiting_fr3(
             ranges,
             0,

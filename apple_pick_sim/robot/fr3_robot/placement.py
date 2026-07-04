@@ -482,7 +482,7 @@ def batched_ik_teleop_kwargs(scene: Any) -> dict[str, Any]:
         tpl is None
         or layout is None
         or robot_model is None
-        or int(robot_model.world_count) <= 1
+        or int(robot_model.world_count) < 1
     ):
         return {}
     return {

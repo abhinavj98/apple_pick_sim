@@ -223,6 +223,7 @@ def _builder_kwargs(
         "skip_ik_bootstrap": robot_cfg.skip_ik_bootstrap,
         "ik_bootstrap_iterations": robot_cfg.ik_bootstrap_iterations,
         "defer_template_robot_bootstrap": robot_cfg.defer_template_robot_bootstrap,
+        "force_batched_layout": robot_cfg.force_batched_layout,
     }
     return kw
 

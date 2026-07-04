@@ -94,6 +94,7 @@ class RobotConfig:
     ik_bootstrap_iterations: int = IK_BOOTSTRAP_DEFAULT_ITERATIONS
     skip_ik_bootstrap: bool = True
     defer_template_robot_bootstrap: bool = True
+    force_batched_layout: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -323,9 +324,11 @@ class BatchedHeterogeneousCoupledSimConfig:
 
     @classmethod
     def gym_defaults(cls, *, num_envs: int = 1) -> BatchedHeterogeneousCoupledSimConfig:
-        """Gym-oriented preset: FR3 coupled, gym timing, obs on, diagnostics off."""
+        """Gym-oriented preset: VIC coupled FR3, fix-to-apple, obs on, diagnostics off."""
         return cls(
             runtime=RuntimeConfig(num_envs=int(num_envs)),
+            robot=RobotConfig(fix_to_apple=True, force_batched_layout=True),
+            controller=ControllerConfig(mode="vic"),
             settle_diagnostics=None,
             obs=ObsConfig(),
         )

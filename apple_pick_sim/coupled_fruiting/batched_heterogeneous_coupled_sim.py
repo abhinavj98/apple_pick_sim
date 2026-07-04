@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from apple_pick_sim.batched_obs import gather_batched_obs, make_batched_obs_buffers
+from apple_pick_sim.coupled_fruiting.episode_state_snapshot import EpisodeStateSnapshot
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_build import (
     BatchedHeterogeneousBuildResult,
     build_batched_heterogeneous_scene,
@@ -120,6 +121,8 @@ class BatchedHeterogeneousCoupledSim:
                 self._scene.cable,
                 self._device,
             )
+
+        self._episode_snapshot: EpisodeStateSnapshot | None = None
 
     @property
     def obs_bufs(self):
@@ -380,3 +383,19 @@ class BatchedHeterogeneousCoupledSim:
                 }
             )
         return out
+
+    @property
+    def episode_snapshot(self) -> EpisodeStateSnapshot | None:
+        return self._episode_snapshot
+
+    def capture_episode_snapshot(self) -> EpisodeStateSnapshot:
+        """Capture post-weld episode baseline for cheap ``restore_episode_snapshot()``."""
+        self._episode_snapshot = EpisodeStateSnapshot.capture(self)
+        return self._episode_snapshot
+
+    def restore_episode_snapshot(self) -> None:
+        """Restore physics to the last captured episode baseline."""
+        if self._episode_snapshot is None:
+            raise RuntimeError("no episode snapshot; call capture_episode_snapshot() first")
+        self._episode_snapshot.restore(self)
+

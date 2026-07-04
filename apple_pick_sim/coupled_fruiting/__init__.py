@@ -41,6 +41,7 @@ from apple_pick_sim.coupled_fruiting.scene import (
     DEFAULT_STEM_TORQUE_CAP_NM,
     CoupledFruitingScene,
 )
+from apple_pick_sim.coupled_fruiting.episode_state_snapshot import EpisodeStateSnapshot
 from apple_pick_sim.coupled_fruiting.settled_checkpoint import (
     SettledCheckpoint,
     settle_cache_path_for,
@@ -76,6 +77,7 @@ __all__ = [
     "BatchedHeterogeneousBuildResult",
     "BatchedHeterogeneousCoupledSim",
     "BatchedHeterogeneousCoupledSimConfig",
+    "EpisodeStateSnapshot",
     "SettledCheckpoint",
     "build_batched_heterogeneous_scene",
     "print_per_env_params",

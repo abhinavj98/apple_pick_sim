@@ -44,7 +44,7 @@ _VIC_DEFAULT_LINEAR_D = 200.0
 _VIC_DEFAULT_ANGULAR_K = 20.0
 _VIC_DEFAULT_ANGULAR_D = 4.0
 
-RobotKind = Literal["fr3", "placeholder"]
+RobotKind = Literal["fr3"]
 StepMode = Literal["coupled", "vbd_only"]
 ControllerMode = Literal["direct", "ee", "vic"]
 
@@ -272,9 +272,10 @@ class BatchedHeterogeneousCoupledSimConfig:
                 f"must match runtime.num_envs ({self.runtime.num_envs})"
             )
 
+        if self.robot.kind != "fr3":
+            raise ValueError(f"robot.kind must be 'fr3', got {self.robot.kind!r}")
+
         if self.controller.mode == "vic":
-            if self.robot.kind != "fr3":
-                raise ValueError("controller.mode='vic' requires robot.kind='fr3'")
             if self.robot.step_mode != "coupled":
                 raise ValueError("controller.mode='vic' requires robot.step_mode='coupled'")
 

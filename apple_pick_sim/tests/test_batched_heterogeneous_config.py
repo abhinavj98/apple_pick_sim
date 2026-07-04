@@ -99,14 +99,13 @@ def test_validate_raises_on_per_env_params_length_mismatch():
         cfg.validate()
 
 
-def test_validate_raises_vic_with_placeholder():
+def test_validate_rejects_non_fr3_robot_kind():
     cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=1)
     cfg = dataclasses.replace(
         cfg,
-        robot=dataclasses.replace(cfg.robot, kind="placeholder"),
-        controller=dataclasses.replace(cfg.controller, mode="vic"),
+        robot=dataclasses.replace(cfg.robot, kind="placeholder"),  # type: ignore[arg-type]
     )
-    with pytest.raises(ValueError, match="vic"):
+    with pytest.raises(ValueError, match="robot.kind must be 'fr3'"):
         cfg.validate()
 
 

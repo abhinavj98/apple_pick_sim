@@ -122,21 +122,12 @@ def _resolve_step_mode(args: argparse.Namespace) -> Literal["coupled", "vbd"]:
     return "coupled"
 
 
-def _resolve_robot_kind(args: argparse.Namespace, *, fix_to_apple: bool) -> str:
-    robot_kind = str(args.robot)
-    if fix_to_apple and robot_kind == "placeholder":
-        print(
-            "Warning: fix_to_apple requires FR3 for settle-then-weld; using --robot fr3.",
-            file=sys.stderr,
+def _require_fr3_assets() -> None:
+    if not fr3_robot.fr3_assets_available():
+        raise SystemExit(
+            "Bundled FR3 assets missing under assets/fr3/; "
+            "see assets/fr3/README.md and install usd-core."
         )
-        robot_kind = "fr3"
-    if robot_kind == "fr3" and not fr3_robot.fr3_assets_available():
-        print(
-            "Warning: FR3 assets not found under assets/fr3/; falling back to placeholder TCP.",
-            file=sys.stderr,
-        )
-        return "placeholder"
-    return robot_kind
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -184,7 +175,6 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Not supported for heterogeneous batched builds (num_envs > 1).",
     )
-    parser.add_argument("--robot", type=str, choices=("placeholder", "fr3"), default="fr3")
     parser.add_argument(
         "--controller",
         type=str,
@@ -273,7 +263,6 @@ def _make_parser() -> argparse.ArgumentParser:
 def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSimConfig:
     step_mode = _resolve_step_mode(args)
     fix_to_apple = bool(args.fix_to_apple)
-    robot_kind = _resolve_robot_kind(args, fix_to_apple=fix_to_apple)
     settle_substeps = int(args.settle_substeps)
     viz = _viz_settings_from_args(args)
 
@@ -293,7 +282,6 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
         ),
         robot=dataclasses.replace(
             base.robot,
-            kind=robot_kind,  # type: ignore[arg-type]
             step_mode="vbd_only" if step_mode == "vbd" else "coupled",
             fix_to_apple=fix_to_apple,
         ),
@@ -342,10 +330,8 @@ def _print_startup(
     print(f"Topology seed: {seed}")
     print(f"Warp device: {config.resolve_device()}")
     step_mode = config.robot.step_mode
-    robot_kind = config.robot.kind
     if step_mode == "coupled":
-        label = "FR3+EE" if robot_kind == "fr3" else "placeholder TCP"
-        print(f"M1 cable + {label} MuJoCo (staggered coupling); Newton viewer shows cable model.")
+        print("M1 cable + FR3+EE MuJoCo (staggered coupling); Newton viewer shows cable model.")
     else:
         print("Cable SolverVBD only (--only-vbd).")
     print_per_env_params(per_env_params)
@@ -557,6 +543,7 @@ def main() -> None:
     parser = _make_parser()
     viewer, args = newton.examples.init(parser=parser)
 
+    _require_fr3_assets()
     seed = args.seed if args.seed is not None else secrets.randbelow(2**31 - 1)
     args._resolved_seed = int(seed)
 
@@ -575,7 +562,7 @@ def main() -> None:
     graphical = isinstance(viewer, newton.viewer.ViewerGL)
     build_viewer = viewer if graphical else None
 
-    if config.robot.kind == "fr3" and config.robot.step_mode != "vbd_only":
+    if config.robot.step_mode != "vbd_only":
         fr3_robot.enable_ik_bootstrap_warnings_for_examples()
 
     sim = BatchedHeterogeneousCoupledSim(

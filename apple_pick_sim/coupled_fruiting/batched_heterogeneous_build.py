@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import warnings
 from collections.abc import Sequence
 from typing import Any
 
@@ -12,10 +11,7 @@ import numpy as np
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
 )
-from apple_pick_sim.coupled_fruiting.builders import (
-    build_heterogeneous_coupled_fruiting_fr3,
-    build_heterogeneous_coupled_fruiting_placeholder,
-)
+from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_fr3
 from apple_pick_sim.coupled_fruiting.scene import CoupledFruitingScene
 from apple_pick_sim.coupled_fruiting.settled_checkpoint import SettledCheckpoint
 from apple_pick_sim.coupled_fruiting.settle_ke_decay import (
@@ -74,12 +70,8 @@ def build_batched_heterogeneous_scene(
             f"runtime.num_envs ({config.runtime.num_envs})"
         )
 
-    robot_kind = _resolve_robot_kind(config.robot.kind)
-    build_fn = (
-        build_heterogeneous_coupled_fruiting_fr3
-        if robot_kind == "fr3"
-        else build_heterogeneous_coupled_fruiting_placeholder
-    )
+    _require_fr3_assets()
+    build_fn = build_heterogeneous_coupled_fruiting_fr3
 
     vbd_only = config.robot.step_mode == "vbd_only"
     fix_to_apple = config.robot.fix_to_apple
@@ -95,12 +87,9 @@ def build_batched_heterogeneous_scene(
     if fix_to_apple and not vbd_only:
         gripper_weld = _gripper_proxy(config, fix_to_apple=True)
         if settled_checkpoint is not None:
-            weld_kw = _builder_kwargs(
-                config, gripper=gripper_weld, vbd_only=False, robot_kind=robot_kind
-            )
-            if robot_kind == "fr3":
-                weld_kw["skip_ik_bootstrap"] = True
-                weld_kw["defer_template_robot_bootstrap"] = True
+            weld_kw = _builder_kwargs(config, gripper=gripper_weld, vbd_only=False)
+            weld_kw["skip_ik_bootstrap"] = True
+            weld_kw["defer_template_robot_bootstrap"] = True
             scene = build_fn(ranges, params, **weld_kw)
             seed_fix_to_apple_from_settled_body_q(
                 welded_scene=scene,
@@ -117,9 +106,7 @@ def build_batched_heterogeneous_scene(
             settled = build_fn(
                 ranges,
                 params,
-                **_builder_kwargs(
-                    config, gripper=gripper_free, vbd_only=True, robot_kind=robot_kind
-                ),
+                **_builder_kwargs(config, gripper=gripper_free, vbd_only=True),
             )
             stability_reports, ke_decay_reports = _run_vbd_settle(
                 settled,
@@ -131,12 +118,9 @@ def build_batched_heterogeneous_scene(
                 collect_diagnostics=collect_diag,
             )
             settled_body_q = capture_body_q_numpy(settled.cable.state_0.body_q)
-            weld_kw = _builder_kwargs(
-                config, gripper=gripper_weld, vbd_only=False, robot_kind=robot_kind
-            )
-            if robot_kind == "fr3":
-                weld_kw["skip_ik_bootstrap"] = True
-                weld_kw["defer_template_robot_bootstrap"] = True
+            weld_kw = _builder_kwargs(config, gripper=gripper_weld, vbd_only=False)
+            weld_kw["skip_ik_bootstrap"] = True
+            weld_kw["defer_template_robot_bootstrap"] = True
             scene = build_fn(ranges, params, **weld_kw)
             seed_fix_to_apple_from_settled(
                 welded_scene=scene,
@@ -156,7 +140,6 @@ def build_batched_heterogeneous_scene(
                 config,
                 gripper=_gripper_proxy(config),
                 vbd_only=vbd_only,
-                robot_kind=robot_kind,
             ),
         )
         if settle_substeps > 0:
@@ -192,15 +175,11 @@ def build_batched_heterogeneous_scene(
     )
 
 
-def _resolve_robot_kind(kind: str) -> str:
-    if kind == "fr3" and not fr3_robot.fr3_assets_available():
-        warnings.warn(
-            "FR3 assets not found; building with placeholder TCP.",
-            UserWarning,
-            stacklevel=3,
+def _require_fr3_assets() -> None:
+    if not fr3_robot.fr3_assets_available():
+        raise FileNotFoundError(
+            "Bundled FR3 assets missing; see assets/fr3/README.md"
         )
-        return "placeholder"
-    return kind
 
 
 def _gripper_proxy(
@@ -221,7 +200,6 @@ def _builder_kwargs(
     *,
     gripper: GripperProxyConfig,
     vbd_only: bool,
-    robot_kind: str,
 ) -> dict[str, Any]:
     scene_cfg = config.scene
     robot_cfg = config.robot
@@ -243,10 +221,9 @@ def _builder_kwargs(
         "mujoco_solver_kwargs": dict(mujoco.solver_kwargs),
         "mujoco_use_cpu": mujoco.use_cpu,
         "skip_ik_bootstrap": robot_cfg.skip_ik_bootstrap,
+        "ik_bootstrap_iterations": robot_cfg.ik_bootstrap_iterations,
+        "defer_template_robot_bootstrap": robot_cfg.defer_template_robot_bootstrap,
     }
-    if robot_kind == "fr3":
-        kw["ik_bootstrap_iterations"] = robot_cfg.ik_bootstrap_iterations
-        kw["defer_template_robot_bootstrap"] = robot_cfg.defer_template_robot_bootstrap
     return kw
 
 

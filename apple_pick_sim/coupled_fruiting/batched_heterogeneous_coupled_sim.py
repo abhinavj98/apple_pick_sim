@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import warnings
+import dataclasses
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -16,8 +16,6 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
 )
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
-from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
-from apple_pick_sim.coupled_fruiting.broadcast_device import nudge_joint_q_coord_device
 from apple_pick_sim.coupled_fruiting.scene import CoupledFruitingScene
 from apple_pick_sim.coupled_fruiting.settled_checkpoint import (
     SettledCheckpoint,
@@ -26,12 +24,6 @@ from apple_pick_sim.coupled_fruiting.settled_checkpoint import (
 from apple_pick_sim.fruiting_system import FruitingSystemParams
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.controllers.batched_action_twists import clip_action_tensor
-
-
-_PLACEHOLDER_HOT_PATH_WARNING = (
-    "Placeholder robot uses CPU host nudge in step() on CPU devices; "
-    "use robot.kind='fr3' with FR3 assets for a fully GPU hot path."
-)
 
 
 class BatchedHeterogeneousCoupledSim:
@@ -93,26 +85,6 @@ class BatchedHeterogeneousCoupledSim:
         if self._layout is None:
             raise RuntimeError("batched scene missing layout")
 
-        robot_kind = self._resolved_robot_kind()
-        if robot_kind == "placeholder":
-            if config.robot.kind != "placeholder" and str(self._device) != "cpu":
-                warnings.warn(
-                    "FR3 assets unavailable; placeholder step path active on "
-                    f"{self._device}. Install FR3 assets or set robot.kind='placeholder' "
-                    "for explicit test-only placeholder mode.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            elif str(self._device) == "cpu":
-                warnings.warn(_PLACEHOLDER_HOT_PATH_WARNING, UserWarning, stacklevel=2)
-            elif config.robot.kind == "placeholder":
-                warnings.warn(
-                    "Explicit robot.kind='placeholder' on a CUDA device; "
-                    "joint broadcast uses GPU kernels but placeholder teleop remains test-only.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-
         if (
             loaded_checkpoint is None
             and cache_path is not None
@@ -128,7 +100,7 @@ class BatchedHeterogeneousCoupledSim:
             self._settled_checkpoint = checkpoint
 
         self._ee_ctrl: Any | None = None
-        if robot_kind == "fr3" and self._scene.robot_model is not None and config.robot.step_mode != "vbd_only":
+        if self._scene.robot_model is not None and config.robot.step_mode != "vbd_only":
             self._ee_ctrl = self._configure_fr3_controller(config.controller.mode)
 
         self._action_buffer = None
@@ -210,11 +182,6 @@ class BatchedHeterogeneousCoupledSim:
     @property
     def sim_time(self) -> float:
         return self._sim_time
-
-    def _resolved_robot_kind(self) -> str:
-        if self._config.robot.kind == "fr3" and not fr3_robot.fr3_assets_available():
-            return "placeholder"
-        return self._config.robot.kind
 
     def _configure_fr3_controller(self, mode: str):
         ik_kw = fr3_robot.batched_ik_teleop_kwargs(self._scene)
@@ -348,8 +315,7 @@ class BatchedHeterogeneousCoupledSim:
         if self._action_buffer is not None:
             self._action_buffer.copy_(actions)
 
-        robot_kind = self._resolved_robot_kind()
-        if robot_kind == "fr3" and self._ee_ctrl is not None:
+        if self._ee_ctrl is not None:
             if self._action_buffer is not None:
                 self._run_fr3_teleop_from_actions()
             else:
@@ -366,35 +332,11 @@ class BatchedHeterogeneousCoupledSim:
                         self._ee_ctrl,
                         velocity=velocity,
                     )
-        elif robot_kind == "placeholder":
-            self._nudge_placeholder_world0(actions)
-
-        if robot_kind == "placeholder":
-            broadcast_joint_q_from_world0(self._scene, self._layout)
 
         for _ in range(cfg.runtime.substeps_per_step):
             self._scene.coupled_substep(self.sub_dt)
 
         self._sim_time += self.frame_dt
-
-    def _nudge_placeholder_world0(self, actions) -> None:
-        layout = self._layout
-        assert layout is not None
-        model = self._scene.robot_model
-        if model is None or self._scene.robot_state_0 is None:
-            return
-        vx = float(actions[0, 0].item())
-        delta = vx * self.frame_dt
-        coord_index = int(layout.joint_q_slice(0).start)
-        if str(getattr(model, "device", "cpu")) != "cpu":
-            nudge_joint_q_coord_device(model.joint_q, coord_index, delta)
-            nudge_joint_q_coord_device(self._scene.robot_state_0.joint_q, coord_index, delta)
-            return
-        jq = model.joint_q.numpy().copy()
-        sl = layout.joint_q_slice(0)
-        jq[sl][0] += delta
-        model.joint_q.assign(jq)
-        self._scene.robot_state_0.joint_q.assign(jq)
 
     def gather_obs(self) -> dict[str, Any]:
         """Fill obs buffers and return a snapshot dict."""

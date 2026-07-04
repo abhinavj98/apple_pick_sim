@@ -50,16 +50,29 @@ def per_env_params(ranges):
     )
 
 
-def _vbd_placeholder_config(*, settle_substeps: int = 0) -> BatchedHeterogeneousCoupledSimConfig:
+def _vbd_only_config(*, settle_substeps: int = 0) -> BatchedHeterogeneousCoupledSimConfig:
     return dataclasses.replace(
         BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),
         robot=RobotConfig(
-            kind="placeholder",
+            kind="fr3",
             step_mode="vbd_only",
             fix_to_apple=False,
         ),
         scene=SceneSettleCollisionConfig(settle_substeps=settle_substeps),
         obs=ObsConfig(allocate_buffers=True),
+    )
+
+
+def _coupled_fr3_config(*, settle_substeps: int = 0) -> BatchedHeterogeneousCoupledSimConfig:
+    return dataclasses.replace(
+        _vbd_only_config(settle_substeps=settle_substeps),
+        robot=RobotConfig(
+            kind="fr3",
+            step_mode="coupled",
+            fix_to_apple=False,
+            skip_ik_bootstrap=True,
+            defer_template_robot_bootstrap=True,
+        ),
     )
 
 
@@ -90,8 +103,9 @@ def _vic_cacheable_config(*, settle_substeps: int = 8) -> BatchedHeterogeneousCo
     )
 
 
+@requires_fr3
 def test_init_minimal_smoke(ranges, per_env_params):
-    cfg = _vbd_placeholder_config()
+    cfg = _vbd_only_config()
     sim = BatchedHeterogeneousCoupledSim(cfg, per_env_params, ranges, use_settle_cache=False)
     assert sim.num_envs == _NUM_ENVS
     assert sim.layout is not None
@@ -104,13 +118,7 @@ def test_init_minimal_smoke(ranges, per_env_params):
         assert z > -0.05, f"world {w} apple fell: z={z}"
 
 
-def test_placeholder_kind_warns(ranges, per_env_params):
-    cfg = _vbd_placeholder_config()
-    with pytest.warns(UserWarning, match="CPU host nudge"):
-        BatchedHeterogeneousCoupledSim(cfg, per_env_params, ranges, use_settle_cache=False)
-
-
-def test_fr3_missing_assets_warns_and_builds(ranges, per_env_params):
+def test_build_raises_without_fr3_assets(ranges, per_env_params):
     cfg = dataclasses.replace(
         BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),
         robot=RobotConfig(kind="fr3", step_mode="vbd_only", fix_to_apple=False),
@@ -120,12 +128,10 @@ def test_fr3_missing_assets_warns_and_builds(ranges, per_env_params):
         "apple_pick_sim.coupled_fruiting.batched_heterogeneous_build.fr3_robot.fr3_assets_available",
         return_value=False,
     ):
-        with pytest.warns(UserWarning, match="placeholder TCP"):
-            with pytest.warns(UserWarning, match="CPU host nudge"):
-                sim = BatchedHeterogeneousCoupledSim(
-                    cfg, per_env_params, ranges, use_settle_cache=False
-                )
-    assert sim.layout is not None
+        with pytest.raises(FileNotFoundError, match="FR3 assets"):
+            BatchedHeterogeneousCoupledSim(
+                cfg, per_env_params, ranges, use_settle_cache=False
+            )
 
 
 @requires_fr3
@@ -212,13 +218,10 @@ def test_checkpoint_validate_rejects_mismatch(tmp_path, ranges, per_env_params):
         ckpt.validate_against(config=bad_cfg, ranges=ranges, per_env_params=per_env_params)
 
 
+@requires_fr3
 def test_step_clips_speed(ranges, per_env_params):
     torch = _require_torch()
-    cfg = dataclasses.replace(
-        _vbd_placeholder_config(),
-        robot=RobotConfig(kind="placeholder", step_mode="coupled", fix_to_apple=False),
-        scene=SceneSettleCollisionConfig(settle_substeps=0),
-    )
+    cfg = _coupled_fr3_config()
     sim = BatchedHeterogeneousCoupledSim(cfg, per_env_params, ranges, use_settle_cache=False)
     big = torch.full((sim.num_envs, 6), 10.0, dtype=torch.float32, device=sim.device)
     clipped = sim._clip_actions(big)
@@ -227,21 +230,19 @@ def test_step_clips_speed(ranges, per_env_params):
         assert float(torch.linalg.norm(clipped[i, 3:6])) <= cfg.controller.angular_speed + 1e-5
 
 
+@requires_fr3
 def test_step_vbd_only_rejects_actions(ranges, per_env_params):
     torch = _require_torch()
-    cfg = _vbd_placeholder_config()
+    cfg = _vbd_only_config()
     sim = BatchedHeterogeneousCoupledSim(cfg, per_env_params, ranges, use_settle_cache=False)
     actions = torch.zeros(sim.num_envs, 6, dtype=torch.float32, device=sim.device)
     with pytest.raises(ValueError, match="vbd_only"):
         sim.step(actions)
 
 
+@requires_fr3
 def test_step_coupled_smoke(ranges, per_env_params):
-    cfg = dataclasses.replace(
-        _vbd_placeholder_config(),
-        robot=RobotConfig(kind="placeholder", step_mode="coupled", fix_to_apple=False),
-        scene=SceneSettleCollisionConfig(settle_substeps=0),
-    )
+    cfg = _coupled_fr3_config()
     sim = BatchedHeterogeneousCoupledSim(cfg, per_env_params, ranges, use_settle_cache=False)
     for _ in range(3):
         sim.step(None)
@@ -254,8 +255,9 @@ def test_step_coupled_smoke(ranges, per_env_params):
         assert z > -0.1
 
 
+@requires_fr3
 def test_gather_obs_keys(ranges, per_env_params):
-    cfg = _vbd_placeholder_config()
+    cfg = _vbd_only_config()
     sim = BatchedHeterogeneousCoupledSim(cfg, per_env_params, ranges, use_settle_cache=False)
     sim.step(None)
     obs = sim.gather_obs()

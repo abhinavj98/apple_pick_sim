@@ -63,10 +63,7 @@ from apple_pick_sim.coupled_fruiting import (
     quiet_all_cable_bodies,
     settle_vbd_substeps,
 )
-from apple_pick_sim.coupled_fruiting.builders import (
-    build_coupled_fruiting_fr3,
-    build_coupled_fruiting_placeholder,
-)
+from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 from apple_pick_sim.fruiting_system import (
     GripperProxyConfig,
     PLACEHOLDER_EE_MASS_KG,
@@ -93,20 +90,14 @@ def _enable_self_collisions_from_args(args: argparse.Namespace | None) -> bool:
     return bool(getattr(args, "enable_self_collision", False)) if args else False
 
 
-def _gripper_proxy_from_args(
-    args: argparse.Namespace | None,
-    *,
-    robot_kind: str,
-) -> GripperProxyConfig:
+def _gripper_proxy_from_args(args: argparse.Namespace | None) -> GripperProxyConfig:
     """Build :class:`GripperProxyConfig` from CLI ``--fix-to-apple`` / ``--no-fix-to-apple``."""
     fix = _fix_to_apple_from_args(args)
-    if robot_kind == "fr3":
-        return GripperProxyConfig(
-            mass=PLACEHOLDER_EE_MASS_KG,
-            fix_to_apple=fix,
-            robot_facing_weld=fix,
-        )
-    return GripperProxyConfig(fix_to_apple=fix, robot_facing_weld=fix)
+    return GripperProxyConfig(
+        mass=PLACEHOLDER_EE_MASS_KG,
+        fix_to_apple=fix,
+        robot_facing_weld=fix,
+    )
 
 
 def _resolve_step_mode(args: argparse.Namespace | None) -> str:
@@ -182,15 +173,12 @@ def _print_target_and_expected_tf(
         )
 
 
-def _resolve_robot_kind(args: argparse.Namespace | None) -> str:
-    robot_kind = getattr(args, "robot", "fr3") if args else "fr3"
-    if robot_kind == "fr3" and not fr3_robot.fr3_assets_available():
-        print(
-            "Warning: FR3 assets not found under assets/fr3/; falling back to placeholder TCP.",
-            file=sys.stderr,
+def _require_fr3_assets() -> None:
+    if not fr3_robot.fr3_assets_available():
+        raise SystemExit(
+            "Bundled FR3 assets missing under assets/fr3/; "
+            "see assets/fr3/README.md and install usd-core."
         )
-        return "placeholder"
-    return robot_kind
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -278,16 +266,6 @@ def _make_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.5,
         help="Maximum arrow length [m]; 0 disables cap (default 1.5).",
-    )
-    parser.add_argument(
-        "--robot",
-        type=str,
-        choices=("placeholder", "fr3"),
-        default="fr3",
-        help=(
-            "Robot model for Model A: bundled FR3+EE (default) or placeholder free TCP "
-            "(assets/fr3; requires usd-core)."
-        ),
     )
     parser.add_argument(
         "--controller",
@@ -384,12 +362,10 @@ class ExampleCoupledFruiting:
         print(f"Initial seed: {first_seed}")
         sim_device = resolve_sim_device(getattr(args, "device", None) if args else None)
         print(f"Warp device: {sim_device}")
-        robot_kind = _resolve_robot_kind(args)
-        if robot_kind == "fr3":
-            fr3_robot.enable_ik_bootstrap_warnings_for_examples()
+        _require_fr3_assets()
+        fr3_robot.enable_ik_bootstrap_warnings_for_examples()
         if self._step_mode == "coupled":
-            label = "FR3+EE" if robot_kind == "fr3" else "placeholder TCP"
-            print(f"M1 cable + {label} MuJoCo (staggered coupling); Newton viewer shows cable model.")
+            print("M1 cable + FR3+EE MuJoCo (staggered coupling); Newton viewer shows cable model.")
         elif self._step_mode == "vbd":
             print("Cable SolverVBD only (--only-vbd).")
         else:
@@ -403,12 +379,8 @@ class ExampleCoupledFruiting:
             f"({'stem-harvest' if fix_to_apple else 'velocity-delta'} coupling)."
         )
 
-        build_fn = (
-            build_coupled_fruiting_fr3
-            if robot_kind == "fr3"
-            else build_coupled_fruiting_placeholder
-        )
-        gripper = _gripper_proxy_from_args(args, robot_kind=robot_kind)
+        build_fn = build_coupled_fruiting_fr3
+        gripper = _gripper_proxy_from_args(args)
         build_kw = dict(
             device=sim_device,
             enable_self_collisions=enable_self,
@@ -416,7 +388,7 @@ class ExampleCoupledFruiting:
             vbd_only=(self._step_mode == "vbd"),
             mujoco_only=(self._step_mode == "mjc"),
         )
-        if robot_kind == "fr3" and not (fix_to_apple and self._step_mode != "vbd"):
+        if not (fix_to_apple and self._step_mode != "vbd"):
             # Real-world proxy supplies robot_base_pos in JSON; do not auto-park from proxy.
             if parse_fixture_args(self.ranges).robot_base_pos is None:
                 build_kw["robot_base_from_proxy"] = True
@@ -561,7 +533,7 @@ class ExampleCoupledFruiting:
             | fr3_robot.Fr3EEDirectJointController
             | None
         ) = None
-        if robot_kind == "fr3" and has_robot and self._step_mode != "vbd":
+        if has_robot and self._step_mode != "vbd":
             self._ee_ctrl = self._configure_fr3_controller(args, self._controller_mode)
             if self._print_tcp_transforms:
                 print("FR3 TCP transforms after controller sync:", flush=True)
@@ -569,7 +541,7 @@ class ExampleCoupledFruiting:
 
         enable_kb = bool(getattr(args, "fr3_keyboard", False)) if args else False
         kb_ok = hasattr(self.viewer, "is_key_down")
-        if enable_kb and robot_kind == "fr3" and self._ee_ctrl is not None:
+        if enable_kb and self._ee_ctrl is not None:
             if not kb_ok:
                 print(
                     "FR3 keyboard teleop unavailable: use --viewer gl (not viser/null).",
@@ -577,8 +549,6 @@ class ExampleCoupledFruiting:
                 )
             else:
                 fr3_robot.print_fr3_keyboard_bindings()
-        elif enable_kb and robot_kind != "fr3":
-            print("Warning: --fr3-keyboard requires FR3 assets.", file=sys.stderr)
 
     def _configure_fr3_controller(
         self,

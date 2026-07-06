@@ -25,6 +25,7 @@ from apple_pick_sim.batched_viz import (
     fruiting_viz_joints,
     junction_viz_color,
     log_batched_endpoints,
+    log_batched_movement_direction_arrows,
     log_batched_tcp_force_arrows,
     log_batched_woody_junction_force_arrows,
     log_batched_woody_start_points,
@@ -232,6 +233,36 @@ def test_log_batched_tcp_force_arrows_from_obs_bufs():
         _world_position(scene, layout, 0, [0.0, 0.0, 1.0]),
     )
     np.testing.assert_allclose(ends_np[0], starts_np[0] + [0.2, 0.0, 0.0], rtol=0, atol=1e-5)
+    np.testing.assert_allclose(ends_np[1], starts_np[1] + [0.0, 0.4, 0.0], rtol=0, atol=1e-5)
+
+
+def test_log_batched_movement_direction_arrows_from_obs_bufs():
+    viewer = _MockViewer()
+    layout = _two_env_layout()
+    scene = _mock_scene_with_forces(
+        layout,
+        tcp_positions=[(0.0, 0.0, 1.0), (0.0, 0.0, 1.0)],
+        tcp_forces=[(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)],
+    )
+    bufs = _obs_bufs_from_scene(scene, layout)
+    directions = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
+    log_batched_movement_direction_arrows(
+        viewer,
+        scene,
+        layout,
+        directions=directions,
+        length_m=0.4,
+        bufs=bufs,
+    )
+    arrow_calls = [c for c in viewer.calls if c[0] == "arrows"]
+    assert len(arrow_calls) == 1
+    _kind, name, starts, ends, _colors, _kw = arrow_calls[0]
+    assert name == "/gym/movement_direction"
+    starts_np = starts.numpy().reshape(-1, 3)
+    ends_np = ends.numpy().reshape(-1, 3)
+    origin0 = _world_position(scene, layout, 0, [0.0, 0.0, 1.0])
+    np.testing.assert_allclose(starts_np[0], origin0 + [0.05, 0.0, 0.0], rtol=0, atol=1e-5)
+    np.testing.assert_allclose(ends_np[0], starts_np[0] + [0.4, 0.0, 0.0], rtol=0, atol=1e-5)
     np.testing.assert_allclose(ends_np[1], starts_np[1] + [0.0, 0.4, 0.0], rtol=0, atol=1e-5)
 
 

@@ -18,6 +18,7 @@ from apple_pick_sim.fruiting_system.scene import fixed_joint_anchors_world
 from apple_pick_sim.tcp_force_viz import (
     _clear_logged_arrow,
     _viewer_device,
+    direction_arrow_segment_arrays,
     force_arrow_segment_arrays,
 )
 
@@ -658,6 +659,106 @@ def log_batched_tcp_force_arrows(
                 min_length=min_length,
                 max_length=max_length,
                 force_threshold=force_threshold,
+            )
+            if segments is None:
+                continue
+            starts, ends, colors = segments
+            starts_list.append(starts)
+            ends_list.append(ends)
+            colors_list.append(colors)
+
+    if not starts_list:
+        _clear_logged_arrow(viewer, name, hidden=hidden)
+        return
+
+    _log_force_arrow_batch(
+        viewer,
+        name,
+        np.vstack(starts_list),
+        np.vstack(ends_list),
+        np.vstack(colors_list),
+        device=dev,
+        hidden=hidden,
+    )
+
+
+def log_batched_movement_direction_arrows(
+    viewer: Any,
+    scene: Any,
+    layout: BatchedEnvLayout,
+    *,
+    directions: np.ndarray,
+    name: str = "/gym/movement_direction",
+    length_m: float = 0.4,
+    direction_threshold: float = 1e-6,
+    hidden: bool = False,
+    bufs: BatchedObsBuffers | None = None,
+    linear_velocities: np.ndarray | None = None,
+) -> None:
+    """Draw fixed-length pull / excitation direction arrows at every env TCP."""
+    if not _viewer_has_line_overlay(viewer):
+        return
+
+    dirs = np.asarray(directions, dtype=np.float64).reshape(layout.num_envs, 3)
+    if dirs.shape[0] != layout.num_envs:
+        raise ValueError(
+            f"directions shape {dirs.shape} incompatible with num_envs={layout.num_envs}"
+        )
+
+    lin_vel = None
+    if linear_velocities is not None:
+        lin_vel = np.asarray(linear_velocities, dtype=np.float64).reshape(layout.num_envs, 3)
+
+    fallback = None
+    model = getattr(scene, "robot_model", None)
+    if model is not None:
+        fallback = str(model.device)
+    dev = _viewer_device(viewer, fallback=fallback)
+
+    starts_list: list[np.ndarray] = []
+    ends_list: list[np.ndarray] = []
+    colors_list: list[np.ndarray] = []
+
+    if bufs is not None:
+        tcp_pose = bufs.tcp_pose.numpy()
+        for w in range(layout.num_envs):
+            direction: np.ndarray | None = None
+            if lin_vel is not None:
+                vel = lin_vel[w]
+                if float(np.linalg.norm(vel)) >= direction_threshold:
+                    direction = vel
+            if direction is None:
+                direction = dirs[w]
+            origin = _world_position(scene, layout, w, tcp_pose[w, :3])
+            segments = direction_arrow_segment_arrays(
+                origin,
+                direction,
+                length_m=length_m,
+                direction_threshold=direction_threshold,
+            )
+            if segments is None:
+                continue
+            starts, ends, colors = segments
+            starts_list.append(starts)
+            ends_list.append(ends)
+            colors_list.append(colors)
+    else:
+        robot_bq = scene.robot_state_0.body_q.numpy().reshape(-1, 7)
+        for w in range(layout.num_envs):
+            direction = None
+            if lin_vel is not None:
+                vel = lin_vel[w]
+                if float(np.linalg.norm(vel)) >= direction_threshold:
+                    direction = vel
+            if direction is None:
+                direction = dirs[w]
+            tcp_idx = layout.tcp_body_indices[w]
+            origin = _world_position(scene, layout, w, robot_bq[tcp_idx, :3])
+            segments = direction_arrow_segment_arrays(
+                origin,
+                direction,
+                length_m=length_m,
+                direction_threshold=direction_threshold,
             )
             if segments is None:
                 continue

@@ -1731,7 +1731,7 @@ def test_example_coupled_fruiting_fix_to_apple_parser_default():
 
     args = ex._make_parser().parse_args([])
     assert ex._fix_to_apple_from_args(args) is False
-    proxy_config = ex._gripper_proxy_from_args(args, robot_kind="fr3")
+    proxy_config = ex._gripper_proxy_from_args(args)
     assert proxy_config.fix_to_apple is False
     assert proxy_config.robot_facing_weld is False
 
@@ -1741,7 +1741,7 @@ def test_example_coupled_fruiting_fix_to_apple_parser_enabled():
 
     args = ex._make_parser().parse_args(["--fix-to-apple"])
     assert ex._fix_to_apple_from_args(args) is True
-    proxy_config = ex._gripper_proxy_from_args(args, robot_kind="fr3")
+    proxy_config = ex._gripper_proxy_from_args(args)
     assert proxy_config.fix_to_apple is True
     assert proxy_config.robot_facing_weld is True
 
@@ -1790,11 +1790,12 @@ def test_fr3_direct_teleop_kinematic_substep_preserves_joint_q():
     np.testing.assert_allclose(q_after_substeps, q_after_teleop, rtol=0, atol=1e-5)
 
 
-def test_example_coupled_fruiting_default_robot_is_fr3():
+def test_example_coupled_fruiting_default_vic_gains():
     from apple_pick_sim.examples import example_coupled_fruiting as ex
 
     args = ex._make_parser().parse_args([])
-    assert args.robot == "fr3"
+    assert args.json is None
+    assert ex._resolve_controller_mode(args) == "vic"
     assert args.vic_linear_k == 8000.0
     assert args.vic_angular_d == 4.0
 

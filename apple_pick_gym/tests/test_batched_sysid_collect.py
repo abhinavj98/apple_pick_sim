@@ -24,8 +24,11 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     SceneSettleCollisionConfig,
 )
 from apple_pick_sim.fruiting_system import load_ranges, sample_heterogeneous_params_list
-from apple_pick_sim.system_id import QuasiStaticStepConfig, TrajectoryDataset
-from apple_pick_sim.system_id.trajectory_store import METADATA_COLUMNS, REQUIRED_FRAME_COLUMNS
+from apple_pick_sim.system_id import BatchedSysIdDataset, QuasiStaticStepConfig
+from apple_pick_sim.system_id.batched_trajectory_store import (
+    BATCHED_REQUIRED_FRAME_COLUMNS,
+    episode_filename,
+)
 from apple_pick_sim.tests.conftest import RANGES_FIXTURE, fr3_assets_available
 
 _SEED = 42
@@ -129,9 +132,9 @@ def test_assign_pull_directions_unit_vectors():
 
 @gymnasium_available
 @requires_fr3
-def test_collect_batched_quasi_static_dataset_writes_parquet(tmp_path: Path):
-    num_structures = 1
-    num_directions = 1
+def test_collect_batched_quasi_static_dataset_writes_v1_layout(tmp_path: Path):
+    num_structures = 2
+    num_directions = 2
     num_envs = num_structures * num_directions
     config = QuasiStaticStepConfig(
         movement_per_step_m=0.02,
@@ -166,24 +169,151 @@ def test_collect_batched_quasi_static_dataset_writes_parquet(tmp_path: Path):
             seed=_SEED,
             ranges_path=RANGES_FIXTURE,
             max_steps=60,
+            command_argv=["test_collect", "--num-structures", "2"],
         )
     finally:
         env.close()
 
-    dataset = TrajectoryDataset(out)
-    episode_ids = dataset.episode_ids()
-    assert len(episode_ids) == 1
-    meta = dataset.load_episode_meta(episode_ids[0])
-    assert meta["excitation_type"] == "quasi_static"
-    assert int(meta["n_directions"]) == 1
+    assert (out / "manifest.json").is_file()
+    assert not (out / "metadata.parquet").exists()
+    assert not (out / "frames").exists()
+    assert (out / episode_filename(0, 0)).is_file()
 
-    import pyarrow.parquet as pq
+    dataset = BatchedSysIdDataset(out)
+    manifest = dataset.manifest
+    assert manifest["command_argv"] == ["test_collect", "--num-structures", "2"]
+    assert len(manifest["episodes"]) == num_envs
+    assert len(manifest["structures"]) == num_structures
 
-    meta_table = pq.read_table(out / "metadata.parquet")
-    for col in METADATA_COLUMNS:
-        assert col in meta_table.column_names
+    ep00 = dataset.load_episode_metadata(0, 0)
+    ep01 = dataset.load_episode_metadata(0, 1)
+    ep10 = dataset.load_episode_metadata(1, 0)
+    assert ep00["params_fingerprint"] == ep01["params_fingerprint"]
+    assert ep00["params_fingerprint"] != ep10["params_fingerprint"]
+    assert ep00["pull_direction"] != ep01["pull_direction"]
 
-    frames = pq.read_table(out / "frames" / f"{episode_ids[0]}.parquet")
-    for col in REQUIRED_FRAME_COLUMNS:
+    frames = dataset.load_episode_frames(0, 0)
+    for col in BATCHED_REQUIRED_FRAME_COLUMNS:
         assert col in frames.column_names
     assert frames.num_rows > 0
+    arrays = dataset.load_episode_obs_arrays(0, 0)
+    assert arrays["action"].shape[0] == frames.num_rows
+
+
+@gymnasium_available
+@requires_fr3
+def test_collect_appends_timestamp_when_dataset_exists(tmp_path: Path):
+    num_structures = 1
+    num_directions = 1
+    num_envs = 1
+    config = QuasiStaticStepConfig(
+        movement_per_step_m=0.02,
+        total_movement_m=0.04,
+        move_speed_mps=0.2,
+        hold_duration_s=0.1,
+        skip_return=True,
+    )
+    per_env_params = sample_and_broadcast_structure_params(
+        RANGES_FIXTURE,
+        topology_seed=_SEED,
+        num_structures=num_structures,
+        num_directions=num_directions,
+    )
+    base = tmp_path / "dataset"
+    env = ApplePickBatchedSysIdEnv(
+        num_envs=num_envs,
+        max_episode_steps=120,
+        ranges_path=RANGES_FIXTURE,
+        topology_seed=_SEED,
+        use_settle_cache=False,
+        sim_config=_test_sim_config(num_envs=num_envs),
+        per_env_params=per_env_params,
+        control_hz=float(config.control_hz),
+    )
+    try:
+        first = collect_batched_quasi_static_dataset(
+            env,
+            num_structures=num_structures,
+            num_directions=num_directions,
+            config=config,
+            output_dir=base,
+            seed=_SEED,
+            ranges_path=RANGES_FIXTURE,
+            max_steps=20,
+        )
+        assert first == base
+        with pytest.warns(UserWarning, match="already exists"):
+            second = collect_batched_quasi_static_dataset(
+                env,
+                num_structures=num_structures,
+                num_directions=num_directions,
+                config=config,
+                output_dir=base,
+                seed=_SEED,
+                ranges_path=RANGES_FIXTURE,
+                max_steps=20,
+            )
+    finally:
+        env.close()
+
+    assert second != base
+    assert second.name.startswith("dataset_")
+    assert BatchedSysIdDataset(base).episode_entries()
+    assert BatchedSysIdDataset(second).episode_entries()
+
+
+@gymnasium_available
+@requires_fr3
+def test_collect_batched_on_step_callback_invoked_and_can_stop(tmp_path: Path):
+    num_structures = 1
+    num_directions = 1
+    num_envs = num_structures * num_directions
+    config = QuasiStaticStepConfig(
+        movement_per_step_m=0.02,
+        total_movement_m=0.04,
+        move_speed_mps=0.2,
+        hold_duration_s=0.1,
+        skip_return=True,
+    )
+    per_env_params = sample_and_broadcast_structure_params(
+        RANGES_FIXTURE,
+        topology_seed=_SEED,
+        num_structures=num_structures,
+        num_directions=num_directions,
+    )
+    env = ApplePickBatchedSysIdEnv(
+        num_envs=num_envs,
+        max_episode_steps=120,
+        ranges_path=RANGES_FIXTURE,
+        topology_seed=_SEED,
+        use_settle_cache=False,
+        sim_config=_test_sim_config(num_envs=num_envs),
+        per_env_params=per_env_params,
+        control_hz=float(config.control_hz),
+    )
+    seen: list[tuple[int, str]] = []
+    stop_at = 3
+
+    def on_step(*, step_idx: int, phase: str, **_kwargs) -> bool:
+        seen.append((step_idx, phase))
+        return step_idx < stop_at
+
+    try:
+        collect_batched_quasi_static_dataset(
+            env,
+            num_structures=num_structures,
+            num_directions=num_directions,
+            config=config,
+            output_dir=tmp_path / "dataset",
+            seed=_SEED,
+            ranges_path=RANGES_FIXTURE,
+            max_steps=60,
+            on_step=on_step,
+        )
+    finally:
+        env.close()
+
+    assert seen[0][0] == -1
+    assert seen[0][1] == "init"
+    assert any(idx >= 0 for idx, _ in seen)
+    assert max(idx for idx, _ in seen) == stop_at

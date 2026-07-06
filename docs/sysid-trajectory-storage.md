@@ -8,7 +8,9 @@ Recording and replaying are complete for sim-to-sim datasets, **and observation-
 
 Digital-twin fixture-catalog reconstruction (M3.0.4) is a separate, still-partially-blocked slice — see `docs/digital-twin.md` ("Known gap").
 
-## Layout
+**Batched parallel collection** (`example_batched_collect_sysid_data.py`) uses a separate **batched_sysid_v1** layout (`manifest.json` + `episodes/s{s}_d{d}.parquet`). See [`batched-sysid-dataset.md`](batched-sysid-dataset.md).
+
+## Layout (single-env / legacy)
 
 ```
 <output_dir>/

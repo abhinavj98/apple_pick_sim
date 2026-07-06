@@ -18,6 +18,14 @@ from apple_pick_sim.system_id.quasi_static_trajectory import (
     derive_n_steps,
     estimate_trajectory_frames,
 )
+from apple_pick_sim.system_id.batched_trajectory_store import (
+    BatchedEpisodeWriter,
+    BatchedSysIdDataset,
+    batched_dataset_exists,
+    materialize_legacy_episode_dir,
+    resolve_batched_dataset_output_dir,
+    write_manifest,
+)
 from apple_pick_sim.system_id.trajectory_store import (
     TrajectoryDataset,
     TrajectoryWriter,
@@ -28,6 +36,9 @@ from apple_pick_sim.system_id.trajectory_store import (
 )
 
 __all__ = [
+    "BatchedEpisodeWriter",
+    "BatchedSysIdDataset",
+    "batched_dataset_exists",
     "EpisodeMeta",
     "ExcitationContext",
     "QuasiStaticStepConfig",
@@ -40,10 +51,13 @@ __all__ = [
     "grasp_snapshot_from_env",
     "initialize_env_from_parquet",
     "load_grasp_snapshot_into_env",
+    "materialize_legacy_episode_dir",
     "observation_reset_options_from_parquet",
+    "resolve_batched_dataset_output_dir",
     "sample_fibonacci_hemisphere",
     "sample_robot_facing_pull_directions",
     "stem_perpendicular_robot_pole",
     "target_tf_from_array",
     "target_tf_to_array",
+    "write_manifest",
 ]

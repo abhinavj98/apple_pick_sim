@@ -1,12 +1,13 @@
 """Parallel batched sys-ID data collection (V.4.2).
 
 Collect ``num_structures × num_directions`` quasi-static episodes in one GPU
-batched run and write Parquet compatible with ``example_gym_replay_overrides.py``.
+batched run and write a ``batched_sysid_v1`` dataset (``manifest.json`` +
+``episodes/s{s}_d{d}.parquet``).
 
 Run from the repository root::
 
     uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \\
-      --viewer null --num-structures 2 --num-directions 3 \\
+      --viewer gl --show-pull-direction --num-structures 2 --num-directions 3 \\
       --max-steps 200 --output /tmp/batched_sysid_dataset
 
 Headless smoke (single structure, single direction)::
@@ -21,8 +22,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
+
+import numpy as np
 
 import newton.examples
+import newton.viewer
 
 
 def _trajectory_config_from_args(args: argparse.Namespace):
@@ -97,11 +102,61 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Directory to write Parquet trajectory dataset.",
     )
     p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing dataset at --output instead of appending a timestamp.",
+    )
+    p.add_argument(
         "--debug",
         action="store_true",
         help="Print collection progress messages.",
     )
+    p.add_argument(
+        "--show-pull-direction",
+        action="store_true",
+        help="Draw cyan pull-direction arrows at each TCP (requires --viewer gl).",
+    )
     return p
+
+
+def _render_frame(
+    viewer: object,
+    env: object,
+    sim_time: float,
+    *,
+    obs: dict | None = None,
+    show_pull_direction: bool = False,
+) -> None:
+    sim = env._sim
+    scene = sim.scene
+    if scene.last_vbd_contacts is not None:
+        contacts = scene.last_vbd_contacts
+    else:
+        contacts = scene.cable.model.collide(
+            scene.cable.state_0,
+            collision_pipeline=scene.cable_collision_pipeline,
+        )
+    viewer.begin_frame(sim_time)
+    viewer.log_state(scene.cable.state_0)
+    viewer.log_contacts(contacts, scene.cable.state_0)
+    if show_pull_direction and obs is not None:
+        layout = sim.layout
+        excitation = obs.get("excitation_direction")
+        if layout is not None and excitation is not None:
+            from apple_pick_sim.batched_viz import log_batched_movement_direction_arrows
+
+            if hasattr(excitation, "detach"):
+                directions = excitation.detach().cpu().numpy()
+            else:
+                directions = np.asarray(excitation, dtype=np.float64)
+            log_batched_movement_direction_arrows(
+                viewer,
+                scene,
+                layout,
+                directions=directions,
+                bufs=sim.obs_bufs,
+            )
+    viewer.end_frame()
 
 
 def main() -> None:
@@ -144,6 +199,35 @@ def main() -> None:
         control_hz=float(config.control_hz),
     )
 
+    sim = env._sim
+    graphical = isinstance(viewer, newton.viewer.ViewerGL)
+    viewer.set_model(sim.scene.cable.model)
+    if graphical and env.num_envs > 1:
+        viewer.set_world_offsets(tuple(sim.config.runtime.env_spacing))
+    if hasattr(viewer, "hide_loading_splash"):
+        viewer.hide_loading_splash()
+
+    frame_dt = 1.0 / float(config.control_hz)
+    use_viewer = graphical or getattr(args, "viewer", None) != "null"
+    show_pull_direction = bool(args.show_pull_direction) and graphical
+
+    def on_step(*, step_idx: int, phase: str, sim_time: float, obs, **_kwargs) -> bool:
+        if hasattr(viewer, "is_running") and not viewer.is_running():
+            return False
+        if use_viewer:
+            _render_frame(
+                viewer,
+                env,
+                sim_time,
+                obs=obs,
+                show_pull_direction=show_pull_direction,
+            )
+            if graphical:
+                time.sleep(max(0.0, frame_dt))
+        if bool(args.debug) and step_idx >= 0 and step_idx % 20 == 0:
+            print(f"step {step_idx} phase={phase}")
+        return True
+
     progress = print if bool(args.debug) else None
     try:
         out = collect_batched_quasi_static_dataset(
@@ -156,6 +240,9 @@ def main() -> None:
             ranges_path=ranges_path,
             max_steps=int(args.max_steps),
             progress=progress,
+            on_step=on_step,
+            command_argv=sys.argv,
+            overwrite=bool(args.overwrite),
         )
         if bool(args.debug):
             print(f"Saved batched sys-ID dataset to {out}")

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from uuid import uuid4
 
 import numpy as np
@@ -22,14 +22,33 @@ from apple_pick_sim.fruiting_system import (
     sample_heterogeneous_params_list,
 )
 from apple_pick_sim.system_id import (
-    EpisodeMeta,
+    BatchedEpisodeWriter,
     ExcitationContext,
     QuasiStaticStepConfig,
     QuasiStaticTrajectory,
-    TrajectoryWriter,
     estimate_trajectory_frames,
     sample_robot_facing_pull_directions,
+    write_manifest,
 )
+from apple_pick_sim.system_id.batched_trajectory_store import (
+    SCHEMA_VERSION,
+    episode_filename,
+    resolve_batched_dataset_output_dir,
+)
+
+
+class OnStepCallback(Protocol):
+    """Optional hook after reset (step_idx=-1) and each env step; return False to stop."""
+
+    def __call__(
+        self,
+        *,
+        env: Any,
+        step_idx: int,
+        phase: str,
+        sim_time: float,
+        obs: Any,
+    ) -> bool: ...
 
 
 def structure_and_direction_indices(env_idx: int, num_directions: int) -> tuple[int, int]:
@@ -126,13 +145,13 @@ def actions_tensor_for_velocity(
 
 
 class BatchedSysIdCollectors:
-    """One TrajectoryWriter per parallel env."""
+    """One BatchedEpisodeWriter per parallel env."""
 
     def __init__(self, num_envs: int) -> None:
-        self._writers = [TrajectoryWriter(episode_id=str(uuid4())) for _ in range(int(num_envs))]
+        self._writers = [BatchedEpisodeWriter(episode_id=str(uuid4())) for _ in range(int(num_envs))]
 
     @property
-    def writers(self) -> list[TrajectoryWriter]:
+    def writers(self) -> list[BatchedEpisodeWriter]:
         return list(self._writers)
 
     def episode_id(self, env_idx: int) -> str:
@@ -154,7 +173,6 @@ class BatchedSysIdCollectors:
             step_idx=int(step_idx),
             sim_time=float(sim_time),
             phase=str(phase),
-            dir_idx=0,
             amplitude_m=float(amplitude_m),
             action=np.asarray(action, dtype=np.float32),
             obs=obs,
@@ -163,87 +181,142 @@ class BatchedSysIdCollectors:
     def save_all(
         self,
         output_dir: Path | str,
-        meta_rows: Sequence[EpisodeMeta],
+        metadata_rows: Sequence[dict[str, Any]],
+        *,
+        num_directions: int,
     ) -> list[Path]:
         out = Path(output_dir)
         paths: list[Path] = []
-        if len(meta_rows) != len(self._writers):
-            raise ValueError("meta_rows length must match number of writers")
-        for writer, meta in zip(self._writers, meta_rows, strict=True):
-            paths.append(writer.save(out, meta))
+        if len(metadata_rows) != len(self._writers):
+            raise ValueError("metadata_rows length must match number of writers")
+        for writer, meta in zip(self._writers, metadata_rows, strict=True):
+            env_idx = int(meta["env_idx"])
+            structure_idx, direction_idx = structure_and_direction_indices(
+                env_idx, int(num_directions)
+            )
+            rel = episode_filename(structure_idx, direction_idx)
+            paths.append(writer.save(out / rel, meta))
         return paths
 
 
-def build_episode_meta(
+def build_episode_metadata(
     *,
     episode_id: str,
     env: Any,
     env_idx: int,
+    num_directions: int,
+    pull_direction: np.ndarray,
     seed: int,
     config: QuasiStaticStepConfig,
     ranges_path: Path | str,
-    reset_obs: dict[str, Any],
-) -> EpisodeMeta:
+) -> dict[str, Any]:
+    structure_idx, direction_idx = structure_and_direction_indices(
+        int(env_idx), int(num_directions)
+    )
     per_env = env.per_env_reset_info(int(env_idx))
     params = env._sim._per_env_params[int(env_idx)]
-    scene = env._sim.scene
     weld = per_env["weld_direction"]
-    weld_tuple = tuple(float(x) for x in np.asarray(weld, dtype=np.float64).reshape(3))
-    weld_norm = float(np.linalg.norm(weld_tuple))
+    weld_list = [float(x) for x in np.asarray(weld, dtype=np.float64).reshape(3)]
+    weld_norm = float(np.linalg.norm(weld_list))
     if weld_norm < 1e-12:
-        weld_tuple = (0.0, 0.0, 1.0)
+        weld_list = [0.0, 0.0, 1.0]
     else:
-        weld_tuple = (
-            float(weld_tuple[0] / weld_norm),
-            float(weld_tuple[1] / weld_norm),
-            float(weld_tuple[2] / weld_norm),
-        )
+        weld_list = [float(x / weld_norm) for x in weld_list]
 
     exported = env.sysid_numpy_obs(int(env_idx))
     fruiting_base = per_env.get("fruiting_base_pos")
-    return EpisodeMeta(
-        episode_id=str(episode_id),
-        weld_direction=weld_tuple,
-        excitation_type="quasi_static",
-        n_woody_parts=len(env.junction_names),
-        junction_names=list(env.junction_names),
-        params_fingerprint=(
+    rod_radii = per_env.get("rod_radii")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "episode_id": str(episode_id),
+        "structure_idx": int(structure_idx),
+        "direction_idx": int(direction_idx),
+        "env_idx": int(env_idx),
+        "pull_direction": [float(x) for x in np.asarray(pull_direction, dtype=np.float64).reshape(3)],
+        "params_fingerprint": (
             json.dumps(per_env["params_fingerprint"], sort_keys=True)
             if isinstance(per_env["params_fingerprint"], dict)
             else str(per_env["params_fingerprint"])
         ),
-        fruiting_system_params=fruiting_params_to_json(params),
-        control_hz=float(config.control_hz),
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        seed=int(seed),
-        n_directions=1,
-        initial_tcp_pos=tuple(float(x) for x in np.asarray(exported["tcp_pos"]).reshape(3)),
-        initial_tcp_quat=tuple(float(x) for x in np.asarray(exported["tcp_quat"]).reshape(4)),
-        initial_apple_pos=tuple(float(x) for x in np.asarray(exported["apple_pos"]).reshape(3)),
-        initial_apple_quat=tuple(float(x) for x in np.asarray(exported["apple_quat"]).reshape(4)),
-        initial_robot_joint_q=tuple(
+        "fruiting_system_params": fruiting_params_to_json(params),
+        "excitation_type": "quasi_static",
+        "control_hz": float(config.control_hz),
+        "seed": int(seed),
+        "n_woody_parts": len(env.junction_names),
+        "junction_names": list(env.junction_names),
+        "initial_tcp_pos": [float(x) for x in np.asarray(exported["tcp_pos"]).reshape(3)],
+        "initial_tcp_quat": [float(x) for x in np.asarray(exported["tcp_quat"]).reshape(4)],
+        "initial_apple_pos": [float(x) for x in np.asarray(exported["apple_pos"]).reshape(3)],
+        "initial_apple_quat": [float(x) for x in np.asarray(exported["apple_quat"]).reshape(4)],
+        "initial_robot_joint_q": [
             float(x) for x in np.asarray(exported["robot_joint_q"]).reshape(-1)
-        ),
-        fixture_path=str(Path(ranges_path)),
-        fruiting_base_pos=(
+        ],
+        "fixture_path": str(Path(ranges_path)),
+        "fruiting_base_pos": (
             None
             if fruiting_base is None
-            else tuple(float(x) for x in np.asarray(fruiting_base).reshape(3))
+            else [float(x) for x in np.asarray(fruiting_base).reshape(3)]
         ),
-        apple_radius=per_env.get("apple_radius"),
-        rod_radii=per_env.get("rod_radii"),
-        weld_reference_pos=tuple(
+        "apple_radius": per_env.get("apple_radius"),
+        "rod_radii": (
+            None
+            if rod_radii is None
+            else json.dumps({str(k): float(v) for k, v in rod_radii.items()}, sort_keys=True)
+        ),
+        "weld_direction": weld_list,
+        "weld_reference_pos": [
             float(x) for x in np.asarray(per_env["weld_reference_pos"]).reshape(3)
-        ),
-        weld_reference_quat=tuple(
+        ],
+        "weld_reference_quat": [
             float(x) for x in np.asarray(per_env["weld_reference_quat"]).reshape(4)
-        ),
-        movement_per_step_m=float(config.movement_per_step_m),
-        total_movement_m=float(config.total_movement_m),
-        hold_duration_s=float(config.hold_duration_s),
-        move_speed_mps=float(config.move_speed_mps),
-        skip_return=bool(config.skip_return),
-    )
+        ],
+        "movement_per_step_m": float(config.movement_per_step_m),
+        "total_movement_m": float(config.total_movement_m),
+        "hold_duration_s": float(config.hold_duration_s),
+        "move_speed_mps": float(config.move_speed_mps),
+        "skip_return": bool(config.skip_return),
+    }
+
+
+def _build_structure_summaries(
+    metadata_rows: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_structure: dict[int, dict[str, Any]] = {}
+    for meta in metadata_rows:
+        s = int(meta["structure_idx"])
+        if s in by_structure:
+            continue
+        by_structure[s] = {
+            "structure_idx": s,
+            "params_fingerprint": meta["params_fingerprint"],
+            "junction_names": meta["junction_names"],
+            "n_woody_parts": meta["n_woody_parts"],
+        }
+    return [by_structure[k] for k in sorted(by_structure)]
+
+
+def _build_manifest_episodes(
+    metadata_rows: Sequence[dict[str, Any]],
+    writers: Sequence[BatchedEpisodeWriter],
+    *,
+    num_directions: int,
+) -> list[dict[str, Any]]:
+    episodes: list[dict[str, Any]] = []
+    for meta, writer in zip(metadata_rows, writers, strict=True):
+        structure_idx = int(meta["structure_idx"])
+        direction_idx = int(meta["direction_idx"])
+        episodes.append(
+            {
+                "structure_idx": structure_idx,
+                "direction_idx": direction_idx,
+                "env_idx": int(meta["env_idx"]),
+                "filename": episode_filename(structure_idx, direction_idx),
+                "episode_id": str(meta["episode_id"]),
+                "pull_direction": meta["pull_direction"],
+                "n_frames": int(writer.n_frames),
+            }
+        )
+    return episodes
 
 
 def collect_batched_quasi_static_dataset(
@@ -257,9 +330,17 @@ def collect_batched_quasi_static_dataset(
     ranges_path: Path | str,
     max_steps: int = 0,
     progress: Callable[[str], None] | None = None,
+    on_step: OnStepCallback | None = None,
+    command_argv: Sequence[str] | None = None,
+    overwrite: bool = False,
+    append_timestamp: bool = True,
 ) -> Path:
-    """Run lockstep quasi-static collection and write Parquet episodes for all envs."""
-    out = Path(output_dir)
+    """Run lockstep quasi-static collection and write batched_sysid_v1 dataset."""
+    out = resolve_batched_dataset_output_dir(
+        output_dir,
+        overwrite=bool(overwrite),
+        append_timestamp=bool(append_timestamp),
+    )
     out.mkdir(parents=True, exist_ok=True)
 
     num_envs = int(num_structures) * int(num_directions)
@@ -284,21 +365,69 @@ def collect_batched_quasi_static_dataset(
 
     obs, _info = env.reset(seed=int(seed))
     collectors = BatchedSysIdCollectors(num_envs)
-    meta_rows = [
-        build_episode_meta(
+    metadata_rows = [
+        build_episode_metadata(
             episode_id=collectors.episode_id(i),
             env=env,
             env_idx=i,
+            num_directions=int(num_directions),
+            pull_direction=per_env_directions[i],
             seed=int(seed),
             config=config,
             ranges_path=ranges_path,
-            reset_obs=obs,
         )
         for i in range(num_envs)
     ]
 
+    def _finalize() -> Path:
+        frame_paths = collectors.save_all(
+            out,
+            metadata_rows,
+            num_directions=int(num_directions),
+        )
+        write_manifest(
+            out,
+            command_argv=list(command_argv if command_argv is not None else sys.argv),
+            collection={
+                "seed": int(seed),
+                "topology_seed": int(getattr(env, "_topology_seed", 0)),
+                "ranges_path": str(Path(ranges_path)),
+                "control_hz": float(config.control_hz),
+                "num_structures": int(num_structures),
+                "num_directions": int(num_directions),
+                "max_steps": int(max_steps),
+                "trajectory": {
+                    "movement_per_step_m": float(config.movement_per_step_m),
+                    "total_movement_m": float(config.total_movement_m),
+                    "hold_duration_s": float(config.hold_duration_s),
+                    "move_speed_mps": float(config.move_speed_mps),
+                    "skip_return": bool(config.skip_return),
+                },
+            },
+            structures=_build_structure_summaries(metadata_rows),
+            episodes=_build_manifest_episodes(
+                metadata_rows,
+                collectors.writers,
+                num_directions=int(num_directions),
+            ),
+            overwrite=bool(overwrite),
+        )
+        if progress is not None:
+            progress(f"wrote {len(frame_paths)} episodes to {out}")
+        return out
+
     sim_time = 0.0
-    dir_idx = 0
+    if on_step is not None and not on_step(
+        env=env,
+        step_idx=-1,
+        phase="init",
+        sim_time=sim_time,
+        obs=obs,
+    ):
+        if progress is not None:
+            progress(f"wrote episodes to {out} (stopped at init)")
+        return _finalize()
+
     for step_idx, (phase, vel) in enumerate(reference_traj.iter_frames()):
         if step_idx >= step_cap:
             break
@@ -335,7 +464,13 @@ def collect_batched_quasi_static_dataset(
         if progress is not None and step_idx % 20 == 0:
             progress(f"step {step_idx} phase={phase}")
 
-    frame_paths = collectors.save_all(out, meta_rows)
-    if progress is not None:
-        progress(f"wrote {len(frame_paths)} episodes to {out}")
-    return out
+        if on_step is not None and not on_step(
+            env=env,
+            step_idx=step_idx,
+            phase=phase,
+            sim_time=sim_time,
+            obs=obs,
+        ):
+            break
+
+    return _finalize()

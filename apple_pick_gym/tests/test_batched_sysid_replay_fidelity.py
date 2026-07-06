@@ -21,8 +21,9 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     SceneSettleCollisionConfig,
 )
 from apple_pick_sim.fruiting_system import fruiting_params_from_json
-from apple_pick_sim.system_id import QuasiStaticStepConfig, TrajectoryDataset
-from apple_pick_sim.system_id.trajectory_store import PHASE_TO_INT
+from apple_pick_sim.system_id import BatchedSysIdDataset, QuasiStaticStepConfig
+from apple_pick_sim.system_id.batched_trajectory_store import materialize_legacy_episode_dir
+from apple_pick_sim.system_id.trajectory_store import PHASE_TO_INT, TrajectoryDataset
 from apple_pick_sim.tests.conftest import RANGES_FIXTURE, fr3_assets_available
 
 _SEED = 42
@@ -100,7 +101,7 @@ def _norm_diff(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _replay_episode_hold_errors(dataset_dir: Path, episode_id: str) -> tuple[list[float], list[float]]:
-    """Return (hold tcp_pos_mm, hold ft_wrist_rmse) lists for one episode."""
+    """Return (hold tcp_pos_mm, hold ft_wrist_rmse) lists for one legacy-layout episode."""
     from apple_pick_gym.envs import ApplePickReplayEnv
 
     import pyarrow.parquet as pq
@@ -186,14 +187,22 @@ def test_batched_collect_replay_hold_phase_fidelity(tmp_path: Path):
     finally:
         collect_env.close()
 
-    dataset = TrajectoryDataset(dataset_dir)
-    episode_ids = dataset.episode_ids()
-    assert len(episode_ids) == num_envs
+    batched = BatchedSysIdDataset(dataset_dir)
+    assert len(batched.episode_entries()) == num_envs
 
+    legacy_dir = tmp_path / "legacy_replay"
+    legacy_dir.mkdir()
     all_tcp_mm: list[float] = []
     all_ft_rmse: list[float] = []
-    for episode_id in episode_ids:
-        tcp_mm, ft_rmse = _replay_episode_hold_errors(dataset_dir, episode_id)
+    for entry in batched.episode_entries():
+        materialize_legacy_episode_dir(
+            batched,
+            structure_idx=int(entry["structure_idx"]),
+            direction_idx=int(entry["direction_idx"]),
+            output_dir=legacy_dir,
+        )
+        episode_id = str(entry["episode_id"])
+        tcp_mm, ft_rmse = _replay_episode_hold_errors(legacy_dir, episode_id)
         assert tcp_mm, f"episode {episode_id} produced no hold-frame comparisons"
         all_tcp_mm.extend(tcp_mm)
         all_ft_rmse.extend(ft_rmse)

@@ -276,6 +276,57 @@ def _woody_pos_dict_from_obs(value: Any) -> dict[str, np.ndarray]:
     return {str(name): np.asarray(pos, dtype=np.float32).reshape(3) for name, pos in value.items()}
 
 
+def build_sysid_frame_row(
+    *,
+    step_idx: int,
+    sim_time: float,
+    phase: str,
+    amplitude_m: float,
+    action: np.ndarray,
+    obs: dict[str, Any],
+    episode_id: str | None = None,
+    dir_idx: int | None = None,
+) -> dict[str, Any]:
+    """Build one Parquet frame row from a sys-ID observation dict."""
+    start_by_name = _woody_pos_dict_from_obs(obs["woody_part_start_pos"])
+    end_by_name = _woody_pos_dict_from_obs(obs["woody_part_end_pos"])
+    if set(start_by_name) != set(end_by_name):
+        raise ValueError("woody_part_start_pos and woody_part_end_pos keys must match")
+
+    row: dict[str, Any] = {
+        "step_idx": int(step_idx),
+        "phase": phase_to_int(phase),
+        "excitation_type": int(obs["excitation_type"]),
+        "excitation_direction": _as_f32_list(obs["excitation_direction"], size=3),
+        "action": _as_f32_list(action, size=6),
+        "tcp_velocity": _as_f32_list(obs["tcp_velocity"], size=6),
+        "ft_wrist": _as_f32_list(obs["ft_wrist"], size=6),
+        "raw_ft_wrist": _as_f32_list(obs.get("raw_ft_wrist", obs["ft_wrist"]), size=6),
+        "sim_time": float(sim_time),
+        "amplitude_m": float(amplitude_m),
+        "tcp_pos": _as_f32_list(obs.get("tcp_pos", np.zeros(3)), size=3),
+        "apple_pos": _as_f32_list(obs.get("apple_pos", np.zeros(3)), size=3),
+        "tcp_quat": _as_f32_list(
+            obs.get("tcp_quat", np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)),
+            size=4,
+        ),
+        "apple_quat": _as_f32_list(
+            obs.get("apple_quat", np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)),
+            size=4,
+        ),
+        "robot_joint_q": _as_f32_list(obs.get("robot_joint_q", np.zeros(7)), size=7),
+        "woody_part_force": _as_f32_list(obs.get("woody_part_force", np.zeros(0))),
+    }
+    if episode_id is not None:
+        row["episode_id"] = str(episode_id)
+    if dir_idx is not None:
+        row["dir_idx"] = int(dir_idx)
+    for name in sorted(start_by_name):
+        row[woody_start_column(name)] = _as_f32_list(start_by_name[name], size=3)
+        row[woody_end_column(name)] = _as_f32_list(end_by_name[name], size=3)
+    return row
+
+
 class TrajectoryWriter:
     """Accumulate per-frame sysID records and write Parquet episode files."""
 
@@ -312,41 +363,18 @@ class TrajectoryWriter:
         obs: dict[str, Any],
     ) -> None:
         """Append one env-step record."""
-        start_by_name = _woody_pos_dict_from_obs(obs["woody_part_start_pos"])
-        end_by_name = _woody_pos_dict_from_obs(obs["woody_part_end_pos"])
-        if set(start_by_name) != set(end_by_name):
-            raise ValueError("woody_part_start_pos and woody_part_end_pos keys must match")
-
-        row: dict[str, Any] = {
-            "episode_id": self._episode_id,
-            "step_idx": int(step_idx),
-            "phase": phase_to_int(phase),
-            "excitation_type": int(obs["excitation_type"]),
-            "excitation_direction": _as_f32_list(obs["excitation_direction"], size=3),
-            "action": _as_f32_list(action, size=6),
-            "tcp_velocity": _as_f32_list(obs["tcp_velocity"], size=6),
-            "ft_wrist": _as_f32_list(obs["ft_wrist"], size=6),
-            "raw_ft_wrist": _as_f32_list(obs.get("raw_ft_wrist", obs["ft_wrist"]), size=6),
-            "sim_time": float(sim_time),
-            "dir_idx": int(dir_idx),
-            "amplitude_m": float(amplitude_m),
-            "tcp_pos": _as_f32_list(obs.get("tcp_pos", np.zeros(3)), size=3),
-            "apple_pos": _as_f32_list(obs.get("apple_pos", np.zeros(3)), size=3),
-            "tcp_quat": _as_f32_list(
-                obs.get("tcp_quat", np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)),
-                size=4,
-            ),
-            "apple_quat": _as_f32_list(
-                obs.get("apple_quat", np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)),
-                size=4,
-            ),
-            "robot_joint_q": _as_f32_list(obs.get("robot_joint_q", np.zeros(7)), size=7),
-            "woody_part_force": _as_f32_list(obs.get("woody_part_force", np.zeros(0))),
-        }
-        for name in sorted(start_by_name):
-            row[woody_start_column(name)] = _as_f32_list(start_by_name[name], size=3)
-            row[woody_end_column(name)] = _as_f32_list(end_by_name[name], size=3)
-        self._rows.append(row)
+        self._rows.append(
+            build_sysid_frame_row(
+                step_idx=step_idx,
+                sim_time=sim_time,
+                phase=phase,
+                amplitude_m=amplitude_m,
+                action=action,
+                obs=obs,
+                episode_id=self._episode_id,
+                dir_idx=dir_idx,
+            )
+        )
 
     def save(self, output_dir: Path, meta: EpisodeMeta) -> Path:
         """Write frames parquet and append metadata row."""

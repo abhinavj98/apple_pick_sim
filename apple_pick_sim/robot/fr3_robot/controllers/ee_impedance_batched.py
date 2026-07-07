@@ -144,8 +144,7 @@ class Fr3BatchedEEImpedanceController:
         *,
         lock_angular: bool = False,
     ) -> EEVelocity:
-        del control, mj_solver
-        self.sync_target_from_state(state)
+        del control, mj_solver, state
         upload_batched_twists_from_actions(
             self._lin_vels_wp,
             self._ang_vels_wp,

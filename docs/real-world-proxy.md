@@ -367,7 +367,7 @@ Before marking the fixture slice done:
 
 - [x] Add `fruiting_system_ranges_real_world_proxy.json` — **shipped, but see topology caveat below**
 - [x] Add `fruiting_system_ranges_real_world_proxy_variance.json`
-- [ ] Add `real_world_proxy` to `digital_twin_fixture_catalog.json` — blocked; catalog file itself is not committed yet, see `docs/digital-twin.md` ("Known gap")
+- [x] Add `real_world_proxy` to `digital_twin_fixture_catalog.json`
 - [x] Wire gym/sys-ID default or explicit `--ranges` path to proxy fixture where intended
 - [ ] Disable `robot_base_from_proxy` for builds using this fixture — not re-verified since this doc was written
 - [ ] Update `assets/testfr3_resolved.usda` (140 mm × Ø200 mm, TCP at +Z tip)

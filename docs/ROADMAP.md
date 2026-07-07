@@ -4,10 +4,10 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-07-03 |
+| **Last updated** | 2026-07-06 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[V].3** — batched gym migration (V.3.1–V.3.2 done; V.1–V.2 done) |
+| **Active work**  | **[V].4** — batched sys-ID (V.4.2 parallel collection done; V.3.3 base env done) |
 
 ---
 
@@ -32,8 +32,8 @@
 | **[M2]** | Partial | M2.1 `ApplePickCoupled-v0` shipped; RL/FID slices in backlog |
 | **[M3]** | Infra done | Sys-ID recording, replay, subprocess MMD grid (`docs/system_identification.md`); batched paths → **V.4** / **V.5** |
 | **[V].1–2** | Done | Batched `replicate(N)`, heterogeneous per-env DR, fixtures, runtime actions (`docs/vectorized-coupled-fruiting.md`) |
-| **[V].3** | **Now** | Sim API extraction + `apple_pick_gym` on batched heterogeneous backend |
-| **[V].4** | Next | Batched sys-ID — `gather_transitions()`, parallel collection, in-process MMD |
+| **[V].3** | **Now** | Sim API extraction + `apple_pick_gym` on batched heterogeneous backend (V.3.3 done; V.3.4–V.3.5 pending) |
+| **[V].4** | **Now** | Batched sys-ID — parallel collection done; digital-twin replay verification next |
 | **[V].5** | Next | Sim-sim transfer wrap-up — CEM, held-out validation (absorbs former **[S]** / M3.2) |
 | **[M4]** | Later | Real-data collection — after **V.5** |
 | **[M5]** | Later | Final pick policy |
@@ -42,11 +42,11 @@
 
 ## Current focus
 
-**Next slice:** **V.3.3** — `ApplePickBatchedBaseEnv`; `num_envs` + `gather_batched_obs`; `num_envs=1` obs v3 parity.
+**Next slice:** **V.4.2.1** — verify batched sys-ID replay via the **digital-twin init path**: frame-0 woody/TCP observations + `params_fingerprint` / fixture metadata (not full privileged `fruiting_system_params` alone). Capstone on `batched_sysid_v1` datasets.
 
-**Goal:** Finish **[V].3** (library API + gym migration) → **[V].4** (batched sys-ID) → **[V].5** (CEM + held-out sim-sim validation). Closes the no-field-data calibration loop before **[M4]**.
+**Goal:** Finish **[V].4** replay fidelity on the observation-derived initializer → **[V].4.3** in-process MMD → **[V].5** (CEM + held-out sim-sim validation). Closes the no-field-data calibration loop before **[M4]**.
 
-**Specs:** `docs/vectorized-coupled-fruiting.md`, `docs/material-parameter-sampling.md`, `docs/system_identification.md`, `docs/digital-twin.md`
+**Specs:** `docs/batched-sysid-dataset.md`, `docs/digital-twin.md`, `docs/sysid-trajectory-storage.md`, `docs/material-parameter-sampling.md`, `docs/system_identification.md`
 
 **Build on (do not reimplement):**
 
@@ -59,16 +59,17 @@
 
 - [x] **V.3.1 — Extract batched heterogeneous sim API:** `BatchedHeterogeneousCoupledSim` + config dataclass in `apple_pick_sim/coupled_fruiting/`. Surface: `build()`, `step(per_env_actions)`, `gather_obs()`, layout/scene accessors. No `argparse` / viewer in library; tests import library, not `examples/`.
 - [x] **V.3.2 — Thin heterogeneous example:** `example_batched_heterogeneous_coupled_sim.py` (canonical entry point); `test_heterogeneous_coupled_fruiting.py` imports library, not monolith example.
-- [ ] **V.3.3 — Batched gym base env:** `ApplePickBatchedBaseEnv`; `num_envs` + `gather_batched_obs`; `num_envs=1` obs v3 parity.
+- [x] **V.3.3 — Batched gym base env:** `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`; `num_envs` + `gather_batched_obs`; episode snapshot reset; `example_batched_gym_keyboard.py`.
 - [ ] **V.3.4 — Migrate gym envs:** `ApplePickCoupledEnv`, `ApplePickVicEnv`, `ApplePickSysIdEnv`, `ApplePickReplayEnv` on batched backend; retire single-world gym build path.
 - [ ] **V.3.5 — Migrate gym examples:** `example_gym_sysid.py`, `example_gym_replay.py`, `example_gym_keyboard.py` + parity tests at `num_envs=1`.
 
-**[V].4 — batched sys-ID** (backend: V.3.1 API)
+**[V].4 — batched sys-ID** (backend: V.3.1 API + V.3.3 batched gym)
 
 - [ ] **V.4.1 — `gather_transitions()` + recorded-action replay**
-- [ ] **V.4.2 — Parallel GT collection** (`num_envs > 1` pull directions / θ seeds)
+- [x] **V.4.2 — Parallel GT collection:** `ApplePickBatchedSysIdEnv`, `example_batched_collect_sysid_data.py`, `batched_sysid_v1` Parquet layout (`docs/batched-sysid-dataset.md`).
+- [ ] **V.4.2.1 — Digital-twin replay verification:** replay from frame-0 observations + `params_fingerprint` / fixture metadata via `digital_twin_obs_from_episode` / `observation_reset_options_from_parquet` on batched datasets; extend or add capstone beyond `test_batched_sysid_replay_fidelity.py` (which currently resets with full `fruiting_system_params`).
 - [ ] **V.4.3 — In-process batched MMD** (replaces `run_system_identification.py` subprocess grid)
-- [ ] **V.4.4 — Sys-ID tooling at batch scale** (replay, dashboard; deprecate subprocess patterns)
+- [ ] **V.4.4 — Sys-ID tooling at batch scale** (native v1 replay, dashboard; deprecate subprocess patterns)
 
 **[V].5 — sim-sim transfer wrap-up**
 
@@ -78,7 +79,7 @@
 
 **[M3] parallel infra** (optional alongside [V])
 
-- [ ] **M3.0.4 — Digital-twin geometry reconstruction:** geometry-from-obs code is implemented, but the named fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) and its example obs JSON are **not committed** — `test_digital_twin.py` currently has 2 failing tests. See `docs/digital-twin.md` ("Known gap") before assuming this is done.
+- [x] **M3.0.4 — Digital-twin fixture catalog:** `digital_twin_fixture_catalog.json`, `digital_twin_obs_straight_rod_initial.json`, and catalog tests shipped. Batched replay still needs V.4.2.1 to exercise frame-0 obs + fingerprint init on `batched_sysid_v1` datasets.
 - [ ] **M3.0.5 — §2.2–2.3 excitation trajectories** (log chirp, torsional) — wire through V.4 when added
 
 ---
@@ -97,7 +98,7 @@ Key M1 docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md
 | ----- | ------ | ----- |
 | M3.0.1–M3.0.3 | Done | §2.1 trajectory, Parquet recording, observation-only replay |
 | M3.1.1 | Done | Subprocess MMD grid — superseded by V.4.3 |
-| M3.0.4 | Planned; blocked on missing fixture data | Field-twin tooling; catalog JSON + example obs file not yet committed (`docs/digital-twin.md`) |
+| M3.0.4 | Done | Fixture catalog + example obs JSON committed; `test_digital_twin.py` passes (`docs/digital-twin.md`) |
 | M3.0.5 | Planned | §2.2–2.3 trajectories → V.4 backend |
 | M3.1.2 | → V.5.1 | MMD feature pipeline |
 | M3.2 | → V.5.2 | CEM calibration |
@@ -117,13 +118,14 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.2.3** | Done | Per-env runtime actions (`velocity_for_world`, action buffer) |
 | **V.3.1** | Done | `BatchedHeterogeneousCoupledSim` library API |
 | **V.3.2** | Done | Thin heterogeneous example (`example_batched_heterogeneous_coupled_sim.py`) |
-| **V.3.3** | **Next** | `ApplePickBatchedBaseEnv` |
+| **V.3.3** | Done | `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`, episode snapshot reset |
 | **V.3.4** | Planned | Migrate gym envs |
 | **V.3.5** | Planned | Migrate gym examples (`num_envs=1` parity) |
 | **V.4.1** | Planned | `gather_transitions()` + recorded replay |
-| **V.4.2** | Planned | Parallel GT sys-ID collection |
+| **V.4.2** | Done | Parallel GT collection (`batched_sysid_v1`, `ApplePickBatchedSysIdEnv`) |
+| **V.4.2.1** | **Next** | Digital-twin replay: frame-0 obs + `params_fingerprint` on batched datasets |
 | **V.4.3** | Planned | In-process batched MMD diagnostic |
-| **V.4.4** | Planned | Sys-ID replay/dashboard at batch scale |
+| **V.4.4** | Planned | Native v1 replay/dashboard at batch scale |
 | **V.5.1** | Planned | MMD feature contract for CEM |
 | **V.5.2** | Planned | CEM θ loop |
 | **V.5.3** | Planned | Held-out validation; [M4] handoff |
@@ -155,7 +157,7 @@ Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_co
 | ---- | ---- |
 | `apple_pick_sim/` | Simulation (`fruiting_system/`, `coupled_fruiting/`, `examples/`, tests) |
 | `apple_pick_sim/coupled_fruiting/` | Coupled sim; `BatchedHeterogeneousCoupledSim` + `batched_heterogeneous_config.py` (V.3.1) |
-| `apple_pick_gym/` | Gymnasium adapter; depends on `apple_pick_sim`, not vice versa |
+| `apple_pick_gym/` | Gymnasium adapter; `envs/` (legacy single-world), `batched_envs/` (V.3.3+), `batched_examples/` |
 | `newton/` | Upstream physics submodule (vendored) |
 | `docs/` | Vision, roadmap, architecture notes — start at `docs/CODEBASE_GUIDE.md` for a map of the codebase and this directory |
 
@@ -197,7 +199,22 @@ uv run --env-file pytest.env python -m pytest \
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_fruiting_system.py -q \
   -k "material or youngs or damping_ratio or sample_params"
 
-# M3 sys-ID (legacy single-env path; V.3.5 / V.4 migrate to batched backend)
+# [V].4 batched sys-ID collection + replay capstone
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_batched_trajectory_store.py \
+  apple_pick_gym/tests/test_batched_sysid_env.py \
+  apple_pick_gym/tests/test_batched_sysid_collect.py \
+  apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py -q
+uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
+  --viewer null --num-structures 2 --num-directions 3 \
+  --max-steps 200 --output /tmp/batched_sysid_dataset
+
+# [V].3.3 batched gym base + VIC env
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_gym/tests/test_batched_vic_env.py \
+  apple_pick_gym/tests/test_batched_obs_torch.py -q
+
+# M3 sys-ID (legacy single-env path; V.3.5 migrates examples to batched backend)
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_quasi_static_sysid.py \
   apple_pick_gym/tests/test_sysid_env.py -q

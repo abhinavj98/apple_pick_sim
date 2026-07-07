@@ -150,6 +150,43 @@ def test_zero_wrench_at_target():
 
 @requires_fr3
 @pytest.mark.slow
+def test_batched_vic_from_actions_holds_setpoint_when_arm_sags():
+    """Zero actions must not re-anchor the integrated target to a sagged actual pose."""
+    scene = _build_batched_scene()
+    ctrl = _configure_batched_vic(scene)
+    anchor = ctrl._target_pos_wp.numpy().copy()
+
+    bq = scene.robot_state_0.body_q.numpy().reshape(-1, 7).copy()
+    layout = scene.layout
+    for w in range(_NUM_ENVS):
+        tcp_idx = int(layout.tcp_body_indices[w])
+        bq[tcp_idx, 2] -= 0.1
+    scene.robot_state_0.body_q.assign(bq.reshape(-1))
+
+    import torch
+
+    actions = torch.zeros(_NUM_ENVS, 6, dtype=torch.float32, device="cpu")
+    ctrl.run_coupled_teleop_frame_from_actions(
+        scene.robot_state_0,
+        scene.robot_control,
+        scene.mj_solver,
+        1.0 / 15.0,
+        actions,
+    )
+
+    pos = ctrl._target_pos_wp.numpy()
+    for w in range(_NUM_ENVS):
+        np.testing.assert_allclose(
+            pos[w],
+            anchor[w],
+            rtol=0,
+            atol=1e-6,
+            err_msg=f"world {w} target re-anchored to sagged TCP",
+        )
+
+
+@requires_fr3
+@pytest.mark.slow
 def test_per_env_twist_affects_wrench_damping():
     """D-term uses per-env v_des; worlds with different twists get different wrenches at zero pose error."""
     scene = _build_batched_scene()

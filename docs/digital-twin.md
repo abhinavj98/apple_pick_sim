@@ -4,7 +4,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Roadmap slice** | M3.0.3 (observation-only replay init) **Done**; M3.0.4 (digital-twin fixture reconstruction) **Planned / partially blocked** — see [Known gap](#known-gap-catalog-and-example-obs-files-are-missing) |
+| **Roadmap slice** | M3.0.3 (observation-only replay init) **Done**; M3.0.4 (digital-twin fixture catalog) **Done**; V.4.2.1 (batched replay via frame-0 obs + `params_fingerprint`) **Next** — see `docs/ROADMAP.md` |
 | **Related docs** | `docs/system_identification.md`, `docs/sysid-trajectory-storage.md`, `docs/gym-observation-contract.md`, `docs/real-world-proxy.md` |
 
 This document merges the observation-only-replay spec and the geometry-reconstruction implementation notes that used to live in two separate files (`observation-replay-digital-twin.md`, `digital-twin-from-obs-implementation.md`).
@@ -15,7 +15,9 @@ M3 needs a replay path that can run from real-world logs, not from Newton intern
 
 **Observation-only replay** is the shipped default: rebuild a plausible initial Newton scene from a real-world-observable bundle plus calibration metadata, then drive it with the recorded end-effector velocity sequence. "Exact replayability" means exact replay of the observed experiment inputs and reconstruction contract; it does not mean recovering hidden simulator buffers perfectly from partial observations.
 
-**Digital-twin reconstruction** is the companion geometry path: rebuild a quasi-static fruiting cable scene from partial real-world observations instead of sampling geometry from variance fixture JSON. This part is implemented in code but the fixture *data files* it depends on for the named catalog are not yet committed — see [Known gap](#known-gap-catalog-and-example-obs-files-are-missing).
+**Digital-twin reconstruction** rebuilds a quasi-static fruiting cable scene from partial real-world observations instead of sampling geometry from variance fixture JSON. The named fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) and example observation JSON are committed; catalog tests pass.
+
+**Batched sys-ID replay (V.4.2.1, next):** parallel collection writes `batched_sysid_v1` datasets (`docs/batched-sysid-dataset.md`). The capstone `test_batched_sysid_replay_fidelity.py` currently materializes legacy episodes and replays with full serialized `fruiting_system_params`. The next verification step is replay initialized from **frame-0 woody observations** plus **`params_fingerprint`** / fixture metadata via `digital_twin_obs_from_episode` and `observation_reset_options_from_parquet` (`apple_pick_sim/system_id/parquet_init.py`) — the path real data will use.
 
 ## Validation strategy
 
@@ -104,7 +106,11 @@ uv run python apple_pick_gym/examples/visualize_pull_directions.py \
 | `apple_pick_sim/system_id/trajectory_store.py` | Writes Parquet frames plus optional privileged `.npz` snapshots |
 | `apple_pick_gym/envs/apple_pick_replay_env.py` | Replays recorded actions; defaults to observation-only init, restores privileged snapshot only when `--use-snapshot` / a snapshot file is explicitly requested |
 | `apple_pick_gym/examples/example_gym_replay.py` | Reports dataset-vs-live replay errors |
-| `docs/sysid-trajectory-storage.md` | Dataset storage contract — keep the observation bundle synchronized with this document |
+| `apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py` | Parallel GT collection → `batched_sysid_v1` datasets |
+| `apple_pick_sim/system_id/parquet_init.py` | `digital_twin_obs_from_episode`, `observation_reset_options_from_parquet` — frame-0 digital-twin init (V.4.2.1 target) |
+| `apple_pick_sim/system_id/batched_trajectory_store.py` | `BatchedSysIdDataset`, `materialize_legacy_episode_dir` |
+| `docs/sysid-trajectory-storage.md` | Legacy single-env dataset storage contract |
+| `docs/batched-sysid-dataset.md` | Batched `batched_sysid_v1` layout and collect commands |
 | `docs/gym-observation-contract.md` | Runtime observation schema — bump schema only when observation keys or semantics break |
 
 ### Tests and verification (Part 1)
@@ -154,29 +160,15 @@ Topology is encoded by `junction_names` (gym labels without `joint_` prefix), e.
 | `apple_pick_sim/digital_twin/from_obs.py` | `infer_params_from_obs`, `build_digital_twin_scene`, `params_from_ranges_median` |
 | `apple_pick_sim/examples/example_digital_twin.py` | Interactive viewer + optional VBD settle |
 
-### Known gap: catalog and example obs files are missing
+### Fixture catalog (shipped)
 
-**The reconstruction code above is implemented and its non-catalog unit tests pass.** However, the named fixture catalog concept — a small JSON manifest tying fixture names to base poses, observation files, and smoke commands — is only partially delivered: the manifest file and the example observation JSON files it (and the interactive example) point to are **not present in the working tree**:
+`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json` (schema `apple_pick_sim_fixture_catalog_v1`) names fixtures, base range JSON paths, optional observation JSON, base poses, and `uv run`-prefixed smoke commands. Initial entries include `straight_rod_test`, `example_variance`, `real_world_proxy`, and `real_world_proxy_variance`.
 
-- `apple_pick_sim/fixtures/digital_twin_fixture_catalog.json` — missing.
-- `apple_pick_sim/fixtures/digital_twin_obs_straight_rod_initial.json` — missing.
-
-As a result, two tests in `apple_pick_sim/tests/test_digital_twin.py` **currently fail**:
+Example observation file: `apple_pick_sim/fixtures/digital_twin_obs_straight_rod_initial.json`.
 
 ```bash
-$ uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
-FAILED apple_pick_sim/tests/test_digital_twin.py::test_example_digital_twin_registers_model_with_viewer
-FAILED apple_pick_sim/tests/test_digital_twin.py::test_fixture_catalog_references_existing_assets
-2 failed, 7 passed
+uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
 ```
-
-Treat M3.0.4 as **not done** until these fixture files are authored (or the tests are updated to match a smaller committed scope) and both tests pass. This is a data/fixture gap, not a code gap — do not re-derive the catalog schema without checking `test_digital_twin.py` for the exact expected shape first.
-
-Intended catalog shape (once authored), for reference:
-
-- `apple_pick_sim/fixtures/digital_twin_fixture_catalog.json` — schema `apple_pick_sim_fixture_catalog_v1`; each entry names a fixture, its base range JSON, an optional observation JSON, and `uv run`-prefixed smoke commands.
-- Expected initial entries: `straight_rod_test` (deterministic straight-rod baseline) and `example_variance` (the procedural variance fixture used by the default gym/sys-ID scene builder).
-- Catalog paths are repository-root relative. The catalog test loads each referenced range fixture, parses its `fruiting_base_pos` / `robot_base_pos`, loads any referenced observation file, and checks that listed smoke commands use `uv run`. This is intentionally a manifest-level check, not a new fixture-selection framework.
 
 ### Tests (Part 2)
 
@@ -186,13 +178,12 @@ Intended catalog shape (once authored), for reference:
 - `apple_pick_sim/tests/test_digital_twin.py::test_topology_full_chain` — four-rod chain inference (passes)
 - `apple_pick_sim/tests/test_digital_twin.py::test_infer_params_uses_observed_rod_radii` — measured radii override fixture midpoints (passes)
 - `apple_pick_sim/tests/test_digital_twin.py::test_infer_params_rejects_mismatched_anchor_lengths` — validation (passes)
-- `apple_pick_sim/tests/test_digital_twin.py::test_fixture_catalog_references_existing_assets` — **currently fails** (missing catalog file)
-- `apple_pick_sim/tests/test_digital_twin.py::test_example_digital_twin_registers_model_with_viewer` — **currently fails** (missing obs example file)
+- `apple_pick_sim/tests/test_digital_twin.py::test_fixture_catalog_references_existing_assets` — catalog manifest + referenced assets
+- `apple_pick_sim/tests/test_digital_twin.py::test_example_digital_twin_registers_model_with_viewer` — interactive example loads committed obs fixture
 
 ### How to verify (Part 2)
 
 ```bash
-# Unit tests (2 known failures — see Known gap above)
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
 ```
 
@@ -231,10 +222,8 @@ A digital-twin fixture is the bridge between observations and Newton geometry. E
 
 The first implementation should use a sim-generated ground-truth fixture, then rebuild a separate tunable fixture from exported observations. This verifies the reconstruction and replay machinery before the project depends on real perception quality.
 
-## Expected follow-up tests (M3.0.3/M3.0.4, beyond current gap)
+## Expected follow-up tests (V.4.2.1)
 
-- dataset fixture with no `.npz` snapshot resets through the observation initializer (already exercised by the default `example_gym_sysid.py` / `ApplePickReplayEnv` path);
-- privileged replay and observation-only replay run the same recorded `action` sequence;
-- drift metrics are reported for TCP/apple/woody/F/T observations;
-- a sim-generated digital-twin fixture can rebuild topology and base poses from metadata (covered for ad hoc obs files; blocked for the named catalog by the gap above);
-- per-fixture sys-ID smoke can use catalog `smoke_commands` once the catalog exists.
+- batched `batched_sysid_v1` episode replays through `digital_twin_obs_from_episode` (frame 0) + `params_fingerprint` / fixture metadata, without passing full privileged `fruiting_system_params` in reset options;
+- hold-phase drift metrics (TCP, `ft_wrist`) reported against ground-truth collection — extend `apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py` or add a sibling test;
+- privileged replay and observation-only replay run the same recorded `action` sequence (legacy single-env path already covered; batched path is V.4.2.1).

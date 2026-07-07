@@ -100,7 +100,14 @@ Writers: `BatchedEpisodeWriter`, `write_manifest` in
 
 `materialize_legacy_episode_dir()` exports one v1 episode into legacy
 `metadata.parquet` + `frames/<episode_id>.parquet` for `ApplePickReplayEnv` and
-other single-episode tooling. Native v1 replay support is a follow-up.
+other single-episode tooling. `test_batched_sysid_replay_fidelity.py` uses this
+bridge today and resets replay with full serialized `fruiting_system_params`.
+
+**Next (V.4.2.1):** verify replay through the digital-twin initializer —
+`digital_twin_obs_from_episode` (frame-0 woody anchors) plus `params_fingerprint`
+/ fixture metadata from episode parquet, without relying on the full params blob alone.
+Helpers live in `apple_pick_sim/system_id/parquet_init.py`. Native v1 replay
+(without legacy materialize) remains a follow-up (V.4.4).
 
 ## Collect command
 
@@ -122,4 +129,4 @@ Re-running into an existing directory:
 
 - `apple_pick_sim/tests/test_batched_trajectory_store.py` — writer/loader roundtrip
 - `apple_pick_gym/tests/test_batched_sysid_collect.py` — end-to-end collect
-- `apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py` — legacy materialize + replay
+- `apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py` — collect → legacy materialize → replay (full `fruiting_system_params`; digital-twin frame-0 path is V.4.2.1)

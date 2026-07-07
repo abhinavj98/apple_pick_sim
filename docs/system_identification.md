@@ -152,7 +152,9 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | M3.0.2 recording + privileged-state replay | **Done** | `TrajectoryWriter`, `TrajectoryDataset`, `ApplePickReplayEnv`, `example_gym_replay.py`, `docs/sysid-trajectory-storage.md` |
 | M3.0.3 observation-only replay init | **Done** | Observation-only Parquet replay is the default initializer (`--use-snapshot` opts into the privileged `.npz` path instead); spec in `docs/digital-twin.md` |
 | M3.1.1 MMD stiffness grid | **Done** | `apple_pick_gym/examples/run_system_identification.py --mmd-output <dir>` sweeps `primary` / `secondary` / `spur` / `stem` `bend_stiffness` values, replays recorded actions, and ranks candidates by hold-phase biased MMD². |
-| M3.0.4 digital-twin fixture reconstruction | **Planned / partially blocked** | Geometry-from-obs code is implemented, but the named fixture catalog and example obs JSON files referenced by `docs/digital-twin.md` are not committed — 2 tests in `test_digital_twin.py` currently fail. See `docs/digital-twin.md` for the exact gap. |
+| M3.0.4 digital-twin fixture catalog | **Done** | `digital_twin_fixture_catalog.json`, example obs JSON, `test_digital_twin.py`; see `docs/digital-twin.md` |
+| V.4.2 batched parallel collection | **Done** | `ApplePickBatchedSysIdEnv`, `batched_sysid_v1` layout; see `docs/batched-sysid-dataset.md` |
+| V.4.2.1 batched digital-twin replay | **Next** | Frame-0 obs + `params_fingerprint` init on `batched_sysid_v1`; extend replay fidelity capstone |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
 | M3.1 MMD features | Planned | — |
 | M3.2 CEM loop | Planned | — |

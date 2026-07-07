@@ -176,7 +176,7 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 
 ### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`**; gym migration is tracked in **`docs/ROADMAP.md`** ([V].3.3+).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`**; batched gym envs and parallel sys-ID collection are tracked in **`docs/ROADMAP.md`** ([V].3.3, [V].4.2).
 
 ```bash
 # Headless smoke (settle→weld)
@@ -304,7 +304,7 @@ uv run --env-file pytest.env python -m pytest \
 
 ### M3 replay and digital-twin setup
 
-Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Parquet recordings are observation-first; privileged `.npz` snapshots are opt-in (`--save-snapshot`) for exact sim-to-sim baseline comparisons. A named digital-twin fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) is planned to list fixture names, base poses, observation fixtures, and smoke commands, but **that catalog file is not committed yet** — see the "Known gap" in `docs/digital-twin.md` before relying on it. Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md) and [`docs/digital-twin.md`](docs/digital-twin.md).
+Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Parquet recordings are observation-first; privileged `.npz` snapshots are opt-in (`--save-snapshot`) for exact sim-to-sim baseline comparisons. The digital-twin fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) lists fixture names, base poses, observation fixtures, and smoke commands. **Parallel batched collection** uses the `batched_sysid_v1` layout — see [`docs/batched-sysid-dataset.md`](docs/batched-sysid-dataset.md). Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md) and [`docs/digital-twin.md`](docs/digital-twin.md).
 
 ```bash
 # Collect a short observation-only dataset (no privileged snapshot by default)
@@ -347,7 +347,26 @@ uv run python apple_pick_gym/examples/run_system_identification.py \
   --stem-bend-stiffness-values 10,25,50 \
   --mmd-output /tmp/apple_pick_mmd_grid
 
-# Digital-twin reconstruction tests (2 known failures pending catalog fixture files — see docs/digital-twin.md)
+# Parallel batched collection (batched_sysid_v1 layout)
+uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
+  --viewer null --num-structures 2 --num-directions 3 \
+  --max-steps 200 --output /tmp/batched_sysid_dataset
+
+# Interactive batched collection (ViewerGL + pull-direction debug)
+uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
+  --viewer gl --num-structures 2 --num-directions 3 \
+  --output tmp/batched_sysid_dataset --show-pull-direction \
+  --movement-per-step-m 0.005 \
+  --total-movement-m 0.2 \
+  --move-speed-mps 0.0150 \
+  --hold-duration-s 0.1 --debug
+
+# Batched collect + replay fidelity capstone tests
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_gym/tests/test_batched_sysid_collect.py \
+  apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py -q
+
+# Digital-twin reconstruction + fixture catalog tests
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
 
 # Pull-direction geometry figure

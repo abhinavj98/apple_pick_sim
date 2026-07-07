@@ -48,6 +48,7 @@ class OnStepCallback(Protocol):
         phase: str,
         sim_time: float,
         obs: Any,
+        amplitude_m: float = 0.0,
     ) -> bool: ...
 
 
@@ -423,6 +424,7 @@ def collect_batched_quasi_static_dataset(
         phase="init",
         sim_time=sim_time,
         obs=obs,
+        amplitude_m=0.0,
     ):
         if progress is not None:
             progress(f"wrote episodes to {out} (stopped at init)")
@@ -470,6 +472,7 @@ def collect_batched_quasi_static_dataset(
             phase=phase,
             sim_time=sim_time,
             obs=obs,
+            amplitude_m=float(reference_traj.current_amplitude_m),
         ):
             break
 

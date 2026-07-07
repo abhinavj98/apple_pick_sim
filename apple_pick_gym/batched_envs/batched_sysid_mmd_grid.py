@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from itertools import product
-from typing import NamedTuple
+from typing import Any, NamedTuple, Protocol
 
 import numpy as np
 import torch
@@ -12,8 +13,148 @@ from apple_pick_sim.fruiting_system import params as fs
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
 from apple_pick_sim.system_id.batched_digital_twin_init import infer_base_params_for_structure
 from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+from apple_pick_sim.system_id.mmd_features import (
+    ReplayObservationCollector,
+    replay_obs_dict_from_sysid_numpy,
+)
 
 ROD_SEGMENTS: tuple[str, ...] = ("primary", "secondary", "spur", "stem")
+
+
+class _ReplayCollectorLike(Protocol):
+    @property
+    def n_rows(self) -> int: ...
+
+    def to_arrays(self) -> dict[str, Any]: ...
+
+
+class _FrozenReplayCollector:
+    """Replay collector backed by pre-built arrays (used after merge)."""
+
+    def __init__(self, arrays: dict[str, Any]) -> None:
+        self._arrays = arrays
+
+    @property
+    def n_rows(self) -> int:
+        return int(self._arrays["action"].shape[0])
+
+    def to_arrays(self) -> dict[str, Any]:
+        return self._arrays
+
+
+def _concat_replay_arrays(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    junction_names = list(left["junction_names"])
+    if junction_names != list(right["junction_names"]):
+        raise ValueError("junction_names mismatch between replay collectors")
+
+    def _cat_1d_or_2d(key: str) -> np.ndarray:
+        a = np.asarray(left[key])
+        b = np.asarray(right[key])
+        if a.shape[0] == 0:
+            return b
+        if b.shape[0] == 0:
+            return a
+        return np.concatenate([a, b], axis=0)
+
+    return {
+        "action": _cat_1d_or_2d("action").astype(np.float32, copy=False),
+        "ft_wrist": _cat_1d_or_2d("ft_wrist").astype(np.float32, copy=False),
+        "tcp_velocity": _cat_1d_or_2d("tcp_velocity").astype(np.float32, copy=False),
+        "tcp_pos": _cat_1d_or_2d("tcp_pos").astype(np.float32, copy=False),
+        "apple_pos": _cat_1d_or_2d("apple_pos").astype(np.float32, copy=False),
+        "phase": _cat_1d_or_2d("phase").astype(np.int8, copy=False),
+        "dir_idx": _cat_1d_or_2d("dir_idx").astype(np.int32, copy=False),
+        "excitation_type": _cat_1d_or_2d("excitation_type").astype(np.int8, copy=False),
+        "excitation_direction": _cat_1d_or_2d("excitation_direction").astype(
+            np.float32, copy=False
+        ),
+        "woody_part_start_pos": {
+            name: _cat_1d_or_2d_for_woody(left["woody_part_start_pos"][name], right["woody_part_start_pos"][name])
+            for name in junction_names
+        },
+        "woody_part_end_pos": {
+            name: _cat_1d_or_2d_for_woody(left["woody_part_end_pos"][name], right["woody_part_end_pos"][name])
+            for name in junction_names
+        },
+        "junction_names": junction_names,
+    }
+
+
+def _cat_1d_or_2d_for_woody(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    a_arr = np.asarray(a)
+    b_arr = np.asarray(b)
+    if a_arr.shape[0] == 0:
+        return b_arr.astype(np.float32, copy=False)
+    if b_arr.shape[0] == 0:
+        return a_arr.astype(np.float32, copy=False)
+    return np.concatenate([a_arr, b_arr], axis=0).astype(np.float32, copy=False)
+
+
+class BatchedSysIdReplayCollectors:
+    """One ReplayObservationCollector per parallel env for replay feature accumulation."""
+
+    def __init__(
+        self,
+        num_envs: int,
+        recorded_by_env: Sequence[Mapping[str, Any]],
+    ) -> None:
+        recorded = list(recorded_by_env)
+        n = int(num_envs)
+        if len(recorded) != n:
+            raise ValueError(
+                f"recorded_by_env length ({len(recorded)}) must match num_envs ({n})"
+            )
+        self._recorded_by_env = recorded
+        self._collectors: list[_ReplayCollectorLike] = [
+            ReplayObservationCollector(item) for item in recorded
+        ]
+
+    def record_step(self, env: Any, *, env_idx: int, frame_idx: int) -> None:
+        idx = int(env_idx)
+        recorded = self._recorded_by_env[idx]
+        obs = env.sysid_numpy_obs(idx)
+        adapted = replay_obs_dict_from_sysid_numpy(
+            obs,
+            junction_names=list(recorded["junction_names"]),
+        )
+        collector = self._collectors[idx]
+        if not isinstance(collector, ReplayObservationCollector):
+            raise RuntimeError("cannot record_step on merged replay collectors")
+        collector.record(adapted, frame_idx=int(frame_idx))
+
+    def to_arrays(self, env_idx: int) -> dict[str, Any]:
+        return self._collectors[int(env_idx)].to_arrays()
+
+    def n_rows(self, env_idx: int) -> int:
+        return int(self._collectors[int(env_idx)].n_rows)
+
+    def merge(self, other: BatchedSysIdReplayCollectors) -> BatchedSysIdReplayCollectors:
+        """Concatenate rows per env_idx for chunking across replay batches."""
+        if len(self._collectors) != len(other._collectors):
+            raise ValueError("cannot merge replay collectors with different num_envs")
+        merged = BatchedSysIdReplayCollectors.__new__(BatchedSysIdReplayCollectors)
+        merged._recorded_by_env = list(self._recorded_by_env)
+        merged._collectors = []
+        for left, right in zip(self._collectors, other._collectors, strict=True):
+            arrays = _concat_replay_arrays(left.to_arrays(), right.to_arrays())
+            merged._collectors.append(_FrozenReplayCollector(arrays))
+        return merged
+
+
+def recorded_metadata_by_env(
+    dataset: BatchedSysIdDataset,
+    *,
+    structure_idx: int,
+    num_directions: int,
+    num_candidates: int,
+) -> list[dict[str, Any]]:
+    """Load recorded obs arrays per env_idx for ReplayObservationCollector init."""
+    num_envs = int(num_candidates) * int(num_directions)
+    out: list[dict[str, Any]] = []
+    for env_idx in range(num_envs):
+        direction_idx = int(env_idx) % int(num_directions)
+        out.append(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+    return out
 
 
 class BendStiffnessCandidate(NamedTuple):

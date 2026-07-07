@@ -251,3 +251,139 @@ def test_actions_tensor_from_recorded_frame_shape_and_device():
     assert out.device.type == "cpu"
     assert out.dtype == torch.float32
     np.testing.assert_array_equal(out.numpy(), recorded[:, 1, :])
+
+
+def _recorded_arrays_for_replay(*, n_frames: int, direction_idx: int = 0) -> dict:
+    junction_names = ["joint_a", "joint_b"]
+    base = np.arange(n_frames, dtype=np.float32).reshape(n_frames, 1)
+    return {
+        "action": np.full((n_frames, 6), float(direction_idx), dtype=np.float32),
+        "phase": np.full(n_frames, direction_idx, dtype=np.int8),
+        "dir_idx": np.full(n_frames, direction_idx, dtype=np.int32),
+        "excitation_type": np.zeros(n_frames, dtype=np.int8),
+        "excitation_direction": np.tile(
+            np.array([0.0, 1.0, 0.0], dtype=np.float32),
+            (n_frames, 1),
+        ),
+        "junction_names": junction_names,
+    }
+
+
+def _sysid_numpy_obs_for_frame(*, frame_idx: int, junction_names: list[str]) -> dict:
+    return {
+        "ft_wrist": np.full(6, 100.0 + frame_idx, dtype=np.float32),
+        "tcp_velocity": np.full(6, 200.0 + frame_idx, dtype=np.float32),
+        "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32) + frame_idx,
+        "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32) + frame_idx,
+        "woody_part_start_pos": {
+            name: np.array([10.0, 11.0, 12.0], dtype=np.float32) + frame_idx
+            for name in junction_names
+        },
+        "woody_part_end_pos": {
+            name: np.array([20.0, 21.0, 22.0], dtype=np.float32) + frame_idx
+            for name in junction_names
+        },
+    }
+
+
+def test_recorded_metadata_by_env_broadcasts_direction_across_candidates():
+    num_directions = 2
+    num_candidates = 3
+    dataset = MagicMock()
+    direction_arrays = {
+        0: _recorded_arrays_for_replay(n_frames=4, direction_idx=0),
+        1: _recorded_arrays_for_replay(n_frames=4, direction_idx=1),
+    }
+
+    def load_episode_obs_arrays(structure_idx: int, direction_idx: int) -> dict:
+        del structure_idx
+        return direction_arrays[direction_idx]
+
+    dataset.load_episode_obs_arrays.side_effect = load_episode_obs_arrays
+
+    got = grid.recorded_metadata_by_env(
+        dataset,
+        structure_idx=7,
+        num_directions=num_directions,
+        num_candidates=num_candidates,
+    )
+
+    assert len(got) == num_candidates * num_directions
+    for env_idx, recorded in enumerate(got):
+        direction_idx = env_idx % num_directions
+        assert recorded is direction_arrays[direction_idx]
+        dataset.load_episode_obs_arrays.assert_any_call(7, direction_idx)
+
+
+def test_batched_sysid_replay_collectors_record_step_and_to_arrays():
+    num_envs = 2
+    n_frames = 3
+    recorded_by_env = [
+        _recorded_arrays_for_replay(n_frames=n_frames, direction_idx=env_idx)
+        for env_idx in range(num_envs)
+    ]
+    collectors = grid.BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+
+    env = MagicMock()
+    junction_names = recorded_by_env[0]["junction_names"]
+
+    for frame_idx in range(2):
+        for env_idx in range(num_envs):
+            env.sysid_numpy_obs.return_value = _sysid_numpy_obs_for_frame(
+                frame_idx=frame_idx,
+                junction_names=junction_names,
+            )
+            collectors.record_step(env, env_idx=env_idx, frame_idx=frame_idx)
+
+    assert collectors.n_rows(0) == 2
+    assert collectors.n_rows(1) == 2
+
+    arrays = collectors.to_arrays(0)
+    assert arrays["action"].shape == (2, 6)
+    assert arrays["ft_wrist"].shape == (2, 6)
+    assert arrays["tcp_pos"].shape == (2, 3)
+    assert arrays["apple_pos"].shape == (2, 3)
+    assert set(arrays["woody_part_start_pos"]) == set(junction_names)
+    assert arrays["woody_part_start_pos"]["joint_a"].shape == (2, 3)
+    np.testing.assert_allclose(arrays["ft_wrist"][1], 101.0)
+
+
+def test_batched_sysid_replay_collectors_merge_concatenates_per_env():
+    num_envs = 2
+    n_frames = 4
+    recorded_by_env = [
+        _recorded_arrays_for_replay(n_frames=n_frames, direction_idx=env_idx)
+        for env_idx in range(num_envs)
+    ]
+    left = grid.BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+    right = grid.BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+
+    env = MagicMock()
+    junction_names = recorded_by_env[0]["junction_names"]
+
+    for frame_idx in (0, 1):
+        for env_idx in range(num_envs):
+            env.sysid_numpy_obs.return_value = _sysid_numpy_obs_for_frame(
+                frame_idx=frame_idx,
+                junction_names=junction_names,
+            )
+            left.record_step(env, env_idx=env_idx, frame_idx=frame_idx)
+
+    for frame_idx in (2, 3):
+        for env_idx in range(num_envs):
+            env.sysid_numpy_obs.return_value = _sysid_numpy_obs_for_frame(
+                frame_idx=frame_idx,
+                junction_names=junction_names,
+            )
+            right.record_step(env, env_idx=env_idx, frame_idx=frame_idx)
+
+    merged = left.merge(right)
+
+    assert merged.n_rows(0) == 4
+    assert merged.n_rows(1) == 4
+
+    arrays = merged.to_arrays(0)
+    assert arrays["action"].shape == (4, 6)
+    assert arrays["ft_wrist"].shape == (4, 6)
+    np.testing.assert_allclose(arrays["ft_wrist"][0], 100.0)
+    np.testing.assert_allclose(arrays["ft_wrist"][3], 103.0)

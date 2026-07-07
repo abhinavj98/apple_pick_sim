@@ -311,7 +311,9 @@ def test_recorded_metadata_by_env_broadcasts_direction_across_candidates():
     assert len(got) == num_candidates * num_directions
     for env_idx, recorded in enumerate(got):
         direction_idx = env_idx % num_directions
-        assert recorded is direction_arrays[direction_idx]
+        expected = direction_arrays[direction_idx]
+        assert recorded["action"] is expected["action"]
+        np.testing.assert_array_equal(recorded["dir_idx"], expected["dir_idx"])
         dataset.load_episode_obs_arrays.assert_any_call(7, direction_idx)
 
 

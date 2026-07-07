@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from itertools import product
 from typing import Any, NamedTuple, Protocol
+
+from apple_pick_gym.batched_envs.batched_sysid_collect import broadcast_structure_params
+from apple_pick_sim.system_id.batched_digital_twin_init import initialize_batched_env_from_dataset
 
 import numpy as np
 import torch
@@ -153,7 +156,11 @@ def recorded_metadata_by_env(
     out: list[dict[str, Any]] = []
     for env_idx in range(num_envs):
         direction_idx = int(env_idx) % int(num_directions)
-        out.append(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+        recorded = dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+        n_frames = int(np.asarray(recorded["action"]).shape[0])
+        if "dir_idx" not in recorded:
+            recorded["dir_idx"] = np.full(n_frames, direction_idx, dtype=np.int32)
+        out.append(recorded)
     return out
 
 
@@ -292,3 +299,70 @@ def actions_tensor_from_recorded_frame(
     """Return one recorded action frame for every env on ``device``."""
     frame = np.asarray(recorded_actions[:, frame_idx, :], dtype=np.float32)
     return torch.as_tensor(frame, device=device, dtype=torch.float32)
+
+
+def replay_batched_sysid_structure(
+    *,
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+    candidates: Sequence[BendStiffnessCandidate],
+    num_directions: int,
+    seed: int,
+    build_env_fn: Callable[..., Any],
+) -> BatchedSysIdReplayCollectors:
+    """Replay recorded actions for one structure across bend-stiffness candidates."""
+    num_candidates = len(candidates)
+    if num_candidates < 1:
+        raise ValueError("candidates must be non-empty")
+    d = int(num_directions)
+    if d < 1:
+        raise ValueError("num_directions must be >= 1")
+
+    num_envs = num_candidates * d
+    base_params = infer_base_params_for_structure(dataset, int(structure_idx))
+    per_env_params = broadcast_structure_params(
+        [c.apply_to(base_params) for c in candidates],
+        d,
+    )
+    recorded_actions = build_recorded_actions_tensor(
+        dataset,
+        structure_idx=int(structure_idx),
+        num_directions=d,
+        num_candidates=num_candidates,
+    )
+    n_frames = int(recorded_actions.shape[1])
+
+    env = build_env_fn(
+        num_envs=num_envs,
+        per_env_params=per_env_params,
+        max_episode_steps=n_frames,
+    )
+    try:
+        env.reset(seed=int(seed))
+        initialize_batched_env_from_dataset(
+            env,
+            dataset,
+            structure_idx=int(structure_idx),
+            num_directions=d,
+        )
+        recorded_by_env = recorded_metadata_by_env(
+            dataset,
+            structure_idx=int(structure_idx),
+            num_directions=d,
+            num_candidates=num_candidates,
+        )
+        collectors = BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+
+        for frame_idx in range(n_frames):
+            actions = actions_tensor_from_recorded_frame(
+                recorded_actions,
+                frame_idx=frame_idx,
+                device=env.device,
+            )
+            env.step(actions)
+            for env_idx in range(num_envs):
+                collectors.record_step(env, env_idx=env_idx, frame_idx=frame_idx)
+    finally:
+        env.close()
+
+    return collectors

@@ -389,3 +389,91 @@ def test_batched_sysid_replay_collectors_merge_concatenates_per_env():
     assert arrays["ft_wrist"].shape == (4, 6)
     np.testing.assert_allclose(arrays["ft_wrist"][0], 100.0)
     np.testing.assert_allclose(arrays["ft_wrist"][3], 103.0)
+
+
+def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None, shift: float = 0.0) -> dict:
+    """Synthetic hold-phase episode arrays (same contract as test_mmd_features)."""
+    junction_names = junction_names or ["joint_b", "joint_a"]
+    base = np.arange(steps, dtype=np.float32).reshape(steps, 1) + float(shift)
+    woody_start = {
+        "joint_a": np.hstack([base + 100.0, base + 101.0, base + 102.0]).astype(np.float32),
+        "joint_b": np.hstack([base + 200.0, base + 201.0, base + 202.0]).astype(np.float32),
+    }
+    woody_end = {
+        "joint_a": np.hstack([base + 300.0, base + 301.0, base + 302.0]).astype(np.float32),
+        "joint_b": np.hstack([base + 400.0, base + 401.0, base + 402.0]).astype(np.float32),
+    }
+    return {
+        "ft_wrist": np.hstack([base + i for i in range(6)]).astype(np.float32),
+        "tcp_velocity": np.hstack([base + 10.0 + i for i in range(6)]).astype(np.float32),
+        "action": np.hstack([base + 20.0 + i for i in range(6)]).astype(np.float32),
+        "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
+        "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
+        "woody_part_start_pos": woody_start,
+        "woody_part_end_pos": woody_end,
+        "excitation_direction": np.tile(
+            np.array([[0.0, 1.0, 0.0]], dtype=np.float32), (steps, 1)
+        ),
+        "phase": np.ones(steps, dtype=np.int8),
+        "excitation_type": np.zeros(steps, dtype=np.int8),
+        "dir_idx": np.zeros(steps, dtype=np.int32),
+        "junction_names": junction_names,
+    }
+
+
+def test_prepare_gt_mmd_context_from_synthetic_arrays():
+    episodes = [_arrays_for_steps(steps=8)]
+
+    context = grid.prepare_gt_mmd_context(episodes)
+
+    assert len(context) == 1
+    direction = (0.0, 1.0, 0.0)
+    assert direction in context
+    entry = context[direction]
+    assert isinstance(entry, grid.MmdDirectionContext)
+    assert entry.gt_norm.ndim == 2
+    assert entry.gt_norm.shape[0] >= 1
+    assert entry.bandwidth > 0.0
+
+
+def test_score_candidate_mmd_identical_features_near_zero():
+    episodes = [_arrays_for_steps(steps=8)]
+    gt_context = grid.prepare_gt_mmd_context(episodes)
+    candidate = grid.BendStiffnessCandidate(1.0, 2.0, 3.0, 4.0)
+
+    result = grid.score_candidate_mmd(
+        candidate_index=0,
+        candidate=candidate,
+        gt_context=gt_context,
+        replay_observations=episodes,
+    )
+
+    assert result.aggregate_mmd2 == pytest.approx(0.0, abs=1e-6)
+    assert result.candidate_index == 0
+    assert result.stiffnesses == {
+        "primary": 1.0,
+        "secondary": 2.0,
+        "spur": 3.0,
+        "stem": 4.0,
+    }
+
+
+def test_score_candidate_mmd_shifted_features_higher():
+    episodes = [_arrays_for_steps(steps=8)]
+    gt_context = grid.prepare_gt_mmd_context(episodes)
+    candidate = grid.BendStiffnessCandidate(1.0, 2.0, 3.0, 4.0)
+
+    identical = grid.score_candidate_mmd(
+        candidate_index=0,
+        candidate=candidate,
+        gt_context=gt_context,
+        replay_observations=episodes,
+    )
+    shifted = grid.score_candidate_mmd(
+        candidate_index=1,
+        candidate=candidate,
+        gt_context=gt_context,
+        replay_observations=[_arrays_for_steps(steps=8, shift=10.0)],
+    )
+
+    assert identical.aggregate_mmd2 < shifted.aggregate_mmd2

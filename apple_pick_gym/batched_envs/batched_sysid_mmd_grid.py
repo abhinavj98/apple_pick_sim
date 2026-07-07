@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from itertools import product
+from pathlib import Path
 from typing import Any, NamedTuple, Protocol
 
 from apple_pick_gym.batched_envs.batched_sysid_collect import broadcast_structure_params
@@ -16,12 +17,238 @@ from apple_pick_sim.fruiting_system import params as fs
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
 from apple_pick_sim.system_id.batched_digital_twin_init import infer_base_params_for_structure
 from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+from apple_pick_sim.system_id.mmd import apply_normalization, biased_mmd2, fit_gt_normalization, rbf_bandwidth_median
 from apple_pick_sim.system_id.mmd_features import (
     ReplayObservationCollector,
+    build_transition_features_by_direction,
     replay_obs_dict_from_sysid_numpy,
 )
+from apple_pick_sim.system_id.mmd_results import MmdCandidateResult, write_results_csv
 
 ROD_SEGMENTS: tuple[str, ...] = ("primary", "secondary", "spur", "stem")
+
+
+class MmdDirectionContext(NamedTuple):
+    """GT normalization and bandwidth for one excitation direction."""
+
+    gt_norm: np.ndarray
+    stats: Any
+    bandwidth: float
+
+
+def combine_transition_features(
+    episodes: list[dict],
+) -> dict[tuple[float, float, float], np.ndarray]:
+    """Concatenate hold-only transition features keyed by excitation direction."""
+    parts: dict[tuple[float, float, float], list[np.ndarray]] = {}
+    for arrays in episodes:
+        for direction, features in build_transition_features_by_direction(arrays).items():
+            parts.setdefault(direction, []).append(features)
+    return {
+        direction: np.concatenate(chunks, axis=0)
+        for direction, chunks in sorted(parts.items())
+        if chunks
+    }
+
+
+def prepare_gt_mmd_context(
+    recorded_episodes: list[dict],
+) -> dict[tuple[float, float, float], MmdDirectionContext]:
+    """Fit per-direction GT normalization and RBF bandwidth from recorded episodes."""
+    gt_by_direction = combine_transition_features(recorded_episodes)
+    if not gt_by_direction:
+        raise ValueError("No valid hold-only GT transition features were found.")
+
+    context: dict[tuple[float, float, float], MmdDirectionContext] = {}
+    for direction, gt_features in gt_by_direction.items():
+        stats = fit_gt_normalization(gt_features)
+        gt_norm = apply_normalization(gt_features, stats)
+        bandwidth = rbf_bandwidth_median(gt_norm)
+        context[direction] = MmdDirectionContext(
+            gt_norm=gt_norm,
+            stats=stats,
+            bandwidth=bandwidth,
+        )
+    return context
+
+
+def _candidate_stiffnesses(candidate: BendStiffnessCandidate) -> dict[str, float]:
+    return {
+        "primary": float(candidate.primary),
+        "secondary": float(candidate.secondary),
+        "spur": float(candidate.spur),
+        "stem": float(candidate.stem),
+    }
+
+
+def score_candidate_mmd(
+    *,
+    candidate_index: int,
+    candidate: BendStiffnessCandidate,
+    gt_context: dict[tuple[float, float, float], MmdDirectionContext],
+    replay_observations: list[dict],
+) -> MmdCandidateResult:
+    """Score one replayed candidate against precomputed GT MMD context."""
+    candidate_by_direction = combine_transition_features(replay_observations)
+    per_direction: dict[tuple[float, float, float], float] = {}
+    for direction, context in gt_context.items():
+        candidate_features = candidate_by_direction.get(direction)
+        if candidate_features is None:
+            continue
+        if candidate_features.shape[1] != context.gt_norm.shape[1]:
+            raise ValueError(
+                "MMD feature dimension mismatch for direction "
+                f"{direction}: gt={context.gt_norm.shape[1]} "
+                f"candidate={candidate_features.shape[1]}"
+            )
+        candidate_norm = apply_normalization(candidate_features, context.stats)
+        per_direction[direction] = biased_mmd2(
+            context.gt_norm,
+            candidate_norm,
+            context.bandwidth,
+        )
+    if not per_direction:
+        raise ValueError("No candidate directions had valid hold-only MMD transitions.")
+    aggregate = float(np.mean(list(per_direction.values())))
+    return MmdCandidateResult(
+        candidate_index=int(candidate_index),
+        stiffnesses=_candidate_stiffnesses(candidate),
+        aggregate_mmd2=aggregate,
+        per_direction_mmd2=per_direction,
+    )
+
+
+def load_recorded_episodes_for_structure(
+    dataset: BatchedSysIdDataset,
+    *,
+    structure_idx: int,
+    num_directions: int,
+) -> list[dict]:
+    """Load recorded observation arrays for each direction of one structure."""
+    return [
+        dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+        for direction_idx in range(int(num_directions))
+    ]
+
+
+def direction_episodes_from_collectors(
+    collectors: BatchedSysIdReplayCollectors,
+    *,
+    candidate_index: int,
+    num_directions: int,
+) -> list[dict]:
+    """Gather per-direction replay arrays for one candidate from merged collectors."""
+    d = int(num_directions)
+    c = int(candidate_index)
+    return [collectors.to_arrays(c * d + direction_idx) for direction_idx in range(d)]
+
+
+def chunk_candidates(
+    candidates: Sequence[BendStiffnessCandidate],
+    *,
+    max_envs_per_batch: int,
+    num_directions: int,
+) -> list[list[BendStiffnessCandidate]]:
+    """Split candidates so each chunk fits ``max_envs_per_batch`` parallel envs."""
+    items = list(candidates)
+    if not items:
+        return []
+    limit = int(max_envs_per_batch)
+    directions = int(num_directions)
+    if limit <= 0:
+        return [items]
+    max_chunk_size = limit // directions
+    if max_chunk_size < 1:
+        raise ValueError(
+            f"max_envs_per_batch ({limit}) must be >= num_directions ({directions})"
+        )
+    return [items[i : i + max_chunk_size] for i in range(0, len(items), max_chunk_size)]
+
+
+def replay_candidates_for_structure(
+    *,
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+    candidates: Sequence[BendStiffnessCandidate],
+    num_directions: int,
+    seed: int,
+    build_env_fn: Callable[..., Any],
+    max_envs_per_batch: int = 0,
+) -> BatchedSysIdReplayCollectors:
+    """Replay all candidates for one structure, optionally chunked by env budget."""
+    chunks = chunk_candidates(
+        candidates,
+        max_envs_per_batch=int(max_envs_per_batch),
+        num_directions=int(num_directions),
+    )
+    if not chunks:
+        raise ValueError(f"No stiffness candidates for structure {structure_idx}")
+
+    merged: BatchedSysIdReplayCollectors | None = None
+    for chunk in chunks:
+        collectors = replay_batched_sysid_structure(
+            dataset=dataset,
+            structure_idx=int(structure_idx),
+            candidates=chunk,
+            num_directions=int(num_directions),
+            seed=int(seed),
+            build_env_fn=build_env_fn,
+        )
+        merged = collectors if merged is None else merged.merge(collectors)
+    assert merged is not None
+    return merged
+
+
+def evaluate_batched_mmd_grid(
+    *,
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+    candidates: Sequence[BendStiffnessCandidate],
+    num_directions: int,
+    seed: int,
+    build_env_fn: Callable[..., Any],
+    output_dir: Path | str | None = None,
+) -> list[MmdCandidateResult]:
+    """Score bend-stiffness candidates for one structure against recorded GT episodes."""
+    candidate_list = list(candidates)
+    if not candidate_list:
+        raise ValueError("candidates must be non-empty")
+
+    gt_context = prepare_gt_mmd_context(
+        load_recorded_episodes_for_structure(
+            dataset,
+            structure_idx=int(structure_idx),
+            num_directions=int(num_directions),
+        )
+    )
+    collectors = replay_candidates_for_structure(
+        dataset=dataset,
+        structure_idx=int(structure_idx),
+        candidates=candidate_list,
+        num_directions=int(num_directions),
+        seed=int(seed),
+        build_env_fn=build_env_fn,
+    )
+
+    results: list[MmdCandidateResult] = []
+    for candidate_index, candidate in enumerate(candidate_list):
+        replay_observations = direction_episodes_from_collectors(
+            collectors,
+            candidate_index=candidate_index,
+            num_directions=int(num_directions),
+        )
+        results.append(
+            score_candidate_mmd(
+                candidate_index=candidate_index,
+                candidate=candidate,
+                gt_context=gt_context,
+                replay_observations=replay_observations,
+            )
+        )
+
+    if output_dir is not None:
+        write_results_csv(results, output_dir)
+    return results
 
 
 class _ReplayCollectorLike(Protocol):

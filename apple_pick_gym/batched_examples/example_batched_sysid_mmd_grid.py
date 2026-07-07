@@ -295,32 +295,18 @@ def _replay_structure(
     max_envs_per_batch: int,
     build_env_fn,
 ):
-    from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
-        BatchedSysIdReplayCollectors,
-        replay_batched_sysid_structure,
-    )
+    from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import replay_candidates_for_structure
 
-    chunks = chunk_candidates(
-        candidates,
-        max_envs_per_batch=max_envs_per_batch,
-        num_directions=num_directions,
+    collectors = replay_candidates_for_structure(
+        dataset=dataset,
+        structure_idx=int(structure_idx),
+        candidates=candidates,
+        num_directions=int(num_directions),
+        seed=int(seed),
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=int(max_envs_per_batch),
     )
-    if not chunks:
-        raise SystemExit(f"No stiffness candidates for structure {structure_idx}")
-
-    merged: BatchedSysIdReplayCollectors | None = None
-    for chunk in chunks:
-        collectors = replay_batched_sysid_structure(
-            dataset=dataset,
-            structure_idx=structure_idx,
-            candidates=chunk,
-            num_directions=num_directions,
-            seed=seed,
-            build_env_fn=build_env_fn,
-        )
-        merged = collectors if merged is None else merged.merge(collectors)
-    assert merged is not None
-    return merged, len(candidates)
+    return collectors, len(candidates)
 
 
 def _print_replay_summary(

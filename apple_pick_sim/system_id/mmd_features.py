@@ -201,6 +201,31 @@ def flatten_woody_positions(
     return np.concatenate(parts).astype(np.float32, copy=False)
 
 
+def replay_obs_dict_from_sysid_numpy(
+    sysid_obs: Mapping[str, Any],
+    *,
+    junction_names: list[str],
+) -> dict[str, Any]:
+    """Adapt batched sysid_numpy obs into ReplayObservationCollector.record format."""
+
+    return {
+        "ft_wrist": np.asarray(sysid_obs["ft_wrist"], dtype=np.float32).reshape(6),
+        "tcp_velocity": np.asarray(sysid_obs["tcp_velocity"], dtype=np.float32).reshape(6),
+        "tcp_pos": np.asarray(sysid_obs["tcp_pos"], dtype=np.float32).reshape(3),
+        "apple_pos": np.asarray(sysid_obs["apple_pos"], dtype=np.float32).reshape(3),
+        "woody_start": flatten_woody_positions(
+            sysid_obs["woody_part_start_pos"],
+            frame_idx=0,
+            junction_names=junction_names,
+        ),
+        "woody_end": flatten_woody_positions(
+            sysid_obs["woody_part_end_pos"],
+            frame_idx=0,
+            junction_names=junction_names,
+        ),
+    }
+
+
 def _stack_woody(
     woody_by_junction: Mapping[str, np.ndarray],
     *,

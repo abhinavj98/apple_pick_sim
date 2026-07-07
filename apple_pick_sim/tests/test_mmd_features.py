@@ -10,6 +10,7 @@ from apple_pick_sim.system_id.mmd_features import (
     build_state_matrix,
     build_transition_features_by_direction,
     flatten_woody_positions,
+    replay_obs_dict_from_sysid_numpy,
 )
 
 
@@ -156,6 +157,84 @@ def test_transition_features_fail_when_required_field_is_missing():
 
     with pytest.raises(KeyError, match="tcp_pos"):
         build_state_matrix(arrays)
+
+
+def test_replay_obs_dict_from_sysid_numpy_flattens_woody():
+    sysid_obs = {
+        "ft_wrist": np.arange(6, dtype=np.float32),
+        "tcp_velocity": np.arange(6, 12, dtype=np.float32),
+        "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32),
+        "woody_part_start_pos": {
+            "joint_b": np.array([7.0, 8.0, 9.0], dtype=np.float32),
+            "joint_a": np.array([10.0, 11.0, 12.0], dtype=np.float32),
+        },
+        "woody_part_end_pos": {
+            "joint_b": np.array([13.0, 14.0, 15.0], dtype=np.float32),
+            "joint_a": np.array([16.0, 17.0, 18.0], dtype=np.float32),
+        },
+    }
+    out = replay_obs_dict_from_sysid_numpy(sysid_obs, junction_names=["joint_b", "joint_a"])
+    np.testing.assert_allclose(out["woody_start"], [7, 8, 9, 10, 11, 12])
+    np.testing.assert_allclose(out["woody_end"], [13, 14, 15, 16, 17, 18])
+
+
+def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
+    recorded = _arrays_for_steps(steps=2, junction_names=["joint_a", "joint_b"])
+    recorded["phase"] = np.array([0, 1], dtype=np.int8)
+    recorded["dir_idx"] = np.array([0, 1], dtype=np.int32)
+    junction_names = recorded["junction_names"]
+    frame_idx = 1
+
+    sysid_obs = {
+        "ft_wrist": recorded["ft_wrist"][frame_idx],
+        "tcp_velocity": recorded["tcp_velocity"][frame_idx],
+        "tcp_pos": recorded["tcp_pos"][frame_idx],
+        "apple_pos": recorded["apple_pos"][frame_idx],
+        "woody_part_start_pos": {
+            name: recorded["woody_part_start_pos"][name][frame_idx]
+            for name in junction_names
+        },
+        "woody_part_end_pos": {
+            name: recorded["woody_part_end_pos"][name][frame_idx]
+            for name in junction_names
+        },
+    }
+    adapted = replay_obs_dict_from_sysid_numpy(sysid_obs, junction_names=junction_names)
+
+    direct_collector = ReplayObservationCollector(recorded)
+    direct_obs = {
+        "ft_wrist": sysid_obs["ft_wrist"],
+        "tcp_velocity": sysid_obs["tcp_velocity"],
+        "tcp_pos": sysid_obs["tcp_pos"],
+        "apple_pos": sysid_obs["apple_pos"],
+        "woody_start": flatten_woody_positions(
+            recorded["woody_part_start_pos"],
+            frame_idx=frame_idx,
+            junction_names=junction_names,
+        ),
+        "woody_end": flatten_woody_positions(
+            recorded["woody_part_end_pos"],
+            frame_idx=frame_idx,
+            junction_names=junction_names,
+        ),
+    }
+    direct_collector.record(direct_obs, frame_idx=frame_idx)
+
+    adapted_collector = ReplayObservationCollector(recorded)
+    adapted_collector.record(adapted, frame_idx=frame_idx)
+
+    direct_arrays = direct_collector.to_arrays()
+    adapted_arrays = adapted_collector.to_arrays()
+    for name in junction_names:
+        np.testing.assert_allclose(
+            adapted_arrays["woody_part_start_pos"][name],
+            direct_arrays["woody_part_start_pos"][name],
+        )
+        np.testing.assert_allclose(
+            adapted_arrays["woody_part_end_pos"][name],
+            direct_arrays["woody_part_end_pos"][name],
+        )
 
 
 def test_replay_observation_collector_builds_dataset_shaped_arrays():

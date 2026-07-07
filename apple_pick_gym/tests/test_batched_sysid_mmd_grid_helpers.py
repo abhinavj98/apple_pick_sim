@@ -421,6 +421,34 @@ def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None, sh
     }
 
 
+def test_load_recorded_episodes_for_structure_synthesizes_dir_idx():
+    num_directions = 2
+    n_frames = 5
+    dataset = MagicMock()
+
+    def load_episode_obs_arrays(structure_idx: int, direction_idx: int) -> dict:
+        del structure_idx
+        return {
+            "action": np.zeros((n_frames, 6), dtype=np.float32),
+            "phase": np.zeros(n_frames, dtype=np.int8),
+        }
+
+    dataset.load_episode_obs_arrays.side_effect = load_episode_obs_arrays
+
+    episodes = grid.load_recorded_episodes_for_structure(
+        dataset,
+        structure_idx=3,
+        num_directions=num_directions,
+    )
+
+    assert len(episodes) == num_directions
+    for direction_idx, episode in enumerate(episodes):
+        np.testing.assert_array_equal(
+            episode["dir_idx"],
+            np.full(n_frames, direction_idx, dtype=np.int32),
+        )
+
+
 def test_prepare_gt_mmd_context_from_synthetic_arrays():
     episodes = [_arrays_for_steps(steps=8)]
 

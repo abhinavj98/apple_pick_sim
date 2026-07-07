@@ -22,8 +22,10 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
 )
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
 from apple_pick_sim.system_id import BatchedSysIdDataset, QuasiStaticStepConfig
+from apple_pick_sim.fruiting_system.params import GripperProxyConfig
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     digital_twin_obs_from_batched_episode,
+    gripper_proxy_from_episode_metadata,
     infer_base_params_for_structure,
     initialize_batched_env_from_dataset,
 )
@@ -118,6 +120,32 @@ def tiny_batched_dataset(tmp_path_factory) -> BatchedSysIdDataset:
     finally:
         env.close()
     return BatchedSysIdDataset(output_dir)
+
+
+def test_gripper_proxy_from_episode_metadata_sets_weld_fields():
+    meta = {
+        "weld_direction": [0.1, 0.2, 0.97],
+        "weld_reference_pos": [1.0, 2.0, 3.0],
+        "weld_reference_quat": [0.0, 0.0, 0.0, 1.0],
+    }
+    base = GripperProxyConfig(mass=0.5)
+
+    proxy = gripper_proxy_from_episode_metadata(meta, base=base)
+
+    assert proxy.fix_to_apple is True
+    assert proxy.robot_facing_weld is False
+    assert proxy.mass == pytest.approx(0.5)
+    assert proxy.weld_direction == pytest.approx((0.1, 0.2, 0.97))
+    assert proxy.weld_reference_pos == pytest.approx((1.0, 2.0, 3.0))
+    assert proxy.weld_reference_quat == pytest.approx((0.0, 0.0, 0.0, 1.0))
+
+
+def test_gripper_proxy_from_episode_metadata_robot_facing_when_no_weld_direction():
+    meta: dict = {}
+    proxy = gripper_proxy_from_episode_metadata(meta)
+    assert proxy.fix_to_apple is True
+    assert proxy.robot_facing_weld is True
+    assert proxy.weld_direction is None
 
 
 @gymnasium_available

@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any, NamedTuple, Protocol
 
 from apple_pick_gym.batched_envs.batched_sysid_collect import broadcast_structure_params
-from apple_pick_sim.system_id.batched_digital_twin_init import initialize_batched_env_from_dataset
+from apple_pick_sim.system_id.batched_digital_twin_init import (
+    gripper_proxy_from_episode_metadata,
+    initialize_batched_env_from_dataset,
+)
 
 import numpy as np
 import torch
@@ -118,6 +121,15 @@ def score_candidate_mmd(
     )
 
 
+def _resolve_replay_seed(dataset: BatchedSysIdDataset, seed: int | None) -> int:
+    if seed is not None:
+        return int(seed)
+    collection = dataset.manifest.get("collection", {})
+    if "seed" not in collection:
+        raise ValueError("replay seed is None and manifest.collection.seed is missing")
+    return int(collection["seed"])
+
+
 def load_recorded_episodes_for_structure(
     dataset: BatchedSysIdDataset,
     *,
@@ -125,10 +137,14 @@ def load_recorded_episodes_for_structure(
     num_directions: int,
 ) -> list[dict]:
     """Load recorded observation arrays for each direction of one structure."""
-    return [
-        dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
-        for direction_idx in range(int(num_directions))
-    ]
+    out: list[dict] = []
+    for direction_idx in range(int(num_directions)):
+        recorded = dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+        n_frames = int(np.asarray(recorded["action"]).shape[0])
+        if "dir_idx" not in recorded:
+            recorded["dir_idx"] = np.full(n_frames, direction_idx, dtype=np.int32)
+        out.append(recorded)
+    return out
 
 
 def direction_episodes_from_collectors(
@@ -171,7 +187,7 @@ def replay_candidates_for_structure(
     structure_idx: int,
     candidates: Sequence[BendStiffnessCandidate],
     num_directions: int,
-    seed: int,
+    seed: int | None = None,
     build_env_fn: Callable[..., Any],
     max_envs_per_batch: int = 0,
 ) -> BatchedSysIdReplayCollectors:
@@ -191,7 +207,7 @@ def replay_candidates_for_structure(
             structure_idx=int(structure_idx),
             candidates=chunk,
             num_directions=int(num_directions),
-            seed=int(seed),
+            seed=seed,
             build_env_fn=build_env_fn,
         )
         merged = collectors if merged is None else merged.merge(collectors)
@@ -205,7 +221,7 @@ def evaluate_batched_mmd_grid(
     structure_idx: int,
     candidates: Sequence[BendStiffnessCandidate],
     num_directions: int,
-    seed: int,
+    seed: int | None = None,
     build_env_fn: Callable[..., Any],
     output_dir: Path | str | None = None,
 ) -> list[MmdCandidateResult]:
@@ -226,7 +242,7 @@ def evaluate_batched_mmd_grid(
         structure_idx=int(structure_idx),
         candidates=candidate_list,
         num_directions=int(num_directions),
-        seed=int(seed),
+        seed=seed,
         build_env_fn=build_env_fn,
     )
 
@@ -534,7 +550,7 @@ def replay_batched_sysid_structure(
     structure_idx: int,
     candidates: Sequence[BendStiffnessCandidate],
     num_directions: int,
-    seed: int,
+    seed: int | None = None,
     build_env_fn: Callable[..., Any],
 ) -> BatchedSysIdReplayCollectors:
     """Replay recorded actions for one structure across bend-stiffness candidates."""
@@ -558,14 +574,18 @@ def replay_batched_sysid_structure(
         num_candidates=num_candidates,
     )
     n_frames = int(recorded_actions.shape[1])
+    replay_seed = _resolve_replay_seed(dataset, seed)
+    structure_meta = dataset.load_episode_metadata(int(structure_idx), 0)
+    replay_gripper = gripper_proxy_from_episode_metadata(structure_meta)
 
     env = build_env_fn(
         num_envs=num_envs,
         per_env_params=per_env_params,
         max_episode_steps=n_frames,
+        gripper=replay_gripper,
     )
     try:
-        env.reset(seed=int(seed))
+        env.reset(seed=replay_seed)
         initialize_batched_env_from_dataset(
             env,
             dataset,

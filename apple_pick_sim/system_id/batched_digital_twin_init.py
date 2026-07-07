@@ -10,7 +10,7 @@ import numpy as np
 
 from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
 from apple_pick_sim.digital_twin import DigitalTwinObs, infer_params_from_obs
-from apple_pick_sim.fruiting_system.params import FruitingSystemParams, load_ranges, parse_fixture_args
+from apple_pick_sim.fruiting_system.params import FruitingSystemParams, GripperProxyConfig, load_ranges, parse_fixture_args
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
 from apple_pick_sim.system_id.excitation_state import ExcitationContext
@@ -80,6 +80,28 @@ def _frame_array_or_meta(
     if arr is not None:
         return arr
     return _array_or_none(meta.get(meta_key), size)
+
+
+def gripper_proxy_from_episode_metadata(
+    meta: dict[str, Any],
+    *,
+    base: GripperProxyConfig | None = None,
+) -> GripperProxyConfig:
+    """Build replay gripper config from batched episode metadata (structure-0 direction-0)."""
+    import dataclasses
+
+    proxy = base or GripperProxyConfig()
+    weld_direction = _tuple_or_none(meta.get("weld_direction"), 3)
+    weld_reference_pos = _tuple_or_none(meta.get("weld_reference_pos"), 3)
+    weld_reference_quat = _tuple_or_none(meta.get("weld_reference_quat"), 4)
+    return dataclasses.replace(
+        proxy,
+        fix_to_apple=True,
+        robot_facing_weld=weld_direction is None,
+        weld_direction=weld_direction,
+        weld_reference_pos=weld_reference_pos,
+        weld_reference_quat=weld_reference_quat,
+    )
 
 
 def digital_twin_obs_from_batched_episode(

@@ -198,7 +198,12 @@ def _make_parser() -> argparse.ArgumentParser:
         default=0,
         help="Cap evaluated stiffness candidates per structure (0 = full grid).",
     )
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Replay RNG seed (default: manifest collection.seed).",
+    )
     p.add_argument(
         "--replay-only",
         action="store_true",
@@ -263,6 +268,8 @@ def _candidates_for_structure(dataset, args: argparse.Namespace, structure_idx: 
 
 
 def _make_build_env_fn(*, ranges_path: str, topology_seed: int):
+    import dataclasses
+
     from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
 
     def build_env_fn(
@@ -270,7 +277,14 @@ def _make_build_env_fn(*, ranges_path: str, topology_seed: int):
         num_envs: int,
         per_env_params: list,
         max_episode_steps: int,
+        gripper: GripperProxyConfig | None = None,
     ) -> ApplePickBatchedSysIdEnv:
+        sim_config = build_sim_config(num_envs=num_envs)
+        if gripper is not None:
+            sim_config = dataclasses.replace(
+                sim_config,
+                robot=dataclasses.replace(sim_config.robot, gripper=gripper),
+            )
         return ApplePickBatchedSysIdEnv(
             num_envs=num_envs,
             max_episode_steps=max_episode_steps,
@@ -279,7 +293,7 @@ def _make_build_env_fn(*, ranges_path: str, topology_seed: int):
             use_settle_cache=False,
             per_env_params=per_env_params,
             control_hz=CONTROL_HZ,
-            sim_config=build_sim_config(num_envs=num_envs),
+            sim_config=sim_config,
         )
 
     return build_env_fn
@@ -291,7 +305,7 @@ def _replay_structure(
     structure_idx: int,
     candidates,
     num_directions: int,
-    seed: int,
+    seed: int | None,
     max_envs_per_batch: int,
     build_env_fn,
 ):
@@ -302,7 +316,7 @@ def _replay_structure(
         structure_idx=int(structure_idx),
         candidates=candidates,
         num_directions=int(num_directions),
-        seed=int(seed),
+        seed=seed,
         build_env_fn=build_env_fn,
         max_envs_per_batch=int(max_envs_per_batch),
     )
@@ -360,7 +374,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             structure_idx=int(structure_idx),
             candidates=candidates,
             num_directions=num_directions,
-            seed=int(args.seed),
+            seed=args.seed,
             max_envs_per_batch=int(args.max_envs_per_batch),
             build_env_fn=build_env_fn,
         )

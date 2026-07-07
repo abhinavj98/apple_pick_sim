@@ -188,10 +188,22 @@ def _gripper_proxy(
     fix_to_apple: bool | None = None,
 ) -> GripperProxyConfig:
     fix = config.robot.fix_to_apple if fix_to_apple is None else fix_to_apple
+    gripper = config.robot.gripper
+    if not fix:
+        return dataclasses.replace(
+            gripper,
+            fix_to_apple=False,
+            robot_facing_weld=False,
+            weld_direction=None,
+            weld_reference_pos=None,
+            weld_reference_quat=None,
+            weld_reference_stem_dir=None,
+        )
+    robot_facing_weld = gripper.weld_direction is None
     return dataclasses.replace(
-        config.robot.gripper,
-        fix_to_apple=fix,
-        robot_facing_weld=fix,
+        gripper,
+        fix_to_apple=True,
+        robot_facing_weld=robot_facing_weld,
     )
 
 

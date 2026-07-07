@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
@@ -24,6 +25,7 @@ from apple_pick_sim.system_id import BatchedSysIdDataset, QuasiStaticStepConfig
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     digital_twin_obs_from_batched_episode,
     infer_base_params_for_structure,
+    initialize_batched_env_from_dataset,
 )
 from apple_pick_sim.tests.conftest import RANGES_FIXTURE, fr3_assets_available
 
@@ -140,3 +142,50 @@ def test_infer_base_params_for_structure_returns_fruiting_params(
     assert isinstance(params, FruitingSystemParams)
     assert params.primary is not None
     assert params.primary.bend_stiffness > 0
+
+
+@gymnasium_available
+@requires_fr3
+def test_initialize_batched_env_from_dataset_sets_joint_q_and_tcp(
+    tiny_batched_dataset: BatchedSysIdDataset,
+):
+    structure_idx = 0
+    num_directions = 1
+    params = infer_base_params_for_structure(tiny_batched_dataset, structure_idx)
+    arrays = tiny_batched_dataset.load_episode_obs_arrays(structure_idx, 0)
+    recorded_joint_q = np.asarray(arrays["robot_joint_q"][0], dtype=np.float32).reshape(-1)
+    recorded_tcp_pos = np.asarray(arrays["tcp_pos"][0], dtype=np.float32).reshape(3)
+
+    env = ApplePickBatchedSysIdEnv(
+        num_envs=1,
+        max_episode_steps=10,
+        ranges_path=RANGES_FIXTURE,
+        topology_seed=_SEED,
+        use_settle_cache=False,
+        sim_config=_test_sim_config(num_envs=1),
+        per_env_params=[params],
+    )
+    try:
+        env.reset(seed=_SEED)
+        initialize_batched_env_from_dataset(
+            env,
+            tiny_batched_dataset,
+            structure_idx=structure_idx,
+            num_directions=num_directions,
+        )
+        env._gather_obs()
+        exported = env.sysid_numpy_obs(0)
+        np.testing.assert_allclose(
+            exported["robot_joint_q"],
+            recorded_joint_q,
+            rtol=0,
+            atol=1e-4,
+        )
+        np.testing.assert_allclose(
+            exported["tcp_pos"],
+            recorded_tcp_pos,
+            rtol=0,
+            atol=1e-3,
+        )
+    finally:
+        env.close()

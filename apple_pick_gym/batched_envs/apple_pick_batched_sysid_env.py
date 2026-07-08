@@ -119,6 +119,19 @@ class ApplePickBatchedSysIdEnv(ApplePickBatchedBaseEnv):
             int(env_idx),
         )
 
+    def pre_weld_sysid_obs(self, env_idx: int) -> dict[str, Any] | None:
+        """Settled tree observation captured before grasp weld (for geometry rebuild)."""
+        build_result = getattr(self._sim, "build_result", None)
+        if build_result is None:
+            return None
+        rows = getattr(build_result, "pre_weld_tree_obs", None)
+        if rows is None:
+            return None
+        i = int(env_idx)
+        if i < 0 or i >= len(rows):
+            return None
+        return dict(rows[i])
+
     def per_env_reset_info(self, env_idx: int) -> dict[str, Any]:
         return dict(self._per_env_reset_info[int(env_idx)])
 

@@ -125,8 +125,60 @@ Re-running into an existing directory:
 - **API:** pass `append_timestamp=False` to `collect_batched_quasi_static_dataset` to
   raise `FileExistsError` instead.
 
+## MMD grid replay export
+
+[`example_batched_sysid_mmd_grid.py`](../apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py)
+can persist replay trajectories per stiffness candidate with
+`--export-replay-dir` (optional `--export-skip-existing` to resume long runs).
+
+Layout under the export root:
+
+```
+<export_replay_dir>/
+  structure_000/
+    candidates/
+      c000/
+        manifest.json
+        episodes/s00_d00.parquet … s00_d19.parquet
+      c001/
+        …
+  structure_001/
+    …
+```
+
+Each candidate mini-dataset uses `batched_sysid_v1` episode files with
+`num_structures=1` (structure index 0 inside the mini-dataset). Episode metadata
+copies weld/reset fields from the source GT dataset and updates
+`fruiting_system_params` / `params_fingerprint` to the candidate stiffness.
+
+The candidate `manifest.json` adds a `replay` block:
+
+| Key | Description |
+|-----|-------------|
+| `replay_schema_version` | `"batched_sysid_replay_v1"` |
+| `source_dataset` | Absolute path to the GT dataset used for actions |
+| `source_structure_idx` | Structure index in the GT dataset |
+| `candidate_index` | Grid candidate index |
+| `candidate_stiffnesses` | `{primary, secondary, spur, stem}` bend stiffnesses |
+
+Writers: `apple_pick_sim.system_id.batched_replay_export`.
+
+Example:
+
+```bash
+uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py \
+  --viewer null --dataset tmp/batched_sysid_dataset_20dir \
+  --replay-only --export-replay-dir tmp/mmd_grid_replay \
+  --export-skip-existing \
+  --primary-bend-stiffness-values 0.005,1,10 \
+  --secondary-bend-stiffness-values 1 \
+  --spur-bend-stiffness-values 0.005,1,10 \
+  --stem-bend-stiffness-values 0.005,1,100
+```
+
 ## Tests
 
 - `apple_pick_sim/tests/test_batched_trajectory_store.py` — writer/loader roundtrip
 - `apple_pick_gym/tests/test_batched_sysid_collect.py` — end-to-end collect
 - `apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py` — collect → legacy materialize → replay (full `fruiting_system_params`; digital-twin frame-0 path is V.4.2.1)
+- `apple_pick_gym/tests/test_batched_replay_export.py` — MMD grid replay export roundtrip

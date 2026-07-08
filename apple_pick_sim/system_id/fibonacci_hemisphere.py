@@ -125,6 +125,35 @@ def stem_perpendicular_robot_pole(
     return (perp / perp_norm).astype(np.float64)
 
 
+def _filter_min_world_z(
+    directions: np.ndarray,
+    *,
+    min_world_z: float,
+) -> np.ndarray:
+    """Keep directions with ``direction[2] >= min_world_z`` (world +Z up)."""
+    keep: list[np.ndarray] = []
+    for d in directions:
+        if float(d[2]) >= float(min_world_z) - 1e-9:
+            keep.append(np.asarray(d, dtype=np.float64))
+    if not keep:
+        return directions
+    return np.stack(keep, axis=0)
+
+
+def _fallback_direction_with_min_world_z(
+    pole: np.ndarray,
+    *,
+    min_world_z: float,
+) -> np.ndarray:
+    """Unit direction near ``pole`` that satisfies the world-Z floor."""
+    p = np.asarray(pole, dtype=np.float64).reshape(3)
+    clamped = np.array([p[0], p[1], max(float(p[2]), float(min_world_z))], dtype=np.float64)
+    norm = float(np.linalg.norm(clamped))
+    if norm < 1e-12:
+        return np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    return (clamped / norm).astype(np.float64)
+
+
 def _filter_horizontal_toward_pole(
     directions: np.ndarray,
     pole: np.ndarray,
@@ -158,6 +187,7 @@ def sample_robot_facing_pull_directions(
     *,
     max_polar_angle: float = 0.5 * np.pi,
     min_horizontal_dot: float | None = None,
+    min_world_z: float | None = 0.0,
 ) -> np.ndarray:
     """Sample ``n`` pull directions on a pole-centered cap toward the robot.
 
@@ -165,6 +195,9 @@ def sample_robot_facing_pull_directions(
     robot_vec)``: perpendicular to the physical stem and facing the fixture
     robot base. Default ``max_polar_angle=π/2`` yields a full hemisphere around
     that pole (same path as ``example_gym_sysid.py`` data collection).
+
+    Default ``min_world_z=0`` drops directions with a downward world-Z component
+    (``direction[2] < 0``). Pass ``min_world_z=None`` to disable.
     """
     pole = stem_perpendicular_robot_pole(physical_stem, robot_vec)
     return sample_fibonacci_hemisphere(
@@ -172,6 +205,7 @@ def sample_robot_facing_pull_directions(
         pole,
         max_polar_angle=max_polar_angle,
         min_horizontal_dot=min_horizontal_dot,
+        min_world_z=min_world_z,
     )
 
 
@@ -181,6 +215,7 @@ def sample_fibonacci_hemisphere(
     *,
     max_polar_angle: float = 0.5 * np.pi,
     min_horizontal_dot: float | None = None,
+    min_world_z: float | None = None,
 ) -> np.ndarray:
     """Sample ``n`` unit directions on a polar cap centered at ``stem_dir``.
 
@@ -191,6 +226,9 @@ def sample_fibonacci_hemisphere(
     When ``min_horizontal_dot`` is set (e.g. ``0.0``), directions must also
     lie in the horizontal half-plane toward ``stem_dir`` (positive dot between
     their XY projection and the pole's XY projection).
+
+    When ``min_world_z`` is set (e.g. ``0.0``), directions must satisfy
+    ``direction[2] >= min_world_z`` in the world frame (+Z up).
     """
     if n <= 0:
         return np.zeros((0, 3), dtype=np.float64)
@@ -201,7 +239,11 @@ def sample_fibonacci_hemisphere(
         raise ValueError("stem_dir must be non-zero")
     stem = stem / stem_norm
 
-    pool_n = max(n * 4, 64) if min_horizontal_dot is not None else n
+    pool_n = (
+        max(n * 4, 64)
+        if min_horizontal_dot is not None or min_world_z is not None
+        else n
+    )
     local = _fibonacci_hemisphere_local(pool_n, max_polar_angle=max_polar_angle)
     rot = _rotation_matrix_from_z_to(stem)
     world = local @ rot.T
@@ -215,8 +257,17 @@ def sample_fibonacci_hemisphere(
             min_horizontal_dot=float(min_horizontal_dot),
         )
 
+    if min_world_z is not None:
+        world = _filter_min_world_z(world, min_world_z=float(min_world_z))
+
     if len(world) == 0:
-        world = np.array([stem], dtype=np.float64)
+        if min_world_z is not None:
+            world = np.array(
+                [_fallback_direction_with_min_world_z(stem, min_world_z=float(min_world_z))],
+                dtype=np.float64,
+            )
+        else:
+            world = np.array([stem], dtype=np.float64)
 
     selected: list[np.ndarray] = []
     for i in range(n):

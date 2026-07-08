@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -95,6 +96,18 @@ def test_bend_stiffness_candidate_apply_to_sets_enabled_segments():
     assert out.stem.bend_stiffness == pytest.approx(44.0)
     assert base.primary is not None
     assert base.primary.bend_stiffness != pytest.approx(11.0)
+    for segment, target in (
+        ("primary", 11.0),
+        ("secondary", 22.0),
+        ("spur", 33.0),
+        ("stem", 44.0),
+    ):
+        base_rod = getattr(base, segment)
+        out_rod = getattr(out, segment)
+        assert base_rod is not None and out_rod is not None
+        assert out_rod.damping_ratio == pytest.approx(base_rod.damping_ratio)
+        ratio = math.sqrt(target / base_rod.bend_stiffness)
+        assert out_rod.bend_damping == pytest.approx(base_rod.bend_damping * ratio)
 
 
 def test_bend_stiffness_candidate_apply_to_skips_disabled_segments():
@@ -127,7 +140,7 @@ def test_ensure_gt_candidate_in_grid_unchanged_when_present():
     assert out is not candidates
 
 
-def test_ensure_gt_candidate_in_grid_replaces_last_when_missing():
+def test_ensure_gt_candidate_in_grid_appends_when_missing():
     gt = grid.BendStiffnessCandidate(1.0, 2.0, 3.0, 4.0)
     candidates = [
         grid.BendStiffnessCandidate(10.0, 20.0, 30.0, 40.0),
@@ -136,8 +149,21 @@ def test_ensure_gt_candidate_in_grid_replaces_last_when_missing():
 
     out = grid.ensure_gt_candidate_in_grid(candidates, gt)
 
-    assert out[:-1] == candidates[:-1]
-    assert out[-1] == gt
+    assert out == candidates + [gt]
+    assert out is not candidates
+
+
+def test_ensure_gt_candidate_in_grid_matches_within_tolerance():
+    gt = grid.BendStiffnessCandidate(1.0, 0.0, 3.0, 4.0)
+    near_gt = grid.BendStiffnessCandidate(1.0, 1e-12, 3.0, 4.0)
+    candidates = [
+        grid.BendStiffnessCandidate(10.0, 20.0, 30.0, 40.0),
+        near_gt,
+    ]
+
+    out = grid.ensure_gt_candidate_in_grid(candidates, gt)
+
+    assert out == candidates
     assert out is not candidates
 
 
@@ -147,7 +173,7 @@ def test_ensure_gt_candidate_in_grid_returns_singleton_when_empty():
     assert grid.ensure_gt_candidate_in_grid([], gt) == [gt]
 
 
-def test_gt_bend_stiffness_candidate_from_structure_reads_inferred_stiffness(monkeypatch):
+def test_gt_bend_stiffness_candidate_from_structure_reads_true_stiffness(monkeypatch):
     base = _sample_params(seed=1)
     assert base.primary is not None
     assert base.secondary is not None
@@ -163,13 +189,31 @@ def test_gt_bend_stiffness_candidate_from_structure_reads_inferred_stiffness(mon
     dataset = MagicMock()
     monkeypatch.setattr(
         grid,
-        "infer_base_params_for_structure",
+        "true_params_for_structure",
         lambda _dataset, _idx: base,
     )
 
     got = grid.gt_bend_stiffness_candidate_from_structure(dataset, structure_idx=0)
 
     assert got == expected
+
+
+def _episode_with_pre_weld(*, n_trajectory_frames: int, direction_idx: int = 0) -> dict:
+    """Synthetic episode: one pre_weld row + ``n_trajectory_frames`` real steps."""
+    n_total = n_trajectory_frames + 1
+    action = np.zeros((n_total, 6), dtype=np.float32)
+    action[0] = 0.0
+    action[1:, 0] = np.arange(n_trajectory_frames, dtype=np.float32) + float(direction_idx)
+    return {
+        "step_idx": np.concatenate(
+            [np.array([-1], dtype=np.int32), np.arange(n_trajectory_frames, dtype=np.int32)]
+        ),
+        "phase": np.concatenate(
+            [np.array([-1], dtype=np.int8), np.zeros(n_trajectory_frames, dtype=np.int8)]
+        ),
+        "action": action,
+        "ft_wrist": np.zeros((n_total, 6), dtype=np.float32),
+    }
 
 
 def _make_mock_dataset(*, num_directions: int, n_frames: int) -> MagicMock:
@@ -187,6 +231,107 @@ def _make_mock_dataset(*, num_directions: int, n_frames: int) -> MagicMock:
 
     dataset.load_episode_obs_arrays.side_effect = load_episode_obs_arrays
     return dataset
+
+
+def _make_mock_dataset_with_pre_weld(*, num_directions: int, n_trajectory_frames: int) -> MagicMock:
+    dataset = MagicMock()
+
+    def load_episode_obs_arrays(structure_idx: int, direction_idx: int) -> dict:
+        del structure_idx
+        return _episode_with_pre_weld(
+            n_trajectory_frames=n_trajectory_frames,
+            direction_idx=direction_idx,
+        )
+
+    dataset.load_episode_obs_arrays.side_effect = load_episode_obs_arrays
+    return dataset
+
+
+def test_strip_pre_weld_rows_removes_leading_pre_weld_snapshot():
+    raw = _episode_with_pre_weld(n_trajectory_frames=4, direction_idx=2)
+    stripped = grid.strip_pre_weld_rows(raw)
+
+    assert stripped["action"].shape == (4, 6)
+    assert stripped["step_idx"].tolist() == [0, 1, 2, 3]
+    assert stripped["phase"].tolist() == [0, 0, 0, 0]
+    np.testing.assert_array_equal(stripped["action"][:, 0], np.arange(4, dtype=np.float32) + 2.0)
+
+
+def test_build_recorded_actions_tensor_excludes_pre_weld_row():
+    num_directions = 2
+    num_candidates = 2
+    n_trajectory_frames = 5
+    dataset = _make_mock_dataset_with_pre_weld(
+        num_directions=num_directions,
+        n_trajectory_frames=n_trajectory_frames,
+    )
+
+    tensor = grid.build_recorded_actions_tensor(
+        dataset,
+        structure_idx=0,
+        num_directions=num_directions,
+        num_candidates=num_candidates,
+    )
+
+    assert tensor.shape == (num_candidates * num_directions, n_trajectory_frames, 6)
+    assert int(tensor[0, 0, 0]) == 0
+    assert int(tensor[1, 0, 0]) == 1
+
+
+def test_load_recorded_episodes_for_structure_excludes_pre_weld_row():
+    dataset = _make_mock_dataset_with_pre_weld(num_directions=2, n_trajectory_frames=3)
+
+    episodes = grid.load_recorded_episodes_for_structure(
+        dataset,
+        structure_idx=0,
+        num_directions=2,
+    )
+
+    assert len(episodes) == 2
+    for direction_idx, episode in enumerate(episodes):
+        assert episode["action"].shape == (3, 6)
+        assert int(episode["step_idx"][0]) == 0
+        np.testing.assert_array_equal(
+            episode["dir_idx"],
+            np.full(3, direction_idx, dtype=np.int32),
+        )
+
+
+def test_recorded_metadata_by_env_excludes_pre_weld_row():
+    dataset = _make_mock_dataset_with_pre_weld(num_directions=2, n_trajectory_frames=3)
+
+    got = grid.recorded_metadata_by_env(
+        dataset,
+        structure_idx=0,
+        num_directions=2,
+        num_candidates=2,
+    )
+
+    assert len(got) == 4
+    for recorded in got:
+        assert recorded["action"].shape == (3, 6)
+        assert int(recorded["step_idx"][0]) == 0
+
+
+def test_trajectory_mse_frame_zero_matches_first_real_trajectory_step():
+    recorded = _episode_with_pre_weld(n_trajectory_frames=4)
+    recorded["phase"][1:] = np.array([1, 1, 1, 1], dtype=np.int8)
+    recorded["ft_wrist"] = np.tile(np.arange(6, dtype=np.float32), (5, 1))
+    recorded["tcp_pos"] = np.tile(np.arange(3, dtype=np.float32), (5, 1))
+    recorded["apple_pos"] = recorded["tcp_pos"].copy()
+
+    recorded = grid.strip_pre_weld_rows(recorded)
+    replay = {
+        "ft_wrist": recorded["ft_wrist"].copy(),
+        "tcp_pos": recorded["tcp_pos"].copy(),
+        "apple_pos": recorded["apple_pos"].copy(),
+    }
+
+    out = grid.trajectory_mse(replay=replay, recorded=recorded, skip_phase=-1)
+
+    assert out["n_frames"] == 4.0
+    assert out["n_used_frames"] == 4.0
+    assert out["ft_wrist_mse"] == pytest.approx(0.0)
 
 
 def test_build_recorded_actions_tensor_shape_and_candidate_broadcast():
@@ -253,6 +398,43 @@ def test_actions_tensor_from_recorded_frame_shape_and_device():
     np.testing.assert_array_equal(out.numpy(), recorded[:, 1, :])
 
 
+def test_replay_candidates_for_structure_threads_on_step(monkeypatch):
+    calls: list[tuple[int, int]] = []
+
+    def fake_replay_batched_sysid_structure(*, candidates, on_step=None, **_kwargs):
+        assert on_step is not None
+        for i in range(3):
+            assert on_step(frame_idx=i, env=MagicMock())
+        calls.append((len(candidates), 1))
+        recorded_by_env = [
+            _recorded_arrays_for_replay(n_frames=4, direction_idx=0),
+        ]
+        return grid.BatchedSysIdReplayCollectors(num_envs=1, recorded_by_env=recorded_by_env)
+
+    monkeypatch.setattr(grid, "chunk_candidates", lambda candidates, **_kwargs: [list(candidates)])
+    monkeypatch.setattr(grid, "replay_batched_sysid_structure", fake_replay_batched_sysid_structure)
+
+    dataset = MagicMock()
+
+    def on_step(*, frame_idx: int, env) -> bool:
+        del env
+        return frame_idx < 10
+
+    out = grid.replay_candidates_for_structure(
+        dataset=dataset,
+        structure_idx=0,
+        candidates=[grid.BendStiffnessCandidate(1.0, 2.0, 3.0, 4.0)],
+        num_directions=1,
+        seed=None,
+        build_env_fn=MagicMock(),
+        max_envs_per_batch=0,
+        on_step=on_step,
+    )
+
+    assert isinstance(out, grid.BatchedSysIdReplayCollectors)
+    assert calls, "expected replay_batched_sysid_structure to be called"
+
+
 def _recorded_arrays_for_replay(*, n_frames: int, direction_idx: int = 0) -> dict:
     junction_names = ["joint_a", "joint_b"]
     base = np.arange(n_frames, dtype=np.float32).reshape(n_frames, 1)
@@ -315,6 +497,85 @@ def test_recorded_metadata_by_env_broadcasts_direction_across_candidates():
         assert recorded["action"] is expected["action"]
         np.testing.assert_array_equal(recorded["dir_idx"], expected["dir_idx"])
         dataset.load_episode_obs_arrays.assert_any_call(7, direction_idx)
+
+
+def _batched_torch_obs_for_replay(*, num_envs: int, frame_idx: int, junction_names: list[str]) -> dict:
+    woody_part_info: dict[str, dict[str, torch.Tensor]] = {}
+    for name in junction_names:
+        anchors = torch.zeros(num_envs, 6, dtype=torch.float32)
+        for env_idx in range(num_envs):
+            anchors[env_idx] = torch.tensor(
+                [10.0 + frame_idx, 11.0 + frame_idx, 12.0 + frame_idx,
+                 20.0 + frame_idx, 21.0 + frame_idx, 22.0 + frame_idx],
+                dtype=torch.float32,
+            ) + float(env_idx)
+        woody_part_info[name] = {
+            "anchors_pos": anchors,
+            "anchor_force": torch.zeros(num_envs, 6, dtype=torch.float32),
+        }
+
+    def _vec(cols: int, base: float) -> torch.Tensor:
+        return torch.full((num_envs, cols), base + float(frame_idx), dtype=torch.float32)
+
+    return {
+        "woody_part_info": woody_part_info,
+        "apple_pos": _vec(3, 4.0),
+        "tcp_force": _vec(6, 0.0),
+        "tcp_velocity": _vec(6, 200.0),
+        "ft_wrist": _vec(6, 100.0),
+        "raw_ft_wrist": _vec(6, 0.0),
+        "tcp_pos": _vec(3, 1.0),
+        "tcp_quat": _vec(4, 0.0),
+        "apple_quat": _vec(4, 0.0),
+        "robot_joint_q": _vec(7, 0.0),
+        "excitation_type": torch.zeros(num_envs, dtype=torch.long),
+        "excitation_f_inst": torch.zeros(num_envs, dtype=torch.float32),
+        "excitation_direction": torch.zeros(num_envs, 3, dtype=torch.float32),
+    }
+
+
+def test_batched_sysid_replay_collectors_record_all_envs_step_matches_record_step():
+    from apple_pick_gym.batched_envs.obs_torch import sysid_numpy_obs_from_batched
+
+    num_envs = 2
+    n_frames = 3
+    recorded_by_env = [
+        _recorded_arrays_for_replay(n_frames=n_frames, direction_idx=env_idx)
+        for env_idx in range(num_envs)
+    ]
+    per_env_collectors = grid.BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+    batched_collectors = grid.BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+
+    junction_names = recorded_by_env[0]["junction_names"]
+    env = MagicMock()
+
+    for frame_idx in range(2):
+        batched_obs = _batched_torch_obs_for_replay(
+            num_envs=num_envs,
+            frame_idx=frame_idx,
+            junction_names=junction_names,
+        )
+        env._last_obs = batched_obs
+        batched_collectors.record_all_envs_step(env, frame_idx=frame_idx)
+
+        for env_idx in range(num_envs):
+            env.sysid_numpy_obs.return_value = sysid_numpy_obs_from_batched(
+                batched_obs,
+                junction_names,
+                env_idx=env_idx,
+            )
+            per_env_collectors.record_step(env, env_idx=env_idx, frame_idx=frame_idx)
+
+    for env_idx in range(num_envs):
+        batched_arrays = batched_collectors.to_arrays(env_idx)
+        per_env_arrays = per_env_collectors.to_arrays(env_idx)
+        for key in ("action", "ft_wrist", "tcp_pos", "apple_pos", "phase", "dir_idx"):
+            np.testing.assert_allclose(batched_arrays[key], per_env_arrays[key])
+        for name in junction_names:
+            np.testing.assert_allclose(
+                batched_arrays["woody_part_start_pos"][name],
+                per_env_arrays["woody_part_start_pos"][name],
+            )
 
 
 def test_batched_sysid_replay_collectors_record_step_and_to_arrays():
@@ -389,6 +650,34 @@ def test_batched_sysid_replay_collectors_merge_concatenates_per_env():
     assert arrays["ft_wrist"].shape == (4, 6)
     np.testing.assert_allclose(arrays["ft_wrist"][0], 100.0)
     np.testing.assert_allclose(arrays["ft_wrist"][3], 103.0)
+
+
+def test_batched_sysid_replay_collectors_concat_envs_appends_env_slots():
+    num_envs = 2
+    n_frames = 3
+    recorded_by_env = [
+        _recorded_arrays_for_replay(n_frames=n_frames, direction_idx=env_idx)
+        for env_idx in range(num_envs)
+    ]
+    left = grid.BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+    right = grid.BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+
+    combined = left.concat_envs(right)
+
+    # Record one frame in each env slot so to_arrays() is defined.
+    env = MagicMock()
+    junction_names = recorded_by_env[0]["junction_names"]
+    for env_idx in range(4):
+        env.sysid_numpy_obs.return_value = _sysid_numpy_obs_for_frame(
+            frame_idx=0,
+            junction_names=junction_names,
+        )
+        combined.record_step(env, env_idx=env_idx, frame_idx=0)
+
+    assert combined.n_rows(0) == 1
+    assert combined.n_rows(3) == 1
+    assert combined.to_arrays(0)["junction_names"] == recorded_by_env[0]["junction_names"]
+    assert combined.to_arrays(3)["junction_names"] == recorded_by_env[1]["junction_names"]
 
 
 def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None, shift: float = 0.0) -> dict:
@@ -505,3 +794,227 @@ def test_score_candidate_mmd_shifted_features_higher():
     )
 
     assert identical.aggregate_mmd2 < shifted.aggregate_mmd2
+
+
+def test_trajectory_mse_skips_pre_weld_phase_minus_one():
+    recorded = _arrays_for_steps(steps=4, shift=0.0)
+    replay = _arrays_for_steps(steps=4, shift=0.0)
+
+    recorded["step_idx"] = np.array([-1, 0, 1, 2], dtype=np.int32)
+    recorded["phase"] = np.array([-1, 1, 1, 1], dtype=np.int8)
+    replay["phase"] = np.array([-1, 1, 1, 1], dtype=np.int8)
+    recorded["ft_wrist"][0] += 999.0
+    recorded["tcp_pos"][0] += 999.0
+    recorded["apple_pos"][0] += 999.0
+
+    recorded = grid.strip_pre_weld_rows(recorded)
+    replay = grid.strip_pre_weld_rows(replay)
+
+    out = grid.trajectory_mse(
+        replay=replay,
+        recorded=recorded,
+        skip_phase=-1,
+    )
+
+    assert out["n_used_frames"] == 3
+    assert out["ft_wrist_mse"] == pytest.approx(0.0)
+
+
+def test_trajectory_mse_rejects_leading_pre_weld_without_strip():
+    recorded = _arrays_for_steps(steps=5, shift=0.0)
+    recorded["phase"] = np.array([-1, 1, 1, 1, 1], dtype=np.int8)
+    replay = {
+        "ft_wrist": recorded["ft_wrist"].copy(),
+        "tcp_pos": recorded["tcp_pos"].copy(),
+        "apple_pos": recorded["apple_pos"].copy(),
+    }
+
+    with pytest.raises(ValueError, match="pre_weld"):
+        grid.trajectory_mse(replay=replay, recorded=recorded, skip_phase=-1)
+
+
+def test_trajectory_mse_matches_after_pre_weld_strip():
+    recorded = _arrays_for_steps(steps=5, shift=0.0)
+    recorded["step_idx"] = np.array([-1, 0, 1, 2, 3], dtype=np.int32)
+    recorded["phase"] = np.array([-1, 1, 1, 1, 1], dtype=np.int8)
+
+    replay = {
+        "ft_wrist": recorded["ft_wrist"][1:].copy(),
+        "tcp_pos": recorded["tcp_pos"][1:].copy(),
+        "apple_pos": recorded["apple_pos"][1:].copy(),
+        "phase": np.ones(4, dtype=np.int8),
+    }
+    recorded = grid.strip_pre_weld_rows(recorded)
+
+    out = grid.trajectory_mse(
+        replay=replay,
+        recorded=recorded,
+        skip_phase=-1,
+    )
+
+    assert out["n_frames"] == 4
+    assert out["n_used_frames"] == 4
+    assert out["ft_wrist_mse"] == pytest.approx(0.0)
+
+
+def test_trajectory_hold_aggregated_mse_ignores_move_frames():
+    recorded = _arrays_for_steps(steps=6, shift=0.0)
+    replay = _arrays_for_steps(steps=6, shift=0.0)
+    recorded["step_idx"] = np.array([-1, 0, 1, 2, 3, 4], dtype=np.int32)
+    recorded["phase"] = np.array([-1, 0, 0, 1, 1, 1], dtype=np.int8)
+    replay["phase"] = recorded["phase"].copy()
+    replay["ft_wrist"][:2] += 50.0
+    replay["tcp_pos"][:2] += 0.5
+    replay["apple_pos"][:2] += 0.5
+
+    recorded = grid.strip_pre_weld_rows(recorded)
+    replay = grid.strip_pre_weld_rows(replay)
+    replay["ft_wrist"][:2] += 50.0
+    replay["tcp_pos"][:2] += 0.5
+    replay["apple_pos"][:2] += 0.5
+
+    out = grid.trajectory_hold_aggregated_mse(
+        replay=replay,
+        recorded=recorded,
+        aggregation="mean",
+        use_latter_half=False,
+    )
+
+    assert out["n_used_frames"] == 3
+    assert out["ft_wrist_mse"] == pytest.approx(0.0)
+    assert out["tcp_pos_mse"] == pytest.approx(0.0)
+    assert out["apple_pos_mse"] == pytest.approx(0.0)
+
+
+def test_trajectory_hold_aggregated_mse_mean_detects_hold_offset():
+    recorded = _arrays_for_steps(steps=4, shift=0.0)
+    replay = _arrays_for_steps(steps=4, shift=0.0)
+    recorded["phase"] = np.array([1, 1, 1, 1], dtype=np.int8)
+    replay["phase"] = recorded["phase"].copy()
+    replay["ft_wrist"][:, :3] += 2.0
+    replay["tcp_pos"] += 0.1
+
+    out = grid.trajectory_hold_aggregated_mse(
+        replay=replay,
+        recorded=recorded,
+        aggregation="mean",
+        use_latter_half=False,
+    )
+
+    assert out["n_used_frames"] == 4
+    assert out["ft_force_rmse"] == pytest.approx(2.0)
+    assert out["tcp_pos_mse"] == pytest.approx(0.01, rel=0, abs=1e-5)
+
+
+def test_trajectory_hold_aggregated_mse_median_ignores_single_outlier():
+    recorded = _arrays_for_steps(steps=5, shift=0.0)
+    replay = _arrays_for_steps(steps=5, shift=0.0)
+    recorded["phase"] = np.ones(5, dtype=np.int8)
+    replay["phase"] = recorded["phase"].copy()
+    const_ft = np.array([1.0, 2.0, 3.0, 0.1, 0.2, 0.3], dtype=np.float32)
+    recorded["ft_wrist"] = np.tile(const_ft, (5, 1))
+    replay["ft_wrist"] = recorded["ft_wrist"].copy()
+    replay["ft_wrist"][0, :3] += 100.0
+
+    mean_out = grid.trajectory_hold_aggregated_mse(
+        replay=replay,
+        recorded=recorded,
+        aggregation="mean",
+        use_latter_half=False,
+    )
+    median_out = grid.trajectory_hold_aggregated_mse(
+        replay=replay,
+        recorded=recorded,
+        aggregation="median",
+        use_latter_half=False,
+    )
+
+    assert mean_out["ft_force_rmse"] > median_out["ft_force_rmse"]
+    assert median_out["ft_force_rmse"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_trajectory_mse_includes_all_frames_when_skip_phase_none():
+    recorded = _arrays_for_steps(steps=2, shift=0.0)
+    replay = _arrays_for_steps(steps=2, shift=0.0)
+
+    recorded["step_idx"] = np.array([0, 1], dtype=np.int32)
+    recorded["phase"] = np.array([1, 1], dtype=np.int8)
+    replay["ft_wrist"][0] += 10.0
+
+    out = grid.trajectory_mse(
+        replay=replay,
+        recorded=recorded,
+        skip_phase=None,
+    )
+
+    assert out["n_used_frames"] == 2
+    assert out["ft_wrist_mse"] > 0.0
+    assert out["ft_force_rmse"] > 0.0
+
+
+def test_trajectory_mse_reports_woody_pos_mse_by_segment():
+    recorded = _arrays_for_steps(steps=4, shift=0.0)
+    replay = _arrays_for_steps(steps=4, shift=0.0)
+
+    out = grid.trajectory_mse(replay=replay, recorded=recorded, skip_phase=-1)
+
+    assert set(out["woody_pos_mse_by_segment"]) == set(recorded["junction_names"])
+    for name in recorded["junction_names"]:
+        assert out["woody_pos_mse_by_segment"][name] == pytest.approx(0.0)
+
+
+def test_trajectory_mse_woody_pos_mse_by_segment_detects_shift():
+    recorded = _arrays_for_steps(steps=3, shift=0.0)
+    replay = _arrays_for_steps(steps=3, shift=1.0)
+
+    out = grid.trajectory_mse(replay=replay, recorded=recorded, skip_phase=-1)
+
+    for name in recorded["junction_names"]:
+        assert out["woody_pos_mse_by_segment"][name] > 0.0
+
+
+def test_trajectory_mse_without_junction_names_returns_empty_woody_dict():
+    recorded = _arrays_for_steps(steps=2, shift=0.0)
+    replay = {
+        "ft_wrist": recorded["ft_wrist"].copy(),
+        "tcp_pos": recorded["tcp_pos"].copy(),
+        "apple_pos": recorded["apple_pos"].copy(),
+    }
+    del recorded["junction_names"]
+    del recorded["woody_part_start_pos"]
+    del recorded["woody_part_end_pos"]
+
+    out = grid.trajectory_mse(replay=replay, recorded=recorded, skip_phase=-1)
+
+    assert out["woody_pos_mse_by_segment"] == {}
+
+
+def test_trajectory_mse_without_replay_woody_returns_empty_woody_dict():
+    recorded = _arrays_for_steps(steps=2, shift=0.0)
+    replay = {
+        "ft_wrist": recorded["ft_wrist"].copy(),
+        "tcp_pos": recorded["tcp_pos"].copy(),
+        "apple_pos": recorded["apple_pos"].copy(),
+    }
+
+    out = grid.trajectory_mse(replay=replay, recorded=recorded, skip_phase=-1)
+
+    assert out["woody_pos_mse_by_segment"] == {}
+
+
+def test_trajectory_hold_aggregated_mse_reports_woody_pos_mse_by_segment():
+    recorded = _arrays_for_steps(steps=6, shift=0.0)
+    replay = _arrays_for_steps(steps=6, shift=0.0)
+    recorded["phase"] = np.array([0, 0, 1, 1, 1, 1], dtype=np.int8)
+    replay["phase"] = recorded["phase"].copy()
+
+    out = grid.trajectory_hold_aggregated_mse(
+        replay=replay,
+        recorded=recorded,
+        aggregation="mean",
+        use_latter_half=False,
+    )
+
+    assert set(out["woody_pos_mse_by_segment"]) == set(recorded["junction_names"])
+    for name in recorded["junction_names"]:
+        assert out["woody_pos_mse_by_segment"][name] == pytest.approx(0.0)

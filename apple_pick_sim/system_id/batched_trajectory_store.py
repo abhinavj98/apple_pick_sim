@@ -24,6 +24,10 @@ from apple_pick_sim.system_id.trajectory_store import (
 )
 
 SCHEMA_VERSION = "batched_sysid_v1"
+PRE_WELD_STEP_IDX = -1
+# step_idx label for the first recorded trajectory frame (observation after action[0]).
+# Not the robot init pose — use episode metadata initial_robot_joint_q / initial_tcp_*.
+FIRST_TRAJECTORY_STEP_IDX = 0
 
 BATCHED_REQUIRED_FRAME_COLUMNS: tuple[str, ...] = (
     "step_idx",
@@ -135,6 +139,25 @@ def episode_metadata_to_schema_metadata(metadata: dict[str, Any]) -> dict[bytes,
         value = metadata[key]
         out[key.encode("utf-8")] = json.dumps(value, sort_keys=True).encode("utf-8")
     return out
+
+
+def frame_index_for_step(
+    arrays: dict[str, Any],
+    step_idx: int,
+    *,
+    fallback: int = 0,
+) -> int:
+    """Map a logical ``step_idx`` to a row index in stacked episode arrays."""
+    steps = arrays.get("step_idx")
+    if steps is None:
+        return int(fallback)
+    step_rows = np.asarray(steps, dtype=np.int32).reshape(-1)
+    if step_rows.size == 0:
+        return int(fallback)
+    matches = np.where(step_rows == int(step_idx))[0]
+    if matches.size == 0:
+        return int(fallback)
+    return int(matches[0])
 
 
 def schema_metadata_to_episode_metadata(raw: dict[bytes, bytes] | None) -> dict[str, Any]:

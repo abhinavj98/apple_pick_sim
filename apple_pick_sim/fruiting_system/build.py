@@ -33,6 +33,23 @@ FRUITING_VBD_RIGID_JOINT_LINEAR_KD = 5.0e-4  # N·s/m, absolute (no Rayleigh sca
 # Junction angular drag (world/spur/stem/apple FIXED joints); drains bend energy at supports.
 FRUITING_VBD_RIGID_JOINT_ANGULAR_KD = 5.0e-4 # N·m·s/rad, absolute (no Rayleigh scaling)
 
+# Paul Tol bright palette (matches Newton ``ModelBuilder._SHAPE_COLOR_PALETTE``).
+_ROD_DISPLAY_COLORS_RGB: dict[str, tuple[int, int, int]] = {
+    "primary": (68, 119, 170),  # blue
+    "secondary": (102, 204, 238),  # cyan
+    "spur": (34, 136, 51),  # green
+    "stem": (238, 153, 51),  # orange
+}
+
+
+def _rod_display_color(segment_name: str) -> tuple[float, float, float]:
+    """Viewer RGB in ``[0, 1]`` for a fruiting rod segment type."""
+    try:
+        rgb = _ROD_DISPLAY_COLORS_RGB[segment_name]
+    except KeyError as exc:
+        raise ValueError(f"unknown rod segment name {segment_name!r}") from exc
+    return (rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
+
 
 def _prescribe_body_vbd_integration(builder: newton.ModelBuilder, body_id: int) -> None:
     """Disable VBD integration for a body (``inv_mass == 0``) while keeping ``body_mass``.
@@ -236,6 +253,7 @@ def _build_linear_chain_into_builder(
             wrap_in_articulation=False,
             body_frame_origin="start",
             label=name,
+            color=_rod_display_color(name),
         )
         all_joints.extend(joints)
         cable_joint_indices.extend(joints)
@@ -368,6 +386,7 @@ def _build_t_junction_into_builder(
         wrap_in_articulation=False,
         body_frame_origin="start",
         label="primary",
+        color=_rod_display_color("primary"),
     )
     all_joints.extend(primary_joints)
     cable_joint_indices.extend(primary_joints)
@@ -409,6 +428,7 @@ def _build_t_junction_into_builder(
             wrap_in_articulation=False,
             body_frame_origin="start",
             label=name,
+            color=_rod_display_color(name),
         )
         all_joints.extend(joints)
         cable_joint_indices.extend(joints)

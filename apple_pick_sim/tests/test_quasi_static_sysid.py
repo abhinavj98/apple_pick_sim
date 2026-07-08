@@ -114,9 +114,19 @@ def test_sample_robot_facing_pull_directions_matches_pole_cap():
     stem = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     robot_vec = np.array([0.3, 0.4, -0.5], dtype=np.float64)
     pole = stem_perpendicular_robot_pole(stem, robot_vec)
-    dirs = sample_robot_facing_pull_directions(20, stem, robot_vec)
+    dirs = sample_robot_facing_pull_directions(20, stem, robot_vec, min_world_z=None)
     expected = sample_fibonacci_hemisphere(20, pole)
     np.testing.assert_allclose(dirs, expected, rtol=1e-9, atol=1e-9)
+
+
+def test_sample_robot_facing_pull_directions_excludes_downward_world_z():
+    stem = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    robot_vec = np.array([0.3, 0.4, -0.5], dtype=np.float64)
+    dirs = sample_robot_facing_pull_directions(30, stem, robot_vec, min_world_z=0.0)
+    assert dirs.shape == (30, 3)
+    assert np.all(dirs[:, 2] >= -1e-9)
+    norms = np.linalg.norm(dirs, axis=1)
+    np.testing.assert_allclose(norms, 1.0, rtol=1e-9, atol=1e-9)
 
 
 def test_fibonacci_hemisphere_horizontal_half_plane_toward_pole():

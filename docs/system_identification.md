@@ -159,6 +159,26 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | M3.1 MMD features | Planned | — |
 | M3.2 CEM loop | Planned | — |
 
+### Batched MMD grid base geometry (2026-07-06)
+
+The batched in-process MMD grid (`apple_pick_gym/batched_envs/batched_sysid_mmd_grid.py`) replays recorded actions while sweeping per-segment `bend_stiffness`. Its **base** `FruitingSystemParams` template (rod lengths, directions, material scalars) must match the structure that produced the recorded GT trajectories.
+
+**Previous behavior:** `replay_batched_sysid_structure` and `gt_bend_stiffness_candidate_from_structure` called `infer_base_params_for_structure`, which chord-fits rod length/direction from post-settle pre-weld woody junction anchors (`infer_segment_geometry` in `apple_pick_sim/digital_twin/from_obs.py`). Gravity sag bends rods before that frame, so chord length/angle underestimate rest length and diverge from nominal orientation.
+
+**Current behavior (sim-to-sim):** both call sites use `true_params_for_structure`, which deserializes the recorded `fruiting_system_params` metadata written at collection time (`apple_pick_gym/batched_envs/batched_sysid_collect.py`). Only `bend_stiffness` is varied per grid candidate via `BendStiffnessCandidate.apply_to`.
+
+**Reserved for field data:** `infer_base_params_for_structure` remains exported for future observation-only replay (ROADMAP V.4.2.1) where true params are unavailable. The legacy single-env path (`observation_reset_options_from_parquet`) already prefers serialized true params when present.
+
+**Tests:** `test_true_params_for_structure_returns_exact_sampled_params`, `test_gt_bend_stiffness_candidate_from_structure_reads_true_stiffness`, `test_replay_structure_uses_true_params_geometry`.
+
+```bash
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_batched_digital_twin_init.py \
+  apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py \
+  apple_pick_gym/tests/test_batched_sysid_replay.py \
+  apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py -q
+```
+
 Verify §2.1: see [Implementation notes: §2.1 quasi-static stepped mapping](#implementation-notes-21-quasi-static-stepped-mapping) below (pytest + `example_gym_sysid.py`). Broader M3 schedule: `docs/ROADMAP.md`.
 
 Diagnostic bend-stiffness grid smoke:

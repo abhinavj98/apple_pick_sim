@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 from apple_pick_sim.system_id.episode_meta import EpisodeMeta
 
 PHASE_TO_INT: dict[str, int] = {
+    "pre_weld": -1,
     "move_out": 0,
     "hold": 1,
     "return": 2,

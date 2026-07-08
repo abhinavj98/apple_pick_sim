@@ -10,9 +10,15 @@ import numpy as np
 
 from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
 from apple_pick_sim.digital_twin import DigitalTwinObs, infer_params_from_obs
+from apple_pick_sim.fruiting_system import fruiting_params_from_json
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams, GripperProxyConfig, load_ranges, parse_fixture_args
 from apple_pick_sim.robot import fr3_robot
-from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+from apple_pick_sim.system_id.batched_trajectory_store import (
+    BatchedSysIdDataset,
+    PRE_WELD_STEP_IDX,
+    FIRST_TRAJECTORY_STEP_IDX,
+    frame_index_for_step,
+)
 from apple_pick_sim.system_id.excitation_state import ExcitationContext
 from apple_pick_sim.system_id.trajectory_store import stack_woody_pos_frame
 
@@ -68,6 +74,22 @@ def _first_frame_array_or_none(arrays: dict[str, Any], key: str, size: int) -> n
     return np.asarray(value[0], dtype=np.float32).reshape(-1)[:size]
 
 
+def _frame_array_at_step(
+    arrays: dict[str, Any],
+    key: str,
+    step_idx: int,
+    size: int,
+) -> np.ndarray | None:
+    value = arrays.get(key)
+    if value is None:
+        return None
+    arr = np.asarray(value)
+    if arr.size < size:
+        return None
+    row = frame_index_for_step(arrays, step_idx, fallback=0)
+    return np.asarray(arr[row], dtype=np.float32).reshape(-1)[:size]
+
+
 def _frame_array_or_meta(
     arrays: dict[str, Any],
     meta: dict[str, Any],
@@ -75,8 +97,9 @@ def _frame_array_or_meta(
     array_key: str,
     meta_key: str,
     size: int,
+    step_idx: int = FIRST_TRAJECTORY_STEP_IDX,
 ) -> np.ndarray | None:
-    arr = _first_frame_array_or_none(arrays, array_key, size)
+    arr = _frame_array_at_step(arrays, array_key, step_idx, size)
     if arr is not None:
         return arr
     return _array_or_none(meta.get(meta_key), size)
@@ -108,8 +131,14 @@ def digital_twin_obs_from_batched_episode(
     dataset: BatchedSysIdDataset,
     structure_idx: int,
     direction_idx: int = 0,
+    *,
+    tree_step_idx: int = PRE_WELD_STEP_IDX,
 ) -> DigitalTwinObs:
-    """Build a digital-twin observation bundle from batched episode metadata and frame 0."""
+    """Build a digital-twin observation bundle for geometry rebuild.
+
+    Defaults to the post-settle ``pre_weld`` frame (``step_idx=-1``) when present.
+    Falls back to the first post-weld pull frame otherwise.
+    """
     meta = dataset.load_episode_metadata(structure_idx, direction_idx)
     arrays = dataset.load_episode_obs_arrays(structure_idx, direction_idx)
     junction_names = list(arrays["junction_names"])
@@ -129,11 +158,16 @@ def digital_twin_obs_from_batched_episode(
     if weld_direction is None:
         raise ValueError("weld_direction is required in metadata")
 
+    frame_idx = frame_index_for_step(
+        arrays,
+        int(tree_step_idx),
+        fallback=frame_index_for_step(arrays, FIRST_TRAJECTORY_STEP_IDX, fallback=0),
+    )
     woody_start = stack_woody_pos_frame(
-        arrays["woody_part_start_pos"], 0, junction_names
+        arrays["woody_part_start_pos"], frame_idx, junction_names
     )
     woody_end = stack_woody_pos_frame(
-        arrays["woody_part_end_pos"], 0, junction_names
+        arrays["woody_part_end_pos"], frame_idx, junction_names
     )
 
     apple_radius = meta.get("apple_radius")
@@ -152,13 +186,33 @@ def infer_base_params_for_structure(
     dataset: BatchedSysIdDataset,
     structure_idx: int,
 ) -> FruitingSystemParams:
-    """Infer base :class:`FruitingSystemParams` for one structure from frame-0 observations."""
-    obs = digital_twin_obs_from_batched_episode(dataset, structure_idx, 0)
+    """Infer base :class:`FruitingSystemParams` from pre-weld tree observations."""
+    obs = digital_twin_obs_from_batched_episode(
+        dataset,
+        structure_idx,
+        0,
+        tree_step_idx=PRE_WELD_STEP_IDX,
+    )
     meta = dataset.load_episode_metadata(structure_idx, 0)
     fixture_path = _resolve_fixture_path(meta)
     if fixture_path is None:
         raise ValueError("fixture_path is required in episode metadata")
     return infer_params_from_obs(obs, fixture_path)
+
+
+def true_params_for_structure(
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+) -> FruitingSystemParams:
+    """Load the exact :class:`FruitingSystemParams` used to build this structure."""
+    meta = dataset.load_episode_metadata(structure_idx, 0)
+    serialized = meta.get("fruiting_system_params")
+    if not serialized:
+        raise ValueError(
+            f"structure {structure_idx} metadata has no fruiting_system_params "
+            "(true params are only available for sim-to-sim datasets)"
+        )
+    return fruiting_params_from_json(str(serialized))
 
 
 def initialize_batched_env_from_dataset(
@@ -168,7 +222,14 @@ def initialize_batched_env_from_dataset(
     structure_idx: int,
     num_directions: int,
 ) -> None:
-    """Apply frame-0 joint and VIC target state from a batched sys-ID dataset."""
+    """Apply pre-weld joint and VIC target state from a batched sys-ID dataset.
+
+    Uses episode metadata (``initial_robot_joint_q``, ``initial_tcp_pos``,
+    ``initial_tcp_quat``) which captures the robot state right after ``env.reset()``
+    but *before* any trajectory step.  This matches the cable-settle equilibrium and
+    avoids the spurious force transient that would arise from initialising with
+    ``step_idx=0`` data (which is recorded *after* the first move step).
+    """
     import newton
 
     scene = env._sim.scene
@@ -189,13 +250,13 @@ def initialize_batched_env_from_dataset(
         meta = dataset.load_episode_metadata(structure_idx, direction_idx)
         world = int(env_idx)
 
-        q = _frame_array_or_meta(
-            arrays,
-            meta,
-            array_key="robot_joint_q",
-            meta_key="initial_robot_joint_q",
-            size=7,
-        )
+        # Prefer metadata initial values (captured right after env.reset(), before any
+        # trajectory step) so the initialized EE position matches the cable-settle
+        # equilibrium.  Fall back to the first trajectory frame only when metadata keys
+        # are absent (legacy datasets).
+        q = _array_or_none(meta.get("initial_robot_joint_q"), 7)
+        if q is None:
+            q = _frame_array_at_step(arrays, "robot_joint_q", FIRST_TRAJECTORY_STEP_IDX, 7)
         if q is None:
             continue
 
@@ -229,20 +290,12 @@ def initialize_batched_env_from_dataset(
             vic_default_batched.assign(default_rows)
 
         if target_pos is not None and target_rot is not None:
-            tcp_pos = _frame_array_or_meta(
-                arrays,
-                meta,
-                array_key="tcp_pos",
-                meta_key="initial_tcp_pos",
-                size=3,
-            )
-            tcp_quat = _frame_array_or_meta(
-                arrays,
-                meta,
-                array_key="tcp_quat",
-                meta_key="initial_tcp_quat",
-                size=4,
-            )
+            tcp_pos = _array_or_none(meta.get("initial_tcp_pos"), 3)
+            if tcp_pos is None:
+                tcp_pos = _frame_array_at_step(arrays, "tcp_pos", FIRST_TRAJECTORY_STEP_IDX, 3)
+            tcp_quat = _array_or_none(meta.get("initial_tcp_quat"), 4)
+            if tcp_quat is None:
+                tcp_quat = _frame_array_at_step(arrays, "tcp_quat", FIRST_TRAJECTORY_STEP_IDX, 4)
             if tcp_pos is not None and tcp_quat is not None:
                 origin = np.asarray(layout.world_origin(world), dtype=np.float32)
                 target_pos[world] = tcp_pos - origin

@@ -8,43 +8,43 @@
   "primary": {
     "num_segments": {"min": 4, "max": 4},
     "length": {"min": 0.3, "max": 0.4},
-    "radius": {"min": 0.012, "max": 0.025},
+    "radius": {"min": 0.02, "max": 0.025},
     "density": {"min": 300.0, "max": 500.0},
     "azimuth_deg": {"min": 0.0, "max": 0.0},
     "elevation_deg": {"min": 0.0, "max": 0.0},
-    "youngs_modulus_pa": {"min": 32623111.3, "max": 114336237.8},
+    "youngs_modulus_pa": {"min": 100000000.3, "max": 200000000.8},
     "damping_ratio": {"min": 0.1, "max": 0.2},
     "vbd_stretch_fixed": {
-      "stretch_stiffness": 614.405763,
+      "stretch_stiffness": 100000.405763,
       "stretch_damping": 4.808486
     }
   },
   "secondary": null,
   "spur": {
-    "num_segments": {"min": 3, "max": 3},
+    "num_segments": {"min": 8, "max": 8},
     "length": {"min": 0.05, "max": 0.1},
     "radius": {"min": 0.008, "max": 0.014},
     "density": {"min": 200.0, "max": 400.0},
-    "elevation_delta_deg": {"min": -90.0, "max": 90.0},
+    "elevation_delta_deg": {"min": -90.0, "max": 0.0},
     "lateral_delta_deg": {"min": -180.0, "max": 180.0},
-    "youngs_modulus_pa": {"min": 2445.9, "max": 7337.6},
+    "youngs_modulus_pa": {"min": 5000000.4, "max": 100000000.9},
     "damping_ratio": {"min": 0.1, "max": 0.2},
     "vbd_stretch_fixed": {
-      "stretch_stiffness": 760.265422,
+      "stretch_stiffness": 100000.265422,
       "stretch_damping": 1.472248
     }
   },
   "stem": {
-    "num_segments": {"min": 3, "max": 3},
-    "length": {"min": 0.03, "max": 0.06},
-    "radius": {"min": 0.006, "max": 0.008},
+    "num_segments": {"min": 10, "max": 10},
+    "length": {"min": 0.03, "max": 0.05},
+    "radius": {"min": 0.001, "max": 0.002},
     "density": {"min": 200.0, "max": 400.0},
     "elevation_delta_deg": {"min": -90.0, "max": 90.0},
     "lateral_delta_deg": {"min": -180.0, "max": 180.0},
-    "youngs_modulus_pa": {"min": 805.4, "max": 8053.9},
+    "youngs_modulus_pa": {"min": 50000000.4, "max": 100000000.9},
     "damping_ratio": {"min": 0.1, "max": 0.2},
     "vbd_stretch_fixed": {
-      "stretch_stiffness": 513.1268,
+      "stretch_stiffness": 100000.1268,
       "stretch_damping": 0.596199
     }
   },

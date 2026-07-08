@@ -902,10 +902,21 @@ def set_rod_bend_stiffness(
     rod = getattr(out, segment)
     if rod is None:
         raise ValueError(f"Segment {segment!r} is disabled in params")
+    _area, inertia, l_seg, _m_seg, j_seg = _segment_material_geometry(
+        rod.radius, rod.length, rod.num_segments, rod.density
+    )
+    k = float(bend_stiffness)
+    new_bend_damping = 2.0 * rod.damping_ratio * math.sqrt(k * j_seg)
+    new_youngs_modulus_pa = k * l_seg / inertia if inertia > 0.0 else 0.0
     setattr(
         out,
         segment,
-        dataclasses.replace(rod, bend_stiffness=bend_stiffness),
+        dataclasses.replace(
+            rod,
+            bend_stiffness=k,
+            bend_damping=new_bend_damping,
+            youngs_modulus_pa=new_youngs_modulus_pa,
+        ),
     )
     return out
 

@@ -108,6 +108,7 @@ def _record_synthetic_frames(writer: TrajectoryWriter, *, n: int = 5) -> None:
 
 
 def test_phase_to_int_mapping():
+    assert phase_to_int("pre_weld") == -1
     assert phase_to_int("move_out") == 0
     assert phase_to_int("hold") == 1
     assert phase_to_int("return") == 2

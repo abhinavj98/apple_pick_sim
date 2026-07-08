@@ -31,10 +31,12 @@ from apple_pick_sim.system_id import (
     write_manifest,
 )
 from apple_pick_sim.system_id.batched_trajectory_store import (
+    PRE_WELD_STEP_IDX,
     SCHEMA_VERSION,
     episode_filename,
     resolve_batched_dataset_output_dir,
 )
+from apple_pick_sim.system_id.pre_weld_obs import complete_pre_weld_sysid_obs
 
 
 class OnStepCallback(Protocol):
@@ -93,6 +95,7 @@ def assign_pull_directions(
     *,
     num_structures: int,
     num_directions: int,
+    min_world_z: float | None = 0.0,
 ) -> list[np.ndarray]:
     scene = env._sim.scene
     layout = env._sim.layout
@@ -111,7 +114,12 @@ def assign_pull_directions(
         robot_base = robot_base_pos_for_world(layout, rep)
         robot_vec = robot_base - apple_pos
         physical_stem = physical_stem_dir_for_world(scene, layout, rep)
-        dirs = sample_robot_facing_pull_directions(d_count, physical_stem, robot_vec)
+        dirs = sample_robot_facing_pull_directions(
+            d_count,
+            physical_stem,
+            robot_vec,
+            min_world_z=min_world_z,
+        )
         for d in range(d_count):
             per_env.append(np.asarray(dirs[d], dtype=np.float64))
     return per_env
@@ -176,6 +184,23 @@ class BatchedSysIdCollectors:
             phase=str(phase),
             amplitude_m=float(amplitude_m),
             action=np.asarray(action, dtype=np.float32),
+            obs=obs,
+        )
+
+    def record_pre_weld_step(
+        self,
+        *,
+        env_idx: int,
+        obs: dict[str, Any],
+    ) -> None:
+        """Append the post-settle, pre-weld reconstruction frame (``step_idx=-1``)."""
+        zero_action = np.zeros(6, dtype=np.float32)
+        self._writers[int(env_idx)].record_step(
+            step_idx=PRE_WELD_STEP_IDX,
+            sim_time=0.0,
+            phase="pre_weld",
+            amplitude_m=0.0,
+            action=zero_action,
             obs=obs,
         )
 
@@ -335,6 +360,7 @@ def collect_batched_quasi_static_dataset(
     command_argv: Sequence[str] | None = None,
     overwrite: bool = False,
     append_timestamp: bool = True,
+    pull_direction_min_world_z: float | None = 0.0,
 ) -> Path:
     """Run lockstep quasi-static collection and write batched_sysid_v1 dataset."""
     out = resolve_batched_dataset_output_dir(
@@ -354,6 +380,7 @@ def collect_batched_quasi_static_dataset(
         env,
         num_structures=int(num_structures),
         num_directions=int(num_directions),
+        min_world_z=pull_direction_min_world_z,
     )
     reference_traj = QuasiStaticTrajectory(
         np.asarray(per_env_directions[0], dtype=np.float64).reshape(1, 3),
@@ -418,10 +445,21 @@ def collect_batched_quasi_static_dataset(
         return out
 
     sim_time = 0.0
+    for env_idx in range(num_envs):
+        pre_weld_obs = env.pre_weld_sysid_obs(int(env_idx))
+        if pre_weld_obs is not None:
+            collectors.record_pre_weld_step(
+                env_idx=int(env_idx),
+                obs=complete_pre_weld_sysid_obs(
+                    pre_weld_obs,
+                    pull_direction=per_env_directions[int(env_idx)],
+                ),
+            )
+
     if on_step is not None and not on_step(
         env=env,
-        step_idx=-1,
-        phase="init",
+        step_idx=PRE_WELD_STEP_IDX,
+        phase="pre_weld",
         sim_time=sim_time,
         obs=obs,
         amplitude_m=0.0,

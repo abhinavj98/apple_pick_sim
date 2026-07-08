@@ -27,7 +27,9 @@ from apple_pick_sim.fruiting_system import load_ranges, sample_heterogeneous_par
 from apple_pick_sim.system_id import BatchedSysIdDataset, QuasiStaticStepConfig
 from apple_pick_sim.system_id.batched_trajectory_store import (
     BATCHED_REQUIRED_FRAME_COLUMNS,
+    PRE_WELD_STEP_IDX,
     episode_filename,
+    frame_index_for_step,
 )
 from apple_pick_sim.tests.conftest import RANGES_FIXTURE, fr3_assets_available
 
@@ -196,8 +198,11 @@ def test_collect_batched_quasi_static_dataset_writes_v1_layout(tmp_path: Path):
     for col in BATCHED_REQUIRED_FRAME_COLUMNS:
         assert col in frames.column_names
     assert frames.num_rows > 0
+    step_idxs = frames.column("step_idx").to_pylist()
+    assert PRE_WELD_STEP_IDX in step_idxs
     arrays = dataset.load_episode_obs_arrays(0, 0)
     assert arrays["action"].shape[0] == frames.num_rows
+    assert frame_index_for_step(arrays, PRE_WELD_STEP_IDX) == 0
 
 
 @gymnasium_available
@@ -314,6 +319,6 @@ def test_collect_batched_on_step_callback_invoked_and_can_stop(tmp_path: Path):
         env.close()
 
     assert seen[0][0] == -1
-    assert seen[0][1] == "init"
+    assert seen[0][1] == "pre_weld"
     assert any(idx >= 0 for idx, _ in seen)
     assert max(idx for idx, _ in seen) == stop_at

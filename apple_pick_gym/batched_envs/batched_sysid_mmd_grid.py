@@ -5,21 +5,24 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from itertools import product
 from pathlib import Path
-from typing import Any, NamedTuple, Protocol
+from typing import Any, Literal, NamedTuple, Protocol
 
 from apple_pick_gym.batched_envs.batched_sysid_collect import broadcast_structure_params
+from apple_pick_gym.grid_viz_metrics import (
+    bend_stiffness_values_match,
+    woody_segment_pos_mse_hold_aggregated,
+    woody_segment_pos_mse_masked,
+)
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_from_episode_metadata,
     initialize_batched_env_from_dataset,
+    true_params_for_structure,
 )
-
-import numpy as np
-import torch
-
-from apple_pick_sim.fruiting_system import params as fs
-from apple_pick_sim.fruiting_system.params import FruitingSystemParams
-from apple_pick_sim.system_id.batched_digital_twin_init import infer_base_params_for_structure
-from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+from apple_pick_sim.system_id.batched_hold_quasi_static import hold_metric_frame_indices
+from apple_pick_sim.system_id.batched_trajectory_store import (
+    BatchedSysIdDataset,
+    PRE_WELD_STEP_IDX,
+)
 from apple_pick_sim.system_id.mmd import apply_normalization, biased_mmd2, fit_gt_normalization, rbf_bandwidth_median
 from apple_pick_sim.system_id.mmd_features import (
     ReplayObservationCollector,
@@ -27,6 +30,12 @@ from apple_pick_sim.system_id.mmd_features import (
     replay_obs_dict_from_sysid_numpy,
 )
 from apple_pick_sim.system_id.mmd_results import MmdCandidateResult, write_results_csv
+
+import numpy as np
+import torch
+
+from apple_pick_sim.fruiting_system import params as fs
+from apple_pick_sim.fruiting_system.params import FruitingSystemParams
 
 ROD_SEGMENTS: tuple[str, ...] = ("primary", "secondary", "spur", "stem")
 
@@ -37,6 +46,281 @@ class MmdDirectionContext(NamedTuple):
     gt_norm: np.ndarray
     stats: Any
     bandwidth: float
+
+
+def _mse(a: np.ndarray, b: np.ndarray) -> float:
+    diff = np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64)
+    return float(np.mean(diff * diff))
+
+
+def _rmse(a: np.ndarray, b: np.ndarray) -> float:
+    diff = np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64)
+    return float(np.sqrt(np.mean(diff * diff)))
+
+
+def strip_pre_weld_rows(arrays: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop leading pre-weld snapshot rows from per-frame episode arrays.
+
+    Collection records ``step_idx=-1`` / ``phase=-1`` as a settled-tree snapshot that
+    is not replayed via ``env.step``. Grid replay/scoring must exclude that row so
+    ``recorded[i]`` aligns with replay step ``i``.
+    """
+    out = dict(arrays)
+
+    def _strip_with_keep(keep: np.ndarray) -> dict[str, Any]:
+        stripped = dict(out)
+        for key, value in list(stripped.items()):
+            if key == "junction_names":
+                continue
+            if isinstance(value, dict):
+                stripped[key] = {
+                    sub_key: np.asarray(sub_val)[keep]
+                    for sub_key, sub_val in value.items()
+                }
+                continue
+            arr = np.asarray(value)
+            if arr.ndim >= 1 and arr.shape[0] == keep.shape[0]:
+                stripped[key] = arr[keep]
+        return stripped
+
+    if "step_idx" in out:
+        step_idx = np.asarray(out["step_idx"], dtype=np.int32).reshape(-1)
+        if step_idx.size >= 1 and int(step_idx[0]) == int(PRE_WELD_STEP_IDX):
+            keep = step_idx != int(PRE_WELD_STEP_IDX)
+            return _strip_with_keep(keep)
+
+    if "phase" in out:
+        phase = np.asarray(out["phase"], dtype=np.int64).reshape(-1)
+        if phase.size >= 1 and int(phase[0]) == -1:
+            keep = phase != -1
+            return _strip_with_keep(keep)
+
+    return out
+
+
+def _require_no_leading_pre_weld(recorded: Mapping[str, Any]) -> None:
+    """Fail fast if replay/scoring inputs still contain a pre-weld row."""
+    if "step_idx" in recorded:
+        step_idx = np.asarray(recorded["step_idx"], dtype=np.int32).reshape(-1)
+        if step_idx.size >= 1 and int(step_idx[0]) == int(PRE_WELD_STEP_IDX):
+            raise ValueError(
+                "recorded episode still contains a pre_weld row; call strip_pre_weld_rows first"
+            )
+    if "phase" in recorded:
+        phase = np.asarray(recorded["phase"], dtype=np.int64).reshape(-1)
+        if phase.size >= 1 and int(phase[0]) == -1:
+            raise ValueError(
+                "recorded episode still contains a pre_weld row; call strip_pre_weld_rows first"
+            )
+
+
+def _aligned_frame_count(
+    replay: Mapping[str, Any],
+    recorded: Mapping[str, Any],
+) -> int:
+    """Return the number of frame-aligned rows shared by replay and recorded arrays."""
+    _require_no_leading_pre_weld(recorded)
+    rep_n = int(np.asarray(replay["ft_wrist"]).reshape(-1, 6).shape[0])
+    rec_n = int(np.asarray(recorded["ft_wrist"]).reshape(-1, 6).shape[0])
+    return min(rep_n, rec_n)
+
+
+def _aggregate_rows(values: np.ndarray, *, aggregation: Literal["mean", "median"]) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr.reshape(-1, 1)
+    if arr.shape[0] == 0:
+        raise ValueError("cannot aggregate an empty hold window")
+    if aggregation == "mean":
+        return np.mean(arr, axis=0)
+    if aggregation == "median":
+        return np.median(arr, axis=0)
+    raise ValueError(f"unsupported hold aggregation: {aggregation!r}")
+
+
+def trajectory_hold_aggregated_mse(
+    *,
+    replay: Mapping[str, Any],
+    recorded: Mapping[str, Any],
+    aggregation: Literal["mean", "median"] = "mean",
+    use_latter_half: bool = True,
+    skip_phase: int | None = -1,
+) -> dict[str, float]:
+    """Compare replay vs recorded using one hold aggregate per signal (mean or median).
+
+  Uses the latter half of each contiguous hold segment by default (burn-in discard).
+    """
+
+    def _as_2d_full(source: Mapping[str, Any], key: str, cols: int) -> np.ndarray:
+        return np.asarray(source[key], dtype=np.float64).reshape(-1, cols)
+
+    alignment = _aligned_frame_count(replay, recorded)
+    junction_names = list(recorded.get("junction_names", []))
+    if alignment <= 0:
+        return {
+            "n_frames": 0.0,
+            "n_used_frames": 0.0,
+            "ft_wrist_mse": float("nan"),
+            "ft_force_rmse": float("nan"),
+            "ft_torque_rmse": float("nan"),
+            "tcp_pos_mse": float("nan"),
+            "apple_pos_mse": float("nan"),
+            "woody_pos_mse_by_segment": {},
+        }
+
+    n = alignment
+
+    ft_rep_full = _as_2d_full(replay, "ft_wrist", 6)[:n]
+    tcp_rep_full = _as_2d_full(replay, "tcp_pos", 3)[:n]
+    apple_rep_full = _as_2d_full(replay, "apple_pos", 3)[:n]
+
+    ft_rec_full = _as_2d_full(recorded, "ft_wrist", 6)[:n]
+    tcp_rec_full = _as_2d_full(recorded, "tcp_pos", 3)[:n]
+    apple_rec_full = _as_2d_full(recorded, "apple_pos", 3)[:n]
+
+    recorded_slice: dict[str, Any] = {
+        "phase": np.asarray(recorded["phase"], dtype=np.int8).reshape(-1)[:n],
+    }
+    if "amplitude_m" in recorded:
+        recorded_slice["amplitude_m"] = np.asarray(recorded["amplitude_m"], dtype=np.float64).reshape(
+            -1
+        )[:n]
+    if "dir_idx" in recorded:
+        recorded_slice["dir_idx"] = np.asarray(recorded["dir_idx"], dtype=np.int32).reshape(-1)[:n]
+
+    hold_idx = hold_metric_frame_indices(recorded_slice, use_latter_half=use_latter_half)
+    used = int(hold_idx.size)
+    if used == 0:
+        return {
+            "n_frames": float(n),
+            "n_used_frames": 0.0,
+            "ft_wrist_mse": float("nan"),
+            "ft_force_rmse": float("nan"),
+            "ft_torque_rmse": float("nan"),
+            "tcp_pos_mse": float("nan"),
+            "apple_pos_mse": float("nan"),
+            "woody_pos_mse_by_segment": woody_segment_pos_mse_hold_aggregated(
+                replay=replay,
+                recorded=recorded,
+                junction_names=junction_names,
+                n=n,
+                hold_idx=hold_idx,
+                aggregation=aggregation,
+            ),
+        }
+
+    ft_rep = _aggregate_rows(ft_rep_full[hold_idx], aggregation=aggregation)
+    tcp_rep = _aggregate_rows(tcp_rep_full[hold_idx], aggregation=aggregation)
+    apple_rep = _aggregate_rows(apple_rep_full[hold_idx], aggregation=aggregation)
+    ft_rec = _aggregate_rows(ft_rec_full[hold_idx], aggregation=aggregation)
+    tcp_rec = _aggregate_rows(tcp_rec_full[hold_idx], aggregation=aggregation)
+    apple_rec = _aggregate_rows(apple_rec_full[hold_idx], aggregation=aggregation)
+
+    return {
+        "n_frames": float(n),
+        "n_used_frames": float(used),
+        "ft_wrist_mse": _mse(ft_rep.reshape(1, -1), ft_rec.reshape(1, -1)),
+        "ft_force_rmse": _rmse(ft_rep[:3].reshape(1, -1), ft_rec[:3].reshape(1, -1)),
+        "ft_torque_rmse": _rmse(ft_rep[3:].reshape(1, -1), ft_rec[3:].reshape(1, -1)),
+        "tcp_pos_mse": _mse(tcp_rep.reshape(1, -1), tcp_rec.reshape(1, -1)),
+        "apple_pos_mse": _mse(apple_rep.reshape(1, -1), apple_rec.reshape(1, -1)),
+        "woody_pos_mse_by_segment": woody_segment_pos_mse_hold_aggregated(
+            replay=replay,
+            recorded=recorded,
+            junction_names=junction_names,
+            n=n,
+            hold_idx=hold_idx,
+            aggregation=aggregation,
+        ),
+    }
+
+
+def trajectory_mse(
+    *,
+    replay: Mapping[str, Any],
+    recorded: Mapping[str, Any],
+    skip_phase: int | None = -1,
+) -> dict[str, float]:
+    """Compute simple frame-aligned MSE metrics between replay and recorded arrays.
+
+    By default skips frames whose recorded ``phase`` equals -1 (``pre_weld``).
+    """
+
+    def _as_2d_full(source: Mapping[str, Any], key: str, cols: int) -> np.ndarray:
+        return np.asarray(source[key], dtype=np.float64).reshape(-1, cols)
+
+    ft_rep_full = _as_2d_full(replay, "ft_wrist", 6)
+    tcp_rep_full = _as_2d_full(replay, "tcp_pos", 3)
+    apple_rep_full = _as_2d_full(replay, "apple_pos", 3)
+
+    ft_rec_full = _as_2d_full(recorded, "ft_wrist", 6)
+    tcp_rec_full = _as_2d_full(recorded, "tcp_pos", 3)
+    apple_rec_full = _as_2d_full(recorded, "apple_pos", 3)
+
+    n = _aligned_frame_count(replay, recorded)
+    junction_names = list(recorded.get("junction_names", []))
+    if n == 0:
+        return {
+            "n_frames": 0.0,
+            "n_used_frames": 0.0,
+            "ft_wrist_mse": 0.0,
+            "ft_force_rmse": 0.0,
+            "ft_torque_rmse": 0.0,
+            "tcp_pos_mse": 0.0,
+            "apple_pos_mse": 0.0,
+            "woody_pos_mse_by_segment": {},
+        }
+
+    ft_rep = ft_rep_full[:n]
+    tcp_rep = tcp_rep_full[:n]
+    apple_rep = apple_rep_full[:n]
+    ft_rec = ft_rec_full[:n]
+    tcp_rec = tcp_rec_full[:n]
+    apple_rec = apple_rec_full[:n]
+
+    if skip_phase is None:
+        mask = np.ones(n, dtype=bool)
+    else:
+        phase = np.asarray(recorded["phase"], dtype=np.int64).reshape(-1)[:n]
+        mask = phase != int(skip_phase)
+
+    used = int(np.count_nonzero(mask))
+    if used == 0:
+        return {
+            "n_frames": float(n),
+            "n_used_frames": 0.0,
+            "ft_wrist_mse": float("nan"),
+            "ft_force_rmse": float("nan"),
+            "ft_torque_rmse": float("nan"),
+            "tcp_pos_mse": float("nan"),
+            "apple_pos_mse": float("nan"),
+            "woody_pos_mse_by_segment": woody_segment_pos_mse_masked(
+                replay=replay,
+                recorded=recorded,
+                junction_names=junction_names,
+                n=n,
+                mask=mask,
+            ),
+        }
+
+    return {
+        "n_frames": float(n),
+        "n_used_frames": float(used),
+        # NOTE: ft_wrist mixes units (N, N·m). Keep the legacy metric for debugging, but
+        # prefer separate force/torque RMSE for interpretable diagnostics.
+        "ft_wrist_mse": _mse(ft_rep[mask], ft_rec[mask]),
+        "ft_force_rmse": _rmse(ft_rep[mask, :3], ft_rec[mask, :3]),
+        "ft_torque_rmse": _rmse(ft_rep[mask, 3:], ft_rec[mask, 3:]),
+        "tcp_pos_mse": _mse(tcp_rep[mask], tcp_rec[mask]),
+        "apple_pos_mse": _mse(apple_rep[mask], apple_rec[mask]),
+        "woody_pos_mse_by_segment": woody_segment_pos_mse_masked(
+            replay=replay,
+            recorded=recorded,
+            junction_names=junction_names,
+            n=n,
+            mask=mask,
+        ),
+    }
 
 
 def combine_transition_features(
@@ -139,7 +423,9 @@ def load_recorded_episodes_for_structure(
     """Load recorded observation arrays for each direction of one structure."""
     out: list[dict] = []
     for direction_idx in range(int(num_directions)):
-        recorded = dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+        recorded = strip_pre_weld_rows(
+            dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+        )
         n_frames = int(np.asarray(recorded["action"]).shape[0])
         if "dir_idx" not in recorded:
             recorded["dir_idx"] = np.full(n_frames, direction_idx, dtype=np.int32)
@@ -190,6 +476,7 @@ def replay_candidates_for_structure(
     seed: int | None = None,
     build_env_fn: Callable[..., Any],
     max_envs_per_batch: int = 0,
+    on_step: Callable[..., bool] | None = None,
 ) -> BatchedSysIdReplayCollectors:
     """Replay all candidates for one structure, optionally chunked by env budget."""
     chunks = chunk_candidates(
@@ -209,8 +496,9 @@ def replay_candidates_for_structure(
             num_directions=int(num_directions),
             seed=seed,
             build_env_fn=build_env_fn,
+            on_step=on_step,
         )
-        merged = collectors if merged is None else merged.merge(collectors)
+        merged = collectors if merged is None else merged.concat_envs(collectors)
     assert merged is not None
     return merged
 
@@ -368,6 +656,37 @@ class BatchedSysIdReplayCollectors:
             raise RuntimeError("cannot record_step on merged replay collectors")
         collector.record(adapted, frame_idx=int(frame_idx))
 
+    def record_all_envs_step(self, env: Any, *, frame_idx: int) -> None:
+        """Record one replay frame for every env with a single batched GPU download."""
+        from apple_pick_gym.batched_envs.obs_torch import (
+            download_batched_replay_obs_numpy,
+            replay_obs_dict_from_batched_numpy_row,
+        )
+
+        last_obs = getattr(env, "_last_obs", None)
+        if last_obs is None:
+            raise RuntimeError("call reset() or step() before record_all_envs_step()")
+
+        num_envs = len(self._collectors)
+        if num_envs == 0:
+            return
+
+        junction_names = [str(name) for name in self._recorded_by_env[0]["junction_names"]]
+        batched = download_batched_replay_obs_numpy(last_obs, junction_names)
+
+        for env_idx in range(num_envs):
+            recorded = self._recorded_by_env[env_idx]
+            env_junction_names = [str(name) for name in recorded["junction_names"]]
+            if env_junction_names != junction_names:
+                raise ValueError(
+                    "record_all_envs_step requires identical junction_names across envs"
+                )
+            collector = self._collectors[env_idx]
+            if not isinstance(collector, ReplayObservationCollector):
+                raise RuntimeError("cannot record_all_envs_step on merged replay collectors")
+            adapted = replay_obs_dict_from_batched_numpy_row(batched, env_idx=env_idx)
+            collector.record(adapted, frame_idx=int(frame_idx))
+
     def to_arrays(self, env_idx: int) -> dict[str, Any]:
         return self._collectors[int(env_idx)].to_arrays()
 
@@ -386,6 +705,13 @@ class BatchedSysIdReplayCollectors:
             merged._collectors.append(_FrozenReplayCollector(arrays))
         return merged
 
+    def concat_envs(self, other: BatchedSysIdReplayCollectors) -> BatchedSysIdReplayCollectors:
+        """Append env slots (used for candidate chunking)."""
+        combined = BatchedSysIdReplayCollectors.__new__(BatchedSysIdReplayCollectors)
+        combined._recorded_by_env = list(self._recorded_by_env) + list(other._recorded_by_env)
+        combined._collectors = list(self._collectors) + list(other._collectors)
+        return combined
+
 
 def recorded_metadata_by_env(
     dataset: BatchedSysIdDataset,
@@ -399,7 +725,9 @@ def recorded_metadata_by_env(
     out: list[dict[str, Any]] = []
     for env_idx in range(num_envs):
         direction_idx = int(env_idx) % int(num_directions)
-        recorded = dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+        recorded = strip_pre_weld_rows(
+            dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+        )
         n_frames = int(np.asarray(recorded["action"]).shape[0])
         if "dir_idx" not in recorded:
             recorded["dir_idx"] = np.full(n_frames, direction_idx, dtype=np.int32)
@@ -462,14 +790,13 @@ def gt_bend_stiffness_candidate_from_structure(
     dataset: BatchedSysIdDataset,
     structure_idx: int,
 ) -> BendStiffnessCandidate:
-    """Build the GT bend-stiffness candidate from inferred structure params."""
-    params = infer_base_params_for_structure(dataset, structure_idx)
+    """Build the GT bend-stiffness candidate from recorded structure params."""
+    params = true_params_for_structure(dataset, structure_idx)
     values: dict[str, float] = {}
     for segment in ROD_SEGMENTS:
         rod = getattr(params, segment)
-        if rod is None:
-            raise ValueError(f"Segment {segment!r} is missing in inferred params")
-        values[segment] = float(rod.bend_stiffness)
+        # Disabled segments use 0.0; BendStiffnessCandidate.apply_to skips None rods.
+        values[segment] = 0.0 if rod is None else float(rod.bend_stiffness)
     return BendStiffnessCandidate(
         primary=values["primary"],
         secondary=values["secondary"],
@@ -482,20 +809,13 @@ def ensure_gt_candidate_in_grid(
     candidates: list[BendStiffnessCandidate],
     gt: BendStiffnessCandidate,
 ) -> list[BendStiffnessCandidate]:
-    """Ensure ``gt`` appears in the candidate list, replacing the last entry if needed."""
+    """Ensure ``gt`` appears in the candidate list (within float tolerance), appending if missing."""
     for candidate in candidates:
-        if (
-            candidate.primary == gt.primary
-            and candidate.secondary == gt.secondary
-            and candidate.spur == gt.spur
-            and candidate.stem == gt.stem
-        ):
+        if bend_stiffness_values_match(candidate, gt):
             return list(candidates)
     if not candidates:
         return [gt]
-    updated = list(candidates)
-    updated[-1] = gt
-    return updated
+    return [*candidates, gt]
 
 
 def build_recorded_actions_tensor(
@@ -509,7 +829,7 @@ def build_recorded_actions_tensor(
     direction_actions: list[np.ndarray] = []
     n_frames: int | None = None
     for direction_idx in range(num_directions):
-        arrays = dataset.load_episode_obs_arrays(structure_idx, direction_idx)
+        arrays = strip_pre_weld_rows(dataset.load_episode_obs_arrays(structure_idx, direction_idx))
         action = np.asarray(arrays["action"], dtype=np.float32)
         if action.ndim != 2 or action.shape[1] != 6:
             raise ValueError(
@@ -552,6 +872,7 @@ def replay_batched_sysid_structure(
     num_directions: int,
     seed: int | None = None,
     build_env_fn: Callable[..., Any],
+    on_step: Callable[..., bool] | None = None,
 ) -> BatchedSysIdReplayCollectors:
     """Replay recorded actions for one structure across bend-stiffness candidates."""
     num_candidates = len(candidates)
@@ -562,7 +883,7 @@ def replay_batched_sysid_structure(
         raise ValueError("num_directions must be >= 1")
 
     num_envs = num_candidates * d
-    base_params = infer_base_params_for_structure(dataset, int(structure_idx))
+    base_params = true_params_for_structure(dataset, int(structure_idx))
     per_env_params = broadcast_structure_params(
         [c.apply_to(base_params) for c in candidates],
         d,
@@ -607,8 +928,11 @@ def replay_batched_sysid_structure(
                 device=env.device,
             )
             env.step(actions)
-            for env_idx in range(num_envs):
-                collectors.record_step(env, env_idx=env_idx, frame_idx=frame_idx)
+            if on_step is not None:
+                keep_going = bool(on_step(frame_idx=frame_idx, env=env))
+                if not keep_going:
+                    break
+            collectors.record_all_envs_step(env, frame_idx=frame_idx)
     finally:
         env.close()
 

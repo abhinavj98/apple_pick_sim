@@ -23,11 +23,17 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
 from apple_pick_sim.system_id import BatchedSysIdDataset, QuasiStaticStepConfig
 from apple_pick_sim.fruiting_system.params import GripperProxyConfig
+from apple_pick_sim.system_id.batched_trajectory_store import (
+    FIRST_TRAJECTORY_STEP_IDX,
+    frame_index_for_step,
+)
+from apple_pick_sim.fruiting_system import fruiting_params_from_json
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     digital_twin_obs_from_batched_episode,
     gripper_proxy_from_episode_metadata,
     infer_base_params_for_structure,
     initialize_batched_env_from_dataset,
+    true_params_for_structure,
 )
 from apple_pick_sim.tests.conftest import RANGES_FIXTURE, fr3_assets_available
 
@@ -174,6 +180,33 @@ def test_infer_base_params_for_structure_returns_fruiting_params(
 
 @gymnasium_available
 @requires_fr3
+def test_true_params_for_structure_returns_exact_sampled_params(
+    tiny_batched_dataset: BatchedSysIdDataset,
+):
+    true_params = true_params_for_structure(tiny_batched_dataset, 0)
+    meta = tiny_batched_dataset.load_episode_metadata(0, 0)
+    from_metadata = fruiting_params_from_json(str(meta["fruiting_system_params"]))
+    inferred = infer_base_params_for_structure(tiny_batched_dataset, 0)
+
+    assert true_params.primary is not None
+    assert from_metadata.primary is not None
+    assert inferred.primary is not None
+
+    assert true_params.primary.length == pytest.approx(from_metadata.primary.length)
+    assert true_params.primary.direction == pytest.approx(from_metadata.primary.direction)
+    assert true_params.primary.bend_stiffness == pytest.approx(
+        from_metadata.primary.bend_stiffness
+    )
+
+    length_delta = abs(inferred.primary.length - true_params.primary.length)
+    direction_delta = 1.0 - abs(
+        float(np.dot(np.asarray(inferred.primary.direction), np.asarray(true_params.primary.direction)))
+    )
+    assert length_delta > 1e-6 or direction_delta > 1e-6
+
+
+@gymnasium_available
+@requires_fr3
 def test_initialize_batched_env_from_dataset_sets_joint_q_and_tcp(
     tiny_batched_dataset: BatchedSysIdDataset,
 ):
@@ -181,8 +214,11 @@ def test_initialize_batched_env_from_dataset_sets_joint_q_and_tcp(
     num_directions = 1
     params = infer_base_params_for_structure(tiny_batched_dataset, structure_idx)
     arrays = tiny_batched_dataset.load_episode_obs_arrays(structure_idx, 0)
-    recorded_joint_q = np.asarray(arrays["robot_joint_q"][0], dtype=np.float32).reshape(-1)
-    recorded_tcp_pos = np.asarray(arrays["tcp_pos"][0], dtype=np.float32).reshape(3)
+    first_trajectory_frame = frame_index_for_step(arrays, FIRST_TRAJECTORY_STEP_IDX)
+    recorded_joint_q = np.asarray(
+        arrays["robot_joint_q"][first_trajectory_frame], dtype=np.float32
+    ).reshape(-1)
+    recorded_tcp_pos = np.asarray(arrays["tcp_pos"][first_trajectory_frame], dtype=np.float32).reshape(3)
 
     env = ApplePickBatchedSysIdEnv(
         num_envs=1,

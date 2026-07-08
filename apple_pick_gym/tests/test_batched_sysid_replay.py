@@ -17,6 +17,7 @@ from apple_pick_gym.batched_envs.batched_sysid_collect import (
 from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     gt_bend_stiffness_candidate_from_structure,
     replay_batched_sysid_structure,
+    strip_pre_weld_rows,
 )
 from apple_pick_gym.batched_envs.batched_sysid_world_info import weld_direction_for_world
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
@@ -27,10 +28,12 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     SceneSettleCollisionConfig,
 )
 from apple_pick_sim.fruiting_system.params import GripperProxyConfig
+from apple_pick_sim.fruiting_system import fruiting_params_from_json
 from apple_pick_sim.system_id import BatchedSysIdDataset, QuasiStaticStepConfig
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_from_episode_metadata,
     infer_base_params_for_structure,
+    true_params_for_structure,
 )
 from apple_pick_sim.tests.conftest import RANGES_FIXTURE, fr3_assets_available
 
@@ -173,7 +176,9 @@ def test_replay_batched_structure_produces_frames(tiny_batched_dataset: BatchedS
     candidates = [gt_bend_stiffness_candidate_from_structure(tiny_batched_dataset, structure_idx)]
     num_envs = len(candidates) * num_directions
 
-    arrays_dir0 = tiny_batched_dataset.load_episode_obs_arrays(structure_idx, 0)
+    arrays_dir0 = strip_pre_weld_rows(
+        dict(tiny_batched_dataset.load_episode_obs_arrays(structure_idx, 0))
+    )
     n_frames = int(arrays_dir0["action"].shape[0])
     assert n_frames > 0
 
@@ -290,6 +295,57 @@ def test_replay_build_applies_recorded_weld_direction(tmp_path):
 
     assert wrong_angle > 5.0, f"expected large mismatch without fix, got {wrong_angle:.2f} deg"
     assert fixed_angle < 1.0, f"recorded weld mismatch {fixed_angle:.2f} deg"
+
+
+@gymnasium_available
+@requires_fr3
+def test_replay_structure_uses_true_params_geometry(tiny_batched_dataset: BatchedSysIdDataset):
+    structure_idx = 0
+    true_params = true_params_for_structure(tiny_batched_dataset, structure_idx)
+    inferred_params = infer_base_params_for_structure(tiny_batched_dataset, structure_idx)
+    meta = tiny_batched_dataset.load_episode_metadata(structure_idx, 0)
+    recorded_params = fruiting_params_from_json(str(meta["fruiting_system_params"]))
+    arrays = tiny_batched_dataset.load_episode_obs_arrays(structure_idx, 0)
+    n_frames = int(arrays["action"].shape[0])
+
+    build_fn = _build_env_fn(
+        ranges_path=RANGES_FIXTURE,
+        topology_seed=_SEED,
+        sim_config_fn=_test_sim_config,
+    )
+    env = build_fn(
+        num_envs=1,
+        per_env_params=[true_params],
+        max_episode_steps=n_frames,
+        gripper=gripper_proxy_from_episode_metadata(meta),
+    )
+    try:
+        env.reset(seed=_SEED)
+        built_params = env._sim._per_env_params[0]
+        assert built_params.primary is not None
+        assert recorded_params.primary is not None
+        assert inferred_params.primary is not None
+
+        assert built_params.primary.length == pytest.approx(recorded_params.primary.length)
+        assert built_params.primary.direction == pytest.approx(
+            recorded_params.primary.direction
+        )
+        assert built_params.primary.bend_stiffness == pytest.approx(
+            recorded_params.primary.bend_stiffness
+        )
+
+        length_delta = abs(inferred_params.primary.length - recorded_params.primary.length)
+        direction_delta = 1.0 - abs(
+            float(
+                np.dot(
+                    np.asarray(inferred_params.primary.direction),
+                    np.asarray(recorded_params.primary.direction),
+                )
+            )
+        )
+        assert length_delta > 1e-6 or direction_delta > 1e-6
+    finally:
+        env.close()
 
 
 @gymnasium_available

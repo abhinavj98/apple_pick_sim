@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
+import numpy as np
 import torch
 import warp as wp
 
@@ -81,11 +83,7 @@ def sysid_numpy_obs_from_batched(
     env_idx: int,
 ) -> dict[str, Any]:
     """Map batched sys-ID torch obs to legacy v3 numpy dict for one env index."""
-    import numpy as np
-
     n = int(env_idx)
-    out = legacy_v3_numpy_from_batched(obs, junction_names)
-    # legacy helper always reads env 0; rebuild for arbitrary index.
     woody_start: dict[str, np.ndarray] = {}
     woody_end: dict[str, np.ndarray] = {}
     woody_force_parts: list[np.ndarray] = []
@@ -96,20 +94,60 @@ def sysid_numpy_obs_from_batched(
         woody_force_parts.append(
             obs["woody_part_info"][name]["anchor_force"][n].detach().cpu().numpy()
         )
-    out["woody_part_start_pos"] = woody_start
-    out["woody_part_end_pos"] = woody_end
-    out["woody_part_force"] = np.concatenate(woody_force_parts, dtype=np.float32)
-    out["apple_pos"] = obs["apple_pos"][n].detach().cpu().numpy()
-    out["tcp_force"] = obs["tcp_force"][n].detach().cpu().numpy()
-    out["tcp_velocity"] = obs["tcp_velocity"][n].detach().cpu().numpy()
-    out["ft_wrist"] = obs["ft_wrist"][n].detach().cpu().numpy()
-    out["raw_ft_wrist"] = obs["raw_ft_wrist"][n].detach().cpu().numpy()
-    out["tcp_pos"] = obs["tcp_pos"][n].detach().cpu().numpy()
-    out["tcp_quat"] = obs["tcp_quat"][n].detach().cpu().numpy()
-    out["apple_quat"] = obs["apple_quat"][n].detach().cpu().numpy()
-    out["robot_joint_q"] = obs["robot_joint_q"][n].detach().cpu().numpy()
-    out["excitation_type"] = int(obs["excitation_type"][n].detach().cpu().item())
-    out["excitation_f_inst"] = float(obs["excitation_f_inst"][n].detach().cpu().item())
-    out["excitation_direction"] = obs["excitation_direction"][n].detach().cpu().numpy()
-    return out
+    return {
+        "woody_part_start_pos": woody_start,
+        "woody_part_end_pos": woody_end,
+        "woody_part_force": np.concatenate(woody_force_parts, dtype=np.float32),
+        "apple_pos": obs["apple_pos"][n].detach().cpu().numpy(),
+        "tcp_force": obs["tcp_force"][n].detach().cpu().numpy(),
+        "tcp_velocity": obs["tcp_velocity"][n].detach().cpu().numpy(),
+        "ft_wrist": obs["ft_wrist"][n].detach().cpu().numpy(),
+        "raw_ft_wrist": obs["raw_ft_wrist"][n].detach().cpu().numpy(),
+        "tcp_pos": obs["tcp_pos"][n].detach().cpu().numpy(),
+        "tcp_quat": obs["tcp_quat"][n].detach().cpu().numpy(),
+        "apple_quat": obs["apple_quat"][n].detach().cpu().numpy(),
+        "robot_joint_q": obs["robot_joint_q"][n].detach().cpu().numpy(),
+        "excitation_type": int(obs["excitation_type"][n].detach().cpu().item()),
+        "excitation_f_inst": float(obs["excitation_f_inst"][n].detach().cpu().item()),
+        "excitation_direction": obs["excitation_direction"][n].detach().cpu().numpy(),
+    }
+
+
+def download_batched_replay_obs_numpy(
+    obs: Mapping[str, Any],
+    junction_names: list[str],
+) -> dict[str, np.ndarray]:
+    """Download one batched sys-ID obs frame to CPU numpy (one sync per field)."""
+    woody_start_parts: list[np.ndarray] = []
+    woody_end_parts: list[np.ndarray] = []
+    for name in junction_names:
+        anchors = obs["woody_part_info"][name]["anchors_pos"].detach().cpu().numpy()
+        woody_start_parts.append(np.asarray(anchors[:, :3], dtype=np.float32))
+        woody_end_parts.append(np.asarray(anchors[:, 3:6], dtype=np.float32))
+
+    return {
+        "ft_wrist": np.asarray(obs["ft_wrist"].detach().cpu().numpy(), dtype=np.float32),
+        "tcp_velocity": np.asarray(obs["tcp_velocity"].detach().cpu().numpy(), dtype=np.float32),
+        "tcp_pos": np.asarray(obs["tcp_pos"].detach().cpu().numpy(), dtype=np.float32),
+        "apple_pos": np.asarray(obs["apple_pos"].detach().cpu().numpy(), dtype=np.float32),
+        "woody_start": np.concatenate(woody_start_parts, axis=1),
+        "woody_end": np.concatenate(woody_end_parts, axis=1),
+    }
+
+
+def replay_obs_dict_from_batched_numpy_row(
+    batched: Mapping[str, np.ndarray],
+    *,
+    env_idx: int,
+) -> dict[str, Any]:
+    """Slice one env row from :func:`download_batched_replay_obs_numpy` output."""
+    i = int(env_idx)
+    return {
+        "ft_wrist": np.asarray(batched["ft_wrist"][i], dtype=np.float32).reshape(6),
+        "tcp_velocity": np.asarray(batched["tcp_velocity"][i], dtype=np.float32).reshape(6),
+        "tcp_pos": np.asarray(batched["tcp_pos"][i], dtype=np.float32).reshape(3),
+        "apple_pos": np.asarray(batched["apple_pos"][i], dtype=np.float32).reshape(3),
+        "woody_start": np.asarray(batched["woody_start"][i], dtype=np.float32),
+        "woody_end": np.asarray(batched["woody_end"][i], dtype=np.float32),
+    }
 

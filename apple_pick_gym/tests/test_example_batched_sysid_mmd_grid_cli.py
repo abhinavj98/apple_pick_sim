@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
 )
@@ -43,6 +45,7 @@ def test_help_smoke_via_subprocess():
     assert proc.returncode == 0
     assert "--dataset" in proc.stdout
     assert "--replay-only" in proc.stdout
+    assert "--score-mse" in proc.stdout
     assert "--primary-bend-stiffness-values" in proc.stdout
 
 
@@ -71,10 +74,12 @@ def test_parser_defaults_and_grid_args(monkeypatch):
 
     assert args.dataset == "/tmp/batched_sysid"
     assert args.structure_indices is None
-    assert args.max_envs_per_batch == 0
+    assert args.max_envs_per_batch == module.MAX_ENVS_PER_BATCH
     assert args.max_candidates == 0
-    assert args.seed == 0
+    assert args.seed is None
     assert args.replay_only is False
+    assert args.score_mse is False
+    assert args.grid_values_are_gt_multipliers is False
     assert args.primary_bend_stiffness_values == (1.0, 2.0)
     assert args.secondary_bend_stiffness_values == (10.0,)
     assert args.spur_bend_stiffness_values == (100.0,)
@@ -102,6 +107,7 @@ def test_parser_accepts_structure_indices_and_batch_limits(monkeypatch):
             "--seed",
             "7",
             "--replay-only",
+            "--score-mse",
             "--primary-bend-stiffness-values",
             "1",
             "--secondary-bend-stiffness-values",
@@ -118,6 +124,44 @@ def test_parser_accepts_structure_indices_and_batch_limits(monkeypatch):
     assert args.max_candidates == 8
     assert args.seed == 7
     assert args.replay_only is True
+    assert args.score_mse is True
+    assert args.mse_hold_aggregation == "median"
+    assert args.mse_hold_latter_half is True
+
+
+def test_plot_metrics_validation_rejects_unknown_metric(monkeypatch):
+    module = _load_example_module()
+
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+
+    parser = module._make_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "--dataset",
+                "/tmp/batched_sysid",
+                "--plot-output",
+                "/tmp/plots",
+                "--plot-metrics",
+                "err_pos_hold,not_a_metric",
+                "--primary-bend-stiffness-values",
+                "1",
+                "--secondary-bend-stiffness-values",
+                "2",
+                "--spur-bend-stiffness-values",
+                "3",
+                "--stem-bend-stiffness-values",
+                "4",
+            ]
+        )
+
+
+def test_plot_metrics_validation_dedupes_and_preserves_order():
+    module = _load_example_module()
+    metrics = module._parse_plot_metrics("err_pos_hold, err_force_hold, err_pos_hold")
+    assert metrics == ("err_pos_hold", "err_force_hold")
 
 
 def test_chunk_candidates_no_chunking_when_limit_zero():
@@ -153,6 +197,12 @@ def test_chunk_candidates_respects_env_budget():
     )
 
     assert [len(chunk) for chunk in chunks] == [3, 2]
+
+
+def test_collection_control_hz_reads_manifest():
+    module = _load_example_module()
+    assert module._collection_control_hz({"control_hz": 25.0}) == pytest.approx(25.0)
+    assert module._collection_control_hz({}) == pytest.approx(module.CONTROL_HZ)
 
 
 def test_sim_config_stays_in_module_constants():

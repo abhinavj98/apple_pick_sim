@@ -29,12 +29,14 @@ from apple_pick_sim.coupled_fruiting.settle_then_weld import (
     seed_fix_to_apple_from_settled,
     seed_fix_to_apple_from_settled_body_q,
 )
+from apple_pick_sim.digital_twin.record import fruiting_tree_fixed_joints
 from apple_pick_sim.fruiting_system import (
     FruitingSystemParams,
     GripperProxyConfig,
     set_fruiting_joint_angular_kd_batched,
 )
 from apple_pick_sim.robot import fr3_robot
+from apple_pick_sim.system_id.pre_weld_obs import capture_pre_weld_tree_obs_all_worlds
 
 # Heterogeneous example: sag under gravity can exceed straight rest length.
 _SETTLE_PATH_RTOL = 0.05
@@ -48,6 +50,7 @@ class BatchedHeterogeneousBuildResult:
     per_env_params: tuple[FruitingSystemParams, ...]
     joint_angular_kd_overrides: dict[str, float]
     settled_body_q: np.ndarray | None = None
+    pre_weld_tree_obs: tuple[dict[str, Any], ...] | None = None
     settle_stability_reports: tuple[SettleStabilityReport, ...] | None = None
     settle_ke_decay_reports: tuple[SettleKeDecayReport, ...] | None = None
     ik_envelope_results: tuple[tuple[float, float, bool], ...] | None = None
@@ -83,10 +86,35 @@ def build_batched_heterogeneous_scene(
     ke_decay_reports: list[SettleKeDecayReport] = []
     ik_results: list[tuple[float, float, bool]] | None = None
     settled_body_q: np.ndarray | None = None
+    pre_weld_tree_obs: tuple[dict[str, Any], ...] | None = None
+
+    def _capture_pre_weld_tree_obs(scene: Any) -> tuple[dict[str, Any], ...] | None:
+        layout = getattr(scene, "layout", None)
+        cable = getattr(scene, "cable", None)
+        if layout is None or cable is None:
+            return None
+        joint_pairs = list(fruiting_tree_fixed_joints(cable))
+        if not joint_pairs:
+            return None
+        junction_names = [label.removeprefix("joint_") for _, label in joint_pairs]
+        return capture_pre_weld_tree_obs_all_worlds(
+            cable,
+            layout,
+            junction_names=junction_names,
+        )
 
     if fix_to_apple and not vbd_only:
         gripper_weld = _gripper_proxy(config, fix_to_apple=True)
         if settled_checkpoint is not None:
+            gripper_free = _gripper_proxy(config, fix_to_apple=False)
+            settled = build_fn(
+                ranges,
+                params,
+                **_builder_kwargs(config, gripper=gripper_free, vbd_only=True),
+            )
+            settled.cable.state_0.body_q.assign(settled_checkpoint.body_q)
+            settled.cable.state_1.body_q.assign(settled_checkpoint.body_q)
+            pre_weld_tree_obs = _capture_pre_weld_tree_obs(settled)
             weld_kw = _builder_kwargs(config, gripper=gripper_weld, vbd_only=False)
             weld_kw["skip_ik_bootstrap"] = True
             weld_kw["defer_template_robot_bootstrap"] = True
@@ -118,6 +146,7 @@ def build_batched_heterogeneous_scene(
                 collect_diagnostics=collect_diag,
             )
             settled_body_q = capture_body_q_numpy(settled.cable.state_0.body_q)
+            pre_weld_tree_obs = _capture_pre_weld_tree_obs(settled)
             weld_kw = _builder_kwargs(config, gripper=gripper_weld, vbd_only=False)
             weld_kw["skip_ik_bootstrap"] = True
             weld_kw["defer_template_robot_bootstrap"] = True
@@ -162,6 +191,7 @@ def build_batched_heterogeneous_scene(
             per_env_params=params,
             joint_angular_kd_overrides=applied_kd,
             settled_body_q=settled_body_q,
+            pre_weld_tree_obs=pre_weld_tree_obs,
         )
 
     return BatchedHeterogeneousBuildResult(
@@ -169,6 +199,7 @@ def build_batched_heterogeneous_scene(
         per_env_params=params,
         joint_angular_kd_overrides=applied_kd,
         settled_body_q=settled_body_q,
+        pre_weld_tree_obs=pre_weld_tree_obs,
         settle_stability_reports=tuple(stability_reports),
         settle_ke_decay_reports=tuple(ke_decay_reports),
         ik_envelope_results=tuple(ik_results) if ik_results is not None else None,

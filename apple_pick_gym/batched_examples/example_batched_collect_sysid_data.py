@@ -62,15 +62,15 @@ SUB_DT = 1.0 / 1800.0
 ENV_SPACING = (2.0, 2.0, 2.0)
 SETTLE_SUBSTEPS = 5000
 VIC_GAINS = ImpedanceGains(
-    linear_k=6000.0,
-    linear_d=0.0,
-    angular_k=2000.0,
-    angular_d=0.0,
+    linear_k=200.0,
+    linear_d=10.0,
+    angular_k=10.0,
+    angular_d=1.0,
 )
 JOINT_ANGULAR_KD_OVERRIDES = {
     "support": 1.0,
     "primary_spur": 1.0,
-    "stem_apple": 5e-2,
+    "stem_apple": 1.0,
 }
 GRIPPER_PROXY = GripperProxyConfig(mass=PLACEHOLDER_EE_MASS_KG)
 
@@ -115,6 +115,8 @@ def format_trajectory_step_debug(
     """One-line per-step debug log (phase name + Parquet int code)."""
     if phase == "init":
         phase_int = -1
+    elif phase == "pre_weld":
+        phase_int = phase_to_int("pre_weld")
     else:
         phase_int = phase_to_int(phase)
     return (
@@ -181,7 +183,7 @@ def build_sim_config(*, num_envs: int) -> BatchedHeterogeneousCoupledSimConfig:
             action_dim=6,
             linear_speed=0.1,
             angular_speed=0.1,
-            ik_iterations=128,
+            ik_iterations=96,
             vic_gains=VIC_GAINS,
             allocate_action_buffer=True,
         ),

@@ -24,7 +24,9 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from typing import get_args
 
+import numpy as np
 import newton.examples
 
 from apple_pick_gym.examples.run_system_identification import parse_positive_float_grid
@@ -54,11 +56,12 @@ CONTROL_HZ = 30.0
 SUB_DT = 1.0 / 1800.0
 ENV_SPACING = (2.0, 2.0, 2.0)
 SETTLE_SUBSTEPS = 5000
+MAX_ENVS_PER_BATCH = 25000
 VIC_GAINS = ImpedanceGains(
-    linear_k=6000.0,
-    linear_d=0.0,
-    angular_k=2000.0,
-    angular_d=0.0,
+    linear_k=200.0,
+    linear_d=10.0,
+    angular_k=10.0,
+    angular_d=1.0,
 )
 JOINT_ANGULAR_KD_OVERRIDES = {
     "support": 1.0,
@@ -68,6 +71,32 @@ JOINT_ANGULAR_KD_OVERRIDES = {
 GRIPPER_PROXY = GripperProxyConfig(mass=PLACEHOLDER_EE_MASS_KG)
 
 ROD_SEGMENTS: tuple[str, ...] = ("primary", "secondary", "spur", "stem")
+
+_PLOT_METRIC_CHOICES = tuple(
+    sorted(get_args(__import__("apple_pick_gym.grid_viz_plotly", fromlist=["Metric"]).Metric))
+)
+
+
+def _parse_plot_metrics(value: str) -> tuple[str, ...]:
+    metrics = tuple(m.strip() for m in str(value).split(",") if m.strip())
+    if not metrics:
+        raise ValueError("--plot-metrics must contain at least one metric")
+    allowed = set(_PLOT_METRIC_CHOICES)
+    invalid = sorted({m for m in metrics if m not in allowed})
+    if invalid:
+        raise ValueError(
+            f"invalid --plot-metrics entries: {', '.join(invalid)}; "
+            f"allowed: {', '.join(_PLOT_METRIC_CHOICES)}"
+        )
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in metrics:
+        if m in seen:
+            continue
+        seen.add(m)
+        out.append(m)
+    return tuple(out)
 
 
 def parse_comma_separated_ints(value: str) -> tuple[int, ...]:
@@ -189,8 +218,11 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-envs-per-batch",
         type=int,
-        default=0,
-        help="Chunk candidates so chunk_size*num_directions <= this (0 = no chunking).",
+        default=MAX_ENVS_PER_BATCH,
+        help=(
+            "Chunk candidates so chunk_size*num_directions <= this "
+            f"(default {MAX_ENVS_PER_BATCH}; 0 = no chunking)."
+        ),
     )
     p.add_argument(
         "--max-candidates",
@@ -208,6 +240,66 @@ def _make_parser() -> argparse.ArgumentParser:
         "--replay-only",
         action="store_true",
         help="Replay recorded actions and print per-structure row-count summary.",
+    )
+    p.add_argument(
+        "--score-mse",
+        action="store_true",
+        help="Compute per-candidate MSE vs recorded GT.",
+    )
+    p.add_argument(
+        "--mse-hold-aggregation",
+        type=str,
+        choices=("mean", "median", "none"),
+        default="median",
+        help=(
+            "With --score-mse: aggregate hold frames using mean/median before comparing "
+            "(default median, latter-half per hold segment). Use none for legacy frame-wise "
+            "MSE over all phases except pre_weld."
+        ),
+    )
+    p.add_argument(
+        "--mse-hold-latter-half",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="With hold aggregation, use the latter half of each hold segment.",
+    )
+    p.add_argument(
+        "--plot-output",
+        type=str,
+        default=None,
+        help="If set, write Plotly HTML plots + JSON rows under this directory.",
+    )
+    p.add_argument(
+        "--export-replay-dir",
+        type=str,
+        default=None,
+        help=(
+            "If set, write one batched_sysid_v1-compatible mini-dataset per candidate "
+            "under this directory (structure_XXX/candidates/cYYY/)."
+        ),
+    )
+    p.add_argument(
+        "--export-skip-existing",
+        action="store_true",
+        help="Skip candidate export when cYYY/manifest.json already exists.",
+    )
+    p.add_argument(
+        "--plot-metrics",
+        type=_parse_plot_metrics,
+        default=("err_pos_hold", "err_force_hold", "err_torque_hold"),
+        help=(
+            "Comma-separated metrics to plot: err_pos_all/hold, err_force_all/hold, "
+            "err_torque_all/hold, err_woody_pos_all/hold."
+        ),
+    )
+    p.add_argument(
+        "--grid-values-are-gt-multipliers",
+        action="store_true",
+        help=(
+            "Interpret --*-bend-stiffness-values as multipliers of the per-structure GT "
+            "stiffness (builds a different absolute grid per structure). GT is still "
+            "forced into the candidate list."
+        ),
     )
     for segment in ROD_SEGMENTS:
         p.add_argument(
@@ -252,14 +344,55 @@ def _build_candidate_grid(args: argparse.Namespace):
     )
 
 
+def _scaled_grid_from_gt(
+    *,
+    multipliers: tuple[float, ...],
+    gt_value: float,
+    eps: float = 1e-12,
+) -> tuple[float, ...]:
+    base = float(gt_value)
+    if base <= 0.0:
+        base = float(eps)
+    return tuple(float(m) * base for m in multipliers)
+
+
 def _candidates_for_structure(dataset, args: argparse.Namespace, structure_idx: int):
     from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
         ensure_gt_candidate_in_grid,
         gt_bend_stiffness_candidate_from_structure,
     )
 
-    candidates = _build_candidate_grid(args)
     gt = gt_bend_stiffness_candidate_from_structure(dataset, int(structure_idx))
+    if bool(getattr(args, "grid_values_are_gt_multipliers", False)):
+        # Treat user-provided values as multipliers; build structure-specific absolute grids.
+        primary_vals = _scaled_grid_from_gt(
+            multipliers=tuple(args.primary_bend_stiffness_values),
+            gt_value=float(gt.primary),
+        )
+        secondary_vals = _scaled_grid_from_gt(
+            multipliers=tuple(args.secondary_bend_stiffness_values),
+            gt_value=float(gt.secondary),
+        )
+        spur_vals = _scaled_grid_from_gt(
+            multipliers=tuple(args.spur_bend_stiffness_values),
+            gt_value=float(gt.spur),
+        )
+        stem_vals = _scaled_grid_from_gt(
+            multipliers=tuple(args.stem_bend_stiffness_values),
+            gt_value=float(gt.stem),
+        )
+        from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import iter_bend_stiffness_candidates
+
+        candidates = list(
+            iter_bend_stiffness_candidates(
+                primary_values=primary_vals,
+                secondary_values=secondary_vals,
+                spur_values=spur_vals,
+                stem_values=stem_vals,
+            )
+        )
+    else:
+        candidates = _build_candidate_grid(args)
     candidates = ensure_gt_candidate_in_grid(candidates, gt)
     max_candidates = int(args.max_candidates)
     if max_candidates > 0:
@@ -267,7 +400,7 @@ def _candidates_for_structure(dataset, args: argparse.Namespace, structure_idx: 
     return candidates
 
 
-def _make_build_env_fn(*, ranges_path: str, topology_seed: int):
+def _make_build_env_fn(*, ranges_path: str, topology_seed: int, control_hz: float):
     import dataclasses
 
     from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
@@ -280,6 +413,10 @@ def _make_build_env_fn(*, ranges_path: str, topology_seed: int):
         gripper: GripperProxyConfig | None = None,
     ) -> ApplePickBatchedSysIdEnv:
         sim_config = build_sim_config(num_envs=num_envs)
+        sim_config = dataclasses.replace(
+            sim_config,
+            runtime=dataclasses.replace(sim_config.runtime, control_hz=float(control_hz)),
+        )
         if gripper is not None:
             sim_config = dataclasses.replace(
                 sim_config,
@@ -292,11 +429,17 @@ def _make_build_env_fn(*, ranges_path: str, topology_seed: int):
             topology_seed=int(topology_seed),
             use_settle_cache=False,
             per_env_params=per_env_params,
-            control_hz=CONTROL_HZ,
+            control_hz=float(control_hz),
             sim_config=sim_config,
         )
 
     return build_env_fn
+
+
+def _collection_control_hz(collection: dict, *, default: float = CONTROL_HZ) -> float:
+    if "control_hz" not in collection:
+        return float(default)
+    return float(collection["control_hz"])
 
 
 def _replay_structure(
@@ -308,6 +451,7 @@ def _replay_structure(
     seed: int | None,
     max_envs_per_batch: int,
     build_env_fn,
+    on_step,
 ):
     from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import replay_candidates_for_structure
 
@@ -319,6 +463,7 @@ def _replay_structure(
         seed=seed,
         build_env_fn=build_env_fn,
         max_envs_per_batch=int(max_envs_per_batch),
+        on_step=on_step,
     )
     return collectors, len(candidates)
 
@@ -340,8 +485,18 @@ def _print_replay_summary(
     )
 
 
-def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: object) -> None:
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
+        direction_episodes_from_collectors,
+        gt_bend_stiffness_candidate_from_structure,
+        load_recorded_episodes_for_structure,
+        trajectory_mse,
+        trajectory_hold_aggregated_mse,
+    )
+    from apple_pick_gym.grid_viz_plotly import write_structure_bundle
+    from apple_pick_gym.grid_viz_report import summarize_across_structures, summarize_structure
+    from apple_pick_gym.grid_viz_table import build_grid_viz_rows, _mean_dict_all_directions
 
     _require_grid_values(parser, args)
 
@@ -357,6 +512,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 
         ranges_path = str(default_ranges_fixture_path())
     topology_seed = int(collection.get("topology_seed", 42))
+    control_hz = _collection_control_hz(collection)
 
     structure_indices = _structure_indices_from_args(dataset, args)
     if not structure_indices:
@@ -365,10 +521,44 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     build_env_fn = _make_build_env_fn(
         ranges_path=str(ranges_path),
         topology_seed=topology_seed,
+        control_hz=control_hz,
     )
+
+    viewer_state: dict[str, object] = {"initialized": False}
+
+    def _on_step(*, frame_idx: int, env: object) -> bool:
+        sim = getattr(env, "_sim", None)
+        if sim is None:
+            return True
+        scene = getattr(sim, "scene", None)
+        if scene is None:
+            return True
+
+        if not viewer_state["initialized"]:
+            if hasattr(viewer, "set_model") and hasattr(scene, "cable"):
+                viewer.set_model(scene.cable.model)
+            if hasattr(viewer, "set_world_offsets") and getattr(env, "num_envs", 1) > 1:
+                viewer.set_world_offsets(tuple(sim.config.runtime.env_spacing))
+            if hasattr(viewer, "hide_loading_splash"):
+                viewer.hide_loading_splash()
+            viewer_state["initialized"] = True
+
+        if not hasattr(viewer, "begin_frame"):
+            return True
+
+        hz = float(getattr(sim.config.runtime, "control_hz", CONTROL_HZ))
+        sim_time = float(frame_idx) / max(hz, 1e-9)
+
+        # Minimal render loop: log current state once per control step.
+        viewer.begin_frame(sim_time)
+        if hasattr(viewer, "log_state") and hasattr(scene, "cable"):
+            viewer.log_state(scene.cable.state_0)
+        viewer.end_frame()
+        return True
 
     for structure_idx in structure_indices:
         candidates = _candidates_for_structure(dataset, args, int(structure_idx))
+        gt = gt_bend_stiffness_candidate_from_structure(dataset, int(structure_idx))
         collectors, num_candidates = _replay_structure(
             dataset=dataset,
             structure_idx=int(structure_idx),
@@ -377,6 +567,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             seed=args.seed,
             max_envs_per_batch=int(args.max_envs_per_batch),
             build_env_fn=build_env_fn,
+            on_step=_on_step,
         )
         if bool(args.replay_only):
             arrays = dataset.load_episode_obs_arrays(int(structure_idx), 0)
@@ -388,9 +579,191 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 num_directions=num_directions,
                 collectors=collectors,
             )
+        if args.export_replay_dir is not None:
+            from apple_pick_sim.system_id.batched_digital_twin_init import true_params_for_structure
+            from apple_pick_sim.system_id.batched_replay_export import (
+                ReplayCandidateSpec,
+                export_replay_candidates_for_structure,
+            )
 
-    if not bool(args.replay_only):
-        print("MMD scoring is not implemented yet; re-run with --replay-only for summaries.")
+            base_params = true_params_for_structure(dataset, int(structure_idx))
+            specs_and_replays = []
+            for cand_idx, candidate in enumerate(candidates):
+                replay_eps = direction_episodes_from_collectors(
+                    collectors,
+                    candidate_index=int(cand_idx),
+                    num_directions=int(num_directions),
+                )
+                applied = candidate.apply_to(base_params)
+                specs_and_replays.append(
+                    (
+                        ReplayCandidateSpec(
+                            candidate_index=int(cand_idx),
+                            params=applied,
+                            stiffnesses={
+                                "primary": float(candidate.primary),
+                                "secondary": float(candidate.secondary),
+                                "spur": float(candidate.spur),
+                                "stem": float(candidate.stem),
+                            },
+                        ),
+                        replay_eps,
+                    )
+                )
+            n_exported = export_replay_candidates_for_structure(
+                args.export_replay_dir,
+                source_dataset=dataset,
+                source_structure_idx=int(structure_idx),
+                specs_and_replays=specs_and_replays,
+                command_argv=sys.argv,
+                skip_existing=bool(args.export_skip_existing),
+            )
+            print(
+                f"structure {int(structure_idx)}: exported {n_exported}/{num_candidates} "
+                f"replay candidate datasets to {args.export_replay_dir}"
+            )
+        if bool(args.score_mse):
+            recorded_eps = load_recorded_episodes_for_structure(
+                dataset,
+                structure_idx=int(structure_idx),
+                num_directions=int(num_directions),
+            )
+            print(f"\n=== structure {int(structure_idx)}: MSE vs recorded GT ===")
+            hold_agg = str(args.mse_hold_aggregation)
+            for cand_idx in range(num_candidates):
+                replay_eps = direction_episodes_from_collectors(
+                    collectors,
+                    candidate_index=int(cand_idx),
+                    num_directions=int(num_directions),
+                )
+                per_dir = []
+                for d in range(int(num_directions)):
+                    if hold_agg == "none":
+                        metrics = trajectory_mse(
+                            replay=replay_eps[d],
+                            recorded=recorded_eps[d],
+                            skip_phase=-1,
+                        )
+                    else:
+                        metrics = trajectory_hold_aggregated_mse(
+                            replay=replay_eps[d],
+                            recorded=recorded_eps[d],
+                            aggregation=hold_agg,  # type: ignore[arg-type]
+                            use_latter_half=bool(args.mse_hold_latter_half),
+                        )
+                    per_dir.append(metrics)
+                if not per_dir:
+                    raise SystemExit(
+                        f"structure {structure_idx} candidate {cand_idx}: no direction metrics"
+                    )
+                for d, metrics in enumerate(per_dir):
+                    for key in (
+                        "ft_force_rmse",
+                        "ft_torque_rmse",
+                        "tcp_pos_mse",
+                        "apple_pos_mse",
+                        "n_used_frames",
+                    ):
+                        val = float(metrics[key])
+                        if not np.isfinite(val):
+                            raise SystemExit(
+                                f"structure {structure_idx} candidate {cand_idx} "
+                                f"direction {d}: non-finite {key}={val}"
+                            )
+                    woody_by_seg = metrics.get("woody_pos_mse_by_segment", {})
+                    if woody_by_seg:
+                        for seg_name, seg_val in woody_by_seg.items():
+                            val = float(seg_val)
+                            if not np.isfinite(val):
+                                raise SystemExit(
+                                    f"structure {structure_idx} candidate {cand_idx} "
+                                    f"direction {d}: non-finite woody_pos_mse_by_segment"
+                                    f"[{seg_name}]={val}"
+                                )
+                ft_force_rmse_mean = float(
+                    sum(float(m["ft_force_rmse"]) for m in per_dir) / len(per_dir)
+                )
+                ft_torque_rmse_mean = float(
+                    sum(float(m["ft_torque_rmse"]) for m in per_dir) / len(per_dir)
+                )
+                tcp_mean = float(
+                    sum(float(m["tcp_pos_mse"]) for m in per_dir) / len(per_dir)
+                )
+                apple_mean = float(
+                    sum(float(m["apple_pos_mse"]) for m in per_dir) / len(per_dir)
+                )
+                woody_mean = _mean_dict_all_directions(
+                    "woody_pos_mse_by_segment",
+                    per_dir,
+                    expected_n=len(per_dir),
+                )
+                woody_mean_str = (
+                    ", ".join(f"{name}={val:.6g}" for name, val in sorted(woody_mean.items()))
+                    if woody_mean
+                    else "{}"
+                )
+                used_min = int(min(float(m["n_used_frames"]) for m in per_dir))
+                print(
+                    f"candidate {cand_idx}: hold_agg={hold_agg} used_frames(min)={used_min} "
+                    f"ft_force_rmse_N(mean)={ft_force_rmse_mean:.6g} "
+                    f"ft_torque_rmse_Nm(mean)={ft_torque_rmse_mean:.6g} "
+                    f"tcp_pos_mse(mean)={tcp_mean:.6g} "
+                    f"apple_pos_mse(mean)={apple_mean:.6g} "
+                    f"woody_pos_mse_by_segment(mean)={{{woody_mean_str}}}"
+                )
+
+        if args.plot_output is not None:
+            recorded_eps = load_recorded_episodes_for_structure(
+                dataset,
+                structure_idx=int(structure_idx),
+                num_directions=int(num_directions),
+            )
+            replay_eps_by_candidate = []
+            for cand_idx in range(num_candidates):
+                replay_eps_by_candidate.append(
+                    direction_episodes_from_collectors(
+                        collectors,
+                        candidate_index=int(cand_idx),
+                        num_directions=int(num_directions),
+                    )
+                )
+            rows = build_grid_viz_rows(
+                structure_idx=int(structure_idx),
+                candidates=list(candidates),
+                gt_candidate=gt,
+                recorded_eps=recorded_eps,
+                replay_eps_by_candidate=replay_eps_by_candidate,
+                hold_phase_value=1,
+                pos_weights=(1.0, 1.0, 1.0),
+                dist_keys=("primary", "spur", "stem"),
+                hold_aggregation=str(args.mse_hold_aggregation),  # type: ignore[arg-type]
+                hold_use_latter_half=bool(args.mse_hold_latter_half),
+            )
+            metrics = tuple(args.plot_metrics)
+            rep = summarize_structure(
+                structure_idx=int(structure_idx),
+                rows=rows,
+                metrics=metrics,  # type: ignore[arg-type]
+            )
+            print(f"\n=== structure {int(structure_idx)}: viz report ===")
+            for s in rep.summaries:
+                print(
+                    f"  {s.metric}: best_is_gt={s.best_is_gt} gt_rank={s.gt_rank} "
+                    f"spearman(dist,err)={s.spearman_dist_vs_err:.3g}"
+                )
+            write_structure_bundle(
+                output_dir=str(args.plot_output),
+                structure_idx=int(structure_idx),
+                rows=rows,
+                metrics=metrics,  # type: ignore[arg-type]
+                n_bins=10,
+            )
+
+    if not bool(args.replay_only) and not bool(args.score_mse):
+        print(
+            "MMD scoring is not implemented yet; re-run with --replay-only for summaries "
+            "or --score-mse for MSE metrics."
+        )
 
 
 def main() -> None:
@@ -401,7 +774,7 @@ def main() -> None:
     parser = _make_parser()
     viewer, args = newton.examples.init(parser=parser)
     try:
-        _run(args, parser)
+        _run(args, parser, viewer=viewer)
     finally:
         if hasattr(viewer, "close"):
             viewer.close()

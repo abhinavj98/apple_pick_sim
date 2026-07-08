@@ -22,6 +22,7 @@ from apple_pick_sim.system_id.batched_digital_twin_init import (
     digital_twin_obs_from_batched_episode,
     infer_base_params_for_structure,
     initialize_batched_env_from_dataset,
+    true_params_for_structure,
 )
 from apple_pick_sim.system_id.batched_trajectory_store import (
     BatchedEpisodeWriter,
@@ -54,6 +55,7 @@ __all__ = [
     "digital_twin_obs_from_episode",
     "infer_base_params_for_structure",
     "initialize_batched_env_from_dataset",
+    "true_params_for_structure",
     "derive_n_steps",
     "estimate_trajectory_frames",
     "grasp_snapshot_from_env",

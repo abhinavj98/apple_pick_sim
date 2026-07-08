@@ -7,7 +7,13 @@ import pytest
 import torch
 import warp as wp
 
-from apple_pick_gym.batched_envs.obs_torch import legacy_v3_numpy_from_batched, obs_dict_from_bufs
+from apple_pick_gym.batched_envs.obs_torch import (
+    download_batched_replay_obs_numpy,
+    legacy_v3_numpy_from_batched,
+    obs_dict_from_bufs,
+    replay_obs_dict_from_batched_numpy_row,
+    sysid_numpy_obs_from_batched,
+)
 from apple_pick_sim.batched_obs import BatchedObsBuffers, make_batched_obs_buffers
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.fruiting_system.coupled import CoupledCableScene
@@ -106,3 +112,86 @@ def test_legacy_v3_mapping_num_envs_one():
     np.testing.assert_allclose(legacy["woody_part_start_pos"]["stem_apple"], [1, 2, 3])
     np.testing.assert_allclose(legacy["woody_part_end_pos"]["stem_apple"], [4, 5, 6])
     np.testing.assert_allclose(legacy["woody_part_force"], [7, 8, 9, 1, 2, 3])
+
+
+def _batched_sysid_torch_obs(*, num_envs: int, junction_names: list[str]) -> dict:
+    woody_part_info: dict[str, dict[str, torch.Tensor]] = {}
+    for j, name in enumerate(junction_names):
+        anchors = torch.zeros(num_envs, 6, dtype=torch.float32)
+        forces = torch.zeros(num_envs, 6, dtype=torch.float32)
+        for env_idx in range(num_envs):
+            base = float(env_idx * 100 + j * 10)
+            anchors[env_idx] = torch.arange(6, dtype=torch.float32) + base
+            forces[env_idx] = torch.arange(6, dtype=torch.float32) + base + 0.5
+        woody_part_info[name] = {
+            "anchors_pos": anchors,
+            "anchor_force": forces,
+        }
+
+    def _row_tensor(cols: int, scale: float) -> torch.Tensor:
+        rows = torch.zeros(num_envs, cols, dtype=torch.float32)
+        for env_idx in range(num_envs):
+            rows[env_idx] = torch.full((cols,), float(env_idx * scale), dtype=torch.float32) + torch.arange(
+                cols, dtype=torch.float32
+            )
+        return rows
+
+    return {
+        "woody_part_info": woody_part_info,
+        "apple_pos": _row_tensor(3, scale=1.0),
+        "tcp_force": _row_tensor(6, scale=2.0),
+        "tcp_velocity": _row_tensor(6, scale=3.0),
+        "ft_wrist": _row_tensor(6, scale=4.0),
+        "raw_ft_wrist": _row_tensor(6, scale=5.0),
+        "tcp_pos": _row_tensor(3, scale=6.0),
+        "tcp_quat": _row_tensor(4, scale=7.0),
+        "apple_quat": _row_tensor(4, scale=8.0),
+        "robot_joint_q": _row_tensor(7, scale=9.0),
+        "excitation_type": torch.tensor([env_idx % 3 for env_idx in range(num_envs)], dtype=torch.long),
+        "excitation_f_inst": torch.tensor(
+            [float(env_idx) for env_idx in range(num_envs)],
+            dtype=torch.float32,
+        ),
+        "excitation_direction": _row_tensor(3, scale=10.0),
+    }
+
+
+def test_sysid_numpy_obs_from_batched_reads_requested_env_idx():
+    junction_names = ["joint_a", "joint_b"]
+    obs = _batched_sysid_torch_obs(num_envs=2, junction_names=junction_names)
+
+    exported = sysid_numpy_obs_from_batched(obs, junction_names, env_idx=1)
+
+    np.testing.assert_allclose(exported["apple_pos"], obs["apple_pos"][1].numpy())
+    np.testing.assert_allclose(exported["ft_wrist"], obs["ft_wrist"][1].numpy())
+    np.testing.assert_allclose(
+        exported["woody_part_start_pos"]["joint_a"],
+        obs["woody_part_info"]["joint_a"]["anchors_pos"][1, :3].numpy(),
+    )
+    assert exported["apple_pos"][0] != pytest.approx(float(obs["apple_pos"][0, 0].item()))
+
+
+def test_download_batched_replay_obs_numpy_matches_per_env_sysid_export():
+    junction_names = ["joint_a", "joint_b"]
+    obs = _batched_sysid_torch_obs(num_envs=3, junction_names=junction_names)
+
+    batched = download_batched_replay_obs_numpy(obs, junction_names)
+
+    assert batched["ft_wrist"].shape == (3, 6)
+    assert batched["woody_start"].shape == (3, 6)
+    assert batched["woody_end"].shape == (3, 6)
+
+    for env_idx in range(3):
+        per_env = sysid_numpy_obs_from_batched(obs, junction_names, env_idx=env_idx)
+        row = replay_obs_dict_from_batched_numpy_row(batched, env_idx=env_idx)
+        np.testing.assert_allclose(row["ft_wrist"], per_env["ft_wrist"])
+        np.testing.assert_allclose(row["tcp_velocity"], per_env["tcp_velocity"])
+        np.testing.assert_allclose(row["tcp_pos"], per_env["tcp_pos"])
+        np.testing.assert_allclose(row["apple_pos"], per_env["apple_pos"])
+        np.testing.assert_allclose(
+            row["woody_start"],
+            np.concatenate(
+                [per_env["woody_part_start_pos"][name] for name in junction_names],
+                dtype=np.float32,
+            ),
+        )

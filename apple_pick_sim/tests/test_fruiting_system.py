@@ -1357,6 +1357,36 @@ def test_set_rod_bend_stiffness_rejects_nonpositive():
         fs.set_rod_bend_stiffness(p, "primary", 0.0)
 
 
+def test_set_rod_bend_stiffness_preserves_damping_ratio():
+    fs = _import_module()
+    rod = fs.rod_params_from_material(
+        youngs_modulus_pa=1.0e7,
+        damping_ratio=0.05,
+        length=0.10,
+        radius=0.01,
+        density=300.0,
+        num_segments=4,
+        direction=(1.0, 0.0, 0.0),
+    )
+    base = fs.FruitingSystemParams(
+        primary=rod,
+        secondary=None,
+        spur=None,
+        stem=None,
+        apple_radius=0.04,
+        apple_density=800.0,
+    )
+    old_k = rod.bend_stiffness
+    new_k = old_k * 100.0
+    out = fs.set_rod_bend_stiffness(base, "primary", new_k)
+    assert out.primary is not None
+    assert out.primary.bend_stiffness == pytest.approx(new_k)
+    assert out.primary.damping_ratio == pytest.approx(rod.damping_ratio)
+    assert out.primary.bend_damping == pytest.approx(
+        rod.bend_damping * math.sqrt(new_k / old_k)
+    )
+
+
 def test_variance_fixture_loads_and_samples_in_bounds():
     """Wide example-variance JSON is valid and produces in-range params."""
     fs = _import_module()
@@ -1622,6 +1652,56 @@ def test_overlap_threshold_respected():
     )
     assert fs.branches_overlap_by_direction(params, threshold=0.75) is False
     assert fs.branches_overlap_by_direction(params, threshold=0.5) is True
+
+
+def _capsule_display_color_for_body(builder, body_id: int) -> tuple[float, float, float]:
+    import newton
+
+    for shape_idx, bid in enumerate(builder.shape_body):
+        if bid == body_id and builder.shape_flags[shape_idx] & newton.ShapeFlags.VISIBLE:
+            c = builder.shape_color[shape_idx]
+            return (float(c[0]), float(c[1]), float(c[2]))
+    raise AssertionError(f"no visible capsule shape for body {body_id}")
+
+
+def test_rod_segments_have_distinct_display_colors():
+    """Each woody rod type (primary/spur/stem) gets a unique viewer color."""
+    from apple_pick_sim.fruiting_system import build as fruiting_build
+
+    fs = _import_module()
+    builder = fruiting_build._new_fruiting_builder()
+    params = _t_junction_params(
+        fs,
+        primary_dir=(1.0, 0.0, 0.0),
+        spur_dir=(0.0, 1.0, 0.0),
+        stem_dir=(0.0, 0.0, 1.0),
+    )
+    artifacts = fruiting_build._build_fruiting_chain_into_builder(
+        builder, params, (0.5, 0.5, 0.5)
+    )
+
+    colors: dict[str, tuple[float, float, float]] = {}
+    for name, bodies in artifacts.seg_bodies.items():
+        if bodies:
+            colors[name] = _capsule_display_color_for_body(builder, bodies[0])
+
+    assert set(colors) == {"primary", "spur", "stem"}
+    assert len(set(colors.values())) == len(colors)
+    np.testing.assert_allclose(
+        colors["primary"],
+        fruiting_build._rod_display_color("primary"),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        colors["spur"],
+        fruiting_build._rod_display_color("spur"),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        colors["stem"],
+        fruiting_build._rod_display_color("stem"),
+        atol=1e-6,
+    )
 
 
 def test_sample_params_no_overlap_result_passes_check():

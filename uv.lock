@@ -87,6 +87,7 @@ dev = [
 gym = [
     { name = "dash" },
     { name = "gymnasium" },
+    { name = "plotly" },
     { name = "pyarrow" },
 ]
 vic = [
@@ -100,6 +101,7 @@ requires-dist = [
     { name = "gymnasium", marker = "extra == 'gym'", specifier = ">=1.0.0" },
     { name = "newton", extras = ["examples"], editable = "newton" },
     { name = "newton", extras = ["torch-cu12"], marker = "extra == 'vic'", editable = "newton" },
+    { name = "plotly", marker = "extra == 'gym'", specifier = ">=6.8.0" },
     { name = "pyarrow", marker = "extra == 'dev'", specifier = ">=18.0.0" },
     { name = "pyarrow", marker = "extra == 'gym'", specifier = ">=18.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },

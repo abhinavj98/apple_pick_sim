@@ -115,9 +115,9 @@ def test_trajectory_debug_formatters(monkeypatch):
         sim_time=0.5,
         amplitude_m=0.005,
     )
-    assert "phase=init    (-1)" in module.format_trajectory_step_debug(
+    assert "phase=pre_weld(-1)" in module.format_trajectory_step_debug(
         step_idx=-1,
-        phase="init",
+        phase="pre_weld",
         sim_time=0.0,
     )
 

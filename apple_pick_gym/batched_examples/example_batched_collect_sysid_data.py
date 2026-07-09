@@ -326,11 +326,15 @@ def main() -> None:
     viewer, args = newton.examples.init(parser=parser)
 
     from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
+    from apple_pick_gym.batched_envs.batched_stability_monitor import StabilityThresholds
     from apple_pick_gym.batched_envs.batched_sysid_collect import (
         collect_batched_quasi_static_dataset,
         sample_and_broadcast_structure_params,
     )
     from apple_pick_sim.fruiting_system import default_ranges_fixture_path
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+
+    stability_thresholds = StabilityThresholds()
 
     num_structures = int(args.num_structures)
     num_directions = int(args.num_directions)
@@ -422,6 +426,22 @@ def main() -> None:
             on_step=on_step,
             command_argv=sys.argv,
             overwrite=bool(args.overwrite),
+            stability_thresholds=stability_thresholds,
+        )
+        unstable_frames = 0
+        total_frames = 0
+        dataset = BatchedSysIdDataset(out)
+        for ep in dataset.episode_entries():
+            arrays = dataset.load_episode_obs_arrays(
+                int(ep["structure_idx"]),
+                int(ep["direction_idx"]),
+            )
+            stable = np.asarray(arrays["stable"], dtype=bool).reshape(-1)
+            unstable_frames += int(np.count_nonzero(~stable))
+            total_frames += int(stable.size)
+        print(
+            f"stability summary: {unstable_frames}/{total_frames} unstable frames "
+            f"across {len(dataset.episode_entries())} episodes"
         )
         if bool(args.debug):
             print(f"Saved batched sys-ID dataset to {out}")

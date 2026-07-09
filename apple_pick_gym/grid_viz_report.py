@@ -22,6 +22,56 @@ MetricName = Literal[
 
 
 @dataclass(frozen=True)
+class FinalRankSummary:
+    best_candidate_index: int | None
+    best_rank_combined: float | None
+    gt_rank_combined: float | None
+    best_is_gt: bool | None
+    n_disqualified: int
+    n_candidates: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def summarize_final_rank(rows: Sequence[GridVizRow]) -> FinalRankSummary:
+    if not rows:
+        raise ValueError("rows must be non-empty")
+    n_disqualified = sum(1 for r in rows if bool(r.disqualified))
+    eligible = [
+        (i, r)
+        for i, r in enumerate(rows)
+        if not bool(r.disqualified) and np.isfinite(float(r.rank_combined))
+    ]
+    best_idx = None
+    best_rank = None
+    best_cand = None
+    if eligible:
+        best_i, best_row = min(eligible, key=lambda item: float(item[1].rank_combined))
+        best_idx = int(best_i)
+        best_rank = float(best_row.rank_combined)
+        best_cand = int(best_row.candidate_index)
+    gt_indices = [i for i, r in enumerate(rows) if bool(r.gt_flag)]
+    gt_rank = None
+    best_is_gt = None
+    if gt_indices:
+        gt_i = int(gt_indices[0])
+        gt_row = rows[gt_i]
+        if not bool(gt_row.disqualified) and np.isfinite(float(gt_row.rank_combined)):
+            gt_rank = float(gt_row.rank_combined)
+        if best_idx is not None:
+            best_is_gt = bool(best_idx == gt_i)
+    return FinalRankSummary(
+        best_candidate_index=best_cand,
+        best_rank_combined=best_rank,
+        gt_rank_combined=gt_rank,
+        best_is_gt=best_is_gt,
+        n_disqualified=int(n_disqualified),
+        n_candidates=len(rows),
+    )
+
+
+@dataclass(frozen=True)
 class MetricSummary:
     metric: str
     gt_rank: int | None

@@ -15,6 +15,7 @@ from apple_pick_sim.system_id.trajectory_store import (
     REQUIRED_FRAME_COLUMNS,
     TrajectoryDataset,
     TrajectoryWriter,
+    build_sysid_frame_row,
     junction_names_from_frame_columns,
     phase_to_int,
     stack_woody_pos_frame,
@@ -318,3 +319,28 @@ def test_digital_twin_obs_from_episode_uses_metadata_and_frame_zero(tmp_path: Pa
 def test_missing_dataset_dir_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError, match="metadata.parquet"):
         TrajectoryDataset(tmp_path / "missing")
+
+
+def test_build_sysid_frame_row_stable_defaults_true():
+    row = build_sysid_frame_row(
+        step_idx=0,
+        sim_time=0.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=_synthetic_obs(),
+    )
+    assert row["stable"] is True
+
+
+def test_build_sysid_frame_row_stable_false():
+    row = build_sysid_frame_row(
+        step_idx=0,
+        sim_time=0.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=_synthetic_obs(),
+        stable=False,
+    )
+    assert row["stable"] is False

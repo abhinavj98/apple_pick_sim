@@ -62,6 +62,7 @@ class ReplayObservationCollector:
             "dir_idx": [],
             "excitation_type": [],
             "excitation_direction": [],
+            "stable": [],
         }
         self._woody_start: dict[str, list[np.ndarray]] = {
             name: [] for name in self._junction_names
@@ -88,7 +89,7 @@ class ReplayObservationCollector:
             for i, name in enumerate(self._junction_names)
         }
 
-    def record(self, obs: Mapping[str, Any], *, frame_idx: int) -> None:
+    def record(self, obs: Mapping[str, Any], *, frame_idx: int, stable: bool = True) -> None:
         """Append one live replay observation aligned to one recorded frame."""
 
         n_frames = int(np.asarray(self._recorded["action"]).shape[0])
@@ -131,6 +132,7 @@ class ReplayObservationCollector:
             self._woody_start[name].append(pos)
         for name, pos in self._split_flat_woody(obs["woody_end"], key="woody_end").items():
             self._woody_end[name].append(pos)
+        self._rows["stable"].append(bool(stable))
 
     def to_arrays(self) -> dict[str, Any]:
         """Return collected observations as arrays compatible with feature builders."""
@@ -147,6 +149,7 @@ class ReplayObservationCollector:
             "excitation_direction": np.stack(
                 self._rows["excitation_direction"], axis=0
             ).astype(np.float32),
+            "stable": np.asarray(self._rows["stable"], dtype=bool),
             "woody_part_start_pos": {
                 name: np.stack(rows, axis=0).astype(np.float32)
                 for name, rows in self._woody_start.items()
@@ -325,6 +328,7 @@ def iter_kept_hold_segments(
     phase: np.ndarray,
     dir_idx: np.ndarray,
     direction: int,
+    stable: np.ndarray | None = None,
 ) -> list[np.ndarray]:
     """Return latter-half index arrays for contiguous hold segments in one direction."""
 
@@ -334,11 +338,19 @@ def iter_kept_hold_segments(
         raise ValueError(
             f"phase and dir_idx must have matching shape, got {phase.shape} and {dir_idx.shape}"
         )
+    if stable is not None:
+        stable = np.asarray(stable, dtype=bool).reshape(-1)
+        if stable.shape != phase.shape:
+            raise ValueError(
+                f"stable and phase must have matching shape, got {stable.shape} and {phase.shape}"
+            )
 
     kept: list[np.ndarray] = []
     current: list[int] = []
     for frame_idx, (phase_value, dir_value) in enumerate(zip(phase, dir_idx, strict=True)):
         is_hold = int(phase_value) == 1 and int(dir_value) == int(direction)
+        if stable is not None and not bool(stable[frame_idx]):
+            is_hold = False
         if is_hold:
             current.append(frame_idx)
             continue
@@ -365,6 +377,9 @@ def build_transition_features_by_direction(
     state = build_state_matrix(arrays)
     phase = np.asarray(arrays["phase"]).reshape(-1)
     dir_idx = np.asarray(arrays["dir_idx"]).reshape(-1)
+    stable = np.asarray(arrays.get("stable", np.ones(phase.shape[0], dtype=bool)), dtype=bool).reshape(
+        -1
+    )
     excitation_dir = np.asarray(arrays["excitation_direction"]).reshape(-1, 3)
     if state.shape[0] != phase.size or state.shape[0] != dir_idx.size:
         raise ValueError("state, phase, and dir_idx frame counts must match")
@@ -384,6 +399,7 @@ def build_transition_features_by_direction(
             phase=phase,
             dir_idx=dir_idx,
             direction=direction,
+            stable=stable,
         ):
             for start_idx, end_idx in zip(segment[:-1], segment[1:], strict=True):
                 current = state[int(start_idx)]

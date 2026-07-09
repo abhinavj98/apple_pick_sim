@@ -43,3 +43,4 @@ tmp/
 Thumbs.db
 scripts
 sweep_runs
+tmp*/

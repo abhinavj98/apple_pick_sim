@@ -33,6 +33,7 @@ def _episode(*, phase: np.ndarray, tcp_shift: float, ft_shift: float, woody_shif
     return {
         "step_idx": np.arange(n, dtype=np.int32),
         "phase": np.asarray(phase, dtype=np.int8),
+        "stable": np.ones(n, dtype=bool),
         "tcp_pos": tcp,
         "apple_pos": apple,
         "ft_wrist": ft,
@@ -40,6 +41,50 @@ def _episode(*, phase: np.ndarray, tcp_shift: float, ft_shift: float, woody_shif
         "woody_part_end_pos": woody_end,
         "junction_names": junction_names,
     }
+
+
+def test_build_grid_viz_rows_disqualifies_unstable_replay():
+    from apple_pick_gym.grid_viz_table import build_grid_viz_rows
+
+    phase = np.array([0, 1, 1, 1, 1, 1, 1, 1, 1, 2], dtype=np.int8)
+    recorded_eps = [_episode(phase=phase, tcp_shift=0.0, ft_shift=0.0)]
+    gt = _Cand(1.0, 0.0, 2.0, 3.0)
+    candidates = [gt]
+
+    stable_replay = _episode(phase=phase, tcp_shift=0.0, ft_shift=0.0, woody_shift=0.0)
+    unstable_replay = _episode(phase=phase, tcp_shift=0.0, ft_shift=0.0, woody_shift=0.0)
+    unstable_replay["stable"] = np.ones(phase.shape[0], dtype=bool)
+    unstable_replay["stable"][2] = False
+    unstable_replay["stable"][3] = False
+
+    rows = build_grid_viz_rows(
+        structure_idx=0,
+        candidates=candidates,
+        gt_candidate=gt,
+        recorded_eps=recorded_eps,
+        replay_eps_by_candidate=[[unstable_replay]],
+        hold_phase_value=1,
+        pos_weights=(1.0, 1.0),
+        dist_keys=("primary", "spur", "stem"),
+        hold_aggregation="none",
+    )
+    assert rows[0].disqualified is True
+    assert rows[0].unstable_fraction_all > 0.10
+    assert rows[0].rank_combined == float("inf")
+
+    rows_stable = build_grid_viz_rows(
+        structure_idx=0,
+        candidates=candidates,
+        gt_candidate=gt,
+        recorded_eps=recorded_eps,
+        replay_eps_by_candidate=[[stable_replay]],
+        hold_phase_value=1,
+        pos_weights=(1.0, 1.0),
+        dist_keys=("primary", "spur", "stem"),
+        hold_aggregation="none",
+    )
+    assert rows_stable[0].disqualified is False
+    assert rows_stable[0].rank_combined == pytest.approx(1.0)
 
 
 def test_build_grid_viz_rows_marks_gt_and_prefers_gt_errors():
@@ -160,3 +205,20 @@ def test_build_grid_viz_rows_without_woody_data_uses_nan_scalar():
     assert rows[0].err_pos_all == pytest.approx(0.0)
     assert rows[0].err_pos_hold == pytest.approx(0.0)
 
+
+def test_replay_vs_recorded_errors_excludes_replay_unstable():
+    from apple_pick_gym.grid_viz_table import replay_vs_recorded_errors
+
+    recorded = _episode(phase=np.ones(3, dtype=np.int8), tcp_shift=0.0, ft_shift=0.0)
+    replay = _episode(phase=np.ones(3, dtype=np.int8), tcp_shift=0.0, ft_shift=0.0)
+    recorded["stable"] = np.ones(3, dtype=bool)
+    replay["stable"] = np.array([True, False, True], dtype=bool)
+    replay["ft_wrist"][1, 0] = 999.0
+
+    out = replay_vs_recorded_errors(
+        replay=replay,
+        recorded=recorded,
+        include_phase=1,
+    )
+    assert out["n_used_frames"] == 2.0
+    assert out["ft_force_rmse"] == pytest.approx(0.0, abs=1e-6)

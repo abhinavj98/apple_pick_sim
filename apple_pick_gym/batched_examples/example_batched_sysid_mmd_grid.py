@@ -66,7 +66,7 @@ VIC_GAINS = ImpedanceGains(
 JOINT_ANGULAR_KD_OVERRIDES = {
     "support": 1.0,
     "primary_spur": 1.0,
-    "stem_apple": 5e-2,
+    "stem_apple": 1.0,
 }
 GRIPPER_PROXY = GripperProxyConfig(mass=PLACEHOLDER_EE_MASS_KG)
 
@@ -452,6 +452,7 @@ def _replay_structure(
     max_envs_per_batch: int,
     build_env_fn,
     on_step,
+    replay_sim_config,
 ):
     from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import replay_candidates_for_structure
 
@@ -464,6 +465,7 @@ def _replay_structure(
         build_env_fn=build_env_fn,
         max_envs_per_batch=int(max_envs_per_batch),
         on_step=on_step,
+        replay_sim_config=replay_sim_config,
     )
     return collectors, len(candidates)
 
@@ -488,14 +490,21 @@ def _print_replay_summary(
 def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: object) -> None:
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
     from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
+        UNSTABLE_DISQUALIFY_THRESHOLD,
         direction_episodes_from_collectors,
         gt_bend_stiffness_candidate_from_structure,
         load_recorded_episodes_for_structure,
+        replay_instability_fraction_all_frames,
         trajectory_mse,
         trajectory_hold_aggregated_mse,
+        warn_recorded_gt_instability,
     )
     from apple_pick_gym.grid_viz_plotly import write_structure_bundle
-    from apple_pick_gym.grid_viz_report import summarize_across_structures, summarize_structure
+    from apple_pick_gym.grid_viz_report import (
+        summarize_across_structures,
+        summarize_final_rank,
+        summarize_structure,
+    )
     from apple_pick_gym.grid_viz_table import build_grid_viz_rows, _mean_dict_all_directions
 
     _require_grid_values(parser, args)
@@ -559,6 +568,17 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
     for structure_idx in structure_indices:
         candidates = _candidates_for_structure(dataset, args, int(structure_idx))
         gt = gt_bend_stiffness_candidate_from_structure(dataset, int(structure_idx))
+        recorded_eps = load_recorded_episodes_for_structure(
+            dataset,
+            structure_idx=int(structure_idx),
+            num_directions=int(num_directions),
+        )
+        gt_warn_messages = warn_recorded_gt_instability(
+            structure_idx=int(structure_idx),
+            recorded_eps=recorded_eps,
+        )
+        for msg in gt_warn_messages:
+            print(f"WARNING: {msg}")
         collectors, num_candidates = _replay_structure(
             dataset=dataset,
             structure_idx=int(structure_idx),
@@ -568,6 +588,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
             max_envs_per_batch=int(args.max_envs_per_batch),
             build_env_fn=build_env_fn,
             on_step=_on_step,
+            replay_sim_config=build_sim_config(num_envs=1),
         )
         if bool(args.replay_only):
             arrays = dataset.load_episode_obs_arrays(int(structure_idx), 0)
@@ -578,6 +599,20 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 num_candidates=num_candidates,
                 num_directions=num_directions,
                 collectors=collectors,
+            )
+            num_envs = num_candidates * num_directions
+            unstable_by_env = []
+            for env_idx in range(num_envs):
+                replay_arrays = collectors.to_arrays(env_idx)
+                stable = np.asarray(replay_arrays.get("stable", np.ones(replay_arrays["action"].shape[0])), dtype=bool)
+                unstable_by_env.append(int(np.count_nonzero(~stable)))
+            cand_unstable = [
+                sum(unstable_by_env[c * num_directions + d] for d in range(num_directions))
+                for c in range(num_candidates)
+            ]
+            print(
+                f"structure {int(structure_idx)} stability: "
+                f"unstable_frames_per_candidate={cand_unstable}"
             )
         if args.export_replay_dir is not None:
             from apple_pick_sim.system_id.batched_digital_twin_init import true_params_for_structure
@@ -623,11 +658,6 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 f"replay candidate datasets to {args.export_replay_dir}"
             )
         if bool(args.score_mse):
-            recorded_eps = load_recorded_episodes_for_structure(
-                dataset,
-                structure_idx=int(structure_idx),
-                num_directions=int(num_directions),
-            )
             print(f"\n=== structure {int(structure_idx)}: MSE vs recorded GT ===")
             hold_agg = str(args.mse_hold_aggregation)
             for cand_idx in range(num_candidates):
@@ -635,6 +665,19 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                     collectors,
                     candidate_index=int(cand_idx),
                     num_directions=int(num_directions),
+                )
+                direction_instability = [
+                    replay_instability_fraction_all_frames(
+                        replay=replay_eps[d],
+                        recorded=recorded_eps[d],
+                    )
+                    for d in range(int(num_directions))
+                ]
+                finite_instability = [float(f) for f in direction_instability if np.isfinite(float(f))]
+                unstable_fraction_all = max(finite_instability) if finite_instability else float("nan")
+                disqualified = any(
+                    np.isfinite(float(f)) and float(f) > float(UNSTABLE_DISQUALIFY_THRESHOLD)
+                    for f in direction_instability
                 )
                 per_dir = []
                 for d in range(int(num_directions)):
@@ -703,8 +746,13 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                     else "{}"
                 )
                 used_min = int(min(float(m["n_used_frames"]) for m in per_dir))
+                disq_tag = (
+                    f" DISQUALIFIED unstable_fraction_all={unstable_fraction_all:.3g}"
+                    if disqualified
+                    else ""
+                )
                 print(
-                    f"candidate {cand_idx}: hold_agg={hold_agg} used_frames(min)={used_min} "
+                    f"candidate {cand_idx}:{disq_tag} hold_agg={hold_agg} used_frames(min)={used_min} "
                     f"ft_force_rmse_N(mean)={ft_force_rmse_mean:.6g} "
                     f"ft_torque_rmse_Nm(mean)={ft_torque_rmse_mean:.6g} "
                     f"tcp_pos_mse(mean)={tcp_mean:.6g} "
@@ -713,11 +761,6 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 )
 
         if args.plot_output is not None:
-            recorded_eps = load_recorded_episodes_for_structure(
-                dataset,
-                structure_idx=int(structure_idx),
-                num_directions=int(num_directions),
-            )
             replay_eps_by_candidate = []
             for cand_idx in range(num_candidates):
                 replay_eps_by_candidate.append(
@@ -751,6 +794,15 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                     f"  {s.metric}: best_is_gt={s.best_is_gt} gt_rank={s.gt_rank} "
                     f"spearman(dist,err)={s.spearman_dist_vs_err:.3g}"
                 )
+            final_rank = summarize_final_rank(rows)
+            print(f"\n=== structure {int(structure_idx)}: final hold rank (pos+force) ===")
+            print(
+                f"  disqualified: {final_rank.n_disqualified}/{final_rank.n_candidates} "
+                f"best_candidate={final_rank.best_candidate_index} "
+                f"rank_combined={final_rank.best_rank_combined} "
+                f"gt_rank={final_rank.gt_rank_combined} "
+                f"best_is_gt={final_rank.best_is_gt}"
+            )
             write_structure_bundle(
                 output_dir=str(args.plot_output),
                 structure_idx=int(structure_idx),

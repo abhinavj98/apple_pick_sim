@@ -49,6 +49,7 @@ BATCHED_BONUS_FRAME_COLUMNS: tuple[str, ...] = (
     "apple_quat",
     "robot_joint_q",
     "woody_part_force",
+    "stable",
 )
 
 EPISODE_METADATA_KEYS: tuple[str, ...] = (
@@ -195,6 +196,7 @@ class BatchedEpisodeWriter:
         amplitude_m: float,
         action: np.ndarray,
         obs: dict[str, Any],
+        stable: bool = True,
     ) -> None:
         """Append one env-step record (no per-frame episode_id / dir_idx)."""
         self._rows.append(
@@ -205,6 +207,7 @@ class BatchedEpisodeWriter:
                 amplitude_m=amplitude_m,
                 action=action,
                 obs=obs,
+                stable=bool(stable),
             )
         )
 
@@ -354,6 +357,14 @@ class BatchedSysIdDataset:
             arrays["sim_time"] = _stack_column("sim_time").reshape(-1)
         if "amplitude_m" in table.column_names:
             arrays["amplitude_m"] = _stack_column("amplitude_m").reshape(-1)
+        n_rows = int(arrays["action"].shape[0])
+        if "stable" in table.column_names:
+            arrays["stable"] = np.asarray(
+                table.column("stable").to_pylist(),
+                dtype=bool,
+            ).reshape(-1)
+        else:
+            arrays["stable"] = np.ones(n_rows, dtype=bool)
         return arrays
 
 

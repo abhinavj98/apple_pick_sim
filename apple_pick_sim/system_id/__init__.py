@@ -32,6 +32,11 @@ from apple_pick_sim.system_id.batched_trajectory_store import (
     resolve_batched_dataset_output_dir,
     write_manifest,
 )
+from apple_pick_sim.system_id.manifest_sim_config import (
+    sim_config_manifest_mismatches,
+    sim_config_to_manifest_dict,
+    warn_manifest_sim_config_mismatch,
+)
 from apple_pick_sim.system_id.trajectory_store import (
     TrajectoryDataset,
     TrajectoryWriter,
@@ -66,8 +71,11 @@ __all__ = [
     "resolve_batched_dataset_output_dir",
     "sample_fibonacci_hemisphere",
     "sample_robot_facing_pull_directions",
+    "sim_config_manifest_mismatches",
+    "sim_config_to_manifest_dict",
     "stem_perpendicular_robot_pole",
     "target_tf_from_array",
     "target_tf_to_array",
+    "warn_manifest_sim_config_mismatch",
     "write_manifest",
 ]

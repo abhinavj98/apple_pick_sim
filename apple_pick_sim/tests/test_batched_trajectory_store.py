@@ -281,3 +281,86 @@ def test_materialize_legacy_episode_dir(tmp_path: Path):
     assert frames.num_rows == 1
     assert "episode_id" in frames.column_names
     assert frames.column("episode_id")[0].as_py() == "ep-legacy"
+
+
+def test_batched_writer_stable_column_roundtrip(tmp_path: Path):
+    writer = BatchedEpisodeWriter(episode_id="ep-stable")
+    writer.record_step(
+        step_idx=0,
+        sim_time=0.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=_synthetic_obs(),
+        stable=True,
+    )
+    writer.record_step(
+        step_idx=1,
+        sim_time=1 / 60.0,
+        phase="hold",
+        amplitude_m=0.01,
+        action=np.ones(6, dtype=np.float32),
+        obs=_synthetic_obs(),
+        stable=False,
+    )
+    writer.save(
+        tmp_path / episode_filename(0, 0),
+        _synthetic_episode_metadata(episode_id="ep-stable"),
+    )
+    write_manifest(
+        tmp_path,
+        command_argv=["collect.py"],
+        collection={"seed": 0},
+        structures=[],
+        episodes=[
+            {
+                "structure_idx": 0,
+                "direction_idx": 0,
+                "env_idx": 0,
+                "filename": episode_filename(0, 0),
+                "episode_id": "ep-stable",
+                "pull_direction": [0.0, 1.0, 0.0],
+                "n_frames": 2,
+            }
+        ],
+    )
+    dataset = BatchedSysIdDataset(tmp_path)
+    arrays = dataset.load_episode_obs_arrays(0, 0)
+    assert arrays["stable"].tolist() == [True, False]
+
+
+def test_load_episode_obs_arrays_stable_defaults_when_column_missing(tmp_path: Path):
+    writer = BatchedEpisodeWriter(episode_id="ep-no-stable-col")
+    writer.record_step(
+        step_idx=0,
+        sim_time=0.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=_synthetic_obs(),
+    )
+    path = tmp_path / episode_filename(0, 0)
+    writer.save(path, _synthetic_episode_metadata(episode_id="ep-no-stable-col"))
+    table = pq.read_table(path)
+    names = [n for n in table.column_names if n != "stable"]
+    pq.write_table(table.select(names), path)
+    write_manifest(
+        tmp_path,
+        command_argv=["collect.py"],
+        collection={"seed": 0},
+        structures=[],
+        episodes=[
+            {
+                "structure_idx": 0,
+                "direction_idx": 0,
+                "env_idx": 0,
+                "filename": episode_filename(0, 0),
+                "episode_id": "ep-no-stable-col",
+                "pull_direction": [0.0, 1.0, 0.0],
+                "n_frames": 1,
+            }
+        ],
+    )
+    dataset = BatchedSysIdDataset(tmp_path)
+    arrays = dataset.load_episode_obs_arrays(0, 0)
+    assert arrays["stable"].tolist() == [True]

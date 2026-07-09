@@ -578,6 +578,50 @@ def test_batched_sysid_replay_collectors_record_all_envs_step_matches_record_ste
             )
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_batched_sysid_replay_collectors_record_step_accepts_torch_unstable_mask(device):
+    from apple_pick_gym.batched_envs.obs_torch import sysid_numpy_obs_from_batched
+
+    if device.startswith("cuda") and not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    num_envs = 2
+    n_frames = 3
+    recorded_by_env = [
+        _recorded_arrays_for_replay(n_frames=n_frames, direction_idx=env_idx)
+        for env_idx in range(num_envs)
+    ]
+    per_env_collectors = grid.BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+    batched_collectors = grid.BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
+
+    junction_names = recorded_by_env[0]["junction_names"]
+    env = MagicMock()
+    unstable = torch.tensor([False, True], dtype=torch.bool, device=device)
+
+    batched_obs = _batched_torch_obs_for_replay(
+        num_envs=num_envs,
+        frame_idx=0,
+        junction_names=junction_names,
+    )
+    env._last_obs = batched_obs
+    batched_collectors.record_all_envs_step(env, frame_idx=0, unstable=unstable)
+
+    for env_idx in range(num_envs):
+        env.sysid_numpy_obs.return_value = sysid_numpy_obs_from_batched(
+            batched_obs,
+            junction_names,
+            env_idx=env_idx,
+        )
+        per_env_collectors.record_step(
+            env, env_idx=env_idx, frame_idx=0, unstable=unstable
+        )
+
+    assert batched_collectors.to_arrays(0)["stable"].tolist() == [True]
+    assert batched_collectors.to_arrays(1)["stable"].tolist() == [False]
+    assert per_env_collectors.to_arrays(0)["stable"].tolist() == [True]
+    assert per_env_collectors.to_arrays(1)["stable"].tolist() == [False]
+
+
 def test_batched_sysid_replay_collectors_record_step_and_to_arrays():
     num_envs = 2
     n_frames = 3
@@ -1018,3 +1062,101 @@ def test_trajectory_hold_aggregated_mse_reports_woody_pos_mse_by_segment():
     assert set(out["woody_pos_mse_by_segment"]) == set(recorded["junction_names"])
     for name in recorded["junction_names"]:
         assert out["woody_pos_mse_by_segment"][name] == pytest.approx(0.0)
+
+
+def test_trajectory_mse_drops_gt_unstable_rows():
+    recorded = _arrays_for_steps(steps=4, shift=0.0)
+    replay = _arrays_for_steps(steps=4, shift=0.0)
+    recorded["phase"] = np.ones(4, dtype=np.int8)
+    replay["phase"] = recorded["phase"].copy()
+    recorded["stable"] = np.array([True, False, True, True], dtype=bool)
+    replay["stable"] = np.ones(4, dtype=bool)
+    replay["ft_wrist"][1, :3] += 500.0
+
+    out = grid.trajectory_mse(replay=replay, recorded=recorded, skip_phase=-1)
+    assert out["n_used_frames"] == 3.0
+    assert out["ft_force_rmse"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_trajectory_mse_excludes_replay_unstable_frames():
+    recorded = _arrays_for_steps(steps=3, shift=0.0)
+    replay = _arrays_for_steps(steps=3, shift=0.0)
+    recorded["phase"] = np.ones(3, dtype=np.int8)
+    replay["phase"] = recorded["phase"].copy()
+    recorded["stable"] = np.ones(3, dtype=bool)
+    replay["stable"] = np.array([True, False, True], dtype=bool)
+    replay["ft_wrist"][1, 0] = 999.0
+
+    out = grid.trajectory_mse(replay=replay, recorded=recorded, skip_phase=-1)
+    assert out["n_used_frames"] == 2.0
+    assert out["ft_force_rmse"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_trajectory_hold_aggregated_mse_excludes_replay_unstable_hold_frames():
+    recorded = _arrays_for_steps(steps=4, shift=0.0)
+    replay = _arrays_for_steps(steps=4, shift=0.0)
+    recorded["phase"] = np.ones(4, dtype=np.int8)
+    replay["phase"] = recorded["phase"].copy()
+    recorded["stable"] = np.ones(4, dtype=bool)
+    replay["stable"] = np.array([True, False, True, True], dtype=bool)
+    replay["ft_wrist"][1, 0] = 999.0
+
+    out = grid.trajectory_hold_aggregated_mse(
+        replay=replay,
+        recorded=recorded,
+        aggregation="mean",
+        use_latter_half=False,
+    )
+    assert out["n_used_frames"] == 3.0
+    assert out["ft_force_rmse"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_replay_instability_fraction_all_frames_counts_replay_unstable():
+    recorded = _arrays_for_steps(steps=10, shift=0.0)
+    replay = _arrays_for_steps(steps=10, shift=0.0)
+    recorded["stable"] = np.ones(10, dtype=bool)
+    replay["stable"] = np.ones(10, dtype=bool)
+    replay["stable"][2] = False
+    replay["stable"][3] = False
+    assert grid.replay_instability_fraction_all_frames(replay=replay, recorded=recorded) == pytest.approx(
+        0.2
+    )
+
+
+def test_recorded_instability_fraction_all_frames_ignores_pre_weld():
+    recorded = _arrays_for_steps(steps=4, shift=0.0)
+    recorded["phase"] = np.array([-1, 0, 0, 0], dtype=np.int8)
+    recorded["stable"] = np.array([False, True, False, True], dtype=bool)
+    assert grid.recorded_instability_fraction_all_frames(recorded) == pytest.approx(1.0 / 3.0)
+
+
+def test_warn_recorded_gt_instability_emits_warning():
+    recorded = _arrays_for_steps(steps=10, shift=0.0)
+    recorded["stable"] = np.ones(10, dtype=bool)
+    recorded["stable"][:3] = False
+
+    with pytest.warns(UserWarning, match="recorded GT dataset"):
+        msgs = grid.warn_recorded_gt_instability(structure_idx=0, recorded_eps=[recorded])
+    assert len(msgs) == 1
+
+
+def test_concat_replay_arrays_propagates_stable():
+    left = {
+        "action": np.zeros((2, 6), dtype=np.float32),
+        "ft_wrist": np.zeros((2, 6), dtype=np.float32),
+        "tcp_velocity": np.zeros((2, 6), dtype=np.float32),
+        "tcp_pos": np.zeros((2, 3), dtype=np.float32),
+        "apple_pos": np.zeros((2, 3), dtype=np.float32),
+        "phase": np.zeros(2, dtype=np.int8),
+        "dir_idx": np.zeros(2, dtype=np.int32),
+        "excitation_type": np.zeros(2, dtype=np.int8),
+        "excitation_direction": np.zeros((2, 3), dtype=np.float32),
+        "stable": np.array([True, False], dtype=bool),
+        "woody_part_start_pos": {"j": np.zeros((2, 3), dtype=np.float32)},
+        "woody_part_end_pos": {"j": np.zeros((2, 3), dtype=np.float32)},
+        "junction_names": ["j"],
+    }
+    right = dict(left)
+    right["stable"] = np.array([False, True], dtype=bool)
+    merged = grid._concat_replay_arrays(left, right)
+    assert merged["stable"].tolist() == [True, False, False, True]

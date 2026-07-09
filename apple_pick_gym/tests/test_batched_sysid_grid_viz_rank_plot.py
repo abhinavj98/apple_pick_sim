@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from apple_pick_gym.grid_viz_plotly import (
     compute_dual_metric_ranks,
     compute_pareto_front_mask,
     load_grid_viz_rows_from_json,
+    make_3d_rank_scatter,
+    make_3d_scatter,
 )
-from apple_pick_gym.grid_viz_plotly import make_3d_scatter
-from apple_pick_gym.grid_viz_table import GridVizRow
+from apple_pick_gym.grid_viz_table import GridVizRow, assign_hold_combined_ranks
 
 
-def _row(candidate_index: int, *, pos: float, force: float, gt: bool = False) -> GridVizRow:
+def _row(candidate_index: int, *, pos: float, force: float, gt: bool = False, disqualified: bool = False) -> GridVizRow:
     return GridVizRow(
         structure_idx=0,
         candidate_index=candidate_index,
@@ -35,6 +37,11 @@ def _row(candidate_index: int, *, pos: float, force: float, gt: bool = False) ->
         err_woody_pos_hold=float("nan"),
         n_directions_all=1.0,
         n_directions_hold=1.0,
+        unstable_fraction_all=0.15 if disqualified else 0.0,
+        disqualified=bool(disqualified),
+        rank_pos_hold=float("nan"),
+        rank_force_hold=float("nan"),
+        rank_combined=float("inf") if disqualified else float("nan"),
     )
 
 
@@ -63,12 +70,42 @@ def test_load_grid_viz_rows_from_json_round_trip(tmp_path):
     assert loaded[1].err_force_hold == 20.0
 
 
-def test_make_3d_scatter_gt_shares_color_scale():
+def test_assign_hold_combined_ranks_excludes_disqualified():
     rows = [
-        _row(0, pos=0.3, force=30.0, gt=False),
+        _row(0, pos=0.3, force=30.0, gt=False, disqualified=True),
         _row(1, pos=0.1, force=20.0, gt=True),
         _row(2, pos=0.2, force=10.0, gt=False),
     ]
+    ranked = assign_hold_combined_ranks(rows)
+    assert ranked[0].disqualified is True
+    assert ranked[0].rank_combined == float("inf")
+    assert ranked[1].rank_combined == pytest.approx(1.5)
+    assert ranked[2].rank_combined == pytest.approx(1.5)
+
+
+def test_make_3d_rank_scatter_includes_disqualified_trace():
+    rows = assign_hold_combined_ranks(
+        [
+            _row(0, pos=0.3, force=30.0, gt=False, disqualified=True),
+            _row(1, pos=0.1, force=20.0, gt=True),
+            _row(2, pos=0.2, force=10.0, gt=False),
+        ]
+    )
+    fig = make_3d_rank_scatter(rows=rows, title="t")
+    names = [trace.name for trace in fig.data]
+    assert "disqualified" in names
+    assert "candidates" in names
+    assert "GT" in names
+
+
+def test_make_3d_scatter_gt_shares_color_scale():
+    rows = assign_hold_combined_ranks(
+        [
+            _row(0, pos=0.3, force=30.0, gt=False),
+            _row(1, pos=0.1, force=20.0, gt=True),
+            _row(2, pos=0.2, force=10.0, gt=False),
+        ]
+    )
     fig = make_3d_scatter(rows=rows, metric="err_pos_hold", title="t")
     assert len(fig.data) == 2
     candidates = fig.data[0]

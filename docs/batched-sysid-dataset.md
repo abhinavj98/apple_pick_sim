@@ -41,11 +41,37 @@ Top-level keys:
 | `schema_version` | `"batched_sysid_v1"` |
 | `created_at` | ISO-8601 UTC timestamp |
 | `command_argv` | argv used to invoke the collector |
-| `collection` | `seed`, `topology_seed`, `ranges_path`, `control_hz`, `num_structures`, `num_directions`, `max_steps`, `trajectory` |
+| `collection` | `seed`, `topology_seed`, `ranges_path`, `control_hz`, `num_structures`, `num_directions`, `max_steps`, `trajectory`, `sim_config` |
 | `structures[]` | Light summary per `structure_idx`: `params_fingerprint`, `junction_names`, `n_woody_parts` |
 | `episodes[]` | Catalog entry per episode: indices, `filename`, `episode_id`, `pull_direction`, `n_frames` |
 
 Full `fruiting_system_params` live in each episode parquet (not duplicated in `structures[]`).
+
+### `collection.sim_config`
+
+Replay-relevant physics and controller settings from the **effective** sim build at
+collection time (`env._sim.config`, not example-script constants). Omitted on legacy
+datasets collected before this field existed.
+
+| Key | Description |
+|-----|-------------|
+| `sub_dt` | VBD substep dt [s] |
+| `settle_substeps` | Gravity settle substeps before weld |
+| `settle_gravity_ramp`, `settle_max_speed_m_s` | Settle policy |
+| `enable_*_collisions` | AVBD collision flags |
+| `stem_coupling_gain`, `stem_force_cap_N`, `stem_torque_cap_Nm` | Stem harvest caps |
+| `joint_angular_kd_overrides` | Requested per-joint angular kd overrides |
+| `joint_angular_kd_applied` | Joints that matched template labels at build |
+| `controller` | `mode`, speeds, `ik_iterations`, `vic_gains` |
+| `robot` | `fix_to_apple`, `gripper_mass_kg` |
+
+`control_hz` remains at `collection.control_hz` (not duplicated). Batch-size fields
+(`num_envs`, `env_spacing`, …) are excluded.
+
+Replay scripts should match these settings. When
+[`replay_batched_sysid_structure`](../apple_pick_gym/batched_envs/batched_sysid_mmd_grid.py)
+is called with `replay_sim_config`, mismatches emit `warnings.warn` messages (non-fatal;
+legacy datasets without `sim_config` are skipped).
 
 ## Episode parquet
 

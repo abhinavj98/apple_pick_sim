@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import dataclasses
+import warnings
+from collections.abc import Mapping, Sequence
 from itertools import product
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, Protocol
+from typing import Any, Callable, Literal, NamedTuple, Protocol
 
 from apple_pick_gym.batched_envs.batched_sysid_collect import broadcast_structure_params
+from apple_pick_gym.batched_envs.batched_stability_monitor import (
+    BatchedStabilityMonitor,
+    ik_bootstrap_unstable_mask,
+)
 from apple_pick_gym.grid_viz_metrics import (
     bend_stiffness_values_match,
     woody_segment_pos_mse_hold_aggregated,
@@ -29,15 +35,147 @@ from apple_pick_sim.system_id.mmd_features import (
     build_transition_features_by_direction,
     replay_obs_dict_from_sysid_numpy,
 )
+from apple_pick_sim.system_id.manifest_sim_config import warn_manifest_sim_config_mismatch
 from apple_pick_sim.system_id.mmd_results import MmdCandidateResult, write_results_csv
 
 import numpy as np
 import torch
 
+from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
+    BatchedHeterogeneousCoupledSimConfig,
+)
+
 from apple_pick_sim.fruiting_system import params as fs
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
 
 ROD_SEGMENTS: tuple[str, ...] = ("primary", "secondary", "spur", "stem")
+
+UNSTABLE_DISQUALIFY_THRESHOLD = 0.10
+
+
+def _stable_mask_arrays(
+    *,
+    recorded: Mapping[str, Any],
+    replay: Mapping[str, Any],
+    n: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    gt_stable = np.asarray(
+        recorded.get("stable", np.ones(n, dtype=bool)),
+        dtype=bool,
+    ).reshape(-1)[:n]
+    replay_stable = np.asarray(
+        replay.get("stable", np.ones(n, dtype=bool)),
+        dtype=bool,
+    ).reshape(-1)[:n]
+    return gt_stable, replay_stable
+
+
+def _unstable_mask_as_bool_numpy(unstable: torch.Tensor | np.ndarray) -> np.ndarray:
+    if isinstance(unstable, torch.Tensor):
+        return unstable.detach().cpu().numpy().astype(bool).reshape(-1)
+    return np.asarray(unstable, dtype=bool).reshape(-1)
+
+
+def _scored_frame_mask(
+    arrays: Mapping[str, Any],
+    n: int,
+    *,
+    skip_phase: int | None = -1,
+) -> np.ndarray:
+    if skip_phase is None:
+        return np.ones(int(n), dtype=bool)
+    phase = np.asarray(arrays["phase"], dtype=np.int64).reshape(-1)[: int(n)]
+    return phase != int(skip_phase)
+
+
+def recorded_instability_fraction_all_frames(
+    recorded: Mapping[str, Any],
+    *,
+    skip_phase: int | None = -1,
+) -> float:
+    """Recorded-collection unstable fraction among scored frames (``phase != skip_phase``)."""
+    n = int(np.asarray(recorded["ft_wrist"]).reshape(-1, 6).shape[0])
+    scored = _scored_frame_mask(recorded, n, skip_phase=skip_phase)
+    stable = np.asarray(
+        recorded.get("stable", np.ones(n, dtype=bool)),
+        dtype=bool,
+    ).reshape(-1)[:n]
+    denom = int(np.count_nonzero(scored))
+    if denom == 0:
+        return float("nan")
+    return float(np.count_nonzero(scored & ~stable)) / float(denom)
+
+
+def replay_instability_fraction_all_frames(
+    replay: Mapping[str, Any],
+    recorded: Mapping[str, Any],
+    *,
+    skip_phase: int | None = -1,
+) -> float:
+    """Replay-unstable fraction among GT-stable scored frames."""
+    n = _aligned_frame_count(replay, recorded)
+    if n <= 0:
+        return float("nan")
+    scored = _scored_frame_mask(recorded, n, skip_phase=skip_phase)
+    gt_stable, replay_stable = _stable_mask_arrays(recorded=recorded, replay=replay, n=n)
+    denom_mask = scored & gt_stable
+    denom = int(np.count_nonzero(denom_mask))
+    if denom == 0:
+        return float("nan")
+    return float(np.count_nonzero(denom_mask & ~replay_stable)) / float(denom)
+
+
+def warn_recorded_gt_instability(
+    *,
+    structure_idx: int,
+    recorded_eps: Sequence[Mapping[str, Any]],
+    threshold: float = UNSTABLE_DISQUALIFY_THRESHOLD,
+) -> list[str]:
+    """Emit warnings when recorded GT episodes exceed the instability threshold."""
+    messages: list[str] = []
+    for direction_idx, recorded in enumerate(recorded_eps):
+        frac = recorded_instability_fraction_all_frames(recorded)
+        if not np.isfinite(frac) or float(frac) <= float(threshold):
+            continue
+        msg = (
+            f"structure {int(structure_idx)} direction {int(direction_idx)}: recorded GT dataset "
+            f"has {float(frac):.1%} unstable frames (>{float(threshold):.0%}); "
+            "replay scoring may be unreliable"
+        )
+        warnings.warn(msg, stacklevel=2)
+        messages.append(msg)
+    return messages
+
+
+def _masked_rmse(
+    rep: np.ndarray,
+    rec: np.ndarray,
+    *,
+    keep: np.ndarray,
+) -> float:
+    keep = np.asarray(keep, dtype=bool).reshape(-1)
+    if not bool(np.any(keep)):
+        return float("nan")
+    diff = np.asarray(rep, dtype=np.float64) - np.asarray(rec, dtype=np.float64)
+    row_vals = np.sqrt(np.mean(diff * diff, axis=-1))
+    return float(np.mean(row_vals[keep]))
+
+
+def _masked_mse(
+    rep: np.ndarray,
+    rec: np.ndarray,
+    *,
+    keep: np.ndarray,
+) -> float:
+    keep = np.asarray(keep, dtype=bool).reshape(-1)
+    if not bool(np.any(keep)):
+        return float("nan")
+    diff = np.asarray(rep, dtype=np.float64) - np.asarray(rec, dtype=np.float64)
+    if diff.ndim == 1:
+        row_vals = diff * diff
+    else:
+        row_vals = np.mean(diff * diff, axis=-1)
+    return float(np.mean(row_vals[keep]))
 
 
 class MmdDirectionContext(NamedTuple):
@@ -189,6 +327,8 @@ def trajectory_hold_aggregated_mse(
         recorded_slice["dir_idx"] = np.asarray(recorded["dir_idx"], dtype=np.int32).reshape(-1)[:n]
 
     hold_idx = hold_metric_frame_indices(recorded_slice, use_latter_half=use_latter_half)
+    gt_stable, replay_stable = _stable_mask_arrays(recorded=recorded, replay=replay, n=n)
+    hold_idx = hold_idx[gt_stable[hold_idx] & replay_stable[hold_idx]]
     used = int(hold_idx.size)
     if used == 0:
         return {
@@ -284,7 +424,10 @@ def trajectory_mse(
         phase = np.asarray(recorded["phase"], dtype=np.int64).reshape(-1)[:n]
         mask = phase != int(skip_phase)
 
-    used = int(np.count_nonzero(mask))
+    gt_stable, replay_stable = _stable_mask_arrays(recorded=recorded, replay=replay, n=n)
+    keep = np.asarray(mask, dtype=bool) & gt_stable & replay_stable
+
+    used = int(np.count_nonzero(keep))
     if used == 0:
         return {
             "n_frames": float(n),
@@ -299,28 +442,73 @@ def trajectory_mse(
                 recorded=recorded,
                 junction_names=junction_names,
                 n=n,
-                mask=mask,
+                mask=keep,
             ),
         }
+
+    woody_mse: dict[str, float] = {}
+    if junction_names and _has_woody_for_scoring(replay, recorded, junction_names):
+        for name in junction_names:
+            start_rep = np.asarray(replay["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rep = np.asarray(replay["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            start_rec = np.asarray(recorded["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rec = np.asarray(recorded["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            rep = np.concatenate([start_rep, end_rep], axis=1)
+            rec = np.concatenate([start_rec, end_rec], axis=1)
+            woody_mse[name] = _masked_mse(
+                rep,
+                rec,
+                keep=keep,
+            )
 
     return {
         "n_frames": float(n),
         "n_used_frames": float(used),
         # NOTE: ft_wrist mixes units (N, N·m). Keep the legacy metric for debugging, but
         # prefer separate force/torque RMSE for interpretable diagnostics.
-        "ft_wrist_mse": _mse(ft_rep[mask], ft_rec[mask]),
-        "ft_force_rmse": _rmse(ft_rep[mask, :3], ft_rec[mask, :3]),
-        "ft_torque_rmse": _rmse(ft_rep[mask, 3:], ft_rec[mask, 3:]),
-        "tcp_pos_mse": _mse(tcp_rep[mask], tcp_rec[mask]),
-        "apple_pos_mse": _mse(apple_rep[mask], apple_rec[mask]),
-        "woody_pos_mse_by_segment": woody_segment_pos_mse_masked(
-            replay=replay,
-            recorded=recorded,
-            junction_names=junction_names,
-            n=n,
-            mask=mask,
+        "ft_wrist_mse": _masked_mse(
+            ft_rep,
+            ft_rec,
+            keep=keep,
         ),
+        "ft_force_rmse": _masked_rmse(
+            ft_rep[:, :3],
+            ft_rec[:, :3],
+            keep=keep,
+        ),
+        "ft_torque_rmse": _masked_rmse(
+            ft_rep[:, 3:],
+            ft_rec[:, 3:],
+            keep=keep,
+        ),
+        "tcp_pos_mse": _masked_mse(
+            tcp_rep,
+            tcp_rec,
+            keep=keep,
+        ),
+        "apple_pos_mse": _masked_mse(
+            apple_rep,
+            apple_rec,
+            keep=keep,
+        ),
+        "woody_pos_mse_by_segment": woody_mse,
     }
+
+
+def _has_woody_for_scoring(
+    replay: Mapping[str, Any],
+    recorded: Mapping[str, Any],
+    junction_names: list[str],
+) -> bool:
+    for key in ("woody_part_start_pos", "woody_part_end_pos"):
+        for source in (replay, recorded):
+            woody = source.get(key)
+            if not isinstance(woody, dict):
+                return False
+            for name in junction_names:
+                if name not in woody:
+                    return False
+    return bool(junction_names)
 
 
 def combine_transition_features(
@@ -477,6 +665,7 @@ def replay_candidates_for_structure(
     build_env_fn: Callable[..., Any],
     max_envs_per_batch: int = 0,
     on_step: Callable[..., bool] | None = None,
+    replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
 ) -> BatchedSysIdReplayCollectors:
     """Replay all candidates for one structure, optionally chunked by env budget."""
     chunks = chunk_candidates(
@@ -497,6 +686,7 @@ def replay_candidates_for_structure(
             seed=seed,
             build_env_fn=build_env_fn,
             on_step=on_step,
+            replay_sim_config=replay_sim_config,
         )
         merged = collectors if merged is None else merged.concat_envs(collectors)
     assert merged is not None
@@ -590,6 +780,21 @@ def _concat_replay_arrays(left: dict[str, Any], right: dict[str, Any]) -> dict[s
             return a
         return np.concatenate([a, b], axis=0)
 
+    def _cat_bool_1d(key: str) -> np.ndarray:
+        def _one_side(arrays: dict[str, Any]) -> np.ndarray:
+            if key not in arrays:
+                n = int(np.asarray(arrays["action"]).shape[0])
+                return np.ones(n, dtype=bool)
+            return np.asarray(arrays[key], dtype=bool).reshape(-1)
+
+        a = _one_side(left)
+        b = _one_side(right)
+        if a.shape[0] == 0:
+            return b
+        if b.shape[0] == 0:
+            return a
+        return np.concatenate([a, b], axis=0)
+
     return {
         "action": _cat_1d_or_2d("action").astype(np.float32, copy=False),
         "ft_wrist": _cat_1d_or_2d("ft_wrist").astype(np.float32, copy=False),
@@ -602,6 +807,7 @@ def _concat_replay_arrays(left: dict[str, Any], right: dict[str, Any]) -> dict[s
         "excitation_direction": _cat_1d_or_2d("excitation_direction").astype(
             np.float32, copy=False
         ),
+        "stable": _cat_bool_1d("stable"),
         "woody_part_start_pos": {
             name: _cat_1d_or_2d_for_woody(left["woody_part_start_pos"][name], right["woody_part_start_pos"][name])
             for name in junction_names
@@ -643,7 +849,14 @@ class BatchedSysIdReplayCollectors:
             ReplayObservationCollector(item) for item in recorded
         ]
 
-    def record_step(self, env: Any, *, env_idx: int, frame_idx: int) -> None:
+    def record_step(
+        self,
+        env: Any,
+        *,
+        env_idx: int,
+        frame_idx: int,
+        unstable: torch.Tensor | np.ndarray | None = None,
+    ) -> None:
         idx = int(env_idx)
         recorded = self._recorded_by_env[idx]
         obs = env.sysid_numpy_obs(idx)
@@ -654,9 +867,19 @@ class BatchedSysIdReplayCollectors:
         collector = self._collectors[idx]
         if not isinstance(collector, ReplayObservationCollector):
             raise RuntimeError("cannot record_step on merged replay collectors")
-        collector.record(adapted, frame_idx=int(frame_idx))
+        stable = True
+        if unstable is not None:
+            unstable_arr = _unstable_mask_as_bool_numpy(unstable)
+            stable = not bool(unstable_arr[int(env_idx)])
+        collector.record(adapted, frame_idx=int(frame_idx), stable=stable)
 
-    def record_all_envs_step(self, env: Any, *, frame_idx: int) -> None:
+    def record_all_envs_step(
+        self,
+        env: Any,
+        *,
+        frame_idx: int,
+        unstable: torch.Tensor | np.ndarray | None = None,
+    ) -> None:
         """Record one replay frame for every env with a single batched GPU download."""
         from apple_pick_gym.batched_envs.obs_torch import (
             download_batched_replay_obs_numpy,
@@ -685,7 +908,11 @@ class BatchedSysIdReplayCollectors:
             if not isinstance(collector, ReplayObservationCollector):
                 raise RuntimeError("cannot record_all_envs_step on merged replay collectors")
             adapted = replay_obs_dict_from_batched_numpy_row(batched, env_idx=env_idx)
-            collector.record(adapted, frame_idx=int(frame_idx))
+            stable = True
+            if unstable is not None:
+                unstable_arr = _unstable_mask_as_bool_numpy(unstable)
+                stable = not bool(unstable_arr[int(env_idx)])
+            collector.record(adapted, frame_idx=int(frame_idx), stable=stable)
 
     def to_arrays(self, env_idx: int) -> dict[str, Any]:
         return self._collectors[int(env_idx)].to_arrays()
@@ -873,6 +1100,7 @@ def replay_batched_sysid_structure(
     seed: int | None = None,
     build_env_fn: Callable[..., Any],
     on_step: Callable[..., bool] | None = None,
+    replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
 ) -> BatchedSysIdReplayCollectors:
     """Replay recorded actions for one structure across bend-stiffness candidates."""
     num_candidates = len(candidates)
@@ -881,6 +1109,9 @@ def replay_batched_sysid_structure(
     d = int(num_directions)
     if d < 1:
         raise ValueError("num_directions must be >= 1")
+
+    if replay_sim_config is not None:
+        warn_manifest_sim_config_mismatch(dataset, replay_sim_config)
 
     num_envs = num_candidates * d
     base_params = true_params_for_structure(dataset, int(structure_idx))
@@ -913,6 +1144,15 @@ def replay_batched_sysid_structure(
             structure_idx=int(structure_idx),
             num_directions=d,
         )
+        initial_unstable = ik_bootstrap_unstable_mask(env, num_envs)
+        last_obs = getattr(env, "_last_obs", None)
+        if last_obs is None:
+            raise RuntimeError("env._last_obs missing after reset")
+        monitor = BatchedStabilityMonitor(
+            num_envs,
+            known_obs_keys=set(last_obs.keys()),
+            initial_unstable=initial_unstable,
+        )
         recorded_by_env = recorded_metadata_by_env(
             dataset,
             structure_idx=int(structure_idx),
@@ -932,7 +1172,15 @@ def replay_batched_sysid_structure(
                 keep_going = bool(on_step(frame_idx=frame_idx, env=env))
                 if not keep_going:
                     break
-            collectors.record_all_envs_step(env, frame_idx=frame_idx)
+            last_obs = getattr(env, "_last_obs", None)
+            if last_obs is None:
+                raise RuntimeError("env._last_obs missing after step")
+            step_report = monitor.check(last_obs, step_idx=int(frame_idx))
+            collectors.record_all_envs_step(
+                env,
+                frame_idx=frame_idx,
+                unstable=step_report.unstable,
+            )
     finally:
         env.close()
 

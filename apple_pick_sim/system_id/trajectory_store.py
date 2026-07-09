@@ -287,6 +287,7 @@ def build_sysid_frame_row(
     obs: dict[str, Any],
     episode_id: str | None = None,
     dir_idx: int | None = None,
+    stable: bool = True,
 ) -> dict[str, Any]:
     """Build one Parquet frame row from a sys-ID observation dict."""
     start_by_name = _woody_pos_dict_from_obs(obs["woody_part_start_pos"])
@@ -317,6 +318,7 @@ def build_sysid_frame_row(
         ),
         "robot_joint_q": _as_f32_list(obs.get("robot_joint_q", np.zeros(7)), size=7),
         "woody_part_force": _as_f32_list(obs.get("woody_part_force", np.zeros(0))),
+        "stable": bool(stable),
     }
     if episode_id is not None:
         row["episode_id"] = str(episode_id)

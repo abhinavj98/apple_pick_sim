@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -23,6 +24,7 @@ from apple_pick_gym.batched_envs.batched_sysid_world_info import weld_direction_
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
     ControllerConfig,
+    FruitingSystemConfig,
     ObsConfig,
     RobotConfig,
     SceneSettleCollisionConfig,
@@ -193,6 +195,7 @@ def test_replay_batched_structure_produces_frames(tiny_batched_dataset: BatchedS
             topology_seed=_SEED,
             sim_config_fn=_test_sim_config,
         ),
+        replay_sim_config=_test_sim_config(num_envs=1),
     )
 
     for env_idx in range(num_envs):
@@ -379,8 +382,75 @@ def test_replay_uses_manifest_seed_when_seed_is_none(tiny_batched_dataset: Batch
             num_directions=num_directions,
             seed=None,
             build_env_fn=build_fn,
+            replay_sim_config=_test_sim_config(num_envs=1),
         )
     finally:
         ApplePickBatchedSysIdEnv.reset = original_reset  # type: ignore[method-assign]
 
     assert seen_seeds == [manifest_seed]
+
+
+@gymnasium_available
+@requires_fr3
+def test_replay_warns_on_manifest_sim_config_mismatch(tiny_batched_dataset: BatchedSysIdDataset):
+    num_directions = 2
+    structure_idx = 0
+    candidates = [gt_bend_stiffness_candidate_from_structure(tiny_batched_dataset, structure_idx)]
+    mismatched = dataclasses.replace(
+        _test_sim_config(num_envs=1),
+        fruiting_system=FruitingSystemConfig(
+            joint_angular_kd_overrides={
+                "support": 1.0,
+                "primary_spur": 1.0,
+                "stem_apple": 99.0,
+            }
+        ),
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        replay_batched_sysid_structure(
+            dataset=tiny_batched_dataset,
+            structure_idx=structure_idx,
+            candidates=candidates,
+            num_directions=num_directions,
+            seed=_SEED,
+            build_env_fn=_build_env_fn(
+                ranges_path=RANGES_FIXTURE,
+                topology_seed=_SEED,
+                sim_config_fn=_test_sim_config,
+            ),
+            replay_sim_config=mismatched,
+        )
+
+    assert any("manifest sim_config mismatch" in str(w.message) for w in caught)
+    assert any("stem_apple" in str(w.message) for w in caught)
+
+
+@gymnasium_available
+@requires_fr3
+def test_replay_silent_when_manifest_sim_config_matches(tiny_batched_dataset: BatchedSysIdDataset):
+    num_directions = 2
+    structure_idx = 0
+    candidates = [gt_bend_stiffness_candidate_from_structure(tiny_batched_dataset, structure_idx)]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        replay_batched_sysid_structure(
+            dataset=tiny_batched_dataset,
+            structure_idx=structure_idx,
+            candidates=candidates,
+            num_directions=num_directions,
+            seed=_SEED,
+            build_env_fn=_build_env_fn(
+                ranges_path=RANGES_FIXTURE,
+                topology_seed=_SEED,
+                sim_config_fn=_test_sim_config,
+            ),
+            replay_sim_config=_test_sim_config(num_envs=1),
+        )
+
+    mismatch_warnings = [
+        w for w in caught if "manifest sim_config mismatch" in str(w.message)
+    ]
+    assert mismatch_warnings == []

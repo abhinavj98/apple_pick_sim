@@ -16,6 +16,11 @@ from apple_pick_gym.batched_envs.batched_sysid_world_info import (
     physical_stem_dir_for_world,
     robot_base_pos_for_world,
 )
+from apple_pick_gym.batched_envs.batched_stability_monitor import (
+    BatchedStabilityMonitor,
+    StabilityThresholds,
+    ik_bootstrap_unstable_mask,
+)
 from apple_pick_sim.fruiting_system import (
     fruiting_params_to_json,
     load_ranges,
@@ -36,6 +41,7 @@ from apple_pick_sim.system_id.batched_trajectory_store import (
     episode_filename,
     resolve_batched_dataset_output_dir,
 )
+from apple_pick_sim.system_id.manifest_sim_config import sim_config_to_manifest_dict
 from apple_pick_sim.system_id.pre_weld_obs import complete_pre_weld_sysid_obs
 
 
@@ -176,6 +182,7 @@ class BatchedSysIdCollectors:
         phase: str,
         amplitude_m: float,
         action: np.ndarray,
+        stable: bool = True,
     ) -> None:
         obs = env.sysid_numpy_obs(int(env_idx))
         self._writers[int(env_idx)].record_step(
@@ -185,6 +192,7 @@ class BatchedSysIdCollectors:
             amplitude_m=float(amplitude_m),
             action=np.asarray(action, dtype=np.float32),
             obs=obs,
+            stable=bool(stable),
         )
 
     def record_pre_weld_step(
@@ -192,6 +200,7 @@ class BatchedSysIdCollectors:
         *,
         env_idx: int,
         obs: dict[str, Any],
+        stable: bool = True,
     ) -> None:
         """Append the post-settle, pre-weld reconstruction frame (``step_idx=-1``)."""
         zero_action = np.zeros(6, dtype=np.float32)
@@ -202,6 +211,7 @@ class BatchedSysIdCollectors:
             amplitude_m=0.0,
             action=zero_action,
             obs=obs,
+            stable=bool(stable),
         )
 
     def save_all(
@@ -361,6 +371,7 @@ def collect_batched_quasi_static_dataset(
     overwrite: bool = False,
     append_timestamp: bool = True,
     pull_direction_min_world_z: float | None = 0.0,
+    stability_thresholds: StabilityThresholds | None = None,
 ) -> Path:
     """Run lockstep quasi-static collection and write batched_sysid_v1 dataset."""
     out = resolve_batched_dataset_output_dir(
@@ -392,6 +403,13 @@ def collect_batched_quasi_static_dataset(
         step_cap = estimate_trajectory_frames(config, 1) + 64
 
     obs, _info = env.reset(seed=int(seed))
+    initial_unstable = ik_bootstrap_unstable_mask(env, num_envs)
+    monitor = BatchedStabilityMonitor(
+        num_envs,
+        known_obs_keys=set(obs.keys()),
+        thresholds=stability_thresholds,
+        initial_unstable=initial_unstable,
+    )
     collectors = BatchedSysIdCollectors(num_envs)
     metadata_rows = [
         build_episode_metadata(
@@ -431,6 +449,10 @@ def collect_batched_quasi_static_dataset(
                     "move_speed_mps": float(config.move_speed_mps),
                     "skip_return": bool(config.skip_return),
                 },
+                "sim_config": sim_config_to_manifest_dict(
+                    env._sim.config,
+                    applied_joint_kd_overrides=env._sim.build_result.joint_angular_kd_overrides,
+                ),
             },
             structures=_build_structure_summaries(metadata_rows),
             episodes=_build_manifest_episodes(
@@ -445,6 +467,7 @@ def collect_batched_quasi_static_dataset(
         return out
 
     sim_time = 0.0
+    pre_weld_report = monitor.check(obs, step_idx=PRE_WELD_STEP_IDX)
     for env_idx in range(num_envs):
         pre_weld_obs = env.pre_weld_sysid_obs(int(env_idx))
         if pre_weld_obs is not None:
@@ -454,6 +477,7 @@ def collect_batched_quasi_static_dataset(
                     pre_weld_obs,
                     pull_direction=per_env_directions[int(env_idx)],
                 ),
+                stable=not bool(pre_weld_report.unstable[int(env_idx)].item()),
             )
 
     if on_step is not None and not on_step(
@@ -488,6 +512,7 @@ def collect_batched_quasi_static_dataset(
         )
         obs, _reward, _terminated, _truncated, _info = env.step(actions)
         sim_time += 1.0 / float(config.control_hz)
+        step_report = monitor.check(obs, step_idx=step_idx)
 
         for i in range(num_envs):
             action_np = actions[i].detach().cpu().numpy()
@@ -499,6 +524,7 @@ def collect_batched_quasi_static_dataset(
                 phase=phase,
                 amplitude_m=reference_traj.current_amplitude_m,
                 action=action_np,
+                stable=not bool(step_report.unstable[i].item()),
             )
 
         if progress is not None and step_idx % 20 == 0:

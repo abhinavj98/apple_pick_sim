@@ -260,6 +260,21 @@ def sample_fibonacci_hemisphere(
     if min_world_z is not None:
         world = _filter_min_world_z(world, min_world_z=float(min_world_z))
 
+    # If constraints collapse the set below the requested count, retry without the
+    # world-Z constraint so callers asking for multiple directions don't silently
+    # get duplicates from modulo-repeat selection.
+    if min_world_z is not None and len(world) < n:
+        retry = local @ rot.T
+        retry_norms = np.linalg.norm(retry, axis=1, keepdims=True)
+        retry = retry / retry_norms
+        if min_horizontal_dot is not None:
+            retry = _filter_horizontal_toward_pole(
+                retry,
+                stem,
+                min_horizontal_dot=float(min_horizontal_dot),
+            )
+        world = retry
+
     if len(world) == 0:
         if min_world_z is not None:
             world = np.array(

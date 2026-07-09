@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
 import numpy as np
 
+from apple_pick_gym.grid_viz_metrics import average_ranks
 from apple_pick_gym.grid_viz_metrics import bend_stiffness_values_match
 from apple_pick_gym.grid_viz_metrics import log_l2_distance_to_gt
 from apple_pick_gym.grid_viz_metrics import (
     woody_segment_pos_mse_hold_aggregated,
     woody_segment_pos_mse_masked,
+)
+from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
+    UNSTABLE_DISQUALIFY_THRESHOLD,
+    _masked_mse,
+    _masked_rmse,
+    _stable_mask_arrays,
+    replay_instability_fraction_all_frames,
 )
 from apple_pick_sim.system_id.batched_hold_quasi_static import hold_metric_frame_indices
 
@@ -113,7 +122,9 @@ def replay_vs_recorded_errors(
     rec_phase_aligned = np.asarray(recorded.get("phase", np.zeros(n)), dtype=np.int64).reshape(-1)[:n]
     mask = _phase_mask({"phase": rec_phase_aligned, "ft_wrist": ft_rec}, include_phase=include_phase)
     mask = np.asarray(mask, dtype=bool).reshape(-1)[:n]
-    used = int(np.count_nonzero(mask))
+    gt_stable, replay_stable = _stable_mask_arrays(recorded=recorded, replay=replay, n=n)
+    keep = mask & gt_stable & replay_stable
+    used = int(np.count_nonzero(keep))
     if used <= 0:
         return {
             "n_frames": float(n),
@@ -127,24 +138,54 @@ def replay_vs_recorded_errors(
                 recorded=recorded,
                 junction_names=junction_names,
                 n=n,
-                mask=mask,
+                mask=keep,
             ),
         }
+
+    woody_mse: dict[str, float] = {}
+    if junction_names:
+        for name in junction_names:
+            if (
+                name not in replay.get("woody_part_start_pos", {})
+                or name not in recorded.get("woody_part_start_pos", {})
+            ):
+                continue
+            start_rep = np.asarray(replay["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rep = np.asarray(replay["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            start_rec = np.asarray(recorded["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rec = np.asarray(recorded["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            rep = np.concatenate([start_rep, end_rep], axis=1)
+            rec = np.concatenate([start_rec, end_rec], axis=1)
+            woody_mse[name] = _masked_mse(
+                rep,
+                rec,
+                keep=keep,
+            )
 
     return {
         "n_frames": float(n),
         "n_used_frames": float(used),
-        "ft_force_rmse": _rmse(ft_rep[mask, :3], ft_rec[mask, :3]),
-        "ft_torque_rmse": _rmse(ft_rep[mask, 3:], ft_rec[mask, 3:]),
-        "tcp_pos_mse": _mse(tcp_rep[mask], tcp_rec[mask]),
-        "apple_pos_mse": _mse(apple_rep[mask], apple_rec[mask]),
-        "woody_pos_mse_by_segment": woody_segment_pos_mse_masked(
-            replay=replay,
-            recorded=recorded,
-            junction_names=junction_names,
-            n=n,
-            mask=mask,
+        "ft_force_rmse": _masked_rmse(
+            ft_rep[:, :3],
+            ft_rec[:, :3],
+            keep=keep,
         ),
+        "ft_torque_rmse": _masked_rmse(
+            ft_rep[:, 3:],
+            ft_rec[:, 3:],
+            keep=keep,
+        ),
+        "tcp_pos_mse": _masked_mse(
+            tcp_rep,
+            tcp_rec,
+            keep=keep,
+        ),
+        "apple_pos_mse": _masked_mse(
+            apple_rep,
+            apple_rec,
+            keep=keep,
+        ),
+        "woody_pos_mse_by_segment": woody_mse,
     }
 
 
@@ -201,6 +242,8 @@ def replay_vs_recorded_hold_aggregated_errors(
 
     hold_idx = hold_metric_frame_indices(recorded_slice, use_latter_half=use_latter_half)
     hold_idx = hold_idx[np.asarray(recorded_slice["phase"][hold_idx], dtype=np.int64) == int(hold_phase_value)]
+    gt_stable, replay_stable = _stable_mask_arrays(recorded=recorded, replay=replay, n=n)
+    hold_idx = hold_idx[gt_stable[hold_idx] & replay_stable[hold_idx]]
     used = int(hold_idx.size)
     if used <= 0:
         return {
@@ -355,9 +398,52 @@ class GridVizRow:
     err_woody_pos_hold: float
     n_directions_all: float
     n_directions_hold: float
+    unstable_fraction_all: float
+    disqualified: bool
+    rank_pos_hold: float
+    rank_force_hold: float
+    rank_combined: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def assign_hold_combined_ranks(rows: list[GridVizRow]) -> list[GridVizRow]:
+    """Assign hold pos/force average ranks; disqualified rows get rank_combined=inf."""
+    if not rows:
+        return []
+    eligible_idx = [
+        i
+        for i, row in enumerate(rows)
+        if not bool(row.disqualified)
+        and np.isfinite(float(row.err_pos_hold))
+        and np.isfinite(float(row.err_force_hold))
+    ]
+    n_eligible = len(eligible_idx)
+    rank_pos = np.full(len(rows), float("inf"), dtype=np.float64)
+    rank_force = np.full(len(rows), float("inf"), dtype=np.float64)
+    rank_combined = np.full(len(rows), float("inf"), dtype=np.float64)
+    if n_eligible > 0:
+        pos_vals = np.array([float(rows[i].err_pos_hold) for i in eligible_idx], dtype=np.float64)
+        force_vals = np.array([float(rows[i].err_force_hold) for i in eligible_idx], dtype=np.float64)
+        pos_ranks = average_ranks(pos_vals)
+        force_ranks = average_ranks(force_vals)
+        combined_ranks = 0.5 * (pos_ranks + force_ranks)
+        for j, i in enumerate(eligible_idx):
+            rank_pos[i] = float(pos_ranks[j])
+            rank_force[i] = float(force_ranks[j])
+            rank_combined[i] = float(combined_ranks[j])
+    out: list[GridVizRow] = []
+    for i, row in enumerate(rows):
+        out.append(
+            dataclasses.replace(
+                row,
+                rank_pos_hold=float(rank_pos[i]),
+                rank_force_hold=float(rank_force[i]),
+                rank_combined=float(rank_combined[i]),
+            )
+        )
+    return out
 
 
 def build_grid_viz_rows(
@@ -403,10 +489,17 @@ def build_grid_viz_rows(
 
         per_dir_all = []
         per_dir_hold = []
+        direction_instability: list[float] = []
         replay_dirs = replay_eps_by_candidate[cand_idx]
         if len(replay_dirs) != len(recorded_eps):
             raise ValueError("replay directions length must match recorded directions length")
         for d in range(len(recorded_eps)):
+            direction_instability.append(
+                replay_instability_fraction_all_frames(
+                    replay=replay_dirs[d],
+                    recorded=recorded_eps[d],
+                )
+            )
             per_dir_all.append(
                 replay_vs_recorded_errors(
                     replay=replay_dirs[d],
@@ -461,6 +554,13 @@ def build_grid_viz_rows(
         err_woody_all = _mean_woody_pos_mse(woody_all)
         err_woody_hold = _mean_woody_pos_mse(woody_hold)
 
+        finite_instability = [float(f) for f in direction_instability if np.isfinite(float(f))]
+        unstable_fraction_all = max(finite_instability) if finite_instability else float("nan")
+        disqualified = any(
+            np.isfinite(float(f)) and float(f) > float(UNSTABLE_DISQUALIFY_THRESHOLD)
+            for f in direction_instability
+        )
+
         out.append(
             GridVizRow(
                 structure_idx=int(structure_idx),
@@ -499,7 +599,12 @@ def build_grid_viz_rows(
                 err_woody_pos_hold=err_woody_hold,
                 n_directions_all=float(n_dirs_all),
                 n_directions_hold=float(n_dirs_hold),
+                unstable_fraction_all=float(unstable_fraction_all),
+                disqualified=bool(disqualified),
+                rank_pos_hold=float("nan"),
+                rank_force_hold=float("nan"),
+                rank_combined=float("inf") if disqualified else float("nan"),
             )
         )
 
-    return out
+    return assign_hold_combined_ranks(out)

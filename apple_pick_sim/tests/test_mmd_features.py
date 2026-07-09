@@ -237,6 +237,34 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
         )
 
 
+def test_replay_observation_collector_stable_column():
+    recorded = _arrays_for_steps(steps=2, junction_names=["joint_a", "joint_b"])
+    recorded["phase"] = np.array([0, 1], dtype=np.int8)
+    recorded["dir_idx"] = np.array([0, 1], dtype=np.int32)
+    collector = ReplayObservationCollector(recorded)
+    obs = {
+        "ft_wrist": np.arange(6, dtype=np.float32) + 1000.0,
+        "tcp_velocity": np.arange(6, dtype=np.float32) + 2000.0,
+        "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32),
+        "woody_start": np.array([10.0, 11.0, 12.0, 20.0, 21.0, 22.0], dtype=np.float32),
+        "woody_end": np.array([30.0, 31.0, 32.0, 40.0, 41.0, 42.0], dtype=np.float32),
+    }
+    collector.record(obs, frame_idx=1, stable=False)
+    arrays = collector.to_arrays()
+    assert arrays["stable"].tolist() == [False]
+
+
+def test_transition_features_exclude_unstable_hold_frame():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["excitation_direction"] = np.tile([1.0, 0.0, 0.0], (8, 1)).astype(np.float32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 1, 1, 1, 1], dtype=np.int8)
+    arrays["stable"] = np.array([True, False, False, False, False, False, False, False], dtype=bool)
+    by_direction = build_transition_features_by_direction(arrays)
+    assert by_direction == {}
+
+
 def test_replay_observation_collector_builds_dataset_shaped_arrays():
     recorded = _arrays_for_steps(steps=2, junction_names=["joint_a", "joint_b"])
     recorded["phase"] = np.array([0, 1], dtype=np.int8)

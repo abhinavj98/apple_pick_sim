@@ -272,6 +272,21 @@ def compute_dual_metric_ranks(
     pos_metric: Metric = "err_pos_hold",
     force_metric: Metric = "err_force_hold",
 ) -> dict[str, np.ndarray]:
+    if rows and all(
+        (not bool(r.disqualified) and np.isfinite(float(r.rank_combined)))
+        or bool(r.disqualified)
+        for r in rows
+    ):
+        rank_pos = np.array([float(r.rank_pos_hold) for r in rows], dtype=np.float64)
+        rank_force = np.array([float(r.rank_force_hold) for r in rows], dtype=np.float64)
+        rank_combined = np.array([float(r.rank_combined) for r in rows], dtype=np.float64)
+        return {
+            "rank_pos": rank_pos,
+            "rank_force": rank_force,
+            "rank_combined": rank_combined,
+            pos_metric: np.array([float(getattr(r, pos_metric)) for r in rows], dtype=np.float64),
+            force_metric: np.array([float(getattr(r, force_metric)) for r in rows], dtype=np.float64),
+        }
     pos = np.array([float(getattr(r, pos_metric)) for r in rows], dtype=np.float64)
     force = np.array([float(getattr(r, force_metric)) for r in rows], dtype=np.float64)
     rank_pos = average_ranks(pos)
@@ -298,13 +313,15 @@ def make_3d_rank_scatter(
     a = _rows_to_arrays(rows)
     ranks = compute_dual_metric_ranks(rows, pos_metric=pos_metric, force_metric=force_metric)
     is_gt = a["gt_flag"]
-    non = ~is_gt
+    is_disqualified = np.array([bool(r.disqualified) for r in rows], dtype=bool)
+    eligible_candidates = (~is_gt) & (~is_disqualified)
+    disqualified_candidates = (~is_gt) & is_disqualified
 
     def _marker_size(rank_force: np.ndarray) -> np.ndarray:
         n = max(1, int(rank_force.size))
         return 11.0 - 6.0 * (rank_force - 1.0) / max(1.0, float(n - 1))
 
-    def _scatter(mask: np.ndarray, *, name: str, symbol: str, base_size: float, line_width: int):
+    def _scatter(mask: np.ndarray, *, name: str, symbol: str, base_size: float, line_width: int, color_values: np.ndarray | None = None, colorscale: str | None = "Viridis_r", showscale: bool = False, fixed_color: str | None = None):
         idxs = np.where(mask)[0]
         if idxs.size == 0:
             return None
@@ -316,6 +333,8 @@ def make_3d_rank_scatter(
                     [
                         f"candidate={r.candidate_index}",
                         f"GT={r.gt_flag}",
+                        f"disqualified={r.disqualified}",
+                        f"unstable_fraction_all={r.unstable_fraction_all:.3g}",
                         f"primary={r.primary:.3g}",
                         f"spur={r.spur:.3g}",
                         f"stem={r.stem:.3g}",
@@ -328,32 +347,61 @@ def make_3d_rank_scatter(
                     ]
                 )
             )
-        sizes = _marker_size(ranks["rank_force"][mask]) if name == "candidates" else np.full(int(np.count_nonzero(mask)), base_size)
+        if fixed_color is not None:
+            marker = dict(
+                size=np.full(int(idxs.size), base_size),
+                symbol=symbol,
+                color=fixed_color,
+                line=dict(width=line_width, color="black"),
+            )
+        else:
+            sizes = _marker_size(ranks["rank_force"][mask]) if name == "candidates" else np.full(int(idxs.size), base_size)
+            eligible_combined = color_values if color_values is not None else ranks["rank_combined"][mask]
+            cmax = float(np.nanmax(eligible_combined)) if eligible_combined.size else 1.0
+            marker = dict(
+                size=sizes,
+                symbol=symbol,
+                color=eligible_combined,
+                colorscale=colorscale,
+                cmin=1.0,
+                cmax=max(cmax, 1.0),
+                colorbar=dict(title="combined rank<br>(pos+force)/2"),
+                showscale=showscale,
+                line=dict(width=line_width, color="black"),
+            )
         return go.Scatter3d(
             x=np.log10(a["primary"][mask]),
             y=np.log10(a["spur"][mask]),
             z=np.log10(a["stem"][mask]),
             mode="markers",
             name=name,
-            marker=dict(
-                size=sizes,
-                symbol=symbol,
-                color=ranks["rank_combined"][mask],
-                colorscale="Viridis_r",
-                cmin=1.0,
-                cmax=float(max(ranks["rank_combined"])),
-                colorbar=dict(title="combined rank<br>(pos+force)/2"),
-                line=dict(width=line_width, color="black"),
-            ),
+            marker=marker,
             text=hover,
             hoverinfo="text",
         )
 
     traces = []
-    t_non = _scatter(non, name="candidates", symbol="circle", base_size=5.0, line_width=0)
+    t_non = _scatter(
+        eligible_candidates,
+        name="candidates",
+        symbol="circle",
+        base_size=5.0,
+        line_width=0,
+        showscale=True,
+    )
     if t_non is not None:
         traces.append(t_non)
-    t_gt = _scatter(is_gt, name="GT", symbol="diamond", base_size=9.0, line_width=2)
+    t_disq = _scatter(
+        disqualified_candidates,
+        name="disqualified",
+        symbol="x",
+        base_size=6.0,
+        line_width=1,
+        fixed_color="gray",
+    )
+    if t_disq is not None:
+        traces.append(t_disq)
+    t_gt = _scatter(is_gt, name="GT", symbol="diamond", base_size=9.0, line_width=2, showscale=False)
     if t_gt is not None:
         traces.append(t_gt)
 
@@ -618,6 +666,16 @@ def write_structure_bundle(
     )
     written.append(rows_path)
 
+    rank_fig = make_3d_rank_scatter(
+        rows=rows,
+        title=f"structure {int(structure_idx)}: combined hold rank (pos+force)",
+        pos_metric="err_pos_hold",
+        force_metric="err_force_hold",
+    )
+    rank_path = out_dir / f"structure_{int(structure_idx):03d}_rank_pos_force_hold_3d.html"
+    rank_fig.write_html(str(rank_path), include_plotlyjs="cdn")
+    written.append(rank_path)
+
     for metric in metrics:
         fig3d = make_3d_scatter(
             rows=rows,
@@ -665,6 +723,18 @@ def write_structure_bundle(
             path_sens = out_dir / f"structure_{int(structure_idx):03d}_sensitivity_{metric}.html"
             fig_sens.write_html(str(path_sens), include_plotlyjs="cdn")
             written.append(path_sens)
+        except Exception:
+            pass
+
+    if "err_pos_hold" in metrics and "err_force_hold" in metrics:
+        try:
+            fig_rank = make_3d_rank_scatter(
+                rows=rows,
+                title=f"structure {int(structure_idx)}: combined hold rank (pos+force)",
+            )
+            path_rank = out_dir / f"structure_{int(structure_idx):03d}_rank_pos_force_hold_3d.html"
+            fig_rank.write_html(str(path_rank), include_plotlyjs="cdn")
+            written.append(path_rank)
         except Exception:
             pass
 

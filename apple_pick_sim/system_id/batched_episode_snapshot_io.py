@@ -304,7 +304,6 @@ def load_and_restore_episode_snapshots(
     *,
     structure_idx: int,
     num_directions: int,
-    num_candidates: int,
 ) -> None:
     """Restore post-weld state0/state1 from disk; skip metadata joint/VIC init."""
     sim = env._sim

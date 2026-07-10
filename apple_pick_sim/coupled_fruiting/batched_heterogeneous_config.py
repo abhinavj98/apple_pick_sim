@@ -60,14 +60,14 @@ EXAMPLE_JOINT_LINEAR_KD_OVERRIDES: dict[str, float] = {
     "spur_stem": 0.3,
     "stem_apple": 0.3,
 }
-EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES: dict[str, float] = {"support": 200.0}
-EXAMPLE_JOINT_LINEAR_KP_OVERRIDES: dict[str, float] = {"support": 200.0}
+EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES: dict[str, float] = {"support": 2000.0}
+EXAMPLE_JOINT_LINEAR_KP_OVERRIDES: dict[str, float] = {"support": 2000.0}
 
-# Heterogeneous example VIC defaults.
-_VIC_DEFAULT_LINEAR_K = 600.0
-_VIC_DEFAULT_LINEAR_D = 200.0
-_VIC_DEFAULT_ANGULAR_K = 20.0
-_VIC_DEFAULT_ANGULAR_D = 4.0
+# Heterogeneous / sys-ID example VIC defaults (match variance fixture sim_build).
+_VIC_DEFAULT_LINEAR_K = 200.0
+_VIC_DEFAULT_LINEAR_D = 10.0
+_VIC_DEFAULT_ANGULAR_K = 10.0
+_VIC_DEFAULT_ANGULAR_D = 1.0
 
 RobotKind = Literal["fr3"]
 StepMode = Literal["coupled", "vbd_only"]

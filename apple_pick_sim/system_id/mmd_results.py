@@ -20,6 +20,7 @@ class MmdCandidateResult:
     stiffnesses: dict[str, float]
     aggregate_mmd2: float
     per_direction_mmd2: dict[int, float]
+    missing_directions: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.per_direction_mmd2:
@@ -125,7 +126,7 @@ def write_ranked_loss_plot(
 
 def _direction_loss_matrix(
     results: list[MmdCandidateResult],
-) -> tuple[list[MmdCandidateResult], list[tuple[float, float, float]], np.ndarray]:
+) -> tuple[list[MmdCandidateResult], list[int], np.ndarray]:
     ranked = rank_results(results)
     directions = _all_directions(ranked)
     matrix = np.full((len(directions), len(ranked)), np.nan, dtype=np.float64)
@@ -165,7 +166,7 @@ def write_direction_heatmap_plot(
         ha="right",
     )
     ax.set_yticks(range(len(directions)))
-    ax.set_yticklabels([f"({direction[0]:+.3f},{direction[1]:+.3f},{direction[2]:+.3f})" for direction in directions])
+    ax.set_yticklabels([f"dir_idx_{int(direction)}" for direction in directions])
     fig.colorbar(image, ax=ax, label="Biased MMD^2")
     fig.tight_layout()
     fig.savefig(path)

@@ -79,8 +79,8 @@ def test_write_ranked_loss_plot_creates_png(tmp_path: Path):
 def test_write_direction_heatmap_plot_handles_sparse_direction_results(tmp_path: Path):
     path = write_direction_heatmap_plot(
         [
-            _result(0, aggregate=0.25, directions={(1.0, 0.0, 0.0): 0.1, (0.0, 0.0, 1.0): 0.4}),
-            _result(1, aggregate=0.5, directions={(1.0, 0.0, 0.0): 0.5}),
+            _result(0, aggregate=0.25, directions={0: 0.1, 1: 0.4}),
+            _result(1, aggregate=0.5, directions={0: 0.5}),
         ],
         tmp_path,
     )
@@ -106,8 +106,8 @@ def test_write_stiffness_sensitivity_plot_creates_png(tmp_path: Path):
 def test_write_diagnostic_plots_returns_all_png_paths(tmp_path: Path):
     paths = write_diagnostic_plots(
         [
-            _result(0, aggregate=0.25, directions={(1.0, 0.0, 0.0): 0.1, (0.0, 0.0, 1.0): 0.4}),
-            _result(1, aggregate=0.5, directions={(1.0, 0.0, 0.0): 0.5}),
+            _result(0, aggregate=0.25, directions={0: 0.1, 1: 0.4}),
+            _result(1, aggregate=0.5, directions={0: 0.5}),
         ],
         tmp_path,
     )

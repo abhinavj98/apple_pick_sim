@@ -5,6 +5,12 @@ Parallel quasi-static collection from
 writes a **batched_sysid_v1** layout optimized for training and analysis over a
 `num_structures × num_directions` grid.
 
+**Canonical consumer (V.4.3 Done):** in-process stiffness grid
+[`example_batched_sysid_mmd_grid.py`](../apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py)
+(MSE / Wasserstein + viz). Alignment contract:
+[`sysid-mmd-grid-replay-alignment.md`](sysid-mmd-grid-replay-alignment.md).
+Status / next (V.5.1 loss hardening): [`ROADMAP.md`](ROADMAP.md).
+
 Single-env collection (`example_gym_sysid.py`) still uses the legacy layout in
 [`sysid-trajectory-storage.md`](sysid-trajectory-storage.md).
 
@@ -131,11 +137,14 @@ Writers: `BatchedEpisodeWriter`, `write_manifest` in
 other single-episode tooling. `test_batched_sysid_replay_fidelity.py` uses this
 bridge today and resets replay with full serialized `fruiting_system_params`.
 
-**Next (V.4.2.1):** verify replay through the digital-twin initializer —
-`digital_twin_obs_from_episode` (frame-0 woody anchors) plus `params_fingerprint`
-/ fixture metadata from episode parquet, without relying on the full params blob alone.
-Helpers live in `apple_pick_sim/system_id/parquet_init.py`. Native v1 replay
-(without legacy materialize) remains a follow-up (V.4.4).
+**Deferred (V.4.2.1):** verify replay through the digital-twin initializer —
+`digital_twin_obs_from_episode` / `digital_twin_obs_from_batched_episode` (frame-0
+woody anchors) plus `params_fingerprint` / fixture metadata, without relying on
+the full params blob alone. Helpers live in
+`apple_pick_sim/system_id/parquet_init.py` and
+`batched_digital_twin_init.py`; grid CLI `--infer-params` already wires infer
+build params. Native v1 replay dashboard remains V.4.4. Current focus is V.5.1
+loss hardening (`docs/ROADMAP.md`).
 
 ## Collect command
 
@@ -208,5 +217,5 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py 
 
 - `apple_pick_sim/tests/test_batched_trajectory_store.py` — writer/loader roundtrip
 - `apple_pick_gym/tests/test_batched_sysid_collect.py` — end-to-end collect
-- `apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py` — collect → legacy materialize → replay (full `fruiting_system_params`; digital-twin frame-0 path is V.4.2.1)
+- `apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py` — collect → legacy materialize → replay (full `fruiting_system_params`; infer-only fidelity floor is deferred V.4.2.1)
 - `apple_pick_gym/tests/test_batched_replay_export.py` — MMD grid replay export roundtrip

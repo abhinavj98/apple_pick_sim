@@ -1067,6 +1067,19 @@ def test_print_per_env_params_includes_all_rod_stiffnesses(capsys):
             assert f"{rod.stretch_stiffness:.4g}" in out
 
 
+def test_print_per_env_params_filters_to_env_indices(capsys):
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_build import print_per_env_params
+
+    ranges = load_ranges(RANGES_FIXTURE)
+    params_list = sample_heterogeneous_params_list(ranges, topology_seed=0, num_envs=3)
+    print_per_env_params(params_list, env_indices=[1])
+
+    out = capsys.readouterr().out
+    assert "env1:" in out
+    assert "env0:" not in out
+    assert "env2:" not in out
+
+
 @requires_fr3
 def test_batched_heterogeneous_only_vbd_builds_cable_only_scene(ranges):
     """vbd_only CoupledSim builds cable-only scene and steps VBD substeps only."""

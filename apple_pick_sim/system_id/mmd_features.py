@@ -94,7 +94,10 @@ class ReplayObservationCollector:
 
         n_frames = int(np.asarray(self._recorded["action"]).shape[0])
         if frame_idx < 0 or frame_idx >= n_frames:
-            return
+            raise IndexError(
+                f"frame_idx={frame_idx} out of range for recorded episode "
+                f"with {n_frames} frames"
+            )
         for key in ("ft_wrist", "tcp_velocity", "tcp_pos", "apple_pos", "woody_start", "woody_end"):
             if key not in obs:
                 raise KeyError(f"missing replay observation field: {key}")

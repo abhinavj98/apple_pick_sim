@@ -1,5 +1,7 @@
 # Wasserstein (Sinkhorn) sys-ID ranking validation
 
+**Status: Implemented** (2026-07-08+) — see `apple_pick_sim/system_id/wasserstein.py`, `wasserstein_ranking.py`, and `--score-wasserstein` on `example_batched_sysid_mmd_grid.py`. This file remains a historical design note.
+
 Date: 2026-07-08  
 Branch: `feature/batched-sysid-mmd`  
 Scope: ranking validation only — Sinkhorn beside MSE on the batched stiffness grid. No CMA-ES loop, no GPU-only bag pipeline, no MMD CLI wiring.
@@ -193,7 +195,7 @@ after per-direction GT z-score. Keep per-direction losses for diagnostics / opti
 
 **Next slices (not this one):** GPU-resident bag build; batched Geomloss over a CMA-ES population; roadmap update once ranking validation looks good. Living CEM/MMD plan in `docs/system_identification.md` §4 remains until that decision.
 
-## Code map (planned)
+## Code map (implemented)
 
 | Piece | Location |
 | --- | --- |

@@ -51,28 +51,64 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_coupled_sim import (
     BatchedHeterogeneousCoupledSim,
 )
 from apple_pick_sim.coupled_fruiting.batched_robot_status import print_batched_robot_status
-from apple_pick_sim.coupled_fruiting.settle_ke_decay import print_settle_ke_decay_report
 from apple_pick_sim.fruiting_system import (
     FruitingSystemParams,
     default_ranges_fixture_path,
     load_ranges,
+    parse_sim_build,
     sample_heterogeneous_params_list,
 )
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.sim_device import resolve_sim_device
 
-_VIC_DEFAULT_LINEAR_K = 600.0
-_VIC_DEFAULT_LINEAR_D = 200.0
-_VIC_DEFAULT_ANGULAR_K = 20.0
-_VIC_DEFAULT_ANGULAR_D = 4.0
+# Fallbacks when ranges JSON has no ``sim_build`` (match variance fixture values).
+_VIC_DEFAULT_LINEAR_K = 200.0
+_VIC_DEFAULT_LINEAR_D = 10.0
+_VIC_DEFAULT_ANGULAR_K = 10.0
+_VIC_DEFAULT_ANGULAR_D = 1.0
 _PHYSICS_SUB_DT = 1.0 / 1800.0
 
-# --- Sim build (edit here; not exposed on CLI) ---
+# --- Sim build fallbacks (used when ranges omit ``sim_build``) ---
 JOINT_ANGULAR_KD_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES
 JOINT_LINEAR_KD_OVERRIDES = EXAMPLE_JOINT_LINEAR_KD_OVERRIDES
 JOINT_ANGULAR_KP_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES
 JOINT_LINEAR_KP_OVERRIDES = EXAMPLE_JOINT_LINEAR_KP_OVERRIDES
+
+
+def _resolve_sim_build_knobs(ranges: dict) -> tuple[
+    ImpedanceGains,
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+]:
+    sb = parse_sim_build(ranges)
+    if sb is None:
+        return (
+            ImpedanceGains(
+                linear_k=_VIC_DEFAULT_LINEAR_K,
+                linear_d=_VIC_DEFAULT_LINEAR_D,
+                angular_k=_VIC_DEFAULT_ANGULAR_K,
+                angular_d=_VIC_DEFAULT_ANGULAR_D,
+            ),
+            dict(JOINT_ANGULAR_KD_OVERRIDES),
+            dict(JOINT_LINEAR_KD_OVERRIDES),
+            dict(JOINT_ANGULAR_KP_OVERRIDES),
+            dict(JOINT_LINEAR_KP_OVERRIDES),
+        )
+    return (
+        ImpedanceGains(
+            linear_k=sb.vic_gains.linear_k,
+            linear_d=sb.vic_gains.linear_d,
+            angular_k=sb.vic_gains.angular_k,
+            angular_d=sb.vic_gains.angular_d,
+        ),
+        dict(sb.joint_angular_kd_overrides),
+        dict(sb.joint_linear_kd_overrides),
+        dict(sb.joint_angular_kp_overrides),
+        dict(sb.joint_linear_kp_overrides),
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -249,26 +285,38 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--print-robot-state",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Print per-env robot diagnostics once after build.",
+        default=False,
+        help="Print per-env robot diagnostics once after build (default: off).",
     )
     parser.add_argument(
-        "--vic-linear-k", type=float, default=_VIC_DEFAULT_LINEAR_K, help="VIC linear K [N/m]."
+        "--print-per-env-params",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Print all per-env fruiting params at startup (default: off).",
     )
     parser.add_argument(
-        "--vic-linear-d", type=float, default=_VIC_DEFAULT_LINEAR_D, help="VIC linear D [N·s/m]."
+        "--vic-linear-k",
+        type=float,
+        default=None,
+        help="VIC linear K [N/m] (default: ranges sim_build or 200).",
+    )
+    parser.add_argument(
+        "--vic-linear-d",
+        type=float,
+        default=None,
+        help="VIC linear D [N·s/m] (default: ranges sim_build or 10).",
     )
     parser.add_argument(
         "--vic-angular-k",
         type=float,
-        default=_VIC_DEFAULT_ANGULAR_K,
-        help="VIC angular K [N·m/rad].",
+        default=None,
+        help="VIC angular K [N·m/rad] (default: ranges sim_build or 10).",
     )
     parser.add_argument(
         "--vic-angular-d",
         type=float,
-        default=_VIC_DEFAULT_ANGULAR_D,
-        help="VIC angular D [N·m·s/rad].",
+        default=None,
+        help="VIC angular D [N·m·s/rad] (default: ranges sim_build or 1).",
     )
     parser.add_argument("--tcp-force-arrow", action="store_true")
     parser.add_argument("--tcp-force-scale", type=float, default=0.02)
@@ -294,6 +342,28 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
     viz = _viz_settings_from_args(args)
 
     ranges_path = Path(args.json) if args.json else default_ranges_fixture_path()
+    ranges = load_ranges(ranges_path)
+    (
+        fixture_vic,
+        joint_angular_kd,
+        joint_linear_kd,
+        joint_angular_kp,
+        joint_linear_kp,
+    ) = _resolve_sim_build_knobs(ranges)
+    vic_gains = ImpedanceGains(
+        linear_k=float(args.vic_linear_k)
+        if args.vic_linear_k is not None
+        else fixture_vic.linear_k,
+        linear_d=float(args.vic_linear_d)
+        if args.vic_linear_d is not None
+        else fixture_vic.linear_d,
+        angular_k=float(args.vic_angular_k)
+        if args.vic_angular_k is not None
+        else fixture_vic.angular_k,
+        angular_d=float(args.vic_angular_d)
+        if args.vic_angular_d is not None
+        else fixture_vic.angular_d,
+    )
     seed = getattr(args, "_resolved_seed", None)
 
     base = BatchedHeterogeneousCoupledSimConfig.defaults()
@@ -333,19 +403,14 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
         controller=dataclasses.replace(
             base.controller,
             mode=str(args.controller),  # type: ignore[arg-type]
-            vic_gains=ImpedanceGains(
-                linear_k=float(args.vic_linear_k),
-                linear_d=float(args.vic_linear_d),
-                angular_k=float(args.vic_angular_k),
-                angular_d=float(args.vic_angular_d),
-            ),
+            vic_gains=vic_gains,
         ),
         fruiting_system=dataclasses.replace(
             base.fruiting_system,
-            joint_angular_kd_overrides=JOINT_ANGULAR_KD_OVERRIDES,
-            joint_linear_kd_overrides=JOINT_LINEAR_KD_OVERRIDES,
-            joint_angular_kp_overrides=JOINT_ANGULAR_KP_OVERRIDES,
-            joint_linear_kp_overrides=JOINT_LINEAR_KP_OVERRIDES,
+            joint_angular_kd_overrides=joint_angular_kd,
+            joint_linear_kd_overrides=joint_linear_kd,
+            joint_angular_kp_overrides=joint_angular_kp,
+            joint_linear_kp_overrides=joint_linear_kp,
         ),
         settle_diagnostics=SettleDiagnosticsConfig() if settle_substeps > 0 else None,
         obs=(
@@ -364,6 +429,7 @@ def _print_startup(
     ranges_path: Path,
     seed: int,
     per_env_params: list[FruitingSystemParams],
+    print_per_env_params_flag: bool = False,
 ) -> None:
     print(f"Heterogeneous batched fruiting ranges: {ranges_path}")
     print(f"Topology seed: {seed}")
@@ -373,7 +439,8 @@ def _print_startup(
         print("M1 cable + FR3+EE MuJoCo (staggered coupling); Newton viewer shows cable model.")
     else:
         print("Cable SolverVBD only (--only-vbd).")
-    print_per_env_params(per_env_params)
+    if print_per_env_params_flag:
+        print_per_env_params(per_env_params)
     fix_to_apple = config.robot.fix_to_apple
     coupling_label = (
         "stem-harvest / settle-then-weld"
@@ -395,24 +462,25 @@ def _print_startup(
 
 def _print_settle_diagnostics(sim: BatchedHeterogeneousCoupledSim) -> None:
     br = sim.build_result
-    if (
-        br.settle_stability_reports is None
-        and br.settle_ke_decay_reports is None
-        and br.ik_envelope_results is None
-    ):
+    if br.settle_stability_reports is None and br.ik_envelope_results is None:
         return
     diag = sim.config.settle_diagnostics
     brief = bool(diag.report_brief) if diag is not None else False
+    stability = list(br.settle_stability_reports or ())
     print_envelope_coverage_report(
         list(br.ik_envelope_results or ()),
-        stability_reports=list(br.settle_stability_reports or ()),
+        stability_reports=stability,
         verbose=not brief,
     )
-    if br.settle_ke_decay_reports:
-        print_settle_ke_decay_report(
-            list(br.settle_ke_decay_reports),
-            prefix="  ",
-            verbose=not brief,
+    unstable = [r.world for r in stability if not r.is_stable]
+    if unstable:
+        print_per_env_params(
+            sim.per_env_params,
+            env_indices=unstable,
+            heading=(
+                f"Unstable settle envs {unstable} — fruiting params "
+                "(topology shared, continuous θ differs):"
+            ),
         )
 
 
@@ -596,7 +664,13 @@ def main() -> None:
         num_envs=config.runtime.num_envs,
     )
 
-    _print_startup(config, ranges_path=ranges_path, seed=int(seed), per_env_params=per_env_params)
+    _print_startup(
+        config,
+        ranges_path=ranges_path,
+        seed=int(seed),
+        per_env_params=per_env_params,
+        print_per_env_params_flag=bool(args.print_per_env_params),
+    )
 
     graphical = isinstance(viewer, newton.viewer.ViewerGL)
     show_settling = graphical and bool(args.show_settling)

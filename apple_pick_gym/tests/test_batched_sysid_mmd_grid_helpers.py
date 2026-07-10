@@ -198,6 +198,18 @@ def test_gt_bend_stiffness_candidate_from_structure_reads_true_stiffness(monkeyp
     assert got == expected
 
 
+def test_base_params_for_replay_defaults_to_oracle(monkeypatch):
+    oracle = _sample_params(seed=1)
+    inferred = _sample_params(seed=2)
+    dataset = MagicMock()
+    monkeypatch.setattr(grid, "true_params_for_structure", lambda *_a, **_k: oracle)
+    monkeypatch.setattr(grid, "infer_base_params_for_structure", lambda *_a, **_k: inferred)
+
+    assert grid.base_params_for_replay(dataset, 0) is oracle
+    assert grid.base_params_for_replay(dataset, 0, use_oracle_params=True) is oracle
+    assert grid.base_params_for_replay(dataset, 0, use_oracle_params=False) is inferred
+
+
 def _episode_with_pre_weld(*, n_trajectory_frames: int, direction_idx: int = 0) -> dict:
     """Synthetic episode: one pre_weld row + ``n_trajectory_frames`` real steps."""
     n_total = n_trajectory_frames + 1
@@ -788,7 +800,7 @@ def test_prepare_gt_mmd_context_from_synthetic_arrays():
     context = grid.prepare_gt_mmd_context(episodes)
 
     assert len(context) == 1
-    direction = (0.0, 1.0, 0.0)
+    direction = 0
     assert direction in context
     entry = context[direction]
     assert isinstance(entry, grid.MmdDirectionContext)
@@ -838,6 +850,42 @@ def test_score_candidate_mmd_shifted_features_higher():
     )
 
     assert identical.aggregate_mmd2 < shifted.aggregate_mmd2
+    assert identical.missing_directions == ()
+    assert shifted.missing_directions == ()
+
+
+def test_score_candidate_mmd_reports_missing_directions():
+    ep0 = _arrays_for_steps(steps=8)
+    ep1 = _arrays_for_steps(steps=8)
+    ep1["dir_idx"] = np.ones(8, dtype=np.int32)
+    ep1["excitation_direction"] = np.tile(
+        np.array([[1.0, 0.0, 0.0]], dtype=np.float32), (8, 1)
+    )
+    gt_context = grid.prepare_gt_mmd_context([ep0, ep1])
+    candidate = grid.BendStiffnessCandidate(1.0, 2.0, 3.0, 4.0)
+
+    result = grid.score_candidate_mmd(
+        candidate_index=0,
+        candidate=candidate,
+        gt_context=gt_context,
+        replay_observations=[ep0],
+    )
+
+    assert 0 in result.per_direction_mmd2
+    assert result.missing_directions == (1,)
+
+
+def test_trajectory_mse_empty_alignment_returns_nan_metrics():
+    recorded = _arrays_for_steps(steps=0)
+    replay = _arrays_for_steps(steps=0)
+    out = grid.trajectory_mse(replay=replay, recorded=recorded, skip_phase=-1)
+    assert out["n_frames"] == 0.0
+    assert out["n_used_frames"] == 0.0
+    assert np.isnan(out["ft_wrist_mse"])
+    assert np.isnan(out["tcp_pos_mse"])
+    assert np.isnan(out["apple_pos_mse"])
+    assert np.isnan(out["ft_force_rmse"])
+    assert np.isnan(out["ft_torque_rmse"])
 
 
 def test_trajectory_mse_skips_pre_weld_phase_minus_one():

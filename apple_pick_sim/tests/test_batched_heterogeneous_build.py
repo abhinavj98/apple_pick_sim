@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import sys
+import warnings
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -449,8 +450,66 @@ def test_settle_quiet_every_invoked_during_vbd_settle(ranges, per_env_params, mo
         scene=SceneSettleCollisionConfig(settle_substeps=12, settle_quiet_every=5),
     )
     build_batched_heterogeneous_scene(cfg, per_env_params, ranges)
-    # Periodic quiet at substeps 5 and 10, plus final post-settle quiet.
+    # Periodic quiet at substeps 5 and 10, plus final post-stability quiet.
     assert quiet_at == [1, 2, 3]
+
+
+@requires_fr3
+def test_stability_report_collected_before_final_quiet(ranges, per_env_params, monkeypatch):
+    events: list[str] = []
+    real_quiet = build_module.quiet_all_cable_bodies
+    real_stability = build_module.settle_stability_reports_from_cable
+
+    def _capture_quiet(cable):
+        events.append("quiet")
+        return real_quiet(cable)
+
+    def _capture_stability(*args, **kwargs):
+        events.append("stability")
+        return real_stability(*args, **kwargs)
+
+    monkeypatch.setattr(build_module, "quiet_all_cable_bodies", _capture_quiet)
+    monkeypatch.setattr(
+        build_module, "settle_stability_reports_from_cable", _capture_stability
+    )
+    cfg = dataclasses.replace(
+        _vbd_only_config(settle_substeps=12),
+        settle_diagnostics=SettleDiagnosticsConfig(),
+        scene=SceneSettleCollisionConfig(settle_substeps=12, settle_quiet_every=5),
+    )
+    build_batched_heterogeneous_scene(cfg, per_env_params, ranges)
+    assert "stability" in events
+    stab_i = events.index("stability")
+    assert events[:stab_i] == ["quiet", "quiet"]  # periodic at 5 and 10
+    assert events[stab_i:] == ["stability", "quiet"]  # final quiet after report
+
+
+def test_warn_settle_quiet_every_remainder_when_divides_evenly(capsys):
+    from apple_pick_sim.coupled_fruiting.settle_then_weld import (
+        warn_settle_quiet_every_alignment,
+    )
+
+    with pytest.warns(UserWarning, match="remainder=0"):
+        rem = warn_settle_quiet_every_alignment(10000, 200)
+    assert rem == 0
+    out = capsys.readouterr().out
+    assert "remainder=0" in out
+    assert "10000" in out
+    assert "200" in out
+
+
+def test_warn_settle_quiet_every_prints_nonzero_remainder_without_warning(capsys):
+    from apple_pick_sim.coupled_fruiting.settle_then_weld import (
+        warn_settle_quiet_every_alignment,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rem = warn_settle_quiet_every_alignment(10001, 200)
+    assert rem == 1
+    assert not any(issubclass(w.category, UserWarning) for w in caught)
+    out = capsys.readouterr().out
+    assert "remainder=1" in out
 
 
 @requires_fr3

@@ -158,6 +158,119 @@ def test_invalid_fixture_args_rejected():
 
 
 # ---------------------------------------------------------------------------
+# Optional sim_build (VIC + joint overrides)
+# ---------------------------------------------------------------------------
+
+
+_GOOD_SIM_BUILD = {
+    "vic_gains": {
+        "linear_k": 200.0,
+        "linear_d": 10.0,
+        "angular_k": 10.0,
+        "angular_d": 1.0,
+    },
+    "joint_angular_kd_overrides": {
+        "support": 0.3,
+        "primary_spur": 0.3,
+        "spur_stem": 0.3,
+        "stem_apple": 0.3,
+    },
+    "joint_linear_kd_overrides": {
+        "support": 0.3,
+        "primary_spur": 0.3,
+        "spur_stem": 0.3,
+        "stem_apple": 0.3,
+    },
+    "joint_angular_kp_overrides": {"support": 2000.0},
+    "joint_linear_kp_overrides": {"support": 2000.0},
+}
+
+
+def _write_ranges_with_sim_build(base_ranges: dict, sim_build: dict | None, *, omit: bool = False):
+    import copy
+    import json
+    import tempfile
+
+    payload = copy.deepcopy(base_ranges)
+    if omit:
+        payload.pop("sim_build", None)
+    elif sim_build is None:
+        payload["sim_build"] = None
+    else:
+        payload["sim_build"] = sim_build
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(payload, f)
+        return f.name
+
+
+def test_parse_sim_build_absent_returns_none():
+    fs = _import_module()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    assert fs.parse_sim_build(ranges) is None
+
+
+def test_load_ranges_accepts_good_sim_build():
+    fs = _import_module()
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), _GOOD_SIM_BUILD)
+    ranges = fs.load_ranges(path)
+    sb = fs.parse_sim_build(ranges)
+    assert sb is not None
+    assert sb.vic_gains.linear_k == pytest.approx(200.0)
+    assert sb.vic_gains.linear_d == pytest.approx(10.0)
+    assert sb.vic_gains.angular_k == pytest.approx(10.0)
+    assert sb.vic_gains.angular_d == pytest.approx(1.0)
+    assert sb.joint_angular_kd_overrides == _GOOD_SIM_BUILD["joint_angular_kd_overrides"]
+    assert sb.joint_linear_kd_overrides == _GOOD_SIM_BUILD["joint_linear_kd_overrides"]
+    assert sb.joint_angular_kp_overrides == {"support": 2000.0}
+    assert sb.joint_linear_kp_overrides == {"support": 2000.0}
+
+
+def test_load_ranges_rejects_sim_build_negative_vic_gain():
+    fs = _import_module()
+    bad = dict(_GOOD_SIM_BUILD)
+    bad["vic_gains"] = dict(_GOOD_SIM_BUILD["vic_gains"], linear_k=-1.0)
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), bad)
+    with pytest.raises(ValueError, match="linear_k"):
+        fs.load_ranges(path)
+
+
+def test_load_ranges_rejects_sim_build_missing_vic_gains():
+    fs = _import_module()
+    bad = {k: v for k, v in _GOOD_SIM_BUILD.items() if k != "vic_gains"}
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), bad)
+    with pytest.raises(ValueError, match="vic_gains"):
+        fs.load_ranges(path)
+
+
+def test_load_ranges_rejects_sim_build_unknown_joint_role():
+    fs = _import_module()
+    bad = dict(_GOOD_SIM_BUILD)
+    bad["joint_angular_kd_overrides"] = {"not_a_role": 0.1}
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), bad)
+    with pytest.raises(ValueError, match="not_a_role"):
+        fs.load_ranges(path)
+
+
+def test_load_ranges_rejects_unknown_sim_build_key():
+    fs = _import_module()
+    bad = dict(_GOOD_SIM_BUILD)
+    bad["control_hz"] = 30.0
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), bad)
+    with pytest.raises(ValueError, match="control_hz"):
+        fs.load_ranges(path)
+
+
+def test_load_ranges_sim_build_optional_joint_overrides():
+    fs = _import_module()
+    minimal = {"vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"])}
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), minimal)
+    sb = fs.parse_sim_build(fs.load_ranges(path))
+    assert sb is not None
+    assert sb.joint_angular_kd_overrides == {}
+    assert sb.joint_linear_kp_overrides == {}
+
+
+# ---------------------------------------------------------------------------
 # Material-parameter sampling (E, ζ)
 # ---------------------------------------------------------------------------
 

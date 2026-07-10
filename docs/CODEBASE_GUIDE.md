@@ -8,7 +8,7 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-07-06 (batched gym + sys-ID collection shipped — see `docs/ROADMAP.md`) |
+| **Last reviewed** | 2026-07-10 (settle + batched collect/replay/MMD grid shipped; V.5.1 loss hardening next — see `docs/ROADMAP.md`) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
@@ -26,7 +26,8 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
 │ apple_pick_gym/            Gymnasium adapter (depends on         │
-│  envs/, examples/, tests/  apple_pick_sim; not vice versa)        │
+│  envs/, batched_envs/,     apple_pick_sim; not vice versa)        │
+│  batched_examples/, tests/                                       │
 └───────────────────────────────┬───────────────────────────────────┘
                                  │ builds / steps
 ┌───────────────────────────────▼───────────────────────────────────┐
@@ -37,10 +38,10 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 │  coupled_fruiting/    Two-Model orchestration: MuJoCo (arm) +      │
 │                       VBD (plant) staggered coupling loop (M1),    │
 │                       batched/heterogeneous variants ([V] track),  │
-│                       VIC joint-torque control.                    │
+│                       settle→weld, VIC joint-torque control.       │
 │  robot/fr3_robot/     FR3 build, controllers, batched IK.          │
-│  system_id/           Excitation trajectories, Parquet storage,    │
-│                       MMD features (M3).                           │
+│  system_id/           Excitation, Parquet, MMD/Wasserstein,        │
+│                       batched digital-twin init (M3 / V.4).        │
 │  digital_twin/        Geometry reconstruction from observations    │
 │                       (M3.0.4 catalog shipped).                    │
 │  diagnostics/         Standalone verification/benchmark scripts.   │
@@ -63,18 +64,19 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | Path | Role |
 | ---- | ---- |
 | `apple_pick_sim/fruiting_system/` | `params.py` (sampling, `RodParams`/`FruitingSystemParams`), `build.py` (ModelBuilder geometry, collision filters, VBD solver setup), `scene.py`/`coupled.py` (P0 scene + M1 cable-only scene) |
-| `apple_pick_sim/coupled_fruiting/` | `scene.py` (`CoupledFruitingScene.coupled_substep` — the authoritative loop), `builders.py` (`build_coupled_fruiting_fr3`, `build_heterogeneous_coupled_fruiting_fr3`), `batched_heterogeneous_*` (config-driven batched API), `proxy_coupling.py`, `settle_then_weld.py`, `vic_joint_torques*.py`, `batched_layout.py` |
+| `apple_pick_sim/coupled_fruiting/` | `scene.py` (`CoupledFruitingScene.coupled_substep` — the authoritative loop), `builders.py`, `batched_heterogeneous_*` (config-driven batched API), `proxy_coupling.py`, `settle_then_weld.py`, `settle_seed_device.py`, `settle_ke_decay.py`, `settle_quasi_static.py`, `settled_checkpoint.py`, `vic_joint_torques*.py`, `batched_layout.py` |
 | `apple_pick_sim/robot/fr3_robot/` | FR3 USD import, controllers (direct-joint, EE velocity, impedance), `batched_template_ik.py` |
-| `apple_pick_sim/system_id/` | Fibonacci-hemisphere excitation, `quasi_static_trajectory.py`, `trajectory_store.py` (legacy Parquet), `batched_trajectory_store.py` (`batched_sysid_v1`), `parquet_init.py` (frame-0 digital-twin init), `mmd*.py` |
+| `apple_pick_sim/system_id/` | Fibonacci-hemisphere excitation, `quasi_static_trajectory.py`, `trajectory_store.py` (legacy Parquet), `batched_trajectory_store.py` (`batched_sysid_v1`), `batched_digital_twin_init.py`, `parquet_init.py`, `mmd*.py`, `wasserstein.py`, `wasserstein_ranking.py`, `batched_hold_quasi_static.py` |
 | `apple_pick_sim/digital_twin/` | `obs_io.py`, `from_obs.py` — rebuild scene geometry from observation JSON |
-| `apple_pick_sim/diagnostics/` | `verify_coupling.py`, `benchmark_coupling.py`, `sweep_zero_vic_stability.py` — standalone checks, not pytest |
+| `apple_pick_sim/diagnostics/` | `verify_coupling.py`, `benchmark_coupling.py`, `sweep_zero_vic_stability.py`, `log_settle_ke_decay.py`, `sweep_settle_weld_stability.py` — standalone checks, not pytest |
 | `apple_pick_sim/examples/` | One runnable script per capability; `example_batched_heterogeneous_coupled_sim.py` is the canonical batched heterogeneous example |
 | `apple_pick_sim/fixtures/` | `fruiting_system_ranges_*.json`, `digital_twin_fixture_catalog.json`, `digital_twin_obs_straight_rod_initial.json` |
 | `apple_pick_gym/envs/` | Legacy single-world: `apple_pick_base_env.py` → `apple_pick_coupled_env.py` → `apple_pick_vic_env.py` → `apple_pick_sysid_env.py`, `apple_pick_replay_env.py` |
-| `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`, `ApplePickBatchedSysIdEnv`, `batched_sysid_collect.py` |
-| `apple_pick_gym/batched_examples/` | `example_batched_collect_sysid_data.py`, `example_batched_gym_keyboard.py` |
+| `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`, `ApplePickBatchedSysIdEnv`, `batched_sysid_collect.py`, `batched_sysid_mmd_grid.py`, `batched_stability_monitor.py` |
+| `apple_pick_gym/batched_examples/` | `example_batched_collect_sysid_data.py`, `example_batched_sysid_mmd_grid.py`, `example_batched_gym_keyboard.py` |
+| `apple_pick_gym/grid_viz_*.py` | Plotly / table / report helpers for batched stiffness-grid ranking |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |
-| `docs/` | This documentation set (below). `docs/specs/` holds dated point-in-time design notes (MMD grid visualization, Wasserstein ranking validation, sys-ID dashboard) — historical, not living docs |
+| `docs/` | This documentation set (below). `docs/specs/` holds dated point-in-time design notes (historical once stamped Implemented) |
 
 ## Document index
 
@@ -110,18 +112,21 @@ Organized by question, not by filename — each doc listed once, under its prima
 - `docs/system_identification.md` — the full M3 protocol (excitation trajectories, MMD/CEM plan) **plus an implementation-notes appendix** for the shipped §2.1 quasi-static stepped mapping (trajectory phases, Fibonacci hemisphere, code map, tests).
 - `docs/sysid-trajectory-storage.md` — legacy single-env Parquet schema, collection/replay commands, dataset dashboard.
 - `docs/batched-sysid-dataset.md` — **batched_sysid_v1** layout for parallel collection (`example_batched_collect_sysid_data.py`).
-- `docs/digital-twin.md` — observation-only replay initialization (shipped) and digital-twin geometry reconstruction from observations (catalog shipped; batched replay verification tracked as V.4.2.1 in `docs/ROADMAP.md`).
+- `docs/sysid-mmd-grid-replay-alignment.md` — pre-weld strip, hold-metric semantics, structure-level weld, oracle vs `--infer-params` for the **shipped** in-process grid (`example_batched_sysid_mmd_grid.py`).
+- `docs/batched-stability-monitor-design.md` — online per-env stability monitor used during collect/grid (Implemented).
+- `docs/digital-twin.md` — observation-only replay initialization (shipped) and digital-twin geometry reconstruction; batched infer-only fidelity floor is deferred V.4.2.1 in `docs/ROADMAP.md`.
 
 ### "How does the Gym adapter work?"
 
 - `docs/gym-observation-contract.md` — observation schema versioning (v1→v3), shared keys, env-specific keys.
-- `docs/variable-impedance-teleop.md` — which envs are kinematic (`ApplePickCoupledEnv`) vs. dynamic/VIC (`ApplePickVicEnv` and its subclasses `ApplePickSysIdEnv`, `ApplePickReplayEnv`).
+- `docs/variable-impedance-teleop.md` — which envs are kinematic (`ApplePickCoupledEnv`) vs. dynamic/VIC (`ApplePickVicEnv` and its subclasses `ApplePickSysIdEnv`, `ApplePickReplayEnv`). Batched VIC/SysId envs: `apple_pick_gym/batched_envs/`.
 
 ## Known gaps (do not assume these are done without checking code/tests)
 
 | Gap | Detail | Where documented |
 | --- | ------ | ----------------- |
-| Batched digital-twin replay | `test_batched_sysid_replay_fidelity.py` replays via legacy materialize + full `fruiting_system_params`; frame-0 obs + `params_fingerprint` init on `batched_sysid_v1` is the next slice (V.4.2.1) | `docs/ROADMAP.md`, `docs/batched-sysid-dataset.md` |
+| Loss / GT scoring hardening (V.5.1) | Grid MSE/Wasserstein ship; dedicated outlier rejection so GT always ranks best is Current focus | `docs/ROADMAP.md`, `docs/system_identification.md` |
+| Batched digital-twin fidelity (V.4.2.1) | Helpers + `--infer-params` exist; default sim-sim uses oracle `true_params_for_structure`; no infer-only fidelity floor test yet (deferred, not Current focus) | `docs/ROADMAP.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/digital-twin.md` |
 | `real_world_proxy.json` topology | Nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`. The two fixtures for the same physical proxy build different topologies | `docs/real-world-proxy.md` |
 
 ## Conventions worth knowing before editing docs or code

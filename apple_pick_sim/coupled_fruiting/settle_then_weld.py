@@ -14,6 +14,7 @@ runtime. This module provides a robust two-build workflow:
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import numpy as np
@@ -72,6 +73,40 @@ def should_quiet_cable_bodies_at_settle_substep(
     if every <= 0:
         return False
     return int(completed_substep) % every == 0
+
+
+def warn_settle_quiet_every_alignment(
+    settle_substeps: int,
+    quiet_every: int | None,
+) -> int | None:
+    """Print ``settle_substeps % quiet_every``; warn when remainder is 0.
+
+    When remainder is 0, the periodic quiet lands on the final settle substep and
+    zeros ``body_qd`` before post-settle residual-speed checks.
+
+    Returns the remainder, or ``None`` when quieting is disabled.
+    """
+    if quiet_every is None:
+        return None
+    every = int(quiet_every)
+    n = int(settle_substeps)
+    if every <= 0 or n <= 0:
+        return None
+    remainder = n % every
+    print(
+        f"settle quiet alignment: settle_substeps={n} quiet_every={every} "
+        f"remainder={remainder}",
+        flush=True,
+    )
+    if remainder == 0:
+        warnings.warn(
+            f"settle_substeps ({n}) % settle_quiet_every ({every}) == 0 "
+            f"(remainder={remainder}); periodic quiet lands on the final settle "
+            f"substep, zeroing velocities before the stability residual-speed check.",
+            UserWarning,
+            stacklevel=2,
+        )
+    return remainder
 
 
 def quiet_all_cable_bodies(cable: Any) -> None:

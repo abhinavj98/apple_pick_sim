@@ -143,10 +143,18 @@ def test_joint_kd_overrides_stay_in_module_constants():
         joint_linear_kp_overrides=JOINT_LINEAR_KP_OVERRIDES,
     )
     args = _make_parser().parse_args([])
-    assert args.vic_linear_k == _VIC_DEFAULT_LINEAR_K == 600.0
-    assert args.vic_linear_d == _VIC_DEFAULT_LINEAR_D == 200.0
-    assert args.vic_angular_k == _VIC_DEFAULT_ANGULAR_K == 20.0
-    assert args.vic_angular_d == _VIC_DEFAULT_ANGULAR_D == 4.0
+    assert args.vic_linear_k is None
+    assert args.vic_linear_d is None
+    assert args.vic_angular_k is None
+    assert args.vic_angular_d is None
+    assert cfg.controller.vic_gains.linear_k == pytest.approx(200.0)
+    assert cfg.controller.vic_gains.linear_d == pytest.approx(10.0)
+    assert cfg.controller.vic_gains.angular_k == pytest.approx(10.0)
+    assert cfg.controller.vic_gains.angular_d == pytest.approx(1.0)
+    assert _VIC_DEFAULT_LINEAR_K == 200.0
+    assert _VIC_DEFAULT_LINEAR_D == 10.0
+    assert _VIC_DEFAULT_ANGULAR_K == 10.0
+    assert _VIC_DEFAULT_ANGULAR_D == 1.0
 
 
 def test_show_settling_parser_defaults():

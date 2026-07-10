@@ -253,3 +253,24 @@ def test_initialize_batched_env_from_dataset_sets_joint_q_and_tcp(
         )
     finally:
         env.close()
+
+
+def test_initialize_batched_env_from_dataset_raises_without_joint_q():
+    from unittest.mock import MagicMock
+
+    env = MagicMock()
+    env.num_envs = 1
+    env._sim.layout = MagicMock()
+    dataset = MagicMock()
+    dataset.load_episode_obs_arrays.return_value = {
+        "excitation_direction": np.zeros((1, 3), dtype=np.float32),
+    }
+    dataset.load_episode_metadata.return_value = {}
+
+    with pytest.raises(ValueError, match="missing initial robot_joint_q"):
+        initialize_batched_env_from_dataset(
+            env,
+            dataset,
+            structure_idx=0,
+            num_directions=1,
+        )

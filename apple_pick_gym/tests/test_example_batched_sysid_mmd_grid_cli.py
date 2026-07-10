@@ -47,6 +47,8 @@ def test_help_smoke_via_subprocess():
     assert "--replay-only" in proc.stdout
     assert "--score-mse" in proc.stdout
     assert "--score-wasserstein" in proc.stdout
+    assert "--infer-params" in proc.stdout
+    assert "--use-snapshot" in proc.stdout
     assert "--primary-bend-stiffness-values" in proc.stdout
     assert "--settle-quiet-every" in proc.stdout
 
@@ -78,6 +80,8 @@ def test_parser_defaults_and_grid_args(monkeypatch):
     assert args.structure_indices is None
     assert args.max_envs_per_batch == module.MAX_ENVS_PER_BATCH
     assert args.max_candidates == 0
+    assert args.use_snapshot is False
+    assert args.infer_params is False
     assert args.seed is None
     assert args.replay_only is False
     assert args.score_mse is False
@@ -87,7 +91,6 @@ def test_parser_defaults_and_grid_args(monkeypatch):
     assert args.secondary_bend_stiffness_values == (10.0,)
     assert args.spur_bend_stiffness_values == (100.0,)
     assert args.stem_bend_stiffness_values == (1000.0, 2000.0)
-    assert args.use_snapshot is False
 
 
 def test_parser_accepts_structure_indices_and_batch_limits(monkeypatch):
@@ -238,6 +241,19 @@ def test_sim_config_stays_in_module_constants():
     assert cfg.controller.mode == "vic"
 
 
+def test_build_sim_config_reads_sim_build_from_default_fixture():
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path, load_ranges, parse_sim_build
+
+    module = _load_example_module()
+    ranges = load_ranges(default_ranges_fixture_path())
+    sb = parse_sim_build(ranges)
+    assert sb is not None
+    cfg = module.build_sim_config(num_envs=2, ranges=ranges)
+    assert cfg.controller.vic_gains.linear_k == pytest.approx(sb.vic_gains.linear_k)
+    assert cfg.fruiting_system.joint_angular_kd_overrides == sb.joint_angular_kd_overrides
+    assert cfg.fruiting_system.joint_angular_kp_overrides == sb.joint_angular_kp_overrides
+
+
 def test_build_sim_config_settle_override():
     module = _load_example_module()
     cfg = module.build_sim_config(num_envs=2, settle_substeps=0)
@@ -269,6 +285,36 @@ def test_settle_config_kwargs_snapshot_disables_settle():
         "settle_gravity_ramp": False,
         "settle_quiet_every": None,
     }
+
+
+def test_candidates_for_structure_retains_gt_under_max_candidates(monkeypatch):
+    module = _load_example_module()
+    from apple_pick_gym.batched_envs import batched_sysid_mmd_grid as grid_mod
+    from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import BendStiffnessCandidate
+
+    gt = BendStiffnessCandidate(99.0, 99.0, 99.0, 99.0)
+    monkeypatch.setattr(
+        grid_mod,
+        "gt_bend_stiffness_candidate_from_structure",
+        lambda dataset, structure_idx: gt,
+    )
+    monkeypatch.setattr(
+        module,
+        "_build_candidate_grid",
+        lambda args: [
+            BendStiffnessCandidate(1.0, 1.0, 1.0, 1.0),
+            BendStiffnessCandidate(2.0, 2.0, 2.0, 2.0),
+            BendStiffnessCandidate(3.0, 3.0, 3.0, 3.0),
+        ],
+    )
+    args = argparse.Namespace(
+        max_candidates=1,
+        grid_values_are_gt_multipliers=False,
+    )
+    out = module._candidates_for_structure(object(), args, structure_idx=0)
+    assert out[0] == BendStiffnessCandidate(1.0, 1.0, 1.0, 1.0)
+    assert out[-1] == gt
+    assert len(out) == 2
 
 
 def test_build_sim_config_accepts_device_override():

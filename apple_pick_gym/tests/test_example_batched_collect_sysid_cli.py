@@ -7,6 +7,8 @@ import dataclasses
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
 )
@@ -152,6 +154,19 @@ def test_sim_config_stays_in_module_constants():
             joint_linear_kp_overrides=module.JOINT_LINEAR_KP_OVERRIDES,
         ),
     )
+
+
+def test_build_sim_config_reads_sim_build_from_default_fixture():
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path, load_ranges, parse_sim_build
+
+    module = _load_example_module()
+    ranges = load_ranges(default_ranges_fixture_path())
+    sb = parse_sim_build(ranges)
+    assert sb is not None
+    cfg = module.build_sim_config(num_envs=2, ranges=ranges)
+    assert cfg.controller.vic_gains.linear_k == pytest.approx(sb.vic_gains.linear_k)
+    assert cfg.fruiting_system.joint_angular_kd_overrides == sb.joint_angular_kd_overrides
+    assert cfg.fruiting_system.joint_angular_kp_overrides == sb.joint_angular_kp_overrides
 
 
 def test_build_sim_config_settle_quiet_every_override():

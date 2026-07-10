@@ -1,5 +1,7 @@
 # Batched sysID MMD grid — visualization design (RMSE/MSE landscape)
 
+**Status: Implemented** (2026-07-07+) — see `apple_pick_gym/grid_viz_*.py` and tests under `apple_pick_gym/tests/test_batched_sysid_grid_viz_*.py`. This file remains a historical design note.
+
 Date: 2026-07-07  
 Scope: visualization + reporting only (no changes to simulation/replay correctness)
 

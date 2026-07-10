@@ -176,7 +176,7 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 
 ### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`**; batched gym envs and parallel sys-ID collection are tracked in **`docs/ROADMAP.md`** ([V].3.3, [V].4.2).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, and in-process stiffness grid: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3; Current focus [V].5.1).
 
 ```bash
 # Headless smoke (settle→weld)
@@ -304,7 +304,7 @@ uv run --env-file pytest.env python -m pytest \
 
 ### M3 replay and digital-twin setup
 
-Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Parquet recordings are observation-first; privileged `.npz` snapshots are opt-in (`--save-snapshot`) for exact sim-to-sim baseline comparisons. The digital-twin fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) lists fixture names, base poses, observation fixtures, and smoke commands. **Parallel batched collection** uses the `batched_sysid_v1` layout — see [`docs/batched-sysid-dataset.md`](docs/batched-sysid-dataset.md). Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md) and [`docs/digital-twin.md`](docs/digital-twin.md).
+Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Parquet recordings are observation-first; privileged `.npz` snapshots are opt-in (`--save-snapshot`) for exact sim-to-sim baseline comparisons. The digital-twin fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) lists fixture names, base poses, observation fixtures, and smoke commands. **Parallel batched collection** uses the `batched_sysid_v1` layout — see [`docs/batched-sysid-dataset.md`](docs/batched-sysid-dataset.md). Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md), [`docs/digital-twin.md`](docs/digital-twin.md), [`docs/sysid-mmd-grid-replay-alignment.md`](docs/sysid-mmd-grid-replay-alignment.md). Status: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```bash
 # Collect a short observation-only dataset (no privileged snapshot by default)
@@ -325,28 +325,6 @@ uv run python apple_pick_gym/examples/example_gym_replay.py \
 uv run python apple_pick_gym/examples/dashboard_sysid_dataset.py \
   --dataset /tmp/sysid_dataset
 
-# List recorded episodes before running parameter sweeps
-uv run python apple_pick_gym/examples/run_system_identification.py \
-  --dataset /tmp/sysid_dataset --viewer null --list-episodes
-
-# Diagnostic bend-stiffness smoke: one candidate, observation-only replay
-uv run python apple_pick_gym/examples/run_system_identification.py \
-  --dataset /tmp/sysid_dataset --viewer null \
-  --primary-bend-stiffness-values 10 \
-  --secondary-bend-stiffness-values 10 \
-  --spur-bend-stiffness-values 10 \
-  --stem-bend-stiffness-values 10 \
-  --max-candidates 1
-
-# Expand each axis to sweep primary/secondary/spur/stem bend stiffnesses and rank by MMD
-uv run python apple_pick_gym/examples/run_system_identification.py \
-  --dataset /tmp/sysid_dataset --viewer null \
-  --primary-bend-stiffness-values 10,25,50 \
-  --secondary-bend-stiffness-values 10,25,50 \
-  --spur-bend-stiffness-values 10,25,50 \
-  --stem-bend-stiffness-values 10,25,50 \
-  --mmd-output /tmp/apple_pick_mmd_grid
-
 # Parallel batched collection (batched_sysid_v1 layout)
 uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
   --viewer null --num-structures 2 --num-directions 3 \
@@ -361,10 +339,36 @@ uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data
   --move-speed-mps 0.0150 \
   --hold-duration-s 0.1 --debug
 
-# Batched collect + replay fidelity capstone tests
+# Batched in-process stiffness grid (V.4.3; preferred for batched_sysid_v1)
+# Defaults to oracle fruiting_system_params; optional --infer-params / --score-wasserstein
+uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py \
+  --viewer null --dataset /tmp/batched_sysid_dataset --replay-only --score-mse \
+  --plot-output /tmp/mmd_grid \
+  --primary-bend-stiffness-values 1e-4,2e-4 \
+  --secondary-bend-stiffness-values 1e-4 \
+  --spur-bend-stiffness-values 1e-4 \
+  --stem-bend-stiffness-values 1e-4,2e-4
+
+# Batched collect + replay + grid tests
 uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_batched_sysid_collect.py \
-  apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py -q
+  apple_pick_gym/tests/test_batched_sysid_replay.py \
+  apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py \
+  apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py \
+  apple_pick_gym/tests/test_batched_sysid_grid_viz_table.py \
+  apple_pick_gym/tests/test_batched_sysid_grid_viz_integration.py \
+  apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py -q
+
+# Legacy single-env bend-stiffness / MMD grid (legacy Parquet layout only)
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null --list-episodes
+uv run python apple_pick_gym/examples/run_system_identification.py \
+  --dataset /tmp/sysid_dataset --viewer null \
+  --primary-bend-stiffness-values 10,25,50 \
+  --secondary-bend-stiffness-values 10,25,50 \
+  --spur-bend-stiffness-values 10,25,50 \
+  --stem-bend-stiffness-values 10,25,50 \
+  --mmd-output /tmp/apple_pick_mmd_grid_legacy
 
 # Digital-twin reconstruction + fixture catalog tests
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
@@ -380,6 +384,4 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_replay_env.py -q
 ```
 
-The MMD grid command writes `mmd_results.csv` plus compact diagnostics:
-`mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and
-`mmd_stiffness_sensitivity.png`.
+The batched grid writes Plotly/HTML ranking artifacts under `--plot-output` (see `docs/sysid-mmd-grid-replay-alignment.md`). The legacy `--mmd-output` path writes `mmd_results.csv` plus `mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and `mmd_stiffness_sensitivity.png`.

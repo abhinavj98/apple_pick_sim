@@ -258,7 +258,11 @@ def initialize_batched_env_from_dataset(
         if q is None:
             q = _frame_array_at_step(arrays, "robot_joint_q", FIRST_TRAJECTORY_STEP_IDX, 7)
         if q is None:
-            continue
+            raise ValueError(
+                "missing initial robot_joint_q for "
+                f"structure={structure_idx} direction={direction_idx} "
+                f"(env_idx={env_idx})"
+            )
 
         q_slice = layout.joint_q_slice(world)
         qd_slice = layout.joint_qd_slice(world)

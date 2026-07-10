@@ -223,16 +223,7 @@ def _replay_episode_hold_errors(dataset_dir: Path, episode_id: str) -> tuple[lis
     ft_rmse: list[float] = []
     try:
         env.load_dataset(dataset_dir, episode_id=episode_id)
-        try:
-            env.reset(seed=int(meta["seed"]), options={"params": params})
-        except Exception as e:
-            # IK bootstrap can fail for some random fixtures; treat as "no comparison"
-            # for this lightweight fidelity probe.
-            from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
-
-            if isinstance(e, IKBootstrapConvergenceError):
-                return [], []
-            raise
+        env.reset(seed=int(meta["seed"]), options={"params": params})
         n_frames = int(recorded["action"].shape[0])
         for _ in range(n_frames):
             obs, _reward, _terminated, truncated, info = env.step(np.zeros(6, dtype=np.float32))
@@ -311,14 +302,7 @@ def _replay_episode_hold_errors_with_snapshot(
     try:
         env.load_dataset(legacy_dataset_dir, episode_id=episode_id)
         # Reset builds the sim; snapshot is applied immediately after.
-        try:
-            env.reset(seed=int(meta["seed"]), options={"params": params})
-        except Exception as e:
-            from apple_pick_sim.robot.fr3_robot.placement import IKBootstrapConvergenceError
-
-            if isinstance(e, IKBootstrapConvergenceError):
-                return [], []
-            raise
+        env.reset(seed=int(meta["seed"]), options={"params": params})
         load_grasp_snapshot_into_env(env, snap)
 
         n_frames = int(recorded["action"].shape[0])

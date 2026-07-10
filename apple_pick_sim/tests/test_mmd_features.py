@@ -255,6 +255,25 @@ def test_replay_observation_collector_stable_column():
     assert arrays["stable"].tolist() == [False]
 
 
+def test_replay_observation_collector_oob_frame_raises():
+    recorded = _arrays_for_steps(steps=2, junction_names=["joint_a"])
+    recorded["phase"] = np.array([0, 1], dtype=np.int8)
+    recorded["dir_idx"] = np.array([0, 0], dtype=np.int32)
+    collector = ReplayObservationCollector(recorded)
+    obs = {
+        "ft_wrist": np.arange(6, dtype=np.float32),
+        "tcp_velocity": np.arange(6, dtype=np.float32),
+        "tcp_pos": np.zeros(3, dtype=np.float32),
+        "apple_pos": np.zeros(3, dtype=np.float32),
+        "woody_start": np.zeros(3, dtype=np.float32),
+        "woody_end": np.zeros(3, dtype=np.float32),
+    }
+    with pytest.raises(IndexError, match="frame_idx"):
+        collector.record(obs, frame_idx=2)
+    with pytest.raises(IndexError, match="frame_idx"):
+        collector.record(obs, frame_idx=-1)
+
+
 def test_transition_features_exclude_unstable_hold_frame():
     arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
     arrays["dir_idx"] = np.zeros(8, dtype=np.int32)

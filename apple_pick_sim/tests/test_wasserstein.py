@@ -228,9 +228,54 @@ def test_sinkhorn_gt_preference_excludes_disqualified():
         gt_candidate_index=1,
         disqualified=[True, False],
     )
-    assert pref.n_disqualified == 1
-    assert pref.best_candidate_index == 1
+    assert pref.gt_disqualified is False
     assert pref.best_is_gt is True
+    assert pref.best_candidate_index == 1
+    assert pref.n_disqualified == 1
+
+
+def test_sinkhorn_gt_preference_resolves_noncontiguous_candidate_index():
+    from apple_pick_sim.system_id.wasserstein import WassersteinCandidateResult
+
+    results = [
+        WassersteinCandidateResult(
+            candidate_index=2,
+            stiffnesses={"primary": 1.0},
+            aggregate_sinkhorn=0.9,
+            per_direction_sinkhorn={0: 0.9},
+            per_direction_n_transitions={0: 10},
+            low_sample_directions=(),
+            missing_directions=(),
+        ),
+        WassersteinCandidateResult(
+            candidate_index=5,
+            stiffnesses={"primary": 2.0},
+            aggregate_sinkhorn=0.1,
+            per_direction_sinkhorn={0: 0.1},
+            per_direction_n_transitions={0: 10},
+            low_sample_directions=(),
+            missing_directions=(),
+        ),
+        WassersteinCandidateResult(
+            candidate_index=9,
+            stiffnesses={"primary": 3.0},
+            aggregate_sinkhorn=0.2,
+            per_direction_sinkhorn={0: 0.2},
+            per_direction_n_transitions={0: 10},
+            low_sample_directions=(),
+            missing_directions=(),
+        ),
+    ]
+    pref = sinkhorn_gt_preference(
+        results=results,
+        gt_candidate_index=5,
+        disqualified=[True, False, False],
+    )
+    assert pref.gt_disqualified is False
+    assert pref.best_is_gt is True
+    assert pref.gt_rank == 1
+    assert pref.best_candidate_index == 5
+    assert pref.n_disqualified == 1
 
 
 def test_sinkhorn_mse_spearman_positive_for_monotone_errors():

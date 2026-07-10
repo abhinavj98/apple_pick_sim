@@ -1,5 +1,10 @@
 # Sys-ID MMD grid replay alignment
 
+| Field | Value |
+| ----- | ----- |
+| **Status** | Shipped (V.4.3) |
+| **Next** | V.5.1 loss / GT-scoring hardening — see `docs/ROADMAP.md` |
+
 ## Summary
 
 Batched sys-ID grid replay compares recorded quasi-static trajectories against
@@ -61,6 +66,18 @@ representative source (`load_episode_metadata(structure_idx, 0)`). This is
 not a per-candidate quantity. Non-GT candidates are evaluated against the same
 grasp point by design.
 
+## Build params vs init state (independent)
+
+| Axis | Default | Opt-in |
+|------|---------|--------|
+| **Build params** | Oracle: `true_params_for_structure` (privileged recorded `FruitingSystemParams`) | `--infer-params` → `infer_base_params_for_structure` (obs digital twin) |
+| **Init state** | Settle + `initialize_batched_env_from_dataset` from obs/metadata | `--use-snapshot` → restore `EpisodeStateSnapshot` |
+
+These flags are independent. Snapshot is privileged **state**, not privileged **params**.
+Grid MSE/Wasserstein debugging currently defaults to oracle params. Infer-only
+fidelity floor (V.4.2.1) is **deferred** — helpers and `--infer-params` exist;
+a dedicated capstone test is not Current focus (`docs/ROADMAP.md`).
+
 ## Collection / replay sim config
 
 Grid replay reads `manifest.collection.control_hz` (falls back to module
@@ -97,4 +114,4 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py 
 ```
 
 Expect GT candidate (`dist_log_gt = 0`) to rank best or near-best on hold metrics
-after the pre-weld alignment fix.
+after the pre-weld alignment fix. Further GT-rank reliability is **V.5.1**.

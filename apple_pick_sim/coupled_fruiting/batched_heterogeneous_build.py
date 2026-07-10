@@ -30,6 +30,7 @@ from apple_pick_sim.coupled_fruiting.settle_then_weld import (
     seed_fix_to_apple_from_settled,
     seed_fix_to_apple_from_settled_body_q,
     should_quiet_cable_bodies_at_settle_substep,
+    warn_settle_quiet_every_alignment,
 )
 from apple_pick_sim.digital_twin.record import fruiting_tree_fixed_joints
 from apple_pick_sim.fruiting_system import (
@@ -475,6 +476,7 @@ def _run_vbd_settle(
     h = float(sim_dt)
     gravity_ramp = bool(scene_cfg.settle_gravity_ramp)
     quiet_every = scene_cfg.settle_quiet_every
+    warn_settle_quiet_every_alignment(n, quiet_every)
     render_stride = _settle_render_stride(n) if viewer is not None else 1
     viewer_state = _SettleViewerState()
 
@@ -506,11 +508,11 @@ def _run_vbd_settle(
                 frame_sleep_s=_SETTLE_RENDER_FRAME_DT_S,
             )
 
-    quiet_all_cable_bodies(scene.cable)
-
     if not collect_diagnostics:
+        quiet_all_cable_bodies(scene.cable)
         return [], []
 
+    # Measure residual motion before the final quiet so |v|_max is meaningful.
     stability_reports = settle_stability_reports_from_cable(
         scene.cable,
         per_env_params,
@@ -520,6 +522,7 @@ def _run_vbd_settle(
     ke_decay_reports: list[SettleKeDecayReport] = []
     if recorder is not None and diag is not None:
         ke_decay_reports = recorder.reports(config=diag.ke_analysis)
+    quiet_all_cable_bodies(scene.cable)
     return stability_reports, ke_decay_reports
 
 
@@ -560,10 +563,32 @@ def _maybe_render_settle(
         time.sleep(frame_sleep_s)
 
 
-def print_per_env_params(params_list: Sequence[FruitingSystemParams]) -> None:
-    """Print per-env continuous θ (topology shared) for CLI diagnostics."""
-    print("Per-env fruiting params (topology shared, continuous θ differs):")
-    for w, p in enumerate(params_list):
+def print_per_env_params(
+    params_list: Sequence[FruitingSystemParams],
+    *,
+    env_indices: Sequence[int] | None = None,
+    heading: str | None = None,
+) -> None:
+    """Print per-env continuous θ (topology shared) for CLI diagnostics.
+
+    When ``env_indices`` is set, only those worlds are printed (e.g. unstable settle envs).
+    """
+    if env_indices is None:
+        worlds = list(range(len(params_list)))
+        title = heading or (
+            "Per-env fruiting params (topology shared, continuous θ differs):"
+        )
+    else:
+        worlds = [int(i) for i in env_indices]
+        title = heading or (
+            f"Fruiting params for selected envs {worlds} "
+            "(topology shared, continuous θ differs):"
+        )
+    if not worlds:
+        return
+    print(title)
+    for w in worlds:
+        p = params_list[w]
         print(f"  env{w}:")
         for seg_name in ("primary", "secondary", "spur", "stem"):
             rod = getattr(p, seg_name)

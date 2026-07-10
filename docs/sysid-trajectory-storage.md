@@ -6,7 +6,7 @@ Parquet persistence for quasi-static (and future) sysID rollouts, plus dataset-b
 
 Recording and replaying are complete for sim-to-sim datasets, **and observation-only replay initialization is the shipped default** (M3.0.3 — see `docs/ROADMAP.md`). Collection writes per-frame observations/actions, reset observable state in episode metadata, and an optional privileged initial-state snapshot. Replay loads the dataset and, by default, rebuilds its initial state from recorded observations and calibration metadata rather than privileged simulator arrays (body poses, velocities, solver previous-state buffers, saved controller internals). It applies the recorded EE velocity actions open-loop while recomputing observations from the live simulation. Pass `--use-snapshot` only to opt into the privileged `.npz` path for sim-to-sim debugging. Observation and digital-twin requirements are specified in `docs/digital-twin.md`.
 
-Digital-twin fixture catalog (M3.0.4) is shipped — see `docs/digital-twin.md`. Batched parallel collection uses **batched_sysid_v1** (`docs/batched-sysid-dataset.md`). Next replay slice (V.4.2.1): frame-0 observations + `params_fingerprint` init on batched datasets.
+Digital-twin fixture catalog (M3.0.4) is shipped — see `docs/digital-twin.md`. Batched parallel collection uses **batched_sysid_v1** (`docs/batched-sysid-dataset.md`). Batched infer-only fidelity floor (V.4.2.1) is deferred; Current focus is V.5.1 loss hardening — see `docs/ROADMAP.md`.
 
 **Batched parallel collection** (`example_batched_collect_sysid_data.py`) uses a separate **batched_sysid_v1** layout (`manifest.json` + `episodes/s{s}_d{d}.parquet`). See [`batched-sysid-dataset.md`](batched-sysid-dataset.md).
 

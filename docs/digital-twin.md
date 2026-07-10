@@ -4,8 +4,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Roadmap slice** | M3.0.3 (observation-only replay init) **Done**; M3.0.4 (digital-twin fixture catalog) **Done**; V.4.2.1 (batched replay via frame-0 obs + `params_fingerprint`) **Next** — see `docs/ROADMAP.md` |
-| **Related docs** | `docs/system_identification.md`, `docs/sysid-trajectory-storage.md`, `docs/gym-observation-contract.md`, `docs/real-world-proxy.md` |
+| **Roadmap slice** | M3.0.3 (observation-only replay init) **Done**; M3.0.4 (digital-twin fixture catalog) **Done**; V.4.2.1 (batched infer-only fidelity floor) **Deferred** — see `docs/ROADMAP.md` (Current focus is V.5.1) |
+| **Related docs** | `docs/system_identification.md`, `docs/sysid-trajectory-storage.md`, `docs/batched-sysid-dataset.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/gym-observation-contract.md`, `docs/real-world-proxy.md` |
 
 This document merges the observation-only-replay spec and the geometry-reconstruction implementation notes that used to live in two separate files (`observation-replay-digital-twin.md`, `digital-twin-from-obs-implementation.md`).
 
@@ -17,7 +17,7 @@ M3 needs a replay path that can run from real-world logs, not from Newton intern
 
 **Digital-twin reconstruction** rebuilds a quasi-static fruiting cable scene from partial real-world observations instead of sampling geometry from variance fixture JSON. The named fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) and example observation JSON are committed; catalog tests pass.
 
-**Batched sys-ID replay (V.4.2.1, next):** parallel collection writes `batched_sysid_v1` datasets (`docs/batched-sysid-dataset.md`). The capstone `test_batched_sysid_replay_fidelity.py` currently materializes legacy episodes and replays with full serialized `fruiting_system_params`. The next verification step is replay initialized from **frame-0 woody observations** plus **`params_fingerprint`** / fixture metadata via `digital_twin_obs_from_episode` and `observation_reset_options_from_parquet` (`apple_pick_sim/system_id/parquet_init.py`) — the path real data will use.
+**Batched sys-ID replay:** parallel collection writes `batched_sysid_v1` datasets (`docs/batched-sysid-dataset.md`). Grid replay defaults to oracle `true_params_for_structure`; CLI `--infer-params` on `example_batched_sysid_mmd_grid.py` uses `infer_base_params_for_structure` (`batched_digital_twin_init.py`). The fidelity capstone `test_batched_sysid_replay_fidelity.py` still materializes legacy episodes and resets with full serialized `fruiting_system_params`. **V.4.2.1 (deferred):** prove an infer-only / frame-0 woody + `params_fingerprint` fidelity floor — helpers exist; not Current focus (`docs/ROADMAP.md`).
 
 ## Validation strategy
 
@@ -107,7 +107,9 @@ uv run python apple_pick_gym/examples/visualize_pull_directions.py \
 | `apple_pick_gym/envs/apple_pick_replay_env.py` | Replays recorded actions; defaults to observation-only init, restores privileged snapshot only when `--use-snapshot` / a snapshot file is explicitly requested |
 | `apple_pick_gym/examples/example_gym_replay.py` | Reports dataset-vs-live replay errors |
 | `apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py` | Parallel GT collection → `batched_sysid_v1` datasets |
-| `apple_pick_sim/system_id/parquet_init.py` | `digital_twin_obs_from_episode`, `observation_reset_options_from_parquet` — frame-0 digital-twin init (V.4.2.1 target) |
+| `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` | In-process grid; `--infer-params` for obs-inferred build params |
+| `apple_pick_sim/system_id/batched_digital_twin_init.py` | `digital_twin_obs_from_batched_episode`, `infer_base_params_for_structure`, `true_params_for_structure` |
+| `apple_pick_sim/system_id/parquet_init.py` | `digital_twin_obs_from_episode`, `observation_reset_options_from_parquet` — frame-0 digital-twin init |
 | `apple_pick_sim/system_id/batched_trajectory_store.py` | `BatchedSysIdDataset`, `materialize_legacy_episode_dir` |
 | `docs/sysid-trajectory-storage.md` | Legacy single-env dataset storage contract |
 | `docs/batched-sysid-dataset.md` | Batched `batched_sysid_v1` layout and collect commands |
@@ -222,8 +224,8 @@ A digital-twin fixture is the bridge between observations and Newton geometry. E
 
 The first implementation should use a sim-generated ground-truth fixture, then rebuild a separate tunable fixture from exported observations. This verifies the reconstruction and replay machinery before the project depends on real perception quality.
 
-## Expected follow-up tests (V.4.2.1)
+## Expected follow-up tests (V.4.2.1, deferred)
 
-- batched `batched_sysid_v1` episode replays through `digital_twin_obs_from_episode` (frame 0) + `params_fingerprint` / fixture metadata, without passing full privileged `fruiting_system_params` in reset options;
+- batched `batched_sysid_v1` episode replays through `digital_twin_obs_from_batched_episode` / `digital_twin_obs_from_episode` (frame 0) + `params_fingerprint` / fixture metadata, without passing full privileged `fruiting_system_params` in reset options;
 - hold-phase drift metrics (TCP, `ft_wrist`) reported against ground-truth collection — extend `apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py` or add a sibling test;
-- privileged replay and observation-only replay run the same recorded `action` sequence (legacy single-env path already covered; batched path is V.4.2.1).
+- privileged replay and observation-only replay run the same recorded `action` sequence (legacy single-env path already covered; batched infer-only path is V.4.2.1).

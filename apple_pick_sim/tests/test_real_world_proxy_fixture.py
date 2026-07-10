@@ -80,6 +80,35 @@ def test_variance_loads_and_topology(variance_ranges):
     assert r["apple"] is not None
 
 
+def test_variance_sim_build_knobs(variance_ranges):
+    fs = _import_fs()
+    sb = fs.parse_sim_build(variance_ranges)
+    assert sb is not None
+    assert sb.vic_gains.linear_k == pytest.approx(200.0)
+    assert sb.vic_gains.linear_d == pytest.approx(10.0)
+    assert sb.vic_gains.angular_k == pytest.approx(10.0)
+    assert sb.vic_gains.angular_d == pytest.approx(1.0)
+    assert sb.joint_angular_kd_overrides == {
+        "support": 0.3,
+        "primary_spur": 0.3,
+        "spur_stem": 0.3,
+        "stem_apple": 0.3,
+    }
+    assert sb.joint_linear_kd_overrides == {
+        "support": 0.3,
+        "primary_spur": 0.3,
+        "spur_stem": 0.3,
+        "stem_apple": 0.3,
+    }
+    assert sb.joint_angular_kp_overrides == {"support": 2000.0}
+    assert sb.joint_linear_kp_overrides == {"support": 2000.0}
+
+
+def test_nominal_has_no_sim_build(nominal_ranges):
+    fs = _import_fs()
+    assert fs.parse_sim_build(nominal_ranges) is None
+
+
 def test_variance_stiffness_ordering(variance_ranges):
     spur_max = variance_ranges["spur"]["youngs_modulus_pa"]["max"]
     primary_min = variance_ranges["primary"]["youngs_modulus_pa"]["min"]

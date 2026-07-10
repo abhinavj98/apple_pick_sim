@@ -34,10 +34,14 @@ flowchart LR
 
 ### 2. Settle all worlds in parallel
 
-- Run **`settle_vbd_substeps(scene, substeps, dt)`** on the free batched scene (or on the built scene when not using settle-then-weld).
+- Run **`settle_vbd_substeps(scene, substeps, dt)`** on the free batched scene (or on the built scene when not using settle-then-weld). Config knobs live on `SceneSettleCollisionConfig` / CLI (`settle_substeps`, `settle_gravity_ramp`, `settle_quiet_every`, `settle_max_speed_m_s`).
 - All **N** worlds advance together on the GPU; each fruiting system relaxes under gravity with a free proxy.
-- Optional linear gravity ramp (0 → −9.81 m/s² over all settle substeps) via `gravity_ramp=True` or `--settle-gravity-ramp` (default: off). The canonical example (`example_batched_heterogeneous_coupled_sim.py`) runs settle during build via `build_batched_heterogeneous_scene`.
-- Default settle length matches single-env coupled fruiting (`--settle-substeps`, typically 1000). Soft DR fixtures may need more substeps: full g applies only on the final substep of the ramp.
+- **Gravity ramp** (0 → −9.81 m/s² over settle substeps) via `gravity_ramp=True` / `--settle-gravity-ramp` — **default off** (`settle_gravity_ramp=False` in `BatchedHeterogeneousCoupledSimConfig`). Soft DR fixtures may need more substeps when the ramp is on (full g only on the final substep).
+- **Quiet / zero twist:** `quiet_all_cable_bodies` / device `zero_all_body_qd_device` remove residual kinetic energy. Optional periodic quiet during settle via `settle_quiet_every` / `--settle-quiet-every` (`should_quiet_cable_bodies_at_settle_substep`). Post-settle quiet is part of a stable weld seed.
+- Optional **settled-state disk cache** (`settled_checkpoint.py`, env `APPLE_PICK_SIM_SETTLE_CACHE_DIR`) when `use_settle_cache=True`.
+- Diagnostics: `settle_ke_decay.py` / `log_settle_ke_decay.py`, `settle_quasi_static.py`, `sweep_settle_weld_stability.py`.
+- The canonical example (`example_batched_heterogeneous_coupled_sim.py`) runs settle during build via `build_batched_heterogeneous_scene`.
+- Default settle length is configurable (`--settle-substeps`; config default often 5000 for heterogeneous builds — check CLI/config, not this prose alone).
 
 ### 3. Build batched welded scene and seed from settled state
 
@@ -87,7 +91,7 @@ ctrl = fr3_robot.Fr3BatchedEEDirectJointController(
 scene.update_fr3_ee_teleop_direct(frame_dt, ctrl)  # scatter, no broadcast
 ```
 
-A batched Gym / RL adapter (planned — see `docs/ROADMAP.md` [V] track) will pass **`(N, act_dim)`** policy outputs into the same scatter path instead of `velocity_for_world`.
+A batched Gym adapter is **shipped** (`ApplePickBatchedBaseEnv` / Vic / SysId — V.3.3+). A future **`(N, act_dim)`** policy tensor path into the same scatter (without per-env Python callbacks) remains planned — see `docs/ROADMAP.md` [V] deferred.
 
 ---
 
@@ -130,9 +134,8 @@ Run **N independent coupled stacks** (VBD cable + MuJoCo FR3 per env) in one GPU
 | Use case | θ per env | Actions | Collection |
 | -------- | --------- | ------- | ---------- |
 | **Interactive / smoke** | Identical (homogeneous) | Same EE vel all envs (example default); IK scatter per env | Stability, IK convergence |
-| **Sys-ID / CEM** | Different \(E\), \(\zeta\) (→ stiffness/damping) per env (heterogeneous) | Per-env or recorded `v_ee(t)` via scatter | Per-world transition gathering for MMD (planned — see ROADMAP [V].4) |
+| **Sys-ID / CEM** | Different \(E\), \(\zeta\) (→ stiffness/damping) per env (heterogeneous) | Per-env or recorded `v_ee(t)` via scatter | Transition bags in MMD/Wasserstein feature code; in-process grid shipped (V.4.3) |
 | **RL (planned)** | Domain randomization | Per-env `(N, act_dim)` from policy → scatter | Per-world obs / reward / done |
-
 Both `replicate()` and `add_world` remain the build strategies; consumers differ in θ content, init bootstrap, action path, and gather API.
 
 ---
@@ -426,8 +429,8 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --viewer null 
 
 | Risk | Mitigation |
 | ---- | ---------- |
-| FR3 + `replicate` + MuJoCo validation | Placeholder TCP in fast tests; FR3 smoke after settle→weld |
+| FR3 + `replicate` + MuJoCo validation | Fast tests use FR3 helpers (`conftest.py`); placeholder builders removed |
 | `separate_worlds` on CPU pytest | `separate_worlds=True` when `num_envs > 1` |
 | IK / settle drift across worlds | Per-world settled copy; co-located replicate; V.2 per-env IK bootstrap; runtime per-env IK scatter |
 | Per-env actions vs broadcast confusion | FR3 teleop uses `BatchedTemplateIK.scatter_to_model`; `broadcast_joint_q_from_world0` is homogeneous bootstrap / placeholder only — not used on the heterogeneous FR3 path |
-| CEM wants fast θ sweeps | Per-env K/B scatter is shipped (build-time); `gather_transitions()` on the batched backend is planned — see `docs/ROADMAP.md` [V].4 |
+| CEM wants fast θ sweeps | Per-env K/B scatter is shipped (build-time); recorded-action replay + MSE/Wasserstein grid shipped (V.4.3); loss hardening is V.5.1 — see `docs/ROADMAP.md` |

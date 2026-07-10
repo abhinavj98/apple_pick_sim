@@ -83,10 +83,23 @@ def sinkhorn_gt_preference(
     ]
     n_disqualified = sum(1 for bad in disqualified if bool(bad))
 
+    gt_pos = next(
+        (
+            i
+            for i, result in enumerate(results)
+            if int(result.candidate_index) == int(gt_candidate_index)
+        ),
+        None,
+    )
+    if gt_pos is None:
+        raise ValueError(
+            f"gt_candidate_index={gt_candidate_index} not found in results"
+        )
+
     best_idx = None
     best_is_gt = None
     gt_rank = None
-    gt_disqualified = bool(disqualified[int(gt_candidate_index)])
+    gt_disqualified = bool(disqualified[gt_pos])
     if eligible:
         eligible_sorted = sorted(eligible, key=lambda item: (item[1], item[0]))
         best_idx = int(eligible_sorted[0][0])

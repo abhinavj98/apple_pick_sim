@@ -12,7 +12,7 @@ alwaysApply: true
   - `newton/` — git **submodule** (upstream Newton). Treat as vendored: avoid drive-by edits unless the task is explicitly to patch Newton or sync with upstream.
   - `apple_pick_sim/` — project-local simulation code; runnable examples under `apple_pick_sim/examples/`. Prefer new simulation logic here.
   - `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py` — canonical batched heterogeneous coupled simulation example.
-  - `apple_pick_sim/examples/legacy/` — deprecated monoliths (e.g. pre–V.3.2 heterogeneous script with unmigrated CLI flags).
+  - `apple_pick_gym/` — Gymnasium adapter; batched collect/grid under `batched_envs/` and `batched_examples/`.
 
 ## Environment and runs
 

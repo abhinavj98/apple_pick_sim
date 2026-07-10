@@ -2,7 +2,14 @@
 
 Replay recorded actions across a bend-stiffness candidate grid for each structure
 in a ``batched_sysid_v1`` dataset. Use ``--score-mse`` and/or ``--score-wasserstein``
-for hold-phase ranking validation beside ``--replay-only`` summaries.
+for hold-phase ranking validation beside ``--replay-only`` summaries. Biased MMD
+scoring remains available in the library (``evaluate_batched_mmd_grid``); the CLI
+does not expose ``--score-mmd`` yet.
+
+Build params default to privileged oracle ``true_params_for_structure``; pass
+``--infer-params`` for obs-inferred digital-twin geometry (V.4.2.1). Init state
+defaults to settle + metadata/obs init; ``--use-snapshot`` restores post-weld
+snapshots (orthogonal to build params).
 
 Run from the repository root::
 
@@ -15,8 +22,9 @@ Run from the repository root::
       --stem-bend-stiffness-values 1e-4,2e-4
 
 Sim build (VIC gains, settle substeps, control_hz, …) is configured via module
-constants in this file; settle phase knobs also accept ``--settle-substeps``,
-``--settle-gravity-ramp``, and ``--settle-quiet-every``.
+constants in this file as fallbacks; when the ranges JSON includes optional
+``sim_build``, those values win. Settle phase knobs also accept
+``--settle-substeps``, ``--settle-gravity-ramp``, and ``--settle-quiet-every``.
 """
 
 from __future__ import annotations
@@ -53,11 +61,12 @@ from apple_pick_sim.coupled_fruiting.scene import (
     DEFAULT_STEM_FORCE_CAP_N,
     DEFAULT_STEM_TORQUE_CAP_NM,
 )
+from apple_pick_sim.fruiting_system import default_ranges_fixture_path, load_ranges, parse_sim_build
 from apple_pick_sim.fruiting_system.params import PLACEHOLDER_EE_MASS_KG, GripperProxyConfig
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 
-# --- Sim build (edit here; not exposed on CLI) ---
+# --- Sim build fallbacks (used when ranges omit ``sim_build``) ---
 CONTROL_HZ = 30.0
 SUB_DT = 1.0 / 1800.0
 ENV_SPACING = (2.0, 2.0, 2.0)
@@ -78,6 +87,36 @@ JOINT_LINEAR_KP_OVERRIDES = EXAMPLE_JOINT_LINEAR_KP_OVERRIDES
 GRIPPER_PROXY = GripperProxyConfig(mass=PLACEHOLDER_EE_MASS_KG)
 
 ROD_SEGMENTS: tuple[str, ...] = ("primary", "secondary", "spur", "stem")
+
+
+def _resolve_sim_build_knobs(ranges: dict) -> tuple[
+    ImpedanceGains,
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+]:
+    sb = parse_sim_build(ranges)
+    if sb is None:
+        return (
+            VIC_GAINS,
+            dict(JOINT_ANGULAR_KD_OVERRIDES),
+            dict(JOINT_LINEAR_KD_OVERRIDES),
+            dict(JOINT_ANGULAR_KP_OVERRIDES),
+            dict(JOINT_LINEAR_KP_OVERRIDES),
+        )
+    return (
+        ImpedanceGains(
+            linear_k=sb.vic_gains.linear_k,
+            linear_d=sb.vic_gains.linear_d,
+            angular_k=sb.vic_gains.angular_k,
+            angular_d=sb.vic_gains.angular_d,
+        ),
+        dict(sb.joint_angular_kd_overrides),
+        dict(sb.joint_linear_kd_overrides),
+        dict(sb.joint_angular_kp_overrides),
+        dict(sb.joint_linear_kp_overrides),
+    )
 
 _PLOT_METRIC_CHOICES = tuple(
     sorted(get_args(__import__("apple_pick_gym.grid_viz_plotly", fromlist=["Metric"]).Metric))
@@ -129,7 +168,17 @@ def build_sim_config(
     settle_gravity_ramp: bool | None = None,
     settle_quiet_every: int | None = None,
     device: str | None = None,
+    ranges: dict | None = None,
 ) -> BatchedHeterogeneousCoupledSimConfig:
+    if ranges is None:
+        ranges = load_ranges(default_ranges_fixture_path())
+    (
+        vic_gains,
+        joint_angular_kd,
+        joint_linear_kd,
+        joint_angular_kp,
+        joint_linear_kp,
+    ) = _resolve_sim_build_knobs(ranges)
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=int(num_envs))
     settle = SETTLE_SUBSTEPS if settle_substeps is None else int(settle_substeps)
     gravity_ramp = SETTLE_GRAVITY_RAMP if settle_gravity_ramp is None else bool(settle_gravity_ramp)
@@ -145,14 +194,14 @@ def build_sim_config(
         ),
         controller=dataclasses.replace(
             gym_cfg.controller,
-            vic_gains=VIC_GAINS,
+            vic_gains=vic_gains,
         ),
         fruiting_system=dataclasses.replace(
             gym_cfg.fruiting_system,
-            joint_angular_kd_overrides=JOINT_ANGULAR_KD_OVERRIDES,
-            joint_linear_kd_overrides=JOINT_LINEAR_KD_OVERRIDES,
-            joint_angular_kp_overrides=JOINT_ANGULAR_KP_OVERRIDES,
-            joint_linear_kp_overrides=JOINT_LINEAR_KP_OVERRIDES,
+            joint_angular_kd_overrides=joint_angular_kd,
+            joint_linear_kd_overrides=joint_linear_kd,
+            joint_angular_kp_overrides=joint_angular_kp,
+            joint_linear_kp_overrides=joint_linear_kp,
         ),
     )
 
@@ -300,7 +349,16 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Restore post-weld initial_states/sXX_dYY.npz (settle_substeps=0, skip metadata "
-            "init). Diagnostic only; requires collect with --save-snapshot."
+            "init). Diagnostic only; requires collect with --save-snapshot. Independent of "
+            "build-params (--infer-params)."
+        ),
+    )
+    p.add_argument(
+        "--infer-params",
+        action="store_true",
+        help=(
+            "Build replay trees from obs-inferred digital-twin params instead of privileged "
+            "true FruitingSystemParams (oracle default). Independent of --use-snapshot."
         ),
     )
     p.add_argument(
@@ -409,10 +467,10 @@ def _candidates_for_structure(dataset, args: argparse.Namespace, structure_idx: 
         )
     else:
         candidates = _build_candidate_grid(args)
-    candidates = ensure_gt_candidate_in_grid(candidates, gt)
     max_candidates = int(args.max_candidates)
     if max_candidates > 0:
         candidates = candidates[:max_candidates]
+    candidates = ensure_gt_candidate_in_grid(candidates, gt)
     return candidates
 
 
@@ -443,6 +501,8 @@ def _make_build_env_fn(
 
     from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
 
+    ranges = load_ranges(ranges_path)
+
     def build_env_fn(
         *,
         num_envs: int,
@@ -453,6 +513,7 @@ def _make_build_env_fn(
         sim_config = build_sim_config(
             num_envs=num_envs,
             device=device,
+            ranges=ranges,
             **(settle_config or {}),
         )
         sim_config = dataclasses.replace(
@@ -496,6 +557,7 @@ def _replay_structure(
     on_step,
     replay_sim_config,
     use_snapshot: bool = False,
+    use_oracle_params: bool = True,
 ):
     from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import replay_candidates_for_structure
 
@@ -510,6 +572,7 @@ def _replay_structure(
         on_step=on_step,
         replay_sim_config=replay_sim_config,
         use_snapshot=bool(use_snapshot),
+        use_oracle_params=bool(use_oracle_params),
     )
     return collectors, len(candidates)
 
@@ -564,9 +627,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
 
     ranges_path = collection.get("ranges_path")
     if not ranges_path:
-        from apple_pick_sim.fruiting_system import default_ranges_fixture_path
-
         ranges_path = str(default_ranges_fixture_path())
+    ranges = load_ranges(ranges_path)
     topology_seed = int(collection.get("topology_seed", 42))
     control_hz = _collection_control_hz(collection)
 
@@ -640,9 +702,11 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
             on_step=_on_step,
             replay_sim_config=build_sim_config(
                 num_envs=1,
+                ranges=ranges,
                 **_settle_config_kwargs(args=args, use_snapshot=bool(args.use_snapshot)),
             ),
             use_snapshot=bool(args.use_snapshot),
+            use_oracle_params=not bool(args.infer_params),
         )
         if bool(args.replay_only):
             arrays = dataset.load_episode_obs_arrays(int(structure_idx), 0)
@@ -669,13 +733,19 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 f"unstable_frames_per_candidate={cand_unstable}"
             )
         if args.export_replay_dir is not None:
-            from apple_pick_sim.system_id.batched_digital_twin_init import true_params_for_structure
+            from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
+                base_params_for_replay,
+            )
             from apple_pick_sim.system_id.batched_replay_export import (
                 ReplayCandidateSpec,
                 export_replay_candidates_for_structure,
             )
 
-            base_params = true_params_for_structure(dataset, int(structure_idx))
+            base_params = base_params_for_replay(
+                dataset,
+                int(structure_idx),
+                use_oracle_params=not bool(args.infer_params),
+            )
             specs_and_replays = []
             for cand_idx, candidate in enumerate(candidates):
                 replay_eps = direction_episodes_from_collectors(

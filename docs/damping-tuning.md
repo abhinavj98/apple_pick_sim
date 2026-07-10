@@ -341,10 +341,12 @@ constant. Raising `kp` above the default `1e5` requires the helper to bump
 
 **Applied at build** via `build_batched_heterogeneous_scene` → `_apply_joint_penalty_overrides`,
 using optional `FruitingSystemConfig.joint_angular_kp_overrides` /
-`joint_linear_kp_overrides` (empty by default). Batched examples import shared
-`EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES` / `EXAMPLE_JOINT_LINEAR_KP_OVERRIDES` from
-`batched_heterogeneous_config.py` with `"support": 200.0` for compliant tree-root
-anchors; other roles keep Newton's default `1e5` unless listed.
+`joint_linear_kp_overrides` (empty by default). Batched examples read shared
+`EXAMPLE_JOINT_*` fallbacks from `batched_heterogeneous_config.py`, but the
+canonical copy for the default variance fixture lives under optional top-level
+`sim_build` in `fruiting_system_ranges_real_world_proxy_variance.json`
+(`"support": 2000.0` angular + linear kp). Other roles keep Newton's default
+`1e5` unless listed. See `parse_sim_build` in `fruiting_system/params.py`.
 
 Linear kp uses `set_fruiting_joint_linear_kp_batched` with the same label matching.
 
@@ -376,8 +378,9 @@ damping-responsive; don't spend a damping sweep chasing `branch_path>nominal`.
 | VBD `iterations` | 25 | `make_fruiting_solver_vbd` |
 | `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` (batched config) | uniform `0.0` per role (`support`, `primary_spur`, `spur_stem`, `stem_apple`; Newton default via `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD`) | `batched_heterogeneous_config.py` |
 | `_DEFAULT_JOINT_LINEAR_KD_OVERRIDES` (batched config) | uniform `0.0` per role (`support`, `primary_spur`, `spur_stem`, `stem_apple`; Newton default via `FRUITING_VBD_RIGID_JOINT_LINEAR_KD`) | `batched_heterogeneous_config.py` |
-| `EXAMPLE_JOINT_*_KD_OVERRIDES` (batched examples) | uniform `0.3` per role | `batched_heterogeneous_config.py` (imported by heterogeneous + sys-ID examples) |
-| `EXAMPLE_JOINT_*_KP_OVERRIDES` (batched examples) | `"support": 200.0` angular + linear | `batched_heterogeneous_config.py` (imported by heterogeneous + sys-ID examples) |
+| `EXAMPLE_JOINT_*_KD_OVERRIDES` (Python fallback) | uniform `0.3` per role | `batched_heterogeneous_config.py` (used when ranges omit `sim_build`) |
+| `EXAMPLE_JOINT_*_KP_OVERRIDES` (Python fallback) | `"support": 2000.0` angular + linear | `batched_heterogeneous_config.py` |
+| `sim_build` VIC + joint overrides (canonical for batched examples) | VIC `200/10/10/1`; kd `0.3` all roles; kp `"support": 2000.0` | `fruiting_system_ranges_real_world_proxy_variance.json` via `parse_sim_build` |
 | `joint_*_kp_overrides` (batched config default) | empty dict | `batched_heterogeneous_config.py` (`FruitingSystemConfig`) |
 
 Update this table when any of these values change so it stays a reliable snapshot.
@@ -432,9 +435,11 @@ uv run python apple_pick_sim/diagnostics/sweep_settle_weld_stability.py \
   --num-envs 4 --seed 42 --settle-substeps 1000,5000,10000,30000 --robot fr3
 ```
 
-Always sweep with `--settle-gravity-ramp` (the default) unless specifically testing
-instant-gravity shock response — instant full gravity injects much more initial energy
-and makes early checkpoints look worse than a ramped settle would.
+Always sweep with `--settle-gravity-ramp` when comparing soft fixtures unless
+specifically testing instant-gravity shock response — the ramp is **opt-in**
+(`settle_gravity_ramp=False` by default in `BatchedHeterogeneousCoupledSimConfig`).
+Instant full gravity injects much more initial energy and makes early checkpoints
+look worse than a ramped settle would.
 
 ## Related docs
 

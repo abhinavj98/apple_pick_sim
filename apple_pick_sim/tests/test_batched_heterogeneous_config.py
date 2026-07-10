@@ -167,10 +167,10 @@ def test_vic_gains_defaults_match_heterogeneous_example():
     cfg = BatchedHeterogeneousCoupledSimConfig.defaults()
     g = cfg.controller.vic_gains
     assert isinstance(g, ImpedanceGains)
-    assert g.linear_k == pytest.approx(600.0)
-    assert g.linear_d == pytest.approx(200.0)
-    assert g.angular_k == pytest.approx(20.0)
-    assert g.angular_d == pytest.approx(4.0)
+    assert g.linear_k == pytest.approx(200.0)
+    assert g.linear_d == pytest.approx(10.0)
+    assert g.angular_k == pytest.approx(10.0)
+    assert g.angular_d == pytest.approx(1.0)
 
 
 def test_fruiting_joint_kp_overrides_defaults():
@@ -183,8 +183,8 @@ def test_example_joint_override_constants():
     for role in ("support", "primary_spur", "spur_stem", "stem_apple"):
         assert EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES[role] == pytest.approx(0.3)
         assert EXAMPLE_JOINT_LINEAR_KD_OVERRIDES[role] == pytest.approx(0.3)
-    assert EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES == {"support": pytest.approx(200.0)}
-    assert EXAMPLE_JOINT_LINEAR_KP_OVERRIDES == {"support": pytest.approx(200.0)}
+    assert EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES == {"support": pytest.approx(2000.0)}
+    assert EXAMPLE_JOINT_LINEAR_KP_OVERRIDES == {"support": pytest.approx(2000.0)}
 
 def test_fruiting_joint_kd_overrides_defaults():
     cfg = BatchedHeterogeneousCoupledSimConfig.defaults()

@@ -17,8 +17,9 @@ Headless smoke::
       --output /tmp/batched_sysid_smoke
 
 Sim build (VIC gains, settle substeps, control_hz, …) is configured via module
-constants in this file; settle phase knobs also accept ``--settle-substeps``,
-``--settle-gravity-ramp``, and ``--settle-quiet-every``.
+constants in this file as fallbacks; when the ranges JSON includes optional
+``sim_build``, those values win. Settle phase knobs also accept
+``--settle-substeps``, ``--settle-gravity-ramp``, and ``--settle-quiet-every``.
 """
 
 from __future__ import annotations
@@ -55,13 +56,14 @@ from apple_pick_sim.coupled_fruiting.scene import (
     DEFAULT_STEM_FORCE_CAP_N,
     DEFAULT_STEM_TORQUE_CAP_NM,
 )
+from apple_pick_sim.fruiting_system import default_ranges_fixture_path, load_ranges, parse_sim_build
 from apple_pick_sim.fruiting_system.params import PLACEHOLDER_EE_MASS_KG, GripperProxyConfig
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.system_id import QuasiStaticStepConfig
 from apple_pick_sim.system_id.quasi_static_trajectory import derive_n_steps
 from apple_pick_sim.system_id.trajectory_store import phase_to_int
 
-# --- Sim build (edit here; not exposed on CLI) ---
+# --- Sim build fallbacks (used when ranges omit ``sim_build``) ---
 CONTROL_HZ = 30.0
 SUB_DT = 1.0 / 1800.0
 ENV_SPACING = (2.0, 2.0, 2.0)
@@ -79,6 +81,36 @@ JOINT_LINEAR_KD_OVERRIDES = EXAMPLE_JOINT_LINEAR_KD_OVERRIDES
 JOINT_ANGULAR_KP_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES
 JOINT_LINEAR_KP_OVERRIDES = EXAMPLE_JOINT_LINEAR_KP_OVERRIDES
 GRIPPER_PROXY = GripperProxyConfig(mass=PLACEHOLDER_EE_MASS_KG)
+
+
+def _resolve_sim_build_knobs(ranges: dict) -> tuple[
+    ImpedanceGains,
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+    dict[str, float],
+]:
+    sb = parse_sim_build(ranges)
+    if sb is None:
+        return (
+            VIC_GAINS,
+            dict(JOINT_ANGULAR_KD_OVERRIDES),
+            dict(JOINT_LINEAR_KD_OVERRIDES),
+            dict(JOINT_ANGULAR_KP_OVERRIDES),
+            dict(JOINT_LINEAR_KP_OVERRIDES),
+        )
+    return (
+        ImpedanceGains(
+            linear_k=sb.vic_gains.linear_k,
+            linear_d=sb.vic_gains.linear_d,
+            angular_k=sb.vic_gains.angular_k,
+            angular_d=sb.vic_gains.angular_d,
+        ),
+        dict(sb.joint_angular_kd_overrides),
+        dict(sb.joint_linear_kd_overrides),
+        dict(sb.joint_angular_kp_overrides),
+        dict(sb.joint_linear_kp_overrides),
+    )
 
 
 def summarize_trajectory_for_debug(config: QuasiStaticStepConfig) -> str:
@@ -149,7 +181,17 @@ def build_sim_config(
     settle_gravity_ramp: bool | None = None,
     settle_quiet_every: int | None = None,
     device: str | None = None,
+    ranges: dict | None = None,
 ) -> BatchedHeterogeneousCoupledSimConfig:
+    if ranges is None:
+        ranges = load_ranges(default_ranges_fixture_path())
+    (
+        vic_gains,
+        joint_angular_kd,
+        joint_linear_kd,
+        joint_angular_kp,
+        joint_linear_kp,
+    ) = _resolve_sim_build_knobs(ranges)
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=int(num_envs))
     settle = SETTLE_SUBSTEPS if settle_substeps is None else int(settle_substeps)
     gravity_ramp = SETTLE_GRAVITY_RAMP if settle_gravity_ramp is None else bool(settle_gravity_ramp)
@@ -171,14 +213,14 @@ def build_sim_config(
         ),
         controller=dataclasses.replace(
             gym_cfg.controller,
-            vic_gains=VIC_GAINS,
+            vic_gains=vic_gains,
         ),
         fruiting_system=dataclasses.replace(
             gym_cfg.fruiting_system,
-            joint_angular_kd_overrides=JOINT_ANGULAR_KD_OVERRIDES,
-            joint_linear_kd_overrides=JOINT_LINEAR_KD_OVERRIDES,
-            joint_angular_kp_overrides=JOINT_ANGULAR_KP_OVERRIDES,
-            joint_linear_kp_overrides=JOINT_LINEAR_KP_OVERRIDES,
+            joint_angular_kd_overrides=joint_angular_kd,
+            joint_linear_kd_overrides=joint_linear_kd,
+            joint_angular_kp_overrides=joint_angular_kp,
+            joint_linear_kp_overrides=joint_linear_kp,
         ),
     )
 
@@ -344,7 +386,6 @@ def main() -> None:
         collect_batched_quasi_static_dataset,
         sample_and_broadcast_structure_params,
     )
-    from apple_pick_sim.fruiting_system import default_ranges_fixture_path
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
 
     stability_thresholds = StabilityThresholds()
@@ -356,6 +397,7 @@ def main() -> None:
 
     num_envs = num_structures * num_directions
     ranges_path = args.ranges_path or str(default_ranges_fixture_path())
+    ranges = load_ranges(ranges_path)
     config = build_trajectory_config(args)
     per_env_params = sample_and_broadcast_structure_params(
         ranges_path,
@@ -373,6 +415,7 @@ def main() -> None:
         settle_substeps=args.settle_substeps,
         settle_gravity_ramp=args.settle_gravity_ramp,
         settle_quiet_every=args.settle_quiet_every,
+        ranges=ranges,
     )
 
     env = ApplePickBatchedSysIdEnv(

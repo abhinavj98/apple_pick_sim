@@ -4,10 +4,10 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-07-06 |
+| **Last updated** | 2026-07-10 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[V].4** — batched sys-ID (V.4.2 parallel collection done; V.3.3 base env done) |
+| **Active work**  | **[V].5.1** — loss / feature pipeline hardening (GT consistently ranks best) |
 
 ---
 
@@ -30,11 +30,11 @@
 | **[P0]** | Done | Variational fruiting geometry, fixtures, force readouts, `example_fruiting_system.py` |
 | **[M1]** | Done | MuJoCo + VBD coupling, FR3, VIC teleop, settle→weld (`docs/mujoco-vbd-coupling-architecture.md`) |
 | **[M2]** | Partial | M2.1 `ApplePickCoupled-v0` shipped; RL/FID slices in backlog |
-| **[M3]** | Infra done | Sys-ID recording, replay, subprocess MMD grid (`docs/system_identification.md`); batched paths → **V.4** / **V.5** |
+| **[M3]** | Infra done | Sys-ID recording, replay, legacy single-env MMD grid (`docs/system_identification.md`); batched paths → **V.4** / **V.5** |
 | **[V].1–2** | Done | Batched `replicate(N)`, heterogeneous per-env DR, fixtures, runtime actions (`docs/vectorized-coupled-fruiting.md`) |
-| **[V].3** | **Now** | Sim API extraction + `apple_pick_gym` on batched heterogeneous backend (V.3.3 done; V.3.4–V.3.5 pending) |
-| **[V].4** | **Now** | Batched sys-ID — parallel collection done; digital-twin replay verification next |
-| **[V].5** | Next | Sim-sim transfer wrap-up — CEM, held-out validation (absorbs former **[S]** / M3.2) |
+| **[V].3** | Partial | Sim API + batched gym (V.3.3 done; V.3.4–V.3.5 pending) |
+| **[V].4** | Done | Parallel collect, batched replay, in-process MSE/Wasserstein grid; V.4.2.1 digital-twin fidelity capstone deferred |
+| **[V].5** | **Now** | Loss hardening → CEM → held-out sim-sim validation (absorbs former **[S]** / M3.2) |
 | **[M4]** | Later | Real-data collection — after **V.5** |
 | **[M5]** | Later | Final pick policy |
 
@@ -42,20 +42,32 @@
 
 ## Current focus
 
-**Next slice:** **V.4.2.1** — verify batched sys-ID replay via the **digital-twin init path**: frame-0 woody/TCP observations + `params_fingerprint` / fixture metadata (not full privileged `fruiting_system_params` alone). Capstone on `batched_sysid_v1` datasets.
+**Next slice:** **V.5.1** — harden the loss / feature pipeline so the **GT stiffness candidate consistently ranks best** on the batched grid (outlier / unstable frame & direction handling, scoring contract, optional CLI `--score-mmd` wiring).
 
-**Goal:** Finish **[V].4** replay fidelity on the observation-derived initializer → **[V].4.3** in-process MMD → **[V].5** (CEM + held-out sim-sim validation). Closes the no-field-data calibration loop before **[M4]**.
+**Shipped wins (do not reimplement):**
 
-**Specs:** `docs/batched-sysid-dataset.md`, `docs/digital-twin.md`, `docs/sysid-trajectory-storage.md`, `docs/material-parameter-sampling.md`, `docs/system_identification.md`
+- Settle stack: quiet / zero-qd, opt-in gravity ramp, settle cache, KE/QS diagnostics (`docs/vectorized-coupled-fruiting.md`)
+- **V.4.2** parallel GT collection (`batched_sysid_v1`, `example_batched_collect_sysid_data.py`)
+- Batched recorded-action replay (`replay_batched_sysid_structure`)
+- **V.4.3** in-process GPU-batched stiffness grid: MSE + Sinkhorn Wasserstein + Plotly viz (`example_batched_sysid_mmd_grid.py`; alignment notes in `docs/sysid-mmd-grid-replay-alignment.md`)
+
+**Existing mitigations to build on (not yet a full hardening stage):** `mmd_features.py` `stable` mask, `trajectory_hold_aggregated_mse` median aggregation, grid-viz candidate `disqualified` flags, hold impulse flags in `batched_hold_quasi_static.py`, online `batched_stability_monitor` (`docs/batched-stability-monitor-design.md`).
+
+**Deferred (not Current focus):** **V.4.2.1** — helpers + `--infer-params` exist; default sim-sim path still uses oracle `fruiting_system_params`; no infer-only fidelity floor test yet.
+
+**Goal:** Reliable GT-preferring scores on the shipped grid → **V.5.2** CEM → **V.5.3** held-out validation → **[M4]**.
+
+**Specs:** `docs/system_identification.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/batched-sysid-dataset.md`, `docs/digital-twin.md`, `docs/material-parameter-sampling.md`
 
 **Build on (do not reimplement):**
 
 - [M1] `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_fr3`, `measure_fruiting_forces`, `sample_params` / `params_fingerprint`, VIC joint torques (`docs/variable-impedance-teleop.md`)
 - [M2.1] `apple_pick_gym/` observation contract v3 (`docs/gym-observation-contract.md`); θ packing reused in V.4 / V.5
+- [V.4.3] `batched_sysid_mmd_grid.py`, `evaluate_batched_mmd_grid` / `score_candidate_mmd` (library), MSE/Wasserstein CLI paths
 
 ### Next up (ordered)
 
-**[V].3 — sim API + gym migration**
+**[V].3 — sim API + gym migration** (parallel / lower priority)
 
 - [x] **V.3.1 — Extract batched heterogeneous sim API:** `BatchedHeterogeneousCoupledSim` + config dataclass in `apple_pick_sim/coupled_fruiting/`. Surface: `build()`, `step(per_env_actions)`, `gather_obs()`, layout/scene accessors. No `argparse` / viewer in library; tests import library, not `examples/`.
 - [x] **V.3.2 — Thin heterogeneous example:** `example_batched_heterogeneous_coupled_sim.py` (canonical entry point); `test_heterogeneous_coupled_fruiting.py` imports library, not monolith example.
@@ -65,21 +77,25 @@
 
 **[V].4 — batched sys-ID** (backend: V.3.1 API + V.3.3 batched gym)
 
-- [ ] **V.4.1 — `gather_transitions()` + recorded-action replay**
+- [x] **V.4.1 — Recorded-action replay:** `replay_batched_sysid_structure` drives recorded EE actions on candidate stiffnesses. (No `gather_transitions()` API symbol; transition bags live in MMD/Wasserstein feature code — backlog if a public gather API is needed.)
 - [x] **V.4.2 — Parallel GT collection:** `ApplePickBatchedSysIdEnv`, `example_batched_collect_sysid_data.py`, `batched_sysid_v1` Parquet layout (`docs/batched-sysid-dataset.md`).
-- [ ] **V.4.2.1 — Digital-twin replay verification:** replay from frame-0 observations + `params_fingerprint` / fixture metadata via `digital_twin_obs_from_episode` / `observation_reset_options_from_parquet` on batched datasets; extend or add capstone beyond `test_batched_sysid_replay_fidelity.py` (which currently resets with full `fruiting_system_params`).
-- [ ] **V.4.3 — In-process batched MMD** (replaces `run_system_identification.py` subprocess grid)
-- [ ] **V.4.4 — Sys-ID tooling at batch scale** (native v1 replay, dashboard; deprecate subprocess patterns)
+- [ ] **V.4.2.1 — Digital-twin replay verification (deferred):** helpers + CLI `--infer-params` exist (`batched_digital_twin_init.py`); fidelity capstone still uses full `fruiting_system_params` / oracle default. Not Current focus.
+- [x] **V.4.3 — In-process batched grid:** `example_batched_sysid_mmd_grid.py` + `batched_sysid_mmd_grid.py` (MSE / Sinkhorn Wasserstein + viz). Library MMD (`evaluate_batched_mmd_grid`) exists; CLI `--score-mmd` optional leftover → V.5.1. Legacy single-env: `run_system_identification.py`.
+- [ ] **V.4.4 — Sys-ID tooling at batch scale** (native v1 replay dashboard; further deprecate legacy subprocess patterns)
 
 **[V].5 — sim-sim transfer wrap-up**
 
-- [ ] **V.5.1 — MMD feature pipeline + objective contract** (M3.1.2 gaps)
+- [ ] **V.5.1 — Loss / feature pipeline hardening (Next):**
+  - Outlier / unstable frame & direction handling beyond current `stable` mask + median hold agg + candidate disqualification
+  - Scoring contract so GT ranks best on hold MSE / Wasserstein (and MMD when wired)
+  - Optional CLI `--score-mmd` exposing `evaluate_batched_mmd_grid`
+  - Documented invariants + tests for GT preference under known-good datasets
 - [ ] **V.5.2 — CEM calibration loop** (M3.2)
 - [ ] **V.5.3 — Held-out sim-sim validation** + [M4] handoff criteria
 
 **[M3] parallel infra** (optional alongside [V])
 
-- [x] **M3.0.4 — Digital-twin fixture catalog:** `digital_twin_fixture_catalog.json`, `digital_twin_obs_straight_rod_initial.json`, and catalog tests shipped. Batched replay still needs V.4.2.1 to exercise frame-0 obs + fingerprint init on `batched_sysid_v1` datasets.
+- [x] **M3.0.4 — Digital-twin fixture catalog:** `digital_twin_fixture_catalog.json`, `digital_twin_obs_straight_rod_initial.json`, and catalog tests shipped. Batched infer-only fidelity floor remains V.4.2.1 (deferred).
 - [ ] **M3.0.5 — §2.2–2.3 excitation trajectories** (log chirp, torsional) — wire through V.4 when added
 
 ---
@@ -97,10 +113,10 @@ Key M1 docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md
 | Slice | Status | Notes |
 | ----- | ------ | ----- |
 | M3.0.1–M3.0.3 | Done | §2.1 trajectory, Parquet recording, observation-only replay |
-| M3.1.1 | Done | Subprocess MMD grid — superseded by V.4.3 |
+| M3.1.1 | Done | Legacy single-env MMD grid — superseded by V.4.3 |
 | M3.0.4 | Done | Fixture catalog + example obs JSON committed; `test_digital_twin.py` passes (`docs/digital-twin.md`) |
 | M3.0.5 | Planned | §2.2–2.3 trajectories → V.4 backend |
-| M3.1.2 | → V.5.1 | MMD feature pipeline |
+| M3.1.2 | → V.5.1 | Loss / feature pipeline hardening |
 | M3.2 | → V.5.2 | CEM calibration |
 
 ### [V] Batched vectorization
@@ -121,12 +137,12 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.3.3** | Done | `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`, episode snapshot reset |
 | **V.3.4** | Planned | Migrate gym envs |
 | **V.3.5** | Planned | Migrate gym examples (`num_envs=1` parity) |
-| **V.4.1** | Planned | `gather_transitions()` + recorded replay |
+| **V.4.1** | Done | Recorded-action replay (`replay_batched_sysid_structure`) |
 | **V.4.2** | Done | Parallel GT collection (`batched_sysid_v1`, `ApplePickBatchedSysIdEnv`) |
-| **V.4.2.1** | **Next** | Digital-twin replay: frame-0 obs + `params_fingerprint` on batched datasets |
-| **V.4.3** | Planned | In-process batched MMD diagnostic |
+| **V.4.2.1** | Deferred | Infer-params / obs-init fidelity capstone (helpers exist; not Current focus) |
+| **V.4.3** | Done | In-process batched MSE/Wasserstein grid + viz; library MMD present |
 | **V.4.4** | Planned | Native v1 replay/dashboard at batch scale |
-| **V.5.1** | Planned | MMD feature contract for CEM |
+| **V.5.1** | **Next** | Loss / feature pipeline hardening (GT rank reliability) |
 | **V.5.2** | Planned | CEM θ loop |
 | **V.5.3** | Planned | Held-out validation; [M4] handoff |
 
@@ -134,14 +150,15 @@ Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_co
 
 **Consumers after V.5:** [M4] real-data validation; M2.3 / M2.2c parallel RL envs.
 
-> Former **[S] sim-sim transfer** is fully absorbed into **V.4** (MMD diagnostic) and **V.5** (CEM + validation).
+> Former **[S] sim-sim transfer** is fully absorbed into **V.4** (grid diagnostic) and **V.5** (loss hardening + CEM + validation).
 
 ---
 
 ## Backlog
 
 - **[M2] remaining** — resume after V.5 or V.3.5 if directed; batched backend needs V.3.3–V.3.5
-- **[V] deferred** — per-env geometry DR on reset without rebuild; `(N, act_dim)` policy tensor path; batched VIC as default gym controller
+- **[V] deferred** — per-env geometry DR on reset without rebuild; `(N, act_dim)` policy tensor path; batched VIC as default gym controller; public `gather_transitions()` API if needed beyond feature bags
+- **V.4.2.1** — infer-only digital-twin fidelity floor on `batched_sysid_v1`
 - **Scope changes** — additional manipulators/crops; triangle mesh import (P0 stays capsules)
 - **[M4]** real-data pipeline, **[M5]** final pick policy — after V.5
 
@@ -157,7 +174,7 @@ Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_co
 | ---- | ---- |
 | `apple_pick_sim/` | Simulation (`fruiting_system/`, `coupled_fruiting/`, `examples/`, tests) |
 | `apple_pick_sim/coupled_fruiting/` | Coupled sim; `BatchedHeterogeneousCoupledSim` + `batched_heterogeneous_config.py` (V.3.1) |
-| `apple_pick_gym/` | Gymnasium adapter; `envs/` (legacy single-world), `batched_envs/` (V.3.3+), `batched_examples/` |
+| `apple_pick_gym/` | Gymnasium adapter; `envs/` (legacy single-world), `batched_envs/` (V.3.3+ grid/collect), `batched_examples/` |
 | `newton/` | Upstream physics submodule (vendored) |
 | `docs/` | Vision, roadmap, architecture notes — start at `docs/CODEBASE_GUIDE.md` for a map of the codebase and this directory |
 
@@ -179,6 +196,11 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --viewer null 
 # Coupling verification
 uv run python apple_pick_sim/diagnostics/verify_coupling.py --num-substeps 600 --max-force 5 --max-torque 1
 
+# Settle stack
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_settle_then_weld.py \
+  apple_pick_sim/tests/test_settled_checkpoint.py -q
+
 # [V].3 heterogeneous batched coupled (library API + thin example; FR3 required)
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_batched_heterogeneous_build.py \
@@ -199,15 +221,30 @@ uv run --env-file pytest.env python -m pytest \
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_fruiting_system.py -q \
   -k "material or youngs or damping_ratio or sample_params"
 
-# [V].4 batched sys-ID collection + replay capstone
+# [V].4 batched sys-ID collection + replay
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_batched_trajectory_store.py \
   apple_pick_gym/tests/test_batched_sysid_env.py \
   apple_pick_gym/tests/test_batched_sysid_collect.py \
+  apple_pick_gym/tests/test_batched_sysid_replay.py \
   apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py -q
 uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
   --viewer null --num-structures 2 --num-directions 3 \
   --max-steps 200 --output /tmp/batched_sysid_dataset
+
+# [V].4.3 in-process batched stiffness grid (MSE / Wasserstein)
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py \
+  apple_pick_gym/tests/test_batched_sysid_grid_viz_table.py \
+  apple_pick_gym/tests/test_batched_sysid_grid_viz_integration.py \
+  apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py -q
+uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py \
+  --viewer null --dataset /tmp/batched_sysid_dataset --replay-only --score-mse \
+  --plot-output /tmp/mmd_grid \
+  --primary-bend-stiffness-values 1e-4,2e-4 \
+  --secondary-bend-stiffness-values 1e-4 \
+  --spur-bend-stiffness-values 1e-4 \
+  --stem-bend-stiffness-values 1e-4,2e-4
 
 # [V].3.3 batched gym base + VIC env
 uv run --env-file pytest.env python -m pytest \
@@ -221,7 +258,7 @@ uv run --env-file pytest.env python -m pytest \
 uv run python apple_pick_gym/examples/example_gym_sysid.py \
   --viewer null --n-directions 1 --max-steps 200 --output /tmp/apple_pick_sysid_gt
 
-# M3.1.1 subprocess MMD grid (superseded by V.4.3)
+# Legacy single-env MMD grid (prefer example_batched_sysid_mmd_grid.py for batched_sysid_v1)
 uv run python apple_pick_gym/examples/run_system_identification.py \
   --dataset /tmp/apple_pick_sysid_gt --viewer null \
   --primary-bend-stiffness-values 10,25 \

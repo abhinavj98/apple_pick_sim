@@ -18,7 +18,7 @@ If **vision**, **roadmap**, and **code** disagree, **stop** and report the confl
 |------|------|
 | `apple_pick_sim/` | Project-local simulation code; runnable examples in `examples/`. |
 | `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py` | Canonical batched heterogeneous coupled simulation demo (V.3.2). |
-| `apple_pick_sim/examples/legacy/` | Deprecated scripts (pre–V.3.2 monolith; unmigrated CLI flags). |
+| `apple_pick_gym/` | Gymnasium adapter; `batched_envs/` + `batched_examples/` for parallel collect / MMD grid. |
 | `newton/` | Upstream Newton **git submodule**; treat as vendored unless the task is explicitly to patch or sync it. |
 | `docs/` | Project vision and roadmap (this repo’s planning docs, not `newton/docs/`). |
 

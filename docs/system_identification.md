@@ -151,23 +151,26 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | M3.0 §2.1 quasi-static | **Done** (trajectory + gym replay) | `apple_pick_sim/system_id/`, `apple_pick_gym/envs/apple_pick_sysid_env.py`; implementation notes below |
 | M3.0.2 recording + privileged-state replay | **Done** | `TrajectoryWriter`, `TrajectoryDataset`, `ApplePickReplayEnv`, `example_gym_replay.py`, `docs/sysid-trajectory-storage.md` |
 | M3.0.3 observation-only replay init | **Done** | Observation-only Parquet replay is the default initializer (`--use-snapshot` opts into the privileged `.npz` path instead); spec in `docs/digital-twin.md` |
-| M3.1.1 MMD stiffness grid | **Done** | `apple_pick_gym/examples/run_system_identification.py --mmd-output <dir>` sweeps `primary` / `secondary` / `spur` / `stem` `bend_stiffness` values, replays recorded actions, and ranks candidates by hold-phase biased MMD². |
+| M3.1.1 MMD stiffness grid (legacy single-env) | **Done** | `apple_pick_gym/examples/run_system_identification.py --mmd-output <dir>` — prefer V.4.3 batched grid for `batched_sysid_v1` |
 | M3.0.4 digital-twin fixture catalog | **Done** | `digital_twin_fixture_catalog.json`, example obs JSON, `test_digital_twin.py`; see `docs/digital-twin.md` |
 | V.4.2 batched parallel collection | **Done** | `ApplePickBatchedSysIdEnv`, `batched_sysid_v1` layout; see `docs/batched-sysid-dataset.md` |
-| V.4.2.1 batched digital-twin replay | **Next** | Frame-0 obs + `params_fingerprint` init on `batched_sysid_v1`; extend replay fidelity capstone |
+| V.4.3 in-process batched grid | **Done** | `example_batched_sysid_mmd_grid.py` + `batched_sysid_mmd_grid.py` (MSE / Sinkhorn Wasserstein + viz); library MMD via `evaluate_batched_mmd_grid`; see `docs/sysid-mmd-grid-replay-alignment.md` |
+| V.4.2.1 batched digital-twin fidelity | **Deferred** | Helpers + CLI `--infer-params` exist; infer-only fidelity floor not yet a capstone test — see `docs/ROADMAP.md` |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
-| M3.1 MMD features | Planned | — |
-| M3.2 CEM loop | Planned | — |
+| V.5.1 loss / feature hardening | **Next** | Outlier / unstable frame & direction handling so GT ranks best; optional CLI `--score-mmd`; see `docs/ROADMAP.md` |
+| M3.2 / V.5.2 CEM loop | Planned | — |
 
 ### Batched MMD grid base geometry (2026-07-06)
 
-The batched in-process MMD grid (`apple_pick_gym/batched_envs/batched_sysid_mmd_grid.py`) replays recorded actions while sweeping per-segment `bend_stiffness`. Its **base** `FruitingSystemParams` template (rod lengths, directions, material scalars) must match the structure that produced the recorded GT trajectories.
+The batched in-process grid (`apple_pick_gym/batched_envs/batched_sysid_mmd_grid.py`) replays recorded actions while sweeping per-segment `bend_stiffness`. Its **base** `FruitingSystemParams` template (rod lengths, directions, material scalars) must match the structure that produced the recorded GT trajectories.
 
 **Previous behavior:** `replay_batched_sysid_structure` and `gt_bend_stiffness_candidate_from_structure` called `infer_base_params_for_structure`, which chord-fits rod length/direction from post-settle pre-weld woody junction anchors (`infer_segment_geometry` in `apple_pick_sim/digital_twin/from_obs.py`). Gravity sag bends rods before that frame, so chord length/angle underestimate rest length and diverge from nominal orientation.
 
-**Current behavior (sim-to-sim):** both call sites use `true_params_for_structure`, which deserializes the recorded `fruiting_system_params` metadata written at collection time (`apple_pick_gym/batched_envs/batched_sysid_collect.py`). Only `bend_stiffness` is varied per grid candidate via `BendStiffnessCandidate.apply_to`.
+**Current behavior (sim-to-sim default):** both call sites use `true_params_for_structure`, which deserializes the recorded `fruiting_system_params` metadata written at collection time (`apple_pick_gym/batched_envs/batched_sysid_collect.py`). Only `bend_stiffness` is varied per grid candidate via `BendStiffnessCandidate.apply_to`.
 
-**Reserved for field data:** `infer_base_params_for_structure` remains exported for future observation-only replay (ROADMAP V.4.2.1) where true params are unavailable. The legacy single-env path (`observation_reset_options_from_parquet`) already prefers serialized true params when present.
+**Opt-in digital twin:** CLI `--infer-params` switches build params to `infer_base_params_for_structure` (obs-inferred geometry). Independent of `--use-snapshot` (privileged state restore). Infer-only fidelity floor remains deferred V.4.2.1. Online unstable-env signal during collect/grid: `docs/batched-stability-monitor-design.md`.
+
+**Current scoring mitigations (not yet V.5.1 hardening):** `stable` frame mask in `mmd_features.py`, median hold aggregation in `trajectory_hold_aggregated_mse`, candidate `disqualified` flags in grid viz, hold impulse flags in `batched_hold_quasi_static.py`.
 
 **Tests:** `test_true_params_for_structure_returns_exact_sampled_params`, `test_gt_bend_stiffness_candidate_from_structure_reads_true_stiffness`, `test_replay_structure_uses_true_params_geometry`.
 
@@ -179,9 +182,23 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py -q
 ```
 
-Verify §2.1: see [Implementation notes: §2.1 quasi-static stepped mapping](#implementation-notes-21-quasi-static-stepped-mapping) below (pytest + `example_gym_sysid.py`). Broader M3 schedule: `docs/ROADMAP.md`.
+Verify §2.1: see [Implementation notes: §2.1 quasi-static stepped mapping](#implementation-notes-21-quasi-static-stepped-mapping) below (pytest + `example_gym_sysid.py`). Broader schedule: `docs/ROADMAP.md`.
 
-Diagnostic bend-stiffness grid smoke:
+Preferred batched grid smoke (`batched_sysid_v1`):
+
+```bash
+uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py \
+  --viewer null --dataset /tmp/batched_sysid_dataset --replay-only --score-mse \
+  --plot-output /tmp/mmd_grid \
+  --primary-bend-stiffness-values 1e-4,2e-4 \
+  --secondary-bend-stiffness-values 1e-4 \
+  --spur-bend-stiffness-values 1e-4 \
+  --stem-bend-stiffness-values 1e-4,2e-4
+```
+
+### Legacy single-env MMD grid
+
+Diagnostic bend-stiffness grid on the **legacy** Parquet layout:
 
 ```bash
 uv run python apple_pick_gym/examples/run_system_identification.py \
@@ -227,12 +244,12 @@ simulator tuning or CEM.
 
 Alongside hold MSE on the batched stiffness grid, a **Geomloss Sinkhorn**
 objective on the same hold-phase transition bags \(v_t=[s_t,\Delta s_t]\) is
-planned for ranking validation (GT preference + Spearman vs MSE) before any
-CMA-ES/CEM objective swap. Design:
+**shipped** (`apple_pick_sim/system_id/wasserstein.py`, `wasserstein_ranking.py`;
+CLI `--score-wasserstein` on `example_batched_sysid_mmd_grid.py`). Design:
 `docs/specs/2026-07-08-wasserstein-sysid-ranking-design.md`. This does not
-replace §4 CEM/MMD until ranking evidence supports it.
-The default initializer is observation-only Parquet replay. Use
-`--use-snapshot` only for privileged sim-to-sim debugging against
+replace §4 CEM/MMD until ranking evidence supports it (V.5.1 hardens GT preference
+further). On the legacy single-env path, the default initializer is observation-only
+Parquet replay; use `--use-snapshot` only for privileged sim-to-sim debugging against
 `initial_states/*.npz`.
 
 ## Implementation notes: §2.1 quasi-static stepped mapping

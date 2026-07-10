@@ -21,6 +21,7 @@ from apple_pick_gym.grid_viz_metrics import (
 )
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_from_episode_metadata,
+    infer_base_params_for_structure,
     initialize_batched_env_from_dataset,
     true_params_for_structure,
 )
@@ -403,11 +404,11 @@ def trajectory_mse(
         return {
             "n_frames": 0.0,
             "n_used_frames": 0.0,
-            "ft_wrist_mse": 0.0,
-            "ft_force_rmse": 0.0,
-            "ft_torque_rmse": 0.0,
-            "tcp_pos_mse": 0.0,
-            "apple_pos_mse": 0.0,
+            "ft_wrist_mse": float("nan"),
+            "ft_force_rmse": float("nan"),
+            "ft_torque_rmse": float("nan"),
+            "tcp_pos_mse": float("nan"),
+            "apple_pos_mse": float("nan"),
             "woody_pos_mse_by_segment": {},
         }
 
@@ -550,6 +551,8 @@ def score_candidate_mmd(
 ) -> MmdCandidateResult:
     """Score one replayed candidate against precomputed GT MMD context."""
     candidate_by_direction = combine_transition_features(replay_observations)
+    missing = sorted(set(gt_context) - set(candidate_by_direction))
+    missing_directions = tuple(int(d) for d in missing)
     per_direction: dict[int, float] = {}
     for direction, context in gt_context.items():
         candidate_features = candidate_by_direction.get(int(direction))
@@ -575,6 +578,7 @@ def score_candidate_mmd(
         stiffnesses=_candidate_stiffnesses(candidate),
         aggregate_mmd2=aggregate,
         per_direction_mmd2=per_direction,
+        missing_directions=missing_directions,
     )
 
 
@@ -652,6 +656,7 @@ def replay_candidates_for_structure(
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
     use_snapshot: bool = False,
+    use_oracle_params: bool = True,
 ) -> BatchedSysIdReplayCollectors:
     chunks = chunk_candidates(
         candidates,
@@ -673,6 +678,7 @@ def replay_candidates_for_structure(
             on_step=on_step,
             replay_sim_config=replay_sim_config,
             use_snapshot=bool(use_snapshot),
+            use_oracle_params=bool(use_oracle_params),
         )
         merged = collectors if merged is None else merged.concat_envs(collectors)
     assert merged is not None
@@ -999,6 +1005,18 @@ def iter_bend_stiffness_candidates(
         )
 
 
+def base_params_for_replay(
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+    *,
+    use_oracle_params: bool = True,
+):
+    """Select structure build params: oracle (default) or obs-inferred digital twin."""
+    if use_oracle_params:
+        return true_params_for_structure(dataset, int(structure_idx))
+    return infer_base_params_for_structure(dataset, int(structure_idx))
+
+
 def gt_bend_stiffness_candidate_from_structure(
     dataset: BatchedSysIdDataset,
     structure_idx: int,
@@ -1088,6 +1106,7 @@ def replay_batched_sysid_structure(
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
     use_snapshot: bool = False,
+    use_oracle_params: bool = True,
 ) -> BatchedSysIdReplayCollectors:
     """Replay recorded actions for one structure across bend-stiffness candidates."""
     num_candidates = len(candidates)
@@ -1098,7 +1117,11 @@ def replay_batched_sysid_structure(
         raise ValueError("num_directions must be >= 1")
 
     num_envs = num_candidates * d
-    base_params = true_params_for_structure(dataset, int(structure_idx))
+    base_params = base_params_for_replay(
+        dataset,
+        int(structure_idx),
+        use_oracle_params=bool(use_oracle_params),
+    )
     per_env_params = broadcast_structure_params(
         [c.apply_to(base_params) for c in candidates],
         d,
@@ -1135,7 +1158,6 @@ def replay_batched_sysid_structure(
                 dataset,
                 structure_idx=int(structure_idx),
                 num_directions=d,
-                num_candidates=num_candidates,
             )
         else:
             env.reset(seed=replay_seed)

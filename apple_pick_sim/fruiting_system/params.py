@@ -419,10 +419,135 @@ class FixtureArgs:
     robot_base_pos: tuple[float, float, float] | None = None
 
 
+_SIM_BUILD_JOINT_ROLES = frozenset({"support", "primary_spur", "spur_stem", "stem_apple"})
+_SIM_BUILD_ALLOWED_KEYS = frozenset(
+    {
+        "vic_gains",
+        "joint_angular_kd_overrides",
+        "joint_linear_kd_overrides",
+        "joint_angular_kp_overrides",
+        "joint_linear_kp_overrides",
+    }
+)
+_VIC_GAIN_KEYS = ("linear_k", "linear_d", "angular_k", "angular_d")
+
+
+@dataclasses.dataclass(frozen=True)
+class VicGainsConfig:
+    """TCP impedance gains from an optional ranges JSON ``sim_build.vic_gains`` block."""
+
+    linear_k: float
+    linear_d: float
+    angular_k: float
+    angular_d: float
+
+
+@dataclasses.dataclass(frozen=True)
+class SimBuildConfig:
+    """Optional sim-build knobs from a ranges JSON ``sim_build`` block."""
+
+    vic_gains: VicGainsConfig
+    joint_angular_kd_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
+    joint_linear_kd_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
+    joint_angular_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
+    joint_linear_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
+
+
 def _coerce_xyz_triplet(raw: object, *, field: str) -> tuple[float, float, float]:
     if not isinstance(raw, (list, tuple)) or len(raw) != 3:
         raise ValueError(f"args.{field} must be [x, y, z]")
     return (float(raw[0]), float(raw[1]), float(raw[2]))
+
+
+def _coerce_nonnegative_float(raw: object, *, field: str) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a finite float >= 0") from exc
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"{field} must be a finite float >= 0, got {raw!r}")
+    return value
+
+
+def _coerce_joint_overrides(raw: object, *, field: str) -> dict[str, float]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"sim_build.{field} must be a JSON object")
+    out: dict[str, float] = {}
+    for role, value in raw.items():
+        if role not in _SIM_BUILD_JOINT_ROLES:
+            raise ValueError(
+                f"sim_build.{field} has unknown joint role {role!r}; "
+                f"expected one of {sorted(_SIM_BUILD_JOINT_ROLES)}"
+            )
+        out[str(role)] = _coerce_nonnegative_float(
+            value, field=f"sim_build.{field}.{role}"
+        )
+    return out
+
+
+def _coerce_vic_gains(raw: object) -> VicGainsConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("sim_build.vic_gains must be a JSON object")
+    missing = [k for k in _VIC_GAIN_KEYS if k not in raw]
+    if missing:
+        raise ValueError(f"sim_build.vic_gains missing required keys: {missing}")
+    unknown = sorted(set(raw) - set(_VIC_GAIN_KEYS))
+    if unknown:
+        raise ValueError(f"sim_build.vic_gains has unknown keys: {unknown}")
+    return VicGainsConfig(
+        **{
+            key: _coerce_nonnegative_float(raw[key], field=f"sim_build.vic_gains.{key}")
+            for key in _VIC_GAIN_KEYS
+        }
+    )
+
+
+def _validate_sim_build(block: object) -> None:
+    """Raise ValueError if ``sim_build`` is present but invalid."""
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError("sim_build must be a JSON object")
+    unknown = sorted(set(block) - _SIM_BUILD_ALLOWED_KEYS)
+    if unknown:
+        raise ValueError(f"sim_build has unknown keys: {unknown}")
+    if "vic_gains" not in block:
+        raise ValueError("sim_build.vic_gains is required when sim_build is present")
+    _coerce_vic_gains(block["vic_gains"])
+    for field in (
+        "joint_angular_kd_overrides",
+        "joint_linear_kd_overrides",
+        "joint_angular_kp_overrides",
+        "joint_linear_kp_overrides",
+    ):
+        if field in block:
+            _coerce_joint_overrides(block[field], field=field)
+
+
+def parse_sim_build(ranges: dict) -> SimBuildConfig | None:
+    """Return ``sim_build`` knobs from ``ranges``, or ``None`` when absent."""
+    block = ranges.get("sim_build")
+    if block is None:
+        return None
+    if not isinstance(block, dict):
+        raise ValueError("sim_build must be a JSON object")
+    return SimBuildConfig(
+        vic_gains=_coerce_vic_gains(block["vic_gains"]),
+        joint_angular_kd_overrides=_coerce_joint_overrides(
+            block.get("joint_angular_kd_overrides"), field="joint_angular_kd_overrides"
+        ),
+        joint_linear_kd_overrides=_coerce_joint_overrides(
+            block.get("joint_linear_kd_overrides"), field="joint_linear_kd_overrides"
+        ),
+        joint_angular_kp_overrides=_coerce_joint_overrides(
+            block.get("joint_angular_kp_overrides"), field="joint_angular_kp_overrides"
+        ),
+        joint_linear_kp_overrides=_coerce_joint_overrides(
+            block.get("joint_linear_kp_overrides"), field="joint_linear_kp_overrides"
+        ),
+    )
 
 
 def parse_fixture_args(ranges: dict) -> FixtureArgs:
@@ -483,7 +608,8 @@ def load_ranges(path: str | Path) -> dict:
 
     Returns:
         Dict with keys ``primary``, ``secondary``, ``spur``, ``stem``, ``apple``, and
-        optionally ``args`` (``fruiting_base_pos`` / ``robot_base_pos`` as ``[x, y, z]``).
+        optionally ``args`` (``fruiting_base_pos`` / ``robot_base_pos`` as ``[x, y, z]``)
+        and ``sim_build`` (VIC gains + joint kp/kd overrides).
         A rod or ``apple`` entry may be JSON ``null`` (``None`` in Python) to omit that
         piece from sampling and scene construction (at least one rod must remain).
     """
@@ -1154,6 +1280,9 @@ def _validate_ranges(data: dict) -> None:
             raise ValueError(
                 f"spur_attach_fraction must lie in (0, 1), got {fraction}"
             )
+
+    if "sim_build" in data:
+        _validate_sim_build(data["sim_build"])
 
     args = data.get("args")
     if args is None:

@@ -21,8 +21,12 @@ from apple_pick_sim.fruiting_system import (
     sample_params,
     set_fruiting_joint_angular_kd_batched,
     set_fruiting_joint_angular_kp_batched,
+    set_fruiting_joint_linear_kd_batched,
 )
-from apple_pick_sim.fruiting_system.build import FRUITING_VBD_RIGID_JOINT_ANGULAR_KD
+from apple_pick_sim.fruiting_system.build import (
+    FRUITING_VBD_RIGID_JOINT_ANGULAR_KD,
+    FRUITING_VBD_RIGID_JOINT_LINEAR_KD,
+)
 from apple_pick_sim.fruiting_system.params import _fix_topology
 from apple_pick_sim.coupled_fruiting import (
     seed_fix_to_apple_from_settled,
@@ -286,6 +290,197 @@ def test_set_fruiting_joint_angular_kd_batched_changes_trajectory_after_steps(ra
     )
 
 
+def _linear_kd_at_joint(solver, global_joint_index: int) -> float:
+    import newton
+
+    jc_start = solver.joint_constraint_start.numpy()
+    kd = solver.joint_penalty_kd.numpy()
+    c0 = int(jc_start[global_joint_index])
+    return float(kd[c0 + newton.solvers.SolverVBD.JointSlot.LINEAR])
+
+
+def _reference_batched_joint_linear_kd_numpy(
+    solver,
+    matched_by_key: dict[str, list[int]],
+    label_kd: dict[str, float],
+    *,
+    num_envs: int,
+    joints_per_world: int,
+) -> np.ndarray:
+    import newton
+
+    jc_start = solver.joint_constraint_start.numpy()
+    kd_np = solver.joint_penalty_kd.numpy().copy()
+    lin_slot = newton.solvers.SolverVBD.JointSlot.LINEAR
+    for w in range(num_envs):
+        base = w * joints_per_world
+        for key, template_indices in matched_by_key.items():
+            kd_val = float(label_kd[key])
+            for template_joint in template_indices:
+                global_joint = base + int(template_joint)
+                c0 = int(jc_start[global_joint])
+                kd_np[c0 + lin_slot] = kd_val
+    return kd_np
+
+
+def test_set_fruiting_joint_linear_kd_batched_patches_all_envs(ranges):
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    num_envs = int(cable.model.world_count)
+    joints_per_world = _joints_per_world(cable)
+    j_primary = _template_joint_by_label(cable.fruiting_fixed_joints, "primary_secondary")
+    j_stem_apple = _template_joint_by_label(cable.fruiting_fixed_joints, "stem_apple")
+
+    set_fruiting_joint_linear_kd_batched(
+        cable.solver,
+        cable.fruiting_fixed_joints,
+        {"primary_secondary": 2.5, "stem_apple": 0.25},
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+
+    for w in range(num_envs):
+        base = w * joints_per_world
+        assert _linear_kd_at_joint(cable.solver, base + j_primary) == pytest.approx(2.5)
+        assert _linear_kd_at_joint(cable.solver, base + j_stem_apple) == pytest.approx(0.25)
+
+
+def test_set_fruiting_joint_linear_kd_batched_leaves_unmatched_joints_at_default(ranges):
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    num_envs = int(cable.model.world_count)
+    joints_per_world = _joints_per_world(cable)
+    j_spur_stem = _template_joint_by_label(cable.fruiting_fixed_joints, "spur_stem")
+
+    set_fruiting_joint_linear_kd_batched(
+        cable.solver,
+        cable.fruiting_fixed_joints,
+        {"primary_secondary": 3.0},
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+
+    for w in range(num_envs):
+        global_joint = w * joints_per_world + j_spur_stem
+        assert _linear_kd_at_joint(cable.solver, global_joint) == pytest.approx(
+            FRUITING_VBD_RIGID_JOINT_LINEAR_KD
+        )
+
+
+def test_set_fruiting_joint_linear_kd_batched_raises_on_unmatched_key(ranges):
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    with pytest.raises(ValueError, match="nonexistent_key_xyz"):
+        set_fruiting_joint_linear_kd_batched(
+            cable.solver,
+            cable.fruiting_fixed_joints,
+            {"nonexistent_key_xyz": 1.0},
+            num_envs=int(cable.model.world_count),
+            joints_per_world=_joints_per_world(cable),
+        )
+
+
+def test_set_fruiting_joint_linear_kd_batched_raises_on_ambiguous_match(ranges):
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    with pytest.raises(ValueError, match="ambiguous"):
+        set_fruiting_joint_linear_kd_batched(
+            cable.solver,
+            cable.fruiting_fixed_joints,
+            {"apple": 0.5, "stem_apple": 0.25},
+            num_envs=int(cable.model.world_count),
+            joints_per_world=_joints_per_world(cable),
+        )
+
+
+def test_set_fruiting_joint_linear_kd_batched_raises_on_negative_kd(ranges):
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    with pytest.raises(ValueError, match="negative"):
+        set_fruiting_joint_linear_kd_batched(
+            cable.solver,
+            cable.fruiting_fixed_joints,
+            {"stem_apple": -0.1},
+            num_envs=int(cable.model.world_count),
+            joints_per_world=_joints_per_world(cable),
+        )
+
+
+def test_set_fruiting_joint_linear_kd_batched_matches_python_loop_reference(ranges):
+    cable_a = _build_batched_cable_for_joint_kd(ranges)
+    cable_b = _build_batched_cable_for_joint_kd(ranges)
+    num_envs = int(cable_a.model.world_count)
+    joints_per_world = _joints_per_world(cable_a)
+    label_kd = {"primary_secondary": 2.0, "stem_apple": 0.2}
+    template_matched = {
+        "primary_secondary": [
+            _template_joint_by_label(cable_a.fruiting_fixed_joints, "primary_secondary")
+        ],
+        "stem_apple": [
+            _template_joint_by_label(cable_a.fruiting_fixed_joints, "stem_apple")
+        ],
+    }
+
+    set_fruiting_joint_linear_kd_batched(
+        cable_a.solver,
+        cable_a.fruiting_fixed_joints,
+        label_kd,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+
+    expected = _reference_batched_joint_linear_kd_numpy(
+        cable_b.solver,
+        template_matched,
+        label_kd,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+    actual = cable_a.solver.joint_penalty_kd.numpy()
+    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=0.0)
+
+
+def test_set_fruiting_joint_linear_kd_batched_persists_through_solver_step(ranges):
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    num_envs = int(cable.model.world_count)
+    joints_per_world = _joints_per_world(cable)
+    j_stem_apple = _template_joint_by_label(cable.fruiting_fixed_joints, "stem_apple")
+
+    set_fruiting_joint_linear_kd_batched(
+        cable.solver,
+        cable.fruiting_fixed_joints,
+        {"stem_apple": 2.5},
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+    _run_batched_vbd_substeps(cable, num_substeps=8, sim_dt=SUB_DT)
+
+    for w in range(num_envs):
+        global_joint = w * joints_per_world + j_stem_apple
+        assert _linear_kd_at_joint(cable.solver, global_joint) == pytest.approx(2.5)
+
+
+def test_set_fruiting_joint_linear_kd_batched_changes_trajectory_after_steps(ranges):
+    sim_dt = SUB_DT
+    substeps = 120
+
+    cable_default = _build_batched_cable_for_joint_kd(ranges)
+    _run_batched_vbd_substeps(cable_default, num_substeps=substeps, sim_dt=sim_dt)
+    q_default = cable_default.state_0.body_q.numpy().copy()
+
+    cable_patched = _build_batched_cable_for_joint_kd(ranges)
+    num_envs = int(cable_patched.model.world_count)
+    joints_per_world = _joints_per_world(cable_patched)
+    set_fruiting_joint_linear_kd_batched(
+        cable_patched.solver,
+        cable_patched.fruiting_fixed_joints,
+        {"stem_apple": 50.0},
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+    _run_batched_vbd_substeps(cable_patched, num_substeps=substeps, sim_dt=sim_dt)
+    q_patched = cable_patched.state_0.body_q.numpy().copy()
+
+    assert not np.allclose(q_default, q_patched, rtol=0.0, atol=1.0e-4), (
+        "batched patched stem_apple linear kd should change integrated trajectory"
+    )
+
+
 def _angular_kp_triple_at_joint(solver, global_joint_index: int) -> tuple[float, float, float]:
     import newton
 
@@ -308,7 +503,7 @@ def _reference_batched_joint_angular_kp_numpy(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     import newton
 
-    from apple_pick_sim.fruiting_system.build import _patch_angular_k_constraint_slot
+    from apple_pick_sim.fruiting_system.build import _patch_k_constraint_slot
 
     jc_start = solver.joint_constraint_start.numpy()
     k_np = solver.joint_penalty_k.numpy().copy()
@@ -322,10 +517,118 @@ def _reference_batched_joint_angular_kp_numpy(
             for template_joint in template_indices:
                 global_joint = base + int(template_joint)
                 c0 = int(jc_start[global_joint])
-                _patch_angular_k_constraint_slot(
+                _patch_k_constraint_slot(
                     k_np, k_min_np, k_max_np, c0 + ang_slot, kp_val
                 )
     return k_np, k_min_np, k_max_np
+
+
+def _linear_kp_triple_at_joint(solver, global_joint_index: int) -> tuple[float, float, float]:
+    import newton
+
+    jc_start = solver.joint_constraint_start.numpy()
+    k = solver.joint_penalty_k.numpy()
+    k_min = solver.joint_penalty_k_min.numpy()
+    k_max = solver.joint_penalty_k_max.numpy()
+    c0 = int(jc_start[global_joint_index])
+    slot = c0 + newton.solvers.SolverVBD.JointSlot.LINEAR
+    return float(k[slot]), float(k_min[slot]), float(k_max[slot])
+
+
+def test_set_fruiting_joint_linear_kp_batched_patches_all_envs(ranges):
+    from apple_pick_sim.fruiting_system import set_fruiting_joint_linear_kp_batched
+
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    num_envs = int(cable.model.world_count)
+    joints_per_world = _joints_per_world(cable)
+    j_primary = _template_joint_by_label(cable.fruiting_fixed_joints, "primary_secondary")
+    j_stem_apple = _template_joint_by_label(cable.fruiting_fixed_joints, "stem_apple")
+
+    set_fruiting_joint_linear_kp_batched(
+        cable.solver,
+        cable.fruiting_fixed_joints,
+        {"primary_secondary": 3.0e5, "stem_apple": 6.0e4},
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+
+    for w in range(num_envs):
+        base = w * joints_per_world
+        k_primary, _, kmax_primary = _linear_kp_triple_at_joint(
+            cable.solver, base + j_primary
+        )
+        k_stem, _, kmax_stem = _linear_kp_triple_at_joint(
+            cable.solver, base + j_stem_apple
+        )
+        assert k_primary == pytest.approx(3.0e5)
+        assert k_stem == pytest.approx(6.0e4)
+        assert kmax_primary >= 3.0e5
+        assert kmax_stem >= 6.0e4
+
+
+def test_set_fruiting_joint_linear_kp_batched_leaves_unmatched_joints_at_default(ranges):
+    from apple_pick_sim.fruiting_system import set_fruiting_joint_linear_kp_batched
+
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    num_envs = int(cable.model.world_count)
+    joints_per_world = _joints_per_world(cable)
+    j_spur_stem = _template_joint_by_label(cable.fruiting_fixed_joints, "spur_stem")
+    default_k, _, _ = _linear_kp_triple_at_joint(cable.solver, j_spur_stem)
+
+    set_fruiting_joint_linear_kp_batched(
+        cable.solver,
+        cable.fruiting_fixed_joints,
+        {"primary_secondary": 3.0e5},
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+
+    for w in range(num_envs):
+        global_joint = w * joints_per_world + j_spur_stem
+        k_spur, _, _ = _linear_kp_triple_at_joint(cable.solver, global_joint)
+        assert k_spur == pytest.approx(default_k)
+
+
+def test_set_fruiting_joint_linear_kp_batched_raises_on_unmatched_key(ranges):
+    from apple_pick_sim.fruiting_system import set_fruiting_joint_linear_kp_batched
+
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    with pytest.raises(ValueError, match="nonexistent_key_xyz"):
+        set_fruiting_joint_linear_kp_batched(
+            cable.solver,
+            cable.fruiting_fixed_joints,
+            {"nonexistent_key_xyz": 1.0e5},
+            num_envs=int(cable.model.world_count),
+            joints_per_world=_joints_per_world(cable),
+        )
+
+
+def test_set_fruiting_joint_linear_kp_batched_raises_on_ambiguous_match(ranges):
+    from apple_pick_sim.fruiting_system import set_fruiting_joint_linear_kp_batched
+
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    with pytest.raises(ValueError, match="ambiguous"):
+        set_fruiting_joint_linear_kp_batched(
+            cable.solver,
+            cable.fruiting_fixed_joints,
+            {"apple": 1.0e5, "stem_apple": 5.0e4},
+            num_envs=int(cable.model.world_count),
+            joints_per_world=_joints_per_world(cable),
+        )
+
+
+def test_set_fruiting_joint_linear_kp_batched_raises_on_negative_kp(ranges):
+    from apple_pick_sim.fruiting_system import set_fruiting_joint_linear_kp_batched
+
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    with pytest.raises(ValueError, match="negative"):
+        set_fruiting_joint_linear_kp_batched(
+            cable.solver,
+            cable.fruiting_fixed_joints,
+            {"stem_apple": -1.0},
+            num_envs=int(cable.model.world_count),
+            joints_per_world=_joints_per_world(cable),
+        )
 
 
 def test_set_fruiting_joint_angular_kp_batched_patches_all_envs(ranges):

@@ -190,6 +190,7 @@ def test_collect_batched_quasi_static_dataset_writes_v1_layout(tmp_path: Path):
     assert sim_config["controller"]["mode"] == "vic"
     assert sim_config["settle_substeps"] == 8
     assert "joint_angular_kd_overrides" in sim_config
+    assert "joint_linear_kd_overrides" in sim_config
 
     ep00 = dataset.load_episode_metadata(0, 0)
     ep01 = dataset.load_episode_metadata(0, 1)

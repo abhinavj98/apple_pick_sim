@@ -46,7 +46,9 @@ def test_help_smoke_via_subprocess():
     assert "--dataset" in proc.stdout
     assert "--replay-only" in proc.stdout
     assert "--score-mse" in proc.stdout
+    assert "--score-wasserstein" in proc.stdout
     assert "--primary-bend-stiffness-values" in proc.stdout
+    assert "--settle-quiet-every" in proc.stdout
 
 
 def test_parser_defaults_and_grid_args(monkeypatch):
@@ -79,11 +81,13 @@ def test_parser_defaults_and_grid_args(monkeypatch):
     assert args.seed is None
     assert args.replay_only is False
     assert args.score_mse is False
+    assert args.score_wasserstein is False
     assert args.grid_values_are_gt_multipliers is False
     assert args.primary_bend_stiffness_values == (1.0, 2.0)
     assert args.secondary_bend_stiffness_values == (10.0,)
     assert args.spur_bend_stiffness_values == (100.0,)
     assert args.stem_bend_stiffness_values == (1000.0, 2000.0)
+    assert args.use_snapshot is False
 
 
 def test_parser_accepts_structure_indices_and_batch_limits(monkeypatch):
@@ -213,10 +217,61 @@ def test_sim_config_stays_in_module_constants():
     assert cfg == dataclasses.replace(
         gym_cfg,
         runtime=dataclasses.replace(gym_cfg.runtime, control_hz=module.CONTROL_HZ),
-        scene=dataclasses.replace(gym_cfg.scene, settle_substeps=module.SETTLE_SUBSTEPS),
+        scene=dataclasses.replace(
+            gym_cfg.scene,
+            settle_substeps=module.SETTLE_SUBSTEPS,
+            settle_gravity_ramp=module.SETTLE_GRAVITY_RAMP,
+            settle_quiet_every=module.SETTLE_QUIET_EVERY,
+        ),
         controller=dataclasses.replace(
             gym_cfg.controller,
             vic_gains=module.VIC_GAINS,
         ),
+        fruiting_system=dataclasses.replace(
+            gym_cfg.fruiting_system,
+            joint_angular_kd_overrides=module.JOINT_ANGULAR_KD_OVERRIDES,
+            joint_linear_kd_overrides=module.JOINT_LINEAR_KD_OVERRIDES,
+            joint_angular_kp_overrides=module.JOINT_ANGULAR_KP_OVERRIDES,
+            joint_linear_kp_overrides=module.JOINT_LINEAR_KP_OVERRIDES,
+        ),
     )
     assert cfg.controller.mode == "vic"
+
+
+def test_build_sim_config_settle_override():
+    module = _load_example_module()
+    cfg = module.build_sim_config(num_envs=2, settle_substeps=0)
+    assert cfg.scene.settle_substeps == 0
+
+
+def test_build_sim_config_settle_override_is_int_coerced():
+    module = _load_example_module()
+    cfg = module.build_sim_config(num_envs=2, settle_substeps=1.0)
+    assert cfg.scene.settle_substeps == 1
+
+
+def test_build_sim_config_settle_quiet_every_override():
+    module = _load_example_module()
+    cfg = module.build_sim_config(num_envs=2, settle_quiet_every=200)
+    assert cfg.scene.settle_quiet_every == 200
+
+
+def test_settle_config_kwargs_snapshot_disables_settle():
+    module = _load_example_module()
+    args = argparse.Namespace(
+        settle_substeps=5000,
+        settle_gravity_ramp=True,
+        settle_quiet_every=100,
+    )
+    kwargs = module._settle_config_kwargs(args=args, use_snapshot=True)
+    assert kwargs == {
+        "settle_substeps": 0,
+        "settle_gravity_ramp": False,
+        "settle_quiet_every": None,
+    }
+
+
+def test_build_sim_config_accepts_device_override():
+    module = _load_example_module()
+    cfg = module.build_sim_config(num_envs=2, device="cpu")
+    assert cfg.runtime.device == "cpu"

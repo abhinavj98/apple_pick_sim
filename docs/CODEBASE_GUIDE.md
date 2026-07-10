@@ -74,7 +74,7 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`, `ApplePickBatchedSysIdEnv`, `batched_sysid_collect.py` |
 | `apple_pick_gym/batched_examples/` | `example_batched_collect_sysid_data.py`, `example_batched_gym_keyboard.py` |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |
-| `docs/` | This documentation set (below). `docs/superpowers/specs/` holds dated point-in-time design notes for already-shipped features (MMD grid diagnostic, sys-ID dashboard) — historical, not living docs |
+| `docs/` | This documentation set (below). `docs/specs/` holds dated point-in-time design notes (MMD grid visualization, Wasserstein ranking validation, sys-ID dashboard) — historical, not living docs |
 
 ## Document index
 

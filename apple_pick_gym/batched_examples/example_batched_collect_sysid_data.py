@@ -17,12 +17,14 @@ Headless smoke::
       --output /tmp/batched_sysid_smoke
 
 Sim build (VIC gains, settle substeps, control_hz, …) is configured via module
-constants in this file, not CLI flags.
+constants in this file; settle phase knobs also accept ``--settle-substeps``,
+``--settle-gravity-ramp``, and ``--settle-quiet-every``.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import sys
 import time
@@ -36,6 +38,10 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
     ControllerConfig,
     DomainRandomizationConfig,
+    EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES,
+    EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES,
+    EXAMPLE_JOINT_LINEAR_KD_OVERRIDES,
+    EXAMPLE_JOINT_LINEAR_KP_OVERRIDES,
     FruitingSystemConfig,
     MujocoConfig,
     ObsConfig,
@@ -51,7 +57,6 @@ from apple_pick_sim.coupled_fruiting.scene import (
 )
 from apple_pick_sim.fruiting_system.params import PLACEHOLDER_EE_MASS_KG, GripperProxyConfig
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
-from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 from apple_pick_sim.system_id import QuasiStaticStepConfig
 from apple_pick_sim.system_id.quasi_static_trajectory import derive_n_steps
 from apple_pick_sim.system_id.trajectory_store import phase_to_int
@@ -61,17 +66,18 @@ CONTROL_HZ = 30.0
 SUB_DT = 1.0 / 1800.0
 ENV_SPACING = (2.0, 2.0, 2.0)
 SETTLE_SUBSTEPS = 5000
+SETTLE_GRAVITY_RAMP = False
+SETTLE_QUIET_EVERY: int | None = None
 VIC_GAINS = ImpedanceGains(
     linear_k=200.0,
     linear_d=10.0,
     angular_k=10.0,
     angular_d=1.0,
 )
-JOINT_ANGULAR_KD_OVERRIDES = {
-    "support": 1.0,
-    "primary_spur": 1.0,
-    "stem_apple": 1.0,
-}
+JOINT_ANGULAR_KD_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES
+JOINT_LINEAR_KD_OVERRIDES = EXAMPLE_JOINT_LINEAR_KD_OVERRIDES
+JOINT_ANGULAR_KP_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES
+JOINT_LINEAR_KP_OVERRIDES = EXAMPLE_JOINT_LINEAR_KP_OVERRIDES
 GRIPPER_PROXY = GripperProxyConfig(mass=PLACEHOLDER_EE_MASS_KG)
 
 
@@ -136,66 +142,43 @@ def build_trajectory_config(args: argparse.Namespace) -> QuasiStaticStepConfig:
     )
 
 
-def build_sim_config(*, num_envs: int) -> BatchedHeterogeneousCoupledSimConfig:
-    return BatchedHeterogeneousCoupledSimConfig(
-        runtime=RuntimeConfig(
-            num_envs=int(num_envs),
-            env_spacing=ENV_SPACING,
-            device=None,
+def build_sim_config(
+    *,
+    num_envs: int,
+    settle_substeps: int | None = None,
+    settle_gravity_ramp: bool | None = None,
+    settle_quiet_every: int | None = None,
+    device: str | None = None,
+) -> BatchedHeterogeneousCoupledSimConfig:
+    gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=int(num_envs))
+    settle = SETTLE_SUBSTEPS if settle_substeps is None else int(settle_substeps)
+    gravity_ramp = SETTLE_GRAVITY_RAMP if settle_gravity_ramp is None else bool(settle_gravity_ramp)
+    quiet_every = SETTLE_QUIET_EVERY if settle_quiet_every is None else settle_quiet_every
+    return dataclasses.replace(
+        gym_cfg,
+        runtime=dataclasses.replace(
+            gym_cfg.runtime,
             control_hz=CONTROL_HZ,
             sub_dt=SUB_DT,
+            env_spacing=ENV_SPACING,
+            device=device,
         ),
-        robot=RobotConfig(
-            kind="fr3",
-            step_mode="coupled",
-            fix_to_apple=True,
-            gripper=GRIPPER_PROXY,
-            robot_base_pos=None,
-            per_env_ik=True,
-            ik_bootstrap_iterations=IK_BOOTSTRAP_DEFAULT_ITERATIONS,
-            skip_ik_bootstrap=True,
-            defer_template_robot_bootstrap=True,
-            force_batched_layout=True,
+        scene=dataclasses.replace(
+            gym_cfg.scene,
+            settle_substeps=settle,
+            settle_gravity_ramp=gravity_ramp,
+            settle_quiet_every=quiet_every,
         ),
-        scene=SceneSettleCollisionConfig(
-            fruiting_base_pos=None,
-            settle_substeps=SETTLE_SUBSTEPS,
-            settle_gravity_ramp=False,
-            settle_max_speed_m_s=0.05,
-            enable_self_collisions=False,
-            enable_apple_woody_collisions=True,
-            enable_proxy_woody_collisions=True,
-        ),
-        domain_randomization=DomainRandomizationConfig(
-            ranges_path=None,
-            topology_seed=None,
-            per_env_params=None,
-        ),
-        fruiting_system=FruitingSystemConfig(
-            stem_coupling_gain=DEFAULT_STEM_COUPLING_GAIN,
-            stem_force_cap_N=DEFAULT_STEM_FORCE_CAP_N,
-            stem_torque_cap_Nm=DEFAULT_STEM_TORQUE_CAP_NM,
-            stem_harvest_explicit_apple_weight=False,
-            joint_angular_kd_overrides=dict(JOINT_ANGULAR_KD_OVERRIDES),
-        ),
-        controller=ControllerConfig(
-            mode="vic",
-            action_dim=6,
-            linear_speed=0.1,
-            angular_speed=0.1,
-            ik_iterations=96,
+        controller=dataclasses.replace(
+            gym_cfg.controller,
             vic_gains=VIC_GAINS,
-            allocate_action_buffer=True,
         ),
-        mujoco=MujocoConfig(
-            solver_kwargs=dict(DEFAULT_FR3_MUJOCO_SOLVER_KWARGS),
-            use_cpu=None,
-        ),
-        settle_diagnostics=None,
-        obs=ObsConfig(
-            allocate_buffers=True,
-            include_robot=True,
-            include_forces=True,
+        fruiting_system=dataclasses.replace(
+            gym_cfg.fruiting_system,
+            joint_angular_kd_overrides=JOINT_ANGULAR_KD_OVERRIDES,
+            joint_linear_kd_overrides=JOINT_LINEAR_KD_OVERRIDES,
+            joint_angular_kp_overrides=JOINT_ANGULAR_KP_OVERRIDES,
+            joint_linear_kp_overrides=JOINT_LINEAR_KP_OVERRIDES,
         ),
     )
 
@@ -274,6 +257,36 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Draw cyan pull-direction arrows at each TCP (requires --viewer gl).",
     )
+    p.add_argument(
+        "--save-snapshot",
+        action="store_true",
+        help=(
+            "Write post-weld initial_states/sXX_dYY.npz per episode (diagnostic only; "
+            "default off)."
+        ),
+    )
+    p.add_argument(
+        "--settle-substeps",
+        type=int,
+        default=None,
+        help=f"VBD substeps before runtime (default: {SETTLE_SUBSTEPS}).",
+    )
+    p.add_argument(
+        "--settle-gravity-ramp",
+        action=argparse.BooleanOptionalAction,
+        default=SETTLE_GRAVITY_RAMP,
+        help="Linear 0→−9.81 m/s² gravity ramp over all settle substeps (default: off).",
+    )
+    p.add_argument(
+        "--settle-quiet-every",
+        type=int,
+        default=SETTLE_QUIET_EVERY,
+        metavar="N",
+        help=(
+            "Zero all fruiting-system body twists every N VBD settle substeps "
+            "(device-side; default: off)."
+        ),
+    )
     return p
 
 
@@ -351,7 +364,16 @@ def main() -> None:
         num_directions=num_directions,
     )
 
-    sim_config = build_sim_config(num_envs=num_envs)
+    device = args.device
+    if device == "cuda":
+        device = "cuda:0"
+    sim_config = build_sim_config(
+        num_envs=num_envs,
+        device=device,
+        settle_substeps=args.settle_substeps,
+        settle_gravity_ramp=args.settle_gravity_ramp,
+        settle_quiet_every=args.settle_quiet_every,
+    )
 
     env = ApplePickBatchedSysIdEnv(
         num_envs=num_envs,
@@ -427,6 +449,7 @@ def main() -> None:
             command_argv=sys.argv,
             overwrite=bool(args.overwrite),
             stability_thresholds=stability_thresholds,
+            save_snapshot=bool(args.save_snapshot),
         )
         unstable_frames = 0
         total_frames = 0

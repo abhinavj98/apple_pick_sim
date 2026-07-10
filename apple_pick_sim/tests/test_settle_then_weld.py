@@ -5,7 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from apple_pick_sim.coupled_fruiting.settle_then_weld import settle_gravity_z_for_substep
+from apple_pick_sim.coupled_fruiting.settle_then_weld import (
+    settle_gravity_z_for_substep,
+    should_quiet_cable_bodies_at_settle_substep,
+)
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.placement import (
     IK_BOOTSTRAP_POS_TOL_M,
@@ -425,3 +428,39 @@ def test_settle_vbd_substeps_gravity_ramp_false_unchanged():
     cf.settle_vbd_substeps(settled, substeps=5, dt=SUB_DT, gravity_ramp=False)
     g_after = settled.cable.model.gravity.numpy()
     np.testing.assert_array_equal(g_after, g_before)
+
+
+def test_should_quiet_cable_bodies_at_settle_substep():
+    assert not should_quiet_cable_bodies_at_settle_substep(100, None)
+    assert not should_quiet_cable_bodies_at_settle_substep(100, 0)
+    assert not should_quiet_cable_bodies_at_settle_substep(3, 5)
+    assert should_quiet_cable_bodies_at_settle_substep(5, 5)
+    assert should_quiet_cable_bodies_at_settle_substep(10, 5)
+    assert should_quiet_cable_bodies_at_settle_substep(100, 100)
+
+
+def test_settle_vbd_substeps_quiet_every_invokes_device_quiet(monkeypatch):
+    import apple_pick_sim.coupled_fruiting.settle_then_weld as settle_mod
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    settled = build_coupled_fruiting_fr3(
+        ranges,
+        2,
+        vbd_only=True,
+        **_BUILD_KW,
+        gripper_proxy=fs.GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            fix_to_apple=False,
+        ),
+    )
+    quiet_calls: list[int] = []
+    real_quiet = settle_mod.quiet_all_cable_bodies
+
+    def _count_quiet(cable):
+        quiet_calls.append(int(cable.model.body_count))
+        real_quiet(cable)
+
+    monkeypatch.setattr(settle_mod, "quiet_all_cable_bodies", _count_quiet)
+    settle_mod.settle_vbd_substeps(settled, substeps=12, dt=SUB_DT, quiet_every=5)
+    assert quiet_calls == [int(settled.cable.model.body_count)] * 2

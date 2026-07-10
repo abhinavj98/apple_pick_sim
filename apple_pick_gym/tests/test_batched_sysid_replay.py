@@ -406,6 +406,9 @@ def test_replay_warns_on_manifest_sim_config_mismatch(tiny_batched_dataset: Batc
             }
         ),
     )
+    def _mismatched_sim_config_fn(*, num_envs: int, **_kwargs):
+        base = _test_sim_config(num_envs=int(num_envs))
+        return dataclasses.replace(base, fruiting_system=mismatched.fruiting_system)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -418,7 +421,7 @@ def test_replay_warns_on_manifest_sim_config_mismatch(tiny_batched_dataset: Batc
             build_env_fn=_build_env_fn(
                 ranges_path=RANGES_FIXTURE,
                 topology_seed=_SEED,
-                sim_config_fn=_test_sim_config,
+                sim_config_fn=_mismatched_sim_config_fn,
             ),
             replay_sim_config=mismatched,
         )

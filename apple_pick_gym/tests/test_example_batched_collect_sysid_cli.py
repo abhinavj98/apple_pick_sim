@@ -46,6 +46,10 @@ def test_collection_and_trajectory_cli_defaults(monkeypatch):
     assert args.overwrite is False
     assert args.debug is False
     assert args.show_pull_direction is False
+    assert args.save_snapshot is False
+    assert args.settle_substeps is None
+    assert args.settle_gravity_ramp is False
+    assert args.settle_quiet_every is None
     assert args.ranges_path is None
     assert args.movement_per_step_m == 0.02
     assert args.total_movement_m == 0.10
@@ -130,10 +134,34 @@ def test_sim_config_stays_in_module_constants():
     assert cfg == dataclasses.replace(
         gym_cfg,
         runtime=dataclasses.replace(gym_cfg.runtime, control_hz=module.CONTROL_HZ),
-        scene=dataclasses.replace(gym_cfg.scene, settle_substeps=module.SETTLE_SUBSTEPS),
+        scene=dataclasses.replace(
+            gym_cfg.scene,
+            settle_substeps=module.SETTLE_SUBSTEPS,
+            settle_gravity_ramp=module.SETTLE_GRAVITY_RAMP,
+            settle_quiet_every=module.SETTLE_QUIET_EVERY,
+        ),
         controller=dataclasses.replace(
             gym_cfg.controller,
             vic_gains=module.VIC_GAINS,
         ),
+        fruiting_system=dataclasses.replace(
+            gym_cfg.fruiting_system,
+            joint_angular_kd_overrides=module.JOINT_ANGULAR_KD_OVERRIDES,
+            joint_linear_kd_overrides=module.JOINT_LINEAR_KD_OVERRIDES,
+            joint_angular_kp_overrides=module.JOINT_ANGULAR_KP_OVERRIDES,
+            joint_linear_kp_overrides=module.JOINT_LINEAR_KP_OVERRIDES,
+        ),
     )
+
+
+def test_build_sim_config_settle_quiet_every_override():
+    module = _load_example_module()
+    cfg = module.build_sim_config(num_envs=2, settle_quiet_every=150)
+    assert cfg.scene.settle_quiet_every == 150
+
+
+def test_build_sim_config_accepts_device_override():
+    module = _load_example_module()
+    cfg = module.build_sim_config(num_envs=2, device="cpu")
+    assert cfg.runtime.device == "cpu"
     assert cfg.controller.mode == "vic"

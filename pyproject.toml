@@ -11,6 +11,7 @@ dependencies = [
 [project.optional-dependencies]
 gym = [
     "dash>=4.2.0",
+    "geomloss>=0.2.6",
     "gymnasium>=1.0.0",
     "plotly>=6.8.0",
     "pyarrow>=18.0.0",

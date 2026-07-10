@@ -372,6 +372,7 @@ def collect_batched_quasi_static_dataset(
     append_timestamp: bool = True,
     pull_direction_min_world_z: float | None = 0.0,
     stability_thresholds: StabilityThresholds | None = None,
+    save_snapshot: bool = False,
 ) -> Path:
     """Run lockstep quasi-static collection and write batched_sysid_v1 dataset."""
     out = resolve_batched_dataset_output_dir(
@@ -403,6 +404,16 @@ def collect_batched_quasi_static_dataset(
         step_cap = estimate_trajectory_frames(config, 1) + 64
 
     obs, _info = env.reset(seed=int(seed))
+    if save_snapshot:
+        from apple_pick_sim.system_id.batched_episode_snapshot_io import (
+            save_per_env_episode_snapshots,
+        )
+
+        save_per_env_episode_snapshots(
+            env._sim,
+            output_dir=out,
+            num_directions=int(num_directions),
+        )
     initial_unstable = ik_bootstrap_unstable_mask(env, num_envs)
     monitor = BatchedStabilityMonitor(
         num_envs,
@@ -452,6 +463,9 @@ def collect_batched_quasi_static_dataset(
                 "sim_config": sim_config_to_manifest_dict(
                     env._sim.config,
                     applied_joint_kd_overrides=env._sim.build_result.joint_angular_kd_overrides,
+                    applied_joint_linear_kd_overrides=env._sim.build_result.joint_linear_kd_overrides,
+                    applied_joint_angular_kp_overrides=env._sim.build_result.joint_angular_kp_overrides,
+                    applied_joint_linear_kp_overrides=env._sim.build_result.joint_linear_kp_overrides,
                 ),
             },
             structures=_build_structure_summaries(metadata_rows),

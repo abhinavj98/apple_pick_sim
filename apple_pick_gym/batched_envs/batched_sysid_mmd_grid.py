@@ -32,7 +32,7 @@ from apple_pick_sim.system_id.batched_trajectory_store import (
 from apple_pick_sim.system_id.mmd import apply_normalization, biased_mmd2, fit_gt_normalization, rbf_bandwidth_median
 from apple_pick_sim.system_id.mmd_features import (
     ReplayObservationCollector,
-    build_transition_features_by_direction,
+    combine_transition_features,
     replay_obs_dict_from_sysid_numpy,
 )
 from apple_pick_sim.system_id.manifest_sim_config import warn_manifest_sim_config_mismatch
@@ -511,35 +511,20 @@ def _has_woody_for_scoring(
     return bool(junction_names)
 
 
-def combine_transition_features(
-    episodes: list[dict],
-) -> dict[tuple[float, float, float], np.ndarray]:
-    """Concatenate hold-only transition features keyed by excitation direction."""
-    parts: dict[tuple[float, float, float], list[np.ndarray]] = {}
-    for arrays in episodes:
-        for direction, features in build_transition_features_by_direction(arrays).items():
-            parts.setdefault(direction, []).append(features)
-    return {
-        direction: np.concatenate(chunks, axis=0)
-        for direction, chunks in sorted(parts.items())
-        if chunks
-    }
-
-
 def prepare_gt_mmd_context(
     recorded_episodes: list[dict],
-) -> dict[tuple[float, float, float], MmdDirectionContext]:
+) -> dict[int, MmdDirectionContext]:
     """Fit per-direction GT normalization and RBF bandwidth from recorded episodes."""
     gt_by_direction = combine_transition_features(recorded_episodes)
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
-    context: dict[tuple[float, float, float], MmdDirectionContext] = {}
+    context: dict[int, MmdDirectionContext] = {}
     for direction, gt_features in gt_by_direction.items():
         stats = fit_gt_normalization(gt_features)
         gt_norm = apply_normalization(gt_features, stats)
         bandwidth = rbf_bandwidth_median(gt_norm)
-        context[direction] = MmdDirectionContext(
+        context[int(direction)] = MmdDirectionContext(
             gt_norm=gt_norm,
             stats=stats,
             bandwidth=bandwidth,
@@ -560,14 +545,14 @@ def score_candidate_mmd(
     *,
     candidate_index: int,
     candidate: BendStiffnessCandidate,
-    gt_context: dict[tuple[float, float, float], MmdDirectionContext],
+    gt_context: dict[int, MmdDirectionContext],
     replay_observations: list[dict],
 ) -> MmdCandidateResult:
     """Score one replayed candidate against precomputed GT MMD context."""
     candidate_by_direction = combine_transition_features(replay_observations)
-    per_direction: dict[tuple[float, float, float], float] = {}
+    per_direction: dict[int, float] = {}
     for direction, context in gt_context.items():
-        candidate_features = candidate_by_direction.get(direction)
+        candidate_features = candidate_by_direction.get(int(direction))
         if candidate_features is None:
             continue
         if candidate_features.shape[1] != context.gt_norm.shape[1]:
@@ -577,7 +562,7 @@ def score_candidate_mmd(
                 f"candidate={candidate_features.shape[1]}"
             )
         candidate_norm = apply_normalization(candidate_features, context.stats)
-        per_direction[direction] = biased_mmd2(
+        per_direction[int(direction)] = biased_mmd2(
             context.gt_norm,
             candidate_norm,
             context.bandwidth,
@@ -666,8 +651,8 @@ def replay_candidates_for_structure(
     max_envs_per_batch: int = 0,
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
+    use_snapshot: bool = False,
 ) -> BatchedSysIdReplayCollectors:
-    """Replay all candidates for one structure, optionally chunked by env budget."""
     chunks = chunk_candidates(
         candidates,
         max_envs_per_batch=int(max_envs_per_batch),
@@ -687,6 +672,7 @@ def replay_candidates_for_structure(
             build_env_fn=build_env_fn,
             on_step=on_step,
             replay_sim_config=replay_sim_config,
+            use_snapshot=bool(use_snapshot),
         )
         merged = collectors if merged is None else merged.concat_envs(collectors)
     assert merged is not None
@@ -1101,6 +1087,7 @@ def replay_batched_sysid_structure(
     build_env_fn: Callable[..., Any],
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
+    use_snapshot: bool = False,
 ) -> BatchedSysIdReplayCollectors:
     """Replay recorded actions for one structure across bend-stiffness candidates."""
     num_candidates = len(candidates)
@@ -1109,9 +1096,6 @@ def replay_batched_sysid_structure(
     d = int(num_directions)
     if d < 1:
         raise ValueError("num_directions must be >= 1")
-
-    if replay_sim_config is not None:
-        warn_manifest_sim_config_mismatch(dataset, replay_sim_config)
 
     num_envs = num_candidates * d
     base_params = true_params_for_structure(dataset, int(structure_idx))
@@ -1137,13 +1121,30 @@ def replay_batched_sysid_structure(
         gripper=replay_gripper,
     )
     try:
-        env.reset(seed=replay_seed)
-        initialize_batched_env_from_dataset(
-            env,
-            dataset,
-            structure_idx=int(structure_idx),
-            num_directions=d,
-        )
+        # Compare against the effective sim config used by the environment
+        # (the sys-ID env may override controller clip limits, allocate buffers, etc.).
+        if replay_sim_config is not None:
+            warn_manifest_sim_config_mismatch(dataset, env._sim.config)
+        if use_snapshot:
+            from apple_pick_sim.system_id.batched_episode_snapshot_io import (
+                load_and_restore_episode_snapshots,
+            )
+
+            load_and_restore_episode_snapshots(
+                env,
+                dataset,
+                structure_idx=int(structure_idx),
+                num_directions=d,
+                num_candidates=num_candidates,
+            )
+        else:
+            env.reset(seed=replay_seed)
+            initialize_batched_env_from_dataset(
+                env,
+                dataset,
+                structure_idx=int(structure_idx),
+                num_directions=d,
+            )
         initial_unstable = ik_bootstrap_unstable_mask(env, num_envs)
         last_obs = getattr(env, "_last_obs", None)
         if last_obs is None:

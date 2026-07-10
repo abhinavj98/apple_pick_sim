@@ -62,6 +62,8 @@ datasets collected before this field existed.
 | `stem_coupling_gain`, `stem_force_cap_N`, `stem_torque_cap_Nm` | Stem harvest caps |
 | `joint_angular_kd_overrides` | Requested per-joint angular kd overrides |
 | `joint_angular_kd_applied` | Joints that matched template labels at build |
+| `joint_linear_kd_overrides` | Requested per-joint linear kd overrides |
+| `joint_linear_kd_applied` | Linear kd joints that matched template labels at build |
 | `controller` | `mode`, speeds, `ik_iterations`, `vic_gains` |
 | `robot` | `fix_to_apple`, `gripper_mass_kg` |
 

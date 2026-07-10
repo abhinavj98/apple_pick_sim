@@ -35,7 +35,7 @@ def _build_two_world_arm_pair(*, device: str = "cpu") -> tuple[newton.Model, new
     template_model = template_builder.finalize(device=device)
 
     batched_builder = newton.ModelBuilder()
-    batched_builder.replicate(template_builder, world_count=2, spacing=(1.0, 0.0, 0.0))
+    batched_builder.replicate(template_builder, world_count=2, spacing=(0.0, 0.0, 0.0))
     batched_model = batched_builder.finalize(device=device)
 
     robot_bodies_per = int(batched_model.body_count // 2)
@@ -52,7 +52,7 @@ def _build_two_world_arm_pair(*, device: str = "cpu") -> tuple[newton.Model, new
         tcp_body_indices=(1, 1 + robot_bodies_per),
         proxy_body_indices=(0, 0),
         apple_body_indices=(-1, -1),
-        env_spacing=(1.0, 0.0, 0.0),
+        env_spacing=(0.0, 0.0, 0.0),
     )
     return template_model, batched_model, layout
 

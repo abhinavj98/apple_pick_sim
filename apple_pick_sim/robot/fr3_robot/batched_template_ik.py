@@ -38,7 +38,6 @@ def _quat_mul(a: wp.quat, b: wp.quat) -> wp.quat:
 def _gather_proxy_targets_from_cable_kernel(
     cable_body_q: wp.array(dtype=wp.transform),
     proxy_indices: wp.array(dtype=int),
-    world_origins: wp.array(dtype=wp.vec3),
     target_positions: wp.array(dtype=wp.vec3),
     target_rotations: wp.array(dtype=wp.vec4),
 ):
@@ -47,8 +46,7 @@ def _gather_proxy_targets_from_cable_kernel(
     tf = cable_body_q[proxy_indices[i]]
     body_pos = wp.transform_get_translation(tf)
     body_rot = wp.transform_get_rotation(tf)
-    origin = world_origins[i]
-    target_positions[i] = body_pos - origin
+    target_positions[i] = body_pos
     target_rotations[i] = wp.vec4(body_rot[0], body_rot[1], body_rot[2], body_rot[3])
 
 
@@ -56,22 +54,19 @@ def _gather_proxy_targets_from_cable_kernel(
 def _gather_tcp_world_poses_kernel(
     body_q: wp.array(dtype=wp.transform),
     tcp_indices: wp.array(dtype=int),
-    origins: wp.array(dtype=wp.vec3),
     out_pos_world: wp.array(dtype=wp.vec3),
     out_rot_world: wp.array(dtype=wp.vec4),
     target_positions: wp.array(dtype=wp.vec3),
     target_rotations: wp.array(dtype=wp.vec4),
 ):
-    """Gather TCP poses from batched FK; world frame adds origin, IK targets stay template-frame."""
+    """Gather TCP poses from batched FK; world frame equals template frame (co-located)."""
     i = wp.tid()
     tcp_idx = tcp_indices[i]
     tf = body_q[tcp_idx]
     body_pos = wp.transform_get_translation(tf)
     body_rot = wp.transform_get_rotation(tf)
-    origin = origins[i]
-    pos_world = body_pos + origin
     rot_v4 = wp.vec4(body_rot[0], body_rot[1], body_rot[2], body_rot[3])
-    out_pos_world[i] = pos_world
+    out_pos_world[i] = body_pos
     out_rot_world[i] = rot_v4
     target_positions[i] = body_pos
     target_rotations[i] = rot_v4
@@ -83,12 +78,11 @@ def _integrate_tcp_targets_kernel(
     rot_world: wp.array(dtype=wp.vec4),
     lin_vels: wp.array(dtype=wp.vec3),
     ang_vels: wp.array(dtype=wp.vec3),
-    origins: wp.array(dtype=wp.vec3),
     dt: float,
     target_positions: wp.array(dtype=wp.vec3),
     target_rotations: wp.array(dtype=wp.vec4),
 ):
-    """Integrate world-frame TCP targets and write template-frame IK objectives."""
+    """Integrate co-located world-frame TCP targets and write IK objectives."""
     i = wp.tid()
     pos = pos_world[i]
     rot = _vec4_to_quat(rot_world[i])
@@ -104,7 +98,7 @@ def _integrate_tcp_targets_kernel(
     rot_v4 = wp.vec4(rot_new[0], rot_new[1], rot_new[2], rot_new[3])
     pos_world[i] = pos_new
     rot_world[i] = rot_v4
-    target_positions[i] = pos_new - origins[i]
+    target_positions[i] = pos_new
     target_rotations[i] = rot_v4
 
 
@@ -141,12 +135,6 @@ class BatchedTemplateIK:
         self.target_positions = wp.zeros(n, dtype=wp.vec3, device=dev)
         self.target_rotations = wp.zeros(n, dtype=wp.vec4, device=dev)
 
-        origins = [layout.world_origin(w) for w in range(n)]
-        self._world_origins_wp = wp.array(
-            [wp.vec3(float(o[0]), float(o[1]), float(o[2])) for o in origins],
-            dtype=wp.vec3,
-            device=dev,
-        )
         self._tcp_body_indices_wp = wp.array(
             list(layout.tcp_body_indices),
             dtype=int,
@@ -180,26 +168,15 @@ class BatchedTemplateIK:
             rng_seed=rng_seed,
         )
 
-    def _world_origin_offset(self, world: int) -> tuple[float, float, float]:
-        return self.layout.world_origin(world)
-
     def template_to_world(self, tf_template: wp.transform, world: int) -> wp.transform:
-        """Express a template-frame TCP pose in world coordinates."""
-        ox, oy, oz = self._world_origin_offset(world)
-        p = wp.transform_get_translation(tf_template)
-        return wp.transform(
-            wp.vec3(float(p[0]) + ox, float(p[1]) + oy, float(p[2]) + oz),
-            wp.transform_get_rotation(tf_template),
-        )
+        """Express a template-frame TCP pose in world coordinates (co-located)."""
+        del world
+        return tf_template
 
     def world_to_template(self, tf_world: wp.transform, world: int) -> wp.transform:
-        """Express a world-frame TCP pose in the single-world template frame."""
-        ox, oy, oz = self._world_origin_offset(world)
-        p = wp.transform_get_translation(tf_world)
-        return wp.transform(
-            wp.vec3(float(p[0]) - ox, float(p[1]) - oy, float(p[2]) - oz),
-            wp.transform_get_rotation(tf_world),
-        )
+        """Express a world-frame TCP pose in the single-world template frame (co-located)."""
+        del world
+        return tf_world
 
     def tcp_pose_from_joint_coords(self, joint_coords: np.ndarray) -> wp.transform:
         """FK on the template model for one world's joint coordinates."""
@@ -230,14 +207,8 @@ class BatchedTemplateIK:
         return self.tcp_pose_from_joint_coords(w_jq)
 
     def sim_tcp_pose_from_model(self, world: int) -> wp.transform:
-        """World-frame TCP pose from ``sim_model.joint_q`` (adds replicate origin offset)."""
-        tpl = self.tcp_template_pose_from_model(world)
-        ox, oy, oz = self._world_origin_offset(world)
-        p = wp.transform_get_translation(tpl)
-        return wp.transform(
-            wp.vec3(float(p[0]) + ox, float(p[1]) + oy, float(p[2]) + oz),
-            wp.transform_get_rotation(tpl),
-        )
+        """World-frame TCP pose from ``sim_model.joint_q`` (co-located)."""
+        return self.tcp_template_pose_from_model(world)
 
     def seed_from_state(self, state: Any) -> None:
         """Copy each world's ``joint_q`` slice from the batched model into IK rows."""
@@ -257,7 +228,6 @@ class BatchedTemplateIK:
             inputs=[
                 cable_state.body_q,
                 proxy_indices_wp,
-                self._world_origins_wp,
                 self.target_positions,
                 self.target_rotations,
             ],
@@ -277,7 +247,6 @@ class BatchedTemplateIK:
             inputs=[
                 state.body_q,
                 self._tcp_body_indices_wp,
-                self._world_origins_wp,
                 out_pos_world,
                 out_rot_world,
                 self.target_positions,
@@ -303,7 +272,6 @@ class BatchedTemplateIK:
                 rot_world,
                 lin_vels_wp,
                 ang_vels_wp,
-                self._world_origins_wp,
                 float(dt),
                 self.target_positions,
                 self.target_rotations,

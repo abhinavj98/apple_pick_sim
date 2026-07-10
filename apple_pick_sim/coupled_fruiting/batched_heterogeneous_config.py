@@ -21,6 +21,10 @@ from apple_pick_sim.coupled_fruiting.settle_ke_decay import (
     DEFAULT_KE_SAMPLE_EVERY,
     SettleKeAnalysisConfig,
 )
+from apple_pick_sim.fruiting_system.build import (
+    FRUITING_VBD_RIGID_JOINT_ANGULAR_KD,
+    FRUITING_VBD_RIGID_JOINT_LINEAR_KD,
+)
 from apple_pick_sim.fruiting_system import default_ranges_fixture_path
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
@@ -31,12 +35,33 @@ from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGai
 from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 from apple_pick_sim.sim_device import resolve_sim_device
 
-# Per-role FIXED-joint angular kd overrides (see docs/damping-tuning.md §3).
+# Per-role FIXED-joint kd overrides (see docs/damping-tuning.md §3).
+# Defaults mirror ``make_fruiting_solver_vbd`` → Newton ``SolverVBD`` rigid joint kd.
+_JOINT_KD_OVERRIDE_ROLES = ("support", "primary_spur", "spur_stem", "stem_apple")
+
 _DEFAULT_JOINT_ANGULAR_KD_OVERRIDES: dict[str, float] = {
-    "support": 1.0,
-    "primary_spur": 1.0,
-    "stem_apple": 5e-2,
+    role: FRUITING_VBD_RIGID_JOINT_ANGULAR_KD for role in _JOINT_KD_OVERRIDE_ROLES
 }
+
+_DEFAULT_JOINT_LINEAR_KD_OVERRIDES: dict[str, float] = {
+    role: FRUITING_VBD_RIGID_JOINT_LINEAR_KD for role in _JOINT_KD_OVERRIDE_ROLES
+}
+
+# Tuned overrides shared by heterogeneous + sys-ID batched examples (see docs/damping-tuning.md).
+EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES: dict[str, float] = {
+    "support": 0.3,
+    "primary_spur": 0.3,
+    "spur_stem": 0.3,
+    "stem_apple": 0.3,
+}
+EXAMPLE_JOINT_LINEAR_KD_OVERRIDES: dict[str, float] = {
+    "support": 0.3,
+    "primary_spur": 0.3,
+    "spur_stem": 0.3,
+    "stem_apple": 0.3,
+}
+EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES: dict[str, float] = {"support": 200.0}
+EXAMPLE_JOINT_LINEAR_KP_OVERRIDES: dict[str, float] = {"support": 200.0}
 
 # Heterogeneous example VIC defaults.
 _VIC_DEFAULT_LINEAR_K = 600.0
@@ -104,6 +129,7 @@ class SceneSettleCollisionConfig:
     fruiting_base_pos: tuple[float, float, float] | None = None
     settle_substeps: int = 5000
     settle_gravity_ramp: bool = False
+    settle_quiet_every: int | None = None
     settle_max_speed_m_s: float = 0.05
     enable_self_collisions: bool = False
     enable_apple_woody_collisions: bool = True
@@ -139,6 +165,11 @@ class FruitingSystemConfig:
     joint_angular_kd_overrides: dict[str, float] = dataclasses.field(
         default_factory=lambda: dict(_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES)
     )
+    joint_linear_kd_overrides: dict[str, float] = dataclasses.field(
+        default_factory=lambda: dict(_DEFAULT_JOINT_LINEAR_KD_OVERRIDES)
+    )
+    joint_angular_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
+    joint_linear_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -147,8 +178,8 @@ class ControllerConfig:
 
     mode: ControllerMode = "direct"
     action_dim: int = 6
-    linear_speed: float = 0.1
-    angular_speed: float = 0.1
+    linear_speed: float = 1.0
+    angular_speed: float = 1.0
     ik_iterations: int = 128
     vic_gains: ImpedanceGains = dataclasses.field(
         default_factory=lambda: ImpedanceGains(
@@ -264,6 +295,11 @@ class BatchedHeterogeneousCoupledSimConfig:
         if self.scene.settle_substeps < 0:
             raise ValueError(
                 f"scene.settle_substeps must be >= 0, got {self.scene.settle_substeps}"
+            )
+        if self.scene.settle_quiet_every is not None and int(self.scene.settle_quiet_every) <= 0:
+            raise ValueError(
+                "scene.settle_quiet_every must be positive when set, "
+                f"got {self.scene.settle_quiet_every}"
             )
 
         injected = self.domain_randomization.per_env_params

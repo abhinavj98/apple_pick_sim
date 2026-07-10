@@ -1,8 +1,7 @@
 """Primary entry point — thin CLI + viewer for ``BatchedHeterogeneousCoupledSim`` (V.3.2).
 
-Per-env heterogeneous DR, settle-then-weld, and vectorized coupled stepping live in
-``apple_pick_sim.coupled_fruiting``. This script wires argparse, teleop, and the
-Newton viewer loop only.
+Sim build (VIC gains, settle substeps, joint kd overrides, control_hz, …) is configured via module
+constants in this file, not CLI flags.
 
 Run from the repository root::
 
@@ -39,6 +38,10 @@ from apple_pick_sim.batched_viz import (
 from apple_pick_sim.coupled_fruiting import print_envelope_coverage_report
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
+    EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES,
+    EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES,
+    EXAMPLE_JOINT_LINEAR_KD_OVERRIDES,
+    EXAMPLE_JOINT_LINEAR_KP_OVERRIDES,
     ObsConfig,
     RuntimeConfig,
     SettleDiagnosticsConfig,
@@ -64,6 +67,12 @@ _VIC_DEFAULT_LINEAR_D = 200.0
 _VIC_DEFAULT_ANGULAR_K = 20.0
 _VIC_DEFAULT_ANGULAR_D = 4.0
 _PHYSICS_SUB_DT = 1.0 / 1800.0
+
+# --- Sim build (edit here; not exposed on CLI) ---
+JOINT_ANGULAR_KD_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES
+JOINT_LINEAR_KD_OVERRIDES = EXAMPLE_JOINT_LINEAR_KD_OVERRIDES
+JOINT_ANGULAR_KP_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES
+JOINT_LINEAR_KP_OVERRIDES = EXAMPLE_JOINT_LINEAR_KP_OVERRIDES
 
 
 @dataclasses.dataclass(frozen=True)
@@ -201,6 +210,16 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Linear 0→−9.81 m/s² gravity ramp over all settle substeps (default: off).",
     )
     parser.add_argument(
+        "--settle-quiet-every",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Zero all fruiting-system body twists every N VBD settle substeps "
+            "(device-side; default: off)."
+        ),
+    )
+    parser.add_argument(
         "--use-settle-cache",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -210,6 +229,14 @@ def _make_parser() -> argparse.ArgumentParser:
         "--force-settle",
         action="store_true",
         help="Always run full VBD settle even when a matching cache file exists.",
+    )
+    parser.add_argument(
+        "--show-settling",
+        action="store_true",
+        help=(
+            "Render VBD settle substeps in the viewer (default: off; show post-settle "
+            "state only). Implies --force-settle and disables settle cache for this run."
+        ),
     )
     parser.add_argument(
         "--scripted-ee-vel",
@@ -289,6 +316,11 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
             base.scene,
             settle_substeps=settle_substeps,
             settle_gravity_ramp=bool(args.settle_gravity_ramp),
+            settle_quiet_every=(
+                int(args.settle_quiet_every)
+                if args.settle_quiet_every is not None
+                else None
+            ),
             enable_self_collisions=bool(args.enable_self_collision),
             enable_apple_woody_collisions=bool(args.apple_woody_collision),
             enable_proxy_woody_collisions=bool(args.proxy_woody_collision),
@@ -307,6 +339,13 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
                 angular_k=float(args.vic_angular_k),
                 angular_d=float(args.vic_angular_d),
             ),
+        ),
+        fruiting_system=dataclasses.replace(
+            base.fruiting_system,
+            joint_angular_kd_overrides=JOINT_ANGULAR_KD_OVERRIDES,
+            joint_linear_kd_overrides=JOINT_LINEAR_KD_OVERRIDES,
+            joint_angular_kp_overrides=JOINT_ANGULAR_KP_OVERRIDES,
+            joint_linear_kp_overrides=JOINT_LINEAR_KP_OVERRIDES,
         ),
         settle_diagnostics=SettleDiagnosticsConfig() if settle_substeps > 0 else None,
         obs=(
@@ -560,7 +599,15 @@ def main() -> None:
     _print_startup(config, ranges_path=ranges_path, seed=int(seed), per_env_params=per_env_params)
 
     graphical = isinstance(viewer, newton.viewer.ViewerGL)
-    build_viewer = viewer if graphical else None
+    show_settling = graphical and bool(args.show_settling)
+    build_viewer = viewer if show_settling else None
+    use_settle_cache = bool(args.use_settle_cache) and not show_settling
+    force_settle = bool(args.force_settle) or show_settling
+    if show_settling:
+        print(
+            "Settling visualization enabled: running full VBD settle and rendering substeps.",
+            flush=True,
+        )
 
     if config.robot.step_mode != "vbd_only":
         fr3_robot.enable_ik_bootstrap_warnings_for_examples()
@@ -570,8 +617,8 @@ def main() -> None:
         per_env_params,
         ranges,
         viewer=build_viewer,
-        use_settle_cache=bool(args.use_settle_cache),
-        force_settle=bool(args.force_settle),
+        use_settle_cache=use_settle_cache,
+        force_settle=force_settle,
     )
 
     _setup_viewer(viewer, sim)
@@ -595,7 +642,11 @@ def main() -> None:
     vbd_only = config.robot.step_mode == "vbd_only"
     frame = 0
     print("Starting heterogeneous batched coupled simulation…", flush=True)
+    # With --show-settling off we skip rendering settle substeps during build. Render one
+    # frame before any runtime stepping so the viewer shows the post-settle state.
+    _render_frame(viewer, sim, sim.sim_time, viz)
     while viewer.is_running():
+        print(f"frame {frame} sim_time={sim.sim_time:.3f}s")
         actions = None if vbd_only else _build_frame_actions(sim, viewer, args)
         sim.step(actions)
         _render_frame(viewer, sim, sim.sim_time, viz)

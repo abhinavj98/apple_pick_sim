@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import math
 import random
 from typing import Any, Iterable
@@ -24,14 +25,21 @@ from apple_pick_sim.fruiting_system.params import (
     TOPOLOGY_T_JUNCTION,
 )
 
-# Newton PR #2877 changed the *documentation* for joint kd from "Rayleigh coefficient"
-# to "absolute damping", but the solver has always stored rigid_joint_linear/angular_kd
-# directly into joint_penalty_kd without any multiplication by k (see solver_vbd.py
-# _init_joint_penalty_k).  The migration factor was therefore not needed for rigid joints;
-# keep the original values that the wrench-equilibrium tests were calibrated against.
-FRUITING_VBD_RIGID_JOINT_LINEAR_KD = 5.0e-4  # N·s/m, absolute (no Rayleigh scaling)
-# Junction angular drag (world/spur/stem/apple FIXED joints); drains bend energy at supports.
-FRUITING_VBD_RIGID_JOINT_ANGULAR_KD = 5.0e-4 # N·m·s/rad, absolute (no Rayleigh scaling)
+def newton_solver_vbd_default_rigid_joint_kd() -> tuple[float, float]:
+    """Return ``(linear_kd, angular_kd)`` from ``newton.solvers.SolverVBD`` constructor defaults."""
+    sig = inspect.signature(newton.solvers.SolverVBD.__init__)
+    linear_kd = float(sig.parameters["rigid_joint_linear_kd"].default)
+    angular_kd = float(sig.parameters["rigid_joint_angular_kd"].default)
+    return linear_kd, angular_kd
+
+
+_NEWTON_DEFAULT_LINEAR_KD, _NEWTON_DEFAULT_ANGULAR_KD = newton_solver_vbd_default_rigid_joint_kd()
+
+# Passed to ``SolverVBD(rigid_joint_*_kd=...)`` in :func:`make_fruiting_solver_vbd`.
+# Newton's constructor defaults are 0.0 for both slots; keep overrides aligned via the
+# same constants in ``batched_heterogeneous_config`` / example scripts.
+FRUITING_VBD_RIGID_JOINT_LINEAR_KD = _NEWTON_DEFAULT_LINEAR_KD  # N·s/m
+FRUITING_VBD_RIGID_JOINT_ANGULAR_KD = _NEWTON_DEFAULT_ANGULAR_KD  # N·m·s/rad
 
 # Paul Tol bright palette (matches Newton ``ModelBuilder._SHAPE_COLOR_PALETTE``).
 _ROD_DISPLAY_COLORS_RGB: dict[str, tuple[int, int, int]] = {
@@ -177,7 +185,7 @@ def _new_fruiting_builder() -> newton.ModelBuilder:
     builder = newton.ModelBuilder()
     builder.default_shape_cfg.ke = 1.0e2
     builder.default_shape_cfg.kd = 1.0e3  # 1.0e1 × ke(1.0e2), absolute VBD damping (#2877)
-    builder.default_shape_cfg.mu = 0.8
+    builder.default_shape_cfg.mu = 1
     return builder
 
 
@@ -204,7 +212,7 @@ def _build_linear_chain_into_builder(
         raise ValueError(
             "At least one rod segment (primary, secondary, spur, or stem) must be non-None."
         )
-
+        
     cable_joint_indices: list[int] = []
     fruiting_fixed_joints: list[tuple[int, str]] = []
 
@@ -975,14 +983,14 @@ def _match_fruiting_joint_labels(
     return {k: sorted(v) for k, v in matched_by_key.items() if v}
 
 
-def _patch_angular_k_constraint_slot(
+def _patch_k_constraint_slot(
     k_np: np.ndarray,
     k_min_np: np.ndarray,
     k_max_np: np.ndarray,
     constraint_index: int,
     kp_val: float,
 ) -> None:
-    """Write one angular penalty-k slot and widen AVBD k bounds to include ``kp_val``."""
+    """Write one penalty-k slot and widen AVBD k bounds to include ``kp_val``."""
     k_np[constraint_index] = kp_val
     k_min_np[constraint_index] = min(float(k_min_np[constraint_index]), kp_val)
     k_max_np[constraint_index] = max(float(k_max_np[constraint_index]), kp_val)
@@ -1004,20 +1012,36 @@ def _validate_template_joint_angular_slots(
             )
 
 
+def _validate_template_joint_linear_slots(
+    solver: newton.solvers.SolverVBD,
+    template_joint_indices: Iterable[int],
+) -> None:
+    """Ensure each template joint has a linear constraint slot."""
+    lin_slot = newton.solvers.SolverVBD.JointSlot.LINEAR
+    jc_dim = solver.joint_constraint_dim.numpy()
+    for joint_index in template_joint_indices:
+        cdim = int(jc_dim[joint_index])
+        if cdim <= lin_slot:
+            raise ValueError(
+                f"joint_index={joint_index} has constraint dimension {cdim}; "
+                f"cannot set linear kd (slot {lin_slot})."
+            )
+
+
 @wp.kernel(enable_backward=False)
-def _apply_batched_joint_angular_kd_kernel(
+def _apply_batched_joint_kd_kernel(
     joint_constraint_start: wp.array(dtype=wp.int32),
     template_joint_indices: wp.array(dtype=wp.int32),
     kd_values: wp.array(dtype=wp.float32),
     joints_per_world: int,
-    angular_slot: int,
+    kd_slot: int,
     joint_penalty_kd: wp.array(dtype=wp.float32),
 ):
-    """Patch angular kd for one (env, matched-template-joint) pair."""
+    """Patch one penalty-kd slot for one (env, matched-template-joint) pair."""
     w, k = wp.tid()
     global_joint = w * joints_per_world + template_joint_indices[k]
     c0 = joint_constraint_start[global_joint]
-    joint_penalty_kd[c0 + angular_slot] = kd_values[k]
+    joint_penalty_kd[c0 + kd_slot] = kd_values[k]
 
 
 def set_fruiting_joint_angular_kd(
@@ -1164,7 +1188,7 @@ def set_fruiting_joint_angular_kd_batched(
     kd_wp = wp.array(kd_np, dtype=wp.float32, device=device)
 
     wp.launch(
-        _apply_batched_joint_angular_kd_kernel,
+        _apply_batched_joint_kd_kernel,
         dim=(int(num_envs), int(len(template_idx_np))),
         inputs=[
             solver.joint_constraint_start,
@@ -1177,6 +1201,15 @@ def set_fruiting_joint_angular_kd_batched(
         device=device,
     )
 
+    return _global_matched_joint_indices(matched_by_key, num_envs=num_envs, joints_per_world=joints_per_world)
+
+
+def _global_matched_joint_indices(
+    matched_by_key: dict[str, list[int]],
+    *,
+    num_envs: int,
+    joints_per_world: int,
+) -> dict[str, list[int]]:
     global_matched: dict[str, list[int]] = {}
     for key, indices in matched_by_key.items():
         global_indices: list[int] = []
@@ -1184,8 +1217,135 @@ def set_fruiting_joint_angular_kd_batched(
             base = w * int(joints_per_world)
             global_indices.extend(base + int(j) for j in indices)
         global_matched[key] = sorted(global_indices)
-
     return global_matched
+
+
+def set_fruiting_joint_linear_kd(
+    solver: newton.solvers.SolverVBD,
+    fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kd: dict[str, float],
+) -> dict[str, list[int]]:
+    """Patch per-joint linear AVBD damping on an existing ``SolverVBD``.
+
+    Same substring-match semantics as :func:`set_fruiting_joint_angular_kd`, but
+    overwrites ``solver.joint_penalty_kd`` at the linear slot
+    (``JointSlot.LINEAR``) for selected FIXED joints.
+
+    Args:
+        solver: Constructed VBD solver whose ``joint_penalty_kd`` array will be
+            patched in place.
+        fruiting_fixed_joints: ``(joint_index, label)`` pairs from scene build.
+        label_kd: Substring label -> absolute linear damping [N·s/m].
+
+    Returns:
+        ``{label_kd_key: [joint_index, ...]}`` with sorted joint indices per key.
+    """
+    matched_by_key = _match_fruiting_joint_labels(
+        fruiting_fixed_joints,
+        label_kd,
+        value_label="linear kd",
+    )
+    if not matched_by_key:
+        return {}
+
+    if not hasattr(solver, "joint_penalty_kd"):
+        raise RuntimeError(
+            "SolverVBD joint_penalty_kd is not initialized; "
+            "ensure the solver was constructed with rigid bodies present."
+        )
+
+    template_indices = sorted(
+        {j for indices in matched_by_key.values() for j in indices}
+    )
+    _validate_template_joint_linear_slots(solver, template_indices)
+
+    jc_start = solver.joint_constraint_start.numpy()
+    kd_np = solver.joint_penalty_kd.numpy().copy()
+    lin_slot = newton.solvers.SolverVBD.JointSlot.LINEAR
+
+    for key, joint_indices in matched_by_key.items():
+        kd_val = float(label_kd[key])
+        for joint_index in joint_indices:
+            c0 = int(jc_start[joint_index])
+            kd_np[c0 + lin_slot] = kd_val
+
+    solver.joint_penalty_kd.assign(kd_np)
+    return matched_by_key
+
+
+def set_fruiting_joint_linear_kd_batched(
+    solver: newton.solvers.SolverVBD,
+    template_fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kd: dict[str, float],
+    *,
+    num_envs: int,
+    joints_per_world: int,
+) -> dict[str, list[int]]:
+    """Vectorized per-role linear kd patch across every env of a batched SolverVBD."""
+    matched_by_key = _match_fruiting_joint_labels(
+        template_fruiting_fixed_joints,
+        label_kd,
+        value_label="linear kd",
+    )
+    if not matched_by_key:
+        return {}
+
+    if num_envs < 1:
+        raise ValueError(f"num_envs must be >= 1, got {num_envs}.")
+    if joints_per_world < 1:
+        raise ValueError(f"joints_per_world must be >= 1, got {joints_per_world}.")
+
+    model = solver.model
+    if num_envs * joints_per_world != int(model.joint_count):
+        raise ValueError(
+            f"batched joint layout mismatch: num_envs={num_envs} * "
+            f"joints_per_world={joints_per_world} != model.joint_count="
+            f"{model.joint_count}."
+        )
+
+    if not hasattr(solver, "joint_penalty_kd"):
+        raise RuntimeError(
+            "SolverVBD joint_penalty_kd is not initialized; "
+            "ensure the solver was constructed with rigid bodies present."
+        )
+
+    template_indices = sorted(
+        {j for indices in matched_by_key.values() for j in indices}
+    )
+    _validate_template_joint_linear_slots(solver, template_indices)
+
+    template_idx_np = np.asarray(template_indices, dtype=np.int32)
+    kd_by_template = {
+        j: float(label_kd[key])
+        for key, indices in matched_by_key.items()
+        for j in indices
+    }
+    kd_np = np.asarray(
+        [kd_by_template[int(j)] for j in template_idx_np], dtype=np.float32
+    )
+
+    device = solver.joint_penalty_kd.device
+    lin_slot = newton.solvers.SolverVBD.JointSlot.LINEAR
+    template_idx_wp = wp.array(template_idx_np, dtype=wp.int32, device=device)
+    kd_wp = wp.array(kd_np, dtype=wp.float32, device=device)
+
+    wp.launch(
+        _apply_batched_joint_kd_kernel,
+        dim=(int(num_envs), int(len(template_idx_np))),
+        inputs=[
+            solver.joint_constraint_start,
+            template_idx_wp,
+            kd_wp,
+            int(joints_per_world),
+            int(lin_slot),
+            solver.joint_penalty_kd,
+        ],
+        device=device,
+    )
+
+    return _global_matched_joint_indices(
+        matched_by_key, num_envs=num_envs, joints_per_world=joints_per_world
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -1267,7 +1427,7 @@ def set_fruiting_joint_angular_kp(
         kp_val = float(label_kp[key])
         for joint_index in joint_indices:
             c0 = int(jc_start[joint_index])
-            _patch_angular_k_constraint_slot(
+            _patch_k_constraint_slot(
                 k_np, k_min_np, k_max_np, c0 + ang_slot, kp_val
             )
 
@@ -1362,6 +1522,157 @@ def set_fruiting_joint_angular_kp_batched(
             kp_wp,
             int(joints_per_world),
             int(ang_slot),
+            solver.joint_penalty_k,
+            solver.joint_penalty_k_min,
+            solver.joint_penalty_k_max,
+        ],
+        device=device,
+    )
+
+    global_matched: dict[str, list[int]] = {}
+    for key, indices in matched_by_key.items():
+        global_indices: list[int] = []
+        for w in range(int(num_envs)):
+            base = w * int(joints_per_world)
+            global_indices.extend(base + int(j) for j in indices)
+        global_matched[key] = sorted(global_indices)
+
+    return global_matched
+
+
+def set_fruiting_joint_linear_kp(
+    solver: newton.solvers.SolverVBD,
+    fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kp: dict[str, float],
+) -> dict[str, list[int]]:
+    """Patch per-joint linear AVBD stiffness on an existing ``SolverVBD``.
+
+    Same substring-match semantics as :func:`set_fruiting_joint_angular_kp`, but
+    overwrites ``solver.joint_penalty_k`` at the linear slot
+    (``JointSlot.LINEAR``) for selected FIXED joints.
+
+    Call after ``make_fruiting_solver_vbd(model)`` and before ``solver.step()``.
+
+    Args:
+        solver: Constructed VBD solver whose joint penalty-k arrays will be patched.
+        fruiting_fixed_joints: ``(joint_index, label)`` pairs from scene build.
+        label_kp: Substring label -> absolute linear penalty stiffness [N/m].
+
+    Returns:
+        ``{label_kp_key: [joint_index, ...]}`` with sorted joint indices per key.
+    """
+    matched_by_key = _match_fruiting_joint_labels(
+        fruiting_fixed_joints,
+        label_kp,
+        param_name="label_kp",
+        value_label="linear kp",
+    )
+    if not matched_by_key:
+        return {}
+
+    for name in ("joint_penalty_k", "joint_penalty_k_min", "joint_penalty_k_max"):
+        if not hasattr(solver, name):
+            raise RuntimeError(
+                f"SolverVBD {name} is not initialized; "
+                "ensure the solver was constructed with rigid bodies present."
+            )
+
+    template_indices = sorted(
+        {j for indices in matched_by_key.values() for j in indices}
+    )
+    _validate_template_joint_linear_slots(solver, template_indices)
+
+    jc_start = solver.joint_constraint_start.numpy()
+    k_np = solver.joint_penalty_k.numpy().copy()
+    k_min_np = solver.joint_penalty_k_min.numpy().copy()
+    k_max_np = solver.joint_penalty_k_max.numpy().copy()
+    lin_slot = newton.solvers.SolverVBD.JointSlot.LINEAR
+
+    for key, joint_indices in matched_by_key.items():
+        kp_val = float(label_kp[key])
+        for joint_index in joint_indices:
+            c0 = int(jc_start[joint_index])
+            _patch_k_constraint_slot(
+                k_np, k_min_np, k_max_np, c0 + lin_slot, kp_val
+            )
+
+    solver.joint_penalty_k.assign(k_np)
+    solver.joint_penalty_k_min.assign(k_min_np)
+    solver.joint_penalty_k_max.assign(k_max_np)
+    return matched_by_key
+
+
+def set_fruiting_joint_linear_kp_batched(
+    solver: newton.solvers.SolverVBD,
+    template_fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kp: dict[str, float],
+    *,
+    num_envs: int,
+    joints_per_world: int,
+) -> dict[str, list[int]]:
+    """Vectorized per-role linear kp patch across every env of a batched SolverVBD.
+
+    Same substring-match semantics as :func:`set_fruiting_joint_linear_kp`, applied to
+    world-0 template labels and broadcast via a single ``wp.launch``.
+    """
+    matched_by_key = _match_fruiting_joint_labels(
+        template_fruiting_fixed_joints,
+        label_kp,
+        param_name="label_kp",
+        value_label="linear kp",
+    )
+    if not matched_by_key:
+        return {}
+
+    if num_envs < 1:
+        raise ValueError(f"num_envs must be >= 1, got {num_envs}.")
+    if joints_per_world < 1:
+        raise ValueError(f"joints_per_world must be >= 1, got {joints_per_world}.")
+
+    model = solver.model
+    if num_envs * joints_per_world != int(model.joint_count):
+        raise ValueError(
+            f"batched joint layout mismatch: num_envs={num_envs} * "
+            f"joints_per_world={joints_per_world} != model.joint_count="
+            f"{model.joint_count}."
+        )
+
+    for name in ("joint_penalty_k", "joint_penalty_k_min", "joint_penalty_k_max"):
+        if not hasattr(solver, name):
+            raise RuntimeError(
+                f"SolverVBD {name} is not initialized; "
+                "ensure the solver was constructed with rigid bodies present."
+            )
+
+    template_indices = sorted(
+        {j for indices in matched_by_key.values() for j in indices}
+    )
+    _validate_template_joint_linear_slots(solver, template_indices)
+
+    template_idx_np = np.asarray(template_indices, dtype=np.int32)
+    kp_by_template = {
+        j: float(label_kp[key])
+        for key, indices in matched_by_key.items()
+        for j in indices
+    }
+    kp_np = np.asarray(
+        [kp_by_template[int(j)] for j in template_idx_np], dtype=np.float32
+    )
+
+    device = solver.joint_penalty_k.device
+    lin_slot = newton.solvers.SolverVBD.JointSlot.LINEAR
+    template_idx_wp = wp.array(template_idx_np, dtype=wp.int32, device=device)
+    kp_wp = wp.array(kp_np, dtype=wp.float32, device=device)
+
+    wp.launch(
+        _apply_batched_joint_angular_kp_kernel,
+        dim=(int(num_envs), int(len(template_idx_np))),
+        inputs=[
+            solver.joint_constraint_start,
+            template_idx_wp,
+            kp_wp,
+            int(joints_per_world),
+            int(lin_slot),
             solver.joint_penalty_k,
             solver.joint_penalty_k_min,
             solver.joint_penalty_k_max,

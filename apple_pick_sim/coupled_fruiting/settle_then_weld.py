@@ -61,6 +61,19 @@ def _proxy_world_pose_from_apple(
     return pos, quat
 
 
+def should_quiet_cable_bodies_at_settle_substep(
+    completed_substep: int,
+    quiet_every: int | None,
+) -> bool:
+    """True when periodic settle quiet should run after substep ``completed_substep`` (1-based)."""
+    if quiet_every is None:
+        return False
+    every = int(quiet_every)
+    if every <= 0:
+        return False
+    return int(completed_substep) % every == 0
+
+
 def quiet_all_cable_bodies(cable: Any) -> None:
     """Zero all cable body twists and align VBD ``body_q_prev`` with ``state_0.body_q``.
 
@@ -107,6 +120,7 @@ def settle_vbd_substeps(
     dt: float,
     gravity_ramp: bool = False,
     gravity_target: tuple[float, float, float] = (0.0, 0.0, -9.81),
+    quiet_every: int | None = None,
 ) -> None:
     """Advance ``scene`` by ``substeps`` VBD-only substeps.
 
@@ -123,6 +137,8 @@ def settle_vbd_substeps(
         gravity_ramp: If True, linearly ramp cable gravity over substeps; if False,
             leave build-time gravity unchanged (instant full g throughout).
         gravity_target: World-frame gravity vector at the end of the ramp (default −9.81 z).
+        quiet_every: When set, zero all cable body twists every this many settle substeps
+            (device-side via :func:`quiet_all_cable_bodies`); ``None`` disables.
     """
     n = int(substeps)
     if n <= 0:
@@ -137,6 +153,8 @@ def settle_vbd_substeps(
             gravity_target=gravity_target,
         )
         scene.vbd_substep(h)
+        if should_quiet_cable_bodies_at_settle_substep(i + 1, quiet_every):
+            quiet_all_cable_bodies(scene.cable)
 
 
 def apply_settle_gravity_for_substep(

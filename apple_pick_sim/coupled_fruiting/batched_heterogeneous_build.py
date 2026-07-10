@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -28,18 +29,44 @@ from apple_pick_sim.coupled_fruiting.settle_then_weld import (
     quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
     seed_fix_to_apple_from_settled_body_q,
+    should_quiet_cable_bodies_at_settle_substep,
 )
 from apple_pick_sim.digital_twin.record import fruiting_tree_fixed_joints
 from apple_pick_sim.fruiting_system import (
     FruitingSystemParams,
     GripperProxyConfig,
     set_fruiting_joint_angular_kd_batched,
+    set_fruiting_joint_angular_kp_batched,
+    set_fruiting_joint_linear_kd_batched,
+    set_fruiting_joint_linear_kp_batched,
 )
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.system_id.pre_weld_obs import capture_pre_weld_tree_obs_all_worlds
 
 # Heterogeneous example: sag under gravity can exceed straight rest length.
 _SETTLE_PATH_RTOL = 0.05
+_SETTLE_RENDER_TARGET_FRAMES = 200
+_SETTLE_RENDER_FRAME_DT_S = 1.0 / 30.0
+
+
+@dataclasses.dataclass
+class _SettleViewerState:
+    model_bound: bool = False
+
+
+def _settle_render_stride(substeps: int) -> int:
+    n = int(substeps)
+    if n <= 1:
+        return 1
+    return max(1, n // _SETTLE_RENDER_TARGET_FRAMES)
+
+
+def _should_render_settle_substep(substep_idx: int, substeps: int, stride: int) -> bool:
+    if stride <= 1:
+        return True
+    if substep_idx == 0 or substep_idx == substeps - 1:
+        return True
+    return (substep_idx + 1) % stride == 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -49,6 +76,9 @@ class BatchedHeterogeneousBuildResult:
     scene: CoupledFruitingScene
     per_env_params: tuple[FruitingSystemParams, ...]
     joint_angular_kd_overrides: dict[str, float]
+    joint_linear_kd_overrides: dict[str, float]
+    joint_angular_kp_overrides: dict[str, float]
+    joint_linear_kp_overrides: dict[str, float]
     settled_body_q: np.ndarray | None = None
     pre_weld_tree_obs: tuple[dict[str, Any], ...] | None = None
     settle_stability_reports: tuple[SettleStabilityReport, ...] | None = None
@@ -103,6 +133,11 @@ def build_batched_heterogeneous_scene(
             junction_names=junction_names,
         )
 
+    angular_kd_overrides = dict(config.fruiting_system.joint_angular_kd_overrides)
+    linear_kd_overrides = dict(config.fruiting_system.joint_linear_kd_overrides)
+    angular_kp_overrides = dict(config.fruiting_system.joint_angular_kp_overrides)
+    linear_kp_overrides = dict(config.fruiting_system.joint_linear_kp_overrides)
+
     if fix_to_apple and not vbd_only:
         gripper_weld = _gripper_proxy(config, fix_to_apple=True)
         if settled_checkpoint is not None:
@@ -135,6 +170,13 @@ def build_batched_heterogeneous_scene(
                 ranges,
                 params,
                 **_builder_kwargs(config, gripper=gripper_free, vbd_only=True),
+            )
+            _apply_joint_penalty_overrides(
+                settled,
+                angular_kd_overrides=angular_kd_overrides,
+                linear_kd_overrides=linear_kd_overrides,
+                angular_kp_overrides=angular_kp_overrides,
+                linear_kp_overrides=linear_kp_overrides,
             )
             stability_reports, ke_decay_reports = _run_vbd_settle(
                 settled,
@@ -172,6 +214,13 @@ def build_batched_heterogeneous_scene(
             ),
         )
         if settle_substeps > 0:
+            _apply_joint_penalty_overrides(
+                scene,
+                angular_kd_overrides=angular_kd_overrides,
+                linear_kd_overrides=linear_kd_overrides,
+                angular_kp_overrides=angular_kp_overrides,
+                linear_kp_overrides=linear_kp_overrides,
+            )
             stability_reports, ke_decay_reports = _run_vbd_settle(
                 scene,
                 config=config,
@@ -182,14 +231,27 @@ def build_batched_heterogeneous_scene(
                 collect_diagnostics=collect_diag,
             )
 
-    kd_overrides = dict(config.fruiting_system.joint_angular_kd_overrides)
-    applied_kd = _apply_joint_kd_overrides(scene, kd_overrides)
+    (
+        applied_angular_kd,
+        applied_linear_kd,
+        applied_angular_kp,
+        applied_linear_kp,
+    ) = _apply_joint_penalty_overrides(
+        scene,
+        angular_kd_overrides=angular_kd_overrides,
+        linear_kd_overrides=linear_kd_overrides,
+        angular_kp_overrides=angular_kp_overrides,
+        linear_kp_overrides=linear_kp_overrides,
+    )
 
     if not collect_diag:
         return BatchedHeterogeneousBuildResult(
             scene=scene,
             per_env_params=params,
-            joint_angular_kd_overrides=applied_kd,
+            joint_angular_kd_overrides=applied_angular_kd,
+            joint_linear_kd_overrides=applied_linear_kd,
+            joint_angular_kp_overrides=applied_angular_kp,
+            joint_linear_kp_overrides=applied_linear_kp,
             settled_body_q=settled_body_q,
             pre_weld_tree_obs=pre_weld_tree_obs,
         )
@@ -197,7 +259,10 @@ def build_batched_heterogeneous_scene(
     return BatchedHeterogeneousBuildResult(
         scene=scene,
         per_env_params=params,
-        joint_angular_kd_overrides=applied_kd,
+        joint_angular_kd_overrides=applied_angular_kd,
+        joint_linear_kd_overrides=applied_linear_kd,
+        joint_angular_kp_overrides=applied_angular_kp,
+        joint_linear_kp_overrides=applied_linear_kp,
         settled_body_q=settled_body_q,
         pre_weld_tree_obs=pre_weld_tree_obs,
         settle_stability_reports=tuple(stability_reports),
@@ -271,30 +336,30 @@ def _builder_kwargs(
     return kw
 
 
-def _matching_kd_overrides(
+def _matching_label_overrides(
     fruiting_fixed_joints: Sequence[tuple[int, str]],
-    kd_overrides: dict[str, float],
+    overrides: dict[str, float],
 ) -> dict[str, float]:
     """Keep override keys that match exactly one fixed-joint label in the template."""
-    if not kd_overrides:
+    if not overrides:
         return {}
-    keys = list(kd_overrides.keys())
+    keys = list(overrides.keys())
     used_keys: set[str] = set()
     for _joint_index, label in fruiting_fixed_joints:
         matching = [k for k in keys if k in label]
         if len(matching) == 1:
             used_keys.add(matching[0])
-    return {k: kd_overrides[k] for k in sorted(used_keys)}
+    return {k: overrides[k] for k in sorted(used_keys)}
 
 
-def _apply_joint_kd_overrides(
+def _apply_joint_angular_kd_overrides(
     scene: CoupledFruitingScene,
     kd_overrides: dict[str, float],
 ) -> dict[str, float]:
     layout = scene.layout
     if layout is None or not kd_overrides:
         return {}
-    filtered = _matching_kd_overrides(scene.cable.fruiting_fixed_joints, kd_overrides)
+    filtered = _matching_label_overrides(scene.cable.fruiting_fixed_joints, kd_overrides)
     if not filtered:
         return {}
     set_fruiting_joint_angular_kd_batched(
@@ -305,6 +370,81 @@ def _apply_joint_kd_overrides(
         joints_per_world=layout.joints_per_world,
     )
     return dict(filtered)
+
+
+def _apply_joint_linear_kd_overrides(
+    scene: CoupledFruitingScene,
+    kd_overrides: dict[str, float],
+) -> dict[str, float]:
+    layout = scene.layout
+    if layout is None or not kd_overrides:
+        return {}
+    filtered = _matching_label_overrides(scene.cable.fruiting_fixed_joints, kd_overrides)
+    if not filtered:
+        return {}
+    set_fruiting_joint_linear_kd_batched(
+        scene.cable.solver,
+        scene.cable.fruiting_fixed_joints,
+        filtered,
+        num_envs=layout.num_envs,
+        joints_per_world=layout.joints_per_world,
+    )
+    return dict(filtered)
+
+
+def _apply_joint_angular_kp_overrides(
+    scene: CoupledFruitingScene,
+    kp_overrides: dict[str, float],
+) -> dict[str, float]:
+    layout = scene.layout
+    if layout is None or not kp_overrides:
+        return {}
+    filtered = _matching_label_overrides(scene.cable.fruiting_fixed_joints, kp_overrides)
+    if not filtered:
+        return {}
+    set_fruiting_joint_angular_kp_batched(
+        scene.cable.solver,
+        scene.cable.fruiting_fixed_joints,
+        filtered,
+        num_envs=layout.num_envs,
+        joints_per_world=layout.joints_per_world,
+    )
+    return dict(filtered)
+
+
+def _apply_joint_linear_kp_overrides(
+    scene: CoupledFruitingScene,
+    kp_overrides: dict[str, float],
+) -> dict[str, float]:
+    layout = scene.layout
+    if layout is None or not kp_overrides:
+        return {}
+    filtered = _matching_label_overrides(scene.cable.fruiting_fixed_joints, kp_overrides)
+    if not filtered:
+        return {}
+    set_fruiting_joint_linear_kp_batched(
+        scene.cable.solver,
+        scene.cable.fruiting_fixed_joints,
+        filtered,
+        num_envs=layout.num_envs,
+        joints_per_world=layout.joints_per_world,
+    )
+    return dict(filtered)
+
+
+def _apply_joint_penalty_overrides(
+    scene: CoupledFruitingScene,
+    *,
+    angular_kd_overrides: dict[str, float],
+    linear_kd_overrides: dict[str, float],
+    angular_kp_overrides: dict[str, float],
+    linear_kp_overrides: dict[str, float],
+) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
+    applied_angular_kd = _apply_joint_angular_kd_overrides(scene, angular_kd_overrides)
+    applied_linear_kd = _apply_joint_linear_kd_overrides(scene, linear_kd_overrides)
+    applied_angular_kp = _apply_joint_angular_kp_overrides(scene, angular_kp_overrides)
+    applied_linear_kp = _apply_joint_linear_kp_overrides(scene, linear_kp_overrides)
+    return applied_angular_kd, applied_linear_kd, applied_angular_kp, applied_linear_kp
 
 
 def _run_vbd_settle(
@@ -334,6 +474,9 @@ def _run_vbd_settle(
     )
     h = float(sim_dt)
     gravity_ramp = bool(scene_cfg.settle_gravity_ramp)
+    quiet_every = scene_cfg.settle_quiet_every
+    render_stride = _settle_render_stride(n) if viewer is not None else 1
+    viewer_state = _SettleViewerState()
 
     for substep_idx in range(n):
         apply_settle_gravity_for_substep(
@@ -343,6 +486,8 @@ def _run_vbd_settle(
             gravity_ramp=gravity_ramp,
         )
         scene.vbd_substep(h)
+        if should_quiet_cable_bodies_at_settle_substep(substep_idx + 1, quiet_every):
+            quiet_all_cable_bodies(scene.cable)
         if recorder is not None:
             recorder.record_substep(
                 scene.cable,
@@ -351,7 +496,15 @@ def _run_vbd_settle(
                 h,
                 sample_every=int(diag.ke_sample_every),
             )
-        _maybe_render_settle(viewer, scene, float(substep_idx + 1) * h)
+        if _should_render_settle_substep(substep_idx, n, render_stride):
+            _maybe_render_settle(
+                viewer,
+                scene,
+                float(substep_idx + 1) * h,
+                config=config,
+                viewer_state=viewer_state,
+                frame_sleep_s=_SETTLE_RENDER_FRAME_DT_S,
+            )
 
     quiet_all_cable_bodies(scene.cable)
 
@@ -374,18 +527,37 @@ def _maybe_render_settle(
     viewer: Any | None,
     scene: CoupledFruitingScene,
     sim_time_s: float,
+    *,
+    config: BatchedHeterogeneousCoupledSimConfig | None = None,
+    viewer_state: _SettleViewerState | None = None,
+    frame_sleep_s: float = 0.0,
 ) -> None:
     if viewer is None:
         return
     is_running = getattr(viewer, "is_running", None)
     if is_running is not None and not is_running():
         return
+    state = viewer_state if viewer_state is not None else _SettleViewerState()
+    if not state.model_bound:
+        if hasattr(viewer, "set_model"):
+            viewer.set_model(scene.cable.model)
+        if (
+            config is not None
+            and config.runtime.num_envs > 1
+            and hasattr(viewer, "set_world_offsets")
+        ):
+            viewer.set_world_offsets(tuple(config.runtime.env_spacing))
+        if hasattr(viewer, "hide_loading_splash"):
+            viewer.hide_loading_splash()
+        state.model_bound = True
     if hasattr(viewer, "begin_frame"):
         viewer.begin_frame(sim_time_s)
     if hasattr(viewer, "log_state"):
         viewer.log_state(scene.cable.state_0)
     if hasattr(viewer, "end_frame"):
         viewer.end_frame()
+    if frame_sleep_s > 0.0:
+        time.sleep(frame_sleep_s)
 
 
 def print_per_env_params(params_list: Sequence[FruitingSystemParams]) -> None:

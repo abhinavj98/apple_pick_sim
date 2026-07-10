@@ -11,8 +11,14 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
     ControllerConfig,
     DomainRandomizationConfig,
+    EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES,
+    EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES,
+    EXAMPLE_JOINT_LINEAR_KD_OVERRIDES,
+    EXAMPLE_JOINT_LINEAR_KP_OVERRIDES,
     RuntimeConfig,
     SettleDiagnosticsConfig,
+    _DEFAULT_JOINT_ANGULAR_KD_OVERRIDES,
+    _DEFAULT_JOINT_LINEAR_KD_OVERRIDES,
 )
 from apple_pick_sim.coupled_fruiting.scene import (
     DEFAULT_STEM_COUPLING_GAIN,
@@ -61,7 +67,7 @@ def test_defaults_preset_constructs_and_validates():
     assert cfg.scene.settle_substeps == 5000
     assert cfg.fruiting_system.stem_coupling_gain == DEFAULT_STEM_COUPLING_GAIN
     assert cfg.controller.mode == "direct"
-    assert cfg.controller.linear_speed == pytest.approx(0.1)
+    assert cfg.controller.linear_speed == pytest.approx(1.0)
     assert cfg.controller.ik_iterations == 128
     assert cfg.settle_diagnostics is not None
     assert cfg.settle_diagnostics.enabled is True
@@ -100,6 +106,16 @@ def test_validate_raises_on_per_env_params_length_mismatch():
         ),
     )
     with pytest.raises(ValueError, match="per_env_params"):
+        cfg.validate()
+
+
+def test_validate_rejects_nonpositive_settle_quiet_every():
+    cfg = BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=2)
+    cfg = dataclasses.replace(
+        cfg,
+        scene=dataclasses.replace(cfg.scene, settle_quiet_every=0),
+    )
+    with pytest.raises(ValueError, match="settle_quiet_every"):
         cfg.validate()
 
 
@@ -157,12 +173,37 @@ def test_vic_gains_defaults_match_heterogeneous_example():
     assert g.angular_d == pytest.approx(4.0)
 
 
+def test_fruiting_joint_kp_overrides_defaults():
+    cfg = BatchedHeterogeneousCoupledSimConfig.defaults()
+    assert cfg.fruiting_system.joint_angular_kp_overrides == {}
+    assert cfg.fruiting_system.joint_linear_kp_overrides == {}
+
+
+def test_example_joint_override_constants():
+    for role in ("support", "primary_spur", "spur_stem", "stem_apple"):
+        assert EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES[role] == pytest.approx(0.3)
+        assert EXAMPLE_JOINT_LINEAR_KD_OVERRIDES[role] == pytest.approx(0.3)
+    assert EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES == {"support": pytest.approx(200.0)}
+    assert EXAMPLE_JOINT_LINEAR_KP_OVERRIDES == {"support": pytest.approx(200.0)}
+
 def test_fruiting_joint_kd_overrides_defaults():
     cfg = BatchedHeterogeneousCoupledSimConfig.defaults()
-    kd = cfg.fruiting_system.joint_angular_kd_overrides
-    assert kd["support"] == pytest.approx(1.0)
-    assert kd["primary_spur"] == pytest.approx(1.0)
-    assert kd["stem_apple"] == pytest.approx(5e-2)
+    ang = cfg.fruiting_system.joint_angular_kd_overrides
+    lin = cfg.fruiting_system.joint_linear_kd_overrides
+    assert ang == _DEFAULT_JOINT_ANGULAR_KD_OVERRIDES
+    assert lin == _DEFAULT_JOINT_LINEAR_KD_OVERRIDES
+    assert (
+        ang["support"]
+        == ang["primary_spur"]
+        == ang["spur_stem"]
+        == ang["stem_apple"]
+    )
+    assert (
+        lin["support"]
+        == lin["primary_spur"]
+        == lin["spur_stem"]
+        == lin["stem_apple"]
+    )
 
 
 def test_stem_caps_defaults():

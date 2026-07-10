@@ -368,9 +368,24 @@ def iter_kept_hold_segments(
     return kept
 
 
+def combine_transition_features(
+    episodes: list[Mapping[str, Any]],
+) -> dict[int, np.ndarray]:
+    """Concatenate hold-only transition features keyed by excitation direction."""
+    parts: dict[int, list[np.ndarray]] = {}
+    for arrays in episodes:
+        for direction, features in build_transition_features_by_direction(arrays).items():
+            parts.setdefault(direction, []).append(features)
+    return {
+        direction: np.concatenate(chunks, axis=0)
+        for direction, chunks in sorted(parts.items())
+        if chunks
+    }
+
+
 def build_transition_features_by_direction(
     arrays: Mapping[str, Any],
-) -> dict[tuple[float, float, float], np.ndarray]:
+) -> dict[int, np.ndarray]:
     """Build hold-only transition feature rows keyed by excitation direction."""
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
@@ -380,20 +395,15 @@ def build_transition_features_by_direction(
     stable = np.asarray(arrays.get("stable", np.ones(phase.shape[0], dtype=bool)), dtype=bool).reshape(
         -1
     )
-    excitation_dir = np.asarray(arrays["excitation_direction"]).reshape(-1, 3)
     if state.shape[0] != phase.size or state.shape[0] != dir_idx.size:
         raise ValueError("state, phase, and dir_idx frame counts must match")
 
-    out: dict[tuple[float, float, float], np.ndarray] = {}
+    out: dict[int, np.ndarray] = {}
     for direction in sorted({int(value) for value in dir_idx.tolist()}):
         frame_indices = np.where(dir_idx == direction)[0]
         if len(frame_indices) == 0:
             continue
-        first_frame = frame_indices[0]
-        vec = excitation_dir[first_frame]
-        
-        vec_key = (float(np.round(vec[0], 3)), float(np.round(vec[1], 3)), float(np.round(vec[2], 3)))
-        
+
         rows: list[np.ndarray] = []
         for segment in iter_kept_hold_segments(
             phase=phase,
@@ -407,8 +417,8 @@ def build_transition_features_by_direction(
                 rows.append(np.concatenate([current, delta]).astype(np.float32))
         if rows:
             arr = np.stack(rows, axis=0).astype(np.float32, copy=False)
-            if vec_key in out:
-                out[vec_key] = np.concatenate([out[vec_key], arr], axis=0)
+            if direction in out:
+                out[direction] = np.concatenate([out[direction], arr], axis=0)
             else:
-                out[vec_key] = arr
+                out[direction] = arr
     return out

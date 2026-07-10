@@ -139,7 +139,7 @@ are currently dead configuration** — every `FIXED` joint uses the fixed penalt
 follow-up cleanup (remove the misleading kwargs, or actually enable ramping with a
 `k_start` below `ke`), but out of scope for damping tuning itself.
 
-## 3. Per-joint `kd` (`set_fruiting_joint_angular_kd`)
+## 3. Per-joint `kd` (angular and linear)
 
 Given the inertia spread above, a **single global `rigid_joint_angular_kd` will
 generally not settle the whole chain without either under-damping primary or
@@ -186,31 +186,54 @@ Behavior:
   from `make_fruiting_solver_vbd`.
 - Raises `ValueError` on negative `kd`, ambiguous multi-key match on one joint, or a
   key that matches no joint.
-- **Angular slot only.** There is no `set_fruiting_joint_linear_kd` — linear `kd` stays
-  at the single global `FRUITING_VBD_RIGID_JOINT_LINEAR_KD` for every `FIXED` joint,
-  with no per-role override today. This matters because a `FIXED` joint constrains
-  **both** translation and rotation: e.g. the T-junction `support` welds are a
-  fixed-fixed beam boundary condition (primary is clamped at both ends, loaded by the
-  spur/stem/apple subtree at midspan per `spur_attach_fraction`), which reacts with
-  **both** a shear force (linear) *and* a clamping moment (angular) — a fixed-fixed
-  beam's end moment from a midspan point load is the same order as the midspan moment
-  (`PL/8` vs. `PL/4`), not negligible. Angular `kd` tiering therefore only damps half of
-  a support joint's possible ringing modes; if residual jitter there turns out to be
-  dominantly translational (the anchor point bouncing, not "nodding"), only a future
-  per-joint **linear** `kd`/`kp` helper (not yet implemented) would address it.
+- **Both slots.** `set_fruiting_joint_angular_kd` / `set_fruiting_joint_linear_kd`
+  (and batched variants) patch the angular and linear slots of `joint_penalty_kd`
+  respectively. Linear tiering matters for translational ringing at supports and the
+  apple hang (shear/bounce), not only rotational nod.
 
 Suggested tiering (starting point, to validate against settle-time and bounce
 observations, not a final answer):
 
-| Joint | Suggested `kd_ang` range |
-| ----- | ------------------------ |
-| World anchor / T-junction | ~2–10 N·m·s/rad |
-| Primary segment welds | ~1–6 |
-| Stem→apple | ~0.1–1 |
+| Joint | Suggested `kd_ang` range | Suggested `kd_lin` range |
+| ----- | ------------------------ | ------------------------ |
+| World anchor / T-junction | ~2–10 N·m·s/rad | ~2–10 N·s/m |
+| Primary segment welds | ~1–6 | ~1–6 |
+| Stem→apple | ~0.1–1 | ~0.1–1 |
 
-**Status: implemented** (angular slot only). `make_fruiting_solver_vbd` still seeds one
-global default; call `set_fruiting_joint_angular_kd` after construction to tier by role.
-Linear `kd` remains global (`FRUITING_VBD_RIGID_JOINT_LINEAR_KD`).
+**Status: implemented** (angular and linear). `make_fruiting_solver_vbd` still seeds one
+global default per slot; call the per-role helpers after construction to tier by role.
+
+### Linear slot (`set_fruiting_joint_linear_kd`)
+
+Same substring matching and validation as angular. Units are N·s/m (linear slot).
+
+```python
+from apple_pick_sim.fruiting_system import (
+    set_fruiting_joint_linear_kd,
+    set_fruiting_joint_linear_kd_batched,
+)
+
+set_fruiting_joint_linear_kd(
+    solver,
+    scene.fruiting_fixed_joints,
+    {
+        "support": FRUITING_VBD_RIGID_JOINT_LINEAR_KD,
+        "primary_spur": FRUITING_VBD_RIGID_JOINT_LINEAR_KD,
+        "stem_apple": FRUITING_VBD_RIGID_JOINT_LINEAR_KD,
+    },
+)
+
+set_fruiting_joint_linear_kd_batched(
+    scene.cable.solver,
+    scene.cable.fruiting_fixed_joints,
+    {"stem_apple": FRUITING_VBD_RIGID_JOINT_LINEAR_KD},
+    num_envs=scene.layout.num_envs,
+    joints_per_world=scene.layout.joints_per_world,
+)
+```
+
+Config defaults mirror angular numerically in `_DEFAULT_JOINT_LINEAR_KD_OVERRIDES`
+(`batched_heterogeneous_config.py`).
 
 ### Batched envs (`set_fruiting_joint_angular_kd_batched`)
 
@@ -239,14 +262,23 @@ set_fruiting_joint_angular_kd_batched(
 )
 ```
 
-`batched_heterogeneous_build.py` calls this after scene construction
-via `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES`. Returns global joint indices
-(`world * joints_per_world + template_index`) per matched key.
+`batched_heterogeneous_build.py` calls `_apply_joint_penalty_overrides` (angular + linear
+`kd` and optional `kp`) **before** `_run_vbd_settle` and again on the final post-weld scene.
+Kd defaults come from `_DEFAULT_JOINT_*_KD_OVERRIDES` in `batched_heterogeneous_config.py`
+(roles: `support`, `primary_spur`, `spur_stem`, `stem_apple`). Kp overrides default to
+empty dicts — only roles listed in `FruitingSystemConfig.joint_*_kp_overrides` are patched.
+Returns global joint indices (`world * joints_per_world + template_index`) per matched key.
+
+Manifest keys: `joint_angular_kd_overrides`, `joint_angular_kd_applied`,
+`joint_linear_kd_overrides`, `joint_linear_kd_applied`, `joint_angular_kp_overrides`,
+`joint_angular_kp_applied`, `joint_linear_kp_overrides`, `joint_linear_kp_applied`
+(see `manifest_sim_config.py`).
 
 ### Damping-ratio check against the current script values
 
 `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` in `batched_heterogeneous_config.py` (`FruitingSystemConfig`)
-currently sets `{"support": 1.0, "primary_spur": 1.0, "stem_apple": 5e-2}`, with **no**
+sets uniform `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD` for
+`support`, `primary_spur`, `spur_stem`, and `stem_apple`, with **no**
 `kp` override applied (see §4) — so every matched joint's `k` is Newton's default
 `rigid_joint_angular_ke = 1e5`, matching the §2 inertia table exactly (no rescaling
 needed). Plugging into `ζ = kd / kd_crit = kd / (2√(k·I_child))`:
@@ -255,8 +287,8 @@ needed). Plugging into `ζ = kd / kd_crit = kd / (2√(k·I_child))`:
 | ----- | ------------------------ | --------------------- | ------------- | --- |
 | support | ~1.1×10⁻⁴ | ~6.6 | 1.0 | **~0.15** (underdamped) |
 | primary_spur | ~1.8×10⁻⁶ | ~0.85 | 1.0 | **~1.18** (slightly overdamped) |
+| spur_stem | ~1.3×10⁻⁷ | ~0.23 | 0.0 (global default) | **~0.0** (underdamped) |
 | stem_apple | ~1.0×10⁻⁶ | ~0.63 | 0.05 | **~0.08** (underdamped) |
-| spur_stem (unmatched) | ~1.3×10⁻⁷ | ~0.23 | 5e-4 (global default) | ~0.002 (effectively undamped, expected) |
 
 Read with the same caveat as §2: `I_child` is from a representative build and may not
 exactly match `fruiting_system_ranges_real_world_proxy_variance.json`'s geometry, so
@@ -307,13 +339,14 @@ After patching, expect `k ≈ kp × gamma^N` after `N` substeps — unlike `kd`,
 constant. Raising `kp` above the default `1e5` requires the helper to bump
 `joint_penalty_k_max`; lowering below the initial `k_min` widens `k_min` accordingly.
 
-**Applied at build** via `build_batched_heterogeneous_scene` → `_apply_joint_kd_overrides`. Config defaults live in `batched_heterogeneous_config.py`
-imports `set_fruiting_joint_angular_kp_batched` but does not call it — there is no
-`_DEFAULT_JOINT_ANGULAR_KP_OVERRIDES` dict in that file today, so every `FIXED` joint's
-angular `kp` stays at the uniform Newton default (`1e5`). This differs from an earlier
-iteration of the script that did tier `kp` per role; if that tiering is reinstated,
-update the damping-ratio check above (it currently assumes uniform `k=1e5`). The unused
-import is dead code worth pruning if `kp` tiering stays off.
+**Applied at build** via `build_batched_heterogeneous_scene` → `_apply_joint_penalty_overrides`,
+using optional `FruitingSystemConfig.joint_angular_kp_overrides` /
+`joint_linear_kp_overrides` (empty by default). Batched examples import shared
+`EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES` / `EXAMPLE_JOINT_LINEAR_KP_OVERRIDES` from
+`batched_heterogeneous_config.py` with `"support": 200.0` for compliant tree-root
+anchors; other roles keep Newton's default `1e5` unless listed.
+
+Linear kp uses `set_fruiting_joint_linear_kp_batched` with the same label matching.
 
 ## Diagnosing which knob to change
 
@@ -336,13 +369,16 @@ damping-responsive; don't spend a damping sweep chasing `branch_path>nominal`.
 | ---- | ----- | -------- |
 | `damping_ratio` (primary/spur/stem) | 0.1–0.2 | `fruiting_system_ranges_real_world_proxy_variance.json` |
 | `vbd_stretch_fixed` (primary) | `stretch_stiffness=5e5`, `stretch_damping=500` | same fixture |
-| `FRUITING_VBD_RIGID_JOINT_LINEAR_KD` | `5.0e-4` N·s/m | `apple_pick_sim/fruiting_system/build.py` |
-| `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD` | `5.0e-4` N·m·s/rad (global default; override per joint via §3) | `apple_pick_sim/fruiting_system/build.py` |
+| `FRUITING_VBD_RIGID_JOINT_LINEAR_KD` | `0.0` (Newton ``SolverVBD`` default) | `apple_pick_sim/fruiting_system/build.py` |
+| `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD` | `0.0` (Newton ``SolverVBD`` default) | `apple_pick_sim/fruiting_system/build.py` |
 | `rigid_joint_linear_ke` / `rigid_joint_angular_ke` | `1e5` (Newton default, not overridden) | `newton/newton/_src/solvers/vbd/solver_vbd.py` |
 | `rigid_joint_*_k_start` | `1e8` / `1e6` passed but **inert** (ramping disabled) | `make_fruiting_solver_vbd` |
 | VBD `iterations` | 25 | `make_fruiting_solver_vbd` |
-| `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` (batched config) | `{"support": 1.0, "primary_spur": 1.0, "stem_apple": 5e-2}` | `batched_heterogeneous_config.py` |
-| `_DEFAULT_JOINT_ANGULAR_KP_OVERRIDES` (batched config) | **none** — `kp` stays uniform `1e5`; `set_fruiting_joint_angular_kp_batched` import is currently unused | `batched_heterogeneous_config.py` |
+| `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` (batched config) | uniform `0.0` per role (`support`, `primary_spur`, `spur_stem`, `stem_apple`; Newton default via `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD`) | `batched_heterogeneous_config.py` |
+| `_DEFAULT_JOINT_LINEAR_KD_OVERRIDES` (batched config) | uniform `0.0` per role (`support`, `primary_spur`, `spur_stem`, `stem_apple`; Newton default via `FRUITING_VBD_RIGID_JOINT_LINEAR_KD`) | `batched_heterogeneous_config.py` |
+| `EXAMPLE_JOINT_*_KD_OVERRIDES` (batched examples) | uniform `0.3` per role | `batched_heterogeneous_config.py` (imported by heterogeneous + sys-ID examples) |
+| `EXAMPLE_JOINT_*_KP_OVERRIDES` (batched examples) | `"support": 200.0` angular + linear | `batched_heterogeneous_config.py` (imported by heterogeneous + sys-ID examples) |
+| `joint_*_kp_overrides` (batched config default) | empty dict | `batched_heterogeneous_config.py` (`FruitingSystemConfig`) |
 
 Update this table when any of these values change so it stays a reliable snapshot.
 
@@ -351,7 +387,7 @@ Update this table when any of these values change so it stays a reliable snapsho
 | Module | Role |
 | ------ | ---- |
 | `apple_pick_sim/fruiting_system/params.py` | `RodParams`, `rod_params_from_material` — derives `bend_damping`/`stretch_damping` from `(E, ζ, geometry)` |
-| `apple_pick_sim/fruiting_system/build.py` | `FRUITING_VBD_RIGID_JOINT_{LINEAR,ANGULAR}_KD`, `make_fruiting_solver_vbd`, `set_fruiting_joint_angular_kd`, `set_fruiting_joint_angular_kd_batched`, `set_fruiting_joint_angular_kp`, `set_fruiting_joint_angular_kp_batched`, `fruiting_fixed_joints` |
+| `apple_pick_sim/fruiting_system/build.py` | `FRUITING_VBD_RIGID_JOINT_{LINEAR,ANGULAR}_KD`, `make_fruiting_solver_vbd`, `set_fruiting_joint_angular_kd`, `set_fruiting_joint_angular_kd_batched`, `set_fruiting_joint_angular_kp`, `set_fruiting_joint_angular_kp_batched`, `set_fruiting_joint_linear_kp`, `set_fruiting_joint_linear_kp_batched`, `fruiting_fixed_joints` |
 | `newton/newton/_src/solvers/vbd/solver_vbd.py` | `SolverVBD._init_joint_penalty_k` (global kd/k → per-constraint-slot arrays), `joint_penalty_kd`, `joint_penalty_k`, `joint_constraint_start` |
 | `newton/newton/_src/solvers/vbd/rigid_vbd_kernels.py` | `evaluate_linear_constraint_force_hessian` / `evaluate_angular_constraint_force_hessian` — where `kd` enters the AVBD force/Hessian |
 | `apple_pick_sim/coupled_fruiting/settle_quasi_static.py` | `settle_stability_reports_from_cable` — `residual_motion` / `branch_path>nominal` classification |

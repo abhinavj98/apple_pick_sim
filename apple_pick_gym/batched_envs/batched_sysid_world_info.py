@@ -30,10 +30,9 @@ def physical_stem_dir_for_world(scene: Any, layout: Any, world: int) -> np.ndarr
 
 
 def robot_base_pos_for_world(layout: Any, world: int) -> np.ndarray:
-    """Fixture robot base position translated to one batched world's origin."""
-    origin = np.asarray(layout.world_origin(int(world)), dtype=np.float64)
-    base = np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64) + origin
-    return base.astype(np.float64)
+    """Fixture robot base position for one batched world (co-located)."""
+    del layout, world
+    return np.asarray(COUPLED_ROBOT_BASE_POS, dtype=np.float64)
 
 
 def weld_direction_for_world(scene: Any, layout: Any, world: int) -> np.ndarray:

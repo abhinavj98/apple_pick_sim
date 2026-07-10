@@ -13,6 +13,7 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
 )
 from apple_pick_sim.coupled_fruiting.settled_checkpoint import (
     SettledCheckpoint,
+    build_cache_key,
     resolve_settle_cache_dir,
     settle_cache_path_for,
 )
@@ -54,6 +55,18 @@ def _sample_checkpoint(config, ranges, per_env_params) -> SettledCheckpoint:
         ranges=ranges,
         per_env_params=per_env_params,
     )
+
+
+def test_cache_key_includes_settle_quiet_every(config, ranges, per_env_params):
+    key_off = build_cache_key(config, ranges, per_env_params)
+    quiet_cfg = dataclasses.replace(
+        config,
+        scene=dataclasses.replace(config.scene, settle_quiet_every=100),
+    )
+    key_on = build_cache_key(quiet_cfg, ranges, per_env_params)
+    assert key_off != key_on
+    assert "quiet_every=100" in key_on
+    assert "quiet_every=0" in key_off
 
 
 def test_save_load_roundtrip(tmp_path, config, ranges, per_env_params):

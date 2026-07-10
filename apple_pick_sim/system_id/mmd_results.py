@@ -19,7 +19,7 @@ class MmdCandidateResult:
     candidate_index: int
     stiffnesses: dict[str, float]
     aggregate_mmd2: float
-    per_direction_mmd2: dict[tuple[float, float, float], float]
+    per_direction_mmd2: dict[int, float]
 
     def __post_init__(self) -> None:
         if not self.per_direction_mmd2:
@@ -32,14 +32,8 @@ def rank_results(results: list[MmdCandidateResult]) -> list[MmdCandidateResult]:
     return sorted(results, key=lambda result: (result.aggregate_mmd2, result.candidate_index))
 
 
-def _all_directions(results: list[MmdCandidateResult]) -> list[tuple[float, float, float]]:
-    return sorted(
-        {
-            direction
-            for result in results
-            for direction in result.per_direction_mmd2.keys()
-        }
-    )
+def _all_directions(results: list[MmdCandidateResult]) -> list[int]:
+    return sorted({direction for result in results for direction in result.per_direction_mmd2.keys()})
 
 
 def _ensure_output_dir(output_dir: str | Path) -> Path:
@@ -75,7 +69,7 @@ def write_results_csv(
         "stem_bend_stiffness",
         "aggregate_mmd2",
         "n_directions",
-    ] + [f"direction_({direction[0]:+.3f},{direction[1]:+.3f},{direction[2]:+.3f})_mmd2" for direction in directions]
+    ] + [f"dir_idx_{int(direction)}_mmd2" for direction in directions]
 
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -92,7 +86,7 @@ def write_results_csv(
                 "n_directions": len(result.per_direction_mmd2),
             }
             for direction in directions:
-                col_name = f"direction_({direction[0]:+.3f},{direction[1]:+.3f},{direction[2]:+.3f})_mmd2"
+                col_name = f"dir_idx_{int(direction)}_mmd2"
                 value = result.per_direction_mmd2.get(direction)
                 row[col_name] = "" if value is None else value
             writer.writerow(row)

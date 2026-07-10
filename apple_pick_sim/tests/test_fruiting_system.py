@@ -1063,6 +1063,138 @@ def test_set_fruiting_joint_angular_kd_returns_matched_indices_per_key():
     assert matched == {"primary_secondary": [j_primary], "stem_apple": [j_stem_apple]}
 
 
+def _linear_kd_for_joint(solver, joint_index: int) -> float:
+    import newton
+
+    jc_start = solver.joint_constraint_start.numpy()
+    kd = solver.joint_penalty_kd.numpy()
+    c0 = int(jc_start[joint_index])
+    return float(kd[c0 + newton.solvers.SolverVBD.JointSlot.LINEAR])
+
+
+def test_set_fruiting_joint_linear_kd_persists_through_solver_step():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+    fs.set_fruiting_joint_linear_kd(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"stem_apple": 2.5},
+    )
+    _run_fruiting_vbd_substeps(scene, num_substeps=8, sim_dt=(1.0 / 60.0) / 10.0)
+    assert _linear_kd_for_joint(scene.solver, j_stem_apple) == pytest.approx(2.5)
+
+
+def test_set_fruiting_joint_linear_kd_changes_trajectory_after_steps():
+    fs = _import_module()
+    sim_dt = (1.0 / 60.0) / 10.0
+    substeps = 120
+
+    scene_default = _scene_for_joint_kd_tests()
+    _run_fruiting_vbd_substeps(scene_default, num_substeps=substeps, sim_dt=sim_dt)
+    q_default = scene_default.state_0.body_q.numpy().copy()
+
+    scene_patched = _scene_for_joint_kd_tests()
+    fs.set_fruiting_joint_linear_kd(
+        scene_patched.solver,
+        scene_patched.fruiting_fixed_joints,
+        {"stem_apple": 50.0},
+    )
+    _run_fruiting_vbd_substeps(scene_patched, num_substeps=substeps, sim_dt=sim_dt)
+    q_patched = scene_patched.state_0.body_q.numpy().copy()
+
+    assert not np.allclose(q_default, q_patched, rtol=0.0, atol=1.0e-4), (
+        "patched stem_apple linear kd should change integrated trajectory"
+    )
+
+
+def test_set_fruiting_joint_linear_kd_patches_matching_slots():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_primary = _joint_index_by_label(scene.fruiting_fixed_joints, "primary_secondary")
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+
+    fs.set_fruiting_joint_linear_kd(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 2.5, "stem_apple": 0.25},
+    )
+
+    assert _linear_kd_for_joint(scene.solver, j_primary) == pytest.approx(2.5)
+    assert _linear_kd_for_joint(scene.solver, j_stem_apple) == pytest.approx(0.25)
+
+
+def test_set_fruiting_joint_linear_kd_leaves_unmatched_joints_at_default():
+    from apple_pick_sim.fruiting_system.build import FRUITING_VBD_RIGID_JOINT_LINEAR_KD
+
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_spur_stem = _joint_index_by_label(scene.fruiting_fixed_joints, "spur_stem")
+    default_kd = _linear_kd_for_joint(scene.solver, j_spur_stem)
+    assert default_kd == pytest.approx(FRUITING_VBD_RIGID_JOINT_LINEAR_KD)
+
+    fs.set_fruiting_joint_linear_kd(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 3.0},
+    )
+
+    assert _linear_kd_for_joint(scene.solver, j_spur_stem) == pytest.approx(
+        FRUITING_VBD_RIGID_JOINT_LINEAR_KD
+    )
+
+
+def test_set_fruiting_joint_linear_kd_raises_on_unmatched_key():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="nonexistent_key_xyz"):
+        fs.set_fruiting_joint_linear_kd(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"nonexistent_key_xyz": 1.0},
+        )
+
+
+def test_set_fruiting_joint_linear_kd_raises_on_ambiguous_multi_key_match():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        fs.set_fruiting_joint_linear_kd(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"apple": 0.5, "stem_apple": 0.25},
+        )
+
+
+def test_set_fruiting_joint_linear_kd_raises_on_negative_kd():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="negative"):
+        fs.set_fruiting_joint_linear_kd(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"stem_apple": -0.1},
+        )
+
+
+def test_set_fruiting_joint_linear_kd_returns_matched_indices_per_key():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_primary = _joint_index_by_label(scene.fruiting_fixed_joints, "primary_secondary")
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+
+    matched = fs.set_fruiting_joint_linear_kd(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 2.0, "stem_apple": 0.2},
+    )
+
+    assert matched == {"primary_secondary": [j_primary], "stem_apple": [j_stem_apple]}
+
+
 def _angular_kp_triple_for_joint(solver, joint_index: int) -> tuple[float, float, float]:
     import newton
 
@@ -1201,6 +1333,90 @@ def test_set_fruiting_joint_angular_kp_returns_matched_indices_per_key():
     )
 
     assert matched == {"primary_secondary": [j_primary], "stem_apple": [j_stem_apple]}
+
+
+def _linear_kp_triple_for_joint(solver, joint_index: int) -> tuple[float, float, float]:
+    import newton
+
+    jc_start = solver.joint_constraint_start.numpy()
+    k = solver.joint_penalty_k.numpy()
+    k_min = solver.joint_penalty_k_min.numpy()
+    k_max = solver.joint_penalty_k_max.numpy()
+    c0 = int(jc_start[joint_index])
+    slot = c0 + newton.solvers.SolverVBD.JointSlot.LINEAR
+    return float(k[slot]), float(k_min[slot]), float(k_max[slot])
+
+
+def test_set_fruiting_joint_linear_kp_patches_matching_slots():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_primary = _joint_index_by_label(scene.fruiting_fixed_joints, "primary_secondary")
+    j_stem_apple = _joint_index_by_label(scene.fruiting_fixed_joints, "stem_apple")
+
+    fs.set_fruiting_joint_linear_kp(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 3.0e5, "stem_apple": 6.0e4},
+    )
+
+    k_primary, _, kmax_primary = _linear_kp_triple_for_joint(scene.solver, j_primary)
+    k_stem, _, kmax_stem = _linear_kp_triple_for_joint(scene.solver, j_stem_apple)
+    assert k_primary == pytest.approx(3.0e5)
+    assert k_stem == pytest.approx(6.0e4)
+    assert kmax_primary >= 3.0e5
+    assert kmax_stem >= 6.0e4
+
+
+def test_set_fruiting_joint_linear_kp_leaves_unmatched_joints_at_default():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+    j_spur_stem = _joint_index_by_label(scene.fruiting_fixed_joints, "spur_stem")
+    default_k, _, _ = _linear_kp_triple_for_joint(scene.solver, j_spur_stem)
+
+    fs.set_fruiting_joint_linear_kp(
+        scene.solver,
+        scene.fruiting_fixed_joints,
+        {"primary_secondary": 3.0e5},
+    )
+
+    k_spur, _, _ = _linear_kp_triple_for_joint(scene.solver, j_spur_stem)
+    assert k_spur == pytest.approx(default_k)
+
+
+def test_set_fruiting_joint_linear_kp_raises_on_unmatched_key():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="nonexistent_key_xyz"):
+        fs.set_fruiting_joint_linear_kp(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"nonexistent_key_xyz": 1.0e5},
+        )
+
+
+def test_set_fruiting_joint_linear_kp_raises_on_ambiguous_multi_key_match():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="ambiguous"):
+        fs.set_fruiting_joint_linear_kp(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"apple": 1.0e5, "stem_apple": 5.0e4},
+        )
+
+
+def test_set_fruiting_joint_linear_kp_raises_on_negative_kp():
+    fs = _import_module()
+    scene = _scene_for_joint_kd_tests()
+
+    with pytest.raises(ValueError, match="negative"):
+        fs.set_fruiting_joint_linear_kp(
+            scene.solver,
+            scene.fruiting_fixed_joints,
+            {"stem_apple": -1.0},
+        )
 
 
 def test_measure_fruiting_forces_returns_fixed_and_cable_indices():

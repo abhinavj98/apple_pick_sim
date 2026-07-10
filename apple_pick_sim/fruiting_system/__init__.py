@@ -8,6 +8,10 @@ from apple_pick_sim.fruiting_system.build import (
     set_fruiting_joint_angular_kd_batched,
     set_fruiting_joint_angular_kp,
     set_fruiting_joint_angular_kp_batched,
+    set_fruiting_joint_linear_kd,
+    set_fruiting_joint_linear_kd_batched,
+    set_fruiting_joint_linear_kp,
+    set_fruiting_joint_linear_kp_batched,
 )
 from apple_pick_sim.fruiting_system.coupled import (
     CoupledCableScene,
@@ -101,6 +105,10 @@ __all__ = [
     "set_fruiting_joint_angular_kd_batched",
     "set_fruiting_joint_angular_kp",
     "set_fruiting_joint_angular_kp_batched",
+    "set_fruiting_joint_linear_kd",
+    "set_fruiting_joint_linear_kd_batched",
+    "set_fruiting_joint_linear_kp",
+    "set_fruiting_joint_linear_kp_batched",
     "measure_fruiting_forces",
     "params_fingerprint",
     "parse_fixture_args",

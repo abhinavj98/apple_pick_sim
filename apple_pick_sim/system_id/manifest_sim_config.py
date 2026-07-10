@@ -27,6 +27,9 @@ def sim_config_to_manifest_dict(
     config: BatchedHeterogeneousCoupledSimConfig,
     *,
     applied_joint_kd_overrides: Mapping[str, float] | None = None,
+    applied_joint_linear_kd_overrides: Mapping[str, float] | None = None,
+    applied_joint_angular_kp_overrides: Mapping[str, float] | None = None,
+    applied_joint_linear_kp_overrides: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """Serialize replay-relevant fields from the effective batched sim config."""
     fs_cfg = config.fruiting_system
@@ -53,6 +56,15 @@ def sim_config_to_manifest_dict(
         "joint_angular_kd_overrides": {
             str(k): float(v) for k, v in sorted(fs_cfg.joint_angular_kd_overrides.items())
         },
+        "joint_linear_kd_overrides": {
+            str(k): float(v) for k, v in sorted(fs_cfg.joint_linear_kd_overrides.items())
+        },
+        "joint_angular_kp_overrides": {
+            str(k): float(v) for k, v in sorted(fs_cfg.joint_angular_kp_overrides.items())
+        },
+        "joint_linear_kp_overrides": {
+            str(k): float(v) for k, v in sorted(fs_cfg.joint_linear_kp_overrides.items())
+        },
         "controller": {
             "mode": str(ctrl.mode),
             "linear_speed": float(ctrl.linear_speed),
@@ -73,6 +85,18 @@ def sim_config_to_manifest_dict(
     if applied_joint_kd_overrides is not None:
         out["joint_angular_kd_applied"] = {
             str(k): float(v) for k, v in sorted(applied_joint_kd_overrides.items())
+        }
+    if applied_joint_linear_kd_overrides is not None:
+        out["joint_linear_kd_applied"] = {
+            str(k): float(v) for k, v in sorted(applied_joint_linear_kd_overrides.items())
+        }
+    if applied_joint_angular_kp_overrides is not None:
+        out["joint_angular_kp_applied"] = {
+            str(k): float(v) for k, v in sorted(applied_joint_angular_kp_overrides.items())
+        }
+    if applied_joint_linear_kp_overrides is not None:
+        out["joint_linear_kp_applied"] = {
+            str(k): float(v) for k, v in sorted(applied_joint_linear_kp_overrides.items())
         }
     return out
 
@@ -158,6 +182,42 @@ def sim_config_manifest_mismatches(
             "joint_angular_kd_overrides: "
             f"manifest={dict(rec_kd)!r} replay={rep_kd!r}"
         )
+
+    rec_lin_kd = recorded.get("joint_linear_kd_overrides")
+    if rec_lin_kd is not None:
+        rep_lin_kd = replay["joint_linear_kd_overrides"]
+        if not _dict_float_close(
+            {str(k): float(v) for k, v in rec_lin_kd.items()},
+            rep_lin_kd,
+        ):
+            mismatches.append(
+                "joint_linear_kd_overrides: "
+                f"manifest={dict(rec_lin_kd)!r} replay={rep_lin_kd!r}"
+            )
+
+    rec_ang_kp = recorded.get("joint_angular_kp_overrides")
+    if rec_ang_kp is not None:
+        rep_ang_kp = replay["joint_angular_kp_overrides"]
+        if not _dict_float_close(
+            {str(k): float(v) for k, v in rec_ang_kp.items()},
+            rep_ang_kp,
+        ):
+            mismatches.append(
+                "joint_angular_kp_overrides: "
+                f"manifest={dict(rec_ang_kp)!r} replay={rep_ang_kp!r}"
+            )
+
+    rec_lin_kp = recorded.get("joint_linear_kp_overrides")
+    if rec_lin_kp is not None:
+        rep_lin_kp = replay["joint_linear_kp_overrides"]
+        if not _dict_float_close(
+            {str(k): float(v) for k, v in rec_lin_kp.items()},
+            rep_lin_kp,
+        ):
+            mismatches.append(
+                "joint_linear_kp_overrides: "
+                f"manifest={dict(rec_lin_kp)!r} replay={rep_lin_kp!r}"
+            )
 
     rec_ctrl = recorded.get("controller") or {}
     rep_ctrl = replay["controller"]

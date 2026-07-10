@@ -11,6 +11,10 @@ import pytest
 
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
+    EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES,
+    EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES,
+    EXAMPLE_JOINT_LINEAR_KD_OVERRIDES,
+    EXAMPLE_JOINT_LINEAR_KP_OVERRIDES,
     ObsConfig,
     RuntimeConfig,
 )
@@ -23,6 +27,10 @@ if str(_EXAMPLES_DIR) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES_DIR))
 
 from example_batched_heterogeneous_coupled_sim import (  # noqa: E402
+    JOINT_ANGULAR_KD_OVERRIDES,
+    JOINT_ANGULAR_KP_OVERRIDES,
+    JOINT_LINEAR_KD_OVERRIDES,
+    JOINT_LINEAR_KP_OVERRIDES,
     _VIC_DEFAULT_ANGULAR_D,
     _VIC_DEFAULT_ANGULAR_K,
     _VIC_DEFAULT_LINEAR_D,
@@ -109,14 +117,63 @@ def test_config_from_args_matches_defaults_without_cli_overrides():
     assert cfg.obs is None
     assert cfg.domain_randomization.ranges_path == base.domain_randomization.ranges_path
     assert cfg.domain_randomization.topology_seed is None
+    assert cfg.fruiting_system.joint_angular_kd_overrides == JOINT_ANGULAR_KD_OVERRIDES
+    assert cfg.fruiting_system.joint_linear_kd_overrides == JOINT_LINEAR_KD_OVERRIDES
+    assert cfg.fruiting_system.joint_angular_kp_overrides == JOINT_ANGULAR_KP_OVERRIDES
+    assert cfg.fruiting_system.joint_linear_kp_overrides == JOINT_LINEAR_KP_OVERRIDES
 
 
-def test_vic_defaults_match_parser():
+def test_joint_kd_overrides_stay_in_module_constants():
+    from example_batched_heterogeneous_coupled_sim import _config_from_args  # noqa: E402
+
+    assert JOINT_ANGULAR_KD_OVERRIDES is EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES
+    assert JOINT_LINEAR_KD_OVERRIDES is EXAMPLE_JOINT_LINEAR_KD_OVERRIDES
+    assert JOINT_ANGULAR_KP_OVERRIDES is EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES
+    assert JOINT_LINEAR_KP_OVERRIDES is EXAMPLE_JOINT_LINEAR_KP_OVERRIDES
+
+    args = _make_parser().parse_args([])
+    args._resolved_seed = 42
+    cfg = _config_from_args(args)
+    base = BatchedHeterogeneousCoupledSimConfig.defaults()
+    assert cfg.fruiting_system == dataclasses.replace(
+        base.fruiting_system,
+        joint_angular_kd_overrides=JOINT_ANGULAR_KD_OVERRIDES,
+        joint_linear_kd_overrides=JOINT_LINEAR_KD_OVERRIDES,
+        joint_angular_kp_overrides=JOINT_ANGULAR_KP_OVERRIDES,
+        joint_linear_kp_overrides=JOINT_LINEAR_KP_OVERRIDES,
+    )
     args = _make_parser().parse_args([])
     assert args.vic_linear_k == _VIC_DEFAULT_LINEAR_K == 600.0
     assert args.vic_linear_d == _VIC_DEFAULT_LINEAR_D == 200.0
     assert args.vic_angular_k == _VIC_DEFAULT_ANGULAR_K == 20.0
     assert args.vic_angular_d == _VIC_DEFAULT_ANGULAR_D == 4.0
+
+
+def test_show_settling_parser_defaults():
+    args = _make_parser().parse_args([])
+    assert args.show_settling is False
+
+    args_on = _make_parser().parse_args(["--show-settling"])
+    assert args_on.show_settling is True
+
+
+def test_show_settling_disables_cache_and_forces_settle():
+    args = _make_parser().parse_args(["--show-settling", "--viewer", "null"])
+    graphical = False
+    show_settling = graphical and bool(args.show_settling)
+    use_settle_cache = bool(args.use_settle_cache) and not show_settling
+    force_settle = bool(args.force_settle) or show_settling
+    assert show_settling is False
+    assert use_settle_cache is True
+    assert force_settle is False
+
+    args_gl = _make_parser().parse_args(["--show-settling", "--viewer", "gl"])
+    show_settling_gl = True and bool(args_gl.show_settling)
+    use_settle_cache_gl = bool(args_gl.use_settle_cache) and not show_settling_gl
+    force_settle_gl = bool(args_gl.force_settle) or show_settling_gl
+    assert show_settling_gl is True
+    assert use_settle_cache_gl is False
+    assert force_settle_gl is True
 
 
 def test_tcp_force_viz_parser_defaults():

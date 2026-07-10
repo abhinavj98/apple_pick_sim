@@ -297,8 +297,7 @@ def initialize_batched_env_from_dataset(
             if tcp_quat is None:
                 tcp_quat = _frame_array_at_step(arrays, "tcp_quat", FIRST_TRAJECTORY_STEP_IDX, 4)
             if tcp_pos is not None and tcp_quat is not None:
-                origin = np.asarray(layout.world_origin(world), dtype=np.float32)
-                target_pos[world] = tcp_pos - origin
+                target_pos[world] = tcp_pos
                 target_rot[world] = tcp_quat
 
         excitation_direction = arrays["excitation_direction"][0]

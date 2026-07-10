@@ -86,6 +86,7 @@ dev = [
 ]
 gym = [
     { name = "dash" },
+    { name = "geomloss" },
     { name = "gymnasium" },
     { name = "plotly" },
     { name = "pyarrow" },
@@ -97,6 +98,7 @@ vic = [
 [package.metadata]
 requires-dist = [
     { name = "dash", marker = "extra == 'gym'", specifier = ">=4.2.0" },
+    { name = "geomloss", marker = "extra == 'gym'", specifier = ">=0.2.6" },
     { name = "gymnasium", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "gymnasium", marker = "extra == 'gym'", specifier = ">=1.0.0" },
     { name = "newton", extras = ["examples"], editable = "newton" },
@@ -827,6 +829,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d5/8d/1c51c094345df128ca4a990d633fe1a0ff28726c9e6b3c41ba65087bba1d/fsspec-2026.4.0.tar.gz", hash = "sha256:301d8ac70ae90ef3ad05dcf94d6c3754a097f9b5fe4667d2787aa359ec7df7e4", size = 312760, upload-time = "2026-04-29T20:42:38.635Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d5/0c/043d5e551459da400957a1395e0febbf771446ff34291afcbe3d8be2a279/fsspec-2026.4.0-py3-none-any.whl", hash = "sha256:11ef7bb35dab8a394fde6e608221d5cf3e8499401c249bebaeaad760a1a8dec2", size = 203402, upload-time = "2026-04-29T20:42:36.842Z" },
+]
+
+[[package]]
+name = "geomloss"
+version = "0.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/be/a8/c7635702d96693895bc4831ad909423b57ec93183a2d92d9066369eb7cbf/geomloss-0.3.1.tar.gz", hash = "sha256:8d8bee2a57c9393642866c329e0dd069f6270b06a721683b0f164cadc4902505", size = 67281, upload-time = "2026-05-05T11:40:08.047Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/7e/37f7b8b7d78ca5b62062c804264914696faf12850040930f12c5e75fb094/geomloss-0.3.1-py3-none-any.whl", hash = "sha256:3ecb9ed72a7122d1ff60f0975edd759d2d1ac1b2397eaea7af6c7523ee117d4b", size = 82962, upload-time = "2026-05-05T11:40:06.525Z" },
 ]
 
 [[package]]

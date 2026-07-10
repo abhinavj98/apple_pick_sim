@@ -222,6 +222,15 @@ half of each hold segment discarded before feature construction. It writes
 `mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and
 `mmd_stiffness_sensitivity.png`. This remains a diagnostic grid search, not
 simulator tuning or CEM.
+
+### Sinkhorn ranking validation (2026-07-08)
+
+Alongside hold MSE on the batched stiffness grid, a **Geomloss Sinkhorn**
+objective on the same hold-phase transition bags \(v_t=[s_t,\Delta s_t]\) is
+planned for ranking validation (GT preference + Spearman vs MSE) before any
+CMA-ES/CEM objective swap. Design:
+`docs/specs/2026-07-08-wasserstein-sysid-ranking-design.md`. This does not
+replace §4 CEM/MMD until ranking evidence supports it.
 The default initializer is observation-only Parquet replay. Use
 `--use-snapshot` only for privileged sim-to-sim debugging against
 `initial_states/*.npz`.

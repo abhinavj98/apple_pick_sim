@@ -9,7 +9,9 @@ from apple_pick_sim.system_id.mmd_features import (
     ReplayObservationCollector,
     build_state_matrix,
     build_transition_features_by_direction,
+    combine_transition_features,
     flatten_woody_positions,
+    iter_kept_hold_segments,
     replay_obs_dict_from_sysid_numpy,
 )
 
@@ -139,16 +141,14 @@ def test_transition_features_are_hold_only_per_direction_and_segment():
 
     by_direction = build_transition_features_by_direction(arrays)
 
-    dir_0_key = (1.0, 0.0, 0.0)
-    dir_1_key = (0.0, 1.0, 0.0)
-    assert set(by_direction) == {dir_0_key, dir_1_key}
+    assert set(by_direction) == {0, 1}
     state = build_state_matrix(arrays)
     expected_dir0 = np.concatenate([state[3], state[4] - state[3]])
     expected_dir1 = np.concatenate([state[10], state[11] - state[10]])
-    assert by_direction[dir_0_key].shape == (1, state.shape[1] * 2)
-    assert by_direction[dir_1_key].shape == (1, state.shape[1] * 2)
-    np.testing.assert_allclose(by_direction[dir_0_key][0], expected_dir0)
-    np.testing.assert_allclose(by_direction[dir_1_key][0], expected_dir1)
+    assert by_direction[0].shape == (1, state.shape[1] * 2)
+    assert by_direction[1].shape == (1, state.shape[1] * 2)
+    np.testing.assert_allclose(by_direction[0][0], expected_dir0)
+    np.testing.assert_allclose(by_direction[1][0], expected_dir1)
 
 
 def test_transition_features_fail_when_required_field_is_missing():
@@ -296,3 +296,66 @@ def test_replay_observation_collector_builds_dataset_shaped_arrays():
     np.testing.assert_allclose(
         arrays["woody_part_start_pos"]["joint_b"][0], [20.0, 21.0, 22.0]
     )
+
+
+def test_iter_kept_hold_segments_discards_first_half_and_requires_two_frames():
+    phase = np.array([0, 1, 1, 1, 1, 1, 1, 1], dtype=np.int8)
+    dir_idx = np.zeros(8, dtype=np.int32)
+
+    segments = iter_kept_hold_segments(phase=phase, dir_idx=dir_idx, direction=0)
+
+    assert len(segments) == 1
+    assert segments[0].tolist() == [5, 6, 7]
+
+
+def test_combine_transition_features_concatenates_episodes_per_direction():
+    ep0 = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    ep1 = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    ep1["ft_wrist"] = ep1["ft_wrist"] + 1000.0
+
+    single = combine_transition_features([ep0])
+    combined = combine_transition_features([ep0, ep1])
+    direction = 0
+
+    assert direction in single
+    assert combined[direction].shape[0] == single[direction].shape[0] * 2
+
+
+def test_transition_features_exclude_pre_weld_row_after_strip():
+    from apple_pick_gym.batched_envs import batched_sysid_mmd_grid as grid
+
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays = {
+        **arrays,
+        "step_idx": np.array([-1, *range(8)], dtype=np.int32),
+        "phase": np.array([-1, 0, 1, 1, 1, 1, 1, 1, 1], dtype=np.int8),
+        "ft_wrist": np.vstack(
+            [np.full(6, -999.0, dtype=np.float32), arrays["ft_wrist"]]
+        ),
+    }
+    for key in ("tcp_velocity", "action", "tcp_pos", "apple_pos"):
+        arrays[key] = np.vstack(
+            [np.zeros((1, arrays[key].shape[1]), dtype=np.float32), arrays[key]]
+        )
+    for woody_key in ("woody_part_start_pos", "woody_part_end_pos"):
+        for name in arrays[woody_key]:
+            arrays[woody_key][name] = np.vstack(
+                [
+                    np.zeros((1, 3), dtype=np.float32),
+                    arrays[woody_key][name],
+                ]
+            )
+    arrays["excitation_direction"] = np.vstack(
+        [arrays["excitation_direction"][0:1], arrays["excitation_direction"]]
+    )
+    arrays["excitation_type"] = np.hstack(
+        [arrays["excitation_type"][0:1], arrays["excitation_type"]]
+    )
+    arrays["dir_idx"] = np.hstack([arrays["dir_idx"][0:1], arrays["dir_idx"]])
+
+    stripped = grid.strip_pre_weld_rows(arrays)
+    by_direction = build_transition_features_by_direction(stripped)
+
+    assert by_direction
+    for features in by_direction.values():
+        assert not np.any(features[:, :6] == -999.0)

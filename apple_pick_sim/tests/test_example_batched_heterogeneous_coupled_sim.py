@@ -98,11 +98,22 @@ def test_collision_parser_defaults():
 
 
 def test_config_from_args_matches_defaults_without_cli_overrides():
-    from example_batched_heterogeneous_coupled_sim import _config_from_args  # noqa: E402
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path, load_ranges
+    from example_batched_heterogeneous_coupled_sim import (  # noqa: E402
+        _config_from_args,
+        _resolve_sim_build_knobs,
+    )
 
     args = _make_parser().parse_args([])
     cfg = _config_from_args(args)
     base = BatchedHeterogeneousCoupledSimConfig.defaults()
+    (
+        _vic,
+        joint_angular_kd,
+        joint_linear_kd,
+        joint_angular_kp,
+        joint_linear_kp,
+    ) = _resolve_sim_build_knobs(load_ranges(default_ranges_fixture_path()))
 
     assert cfg.runtime.num_envs == base.runtime.num_envs
     assert cfg.runtime.control_hz == base.runtime.control_hz
@@ -112,19 +123,23 @@ def test_config_from_args_matches_defaults_without_cli_overrides():
     assert cfg.robot.fix_to_apple == base.robot.fix_to_apple
     assert cfg.robot.per_env_ik == base.robot.per_env_ik
     assert cfg.robot.ik_bootstrap_iterations == base.robot.ik_bootstrap_iterations
-    assert cfg.controller.mode == base.controller.mode
+    assert cfg.controller.mode == base.controller.mode == "vic"
     assert cfg.settle_diagnostics is not None
     assert cfg.obs is None
     assert cfg.domain_randomization.ranges_path == base.domain_randomization.ranges_path
     assert cfg.domain_randomization.topology_seed is None
-    assert cfg.fruiting_system.joint_angular_kd_overrides == JOINT_ANGULAR_KD_OVERRIDES
-    assert cfg.fruiting_system.joint_linear_kd_overrides == JOINT_LINEAR_KD_OVERRIDES
-    assert cfg.fruiting_system.joint_angular_kp_overrides == JOINT_ANGULAR_KP_OVERRIDES
-    assert cfg.fruiting_system.joint_linear_kp_overrides == JOINT_LINEAR_KP_OVERRIDES
+    assert cfg.fruiting_system.joint_angular_kd_overrides == joint_angular_kd
+    assert cfg.fruiting_system.joint_linear_kd_overrides == joint_linear_kd
+    assert cfg.fruiting_system.joint_angular_kp_overrides == joint_angular_kp
+    assert cfg.fruiting_system.joint_linear_kp_overrides == joint_linear_kp
 
 
 def test_joint_kd_overrides_stay_in_module_constants():
-    from example_batched_heterogeneous_coupled_sim import _config_from_args  # noqa: E402
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path, load_ranges
+    from example_batched_heterogeneous_coupled_sim import (  # noqa: E402
+        _config_from_args,
+        _resolve_sim_build_knobs,
+    )
 
     assert JOINT_ANGULAR_KD_OVERRIDES is EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES
     assert JOINT_LINEAR_KD_OVERRIDES is EXAMPLE_JOINT_LINEAR_KD_OVERRIDES
@@ -135,22 +150,30 @@ def test_joint_kd_overrides_stay_in_module_constants():
     args._resolved_seed = 42
     cfg = _config_from_args(args)
     base = BatchedHeterogeneousCoupledSimConfig.defaults()
+    (
+        vic,
+        joint_angular_kd,
+        joint_linear_kd,
+        joint_angular_kp,
+        joint_linear_kp,
+    ) = _resolve_sim_build_knobs(load_ranges(default_ranges_fixture_path()))
     assert cfg.fruiting_system == dataclasses.replace(
         base.fruiting_system,
-        joint_angular_kd_overrides=JOINT_ANGULAR_KD_OVERRIDES,
-        joint_linear_kd_overrides=JOINT_LINEAR_KD_OVERRIDES,
-        joint_angular_kp_overrides=JOINT_ANGULAR_KP_OVERRIDES,
-        joint_linear_kp_overrides=JOINT_LINEAR_KP_OVERRIDES,
+        joint_angular_kd_overrides=joint_angular_kd,
+        joint_linear_kd_overrides=joint_linear_kd,
+        joint_angular_kp_overrides=joint_angular_kp,
+        joint_linear_kp_overrides=joint_linear_kp,
     )
     args = _make_parser().parse_args([])
     assert args.vic_linear_k is None
     assert args.vic_linear_d is None
     assert args.vic_angular_k is None
     assert args.vic_angular_d is None
-    assert cfg.controller.vic_gains.linear_k == pytest.approx(200.0)
-    assert cfg.controller.vic_gains.linear_d == pytest.approx(10.0)
-    assert cfg.controller.vic_gains.angular_k == pytest.approx(10.0)
-    assert cfg.controller.vic_gains.angular_d == pytest.approx(1.0)
+    assert args.controller == "vic"
+    assert cfg.controller.vic_gains.linear_k == pytest.approx(vic.linear_k)
+    assert cfg.controller.vic_gains.linear_d == pytest.approx(vic.linear_d)
+    assert cfg.controller.vic_gains.angular_k == pytest.approx(vic.angular_k)
+    assert cfg.controller.vic_gains.angular_d == pytest.approx(vic.angular_d)
     assert _VIC_DEFAULT_LINEAR_K == 200.0
     assert _VIC_DEFAULT_LINEAR_D == 10.0
     assert _VIC_DEFAULT_ANGULAR_K == 10.0
@@ -172,7 +195,8 @@ def test_show_settling_disables_cache_and_forces_settle():
     use_settle_cache = bool(args.use_settle_cache) and not show_settling
     force_settle = bool(args.force_settle) or show_settling
     assert show_settling is False
-    assert use_settle_cache is True
+    assert args.use_settle_cache is False
+    assert use_settle_cache is False
     assert force_settle is False
 
     args_gl = _make_parser().parse_args(["--show-settling", "--viewer", "gl"])
@@ -182,6 +206,13 @@ def test_show_settling_disables_cache_and_forces_settle():
     assert show_settling_gl is True
     assert use_settle_cache_gl is False
     assert force_settle_gl is True
+
+
+def test_use_settle_cache_parser_default_off():
+    args = _make_parser().parse_args([])
+    assert args.use_settle_cache is False
+    args_on = _make_parser().parse_args(["--use-settle-cache"])
+    assert args_on.use_settle_cache is True
 
 
 def test_tcp_force_viz_parser_defaults():

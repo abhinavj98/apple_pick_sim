@@ -38,7 +38,7 @@ flowchart LR
 - All **N** worlds advance together on the GPU; each fruiting system relaxes under gravity with a free proxy.
 - **Gravity ramp** (0 → −9.81 m/s² over settle substeps) via `gravity_ramp=True` / `--settle-gravity-ramp` — **default off** (`settle_gravity_ramp=False` in `BatchedHeterogeneousCoupledSimConfig`). Soft DR fixtures may need more substeps when the ramp is on (full g only on the final substep).
 - **Quiet / zero twist:** `quiet_all_cable_bodies` / device `zero_all_body_qd_device` remove residual kinetic energy. Optional periodic quiet during settle via `settle_quiet_every` / `--settle-quiet-every` (`should_quiet_cable_bodies_at_settle_substep`). Post-settle quiet is part of a stable weld seed.
-- Optional **settled-state disk cache** (`settled_checkpoint.py`, env `APPLE_PICK_SIM_SETTLE_CACHE_DIR`) when `use_settle_cache=True`.
+- Optional **settled-state disk cache** (`settled_checkpoint.py`, env `APPLE_PICK_SIM_SETTLE_CACHE_DIR`) when `use_settle_cache=True` (off by default; pass `--use-settle-cache` on examples).
 - Diagnostics: `settle_ke_decay.py` / `log_settle_ke_decay.py`, `settle_quasi_static.py`, `sweep_settle_weld_stability.py`.
 - The canonical example (`example_batched_heterogeneous_coupled_sim.py`) runs settle during build via `build_batched_heterogeneous_scene`.
 - Default settle length is configurable (`--settle-substeps`; config default often 5000 for heterogeneous builds — check CLI/config, not this prose alone).
@@ -56,13 +56,14 @@ flowchart LR
 
 ### 4. Run with teleop or per-env actions
 
-- **`Fr3BatchedEEDirectJointController`** or **`Fr3BatchedEEVelocityController`** (`--controller direct` or `ee`).
-- **FR3 runtime IK** follows Newton **`example_ik_cube_stacking.py`**: `BatchedTemplateIK` on `ik_template_robot_model` with **`n_problems = N`**, per-world TCP targets, then **`scatter_to_model`** into each world's `joint_q` slice. This is **not** “solve one IK and broadcast `joint_q`.”
+- **Default controller is VIC** (`--controller vic`): `Fr3BatchedEEImpedanceController` + joint-torque impedance. Gains / joint kp/kd come from optional ranges JSON `sim_build` (see `docs/material-parameter-sampling.md`).
+- Alternatives: **`--controller ee`** (`Fr3BatchedEEVelocityController`) or **`--controller direct`** (`Fr3BatchedEEDirectJointController`, kinematic IK).
+- **FR3 runtime IK** (ee/direct paths) follows Newton **`example_ik_cube_stacking.py`**: `BatchedTemplateIK` on `ik_template_robot_model` with **`n_problems = N`**, per-world TCP targets, then **`scatter_to_model`** into each world's `joint_q` slice. This is **not** “solve one IK and broadcast `joint_q`.”
 - **`--fr3-keyboard --viewer gl`**: the reference example feeds the **same** keyboard/scripted velocity to every env (homogeneous smoke). For **different** actions per arm, pass **`velocity_for_world=lambda w: …`** to the batched controller (see `test_batched_fr3_per_env_velocity_diverges`).
-- **FR3 teleop** uses per-env IK scatter via `BatchedTemplateIK`; `broadcast_joint_q_from_world0` remains for bootstrap/tests only — not the heterogeneous FR3 step path.
+- **FR3 teleop** uses per-env IK scatter via `BatchedTemplateIK` on ee/direct; VIC integrates TCP targets and applies task wrenches as joint torques. `broadcast_joint_q_from_world0` remains for bootstrap/tests only — not the heterogeneous FR3 step path.
 - Inner loop: `coupled_substep` (MuJoCo → mirror TCP→proxy+apple → VBD → stem harvest).
 
-**Not in this flow:** batched VIC, `--only-vbd` / `--only-mjc`, free-proxy velocity-delta harvest as the batched default, or building welded without a prior free settle.
+**Not in this flow:** `--only-vbd` / `--only-mjc`, free-proxy velocity-delta harvest as the batched default, or building welded without a prior free settle.
 
 ---
 
@@ -404,9 +405,9 @@ uv run --env-file pytest.env python -m pytest \
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 
-# Interactive keyboard teleop
+# Interactive keyboard teleop (default --controller vic)
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
-  --num-envs 4 --env-spacing 2.0 2.0 2.0 --controller direct \
+  --num-envs 4 --env-spacing 2.0 2.0 2.0 \
   --fr3-keyboard --viewer gl --seed 42
 
 # Heterogeneous batched tests (build-time DR; default settle→weld)

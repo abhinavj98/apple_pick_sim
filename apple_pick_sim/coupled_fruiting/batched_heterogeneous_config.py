@@ -176,7 +176,7 @@ class FruitingSystemConfig:
 class ControllerConfig:
     """Frame-rate robot control (direct / ee / vic)."""
 
-    mode: ControllerMode = "direct"
+    mode: ControllerMode = "vic"
     action_dim: int = 6
     linear_speed: float = 1.0
     angular_speed: float = 1.0
@@ -371,10 +371,11 @@ class BatchedHeterogeneousCoupledSimConfig:
 
     @classmethod
     def test_minimal(cls, *, num_envs: int = 2) -> BatchedHeterogeneousCoupledSimConfig:
-        """CPU-friendly tests: short settle, straight-rod fixture."""
+        """CPU-friendly tests: short settle, straight-rod fixture, kinematic direct control."""
         return cls(
             runtime=RuntimeConfig(num_envs=int(num_envs), device="cpu"),
             scene=SceneSettleCollisionConfig(settle_substeps=50),
             domain_randomization=DomainRandomizationConfig(ranges_path=_TESTS_RANGES_FIXTURE),
+            controller=ControllerConfig(mode="direct"),
             settle_diagnostics=None,
         )

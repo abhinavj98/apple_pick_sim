@@ -63,14 +63,14 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 
 | Path | Role |
 | ---- | ---- |
-| `apple_pick_sim/fruiting_system/` | `params.py` (sampling, `RodParams`/`FruitingSystemParams`), `build.py` (ModelBuilder geometry, collision filters, VBD solver setup), `scene.py`/`coupled.py` (P0 scene + M1 cable-only scene) |
+| `apple_pick_sim/fruiting_system/` | `params.py` (sampling, `RodParams`/`FruitingSystemParams`, optional `parse_sim_build` / `sim_build` on ranges JSON), `build.py` (ModelBuilder geometry, collision filters, VBD solver setup), `scene.py`/`coupled.py` (P0 scene + M1 cable-only scene) |
 | `apple_pick_sim/coupled_fruiting/` | `scene.py` (`CoupledFruitingScene.coupled_substep` — the authoritative loop), `builders.py`, `batched_heterogeneous_*` (config-driven batched API), `proxy_coupling.py`, `settle_then_weld.py`, `settle_seed_device.py`, `settle_ke_decay.py`, `settle_quasi_static.py`, `settled_checkpoint.py`, `vic_joint_torques*.py`, `batched_layout.py` |
 | `apple_pick_sim/robot/fr3_robot/` | FR3 USD import, controllers (direct-joint, EE velocity, impedance), `batched_template_ik.py` |
 | `apple_pick_sim/system_id/` | Fibonacci-hemisphere excitation, `quasi_static_trajectory.py`, `trajectory_store.py` (legacy Parquet), `batched_trajectory_store.py` (`batched_sysid_v1`), `batched_digital_twin_init.py`, `parquet_init.py`, `mmd*.py`, `wasserstein.py`, `wasserstein_ranking.py`, `batched_hold_quasi_static.py` |
 | `apple_pick_sim/digital_twin/` | `obs_io.py`, `from_obs.py` — rebuild scene geometry from observation JSON |
 | `apple_pick_sim/diagnostics/` | `verify_coupling.py`, `benchmark_coupling.py`, `sweep_zero_vic_stability.py`, `log_settle_ke_decay.py`, `sweep_settle_weld_stability.py` — standalone checks, not pytest |
 | `apple_pick_sim/examples/` | One runnable script per capability; `example_batched_heterogeneous_coupled_sim.py` is the canonical batched heterogeneous example |
-| `apple_pick_sim/fixtures/` | `fruiting_system_ranges_*.json`, `digital_twin_fixture_catalog.json`, `digital_twin_obs_straight_rod_initial.json` |
+| `apple_pick_sim/fixtures/` | `fruiting_system_ranges_*.json` (geometry/material DR; variance proxy may include optional top-level `sim_build` for VIC + joint overrides), `digital_twin_fixture_catalog.json`, `digital_twin_obs_straight_rod_initial.json` |
 | `apple_pick_gym/envs/` | Legacy single-world: `apple_pick_base_env.py` → `apple_pick_coupled_env.py` → `apple_pick_vic_env.py` → `apple_pick_sysid_env.py`, `apple_pick_replay_env.py` |
 | `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`, `ApplePickBatchedSysIdEnv`, `batched_sysid_collect.py`, `batched_sysid_mmd_grid.py`, `batched_stability_monitor.py` |
 | `apple_pick_gym/batched_examples/` | `example_batched_collect_sysid_data.py`, `example_batched_sysid_mmd_grid.py`, `example_batched_gym_keyboard.py` |
@@ -98,14 +98,14 @@ Organized by question, not by filename — each doc listed once, under its prima
 
 ### "How does batched / heterogeneous / vectorized sim work?"
 
-- `docs/vectorized-coupled-fruiting.md` — **single source of truth for the batched build→settle→weld→teleop flow**, homogeneous vs. heterogeneous batches, co-located physics vs. viewer spacing. Does not carry its own status table — see ROADMAP for sequencing.
+- `docs/vectorized-coupled-fruiting.md` — **single source of truth for the batched build→settle→weld→teleop flow**, homogeneous vs. heterogeneous batches, co-located physics vs. viewer spacing. Defaults: controller **vic**, settle cache **off**. Does not carry its own status table — see ROADMAP for sequencing.
 - `docs/heterogeneous-batched-vectorization-audit.md` — narrower audit of which parts of the heterogeneous example's hot path are/aren't GPU-vectorized (re-verified 2026-07-02: both original P0 gaps are now fixed).
 
 ### "How do I sample / randomize plant material and geometry?"
 
-- `docs/material-parameter-sampling.md` — the shipped `(E, ζ)` → derived VBD-stiffness/damping sampling contract, **plus a "Derivation" appendix** explaining why raw independent sampling is unstable and the physics behind the fix.
+- `docs/material-parameter-sampling.md` — the shipped `(E, ζ)` → derived VBD-stiffness/damping sampling contract, **plus a "Derivation" appendix** explaining why raw independent sampling is unstable and the physics behind the fix. Also documents optional top-level `sim_build` (VIC + joint kp/kd) on ranges JSON.
 - `docs/real-world-proxy.md` — bench-proxy geometry, placement, stiffness tiers, and a still-open topology mismatch between the nominal and variance proxy fixtures (see its "Topology caveat").
-- `docs/damping-tuning.md` — practical damping tuning notes.
+- `docs/damping-tuning.md` — practical damping tuning notes; variance fixture `sim_build` is the canonical copy of batched-example VIC/joint overrides.
 
 ### "How does system identification / sys-ID work?"
 

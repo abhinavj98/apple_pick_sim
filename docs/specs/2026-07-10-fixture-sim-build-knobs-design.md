@@ -1,7 +1,7 @@
 # Fixture `sim_build` knobs (VIC + joint overrides)
 
 **Date:** 2026-07-10  
-**Status:** approved for planning  
+**Status:** Implemented  
 **Branch:** `feature/batched-sysid-mmd`
 
 ## Problem

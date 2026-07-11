@@ -7,28 +7,28 @@
   },
   "sim_build": {
     "vic_gains": {
-      "linear_k": 200.0,
-      "linear_d": 10.0,
-      "angular_k": 10.0,
-      "angular_d": 1.0
+      "linear_k": 10.0,
+      "linear_d": 6.0,
+      "angular_k": 20.0,
+      "angular_d": 6.0
     },
     "joint_angular_kd_overrides": {
-      "support": 2,
+      "support": 15,
       "primary_spur": 0.3,
       "spur_stem": 0.3,
       "stem_apple": 0.3
     },
     "joint_linear_kd_overrides": {
-      "support": 2,
+      "support": 15,
       "primary_spur": 0.3,
       "spur_stem": 0.3,
       "stem_apple": 0.3
     },
     "joint_angular_kp_overrides": {
-      "support": 2000.0
+      "support": 1000.0
     },
     "joint_linear_kp_overrides": {
-      "support": 2000.0
+      "support": 1000.0
     }
   },
   "primary": {

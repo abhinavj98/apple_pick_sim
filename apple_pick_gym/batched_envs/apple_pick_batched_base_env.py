@@ -38,7 +38,7 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
         sim_config: Any | None = None,
         ranges_path: Path | str | None = None,
         topology_seed: int = 42,
-        use_settle_cache: bool = True,
+        use_settle_cache: bool = False,
         per_env_params: Sequence[Any] | None = None,
     ) -> None:
         if render_mode not in (None, "none"):

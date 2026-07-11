@@ -37,7 +37,7 @@ class BatchedHeterogeneousCoupledSim:
         ranges: dict,
         *,
         viewer: Any | None = None,
-        use_settle_cache: bool = True,
+        use_settle_cache: bool = False,
         force_settle: bool = False,
         settle_cache_dir: Path | str | None = None,
     ) -> None:

@@ -46,7 +46,7 @@
 
 **Shipped wins (do not reimplement):**
 
-- Settle stack: quiet / zero-qd, opt-in gravity ramp, settle cache, KE/QS diagnostics (`docs/vectorized-coupled-fruiting.md`)
+- Settle stack: quiet / zero-qd, opt-in gravity ramp, **opt-in** settle cache (off by default), KE/QS diagnostics (`docs/vectorized-coupled-fruiting.md`)
 - **V.4.2** parallel GT collection (`batched_sysid_v1`, `example_batched_collect_sysid_data.py`)
 - Batched recorded-action replay (`replay_batched_sysid_structure`)
 - **V.4.3** in-process GPU-batched stiffness grid: MSE + Sinkhorn Wasserstein + Plotly viz (`example_batched_sysid_mmd_grid.py`; alignment notes in `docs/sysid-mmd-grid-replay-alignment.md`)

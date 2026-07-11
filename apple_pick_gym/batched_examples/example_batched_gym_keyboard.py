@@ -174,8 +174,8 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--use-settle-cache",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Reuse settle snapshots across runs (disable for faster CI smoke).",
+        default=False,
+        help="Reuse settle snapshots across runs (default: off).",
     )
     p.add_argument(
         "--linear-speed",

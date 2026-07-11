@@ -224,7 +224,11 @@ def _make_parser() -> argparse.ArgumentParser:
         "--controller",
         type=str,
         choices=("direct", "ee", "vic"),
-        default="direct",
+        default="vic",
+        help=(
+            "FR3 teleop: vic (default, joint-torque impedance), "
+            "ee (velocity IK + MuJoCo PD), or direct (kinematic joint_q)."
+        ),
     )
     parser.add_argument("--fr3-keyboard", action="store_true")
     parser.add_argument(
@@ -258,8 +262,8 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--use-settle-cache",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Reuse on-disk settled body_q when config matches (default: on).",
+        default=False,
+        help="Reuse on-disk settled body_q when config matches (default: off).",
     )
     parser.add_argument(
         "--force-settle",

@@ -66,7 +66,7 @@ def test_defaults_preset_constructs_and_validates():
     assert cfg.robot.ik_bootstrap_iterations == IK_BOOTSTRAP_DEFAULT_ITERATIONS
     assert cfg.scene.settle_substeps == 5000
     assert cfg.fruiting_system.stem_coupling_gain == DEFAULT_STEM_COUPLING_GAIN
-    assert cfg.controller.mode == "direct"
+    assert cfg.controller.mode == "vic"
     assert cfg.controller.linear_speed == pytest.approx(1.0)
     assert cfg.controller.ik_iterations == 128
     assert cfg.settle_diagnostics is not None
@@ -92,6 +92,7 @@ def test_test_minimal_preset():
     assert cfg.runtime.device == "cpu"
     assert cfg.domain_randomization.ranges_path == RANGES_FIXTURE
     assert cfg.scene.settle_substeps == 50
+    assert cfg.controller.mode == "direct"
 
 
 def test_validate_raises_on_per_env_params_length_mismatch():

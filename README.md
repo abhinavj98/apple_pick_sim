@@ -90,6 +90,9 @@ From Python, call `ExampleFruitingSystem.regenerate()` (optional seed) to rebuil
 Range fixtures live under `apple_pick_sim/fixtures/`: **`fruiting_system_ranges_real_world_proxy.json`**
 (bench proxy geometry, `linear_chain` topology — see topology note above; default for
 `example_fruiting_system.py` and `example_coupled_fruiting.py`),
+**`fruiting_system_ranges_real_world_proxy_variance.json`** (DR default for batched
+heterogeneous / sys-ID examples; optional top-level `sim_build` holds shared VIC +
+joint kp/kd overrides — see `docs/material-parameter-sampling.md`),
 **`fruiting_system_ranges_example_variance.json`** (wide-angle procedural variance), and
 **`fruiting_system_ranges_straight_rod_test.json`** (nearly −Z chain; default for tests). The
 generator is the **`apple_pick_sim/fruiting_system/`** package (`params.py`, `build.py`, `scene.py`,
@@ -176,22 +179,23 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 
 ### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, and in-process stiffness grid: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3; Current focus [V].5.1).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, and in-process stiffness grid: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3; Current focus [V].5.1).
 
 ```bash
 # Headless smoke (settle→weld)
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 
-# Interactive keyboard teleop
+# Interactive keyboard teleop (default --controller vic)
 uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py \
-  --num-envs 4 --env-spacing 2.0 2.0 2.0 --controller direct \
+  --num-envs 4 --env-spacing 2.0 2.0 2.0 \
   --fr3-keyboard --viewer gl --seed 42
 ```
 
-**FR3 keyboard teleop** (TCP velocity + IK; ``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):
+**FR3 keyboard teleop** (``--viewer gl``, focus the window — **I/K J/L R/F** translate, **U/O T/G Z/X** rotate; **not W/S**, those move the camera):
 
-- **Coupled fruiting + arm (default):** ``example_coupled_fruiting.py`` with ``--fr3-keyboard --viewer gl`` (VIC joint torques).
+- **Batched heterogeneous (default VIC):** ``example_batched_heterogeneous_coupled_sim.py`` with ``--fr3-keyboard --viewer gl``.
+- **Coupled fruiting + arm (default VIC):** ``example_coupled_fruiting.py`` with ``--fr3-keyboard --viewer gl``.
 - **Robot only (kinematic FK, no MuJoCo step):** ``example_fr3_keyboard.py`` — useful for IK/viewer smoke without the fruiting tree.
 
 ```bash

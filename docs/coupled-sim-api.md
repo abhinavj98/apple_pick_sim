@@ -14,10 +14,10 @@ Use this for batched heterogeneous simulation, gym migration (V.3.3+), and tests
 | Symbol | Role |
 | ------ | ---- |
 | `BatchedHeterogeneousCoupledSim` | Runtime parent: `step()`, `gather_obs()`, scene/layout accessors |
-| `BatchedHeterogeneousCoupledSimConfig` | Config dataclass + presets (`defaults()`, `gym_defaults()`, `test_minimal()`) |
+| `BatchedHeterogeneousCoupledSimConfig` | Config dataclass + presets (`defaults()` / `gym_defaults()` → controller `vic`; `test_minimal()` → `direct` for CPU tests) |
 | `build_batched_heterogeneous_scene` | Config-driven build (settle, weld, diagnostics) |
 | `settle_vbd_substeps`, `quiet_all_cable_bodies`, `seed_fix_to_apple_from_settled*` | Settle-then-weld helpers |
-| `SettledCheckpoint`, `settle_cache_path_for` | Optional disk cache for free-proxy settle state |
+| `SettledCheckpoint`, `settle_cache_path_for` | Optional disk cache for free-proxy settle state (`use_settle_cache=False` by default; opt in with `--use-settle-cache`) |
 
 `RobotConfig.kind` is **`"fr3"` only**. Batched config validation rejects other values.
 
@@ -38,8 +38,8 @@ Homogeneous batched tests use `build_heterogeneous_coupled_fruiting_fr3` with id
 
 | Script | Role |
 | ------ | ---- |
-| **`example_batched_heterogeneous_coupled_sim.py`** | **Canonical** batched entry: CLI + viewer only; logic in library |
-| `example_coupled_fruiting.py` | Single-env FR3 + VIC/EE teleop (diagnostics, keyboard) |
+| **`example_batched_heterogeneous_coupled_sim.py`** | **Canonical** batched entry: CLI + viewer only; logic in library. Defaults: `--controller vic`, settle cache **off** (`--use-settle-cache` to opt in). |
+| `example_coupled_fruiting.py` | Single-env FR3 + VIC/EE teleop (diagnostics, keyboard); default controller `vic` |
 | `example_fr3_keyboard.py` | FR3 kinematic keyboard smoke (no fruiting tree) |
 
 Legacy monoliths under `examples/legacy/` were removed in the pre-gym cleanup.
@@ -53,17 +53,27 @@ from apple_pick_sim.coupled_fruiting import (
 )
 from apple_pick_sim.fruiting_system import (
     load_ranges,
+    parse_sim_build,
     sample_heterogeneous_params_list,
 )
 
 ranges = load_ranges("apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json")
 params = sample_heterogeneous_params_list(ranges, topology_seed=42, num_envs=4)
 cfg = BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=4)
+# Optional: ranges may include top-level ``sim_build`` (VIC + joint overrides).
+# Default variance fixture ships it; ``parse_sim_build(ranges)`` is ``None`` when absent.
+_ = parse_sim_build(ranges)
 cfg.validate()
 
-sim = BatchedHeterogeneousCoupledSim(cfg, params, ranges, use_settle_cache=False)
+sim = BatchedHeterogeneousCoupledSim(cfg, params, ranges)  # use_settle_cache=False by default
 sim.step(None)  # or per-env actions when controller allocates buffer
 ```
+
+Canonical batched examples (`example_batched_heterogeneous_coupled_sim.py`,
+sys-ID collect / MMD grid) apply `sim_build` from the loaded ranges path when
+present; controller default is **vic**. Settle disk cache is **off** unless
+`use_settle_cache=True` / `--use-settle-cache`. See
+`docs/material-parameter-sampling.md` and `docs/damping-tuning.md`.
 
 Headless smoke (from repo root):
 

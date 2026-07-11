@@ -4,7 +4,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Last updated** | 2026-07-01 |
+| **Last updated** | 2026-07-10 |
 | **Roadmap slice** | [V].2.1.3 |
 | **Owner** | Abhinav |
 
@@ -71,6 +71,40 @@ For stability-sensitive batched simulations (e.g. `example_batched_heterogeneous
 
 Per rod segment, optional. When present, both keys are required (strictly positive). `youngs_modulus_pa` and `damping_ratio` min/max bands are still required and still drive `bend_stiffness` and `bend_damping`. Fixed stretch values are **VBD tuning constants**, not beam-theory-consistent with sampled geometry — see `fruiting_system_ranges_real_world_proxy_variance.json`.
 
+### Optional top-level `sim_build` (VIC + joint overrides)
+
+Ranges JSON may include an optional **file-level** (not per-segment) `sim_build` block so batched examples share one source of truth for TCP VIC gains and FIXED-joint kp/kd overrides:
+
+```json
+"sim_build": {
+  "vic_gains": {
+    "linear_k": 200.0,
+    "linear_d": 10.0,
+    "angular_k": 10.0,
+    "angular_d": 1.0
+  },
+  "joint_angular_kd_overrides": {
+    "support": 0.3,
+    "primary_spur": 0.3,
+    "spur_stem": 0.3,
+    "stem_apple": 0.3
+  },
+  "joint_linear_kd_overrides": {
+    "support": 0.3,
+    "primary_spur": 0.3,
+    "spur_stem": 0.3,
+    "stem_apple": 0.3
+  },
+  "joint_angular_kp_overrides": { "support": 2000.0 },
+  "joint_linear_kp_overrides": { "support": 2000.0 }
+}
+```
+
+- **Optional:** omit the key entirely; `load_ranges` still succeeds. `parse_sim_build(ranges)` returns `None`.
+- **When present:** `vic_gains` (all four keys) is required; joint override maps are optional. Values must be finite floats ≥ 0. Joint roles are `support`, `primary_spur`, `spur_stem`, `stem_apple`.
+- **Canonical ship:** `fruiting_system_ranges_real_world_proxy_variance.json`. Consumed by `example_batched_heterogeneous_coupled_sim.py`, `example_batched_collect_sysid_data.py`, and `example_batched_sysid_mmd_grid.py` (Python `EXAMPLE_JOINT_*` / VIC constants remain fallbacks when `sim_build` is absent).
+- **API:** `parse_sim_build` in `apple_pick_sim/fruiting_system/params.py`. Tuning notes: `docs/damping-tuning.md`. Design: `docs/specs/2026-07-10-fixture-sim-build-knobs-design.md`.
+
 ### Tier constraints
 
 When both **primary** and **secondary** are enabled, enforce **`primary.youngs_modulus_pa >= secondary.youngs_modulus_pa`** (replaces the current `primary.bend_stiffness >= secondary.bend_stiffness` check on derived values).
@@ -107,6 +141,8 @@ Add / extend in `apple_pick_sim/tests/test_fruiting_system.py`:
 | `test_load_ranges_material_keys_validate` | Fixture JSON with `youngs_modulus_pa` / `damping_ratio` passes validation |
 | `test_load_ranges_legacy_stiffness_still_valid` | Old JSON keys still load during migration |
 | `test_fruiting_params_v2_roundtrip` | Serialize / deserialize includes \(E\), \(\zeta\) |
+| `test_parse_sim_build_*` / `test_load_ranges_*sim_build*` | Optional top-level `sim_build` validate / parse |
+| `test_variance_sim_build_knobs` (`test_real_world_proxy_fixture.py`) | Variance fixture ships expected VIC + joint overrides |
 
 Regression: existing deterministic-seed tests updated to material-mode fixtures or legacy path smoke.
 
@@ -126,9 +162,11 @@ uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_heteroge
 ## Related docs
 
 - `docs/real-world-proxy.md` — map proxy N/m tier **targets** to \(E\) bands via nominal geometry
+- `docs/damping-tuning.md` — joint kd/kp + variance fixture `sim_build` snapshot
 - `docs/vectorized-coupled-fruiting.md` — batched DR still varies per-env θ; material keys replace raw stiffness bands
 - `docs/system_identification.md` — CEM search space moves to \(E\), \(\zeta\) (plus geometry when fixed)
 - `docs/sysid-trajectory-storage.md` — episode `fruiting_system_params` schema v2
+- `docs/specs/2026-07-10-fixture-sim-build-knobs-design.md` — optional `sim_build` design (Implemented)
 
 ## Derivation: why sample E and ζ instead of raw stiffness/damping
 

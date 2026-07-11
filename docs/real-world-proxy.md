@@ -256,6 +256,13 @@ Document in code comments and tests when the torsion API lands.
 
 Material sampling contract: `docs/material-parameter-sampling.md`.
 
+The variance fixture also ships an optional top-level **`sim_build`** block (VIC
+gains + FIXED-joint kp/kd overrides) consumed by the batched heterogeneous /
+sys-ID examples. That block is **not** domain-randomized; it is a stable
+sim-build snapshot colocated with the DR ranges. See
+`docs/material-parameter-sampling.md` (§ Optional top-level `sim_build`) and
+`docs/damping-tuning.md`.
+
 Mid-span spur attach fraction stays **0.5** in variance (fixed topology per batch).
 Nominal fixture may use fixed angles for reproducible IK smoke tests.
 

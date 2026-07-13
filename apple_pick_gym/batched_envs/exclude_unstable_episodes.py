@@ -17,24 +17,40 @@ FILTERED_MANIFEST_NAME = "manifest.filtered.json"
 PRE_EXCLUDE_BACKUP_NAME = "manifest.pre_exclude.json"
 
 
-def _episode_has_unstable_frame(dataset: BatchedSysIdDataset, episode: dict[str, Any]) -> bool:
+DEFAULT_UNSTABLE_FRACTION_EXCLUDE = 0.25
+
+
+def _episode_unstable_fraction(dataset: BatchedSysIdDataset, episode: dict[str, Any]) -> float:
     arrays = dataset.load_episode_obs_arrays(
         int(episode["structure_idx"]),
         int(episode["direction_idx"]),
     )
     stable = np.asarray(arrays["stable"], dtype=bool).reshape(-1)
     if stable.size == 0:
-        return False
-    return not bool(stable.all())
+        return 0.0
+    return float((~stable).mean())
+
+
+def _episode_should_exclude(
+    dataset: BatchedSysIdDataset,
+    episode: dict[str, Any],
+    *,
+    unstable_fraction_threshold: float = DEFAULT_UNSTABLE_FRACTION_EXCLUDE,
+) -> bool:
+    """Exclude only when already flagged or unstable-frame fraction exceeds threshold.
+
+    A single force-cap hit is common under stiff VIC and must not wipe the episode.
+    """
+    if bool(episode.get("excluded", False)):
+        return True
+    return _episode_unstable_fraction(dataset, episode) > float(unstable_fraction_threshold)
 
 
 def _annotate_episodes(dataset: BatchedSysIdDataset) -> list[dict[str, Any]]:
     episodes: list[dict[str, Any]] = []
     for raw in dataset.episode_entries():
         ep = dict(raw)
-        already = bool(ep.get("excluded", False))
-        unstable = _episode_has_unstable_frame(dataset, ep)
-        if already or unstable:
+        if _episode_should_exclude(dataset, ep):
             ep["excluded"] = True
             ep["excluded_reason"] = ep.get("excluded_reason") or EXCLUDED_REASON_STABILITY_BLOWUP
         else:

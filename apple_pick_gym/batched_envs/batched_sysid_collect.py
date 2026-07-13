@@ -19,6 +19,7 @@ from apple_pick_gym.batched_envs.batched_sysid_world_info import (
 from apple_pick_gym.batched_envs.batched_stability_monitor import (
     BatchedStabilityMonitor,
     StabilityThresholds,
+    hard_blowup_mask,
     ik_bootstrap_unstable_mask,
 )
 from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
@@ -577,7 +578,7 @@ def collect_batched_quasi_static_dataset(
                 action=action_np,
                 stable=not bool(step_report.unstable[i].item()),
             )
-        disable_ctrl.update(step_report.unstable)
+        disable_ctrl.update(hard_blowup_mask(step_report))
 
         if progress is not None and step_idx % 20 == 0:
             progress(f"step {step_idx} phase={phase}")

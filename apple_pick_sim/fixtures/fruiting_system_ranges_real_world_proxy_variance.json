@@ -7,10 +7,10 @@
   },
   "sim_build": {
     "vic_gains": {
-      "linear_k": 10.0,
-      "linear_d": 6.0,
-      "angular_k": 20.0,
-      "angular_d": 6.0
+      "linear_k": 400.0,
+      "linear_d": 15.0,
+      "angular_k": 80.0,
+      "angular_d": 5.0
     },
     "joint_angular_kd_overrides": {
       "support": 15,
@@ -28,7 +28,7 @@
       "support": 1000.0
     },
     "joint_linear_kp_overrides": {
-      "support": 1000.0
+      "support": 10000.0
     }
   },
   "primary": {
@@ -53,7 +53,7 @@
     "density": {"min": 200.0, "max": 400.0},
     "elevation_delta_deg": {"min": -90.0, "max": 0.0},
     "lateral_delta_deg": {"min": -180.0, "max": 180.0},
-    "youngs_modulus_pa": {"min": 2500000.4, "max": 5000000.9},
+    "youngs_modulus_pa": {"min": 250000000.4, "max": 500000000.9},
     "damping_ratio": {"min": 0.2, "max": 0.3},
     "vbd_stretch_fixed": {
       "stretch_stiffness": 10000000.265422,

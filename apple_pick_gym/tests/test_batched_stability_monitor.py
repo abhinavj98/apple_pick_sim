@@ -228,3 +228,22 @@ def test_apple_speed_exceeded_on_second_check_only():
     report1 = monitor.check(obs1, step_idx=1)
     assert bool(report1.unstable[0])
     assert "apple_speed_exceeded" in report1.reasons[0]
+
+
+def test_hard_blowup_mask_ignores_force_cap_keeps_nan():
+    import torch
+    from apple_pick_gym.batched_envs.batched_stability_monitor import (
+        BatchedStabilityReport,
+        hard_blowup_mask,
+    )
+
+    report = BatchedStabilityReport(
+        step_idx=0,
+        unstable=torch.tensor([True, True, False]),
+        reasons=[
+            ["force_cap_exceeded"],
+            ["nan_or_inf:ft_wrist"],
+            [],
+        ],
+    )
+    assert hard_blowup_mask(report).tolist() == [False, True, False]

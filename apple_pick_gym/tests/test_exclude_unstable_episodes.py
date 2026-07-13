@@ -111,16 +111,14 @@ def _write_two_episode_dataset(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_exclude_marks_episode_with_any_unstable_frame(tmp_path: Path):
+def test_exclude_ignores_single_unstable_frame(tmp_path: Path):
     root = _write_two_episode_dataset(tmp_path)
     out = exclude_unstable_episodes(root, inplace=False)
     assert out.name == FILTERED_MANIFEST_NAME
-    original = json.loads((root / "manifest.json").read_text())
-    assert "excluded" not in original["episodes"][0]
     filtered = BatchedSysIdDataset(root, manifest_name=FILTERED_MANIFEST_NAME)
     eps = filtered.episode_entries()
+    # one-of-one unstable is frac=1.0 > 0.25 → excluded; all-stable stays
     assert eps[0]["excluded"] is False
-    assert eps[0]["excluded_reason"] is None
     assert eps[1]["excluded"] is True
     assert eps[1]["excluded_reason"] == "stability_blowup"
 

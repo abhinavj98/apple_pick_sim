@@ -12,6 +12,7 @@ from typing import Any, Callable, Literal, NamedTuple, Protocol
 from apple_pick_gym.batched_envs.batched_sysid_collect import broadcast_structure_params
 from apple_pick_gym.batched_envs.batched_stability_monitor import (
     BatchedStabilityMonitor,
+    hard_blowup_mask,
     ik_bootstrap_unstable_mask,
 )
 from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
@@ -1346,7 +1347,7 @@ def replay_batched_sysid_structure(
                 unstable=step_report.unstable,
                 record_mask=disable_ctrl.should_record_mask(),
             )
-            disable_ctrl.update(step_report.unstable)
+            disable_ctrl.update(hard_blowup_mask(step_report))
     finally:
         env.close()
 

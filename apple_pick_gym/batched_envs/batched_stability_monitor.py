@@ -209,3 +209,16 @@ class BatchedStabilityMonitor:
         self._prev_apple_pos = apple_pos.detach().clone()
 
         return unstable, reason_lists
+
+
+def hard_blowup_mask(report: BatchedStabilityReport) -> torch.Tensor:
+    """True only for NaN/Inf or sticky IK-bootstrap failures (not force/speed caps)."""
+    n = int(report.unstable.numel())
+    out = torch.zeros(n, dtype=torch.bool, device=report.unstable.device)
+    for i, reasons in enumerate(report.reasons):
+        for reason in reasons:
+            r = str(reason)
+            if r.startswith("nan_or_inf") or r == "ik_bootstrap_not_converged":
+                out[i] = True
+                break
+    return out

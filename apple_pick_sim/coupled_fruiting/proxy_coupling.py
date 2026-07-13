@@ -974,6 +974,18 @@ def align_proxy_body_q_prev_for_vbd(
     sync_cable_body_q_prev_from_state(cable_scene, body_ids=proxy_body_ids)
 
 
+def sync_model_body_q_rest_from_state(cable_scene) -> None:
+    """Copy ``state_0.body_q`` into ``model.body_q`` (VBD angular joint rest poses).
+
+    SolverVBD passes ``model.body_q`` as ``body_q_rest`` when evaluating FIXED/D6
+    angular residuals (``kappa``). After settle→weld seeding we rewrite cable
+    ``state_0`` (and often align the proxy), but leave build-time ``model.body_q``
+    untouched — that leaves a large rest-relative kappa on fruiting / weld FIXED
+    joints and can yank the grasp on the first AVBD step.
+    """
+    wp.copy(cable_scene.model.body_q, cable_scene.state_0.body_q)
+
+
 def sync_solver_body_q_prev_from_state(
     cable_scene,
     body_q_source,

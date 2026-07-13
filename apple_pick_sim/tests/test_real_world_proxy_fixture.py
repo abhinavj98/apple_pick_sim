@@ -84,24 +84,23 @@ def test_variance_sim_build_knobs(variance_ranges):
     fs = _import_fs()
     sb = fs.parse_sim_build(variance_ranges)
     assert sb is not None
-    assert sb.vic_gains.linear_k == pytest.approx(200.0)
-    assert sb.vic_gains.linear_d == pytest.approx(10.0)
-    assert sb.vic_gains.angular_k == pytest.approx(10.0)
-    assert sb.vic_gains.angular_d == pytest.approx(1.0)
-    assert sb.joint_angular_kd_overrides == {
-        "support": 0.3,
-        "primary_spur": 0.3,
-        "spur_stem": 0.3,
-        "stem_apple": 0.3,
-    }
-    assert sb.joint_linear_kd_overrides == {
-        "support": 0.3,
-        "primary_spur": 0.3,
-        "spur_stem": 0.3,
-        "stem_apple": 0.3,
-    }
-    assert sb.joint_angular_kp_overrides == {"support": 2000.0}
-    assert sb.joint_linear_kp_overrides == {"support": 2000.0}
+    assert sb.vic_gains.linear_k == pytest.approx(500.0)
+    assert sb.vic_gains.linear_d == pytest.approx(45.0)
+    assert sb.vic_gains.angular_k == pytest.approx(50.0)
+    assert sb.vic_gains.angular_d == pytest.approx(6.0)
+    # Critical kd at midpoint geometry: support uses kp=1e8; other roles ke=1e5.
+    ang = sb.joint_angular_kd_overrides
+    lin = sb.joint_linear_kd_overrides
+    assert ang["support"] == pytest.approx(130.48, rel=0.01)
+    assert ang["primary_spur"] == pytest.approx(0.25651, rel=0.01)
+    assert ang["spur_stem"] == pytest.approx(0.01527, rel=0.01)
+    assert ang["stem_apple"] == pytest.approx(10.233, rel=0.01)
+    assert lin["support"] == pytest.approx(4718.7, rel=0.01)
+    assert lin["primary_spur"] == pytest.approx(31.134, rel=0.01)
+    assert lin["spur_stem"] == pytest.approx(4.8541, rel=0.01)
+    assert lin["stem_apple"] == pytest.approx(323.6, rel=0.01)
+    assert sb.joint_angular_kp_overrides == {"support": 100000000.0}
+    assert sb.joint_linear_kp_overrides == {"support": 100000000.0}
 
 
 def test_nominal_has_no_sim_build(nominal_ranges):
@@ -127,19 +126,22 @@ def _variance_segment_midpoint(row: dict) -> tuple[float, float, float, int]:
     )
 
 
-def test_variance_vbd_stretch_fixed_inextensible_wood(variance_ranges):
-    """Axial knobs follow wood-scale E_axial, decoupled from bend youngs_modulus_pa."""
-    from apple_pick_sim.fruiting_system.params import inextensible_wood_stretch_knobs
+def test_variance_vbd_stretch_fixed_critical_damping(variance_ranges):
+    """``vbd_stretch_fixed.stretch_damping`` is critical (ζ=1) at midpoint geometry."""
+    import math
+
+    from apple_pick_sim.fruiting_system.params import _segment_material_geometry
 
     for seg in ("primary", "spur", "stem"):
         row = variance_ranges[seg]
         length, radius, density, num_segments = _variance_segment_midpoint(row)
-        expected = inextensible_wood_stretch_knobs(
-            length, radius, density, num_segments
+        _area, _inertia, _l_seg, m_seg, _j_seg = _segment_material_geometry(
+            radius, length, num_segments, density
         )
         fixed = row["vbd_stretch_fixed"]
-        assert fixed["stretch_stiffness"] == pytest.approx(expected[0], rel=0.01)
-        assert fixed["stretch_damping"] == pytest.approx(expected[1], rel=0.02)
+        k = float(fixed["stretch_stiffness"])
+        c_crit = 2.0 * math.sqrt(k * m_seg)
+        assert fixed["stretch_damping"] == pytest.approx(c_crit, rel=0.01)
 
 
 def test_variance_stretch_stiffness_decoupled_from_bend_e(variance_ranges):

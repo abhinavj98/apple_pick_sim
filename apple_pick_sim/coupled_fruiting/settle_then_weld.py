@@ -22,6 +22,7 @@ import warp as wp
 
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
+    sync_model_body_q_rest_from_state,
     sync_solver_body_q_prev_from_state,
 )
 from apple_pick_sim.coupled_fruiting.batched_build import (
@@ -536,6 +537,9 @@ def seed_fix_to_apple_from_settled(
     # a mixed settled/unsettled state and inject an artificial stem impulse.
     body_count = int(cable_w.model.body_count)
     align_proxy_body_q_prev_for_vbd(cable_w, tuple(range(body_count)))
+    # VBD angular joints use model.body_q as rest; keep it in sync with the seeded
+    # poses (else FIXED kappa is measured against pre-settle build geometry).
+    sync_model_body_q_rest_from_state(cable_w)
 
     wp.synchronize()
     if per_env_ik and layout is not None and layout.num_envs > 1:

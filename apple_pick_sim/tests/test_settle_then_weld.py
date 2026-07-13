@@ -208,6 +208,28 @@ def test_seed_aligns_body_q_prev_for_apple_and_proxy():
     np.testing.assert_allclose(bqp[proxy], bq[proxy], rtol=1e-6, atol=1e-6)
 
 
+def test_seed_syncs_model_body_q_rest_to_settled_state():
+    """VBD rest (``model.body_q``) must match seeded poses after settle→weld.
+
+    The welded scene is finalized at build-time geometry; seed rewrites ``state_0``
+    but must also refresh ``model.body_q`` so FIXED/D6 kappa is not measured against
+    the pre-settle rest and yank the grasp on the first AVBD step.
+    """
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    welded, _settled = _make_settle_then_weld(cf, fs, ranges, 2, settle_substeps=25)
+    cable = welded.cable
+    apple = cable.apple_body
+    proxy = cable.gripper_proxy_body
+    bq = cable.state_0.body_q.numpy().reshape(-1, 7)
+    model_bq = cable.model.body_q.numpy().reshape(-1, 7)
+    np.testing.assert_allclose(model_bq[apple], bq[apple], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(model_bq[proxy], bq[proxy], rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(model_bq, bq, rtol=1e-6, atol=1e-6)
+
+
 def test_seed_bootstrap_clears_proxy_forces():
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs

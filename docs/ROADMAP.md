@@ -50,6 +50,7 @@
 - **V.4.2** parallel GT collection (`batched_sysid_v1`, `example_batched_collect_sysid_data.py`)
 - Batched recorded-action replay (`replay_batched_sysid_structure`)
 - **V.4.3** in-process GPU-batched stiffness grid: MSE + Sinkhorn Wasserstein + Plotly viz (`example_batched_sysid_mmd_grid.py`; alignment notes in `docs/sysid-mmd-grid-replay-alignment.md`)
+- **V.5.1 precursor** blow-up soft-disable + manifest `excluded` + offline `exclude_unstable_episodes` (see `docs/superpowers/specs/2026-07-12-sysid-stable-collect-replay-design.md`)
 
 **Existing mitigations to build on (not yet a full hardening stage):** `mmd_features.py` `stable` mask, `trajectory_hold_aggregated_mse` median aggregation, grid-viz candidate `disqualified` flags, hold impulse flags in `batched_hold_quasi_static.py`, online `batched_stability_monitor` (`docs/batched-stability-monitor-design.md`).
 

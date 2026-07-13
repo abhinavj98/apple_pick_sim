@@ -87,16 +87,20 @@ apple-speed check (see below).
 ```python
 @dataclass(frozen=True)
 class StabilityThresholds:
-    max_force_n: float = 200.0       # reuse DEFAULT_STEM_FORCE_CAP_N (scene.py)
-    max_torque_nm: float = 50.0      # reuse DEFAULT_STEM_TORQUE_CAP_NM (scene.py)
-    max_tcp_speed_mps: float = 2.0   # well above VIC/sys-ID commanded speeds (~0.03-1 m/s)
-    max_apple_speed_mps: float = 2.0
+    max_force_n: float = 30.0        # reuse DEFAULT_STEM_FORCE_CAP_N (scene.py)
+    max_torque_nm: float = 10.0      # reuse DEFAULT_STEM_TORQUE_CAP_NM (scene.py)
+    max_tcp_speed_mps: float = 0.5
+    max_apple_speed_mps: float = 0.5
 ```
 
 Defaults intentionally reuse the existing wrench-cap constants from
-`apple_pick_sim/coupled_fruiting/scene.py` (`DEFAULT_STEM_FORCE_CAP_N = 200.0`,
-`DEFAULT_STEM_TORQUE_CAP_NM = 50.0`) so "force/torque at cap" and "monitor-flagged unstable"
+`apple_pick_sim/coupled_fruiting/scene.py` (`DEFAULT_STEM_FORCE_CAP_N = 30.0`,
+`DEFAULT_STEM_TORQUE_CAP_NM = 10.0`) so "force/torque at cap" and "monitor-flagged unstable"
 refer to the same physical limit already enforced elsewhere in the sim.
+
+**Meaning of `stable`:** blow-up / unsafe (NaN, caps, speed), not hold quasi-static quality.
+Episode exclude rules treat any `stable=False` frame as grounds to drop the `(structure, direction)`.
+A deeper stability-monitor retune remains a follow-up (see sys-ID stable collect/replay design).
 
 ### `BatchedStabilityReport`
 

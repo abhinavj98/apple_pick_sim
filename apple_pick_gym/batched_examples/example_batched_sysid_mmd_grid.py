@@ -243,6 +243,11 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Comma-separated structure indices (default: all in manifest).",
     )
     p.add_argument(
+        "--include-excluded",
+        action="store_true",
+        help="Include manifest episodes marked excluded (debug only; default skips them).",
+    )
+    p.add_argument(
         "--max-envs-per-batch",
         type=int,
         default=MAX_ENVS_PER_BATCH,
@@ -558,6 +563,8 @@ def _replay_structure(
     replay_sim_config,
     use_snapshot: bool = False,
     use_oracle_params: bool = True,
+    direction_indices=None,
+    include_excluded: bool = False,
 ):
     from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import replay_candidates_for_structure
 
@@ -573,6 +580,8 @@ def _replay_structure(
         replay_sim_config=replay_sim_config,
         use_snapshot=bool(use_snapshot),
         use_oracle_params=bool(use_oracle_params),
+        direction_indices=direction_indices,
+        include_excluded=bool(include_excluded),
     )
     return collectors, len(candidates)
 
@@ -677,13 +686,27 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
         viewer.end_frame()
         return True
 
+    from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import resolve_direction_indices
+
     for structure_idx in structure_indices:
         candidates = _candidates_for_structure(dataset, args, int(structure_idx))
         gt = gt_bend_stiffness_candidate_from_structure(dataset, int(structure_idx))
+        try:
+            usable_dirs = resolve_direction_indices(
+                dataset,
+                structure_idx=int(structure_idx),
+                num_directions=int(num_directions),
+                include_excluded=bool(args.include_excluded),
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        structure_num_directions = len(usable_dirs)
         recorded_eps = load_recorded_episodes_for_structure(
             dataset,
             structure_idx=int(structure_idx),
-            num_directions=int(num_directions),
+            num_directions=structure_num_directions,
+            direction_indices=usable_dirs,
+            include_excluded=bool(args.include_excluded),
         )
         gt_warn_messages = warn_recorded_gt_instability(
             structure_idx=int(structure_idx),
@@ -695,7 +718,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
             dataset=dataset,
             structure_idx=int(structure_idx),
             candidates=candidates,
-            num_directions=num_directions,
+            num_directions=structure_num_directions,
             seed=args.seed,
             max_envs_per_batch=int(args.max_envs_per_batch),
             build_env_fn=build_env_fn,
@@ -707,18 +730,20 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
             ),
             use_snapshot=bool(args.use_snapshot),
             use_oracle_params=not bool(args.infer_params),
+            direction_indices=usable_dirs,
+            include_excluded=bool(args.include_excluded),
         )
         if bool(args.replay_only):
-            arrays = dataset.load_episode_obs_arrays(int(structure_idx), 0)
+            arrays = dataset.load_episode_obs_arrays(int(structure_idx), int(usable_dirs[0]))
             n_frames = int(arrays["action"].shape[0])
             _print_replay_summary(
                 structure_idx=int(structure_idx),
                 n_frames=n_frames,
                 num_candidates=num_candidates,
-                num_directions=num_directions,
+                num_directions=structure_num_directions,
                 collectors=collectors,
             )
-            num_envs = num_candidates * num_directions
+            num_envs = num_candidates * structure_num_directions
             unstable_by_env = []
             for env_idx in range(num_envs):
                 replay_arrays = collectors.to_arrays(env_idx)
@@ -751,7 +776,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 replay_eps = direction_episodes_from_collectors(
                     collectors,
                     candidate_index=int(cand_idx),
-                    num_directions=int(num_directions),
+                    num_directions=int(structure_num_directions),
                 )
                 applied = candidate.apply_to(base_params)
                 specs_and_replays.append(
@@ -826,14 +851,14 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 replay_eps = direction_episodes_from_collectors(
                     collectors,
                     candidate_index=int(cand_idx),
-                    num_directions=int(num_directions),
+                    num_directions=int(structure_num_directions),
                 )
                 direction_instability = [
                     replay_instability_fraction_all_frames(
                         replay=replay_eps[d],
                         recorded=recorded_eps[d],
                     )
-                    for d in range(int(num_directions))
+                    for d in range(int(structure_num_directions))
                 ]
                 finite_instability = [
                     float(f) for f in direction_instability if np.isfinite(float(f))
@@ -849,7 +874,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
 
                 per_dir = []
                 if bool(args.score_mse):
-                    for d in range(int(num_directions)):
+                    for d in range(int(structure_num_directions)):
                         if hold_agg == "none":
                             metrics = trajectory_mse(
                                 replay=replay_eps[d],
@@ -1058,7 +1083,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                     direction_episodes_from_collectors(
                         collectors,
                         candidate_index=int(cand_idx),
-                        num_directions=int(num_directions),
+                        num_directions=int(structure_num_directions),
                     )
                 )
             rows = build_grid_viz_rows(

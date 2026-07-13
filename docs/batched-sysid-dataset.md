@@ -49,7 +49,18 @@ Top-level keys:
 | `command_argv` | argv used to invoke the collector |
 | `collection` | `seed`, `topology_seed`, `ranges_path`, `control_hz`, `num_structures`, `num_directions`, `max_steps`, `trajectory`, `sim_config` |
 | `structures[]` | Light summary per `structure_idx`: `params_fingerprint`, `junction_names`, `n_woody_parts` |
-| `episodes[]` | Catalog entry per episode: indices, `filename`, `episode_id`, `pull_direction`, `n_frames` |
+| `episodes[]` | Catalog entry per episode: indices, `filename`, `episode_id`, `pull_direction`, `n_frames`, optional `excluded` / `excluded_reason` |
+
+### Episode exclusion
+
+Manifest `episodes[]` may include:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `excluded` | bool | When true, default grid load/replay skips this `(structure, direction)` |
+| `excluded_reason` | string or null | e.g. `"stability_blowup"` |
+
+Missing `excluded` is treated as false (legacy datasets). Collect soft-disable and the offline tool `python -m apple_pick_gym.batched_envs.exclude_unstable_episodes` set these when any frame has `stable=False`.
 
 Full `fruiting_system_params` live in each episode parquet (not duplicated in `structures[]`).
 

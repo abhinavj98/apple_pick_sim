@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import json
 from pathlib import Path
 from typing import Any
@@ -221,6 +223,7 @@ def initialize_batched_env_from_dataset(
     *,
     structure_idx: int,
     num_directions: int,
+    direction_indices: Sequence[int] | None = None,
 ) -> None:
     """Apply pre-weld joint and VIC target state from a batched sys-ID dataset.
 
@@ -244,8 +247,20 @@ def initialize_batched_env_from_dataset(
         target_pos = vic._target_pos_wp.numpy().copy()
         target_rot = vic._target_rot_wp.numpy().copy()
 
+    dirs = (
+        [int(d) for d in direction_indices]
+        if direction_indices is not None
+        else list(range(int(num_directions)))
+    )
+    if not dirs:
+        raise ValueError("direction_indices must be non-empty")
+    if len(dirs) != int(num_directions):
+        raise ValueError(
+            f"len(direction_indices)={len(dirs)} != num_directions={int(num_directions)}"
+        )
+
     for env_idx in range(env.num_envs):
-        direction_idx = int(env_idx) % int(num_directions)
+        direction_idx = int(dirs[int(env_idx) % len(dirs)])
         arrays = dataset.load_episode_obs_arrays(structure_idx, direction_idx)
         meta = dataset.load_episode_metadata(structure_idx, direction_idx)
         world = int(env_idx)

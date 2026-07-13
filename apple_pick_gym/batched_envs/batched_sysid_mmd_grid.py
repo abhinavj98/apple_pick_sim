@@ -14,6 +14,7 @@ from apple_pick_gym.batched_envs.batched_stability_monitor import (
     BatchedStabilityMonitor,
     ik_bootstrap_unstable_mask,
 )
+from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
 from apple_pick_gym.grid_viz_metrics import (
     bend_stiffness_values_match,
     woody_segment_pos_mse_hold_aggregated,
@@ -591,21 +592,92 @@ def _resolve_replay_seed(dataset: BatchedSysIdDataset, seed: int | None) -> int:
     return int(collection["seed"])
 
 
+
+def episode_is_excluded(entry: dict) -> bool:
+    """Return True when a manifest episode row is marked excluded."""
+    return bool(entry.get("excluded", False))
+
+
+def list_usable_direction_indices(
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+    *,
+    include_excluded: bool = False,
+) -> list[int]:
+    """Ascending direction indices for one structure, optionally keeping excluded."""
+    idxs: list[int] = []
+    n_excluded = 0
+    for ep in dataset.episode_entries():
+        if int(ep.get("structure_idx", -1)) != int(structure_idx):
+            continue
+        d = int(ep["direction_idx"])
+        if episode_is_excluded(ep):
+            n_excluded += 1
+            if not include_excluded:
+                continue
+        idxs.append(d)
+    idxs = sorted(set(idxs))
+    if not idxs:
+        raise ValueError(
+            f"structure {int(structure_idx)} has no usable directions "
+            f"(excluded={n_excluded})"
+        )
+    return idxs
+
+
+def resolve_direction_indices(
+    dataset: BatchedSysIdDataset,
+    *,
+    structure_idx: int,
+    num_directions: int,
+    direction_indices: Sequence[int] | None = None,
+    include_excluded: bool = False,
+) -> list[int]:
+    """Resolve disk direction indices for load/replay (dense local layout)."""
+    if direction_indices is not None:
+        dirs = [int(d) for d in direction_indices]
+        if not dirs:
+            raise ValueError("direction_indices must be non-empty")
+        return dirs
+    entries = [
+        ep
+        for ep in dataset.episode_entries()
+        if int(ep.get("structure_idx", -1)) == int(structure_idx)
+    ]
+    if not entries:
+        # Legacy mocks / catalogs without per-structure episode rows.
+        return list(range(int(num_directions)))
+    return list_usable_direction_indices(
+        dataset,
+        int(structure_idx),
+        include_excluded=bool(include_excluded),
+    )
+
+
 def load_recorded_episodes_for_structure(
     dataset: BatchedSysIdDataset,
     *,
     structure_idx: int,
     num_directions: int,
+    direction_indices: Sequence[int] | None = None,
+    include_excluded: bool = False,
 ) -> list[dict]:
-    """Load recorded observation arrays for each direction of one structure."""
+    """Load recorded observation arrays for each usable direction of one structure."""
+    dirs = resolve_direction_indices(
+        dataset,
+        structure_idx=int(structure_idx),
+        num_directions=int(num_directions),
+        direction_indices=direction_indices,
+        include_excluded=bool(include_excluded),
+    )
     out: list[dict] = []
-    for direction_idx in range(int(num_directions)):
+    for direction_idx in dirs:
         recorded = strip_pre_weld_rows(
-            dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
+            dict(dataset.load_episode_obs_arrays(int(structure_idx), int(direction_idx)))
         )
         n_frames = int(np.asarray(recorded["action"]).shape[0])
         if "dir_idx" not in recorded:
-            recorded["dir_idx"] = np.full(n_frames, direction_idx, dtype=np.int32)
+            recorded["dir_idx"] = np.full(n_frames, int(direction_idx), dtype=np.int32)
         out.append(recorded)
     return out
 
@@ -657,11 +729,21 @@ def replay_candidates_for_structure(
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
     use_snapshot: bool = False,
     use_oracle_params: bool = True,
+    direction_indices: Sequence[int] | None = None,
+    include_excluded: bool = False,
 ) -> BatchedSysIdReplayCollectors:
+    dirs = resolve_direction_indices(
+        dataset,
+        structure_idx=int(structure_idx),
+        num_directions=int(num_directions),
+        direction_indices=direction_indices,
+        include_excluded=bool(include_excluded),
+    )
+    d = len(dirs)
     chunks = chunk_candidates(
         candidates,
         max_envs_per_batch=int(max_envs_per_batch),
-        num_directions=int(num_directions),
+        num_directions=d,
     )
     if not chunks:
         raise ValueError(f"No stiffness candidates for structure {structure_idx}")
@@ -672,13 +754,15 @@ def replay_candidates_for_structure(
             dataset=dataset,
             structure_idx=int(structure_idx),
             candidates=chunk,
-            num_directions=int(num_directions),
+            num_directions=d,
             seed=seed,
             build_env_fn=build_env_fn,
             on_step=on_step,
             replay_sim_config=replay_sim_config,
             use_snapshot=bool(use_snapshot),
             use_oracle_params=bool(use_oracle_params),
+            direction_indices=dirs,
+            include_excluded=bool(include_excluded),
         )
         merged = collectors if merged is None else merged.concat_envs(collectors)
     assert merged is not None
@@ -700,20 +784,28 @@ def evaluate_batched_mmd_grid(
     if not candidate_list:
         raise ValueError("candidates must be non-empty")
 
+    dirs = resolve_direction_indices(
+        dataset,
+        structure_idx=int(structure_idx),
+        num_directions=int(num_directions),
+    )
+    d = len(dirs)
     gt_context = prepare_gt_mmd_context(
         load_recorded_episodes_for_structure(
             dataset,
             structure_idx=int(structure_idx),
-            num_directions=int(num_directions),
+            num_directions=d,
+            direction_indices=dirs,
         )
     )
     collectors = replay_candidates_for_structure(
         dataset=dataset,
         structure_idx=int(structure_idx),
         candidates=candidate_list,
-        num_directions=int(num_directions),
+        num_directions=d,
         seed=seed,
         build_env_fn=build_env_fn,
+        direction_indices=dirs,
     )
 
     results: list[MmdCandidateResult] = []
@@ -721,7 +813,7 @@ def evaluate_batched_mmd_grid(
         replay_observations = direction_episodes_from_collectors(
             collectors,
             candidate_index=candidate_index,
-            num_directions=int(num_directions),
+            num_directions=d,
         )
         results.append(
             score_candidate_mmd(
@@ -871,6 +963,7 @@ class BatchedSysIdReplayCollectors:
         *,
         frame_idx: int,
         unstable: torch.Tensor | np.ndarray | None = None,
+        record_mask: torch.Tensor | np.ndarray | None = None,
     ) -> None:
         """Record one replay frame for every env with a single batched GPU download."""
         from apple_pick_gym.batched_envs.obs_torch import (
@@ -888,8 +981,13 @@ class BatchedSysIdReplayCollectors:
 
         junction_names = [str(name) for name in self._recorded_by_env[0]["junction_names"]]
         batched = download_batched_replay_obs_numpy(last_obs, junction_names)
+        record_mask_np = None
+        if record_mask is not None:
+            record_mask_np = np.asarray(record_mask.detach().cpu() if hasattr(record_mask, "detach") else record_mask, dtype=bool).reshape(-1)
 
         for env_idx in range(num_envs):
+            if record_mask_np is not None and not bool(record_mask_np[int(env_idx)]):
+                continue
             recorded = self._recorded_by_env[env_idx]
             env_junction_names = [str(name) for name in recorded["junction_names"]]
             if env_junction_names != junction_names:
@@ -938,12 +1036,22 @@ def recorded_metadata_by_env(
     structure_idx: int,
     num_directions: int,
     num_candidates: int,
+    direction_indices: Sequence[int] | None = None,
+    include_excluded: bool = False,
 ) -> list[dict[str, Any]]:
     """Load recorded obs arrays per env_idx for ReplayObservationCollector init."""
-    num_envs = int(num_candidates) * int(num_directions)
+    dirs = resolve_direction_indices(
+        dataset,
+        structure_idx=int(structure_idx),
+        num_directions=int(num_directions),
+        direction_indices=direction_indices,
+        include_excluded=bool(include_excluded),
+    )
+    d = len(dirs)
+    num_envs = int(num_candidates) * d
     out: list[dict[str, Any]] = []
     for env_idx in range(num_envs):
-        direction_idx = int(env_idx) % int(num_directions)
+        direction_idx = int(dirs[int(env_idx) % d])
         recorded = strip_pre_weld_rows(
             dict(dataset.load_episode_obs_arrays(int(structure_idx), direction_idx))
         )
@@ -1055,12 +1163,23 @@ def build_recorded_actions_tensor(
     structure_idx: int,
     num_directions: int,
     num_candidates: int,
+    direction_indices: Sequence[int] | None = None,
+    include_excluded: bool = False,
 ) -> np.ndarray:
     """Stack recorded EE actions for all candidate/direction env slots."""
+    dirs = resolve_direction_indices(
+        dataset,
+        structure_idx=int(structure_idx),
+        num_directions=int(num_directions),
+        direction_indices=direction_indices,
+        include_excluded=bool(include_excluded),
+    )
     direction_actions: list[np.ndarray] = []
     n_frames: int | None = None
-    for direction_idx in range(num_directions):
-        arrays = strip_pre_weld_rows(dataset.load_episode_obs_arrays(structure_idx, direction_idx))
+    for direction_idx in dirs:
+        arrays = strip_pre_weld_rows(
+            dataset.load_episode_obs_arrays(structure_idx, int(direction_idx))
+        )
         action = np.asarray(arrays["action"], dtype=np.float32)
         if action.ndim != 2 or action.shape[1] != 6:
             raise ValueError(
@@ -1075,12 +1194,13 @@ def build_recorded_actions_tensor(
     if n_frames is None:
         raise ValueError("num_directions must be positive")
 
-    num_envs = int(num_candidates) * int(num_directions)
+    d = len(dirs)
+    num_envs = int(num_candidates) * d
     out = np.empty((num_envs, n_frames, 6), dtype=np.float32)
     for candidate_idx in range(num_candidates):
-        for direction_idx in range(num_directions):
-            env_idx = candidate_idx * num_directions + direction_idx
-            out[env_idx] = direction_actions[direction_idx]
+        for local_dir, _direction_idx in enumerate(dirs):
+            env_idx = candidate_idx * d + local_dir
+            out[env_idx] = direction_actions[local_dir]
     return out
 
 
@@ -1107,12 +1227,21 @@ def replay_batched_sysid_structure(
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
     use_snapshot: bool = False,
     use_oracle_params: bool = True,
+    direction_indices: Sequence[int] | None = None,
+    include_excluded: bool = False,
 ) -> BatchedSysIdReplayCollectors:
     """Replay recorded actions for one structure across bend-stiffness candidates."""
     num_candidates = len(candidates)
     if num_candidates < 1:
         raise ValueError("candidates must be non-empty")
-    d = int(num_directions)
+    dirs = resolve_direction_indices(
+        dataset,
+        structure_idx=int(structure_idx),
+        num_directions=int(num_directions),
+        direction_indices=direction_indices,
+        include_excluded=bool(include_excluded),
+    )
+    d = len(dirs)
     if d < 1:
         raise ValueError("num_directions must be >= 1")
 
@@ -1131,10 +1260,12 @@ def replay_batched_sysid_structure(
         structure_idx=int(structure_idx),
         num_directions=d,
         num_candidates=num_candidates,
+        direction_indices=dirs,
+        include_excluded=bool(include_excluded),
     )
     n_frames = int(recorded_actions.shape[1])
     replay_seed = _resolve_replay_seed(dataset, seed)
-    structure_meta = dataset.load_episode_metadata(int(structure_idx), 0)
+    structure_meta = dataset.load_episode_metadata(int(structure_idx), int(dirs[0]))
     replay_gripper = gripper_proxy_from_episode_metadata(structure_meta)
 
     env = build_env_fn(
@@ -1158,6 +1289,7 @@ def replay_batched_sysid_structure(
                 dataset,
                 structure_idx=int(structure_idx),
                 num_directions=d,
+                direction_indices=dirs,
             )
         else:
             env.reset(seed=replay_seed)
@@ -1166,6 +1298,7 @@ def replay_batched_sysid_structure(
                 dataset,
                 structure_idx=int(structure_idx),
                 num_directions=d,
+                direction_indices=dirs,
             )
         initial_unstable = ik_bootstrap_unstable_mask(env, num_envs)
         last_obs = getattr(env, "_last_obs", None)
@@ -1176,11 +1309,18 @@ def replay_batched_sysid_structure(
             known_obs_keys=set(last_obs.keys()),
             initial_unstable=initial_unstable,
         )
+        disable_ctrl = EnvDisableController(
+            num_envs,
+            device=env.device,
+            initial_disabled=initial_unstable,
+        )
         recorded_by_env = recorded_metadata_by_env(
             dataset,
             structure_idx=int(structure_idx),
             num_directions=d,
             num_candidates=num_candidates,
+            direction_indices=dirs,
+            include_excluded=bool(include_excluded),
         )
         collectors = BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
 
@@ -1190,6 +1330,7 @@ def replay_batched_sysid_structure(
                 frame_idx=frame_idx,
                 device=env.device,
             )
+            actions = disable_ctrl.apply_actions(actions)
             env.step(actions)
             if on_step is not None:
                 keep_going = bool(on_step(frame_idx=frame_idx, env=env))
@@ -1203,7 +1344,9 @@ def replay_batched_sysid_structure(
                 env,
                 frame_idx=frame_idx,
                 unstable=step_report.unstable,
+                record_mask=disable_ctrl.should_record_mask(),
             )
+            disable_ctrl.update(step_report.unstable)
     finally:
         env.close()
 

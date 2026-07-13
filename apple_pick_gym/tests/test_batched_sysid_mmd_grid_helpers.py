@@ -1208,3 +1208,59 @@ def test_concat_replay_arrays_propagates_stable():
     right["stable"] = np.array([False, True], dtype=bool)
     merged = grid._concat_replay_arrays(left, right)
     assert merged["stable"].tolist() == [True, False, False, True]
+
+
+def test_list_usable_direction_indices_skips_excluded():
+    from apple_pick_gym.batched_envs import batched_sysid_mmd_grid as grid
+    from unittest.mock import MagicMock
+
+    dataset = MagicMock()
+    dataset.episode_entries.return_value = [
+        {"structure_idx": 0, "direction_idx": 0, "excluded": False},
+        {"structure_idx": 0, "direction_idx": 1, "excluded": True},
+        {"structure_idx": 0, "direction_idx": 2, "excluded": False},
+        {"structure_idx": 1, "direction_idx": 0, "excluded": False},
+    ]
+    assert grid.list_usable_direction_indices(dataset, 0) == [0, 2]
+    assert grid.list_usable_direction_indices(dataset, 0, include_excluded=True) == [0, 1, 2]
+
+
+def test_list_usable_direction_indices_raises_when_all_excluded():
+    from apple_pick_gym.batched_envs import batched_sysid_mmd_grid as grid
+    from unittest.mock import MagicMock
+    import pytest
+
+    dataset = MagicMock()
+    dataset.episode_entries.return_value = [
+        {"structure_idx": 0, "direction_idx": 0, "excluded": True},
+        {"structure_idx": 0, "direction_idx": 1, "excluded": True},
+    ]
+    with pytest.raises(ValueError, match="no usable directions"):
+        grid.list_usable_direction_indices(dataset, 0)
+
+
+def test_load_recorded_episodes_skips_excluded_directions():
+    from apple_pick_gym.batched_envs import batched_sysid_mmd_grid as grid
+    from unittest.mock import MagicMock
+    import numpy as np
+
+    dataset = MagicMock()
+    dataset.episode_entries.return_value = [
+        {"structure_idx": 0, "direction_idx": 0, "excluded": False},
+        {"structure_idx": 0, "direction_idx": 1, "excluded": True},
+    ]
+
+    def _load(s, d):
+        return {
+            "action": np.zeros((2, 6), dtype=np.float32),
+            "phase": np.zeros(2, dtype=np.int8),
+            "step_idx": np.arange(2, dtype=np.int32),
+        }
+
+    dataset.load_episode_obs_arrays.side_effect = _load
+    eps = grid.load_recorded_episodes_for_structure(
+        dataset, structure_idx=0, num_directions=2
+    )
+    assert len(eps) == 1
+    assert int(eps[0]["dir_idx"][0]) == 0
+

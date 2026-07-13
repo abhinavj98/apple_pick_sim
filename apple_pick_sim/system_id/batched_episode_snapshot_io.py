@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pathlib import Path
 from typing import Any
 
@@ -283,9 +285,15 @@ def _set_excitation_from_dataset(
     *,
     structure_idx: int,
     num_directions: int,
+    direction_indices: Sequence[int] | None = None,
 ) -> None:
+    dirs = (
+        [int(d) for d in direction_indices]
+        if direction_indices is not None
+        else list(range(int(num_directions)))
+    )
     for env_idx in range(int(env.num_envs)):
-        direction_idx = int(env_idx) % int(num_directions)
+        direction_idx = int(dirs[int(env_idx) % len(dirs)])
         arrays = dataset.load_episode_obs_arrays(structure_idx, direction_idx)
         excitation_direction = arrays["excitation_direction"][0]
         env.set_excitation_context(
@@ -304,6 +312,7 @@ def load_and_restore_episode_snapshots(
     *,
     structure_idx: int,
     num_directions: int,
+    direction_indices: Sequence[int] | None = None,
 ) -> None:
     """Restore post-weld state0/state1 from disk; skip metadata joint/VIC init."""
     sim = env._sim
@@ -315,9 +324,21 @@ def load_and_restore_episode_snapshots(
     if template is None:
         template = EpisodeStateSnapshot.capture(sim)
 
+    dirs = (
+        [int(d) for d in direction_indices]
+        if direction_indices is not None
+        else list(range(int(num_directions)))
+    )
+    if not dirs:
+        raise ValueError("direction_indices must be non-empty")
+    if len(dirs) != int(num_directions):
+        raise ValueError(
+            f"len(direction_indices)={len(dirs)} != num_directions={int(num_directions)}"
+        )
+
     merge = _allocate_merge_buffers(template)
     for env_idx in range(int(env.num_envs)):
-        direction_idx = int(env_idx) % int(num_directions)
+        direction_idx = int(dirs[int(env_idx) % len(dirs)])
         per_dir = load_npz_for_direction(
             dataset.dataset_dir,
             structure_idx=int(structure_idx),
@@ -333,6 +354,7 @@ def load_and_restore_episode_snapshots(
         dataset,
         structure_idx=int(structure_idx),
         num_directions=int(num_directions),
+        direction_indices=dirs,
     )
 
     env._step_count = 0

@@ -334,6 +334,23 @@ def _build_structure_summaries(
     return [by_structure[k] for k in sorted(by_structure)]
 
 
+
+def _excluded_env_indices(
+    disable_ctrl: EnvDisableController,
+    writers: Sequence[BatchedEpisodeWriter],
+) -> set[int]:
+    """Env indices to mark excluded: sticky-disabled or any unstable recorded frame."""
+    out: set[int] = set()
+    disabled = disable_ctrl.disabled.detach().cpu().tolist()
+    for i, flag in enumerate(disabled):
+        if bool(flag):
+            out.add(int(i))
+    for i, writer in enumerate(writers):
+        if writer.has_unstable_frame():
+            out.add(int(i))
+    return out
+
+
 def _build_manifest_episodes(
     metadata_rows: Sequence[dict[str, Any]],
     writers: Sequence[BatchedEpisodeWriter],

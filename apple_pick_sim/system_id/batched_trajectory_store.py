@@ -187,6 +187,10 @@ class BatchedEpisodeWriter:
     def n_frames(self) -> int:
         return len(self._rows)
 
+    def has_unstable_frame(self) -> bool:
+        """True if any recorded frame has stable=False."""
+        return any(not bool(row.get("stable", True)) for row in self._rows)
+
     def record_step(
         self,
         *,

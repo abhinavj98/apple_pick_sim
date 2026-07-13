@@ -21,6 +21,7 @@ from apple_pick_gym.batched_envs.batched_stability_monitor import (
     StabilityThresholds,
     ik_bootstrap_unstable_mask,
 )
+from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
 from apple_pick_sim.fruiting_system import (
     fruiting_params_to_json,
     load_ranges,
@@ -43,6 +44,8 @@ from apple_pick_sim.system_id.batched_trajectory_store import (
 )
 from apple_pick_sim.system_id.manifest_sim_config import sim_config_to_manifest_dict
 from apple_pick_sim.system_id.pre_weld_obs import complete_pre_weld_sysid_obs
+
+EXCLUDED_REASON_STABILITY_BLOWUP = "stability_blowup"
 
 
 class OnStepCallback(Protocol):
@@ -336,20 +339,27 @@ def _build_manifest_episodes(
     writers: Sequence[BatchedEpisodeWriter],
     *,
     num_directions: int,
+    excluded_env_indices: set[int] | frozenset[int] = frozenset(),
+    excluded_reason: str = EXCLUDED_REASON_STABILITY_BLOWUP,
 ) -> list[dict[str, Any]]:
     episodes: list[dict[str, Any]] = []
+    excluded = {int(i) for i in excluded_env_indices}
     for meta, writer in zip(metadata_rows, writers, strict=True):
         structure_idx = int(meta["structure_idx"])
         direction_idx = int(meta["direction_idx"])
+        env_idx = int(meta["env_idx"])
+        is_excluded = env_idx in excluded
         episodes.append(
             {
                 "structure_idx": structure_idx,
                 "direction_idx": direction_idx,
-                "env_idx": int(meta["env_idx"]),
+                "env_idx": env_idx,
                 "filename": episode_filename(structure_idx, direction_idx),
                 "episode_id": str(meta["episode_id"]),
                 "pull_direction": meta["pull_direction"],
                 "n_frames": int(writer.n_frames),
+                "excluded": bool(is_excluded),
+                "excluded_reason": str(excluded_reason) if is_excluded else None,
             }
         )
     return episodes
@@ -421,6 +431,11 @@ def collect_batched_quasi_static_dataset(
         thresholds=stability_thresholds,
         initial_unstable=initial_unstable,
     )
+    disable_ctrl = EnvDisableController(
+        num_envs,
+        device=env.device,
+        initial_disabled=initial_unstable,
+    )
     collectors = BatchedSysIdCollectors(num_envs)
     metadata_rows = [
         build_episode_metadata(
@@ -473,6 +488,7 @@ def collect_batched_quasi_static_dataset(
                 metadata_rows,
                 collectors.writers,
                 num_directions=int(num_directions),
+                excluded_env_indices=_excluded_env_indices(disable_ctrl, collectors.writers),
             ),
             overwrite=bool(overwrite),
         )
@@ -524,11 +540,15 @@ def collect_batched_quasi_static_dataset(
             per_env_directions,
             device=env.device,
         )
+        actions = disable_ctrl.apply_actions(actions)
         obs, _reward, _terminated, _truncated, _info = env.step(actions)
         sim_time += 1.0 / float(config.control_hz)
         step_report = monitor.check(obs, step_idx=step_idx)
+        record_mask = disable_ctrl.should_record_mask().detach().cpu().tolist()
 
         for i in range(num_envs):
+            if not bool(record_mask[i]):
+                continue
             action_np = actions[i].detach().cpu().numpy()
             collectors.record_step(
                 env,
@@ -540,6 +560,7 @@ def collect_batched_quasi_static_dataset(
                 action=action_np,
                 stable=not bool(step_report.unstable[i].item()),
             )
+        disable_ctrl.update(step_report.unstable)
 
         if progress is not None and step_idx % 20 == 0:
             progress(f"step {step_idx} phase={phase}")

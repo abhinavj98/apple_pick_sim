@@ -327,3 +327,37 @@ def test_collect_batched_on_step_callback_invoked_and_can_stop(tmp_path: Path):
     assert seen[0][1] == "pre_weld"
     assert any(idx >= 0 for idx, _ in seen)
     assert max(idx for idx, _ in seen) == stop_at
+
+
+def test_build_manifest_episodes_marks_excluded_envs():
+    from apple_pick_gym.batched_envs.batched_sysid_collect import _build_manifest_episodes
+    from apple_pick_sim.system_id import BatchedEpisodeWriter
+
+    writers = [BatchedEpisodeWriter(episode_id="a"), BatchedEpisodeWriter(episode_id="b")]
+    # one dummy stable frame each so n_frames > 0 is not required for builder
+    meta = [
+        {
+            "structure_idx": 0,
+            "direction_idx": 0,
+            "env_idx": 0,
+            "episode_id": "a",
+            "pull_direction": [1.0, 0.0, 0.0],
+        },
+        {
+            "structure_idx": 0,
+            "direction_idx": 1,
+            "env_idx": 1,
+            "episode_id": "b",
+            "pull_direction": [0.0, 1.0, 0.0],
+        },
+    ]
+    episodes = _build_manifest_episodes(
+        meta,
+        writers,
+        num_directions=2,
+        excluded_env_indices={1},
+    )
+    assert episodes[0]["excluded"] is False
+    assert episodes[0]["excluded_reason"] is None
+    assert episodes[1]["excluded"] is True
+    assert episodes[1]["excluded_reason"] == "stability_blowup"

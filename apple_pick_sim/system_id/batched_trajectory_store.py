@@ -263,11 +263,16 @@ def write_manifest(
 class BatchedSysIdDataset:
     """Read a batched sys-ID dataset directory (manifest.json + episodes/)."""
 
-    def __init__(self, dataset_dir: Path | str) -> None:
+    def __init__(
+        self,
+        dataset_dir: Path | str,
+        *,
+        manifest_name: str = "manifest.json",
+    ) -> None:
         self._dataset_dir = Path(dataset_dir)
-        self._manifest_path = self._dataset_dir / "manifest.json"
+        self._manifest_path = self._dataset_dir / str(manifest_name)
         if not self._manifest_path.exists():
-            raise FileNotFoundError(f"manifest.json not found in {self._dataset_dir}")
+            raise FileNotFoundError(f"{manifest_name} not found in {self._dataset_dir}")
         self._manifest = json.loads(self._manifest_path.read_text(encoding="utf-8"))
 
     @property

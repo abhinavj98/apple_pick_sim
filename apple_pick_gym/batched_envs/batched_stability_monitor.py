@@ -18,8 +18,8 @@ from apple_pick_sim.coupled_fruiting.scene import (
 class StabilityThresholds:
     max_force_n: float = DEFAULT_STEM_FORCE_CAP_N
     max_torque_nm: float = DEFAULT_STEM_TORQUE_CAP_NM
-    max_tcp_speed_mps: float = 0.5
-    max_apple_speed_mps: float = 0.5
+    max_tcp_speed_mps: float = 5.0
+    max_apple_speed_mps: float = 5.0
 
 
 @dataclasses.dataclass(frozen=True)

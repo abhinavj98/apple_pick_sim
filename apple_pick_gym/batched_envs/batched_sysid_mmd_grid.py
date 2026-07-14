@@ -599,6 +599,34 @@ def episode_is_excluded(entry: dict) -> bool:
     return bool(entry.get("excluded", False))
 
 
+def per_candidate_unstable_counts(
+    unstable_by_env: list[int],
+    *,
+    num_candidates: int,
+    num_directions: int,
+) -> list[int]:
+    """Sum per-env unstable-frame counts into one total per candidate.
+
+    Envs are laid out as ``env_idx = candidate * num_directions + direction``,
+    where ``num_directions`` is the number of *usable* directions for the
+    structure (excluded directions are not replayed). ``unstable_by_env`` must
+    therefore have exactly ``num_candidates * num_directions`` entries.
+    """
+    expected = int(num_candidates) * int(num_directions)
+    if len(unstable_by_env) != expected:
+        raise ValueError(
+            f"unstable_by_env length {len(unstable_by_env)} != "
+            f"num_candidates*num_directions ({num_candidates}*{num_directions}={expected})"
+        )
+    return [
+        sum(
+            unstable_by_env[c * int(num_directions) + d]
+            for d in range(int(num_directions))
+        )
+        for c in range(int(num_candidates))
+    ]
+
+
 def list_usable_direction_indices(
     dataset: BatchedSysIdDataset,
     structure_idx: int,

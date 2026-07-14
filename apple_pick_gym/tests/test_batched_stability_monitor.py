@@ -68,10 +68,26 @@ def test_inf_in_tcp_velocity_flags_with_reason():
     assert "nan_or_inf:tcp_velocity" in report.reasons[0]
 
 
+def test_default_stability_thresholds_are_ten_x_scene_and_speed_caps():
+    """Defaults track stem wrench caps (scene) and speed bounds at 10× prior values."""
+    from apple_pick_sim.coupled_fruiting.scene import (
+        DEFAULT_STEM_FORCE_CAP_N,
+        DEFAULT_STEM_TORQUE_CAP_NM,
+    )
+
+    t = StabilityThresholds()
+    assert t.max_force_n == pytest.approx(DEFAULT_STEM_FORCE_CAP_N)
+    assert t.max_torque_nm == pytest.approx(DEFAULT_STEM_TORQUE_CAP_NM)
+    assert DEFAULT_STEM_FORCE_CAP_N == pytest.approx(300.0)
+    assert DEFAULT_STEM_TORQUE_CAP_NM == pytest.approx(100.0)
+    assert t.max_tcp_speed_mps == pytest.approx(5.0)
+    assert t.max_apple_speed_mps == pytest.approx(5.0)
+
+
 def test_force_cap_exceeded():
     obs = _nominal_obs(num_envs=2)
     obs["ft_wrist"] = obs["ft_wrist"].clone()
-    obs["ft_wrist"][0, 0] = 250.0
+    obs["ft_wrist"][0, 0] = 2500.0
     report = _monitor(num_envs=2).check(obs, step_idx=0)
     assert report.unstable.tolist() == [True, False]
     assert "force_cap_exceeded" in report.reasons[0]
@@ -80,7 +96,7 @@ def test_force_cap_exceeded():
 def test_torque_cap_exceeded():
     obs = _nominal_obs(num_envs=2)
     obs["ft_wrist"] = obs["ft_wrist"].clone()
-    obs["ft_wrist"][1, 3] = 60.0
+    obs["ft_wrist"][1, 3] = 600.0
     report = _monitor(num_envs=2).check(obs, step_idx=0)
     assert report.unstable.tolist() == [False, True]
     assert "torque_cap_exceeded" in report.reasons[1]
@@ -89,7 +105,7 @@ def test_torque_cap_exceeded():
 def test_tcp_speed_exceeded():
     obs = _nominal_obs(num_envs=2)
     obs["tcp_velocity"] = obs["tcp_velocity"].clone()
-    obs["tcp_velocity"][0, :3] = 3.0
+    obs["tcp_velocity"][0, :3] = 15.0
     report = _monitor(num_envs=2).check(obs, step_idx=0)
     assert report.unstable.tolist() == [True, False]
     assert "tcp_speed_exceeded" in report.reasons[0]
@@ -99,8 +115,8 @@ def test_vectorization_multiple_envs_different_reasons():
     obs = _nominal_obs(num_envs=5)
     obs["ft_wrist"] = obs["ft_wrist"].clone()
     obs["tcp_velocity"] = obs["tcp_velocity"].clone()
-    obs["ft_wrist"][1, 0] = 250.0
-    obs["tcp_velocity"][3, 0] = 5.0
+    obs["ft_wrist"][1, 0] = 2500.0
+    obs["tcp_velocity"][3, 0] = 15.0
     report = _monitor(num_envs=5).check(obs, step_idx=0)
     assert report.unstable.tolist() == [False, True, False, True, False]
     assert "force_cap_exceeded" in report.reasons[1]

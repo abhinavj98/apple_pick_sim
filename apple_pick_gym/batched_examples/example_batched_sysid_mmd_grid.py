@@ -749,10 +749,15 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 replay_arrays = collectors.to_arrays(env_idx)
                 stable = np.asarray(replay_arrays.get("stable", np.ones(replay_arrays["action"].shape[0])), dtype=bool)
                 unstable_by_env.append(int(np.count_nonzero(~stable)))
-            cand_unstable = [
-                sum(unstable_by_env[c * num_directions + d] for d in range(num_directions))
-                for c in range(num_candidates)
-            ]
+            from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
+                per_candidate_unstable_counts,
+            )
+
+            cand_unstable = per_candidate_unstable_counts(
+                unstable_by_env,
+                num_candidates=num_candidates,
+                num_directions=structure_num_directions,
+            )
             print(
                 f"structure {int(structure_idx)} stability: "
                 f"unstable_frames_per_candidate={cand_unstable}"

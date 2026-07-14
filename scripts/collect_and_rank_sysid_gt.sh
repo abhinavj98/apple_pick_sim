@@ -10,21 +10,30 @@
 #   SKIP_COLLECT=1 bash scripts/collect_and_rank_sysid_gt.sh   # replay only
 #   LOG=tmp/my_run.log bash scripts/collect_and_rank_sysid_gt.sh
 #   MAX_RETRIES=5 RETRY_SLEEP_S=10 bash scripts/collect_and_rank_sysid_gt.sh
+#   SEED=1 bash scripts/collect_and_rank_sysid_gt.sh   # vary collect+replay RNG
+#   SEED=2 TOPOLOGY_SEED=7 bash scripts/collect_and_rank_sysid_gt.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# RNG seeds. SEED varies material sampling + replay RNG; TOPOLOGY_SEED fixes segment
+# topology (keep constant across seeds to compare the same structures).
+SEED="${SEED:-0}"
+TOPOLOGY_SEED="${TOPOLOGY_SEED:-42}"
+
 # Shared settle params (must match between collect and replay).
 SETTLE_SUBSTEPS="${SETTLE_SUBSTEPS:-10000}"
 SETTLE_QUIET_EVERY="${SETTLE_QUIET_EVERY:-1000}"
 
-DATASET="${DATASET:-tmp/batched_sysid_dataset_settled}"
-PLOT_OUTPUT="${PLOT_OUTPUT:-tmp/mmd_grid}"
+# Per-seed defaults so parallel seed runs never clobber each other's dataset,
+# grid plots, or logs. Override any of these explicitly to pin a path.
+DATASET="${DATASET:-tmp/batched_sysid_dataset_settled_seed${SEED}}"
+PLOT_OUTPUT="${PLOT_OUTPUT:-tmp/mmd_grid_seed${SEED}}"
 NUM_STRUCTURES="${NUM_STRUCTURES:-5}"
 NUM_DIRECTIONS="${NUM_DIRECTIONS:-10}"
 SKIP_COLLECT="${SKIP_COLLECT:-0}"
-LOG="${LOG:-tmp/collect_and_rank_sysid_gt.log}"
+LOG="${LOG:-tmp/collect_and_rank_sysid_gt_seed${SEED}.log}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_SLEEP_S="${RETRY_SLEEP_S:-5}"
 
@@ -64,6 +73,8 @@ run_collect() {
     --num-structures "${NUM_STRUCTURES}" \
     --num-directions "${NUM_DIRECTIONS}" \
     --output "${DATASET}" \
+    --seed "${SEED}" \
+    --topology-seed "${TOPOLOGY_SEED}" \
     --movement-per-step-m 0.01 \
     --total-movement-m 0.06 \
     --move-speed-mps 0.01 \
@@ -83,6 +94,7 @@ run_gt_rank() {
   uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py \
     --viewer null \
     --dataset "${DATASET}" \
+    --seed "${SEED}" \
     --replay-only \
     --score-mse \
     --score-wasserstein \
@@ -96,10 +108,12 @@ run_gt_rank() {
 }
 
 run() {
-  echo "log:     ${LOG}"
-  echo "dataset: ${DATASET}"
-  echo "settle:  substeps=${SETTLE_SUBSTEPS} quiet_every=${SETTLE_QUIET_EVERY}"
-  echo "retries: max=${MAX_RETRIES} sleep_s=${RETRY_SLEEP_S}"
+  echo "log:      ${LOG}"
+  echo "dataset:  ${DATASET}"
+  echo "plots:    ${PLOT_OUTPUT}"
+  echo "seed:     ${SEED} (topology_seed=${TOPOLOGY_SEED})"
+  echo "settle:   substeps=${SETTLE_SUBSTEPS} quiet_every=${SETTLE_QUIET_EVERY}"
+  echo "retries:  max=${MAX_RETRIES} sleep_s=${RETRY_SLEEP_S}"
 
   if [[ "${SKIP_COLLECT}" != "1" ]]; then
     retry_step "collect" run_collect

@@ -1239,6 +1239,30 @@ def test_list_usable_direction_indices_raises_when_all_excluded():
         grid.list_usable_direction_indices(dataset, 0)
 
 
+def test_per_candidate_unstable_counts_groups_by_usable_directions():
+    from apple_pick_gym.batched_envs import batched_sysid_mmd_grid as grid
+
+    # 3 candidates x 2 usable directions; per-env unstable frame counts.
+    unstable_by_env = [1, 2, 10, 20, 100, 200]
+
+    got = grid.per_candidate_unstable_counts(
+        unstable_by_env, num_candidates=3, num_directions=2
+    )
+
+    assert got == [3, 30, 300]
+
+
+def test_per_candidate_unstable_counts_rejects_length_mismatch():
+    from apple_pick_gym.batched_envs import batched_sysid_mmd_grid as grid
+    import pytest
+
+    # 3 candidates x 2 directions requires 6 entries, not 5.
+    with pytest.raises(ValueError, match="num_candidates"):
+        grid.per_candidate_unstable_counts(
+            [1, 2, 3, 4, 5], num_candidates=3, num_directions=2
+        )
+
+
 def test_load_recorded_episodes_skips_excluded_directions():
     from apple_pick_gym.batched_envs import batched_sysid_mmd_grid as grid
     from unittest.mock import MagicMock

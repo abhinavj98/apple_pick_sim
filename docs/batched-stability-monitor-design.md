@@ -87,15 +87,15 @@ apple-speed check (see below).
 ```python
 @dataclass(frozen=True)
 class StabilityThresholds:
-    max_force_n: float = 30.0        # reuse DEFAULT_STEM_FORCE_CAP_N (scene.py)
-    max_torque_nm: float = 10.0      # reuse DEFAULT_STEM_TORQUE_CAP_NM (scene.py)
-    max_tcp_speed_mps: float = 0.5
-    max_apple_speed_mps: float = 0.5
+    max_force_n: float = 300.0       # reuse DEFAULT_STEM_FORCE_CAP_N (scene.py)
+    max_torque_nm: float = 100.0     # reuse DEFAULT_STEM_TORQUE_CAP_NM (scene.py)
+    max_tcp_speed_mps: float = 5.0
+    max_apple_speed_mps: float = 5.0
 ```
 
 Defaults intentionally reuse the existing wrench-cap constants from
-`apple_pick_sim/coupled_fruiting/scene.py` (`DEFAULT_STEM_FORCE_CAP_N = 30.0`,
-`DEFAULT_STEM_TORQUE_CAP_NM = 10.0`) so "force/torque at cap" and "monitor-flagged unstable"
+`apple_pick_sim/coupled_fruiting/scene.py` (`DEFAULT_STEM_FORCE_CAP_N = 300.0`,
+`DEFAULT_STEM_TORQUE_CAP_NM = 100.0`) so "force/torque at cap" and "monitor-flagged unstable"
 refer to the same physical limit already enforced elsewhere in the sim.
 
 **Meaning of `stable`:** blow-up / unsafe (NaN, caps, speed), not hold quasi-static quality.

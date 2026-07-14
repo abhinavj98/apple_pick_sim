@@ -1,5 +1,5 @@
 {
-  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). vbd_stretch_fixed holds wood-scale axial VBD knobs for SolverVBD settling stability; bend DR remains youngs_modulus_pa + damping_ratio. See docs/material-parameter-sampling.md and docs/real-world-proxy.md.",
+  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). vbd_stretch_fixed.stretch_damping is critical (ζ=1): c=2√(k·m_seg) at midpoint geometry for the listed stretch_stiffness. joint_*_kd_overrides are critical at each role: support uses kp=1e8 with primary-segment m/I; other roles use Newton default ke=1e5 with child spur/stem/apple m/I. Bend DR remains youngs_modulus_pa + damping_ratio. See docs/material-parameter-sampling.md and docs/real-world-proxy.md.",
   "args": {
     "spur_attach_fraction": 0.5,
     "fruiting_base_pos": [0.0, 0.4, 0.75],
@@ -7,25 +7,25 @@
   },
   "sim_build": {
     "vic_gains": {
-      "linear_k": 400.0,
-      "linear_d": 15.0,
-      "angular_k": 80.0,
-      "angular_d": 5.0
+      "linear_k": 100.0,
+      "linear_d": 20.0,
+      "angular_k": 10.0,
+      "angular_d": 3.0
     },
     "joint_angular_kd_overrides": {
-      "support": 15,
-      "primary_spur": 0.3,
-      "spur_stem": 0.3,
-      "stem_apple": 0.3
+      "support": 130.48,
+      "primary_spur": 0.25651,
+      "spur_stem": 0.01527,
+      "stem_apple": 10.233
     },
     "joint_linear_kd_overrides": {
-      "support": 15,
-      "primary_spur": 0.3,
-      "spur_stem": 0.3,
-      "stem_apple": 0.3
+      "support": 4718.7,
+      "primary_spur": 31.134,
+      "spur_stem": 4.8541,
+      "stem_apple": 323.6
     },
     "joint_angular_kp_overrides": {
-      "support": 1000.0
+      "support": 10000.0
     },
     "joint_linear_kp_overrides": {
       "support": 10000.0
@@ -42,7 +42,7 @@
     "damping_ratio": {"min": 0.1, "max": 0.2},
     "vbd_stretch_fixed": {
       "stretch_stiffness": 10000000.405763,
-      "stretch_damping": 1000.808486
+      "stretch_damping": 1492.18
     }
   },
   "secondary": null,
@@ -57,7 +57,7 @@
     "damping_ratio": {"min": 0.2, "max": 0.3},
     "vbd_stretch_fixed": {
       "stretch_stiffness": 10000000.265422,
-      "stretch_damping": 1000.472248
+      "stretch_damping": 311.34
     }
   },
   "stem": {
@@ -71,7 +71,7 @@
     "damping_ratio": {"min": 0.2, "max": 0.3},
     "vbd_stretch_fixed": {
       "stretch_stiffness": 10000000.1268,
-      "stretch_damping": 1000
+      "stretch_damping": 48.541
     }
   },
   "apple": {

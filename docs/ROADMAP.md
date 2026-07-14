@@ -7,7 +7,7 @@
 | **Last updated** | 2026-07-10 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[V].5.1** — loss / feature pipeline hardening (GT consistently ranks best) |
+| **Active work**  | **[V].5.1** — harden loss calculation in `example_batched_sysid_mmd_grid.py` (GT ranks best) |
 
 ---
 
@@ -34,7 +34,7 @@
 | **[V].1–2** | Done | Batched `replicate(N)`, heterogeneous per-env DR, fixtures, runtime actions (`docs/vectorized-coupled-fruiting.md`) |
 | **[V].3** | Partial | Sim API + batched gym (V.3.3 done; V.3.4–V.3.5 pending) |
 | **[V].4** | Done | Parallel collect, batched replay, in-process MSE/Wasserstein grid; V.4.2.1 digital-twin fidelity capstone deferred |
-| **[V].5** | **Now** | Loss hardening → CEM → held-out sim-sim validation (absorbs former **[S]** / M3.2) |
+| **[V].5** | **Now** | Harden batched grid loss (`example_batched_sysid_mmd_grid.py`) → CEM → held-out validation (absorbs former **[S]** / M3.2) |
 | **[M4]** | Later | Real-data collection — after **V.5** |
 | **[M5]** | Later | Final pick policy |
 
@@ -42,7 +42,14 @@
 
 ## Current focus
 
-**Next slice:** **V.5.1** — harden the loss / feature pipeline so the **GT stiffness candidate consistently ranks best** on the batched grid (outlier / unstable frame & direction handling, scoring contract, optional CLI `--score-mmd` wiring).
+**Next slice:** **V.5.1** — harden the **loss calculation** in `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` (and its library helpers in `batched_sysid_mmd_grid.py` / feature scorers) so the **GT stiffness candidate consistently ranks best** on the batched grid.
+
+**Scope for this slice:**
+
+- Outlier / unstable frame & direction handling beyond current mitigations
+- Scoring contract for hold MSE / Wasserstein (and MMD when wired) so GT wins on known-good datasets
+- Optional CLI `--score-mmd` exposing `evaluate_batched_mmd_grid`
+- Documented invariants + tests for GT preference
 
 **Shipped wins (do not reimplement):**
 
@@ -56,7 +63,7 @@
 
 **Deferred (not Current focus):** **V.4.2.1** — helpers + `--infer-params` exist; default sim-sim path still uses oracle `fruiting_system_params`; no infer-only fidelity floor test yet.
 
-**Goal:** Reliable GT-preferring scores on the shipped grid → **V.5.2** CEM → **V.5.3** held-out validation → **[M4]**.
+**Goal:** Reliable GT-preferring scores from `example_batched_sysid_mmd_grid.py` → **V.5.2** CEM → **V.5.3** held-out validation → **[M4]**.
 
 **Specs:** `docs/system_identification.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/batched-sysid-dataset.md`, `docs/digital-twin.md`, `docs/material-parameter-sampling.md`
 
@@ -64,7 +71,7 @@
 
 - [M1] `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_fr3`, `measure_fruiting_forces`, `sample_params` / `params_fingerprint`, VIC joint torques (`docs/variable-impedance-teleop.md`)
 - [M2.1] `apple_pick_gym/` observation contract v3 (`docs/gym-observation-contract.md`); θ packing reused in V.4 / V.5
-- [V.4.3] `batched_sysid_mmd_grid.py`, `evaluate_batched_mmd_grid` / `score_candidate_mmd` (library), MSE/Wasserstein CLI paths
+- [V.4.3] `example_batched_sysid_mmd_grid.py`, `batched_sysid_mmd_grid.py`, `evaluate_batched_mmd_grid` / `score_candidate_mmd` (library), MSE/Wasserstein CLI paths
 
 ### Next up (ordered)
 
@@ -86,7 +93,7 @@
 
 **[V].5 — sim-sim transfer wrap-up**
 
-- [ ] **V.5.1 — Loss / feature pipeline hardening (Next):**
+- [ ] **V.5.1 — Harden loss calculation in `example_batched_sysid_mmd_grid.py` (Next):**
   - Outlier / unstable frame & direction handling beyond current `stable` mask + median hold agg + candidate disqualification
   - Scoring contract so GT ranks best on hold MSE / Wasserstein (and MMD when wired)
   - Optional CLI `--score-mmd` exposing `evaluate_batched_mmd_grid`
@@ -117,7 +124,7 @@ Key M1 docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md
 | M3.1.1 | Done | Legacy single-env MMD grid — superseded by V.4.3 |
 | M3.0.4 | Done | Fixture catalog + example obs JSON committed; `test_digital_twin.py` passes (`docs/digital-twin.md`) |
 | M3.0.5 | Planned | §2.2–2.3 trajectories → V.4 backend |
-| M3.1.2 | → V.5.1 | Loss / feature pipeline hardening |
+| M3.1.2 | → V.5.1 | Harden loss calc in `example_batched_sysid_mmd_grid.py` |
 | M3.2 | → V.5.2 | CEM calibration |
 
 ### [V] Batched vectorization
@@ -143,7 +150,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.4.2.1** | Deferred | Infer-params / obs-init fidelity capstone (helpers exist; not Current focus) |
 | **V.4.3** | Done | In-process batched MSE/Wasserstein grid + viz; library MMD present |
 | **V.4.4** | Planned | Native v1 replay/dashboard at batch scale |
-| **V.5.1** | **Next** | Loss / feature pipeline hardening (GT rank reliability) |
+| **V.5.1** | **Next** | Harden loss calc in `example_batched_sysid_mmd_grid.py` (GT rank reliability) |
 | **V.5.2** | Planned | CEM θ loop |
 | **V.5.3** | Planned | Held-out validation; [M4] handoff |
 
@@ -151,7 +158,7 @@ Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_co
 
 **Consumers after V.5:** [M4] real-data validation; M2.3 / M2.2c parallel RL envs.
 
-> Former **[S] sim-sim transfer** is fully absorbed into **V.4** (grid diagnostic) and **V.5** (loss hardening + CEM + validation).
+> Former **[S] sim-sim transfer** is fully absorbed into **V.4** (grid diagnostic) and **V.5** (harden `example_batched_sysid_mmd_grid.py` loss → CEM → validation).
 
 ---
 

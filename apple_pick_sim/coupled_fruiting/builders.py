@@ -25,6 +25,10 @@ from apple_pick_sim.coupled_fruiting.scene import (
     init_robot_mujoco_step_buffers,
 )
 from apple_pick_sim.coupled_fruiting.explicit_load import apple_mass_kg_from_model
+from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import (
+    apply_mujoco_apple_payload_inertias,
+    resolve_apple_payload_body_index,
+)
 from apple_pick_sim.coupled_fruiting.stem import _find_stem_apple_joint
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.sim_mujoco_device import resolve_mujoco_use_cpu
@@ -240,6 +244,7 @@ def _assemble_coupled_robot_scene(
         stem_force_cap_N=stem_force_cap_N,
         stem_torque_cap_Nm=stem_torque_cap_Nm,
         apple_mass_kg=_cached_apple_mass_kg(cable),
+        mj_apple_payload_body_index=resolve_apple_payload_body_index(robot_model),
         qd_synced=qd_synced,
         stem_harvest_explicit_apple_weight=explicit_apple_weight,
         layout=layout,
@@ -247,6 +252,7 @@ def _assemble_coupled_robot_scene(
         ik_template_robot_model=ik_template_robot_model,
     )
     init_robot_mujoco_step_buffers(scene)
+    apply_mujoco_apple_payload_inertias(scene)
     return scene
 
 
@@ -338,6 +344,7 @@ def build_coupled_fruiting_fr3(
         device=device,
         usd_path=usd_path,
         root_xform=root_xform,
+        add_apple_payload=bool(gripper_proxy.fix_to_apple),
         mujoco_solver_kwargs=mj_kw,
     )
 
@@ -501,6 +508,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
         device=device,
         usd_path=usd_path,
         root_xform=root_xform,
+        add_apple_payload=fix,
         mujoco_solver_kwargs=tpl_mj_kw,
     )
     tpl_state = tpl_robot_model.state()
@@ -517,6 +525,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
         return fr3_robot.build_fr3_robot_builder(
             usd_path=usd_path,
             root_xform=root_xform,
+            add_apple_payload=fix,
         )
 
     robot_model, template_tcp, mj_solver = build_replicated_robot_model(
@@ -562,6 +571,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
     )
     scene.per_env_params = params
     scene.per_world_proxy_offsets = per_world_offsets
+    apply_mujoco_apple_payload_inertias(scene)
     _maybe_prepare_batched_stem_harvest(scene)
     newton.eval_fk(
         robot_model,

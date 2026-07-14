@@ -81,8 +81,14 @@ def build_fr3_robot_builder(
     usd_path: Path | str | None = None,
     root_xform: wp.transform | None = None,
     add_ground_plane: bool = False,
+    add_apple_payload: bool = False,
 ) -> tuple[newton.ModelBuilder, int]:
-    """Populate an FR3 USD scene on a builder without ``finalize``."""
+    """Populate an FR3 USD scene on a builder without ``finalize``.
+
+    When ``add_apple_payload`` is true, appends a mass-only FIXED child of the TCP
+    labeled ``apple_payload`` (inertia-only dummy; no shape). See
+    ``apple_pick_sim.coupled_fruiting.mujoco_apple_payload``.
+    """
     if not fr3_assets_available():
         raise FileNotFoundError(
             f"Bundled FR3 scene or Omniverse subtree missing; see {TESTFR3_SCENE_USD} and assets/fr3/README.md"
@@ -103,6 +109,10 @@ def build_fr3_robot_builder(
     if add_ground_plane:
         builder.add_ground_plane()
     tcp_idx = resolve_tcp_body_index_from_builder(builder)
+    if add_apple_payload:
+        from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import append_apple_payload_link
+
+        append_apple_payload_link(builder, tcp_idx)
     return builder, tcp_idx
 
 
@@ -136,6 +146,7 @@ def build_fr3_robot_model_from_usd(
     usd_path: Path | str | None = None,
     root_xform: wp.transform | None = None,
     add_ground_plane: bool = False,
+    add_apple_payload: bool = False,
     mujoco_solver_kwargs: dict[str, Any] | None = None,
 ) -> tuple[newton.Model, int, SolverMuJoCo]:
     """Build FR3 + Isaac-exported EE/tcp from USD for ``SolverMuJoCo``.
@@ -150,6 +161,10 @@ def build_fr3_robot_model_from_usd(
     [`assets/fr3/README.md`]), fix EE joints like ``resolved`` if Newton reports a joint
     cycle, then pass ``usd_path=``.
 
+    When ``add_apple_payload`` is true, the model includes a mass-only FIXED child of
+    TCP (``apple_payload``); set inertial props via
+    ``apply_mujoco_apple_payload_inertias``.
+
     Returns ``(model, tcp_body_index, mj_solver)``.
     """
     if not fr3_assets_available():
@@ -162,6 +177,7 @@ def build_fr3_robot_model_from_usd(
         usd_path=usd_path,
         root_xform=root_xform,
         add_ground_plane=add_ground_plane,
+        add_apple_payload=add_apple_payload,
     )
     model = builder.finalize(device=device)
     # Model A: zero gravity for teleop/PD hold (cable VBD keeps -9.81 on its own model).

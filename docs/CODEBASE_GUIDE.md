@@ -94,6 +94,7 @@ Organized by question, not by filename — each doc listed once, under its prima
 - `docs/variable-impedance-teleop.md` — post-grasp VIC: total TCP wrench, joint-torque control, which gym envs are kinematic vs. dynamic.
 - `docs/WRENCH_READOUT.md` — fixed-joint wrench semantics, sign conventions, subtree cuts.
 - `docs/explicit-apple-load-tcp-harvest.md` — explicit apple-weight term in stem harvest.
+- `docs/mujoco-apple-payload.md` — welded MuJoCo TCP inertia-only apple payload (mass / \(I\) / COM; Model A `g=0`).
 - `docs/gpu-coupling-optimization.md` — single-env GPU/CPU split and benchmarks (does **not** cover the batched hot path — see next section).
 
 ### "How does batched / heterogeneous / vectorized sim work?"

@@ -468,6 +468,8 @@ class CoupledFruitingScene:
     """Add ``-m_apple * gravity`` to stem harvest (prescribed apple, ``inv_mass == 0``)."""
     apple_mass_kg: float = 0.0
     """Cached ``body_mass[apple]`` at build; avoids host sync during CUDA graph capture."""
+    mj_apple_payload_body_index: int | None = None
+    """MuJoCo FIXED child of TCP carrying apple inertia (welded builds only)."""
     gravity_vec: wp.vec3 = dataclasses.field(default_factory=lambda: wp.vec3(0.0, 0.0, -9.81))
     use_mujoco_contacts: bool = False
     robot_disable_contacts: bool = True

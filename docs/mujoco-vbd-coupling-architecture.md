@@ -89,6 +89,7 @@ After each MuJoCo substep, the TCP state on `robot_state_0` is the **kinematic a
 | FR3 link masses under gravity | **Off** — `robot_model.set_gravity((0,0,0))` in `build_fr3_robot_model_from_usd` | — | Not simulated (matches ideal gravity comp on hardware) |
 | Rod / stem / branch gravity | — | **On** — `cable.model` + `gravity_vec` | Indirectly via stem deformation and harvest |
 | Apple weight when welded (`fix_to_apple`) | — | Prescribed apple (`inv_mass = 0`); VBD does not integrate apple gravity | **`body_f[tcp]`** via stem harvest + **`-m_apple · g`** when `stem_harvest_explicit_apple_weight=True` |
+| Apple **inertia** when welded (`fix_to_apple`) | Mass-only FIXED TCP child (`apple_payload`); Model A `g` still **0** | Prescribed apple | Reflected in MuJoCo articulated dynamics; see `docs/mujoco-apple-payload.md` |
 | Apple weight when free proxy | — | VBD integrates apple gravity | **`body_f[tcp]`** via velocity-delta or stem harvest (no explicit load — avoids double-count) |
 
 **Real robot analogue:** joint-level gravity compensation using the arm URDF only (no apple mass in feedforward). After grasp, fruit weight appears as an **unmodeled external disturbance** at the EE — the policy or impedance loop must reject it.
@@ -101,13 +102,13 @@ Train controllers that are **robust to randomized apples** under this contract:
 
 1. **Dynamic arm** — `robot_kinematic_mode=False`. Kinematic mode zeros coupling wrenches; the policy never sees payload.
 2. **Settle → weld** — post-grasp episodes with `fix_to_apple=True` and explicit apple weight on, so load appears at the TCP after grasp (not from t = 0).
-3. **DR on plant parameters** — per-env `apple_mass_kg`, density, rod \(E\)/\(\zeta\) (→ stiffness), etc. (`sample_heterogeneous_params_list`, batched builds). Explicit harvest scales TCP wrench with sampled mass; do **not** put apple mass into Model A gravity or into real gravity-comp feedforward during training.
+3. **DR on plant parameters** — per-env `apple_mass_kg`, density, rod \(E\)/\(\zeta\) (→ stiffness), etc. (`sample_heterogeneous_params_list`, batched builds). Explicit harvest scales TCP wrench with sampled mass; welded builds also patch MuJoCo payload inertia from the same \(m,r\) (still **not** Model A gravity / real grav-comp feedforward).
 4. **Observations** — include load cues (TCP wrench, joint torques, velocity errors). Pose-only policies cannot learn mass-dependent reactions.
 5. **Action interface** — match deploy: VIC/impedance under the policy (`vic_use_joint_torques`, plant load on TCP `body_f`) if that is the real stack.
 
-**Out of scope for this contract:** imperfect arm gravity-comp model error, reflected apple inertia during fast swings, and exact real finger contact vs lagged stem harvest — address via sys-id, extra DR, or observation noise as needed.
+**Out of scope for this contract:** imperfect arm gravity-comp model error, and exact real finger contact vs lagged stem harvest — address via sys-id, extra DR, or observation noise as needed. Reflected apple inertia is modeled on welded builds via the MuJoCo payload body (`docs/mujoco-apple-payload.md`).
 
-**Consumers:** batched DR and RL — `docs/vectorized-coupled-fruiting.md` § [Sim-to-real and RL training contract](vectorized-coupled-fruiting.md#sim-to-real-and-rl-training-contract). Code: `apple_pick_sim/robot/fr3_robot/setup.py` (`set_gravity((0,0,0))`), `coupled_fruiting/explicit_load.py`, `coupled_fruiting/proxy_coupling.py` (`harvest_stem_tension_for_tcp`).
+**Consumers:** batched DR and RL — `docs/vectorized-coupled-fruiting.md` § [Sim-to-real and RL training contract](vectorized-coupled-fruiting.md#sim-to-real-and-rl-training-contract). Code: `apple_pick_sim/robot/fr3_robot/setup.py` (`set_gravity((0,0,0))`), `coupled_fruiting/explicit_load.py`, `coupled_fruiting/mujoco_apple_payload.py`, `coupled_fruiting/proxy_coupling.py` (`harvest_stem_tension_for_tcp`).
 
 ---
 

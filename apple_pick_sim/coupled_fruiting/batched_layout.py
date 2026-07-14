@@ -28,6 +28,8 @@ class BatchedEnvLayout:
     tcp_body_indices: tuple[int, ...]
     proxy_body_indices: tuple[int, ...]
     apple_body_indices: tuple[int, ...]
+    template_mj_apple_payload_body: int | None = None
+    mj_apple_payload_body_indices: tuple[int, ...] = ()
     env_spacing: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def world_origin(self, world: int) -> tuple[float, float, float]:
@@ -77,6 +79,22 @@ class BatchedEnvLayout:
         else:
             apple_indices = tuple(-1 for _ in range(num_envs))
 
+        from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import (
+            resolve_apple_payload_body_index,
+        )
+
+        tpl_payload = resolve_apple_payload_body_index(robot_model)
+        if tpl_payload is not None:
+            # resolve on world-0 body labels; for batch, template index is body % robot_bodies_per
+            tpl_payload_local = int(tpl_payload) % int(robot_bodies_per)
+            payload_indices = tuple(
+                _global_body_index(w, tpl_payload_local, robot_bodies_per)
+                for w in range(num_envs)
+            )
+        else:
+            tpl_payload_local = None
+            payload_indices = tuple(-1 for _ in range(num_envs))
+
         return cls(
             num_envs=num_envs,
             bodies_per_world=bodies_per,
@@ -87,9 +105,11 @@ class BatchedEnvLayout:
             template_tcp_body=int(template_tcp_body),
             template_proxy_body=tpl_proxy,
             template_apple_body=tpl_apple,
+            template_mj_apple_payload_body=tpl_payload_local,
             tcp_body_indices=tcp_indices,
             proxy_body_indices=proxy_indices,
             apple_body_indices=apple_indices,
+            mj_apple_payload_body_indices=payload_indices,
             env_spacing=tuple(float(v) for v in env_spacing),
         )
 
@@ -128,9 +148,11 @@ class BatchedEnvLayout:
             template_tcp_body=-1,
             template_proxy_body=tpl_proxy,
             template_apple_body=tpl_apple,
+            template_mj_apple_payload_body=None,
             tcp_body_indices=tuple(-1 for _ in range(num_envs)),
             proxy_body_indices=proxy_indices,
             apple_body_indices=apple_indices,
+            mj_apple_payload_body_indices=tuple(-1 for _ in range(num_envs)),
             env_spacing=tuple(float(v) for v in env_spacing),
         )
 

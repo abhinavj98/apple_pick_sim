@@ -4,6 +4,8 @@
 
 Welded builds add **`-m_apple · g`** to the harvested TCP wrench so the arm (Model A, zero gravity) feels fruit weight as an **external load** — analogous to a real FR3 with **gravity compensation assuming zero payload** after grasp. Per-env `apple_mass_kg` from build/DR scales this term; it is **not** applied via `robot_model.gravity`. See `docs/mujoco-vbd-coupling-architecture.md` §2.5.
 
+**Complementary:** welded builds also attach a mass-only MuJoCo TCP child for reflected inertia (\(I=\tfrac{2}{5}mr^{2}\)); that body does **not** replace this harvest weight path. See `docs/mujoco-apple-payload.md`.
+
 ## Behavior
 
 When `fix_to_apple=True`, the apple is **prescribed** for VBD (`inv_mass == 0`) while `body_mass` stays analytic. Stem joint gather alone may under-represent fruit weight at quasi-static hold.

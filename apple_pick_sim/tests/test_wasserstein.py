@@ -129,9 +129,10 @@ def test_score_candidate_wasserstein_aggregate_is_mean_of_directions():
 
 
 def test_score_candidate_wasserstein_flags_low_sample_direction():
-    episodes = [_arrays_for_steps(steps=16)]
+    # Full-hold frame→frame: n_frames-1 transitions; keep below LOW_SAMPLE_MIN.
+    episodes = [_arrays_for_steps(steps=6)]
     gt_context = prepare_gt_wasserstein_context(episodes)
-    shifted = [_arrays_for_steps(steps=16, shift=1.0)]
+    shifted = [_arrays_for_steps(steps=6, shift=1.0)]
     result = score_candidate_wasserstein(
         candidate_index=0,
         stiffnesses={"primary": 1.0},
@@ -140,6 +141,7 @@ def test_score_candidate_wasserstein_flags_low_sample_direction():
         device="cpu",
     )
     assert result.low_sample_directions == (0,)
+    assert result.per_direction_n_transitions[0] < LOW_SAMPLE_MIN_TRANSITIONS
     assert LOW_SAMPLE_MIN_TRANSITIONS == 8
 
 

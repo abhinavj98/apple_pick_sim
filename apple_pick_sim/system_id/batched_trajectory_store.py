@@ -42,6 +42,7 @@ BATCHED_REQUIRED_FRAME_COLUMNS: tuple[str, ...] = (
 BATCHED_BONUS_FRAME_COLUMNS: tuple[str, ...] = (
     "sim_time",
     "amplitude_m",
+    "hold_number",
     "raw_ft_wrist",
     "tcp_pos",
     "apple_pos",
@@ -201,6 +202,7 @@ class BatchedEpisodeWriter:
         action: np.ndarray,
         obs: dict[str, Any],
         stable: bool = True,
+        hold_number: int = -1,
     ) -> None:
         """Append one env-step record (no per-frame episode_id / dir_idx)."""
         self._rows.append(
@@ -212,6 +214,7 @@ class BatchedEpisodeWriter:
                 action=action,
                 obs=obs,
                 stable=bool(stable),
+                hold_number=int(hold_number),
             )
         )
 
@@ -366,6 +369,10 @@ class BatchedSysIdDataset:
             arrays["sim_time"] = _stack_column("sim_time").reshape(-1)
         if "amplitude_m" in table.column_names:
             arrays["amplitude_m"] = _stack_column("amplitude_m").reshape(-1)
+        if "hold_number" in table.column_names:
+            arrays["hold_number"] = np.asarray(
+                table.column("hold_number").to_pylist(), dtype=np.int32
+            ).reshape(-1)
         n_rows = int(arrays["action"].shape[0])
         if "stable" in table.column_names:
             arrays["stable"] = np.asarray(

@@ -33,6 +33,7 @@ from apple_pick_sim.system_id import (
     ExcitationContext,
     QuasiStaticStepConfig,
     QuasiStaticTrajectory,
+    derive_n_steps,
     estimate_trajectory_frames,
     sample_robot_facing_pull_directions,
     write_manifest,
@@ -187,6 +188,7 @@ class BatchedSysIdCollectors:
         amplitude_m: float,
         action: np.ndarray,
         stable: bool = True,
+        hold_number: int = -1,
     ) -> None:
         obs = env.sysid_numpy_obs(int(env_idx))
         self._writers[int(env_idx)].record_step(
@@ -197,6 +199,7 @@ class BatchedSysIdCollectors:
             action=np.asarray(action, dtype=np.float32),
             obs=obs,
             stable=bool(stable),
+            hold_number=int(hold_number),
         )
 
     def record_pre_weld_step(
@@ -216,6 +219,7 @@ class BatchedSysIdCollectors:
             action=zero_action,
             obs=obs,
             stable=bool(stable),
+            hold_number=-1,
         )
 
     def save_all(
@@ -315,6 +319,12 @@ def build_episode_metadata(
         "hold_duration_s": float(config.hold_duration_s),
         "move_speed_mps": float(config.move_speed_mps),
         "skip_return": bool(config.skip_return),
+        "n_holds": int(
+            derive_n_steps(
+                movement_per_step_m=float(config.movement_per_step_m),
+                total_movement_m=float(config.total_movement_m),
+            )
+        ),
     }
 
 
@@ -486,6 +496,12 @@ def collect_batched_quasi_static_dataset(
                 "num_structures": int(num_structures),
                 "num_directions": int(num_directions),
                 "max_steps": int(max_steps),
+                "n_holds": int(
+                    derive_n_steps(
+                        movement_per_step_m=float(config.movement_per_step_m),
+                        total_movement_m=float(config.total_movement_m),
+                    )
+                ),
                 "trajectory": {
                     "movement_per_step_m": float(config.movement_per_step_m),
                     "total_movement_m": float(config.total_movement_m),
@@ -577,6 +593,7 @@ def collect_batched_quasi_static_dataset(
                 amplitude_m=reference_traj.current_amplitude_m,
                 action=action_np,
                 stable=not bool(step_report.unstable[i].item()),
+                hold_number=int(reference_traj.current_hold_number),
             )
         disable_ctrl.update(hard_blowup_mask(step_report))
 

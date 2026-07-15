@@ -36,6 +36,7 @@ from apple_pick_sim.system_id.mmd import apply_normalization, biased_mmd2, fit_g
 from apple_pick_sim.system_id.mmd_features import (
     ReplayObservationCollector,
     combine_transition_features,
+    iter_kept_hold_segments,
     replay_obs_dict_from_sysid_numpy,
 )
 from apple_pick_sim.system_id.manifest_sim_config import warn_manifest_sim_config_mismatch
@@ -284,12 +285,12 @@ def trajectory_hold_aggregated_mse(
     replay: Mapping[str, Any],
     recorded: Mapping[str, Any],
     aggregation: Literal["mean", "median"] = "mean",
-    use_latter_half: bool = True,
+    use_latter_half: bool = False,
     skip_phase: int | None = -1,
 ) -> dict[str, float]:
     """Compare replay vs recorded using one hold aggregate per signal (mean or median).
 
-  Uses the latter half of each contiguous hold segment by default (burn-in discard).
+    Uses full hold frames by default (no latter-half burn-in).
     """
 
     def _as_2d_full(source: Mapping[str, Any], key: str, cols: int) -> np.ndarray:
@@ -374,6 +375,108 @@ def trajectory_hold_aggregated_mse(
             n=n,
             hold_idx=hold_idx,
             aggregation=aggregation,
+        ),
+    }
+
+
+def trajectory_paired_hold_median_mse(
+    *,
+    replay: Mapping[str, Any],
+    recorded: Mapping[str, Any],
+) -> dict[str, float]:
+    """Paired per-hold median(replay) vs median(GT), averaged over hold segments."""
+
+    def _as_2d_full(source: Mapping[str, Any], key: str, cols: int) -> np.ndarray:
+        return np.asarray(source[key], dtype=np.float64).reshape(-1, cols)
+
+    alignment = _aligned_frame_count(replay, recorded)
+    junction_names = list(recorded.get("junction_names", []))
+    empty = {
+        "n_frames": float(max(alignment, 0)),
+        "n_used_frames": 0.0,
+        "ft_wrist_mse": float("nan"),
+        "ft_force_rmse": float("nan"),
+        "ft_torque_rmse": float("nan"),
+        "tcp_pos_mse": float("nan"),
+        "apple_pos_mse": float("nan"),
+        "woody_pos_mse_by_segment": {},
+    }
+    if alignment <= 0:
+        return empty
+
+    n = alignment
+    phase = np.asarray(recorded["phase"], dtype=np.int8).reshape(-1)[:n]
+    dir_idx = (
+        np.asarray(recorded["dir_idx"], dtype=np.int32).reshape(-1)[:n]
+        if "dir_idx" in recorded
+        else np.zeros(n, dtype=np.int32)
+    )
+    gt_stable, replay_stable = _stable_mask_arrays(recorded=recorded, replay=replay, n=n)
+    stable = gt_stable & replay_stable
+
+    ft_rep_full = _as_2d_full(replay, "ft_wrist", 6)[:n]
+    tcp_rep_full = _as_2d_full(replay, "tcp_pos", 3)[:n]
+    apple_rep_full = _as_2d_full(replay, "apple_pos", 3)[:n]
+    ft_rec_full = _as_2d_full(recorded, "ft_wrist", 6)[:n]
+    tcp_rec_full = _as_2d_full(recorded, "tcp_pos", 3)[:n]
+    apple_rec_full = _as_2d_full(recorded, "apple_pos", 3)[:n]
+
+    force_rmses: list[float] = []
+    torque_rmses: list[float] = []
+    tcp_mses: list[float] = []
+    apple_mses: list[float] = []
+    ft_mses: list[float] = []
+    used_frames = 0
+    all_hold_idx: list[np.ndarray] = []
+
+    for direction in sorted({int(v) for v in dir_idx.tolist()}):
+        for segment in iter_kept_hold_segments(
+            phase=phase,
+            dir_idx=dir_idx,
+            direction=direction,
+            stable=stable,
+            min_frames=1,
+        ):
+            idx = np.asarray(segment, dtype=np.int64)
+            if idx.size == 0:
+                continue
+            all_hold_idx.append(idx)
+            used_frames += int(idx.size)
+            ft_rep = _aggregate_rows(ft_rep_full[idx], aggregation="median")
+            ft_rec = _aggregate_rows(ft_rec_full[idx], aggregation="median")
+            tcp_rep = _aggregate_rows(tcp_rep_full[idx], aggregation="median")
+            tcp_rec = _aggregate_rows(tcp_rec_full[idx], aggregation="median")
+            apple_rep = _aggregate_rows(apple_rep_full[idx], aggregation="median")
+            apple_rec = _aggregate_rows(apple_rec_full[idx], aggregation="median")
+            ft_mses.append(_mse(ft_rep.reshape(1, -1), ft_rec.reshape(1, -1)))
+            force_rmses.append(_rmse(ft_rep[:3].reshape(1, -1), ft_rec[:3].reshape(1, -1)))
+            torque_rmses.append(_rmse(ft_rep[3:].reshape(1, -1), ft_rec[3:].reshape(1, -1)))
+            tcp_mses.append(_mse(tcp_rep.reshape(1, -1), tcp_rec.reshape(1, -1)))
+            apple_mses.append(_mse(apple_rep.reshape(1, -1), apple_rec.reshape(1, -1)))
+
+    if not force_rmses:
+        return empty
+
+    hold_idx = (
+        np.concatenate(all_hold_idx, axis=0)
+        if all_hold_idx
+        else np.zeros(0, dtype=np.int64)
+    )
+    return {
+        "n_frames": float(n),
+        "n_used_frames": float(used_frames),
+        "ft_wrist_mse": float(np.mean(ft_mses)),
+        "ft_force_rmse": float(np.mean(force_rmses)),
+        "ft_torque_rmse": float(np.mean(torque_rmses)),
+        "tcp_pos_mse": float(np.mean(tcp_mses)),
+        "apple_pos_mse": float(np.mean(apple_mses)),
+        "woody_pos_mse_by_segment": woody_segment_pos_mse_hold_aggregated(
+            replay=replay,
+            recorded=recorded,
+            junction_names=junction_names,
+            n=n,
+            hold_idx=hold_idx,
+            aggregation="median",
         ),
     }
 
@@ -516,9 +619,18 @@ def _has_woody_for_scoring(
 
 def prepare_gt_mmd_context(
     recorded_episodes: list[dict],
+    *,
+    use_median: bool = False,
+    hold_id_onehot: bool = False,
+    n_holds: int | None = None,
 ) -> dict[int, MmdDirectionContext]:
     """Fit per-direction GT normalization and RBF bandwidth from recorded episodes."""
-    gt_by_direction = combine_transition_features(recorded_episodes)
+    gt_by_direction = combine_transition_features(
+        recorded_episodes,
+        use_median=use_median,
+        hold_id_onehot=hold_id_onehot,
+        n_holds=n_holds,
+    )
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
@@ -550,9 +662,17 @@ def score_candidate_mmd(
     candidate: BendStiffnessCandidate,
     gt_context: dict[int, MmdDirectionContext],
     replay_observations: list[dict],
+    use_median: bool = False,
+    hold_id_onehot: bool = False,
+    n_holds: int | None = None,
 ) -> MmdCandidateResult:
     """Score one replayed candidate against precomputed GT MMD context."""
-    candidate_by_direction = combine_transition_features(replay_observations)
+    candidate_by_direction = combine_transition_features(
+        replay_observations,
+        use_median=use_median,
+        hold_id_onehot=hold_id_onehot,
+        n_holds=n_holds,
+    )
     missing = sorted(set(gt_context) - set(candidate_by_direction))
     missing_directions = tuple(int(d) for d in missing)
     per_direction: dict[int, float] = {}

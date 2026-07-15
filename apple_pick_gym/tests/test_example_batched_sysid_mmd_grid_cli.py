@@ -132,8 +132,30 @@ def test_parser_accepts_structure_indices_and_batch_limits(monkeypatch):
     assert args.seed == 7
     assert args.replay_only is True
     assert args.score_mse is True
-    assert args.mse_hold_aggregation == "median"
-    assert args.mse_hold_latter_half is True
+    assert args.use_median is True
+    assert args.hold_id_onehot is False
+    assert args.pool_directions is False
+
+    args_off = parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/batched_sysid",
+            "--no-use-median",
+            "--hold-id-onehot",
+            "--pool-directions",
+            "--primary-bend-stiffness-values",
+            "1",
+            "--secondary-bend-stiffness-values",
+            "2",
+            "--spur-bend-stiffness-values",
+            "3",
+            "--stem-bend-stiffness-values",
+            "4",
+        ]
+    )
+    assert args_off.use_median is False
+    assert args_off.hold_id_onehot is True
+    assert args_off.pool_directions is True
 
 
 def test_plot_metrics_validation_rejects_unknown_metric(monkeypatch):

@@ -107,6 +107,13 @@ class QuasiStaticTrajectory:
         return int(self._step_index)
 
     @property
+    def current_hold_number(self) -> int:
+        """0-based hold index within the current direction, or -1 when not holding."""
+        if self._phase == "hold":
+            return int(self._step_index)
+        return -1
+
+    @property
     def current_amplitude_m(self) -> float:
         return float(self._amplitude_m)
 

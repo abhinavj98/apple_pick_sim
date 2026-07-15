@@ -38,16 +38,15 @@ is still present.
 
 ## Hold metrics
 
-Two paths now share the same hold semantics when `--mse-hold-aggregation` is
-`mean` or `median` (default):
+Default scoring uses `--use-median` (full hold windows, no latter-half burn-in):
 
-| Path | Function | Hold window |
-|------|----------|-------------|
-| Console `--score-mse` | `trajectory_hold_aggregated_mse` | Latter half of each hold segment, then mean/median aggregate |
-| Viz JSON/plots | `build_grid_viz_rows` → `replay_vs_recorded_hold_aggregated_errors` | Same |
+| Path | Behavior |
+|------|----------|
+| Console `--score-mse` with `--use-median` | `trajectory_paired_hold_median_mse` — paired median(replay) vs median(GT) per hold |
+| Wasserstein with `--use-median` | Hold→hold median bags `[s_i, Δs_i]`; optional `--hold-id-onehot` / `--pool-directions` |
+| `--no-use-median` | Frame-wise MSE and frame→frame bags on full holds |
 
-Use `--mse-hold-aggregation none` for legacy frame-wise hold RMSE/MSE over all
-`phase == 1` frames.
+Named gates: `scripts/gate_sysid_gt_sinkhorn.sh --gate gate_median_hold|gate_hold_id|gate_pooled_dirs`.
 
 `GridVizRow` also reports `n_directions_all` / `n_directions_hold`: the number
 of directions with valid metrics. Cross-direction means require all directions

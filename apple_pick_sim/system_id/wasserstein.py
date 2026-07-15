@@ -14,11 +14,12 @@ from apple_pick_sim.system_id.mmd_features import combine_transition_features
 SINKHORN_P = 2
 SINKHORN_BLUR = 1.0
 LOW_SAMPLE_MIN_TRANSITIONS = 8
+POOLED_DIRECTION_KEY = -1
 
 
 @dataclass(frozen=True)
 class WassersteinDirectionContext:
-    """GT-normalized transition bag for one excitation direction."""
+    """GT-normalized transition bag for one excitation direction (or pooled)."""
 
     gt_norm: np.ndarray
     stats: NormalizationStats
@@ -93,11 +94,48 @@ def sinkhorn_distance(
     return float(value.detach().cpu().item())
 
 
+def _feature_kwargs(
+    *,
+    use_median: bool,
+    hold_id_onehot: bool,
+    n_holds: int | None,
+) -> dict[str, Any]:
+    return {
+        "use_median": bool(use_median),
+        "hold_id_onehot": bool(hold_id_onehot),
+        "n_holds": n_holds,
+    }
+
+
+def _pool_by_direction(by_direction: dict[int, np.ndarray]) -> dict[int, np.ndarray]:
+    if not by_direction:
+        return {}
+    pooled = np.concatenate(
+        [by_direction[k] for k in sorted(by_direction.keys())],
+        axis=0,
+    )
+    return {POOLED_DIRECTION_KEY: pooled}
+
+
 def prepare_gt_wasserstein_context(
     recorded_episodes: list[dict],
+    *,
+    use_median: bool = False,
+    hold_id_onehot: bool = False,
+    n_holds: int | None = None,
+    pool_directions: bool = False,
 ) -> dict[int, WassersteinDirectionContext]:
-    """Fit per-direction GT normalization from recorded transition bags."""
-    gt_by_direction = combine_transition_features(recorded_episodes)
+    """Fit GT normalization from recorded transition bags (per-dir or pooled)."""
+    gt_by_direction = combine_transition_features(
+        recorded_episodes,
+        **_feature_kwargs(
+            use_median=use_median,
+            hold_id_onehot=hold_id_onehot,
+            n_holds=n_holds,
+        ),
+    )
+    if pool_directions:
+        gt_by_direction = _pool_by_direction(gt_by_direction)
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
@@ -116,9 +154,23 @@ def score_candidate_wasserstein(
     gt_context: dict[int, WassersteinDirectionContext],
     replay_observations: list[dict],
     device: str | None = None,
+    use_median: bool = False,
+    hold_id_onehot: bool = False,
+    n_holds: int | None = None,
+    pool_directions: bool = False,
 ) -> WassersteinCandidateResult:
     """Score one replayed candidate against precomputed GT Wasserstein context."""
-    candidate_by_direction = combine_transition_features(replay_observations)
+    candidate_by_direction = combine_transition_features(
+        replay_observations,
+        **_feature_kwargs(
+            use_median=use_median,
+            hold_id_onehot=hold_id_onehot,
+            n_holds=n_holds,
+        ),
+    )
+    if pool_directions:
+        candidate_by_direction = _pool_by_direction(candidate_by_direction)
+
     per_direction: dict[int, float] = {}
     per_direction_n: dict[int, int] = {}
     low_sample: list[int] = []

@@ -31,9 +31,11 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import get_args
 
 import numpy as np
@@ -287,21 +289,31 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--mse-hold-aggregation",
-        type=str,
-        choices=("mean", "median", "none"),
-        default="median",
+        "--use-median",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
-            "With --score-mse: aggregate hold frames using mean/median before comparing "
-            "(default median, latter-half per hold segment). Use none for legacy frame-wise "
-            "MSE over all phases except pre_weld."
+            "Use full-hold median hold→hold features for Wasserstein/MMD and paired "
+            "per-hold median MSE (default: on). --no-use-median restores frame-wise bags/MSE."
         ),
     )
     p.add_argument(
-        "--mse-hold-latter-half",
+        "--hold-id-onehot",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="With hold aggregation, use the latter half of each hold segment.",
+        default=False,
+        help="Append per-hold one-hot identity to Wasserstein/MMD transition features.",
+    )
+    p.add_argument(
+        "--pool-directions",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Pool transition bags across directions for Sinkhorn (gate_pooled_dirs).",
+    )
+    p.add_argument(
+        "--score-json-output",
+        type=str,
+        default=None,
+        help="If set, write structured per-structure scoring summary JSON (for gate harness).",
     )
     p.add_argument(
         "--plot-output",
@@ -550,6 +562,27 @@ def _collection_control_hz(collection: dict, *, default: float = CONTROL_HZ) -> 
     return float(collection["control_hz"])
 
 
+def _resolve_n_holds(dataset, collection: dict) -> int | None:
+    """Prefer collection/episode n_holds; fall back to movement geometry."""
+    if "n_holds" in collection:
+        return int(collection["n_holds"])
+    for ep in dataset.episode_entries():
+        if ep.get("n_holds") is not None:
+            return int(ep["n_holds"])
+    move = collection.get("movement_per_step_m")
+    total = collection.get("total_movement_m")
+    if move is not None and total is not None:
+        from apple_pick_sim.system_id import derive_n_steps
+
+        return int(
+            derive_n_steps(
+                movement_per_step_m=float(move),
+                total_movement_m=float(total),
+            )
+        )
+    return None
+
+
 def _replay_structure(
     *,
     dataset,
@@ -615,7 +648,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
         load_recorded_episodes_for_structure,
         replay_instability_fraction_all_frames,
         trajectory_mse,
-        trajectory_hold_aggregated_mse,
+        trajectory_paired_hold_median_mse,
         warn_recorded_gt_instability,
     )
     from apple_pick_gym.grid_viz_plotly import write_structure_bundle
@@ -655,6 +688,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
     )
 
     viewer_state: dict[str, object] = {"initialized": False}
+    score_json_structures: list[dict] = []
 
     def _on_step(*, frame_idx: int, env: object) -> bool:
         sim = getattr(env, "_sim", None)
@@ -829,7 +863,13 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                     sinkhorn_mse_spearman,
                 )
 
-                gt_wasserstein_context = prepare_gt_wasserstein_context(recorded_eps)
+                gt_wasserstein_context = prepare_gt_wasserstein_context(
+                    recorded_eps,
+                    use_median=bool(args.use_median),
+                    hold_id_onehot=bool(args.hold_id_onehot),
+                    n_holds=_resolve_n_holds(dataset, collection),
+                    pool_directions=bool(args.pool_directions),
+                )
 
             from apple_pick_gym.grid_viz_metrics import bend_stiffness_values_match
 
@@ -841,9 +881,10 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 ),
                 None,
             )
-            hold_agg = str(args.mse_hold_aggregation)
+            use_median = bool(args.use_median)
             wasserstein_results = []
             disqualified_flags: list[bool] = []
+            disqualify_reasons: list[list[str]] = []
             err_pos_hold: list[float] = []
             err_force_hold: list[float] = []
             err_torque_hold: list[float] = []
@@ -871,27 +912,30 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 unstable_fraction_all = (
                     max(finite_instability) if finite_instability else float("nan")
                 )
+                reasons: list[str] = []
                 disqualified = any(
                     np.isfinite(float(f)) and float(f) > float(UNSTABLE_DISQUALIFY_THRESHOLD)
                     for f in direction_instability
                 )
+                if disqualified:
+                    reasons.append(
+                        f"unstable_fraction>{UNSTABLE_DISQUALIFY_THRESHOLD}"
+                    )
                 disqualified_flags.append(bool(disqualified))
 
                 per_dir = []
                 if bool(args.score_mse):
                     for d in range(int(structure_num_directions)):
-                        if hold_agg == "none":
+                        if use_median:
+                            metrics = trajectory_paired_hold_median_mse(
+                                replay=replay_eps[d],
+                                recorded=recorded_eps[d],
+                            )
+                        else:
                             metrics = trajectory_mse(
                                 replay=replay_eps[d],
                                 recorded=recorded_eps[d],
                                 skip_phase=-1,
-                            )
-                        else:
-                            metrics = trajectory_hold_aggregated_mse(
-                                replay=replay_eps[d],
-                                recorded=recorded_eps[d],
-                                aggregation=hold_agg,  # type: ignore[arg-type]
-                                use_latter_half=bool(args.mse_hold_latter_half),
                             )
                         per_dir.append(metrics)
                     if not per_dir:
@@ -926,10 +970,19 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                         },
                         gt_context=gt_wasserstein_context,
                         replay_observations=replay_eps,
+                        use_median=bool(args.use_median),
+                        hold_id_onehot=bool(args.hold_id_onehot),
+                        n_holds=_resolve_n_holds(dataset, collection),
+                        pool_directions=bool(args.pool_directions),
                     )
                     wasserstein_results.append(w_result)
                     if w_result.missing_directions:
                         disqualified_flags[-1] = True
+                        reasons.append(
+                            "missing_directions="
+                            + ",".join(str(d) for d in w_result.missing_directions)
+                        )
+                disqualify_reasons.append(list(reasons))
 
                 if bool(args.score_mse):
                     for d, metrics in enumerate(per_dir):
@@ -972,8 +1025,9 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                         if disqualified
                         else ""
                     )
+                    hold_mode = "paired_median" if use_median else "frame_mse"
                     print(
-                        f"candidate {cand_idx}:{disq_tag} hold_agg={hold_agg} used_frames(min)={used_min} "
+                        f"candidate {cand_idx}:{disq_tag} hold_mode={hold_mode} used_frames(min)={used_min} "
                         f"ft_force_rmse_N(mean)={ft_force_rmse_mean:.6g} "
                         f"ft_torque_rmse_Nm(mean)={ft_torque_rmse_mean:.6g} "
                         f"tcp_pos_mse(mean)={tcp_mean:.6g} "
@@ -1022,6 +1076,79 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                         f"  sinkhorn_gt_rank={pref.gt_rank} best_is_gt={pref.best_is_gt} "
                         f"best_candidate={pref.best_candidate_index} "
                         f"disqualified={pref.n_disqualified}/{pref.n_candidates}"
+                    )
+                    gt_w = next(
+                        (
+                            r
+                            for r in wasserstein_results
+                            if int(r.candidate_index) == int(gt_candidate_index)
+                        ),
+                        None,
+                    )
+                    best_w = next(
+                        (
+                            r
+                            for r in wasserstein_results
+                            if pref.best_candidate_index is not None
+                            and int(r.candidate_index) == int(pref.best_candidate_index)
+                        ),
+                        None,
+                    )
+                    gt_reason = (
+                        disqualify_reasons[int(gt_candidate_index)]
+                        if gt_candidate_index is not None
+                        and int(gt_candidate_index) < len(disqualify_reasons)
+                        else []
+                    )
+                    score_json_structures.append(
+                        {
+                            "structure_idx": int(structure_idx),
+                            "gt_candidate_index": int(gt_candidate_index),
+                            "gt_rank": pref.gt_rank,
+                            "best_is_gt": pref.best_is_gt,
+                            "best_candidate_index": pref.best_candidate_index,
+                            "gt_disqualified": bool(pref.gt_disqualified),
+                            "gt_disqualify_reasons": list(gt_reason),
+                            "n_disqualified": int(pref.n_disqualified),
+                            "n_candidates": int(pref.n_candidates),
+                            "gt_aggregate_sinkhorn": (
+                                None
+                                if gt_w is None
+                                else float(gt_w.aggregate_sinkhorn)
+                            ),
+                            "best_aggregate_sinkhorn": (
+                                None
+                                if best_w is None
+                                else float(best_w.aggregate_sinkhorn)
+                            ),
+                            "per_candidate": [
+                                {
+                                    "candidate_index": int(r.candidate_index),
+                                    "aggregate_sinkhorn": float(r.aggregate_sinkhorn),
+                                    "disqualified": bool(disqualified_flags[i]),
+                                    "disqualify_reasons": list(disqualify_reasons[i]),
+                                    "stiffnesses": dict(r.stiffnesses),
+                                    "n_transitions": dict(r.per_direction_n_transitions),
+                                    "low_sample_directions": list(r.low_sample_directions),
+                                    "err_pos_hold": (
+                                        float(err_pos_hold[i])
+                                        if i < len(err_pos_hold)
+                                        else None
+                                    ),
+                                    "err_force_hold": (
+                                        float(err_force_hold[i])
+                                        if i < len(err_force_hold)
+                                        else None
+                                    ),
+                                    "err_torque_hold": (
+                                        float(err_torque_hold[i])
+                                        if i < len(err_torque_hold)
+                                        else None
+                                    ),
+                                }
+                                for i, r in enumerate(wasserstein_results)
+                            ],
+                        }
                     )
                 if bool(args.score_mse):
                     sinkhorn_values = [
@@ -1100,8 +1227,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 hold_phase_value=1,
                 pos_weights=(1.0, 1.0, 1.0),
                 dist_keys=("primary", "spur", "stem"),
-                hold_aggregation=str(args.mse_hold_aggregation),  # type: ignore[arg-type]
-                hold_use_latter_half=bool(args.mse_hold_latter_half),
+                hold_aggregation="median" if bool(args.use_median) else "none",
+                hold_use_latter_half=False,
             )
             metrics = tuple(args.plot_metrics)
             rep = summarize_structure(
@@ -1132,12 +1259,26 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                 n_bins=10,
             )
 
+    if args.score_json_output is not None:
+        out = Path(str(args.score_json_output))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "dataset": str(args.dataset),
+            "use_median": bool(args.use_median),
+            "hold_id_onehot": bool(args.hold_id_onehot),
+            "pool_directions": bool(args.pool_directions),
+            "structures": score_json_structures,
+        }
+        out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(f"wrote score JSON: {out}")
+
     if (
         not bool(args.replay_only)
         and not bool(args.score_mse)
         and not bool(args.score_wasserstein)
         and args.plot_output is None
         and args.export_replay_dir is None
+        and args.score_json_output is None
     ):
         print(
             "No scoring or export requested; re-run with --replay-only, --score-mse, "

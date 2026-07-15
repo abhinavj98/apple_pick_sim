@@ -139,16 +139,15 @@ def test_transition_features_are_hold_only_per_direction_and_segment():
         [0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 2, 1], dtype=np.int8
     )
 
-    by_direction = build_transition_features_by_direction(arrays)
+    by_direction = build_transition_features_by_direction(arrays, use_median=False)
 
     assert set(by_direction) == {0, 1}
     state = build_state_matrix(arrays)
-    expected_dir0 = np.concatenate([state[3], state[4] - state[3]])
-    expected_dir1 = np.concatenate([state[10], state[11] - state[10]])
-    assert by_direction[0].shape == (1, state.shape[1] * 2)
-    assert by_direction[1].shape == (1, state.shape[1] * 2)
-    np.testing.assert_allclose(by_direction[0][0], expected_dir0)
-    np.testing.assert_allclose(by_direction[1][0], expected_dir1)
+    # Full hold segments (no latter-half): dir0 holds [1..4] and [6,7]
+    expected_dir0_first = np.concatenate([state[1], state[2] - state[1]])
+    assert by_direction[0].shape[0] == 3 + 1  # 3 in first hold, 1 in second
+    assert by_direction[0].shape[1] == state.shape[1] * 2
+    np.testing.assert_allclose(by_direction[0][0], expected_dir0_first)
 
 
 def test_transition_features_fail_when_required_field_is_missing():
@@ -317,14 +316,52 @@ def test_replay_observation_collector_builds_dataset_shaped_arrays():
     )
 
 
-def test_iter_kept_hold_segments_discards_first_half_and_requires_two_frames():
+def test_iter_kept_hold_segments_keeps_full_hold():
     phase = np.array([0, 1, 1, 1, 1, 1, 1, 1], dtype=np.int8)
     dir_idx = np.zeros(8, dtype=np.int32)
 
     segments = iter_kept_hold_segments(phase=phase, dir_idx=dir_idx, direction=0)
 
     assert len(segments) == 1
-    assert segments[0].tolist() == [5, 6, 7]
+    assert segments[0].tolist() == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_median_hold_to_hold_features_use_full_hold_medians():
+    """Two holds → one [median_s0, median_s1 - median_s0] row; outlier ignored."""
+    arrays = _arrays_for_steps(steps=10, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(10, dtype=np.int32)
+    arrays["phase"] = np.array(
+        [0, 1, 1, 1, 0, 1, 1, 1, 0, 0], dtype=np.int8
+    )
+    # Outlier on first frame of hold0 ftp force dim0
+    arrays["ft_wrist"][1, 0] = 1.0e6
+
+    by_direction = build_transition_features_by_direction(arrays, use_median=True)
+    assert set(by_direction) == {0}
+    assert by_direction[0].shape[0] == 1
+
+    state = build_state_matrix(arrays)
+    med0 = np.median(state[[1, 2, 3]], axis=0)
+    med1 = np.median(state[[5, 6, 7]], axis=0)
+    expected = np.concatenate([med0, med1 - med0]).astype(np.float32)
+    np.testing.assert_allclose(by_direction[0][0], expected, rtol=1e-5)
+    # Median should not equal the outlier frame
+    assert by_direction[0][0, 0] != pytest.approx(1.0e6)
+
+
+def test_hold_id_onehot_appended_for_median_transitions():
+    arrays = _arrays_for_steps(steps=10, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(10, dtype=np.int32)
+    arrays["phase"] = np.array(
+        [0, 1, 1, 1, 0, 1, 1, 1, 0, 0], dtype=np.int8
+    )
+    by_direction = build_transition_features_by_direction(
+        arrays, use_median=True, hold_id_onehot=True, n_holds=3
+    )
+    row = by_direction[0][0]
+    state_dim = build_state_matrix(arrays).shape[1]
+    assert row.shape[0] == state_dim * 2 + 3
+    np.testing.assert_allclose(row[-3:], [1.0, 0.0, 0.0])  # source hold 0
 
 
 def test_combine_transition_features_concatenates_episodes_per_direction():

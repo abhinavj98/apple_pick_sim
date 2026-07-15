@@ -195,7 +195,7 @@ def replay_vs_recorded_hold_aggregated_errors(
     recorded: dict[str, Any],
     hold_phase_value: int = 1,
     aggregation: Literal["mean", "median"] = "median",
-    use_latter_half: bool = True,
+    use_latter_half: bool = False,
 ) -> dict[str, float]:
     """Compare replay vs recorded using one hold aggregate per signal.
 
@@ -457,7 +457,7 @@ def build_grid_viz_rows(
     pos_weights: tuple[float, ...] = (1.0, 1.0, 1.0),
     dist_keys: tuple[str, ...] = ("primary", "spur", "stem"),
     hold_aggregation: Literal["mean", "median", "none"] = "median",
-    hold_use_latter_half: bool = True,
+    hold_use_latter_half: bool = False,
 ) -> list[GridVizRow]:
     """Build one row per candidate with separate pose vs force/torque errors.
 

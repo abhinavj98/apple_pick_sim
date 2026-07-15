@@ -68,8 +68,8 @@ def test_inf_in_tcp_velocity_flags_with_reason():
     assert "nan_or_inf:tcp_velocity" in report.reasons[0]
 
 
-def test_default_stability_thresholds_are_ten_x_scene_and_speed_caps():
-    """Defaults track stem wrench caps (scene) and speed bounds at 10× prior values."""
+def test_default_stability_thresholds_match_scene_wrench_caps_and_speed_bounds():
+    """Defaults track stem wrench caps (scene) and loosened speed bounds."""
     from apple_pick_sim.coupled_fruiting.scene import (
         DEFAULT_STEM_FORCE_CAP_N,
         DEFAULT_STEM_TORQUE_CAP_NM,
@@ -78,8 +78,8 @@ def test_default_stability_thresholds_are_ten_x_scene_and_speed_caps():
     t = StabilityThresholds()
     assert t.max_force_n == pytest.approx(DEFAULT_STEM_FORCE_CAP_N)
     assert t.max_torque_nm == pytest.approx(DEFAULT_STEM_TORQUE_CAP_NM)
-    assert DEFAULT_STEM_FORCE_CAP_N == pytest.approx(300.0)
-    assert DEFAULT_STEM_TORQUE_CAP_NM == pytest.approx(100.0)
+    assert DEFAULT_STEM_FORCE_CAP_N == pytest.approx(50.0)
+    assert DEFAULT_STEM_TORQUE_CAP_NM == pytest.approx(20.0)
     assert t.max_tcp_speed_mps == pytest.approx(5.0)
     assert t.max_apple_speed_mps == pytest.approx(5.0)
 

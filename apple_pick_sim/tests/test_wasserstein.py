@@ -7,6 +7,7 @@ import pytest
 
 from apple_pick_sim.system_id.wasserstein import (
     LOW_SAMPLE_MIN_TRANSITIONS,
+    POOLED_DIRECTION_KEY,
     prepare_gt_wasserstein_context,
     score_candidate_wasserstein,
     sinkhorn_distance,
@@ -143,6 +144,46 @@ def test_score_candidate_wasserstein_flags_low_sample_direction():
     assert result.low_sample_directions == (0,)
     assert result.per_direction_n_transitions[0] < LOW_SAMPLE_MIN_TRANSITIONS
     assert LOW_SAMPLE_MIN_TRANSITIONS == 8
+
+
+def test_pool_directions_appends_dir_id_onehot():
+    """Pooling auto-enables dir one-hot; feature dim grows by n_directions."""
+
+    def _two_hold_episode(*, dir_idx: int, shift: float = 0.0) -> dict:
+        ep = _arrays_for_steps(steps=10, shift=shift)
+        ep["dir_idx"] = np.full(10, int(dir_idx), dtype=np.int32)
+        ep["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1, 0, 0], dtype=np.int8)
+        if dir_idx != 0:
+            ep["excitation_direction"] = np.tile(
+                np.array([[1.0, 0.0, 0.0]], dtype=np.float32), (10, 1)
+            )
+        return ep
+
+    ep0 = _two_hold_episode(dir_idx=0)
+    ep2 = _two_hold_episode(dir_idx=2)
+    unpooled = prepare_gt_wasserstein_context([ep0, ep2], use_median=True)
+    pooled = prepare_gt_wasserstein_context(
+        [ep0, ep2],
+        use_median=True,
+        pool_directions=True,
+        n_directions=5,
+    )
+    assert POOLED_DIRECTION_KEY in pooled
+    assert set(unpooled) == {0, 2}
+    base_dim = unpooled[0].gt_norm.shape[1]
+    assert pooled[POOLED_DIRECTION_KEY].gt_norm.shape[1] == base_dim + 5
+    result = score_candidate_wasserstein(
+        candidate_index=0,
+        stiffnesses={"primary": 1.0},
+        gt_context=pooled,
+        replay_observations=[ep0, ep2],
+        device="cpu",
+        use_median=True,
+        pool_directions=True,
+        n_directions=5,
+    )
+    assert POOLED_DIRECTION_KEY in result.per_direction_sinkhorn
+    assert np.isfinite(result.aggregate_sinkhorn)
 
 
 def test_score_candidate_wasserstein_raises_when_no_directions():

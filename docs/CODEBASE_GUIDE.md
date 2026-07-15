@@ -8,7 +8,7 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-07-10 (settle + batched collect/replay/MMD grid shipped; V.5.1 loss hardening next — see `docs/ROADMAP.md`) |
+| **Last reviewed** | 2026-07-15 (V.5.1 mid-slice: stable collect + transition features / Sinkhorn gates shipped; GT-rank reliability still open — see `docs/ROADMAP.md`) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
@@ -66,15 +66,16 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | `apple_pick_sim/fruiting_system/` | `params.py` (sampling, `RodParams`/`FruitingSystemParams`, optional `parse_sim_build` / `sim_build` on ranges JSON), `build.py` (ModelBuilder geometry, collision filters, VBD solver setup), `scene.py`/`coupled.py` (P0 scene + M1 cable-only scene) |
 | `apple_pick_sim/coupled_fruiting/` | `scene.py` (`CoupledFruitingScene.coupled_substep` — the authoritative loop), `builders.py`, `batched_heterogeneous_*` (config-driven batched API), `proxy_coupling.py`, `settle_then_weld.py`, `settle_seed_device.py`, `settle_ke_decay.py`, `settle_quasi_static.py`, `settled_checkpoint.py`, `vic_joint_torques*.py`, `batched_layout.py` |
 | `apple_pick_sim/robot/fr3_robot/` | FR3 USD import, controllers (direct-joint, EE velocity, impedance), `batched_template_ik.py` |
-| `apple_pick_sim/system_id/` | Fibonacci-hemisphere excitation, `quasi_static_trajectory.py`, `trajectory_store.py` (legacy Parquet), `batched_trajectory_store.py` (`batched_sysid_v1`), `batched_digital_twin_init.py`, `parquet_init.py`, `mmd*.py`, `wasserstein.py`, `wasserstein_ranking.py`, `batched_hold_quasi_static.py` |
+| `apple_pick_sim/system_id/` | Fibonacci-hemisphere excitation, `quasi_static_trajectory.py`, `trajectory_store.py` (legacy Parquet), `batched_trajectory_store.py` (`batched_sysid_v1`), `batched_digital_twin_init.py`, `parquet_init.py`, `mmd*.py` / `mmd_features.py` (hold→hold median bags, optional hold-id / direction pooling), `wasserstein.py` / `wasserstein_ranking.py`, `batched_hold_quasi_static.py` |
 | `apple_pick_sim/digital_twin/` | `obs_io.py`, `from_obs.py` — rebuild scene geometry from observation JSON |
 | `apple_pick_sim/diagnostics/` | `verify_coupling.py`, `benchmark_coupling.py`, `sweep_zero_vic_stability.py`, `log_settle_ke_decay.py`, `sweep_settle_weld_stability.py` — standalone checks, not pytest |
 | `apple_pick_sim/examples/` | One runnable script per capability; `example_batched_heterogeneous_coupled_sim.py` is the canonical batched heterogeneous example |
 | `apple_pick_sim/fixtures/` | `fruiting_system_ranges_*.json` (geometry/material DR; variance proxy may include optional top-level `sim_build` for VIC + joint overrides), `digital_twin_fixture_catalog.json`, `digital_twin_obs_straight_rod_initial.json` |
 | `apple_pick_gym/envs/` | Legacy single-world: `apple_pick_base_env.py` → `apple_pick_coupled_env.py` → `apple_pick_vic_env.py` → `apple_pick_sysid_env.py`, `apple_pick_replay_env.py` |
-| `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`, `ApplePickBatchedSysIdEnv`, `batched_sysid_collect.py`, `batched_sysid_mmd_grid.py`, `batched_stability_monitor.py` |
+| `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`, `ApplePickBatchedSysIdEnv`, `batched_sysid_collect.py`, `batched_sysid_mmd_grid.py`, `batched_stability_monitor.py`, `env_disable_controller.py` (soft-disable on NaN/IK), `exclude_unstable_episodes.py` (offline exclude when unstable-frame fraction > 0.25), `sysid_gate_report.py` |
 | `apple_pick_gym/batched_examples/` | `example_batched_collect_sysid_data.py`, `example_batched_sysid_mmd_grid.py`, `example_batched_gym_keyboard.py` |
-| `apple_pick_gym/grid_viz_*.py` | Plotly / table / report helpers for batched stiffness-grid ranking |
+| `apple_pick_gym/grid_viz_*.py` | Plotly / table / report helpers for batched stiffness-grid ranking (incl. paired-hold woody MSE) |
+| `scripts/` | Staged sys-ID helpers: `collect_and_rank_sysid_gt.sh`, `gate_sysid_gt_sinkhorn.sh` (`gate_median_hold` / `gate_hold_id` / `gate_pooled_dirs`) |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |
 | `docs/` | This documentation set (below). `docs/specs/` holds dated point-in-time design notes (historical once stamped Implemented) |
 
@@ -111,6 +112,7 @@ Organized by question, not by filename — each doc listed once, under its prima
 ### "How does system identification / sys-ID work?"
 
 - `docs/system_identification.md` — the full M3 protocol (excitation trajectories, MMD/CEM plan) **plus an implementation-notes appendix** for the shipped §2.1 quasi-static stepped mapping (trajectory phases, Fibonacci hemisphere, code map, tests).
+- `docs/sysid-transition-features.md` — **MMD/Wasserstein state vector and transition-bag layout** (\(s\), \([s,\Delta s]\), median/hold one-hots, pooling, gate flags).
 - `docs/sysid-trajectory-storage.md` — legacy single-env Parquet schema, collection/replay commands, dataset dashboard.
 - `docs/batched-sysid-dataset.md` — **batched_sysid_v1** layout for parallel collection (`example_batched_collect_sysid_data.py`).
 - `docs/sysid-mmd-grid-replay-alignment.md` — pre-weld strip, hold-metric semantics, structure-level weld, oracle vs `--infer-params` for the **shipped** in-process grid (`example_batched_sysid_mmd_grid.py`).
@@ -126,7 +128,7 @@ Organized by question, not by filename — each doc listed once, under its prima
 
 | Gap | Detail | Where documented |
 | --- | ------ | ----------------- |
-| Loss / GT scoring hardening (V.5.1) | Grid MSE/Wasserstein ship; dedicated outlier rejection so GT always ranks best is Current focus | `docs/ROADMAP.md`, `docs/system_identification.md` |
+| Loss / GT scoring hardening (V.5.1) | Mid-slice shipped: soft-disable + exclude-fraction collect, transition-feature contract, median/hold-id/pooled Sinkhorn gates. GT still does **not** reliably rank best — remaining Current focus | `docs/ROADMAP.md`, `docs/sysid-transition-features.md`, `docs/system_identification.md` |
 | Batched digital-twin fidelity (V.4.2.1) | Helpers + `--infer-params` exist; default sim-sim uses oracle `true_params_for_structure`; no infer-only fidelity floor test yet (deferred, not Current focus) | `docs/ROADMAP.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/digital-twin.md` |
 | `real_world_proxy.json` topology | Nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`. The two fixtures for the same physical proxy build different topologies | `docs/real-world-proxy.md` |
 

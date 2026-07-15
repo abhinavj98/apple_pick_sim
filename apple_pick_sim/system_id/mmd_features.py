@@ -341,7 +341,12 @@ def iter_kept_hold_segments(
     stable: np.ndarray | None = None,
     min_frames: int = 1,
 ) -> list[np.ndarray]:
-    """Return full contiguous hold index arrays for one direction (no latter-half burn-in)."""
+    """Return full contiguous hold index arrays for one direction (no latter-half burn-in).
+
+    Segmentation uses ``phase == 1`` and matching ``dir_idx`` only. ``stable`` is
+    accepted for API compatibility but does **not** split segments (apply it as an
+    in-hold sample mask at aggregation time instead).
+    """
 
     phase = np.asarray(phase).reshape(-1)
     dir_idx = np.asarray(dir_idx).reshape(-1)
@@ -350,10 +355,11 @@ def iter_kept_hold_segments(
             f"phase and dir_idx must have matching shape, got {phase.shape} and {dir_idx.shape}"
         )
     if stable is not None:
-        stable = np.asarray(stable, dtype=bool).reshape(-1)
-        if stable.shape != phase.shape:
+        # Validate shape for callers that still pass stable; ignore for boundaries.
+        stable_arr = np.asarray(stable, dtype=bool).reshape(-1)
+        if stable_arr.shape != phase.shape:
             raise ValueError(
-                f"stable and phase must have matching shape, got {stable.shape} and {phase.shape}"
+                f"stable and phase must have matching shape, got {stable_arr.shape} and {phase.shape}"
             )
 
     kept: list[np.ndarray] = []
@@ -371,8 +377,6 @@ def iter_kept_hold_segments(
 
     for frame_idx, (phase_value, dir_value) in enumerate(zip(phase, dir_idx, strict=True)):
         is_hold = int(phase_value) == 1 and int(dir_value) == int(direction)
-        if stable is not None and not bool(stable[frame_idx]):
-            is_hold = False
         if is_hold:
             current.append(frame_idx)
             continue
@@ -381,14 +385,39 @@ def iter_kept_hold_segments(
     return kept
 
 
+def _stable_masked_segment(
+    segment: np.ndarray,
+    stable: np.ndarray | None,
+) -> np.ndarray:
+    """Keep segment frame indices that are stable (or all indices if no mask)."""
+    idxs = np.asarray(segment, dtype=np.int64).reshape(-1)
+    if stable is None or idxs.size == 0:
+        return idxs
+    mask = np.asarray(stable, dtype=bool).reshape(-1)
+    return idxs[mask[idxs]]
+
+
 def _one_hot_hold_id(hold_idx: int, *, n_holds: int) -> np.ndarray:
     n = int(n_holds)
     if n <= 0:
         raise ValueError(f"n_holds must be positive, got {n_holds!r}")
-    vec = np.zeros(n, dtype=np.float32)
     i = int(hold_idx)
-    if 0 <= i < n:
-        vec[i] = 1.0
+    if i < 0 or i >= n:
+        raise ValueError(f"hold_idx {i} out of range for n_holds={n}")
+    vec = np.zeros(n, dtype=np.float32)
+    vec[i] = 1.0
+    return vec
+
+
+def _one_hot_dir_id(dir_idx: int, *, n_directions: int) -> np.ndarray:
+    n = int(n_directions)
+    if n <= 0:
+        raise ValueError(f"n_directions must be positive, got {n_directions!r}")
+    i = int(dir_idx)
+    if i < 0 or i >= n:
+        raise ValueError(f"dir_idx {i} out of range for n_directions={n}")
+    vec = np.zeros(n, dtype=np.float32)
+    vec[i] = 1.0
     return vec
 
 
@@ -398,6 +427,8 @@ def combine_transition_features(
     use_median: bool = False,
     hold_id_onehot: bool = False,
     n_holds: int | None = None,
+    dir_id_onehot: bool = False,
+    n_directions: int | None = None,
 ) -> dict[int, np.ndarray]:
     """Concatenate hold-only transition features keyed by excitation direction."""
     parts: dict[int, list[np.ndarray]] = {}
@@ -407,6 +438,8 @@ def combine_transition_features(
             use_median=use_median,
             hold_id_onehot=hold_id_onehot,
             n_holds=n_holds,
+            dir_id_onehot=dir_id_onehot,
+            n_directions=n_directions,
         ).items():
             parts.setdefault(direction, []).append(features)
     return {
@@ -422,12 +455,15 @@ def build_transition_features_by_direction(
     use_median: bool = False,
     hold_id_onehot: bool = False,
     n_holds: int | None = None,
+    dir_id_onehot: bool = False,
+    n_directions: int | None = None,
 ) -> dict[int, np.ndarray]:
     """Build hold-only transition feature rows keyed by excitation direction.
 
     When ``use_median`` is True, emit one row per consecutive hold pair using
-    full-hold median states: ``[s_i, s_{i+1}-s_i]`` (optionally + hold-id one-hot).
-    When False, emit frame→frame transitions on full hold segments.
+    full-hold median states: ``[s_i, s_{i+1}-s_i]`` (optionally + hold-id /
+    dir-id one-hot). When False, emit frame→frame transitions on full hold
+    segments.
     """
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
@@ -453,6 +489,14 @@ def build_transition_features_by_direction(
         elif int(resolved_n_holds) <= 0:
             raise ValueError(f"n_holds must be positive, got {n_holds!r}")
 
+    resolved_n_directions = n_directions
+    if dir_id_onehot:
+        if resolved_n_directions is None:
+            resolved_n_directions = int(dir_idx.max()) + 1 if dir_idx.size else 1
+        elif int(resolved_n_directions) <= 0:
+            raise ValueError(f"n_directions must be positive, got {n_directions!r}")
+        resolved_n_directions = int(resolved_n_directions)
+
     out: dict[int, np.ndarray] = {}
     for direction in sorted({int(value) for value in dir_idx.tolist()}):
         frame_indices = np.where(dir_idx == direction)[0]
@@ -463,19 +507,19 @@ def build_transition_features_by_direction(
             phase=phase,
             dir_idx=dir_idx,
             direction=direction,
-            stable=stable,
-            min_frames=1 if use_median else 2,
+            min_frames=1,
         )
         rows: list[np.ndarray] = []
         if use_median:
             medians: list[np.ndarray] = []
             hold_ids: list[int] = []
             for hold_i, segment in enumerate(segments):
-                if segment.size < 1:
+                kept = _stable_masked_segment(segment, stable)
+                if kept.size < 1:
                     continue
-                medians.append(np.median(state[segment], axis=0).astype(np.float32))
+                medians.append(np.median(state[kept], axis=0).astype(np.float32))
                 if "hold_number" in arrays:
-                    hn = int(np.asarray(arrays["hold_number"])[int(segment[0])])
+                    hn = int(np.asarray(arrays["hold_number"])[int(kept[0])])
                     hold_ids.append(hn if hn >= 0 else hold_i)
                 else:
                     hold_ids.append(hold_i)
@@ -492,6 +536,16 @@ def build_transition_features_by_direction(
                     row = np.concatenate(
                         [row, _one_hot_hold_id(hold_ids[i], n_holds=n_holds_dir)]
                     )
+                if dir_id_onehot:
+                    assert resolved_n_directions is not None
+                    row = np.concatenate(
+                        [
+                            row,
+                            _one_hot_dir_id(
+                                direction, n_directions=resolved_n_directions
+                            ),
+                        ]
+                    )
                 rows.append(row)
         else:
             n_holds_dir = (
@@ -500,7 +554,10 @@ def build_transition_features_by_direction(
                 else max(len(segments), 1)
             )
             for hold_i, segment in enumerate(segments):
-                for start_idx, end_idx in zip(segment[:-1], segment[1:], strict=True):
+                kept = _stable_masked_segment(segment, stable)
+                if kept.size < 2:
+                    continue
+                for start_idx, end_idx in zip(kept[:-1], kept[1:], strict=True):
                     current = state[int(start_idx)]
                     delta = state[int(end_idx)] - current
                     row = np.concatenate([current, delta]).astype(np.float32)
@@ -512,6 +569,16 @@ def build_transition_features_by_direction(
                             hid = hold_i
                         row = np.concatenate(
                             [row, _one_hot_hold_id(hid, n_holds=n_holds_dir)]
+                        )
+                    if dir_id_onehot:
+                        assert resolved_n_directions is not None
+                        row = np.concatenate(
+                            [
+                                row,
+                                _one_hot_dir_id(
+                                    direction, n_directions=resolved_n_directions
+                                ),
+                            ]
                         )
                     rows.append(row)
         if rows:

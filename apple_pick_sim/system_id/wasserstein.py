@@ -99,11 +99,15 @@ def _feature_kwargs(
     use_median: bool,
     hold_id_onehot: bool,
     n_holds: int | None,
+    dir_id_onehot: bool,
+    n_directions: int | None,
 ) -> dict[str, Any]:
     return {
         "use_median": bool(use_median),
         "hold_id_onehot": bool(hold_id_onehot),
         "n_holds": n_holds,
+        "dir_id_onehot": bool(dir_id_onehot),
+        "n_directions": n_directions,
     }
 
 
@@ -124,14 +128,18 @@ def prepare_gt_wasserstein_context(
     hold_id_onehot: bool = False,
     n_holds: int | None = None,
     pool_directions: bool = False,
+    n_directions: int | None = None,
 ) -> dict[int, WassersteinDirectionContext]:
     """Fit GT normalization from recorded transition bags (per-dir or pooled)."""
+    dir_id_onehot = bool(pool_directions)
     gt_by_direction = combine_transition_features(
         recorded_episodes,
         **_feature_kwargs(
             use_median=use_median,
             hold_id_onehot=hold_id_onehot,
             n_holds=n_holds,
+            dir_id_onehot=dir_id_onehot,
+            n_directions=n_directions,
         ),
     )
     if pool_directions:
@@ -158,14 +166,18 @@ def score_candidate_wasserstein(
     hold_id_onehot: bool = False,
     n_holds: int | None = None,
     pool_directions: bool = False,
+    n_directions: int | None = None,
 ) -> WassersteinCandidateResult:
     """Score one replayed candidate against precomputed GT Wasserstein context."""
+    dir_id_onehot = bool(pool_directions)
     candidate_by_direction = combine_transition_features(
         replay_observations,
         **_feature_kwargs(
             use_median=use_median,
             hold_id_onehot=hold_id_onehot,
             n_holds=n_holds,
+            dir_id_onehot=dir_id_onehot,
+            n_directions=n_directions,
         ),
     )
     if pool_directions:

@@ -34,6 +34,7 @@ import dataclasses
 import json
 import os
 import sys
+import warnings
 from collections.abc import Sequence
 from pathlib import Path
 from typing import get_args
@@ -298,16 +299,42 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--mse-hold-aggregation",
+        type=str,
+        choices=("mean", "median", "none"),
+        default=None,
+        help=(
+            "Deprecated alias for --use-median / --no-use-median "
+            "(mean|median → --use-median; none → --no-use-median)."
+        ),
+    )
+    p.add_argument(
+        "--mse-hold-latter-half",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Deprecated no-op: full hold windows are always used (latter-half burn-in removed)."
+        ),
+    )
+    p.add_argument(
         "--hold-id-onehot",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Append per-hold one-hot identity to Wasserstein/MMD transition features.",
+        default=True,
+        help=(
+            "Append per-hold one-hot identity to Wasserstein/MMD transition features "
+            "(default: on; --no-hold-id-onehot to disable)."
+        ),
     )
     p.add_argument(
         "--pool-directions",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Pool transition bags across directions for Sinkhorn (gate_pooled_dirs).",
+        default=True,
+        help=(
+            "Pool transition bags across directions for Sinkhorn (default: on; "
+            "matches gate_pooled_dirs). Automatically appends a fixed-width "
+            "dir_idx one-hot so pooled rows retain excitation identity. "
+            "Use --no-pool-directions for per-direction bags."
+        ),
     )
     p.add_argument(
         "--score-json-output",
@@ -562,6 +589,26 @@ def _collection_control_hz(collection: dict, *, default: float = CONTROL_HZ) -> 
     return float(collection["control_hz"])
 
 
+def apply_deprecated_mse_cli_flags(args: argparse.Namespace) -> argparse.Namespace:
+    """Map deprecated --mse-hold-* flags onto --use-median; latter-half is a no-op."""
+    agg = getattr(args, "mse_hold_aggregation", None)
+    if agg is not None:
+        warnings.warn(
+            "--mse-hold-aggregation is deprecated; use --use-median / --no-use-median",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        args.use_median = str(agg) != "none"
+    latter = getattr(args, "mse_hold_latter_half", None)
+    if latter is not None:
+        warnings.warn(
+            "--mse-hold-latter-half is deprecated and ignored (full holds are always used)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    return args
+
+
 def _resolve_n_holds(dataset, collection: dict) -> int | None:
     """Prefer collection/episode n_holds; fall back to movement geometry."""
     if "n_holds" in collection:
@@ -580,6 +627,21 @@ def _resolve_n_holds(dataset, collection: dict) -> int | None:
                 total_movement_m=float(total),
             )
         )
+    return None
+
+
+def _resolve_n_directions(dataset, collection: dict) -> int | None:
+    """Prefer collection num_directions; fall back to episode direction indices."""
+    if "num_directions" in collection:
+        return int(collection["num_directions"])
+    max_dir = -1
+    for ep in dataset.episode_entries():
+        if ep.get("direction_idx") is not None:
+            max_dir = max(max_dir, int(ep["direction_idx"]))
+        elif ep.get("dir_idx") is not None:
+            max_dir = max(max_dir, int(ep["dir_idx"]))
+    if max_dir >= 0:
+        return int(max_dir) + 1
     return None
 
 
@@ -869,6 +931,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                     hold_id_onehot=bool(args.hold_id_onehot),
                     n_holds=_resolve_n_holds(dataset, collection),
                     pool_directions=bool(args.pool_directions),
+                    n_directions=_resolve_n_directions(dataset, collection),
                 )
 
             from apple_pick_gym.grid_viz_metrics import bend_stiffness_values_match
@@ -974,6 +1037,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
                         hold_id_onehot=bool(args.hold_id_onehot),
                         n_holds=_resolve_n_holds(dataset, collection),
                         pool_directions=bool(args.pool_directions),
+                        n_directions=_resolve_n_directions(dataset, collection),
                     )
                     wasserstein_results.append(w_result)
                     if w_result.missing_directions:
@@ -1267,6 +1331,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser, *, viewer: o
             "use_median": bool(args.use_median),
             "hold_id_onehot": bool(args.hold_id_onehot),
             "pool_directions": bool(args.pool_directions),
+            "dir_id_onehot": bool(args.pool_directions),
+            "n_directions": _resolve_n_directions(dataset, collection),
             "structures": score_json_structures,
         }
         out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1293,6 +1359,7 @@ def main() -> None:
 
     parser = _make_parser()
     viewer, args = newton.examples.init(parser=parser)
+    apply_deprecated_mse_cli_flags(args)
     try:
         _run(args, parser, viewer=viewer)
     finally:

@@ -274,6 +274,7 @@ def test_replay_observation_collector_oob_frame_raises():
 
 
 def test_transition_features_exclude_unstable_hold_frame():
+    """All hold frames unstable → no aggregatable samples → empty bag."""
     arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
     arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
     arrays["excitation_direction"] = np.tile([1.0, 0.0, 0.0], (8, 1)).astype(np.float32)
@@ -281,6 +282,40 @@ def test_transition_features_exclude_unstable_hold_frame():
     arrays["stable"] = np.array([True, False, False, False, False, False, False, False], dtype=bool)
     by_direction = build_transition_features_by_direction(arrays)
     assert by_direction == {}
+
+
+def test_iter_kept_hold_segments_does_not_split_on_unstable():
+    """stable=False mid-hold must not flush; segmentation is phase+dir only."""
+    phase = np.array([0, 1, 1, 1, 1, 1, 1, 1], dtype=np.int8)
+    dir_idx = np.zeros(8, dtype=np.int32)
+    stable = np.array([True, True, True, False, True, True, True, True], dtype=bool)
+
+    segments = iter_kept_hold_segments(
+        phase=phase, dir_idx=dir_idx, direction=0, stable=stable
+    )
+
+    assert len(segments) == 1
+    assert segments[0].tolist() == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_median_features_mid_hold_unstable_keeps_one_hold_pair():
+    """One unstable frame mid-hold must not invent a fake hold→hold transition."""
+    arrays = _arrays_for_steps(steps=10, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(10, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1, 0, 0], dtype=np.int8)
+    arrays["stable"] = np.array(
+        [True, True, False, True, True, True, True, True, True, True], dtype=bool
+    )
+    by_direction = build_transition_features_by_direction(arrays, use_median=True)
+    assert set(by_direction) == {0}
+    # Two real holds → exactly one transition (not hold0a→hold0b from the glitch).
+    assert by_direction[0].shape[0] == 1
+
+    state = build_state_matrix(arrays)
+    med0 = np.median(state[[1, 3]], axis=0)  # stable frames only in hold 0
+    med1 = np.median(state[[5, 6, 7]], axis=0)
+    expected = np.concatenate([med0, med1 - med0]).astype(np.float32)
+    np.testing.assert_allclose(by_direction[0][0], expected, rtol=1e-5)
 
 
 def test_replay_observation_collector_builds_dataset_shaped_arrays():
@@ -362,6 +397,65 @@ def test_hold_id_onehot_appended_for_median_transitions():
     state_dim = build_state_matrix(arrays).shape[1]
     assert row.shape[0] == state_dim * 2 + 3
     np.testing.assert_allclose(row[-3:], [1.0, 0.0, 0.0])  # source hold 0
+
+
+def test_one_hot_hold_id_raises_on_oob():
+    from apple_pick_sim.system_id.mmd_features import _one_hot_hold_id
+
+    with pytest.raises(ValueError, match="hold_idx"):
+        _one_hot_hold_id(3, n_holds=3)
+
+
+def test_one_hot_dir_id_raises_on_oob():
+    from apple_pick_sim.system_id.mmd_features import _one_hot_dir_id
+
+    with pytest.raises(ValueError, match="dir_idx"):
+        _one_hot_dir_id(5, n_directions=5)
+
+
+def test_dir_id_onehot_appended_for_median_transitions():
+    """dir_idx one-hot uses fixed n_directions width; trailing units mark source dir."""
+    arrays = _arrays_for_steps(steps=20, junction_names=["joint_a"])
+    # Two holds in dir 0, then two holds in dir 2 (indexes reserved for missing dirs).
+    arrays["dir_idx"] = np.array(
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+        dtype=np.int32,
+    )
+    arrays["phase"] = np.array(
+        [
+            0, 1, 1, 1, 0, 1, 1, 1, 0, 0,
+            0, 1, 1, 1, 0, 1, 1, 1, 0, 0,
+        ],
+        dtype=np.int8,
+    )
+    by_direction = build_transition_features_by_direction(
+        arrays, use_median=True, dir_id_onehot=True, n_directions=5
+    )
+    state_dim = build_state_matrix(arrays).shape[1]
+    assert set(by_direction) == {0, 2}
+    assert by_direction[0].shape == (1, state_dim * 2 + 5)
+    assert by_direction[2].shape == (1, state_dim * 2 + 5)
+    np.testing.assert_allclose(by_direction[0][0, -5:], [1.0, 0.0, 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(by_direction[2][0, -5:], [0.0, 0.0, 1.0, 0.0, 0.0])
+
+
+def test_dir_id_onehot_after_hold_id_onehot():
+    arrays = _arrays_for_steps(steps=10, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.full(10, 1, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1, 0, 0], dtype=np.int8)
+    by_direction = build_transition_features_by_direction(
+        arrays,
+        use_median=True,
+        hold_id_onehot=True,
+        n_holds=3,
+        dir_id_onehot=True,
+        n_directions=4,
+    )
+    row = by_direction[1][0]
+    state_dim = build_state_matrix(arrays).shape[1]
+    assert row.shape[0] == state_dim * 2 + 3 + 4
+    np.testing.assert_allclose(row[-7:-4], [1.0, 0.0, 0.0])  # hold 0
+    np.testing.assert_allclose(row[-4:], [0.0, 1.0, 0.0, 0.0])  # dir 1
 
 
 def test_combine_transition_features_concatenates_episodes_per_direction():

@@ -4,10 +4,10 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-07-10 |
+| **Last updated** | 2026-07-15 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[V].5.1** — harden loss calculation in `example_batched_sysid_mmd_grid.py` (GT ranks best) |
+| **Active work**  | **[V].5.1** — mid-slice shipped (stable collect + transition/Sinkhorn gates); GT-rank reliability still open |
 
 ---
 
@@ -42,14 +42,14 @@
 
 ## Current focus
 
-**Next slice:** **V.5.1** — harden the **loss calculation** in `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` (and its library helpers in `batched_sysid_mmd_grid.py` / feature scorers) so the **GT stiffness candidate consistently ranks best** on the batched grid.
+**Next slice:** **V.5.1** — finish hardening the **loss calculation** in `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` (and helpers in `batched_sysid_mmd_grid.py` / feature scorers) so the **GT stiffness candidate consistently ranks best** on the batched grid. Mid-slice precursors below are shipped; do **not** mark V.5.1 Done until GT-rank reliability is proven.
 
-**Scope for this slice:**
+**Scope remaining for this slice:**
 
-- Outlier / unstable frame & direction handling beyond current mitigations
-- Scoring contract for hold MSE / Wasserstein (and MMD when wired) so GT wins on known-good datasets
+- Prove GT preference on known-good datasets (hold MSE / Wasserstein; MMD when wired) using the new soft-disable + exclude + median/hold-id/pooled Sinkhorn gates
+- Any further outlier / unstable-frame handling still needed for that GT preference
 - Optional CLI `--score-mmd` exposing `evaluate_batched_mmd_grid`
-- Documented invariants + tests for GT preference
+- Documented invariants + tests for GT preference under known-good datasets
 
 **Shipped wins (do not reimplement):**
 
@@ -57,15 +57,16 @@
 - **V.4.2** parallel GT collection (`batched_sysid_v1`, `example_batched_collect_sysid_data.py`)
 - Batched recorded-action replay (`replay_batched_sysid_structure`)
 - **V.4.3** in-process GPU-batched stiffness grid: MSE + Sinkhorn Wasserstein + Plotly viz (`example_batched_sysid_mmd_grid.py`; alignment notes in `docs/sysid-mmd-grid-replay-alignment.md`)
-- **V.5.1 precursor** blow-up soft-disable + manifest `excluded` + offline `exclude_unstable_episodes` (see `docs/superpowers/specs/2026-07-12-sysid-stable-collect-replay-design.md`)
+- **V.5.1 mid-slice — stable collect / replay:** soft-disable during collect (`EnvDisableController`, sticky on NaN/IK); manifest `excluded` / `excluded_reason`; offline `exclude_unstable_episodes` (exclude when unstable-frame **fraction > 0.25**, preserve already-excluded); online stability force/torque caps **50 N** / **20 N·m** (`docs/batched-stability-monitor-design.md`); scripts `scripts/collect_and_rank_sysid_gt.sh`, `scripts/gate_sysid_gt_sinkhorn.sh` (design: `docs/superpowers/specs/2026-07-12-sysid-stable-collect-replay-design.md`)
+- **V.5.1 mid-slice — scoring / features:** transition-feature contract (`docs/sysid-transition-features.md`); hold→hold median bags (`--use-median` CLI default; deprecated `--mse-hold-aggregation` / `--mse-hold-latter-half`); optional `--hold-id-onehot`, `--pool-directions` (forces dir one-hot); named Sinkhorn gates `gate_median_hold` / `gate_hold_id` / `gate_pooled_dirs` via `scripts/gate_sysid_gt_sinkhorn.sh`; `sysid_gate_report.py` + grid-viz paired-hold woody MSE helper
 
-**Existing mitigations to build on (not yet a full hardening stage):** `mmd_features.py` `stable` mask, `trajectory_hold_aggregated_mse` median aggregation, grid-viz candidate `disqualified` flags, hold impulse flags in `batched_hold_quasi_static.py`, online `batched_stability_monitor` (`docs/batched-stability-monitor-design.md`).
+**Existing mitigations to build on (not yet a full hardening stage):** `mmd_features.py` `stable` mask, median hold aggregation / hold→hold median bags, grid-viz candidate `disqualified` flags, hold impulse flags in `batched_hold_quasi_static.py`, online `batched_stability_monitor` (`docs/batched-stability-monitor-design.md`), soft-disable + exclude-fraction policy above.
 
 **Deferred (not Current focus):** **V.4.2.1** — helpers + `--infer-params` exist; default sim-sim path still uses oracle `fruiting_system_params`; no infer-only fidelity floor test yet.
 
 **Goal:** Reliable GT-preferring scores from `example_batched_sysid_mmd_grid.py` → **V.5.2** CEM → **V.5.3** held-out validation → **[M4]**.
 
-**Specs:** `docs/system_identification.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/batched-sysid-dataset.md`, `docs/digital-twin.md`, `docs/material-parameter-sampling.md`
+**Specs:** `docs/system_identification.md`, `docs/sysid-transition-features.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/batched-sysid-dataset.md`, `docs/batched-stability-monitor-design.md`, `docs/digital-twin.md`, `docs/material-parameter-sampling.md`
 
 **Build on (do not reimplement):**
 
@@ -93,11 +94,13 @@
 
 **[V].5 — sim-sim transfer wrap-up**
 
-- [ ] **V.5.1 — Harden loss calculation in `example_batched_sysid_mmd_grid.py` (Next):**
-  - Outlier / unstable frame & direction handling beyond current `stable` mask + median hold agg + candidate disqualification
-  - Scoring contract so GT ranks best on hold MSE / Wasserstein (and MMD when wired)
-  - Optional CLI `--score-mmd` exposing `evaluate_batched_mmd_grid`
-  - Documented invariants + tests for GT preference under known-good datasets
+- [ ] **V.5.1 — Harden loss calculation in `example_batched_sysid_mmd_grid.py` (Next; mid-slice precursors shipped):**
+  - [x] Soft-disable + manifest `excluded` / offline exclude (unstable-frame fraction > 0.25) + stability caps 50 N / 20 N·m
+  - [x] Documented transition-feature / Sinkhorn scoring contract (`docs/sysid-transition-features.md`) + named gate CLI (`scripts/gate_sysid_gt_sinkhorn.sh`: `gate_median_hold` / `gate_hold_id` / `gate_pooled_dirs`)
+  - [ ] GT consistently ranks best on hold MSE / Wasserstein (and MMD when wired) under known-good datasets
+  - [ ] Any further outlier / unstable-frame / direction handling still required for that GT preference
+  - [ ] Optional CLI `--score-mmd` exposing `evaluate_batched_mmd_grid`
+  - [ ] Documented invariants + tests for GT preference under known-good datasets
 - [ ] **V.5.2 — CEM calibration loop** (M3.2)
 - [ ] **V.5.3 — Held-out sim-sim validation** + [M4] handoff criteria
 
@@ -150,7 +153,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.4.2.1** | Deferred | Infer-params / obs-init fidelity capstone (helpers exist; not Current focus) |
 | **V.4.3** | Done | In-process batched MSE/Wasserstein grid + viz; library MMD present |
 | **V.4.4** | Planned | Native v1 replay/dashboard at batch scale |
-| **V.5.1** | **Next** | Harden loss calc in `example_batched_sysid_mmd_grid.py` (GT rank reliability) |
+| **V.5.1** | **Next** (mid-slice shipped) | Stable collect + transition/Sinkhorn gates in; GT rank reliability still open |
 | **V.5.2** | Planned | CEM θ loop |
 | **V.5.3** | Planned | Held-out validation; [M4] handoff |
 
@@ -276,6 +279,24 @@ uv run python apple_pick_gym/examples/run_system_identification.py \
 
 # Digital-twin fixture catalog
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_digital_twin.py -q
+
+# [V].5.1 feature / Wasserstein unit tests
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_mmd_features.py \
+  apple_pick_sim/tests/test_wasserstein.py \
+  apple_pick_sim/tests/test_mmd.py -q
+
+# [V].5.1 stability / soft-disable / exclude / gate-report tests
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_gym/tests/test_batched_stability_monitor.py \
+  apple_pick_gym/tests/test_env_disable_controller.py \
+  apple_pick_gym/tests/test_exclude_unstable_episodes.py \
+  apple_pick_gym/tests/test_sysid_gate_report.py -q
+
+# Optional Sinkhorn gate wrapper (not a full slow e2e; needs a dataset path)
+# bash scripts/gate_sysid_gt_sinkhorn.sh --gate gate_median_hold
+# bash scripts/gate_sysid_gt_sinkhorn.sh --gate gate_hold_id
+# bash scripts/gate_sysid_gt_sinkhorn.sh --gate gate_pooled_dirs
 ```
 
 **Stop and ask the maintainer when:**

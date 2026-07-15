@@ -361,3 +361,56 @@ def test_build_manifest_episodes_marks_excluded_envs():
     assert episodes[0]["excluded_reason"] is None
     assert episodes[1]["excluded"] is True
     assert episodes[1]["excluded_reason"] == "stability_blowup"
+
+
+def test_excluded_env_indices_only_sticky_disabled_not_force_cap_frames():
+    """Force-cap (stable=False) frames must not exclude; sticky-disable must."""
+    import torch
+
+    from apple_pick_gym.batched_envs.batched_sysid_collect import _excluded_env_indices
+    from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
+    from apple_pick_sim.system_id import BatchedEpisodeWriter
+
+    writers = [
+        BatchedEpisodeWriter(episode_id="force_cap_only"),
+        BatchedEpisodeWriter(episode_id="sticky"),
+    ]
+    # Minimal obs for record_step
+    obs = {
+        "excitation_type": 0,
+        "excitation_direction": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        "tcp_velocity": np.zeros(6, dtype=np.float32),
+        "woody_part_start_pos": {"j0": np.zeros(3, dtype=np.float32)},
+        "woody_part_end_pos": {"j0": np.ones(3, dtype=np.float32)},
+        "ft_wrist": np.zeros(6, dtype=np.float32),
+        "raw_ft_wrist": np.zeros(6, dtype=np.float32),
+        "tcp_pos": np.zeros(3, dtype=np.float32),
+        "apple_pos": np.zeros(3, dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "apple_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "robot_joint_q": np.zeros(7, dtype=np.float32),
+        "woody_part_force": np.zeros(6, dtype=np.float32),
+    }
+    writers[0].record_step(
+        step_idx=0,
+        sim_time=0.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=obs,
+        stable=False,
+    )
+    writers[1].record_step(
+        step_idx=0,
+        sim_time=0.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=obs,
+        stable=True,
+    )
+    ctrl = EnvDisableController(2, device="cpu")
+    ctrl.update(torch.tensor([False, True], dtype=torch.bool))
+
+    excluded = _excluded_env_indices(ctrl, writers)
+    assert excluded == {1}

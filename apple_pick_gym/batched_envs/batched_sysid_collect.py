@@ -348,16 +348,18 @@ def _build_structure_summaries(
 
 def _excluded_env_indices(
     disable_ctrl: EnvDisableController,
-    writers: Sequence[BatchedEpisodeWriter],
+    writers: Sequence[BatchedEpisodeWriter] | None = None,
 ) -> set[int]:
-    """Env indices to mark excluded: sticky-disabled or any unstable recorded frame."""
+    """Env indices to mark excluded: sticky-disabled only (NaN/IK soft-disable).
+
+    Force/speed cap frames are recorded as ``stable=False`` but do not exclude
+    here; the offline fraction filter owns soft exclusion.
+    """
+    del writers  # retained for call-site compatibility
     out: set[int] = set()
     disabled = disable_ctrl.disabled.detach().cpu().tolist()
     for i, flag in enumerate(disabled):
         if bool(flag):
-            out.add(int(i))
-    for i, writer in enumerate(writers):
-        if writer.has_unstable_frame():
             out.add(int(i))
     return out
 

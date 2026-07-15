@@ -20,6 +20,7 @@ from apple_pick_gym.grid_viz_metrics import (
     bend_stiffness_values_match,
     woody_segment_pos_mse_hold_aggregated,
     woody_segment_pos_mse_masked,
+    woody_segment_pos_mse_paired_holds,
 )
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_from_episode_metadata,
@@ -35,6 +36,7 @@ from apple_pick_sim.system_id.batched_trajectory_store import (
 from apple_pick_sim.system_id.mmd import apply_normalization, biased_mmd2, fit_gt_normalization, rbf_bandwidth_median
 from apple_pick_sim.system_id.mmd_features import (
     ReplayObservationCollector,
+    _stable_masked_segment,
     combine_transition_features,
     iter_kept_hold_segments,
     replay_obs_dict_from_sysid_numpy,
@@ -434,10 +436,9 @@ def trajectory_paired_hold_median_mse(
             phase=phase,
             dir_idx=dir_idx,
             direction=direction,
-            stable=stable,
             min_frames=1,
         ):
-            idx = np.asarray(segment, dtype=np.int64)
+            idx = _stable_masked_segment(segment, stable)
             if idx.size == 0:
                 continue
             all_hold_idx.append(idx)
@@ -457,11 +458,6 @@ def trajectory_paired_hold_median_mse(
     if not force_rmses:
         return empty
 
-    hold_idx = (
-        np.concatenate(all_hold_idx, axis=0)
-        if all_hold_idx
-        else np.zeros(0, dtype=np.int64)
-    )
     return {
         "n_frames": float(n),
         "n_used_frames": float(used_frames),
@@ -470,12 +466,12 @@ def trajectory_paired_hold_median_mse(
         "ft_torque_rmse": float(np.mean(torque_rmses)),
         "tcp_pos_mse": float(np.mean(tcp_mses)),
         "apple_pos_mse": float(np.mean(apple_mses)),
-        "woody_pos_mse_by_segment": woody_segment_pos_mse_hold_aggregated(
+        "woody_pos_mse_by_segment": woody_segment_pos_mse_paired_holds(
             replay=replay,
             recorded=recorded,
             junction_names=junction_names,
             n=n,
-            hold_idx=hold_idx,
+            hold_index_lists=all_hold_idx,
             aggregation="median",
         ),
     }
@@ -623,6 +619,8 @@ def prepare_gt_mmd_context(
     use_median: bool = False,
     hold_id_onehot: bool = False,
     n_holds: int | None = None,
+    dir_id_onehot: bool = False,
+    n_directions: int | None = None,
 ) -> dict[int, MmdDirectionContext]:
     """Fit per-direction GT normalization and RBF bandwidth from recorded episodes."""
     gt_by_direction = combine_transition_features(
@@ -630,6 +628,8 @@ def prepare_gt_mmd_context(
         use_median=use_median,
         hold_id_onehot=hold_id_onehot,
         n_holds=n_holds,
+        dir_id_onehot=dir_id_onehot,
+        n_directions=n_directions,
     )
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
@@ -665,6 +665,8 @@ def score_candidate_mmd(
     use_median: bool = False,
     hold_id_onehot: bool = False,
     n_holds: int | None = None,
+    dir_id_onehot: bool = False,
+    n_directions: int | None = None,
 ) -> MmdCandidateResult:
     """Score one replayed candidate against precomputed GT MMD context."""
     candidate_by_direction = combine_transition_features(
@@ -672,6 +674,8 @@ def score_candidate_mmd(
         use_median=use_median,
         hold_id_onehot=hold_id_onehot,
         n_holds=n_holds,
+        dir_id_onehot=dir_id_onehot,
+        n_directions=n_directions,
     )
     missing = sorted(set(gt_context) - set(candidate_by_direction))
     missing_directions = tuple(int(d) for d in missing)

@@ -1140,6 +1140,34 @@ def test_trajectory_mse_excludes_replay_unstable_frames():
     assert out["ft_force_rmse"] == pytest.approx(0.0, abs=1e-6)
 
 
+def test_trajectory_paired_hold_median_mse_woody_is_mean_of_per_hold():
+    """Woody must average per-hold median MSEs (not one median over all holds)."""
+    recorded = _arrays_for_steps(steps=10, junction_names=["joint_a"], shift=0.0)
+    replay = _arrays_for_steps(steps=10, junction_names=["joint_a"], shift=0.0)
+    recorded["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1, 0, 0], dtype=np.int8)
+    replay["phase"] = recorded["phase"].copy()
+    recorded["dir_idx"] = np.zeros(10, dtype=np.int32)
+    replay["dir_idx"] = recorded["dir_idx"].copy()
+    # Hold 2 only: shift woody endpoints on replay frames 5,6,7.
+    for key in ("woody_part_start_pos", "woody_part_end_pos"):
+        replay[key]["joint_a"][5:8] = recorded[key]["joint_a"][5:8] + 2.0
+
+    out = grid.trajectory_paired_hold_median_mse(replay=replay, recorded=recorded)
+    # Hold1 MSE=0; hold2 median shift=2 on start(3)+end(3)=6 dims → mse = 4.0
+    assert out["woody_pos_mse_by_segment"]["joint_a"] == pytest.approx(2.0)
+
+    # Flat-bag median over all hold frames differs from mean of per-hold MSEs.
+    flat = grid.woody_segment_pos_mse_hold_aggregated(
+        replay=replay,
+        recorded=recorded,
+        junction_names=["joint_a"],
+        n=10,
+        hold_idx=np.array([1, 2, 3, 5, 6, 7], dtype=np.int64),
+        aggregation="median",
+    )
+    assert flat["joint_a"] != pytest.approx(out["woody_pos_mse_by_segment"]["joint_a"])
+
+
 def test_trajectory_hold_aggregated_mse_excludes_replay_unstable_hold_frames():
     recorded = _arrays_for_steps(steps=4, shift=0.0)
     replay = _arrays_for_steps(steps=4, shift=0.0)

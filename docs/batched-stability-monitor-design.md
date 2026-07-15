@@ -1,8 +1,9 @@
 # Batched Stability Monitor — Design
 
-**Date:** 2026-07-08
-**Status:** Implemented
-**Branch:** `feature/batched-sysid-mmd`
+**Date:** 2026-07-15
+**Last reviewed:** 2026-07-15
+**Status:** Implemented (collect consumer + offline exclude landed)
+**Branch:** `feature/sysid-stable-collect`
 
 ## Motivation
 
@@ -43,12 +44,13 @@ etc.).
 - Not shipping a concrete sys-ID hold-quality plugin (force_cv / mean-drift / TCP-excursion)
   in this project. The plugin protocol is designed to support it, but the plugin itself is a
   follow-up once this core lands.
-- Not changing collection behavior (`collect_batched_quasi_static_dataset`, `on_step`, etc.) to
-  act on stability reports (e.g. skip writes, abort per-env/per-structure). That's a follow-up
-  consumer of this monitor, not part of this spec.
-- Not wiring the monitor into `ApplePickBatchedBaseEnv.step()` or `info[...]` automatically.
+- Not wiring the monitor into `ApplePickBatchedBaseEnv.step()` or `info[...]` automatically
+  (callers still own the step-loop call). Soft-disable / manifest exclude live in collect
+  consumers, not inside the monitor.
 - Not a replacement for the existing post-hoc `batched_hold_quasi_static.py` analysis, which
   remains the source of truth for sys-ID "quasi-static quality" gating.
+- Not equating every `stable=False` / force-cap frame with episode exclusion — see
+  **Collect / exclude ownership** below.
 
 ## Architecture
 
@@ -87,20 +89,31 @@ apple-speed check (see below).
 ```python
 @dataclass(frozen=True)
 class StabilityThresholds:
-    max_force_n: float = 300.0       # reuse DEFAULT_STEM_FORCE_CAP_N (scene.py)
-    max_torque_nm: float = 100.0     # reuse DEFAULT_STEM_TORQUE_CAP_NM (scene.py)
+    max_force_n: float = 50.0        # reuse DEFAULT_STEM_FORCE_CAP_N (scene.py)
+    max_torque_nm: float = 20.0      # reuse DEFAULT_STEM_TORQUE_CAP_NM (scene.py)
     max_tcp_speed_mps: float = 5.0
     max_apple_speed_mps: float = 5.0
 ```
 
 Defaults intentionally reuse the existing wrench-cap constants from
-`apple_pick_sim/coupled_fruiting/scene.py` (`DEFAULT_STEM_FORCE_CAP_N = 300.0`,
-`DEFAULT_STEM_TORQUE_CAP_NM = 100.0`) so "force/torque at cap" and "monitor-flagged unstable"
+`apple_pick_sim/coupled_fruiting/scene.py` (`DEFAULT_STEM_FORCE_CAP_N = 50.0`,
+`DEFAULT_STEM_TORQUE_CAP_NM = 20.0`) so "force/torque at cap" and "monitor-flagged unstable"
 refer to the same physical limit already enforced elsewhere in the sim.
 
-**Meaning of `stable`:** blow-up / unsafe (NaN, caps, speed), not hold quasi-static quality.
-Episode exclude rules treat any `stable=False` frame as grounds to drop the `(structure, direction)`.
-A deeper stability-monitor retune remains a follow-up (see sys-ID stable collect/replay design).
+**Meaning of `stable` / `report.unstable`:** blow-up / unsafe (NaN/Inf, force/torque caps,
+TCP/apple speed), **not** hold quasi-static quality. A force-cap hit on one frame is a
+common stiff-VIC signal; it must not by itself wipe a `(structure, direction)` episode.
+
+### Collect / exclude ownership (consumers, not the monitor)
+
+| Layer | Module | Policy |
+|-------|--------|--------|
+| Online report | `batched_stability_monitor.py` | Report-only; records per-frame reasons |
+| Sticky soft-disable | `env_disable_controller.py` | Collect feeds **`hard_blowup_mask(report)`** (NaN/Inf + IK bootstrap) into `EnvDisableController.update`; force/speed caps do **not** soft-disable |
+| Manifest `excluded` at collect | `batched_sysid_collect.py` | Only sticky soft-disabled envs → `excluded=True` (`excluded_reason` e.g. `"stability_blowup"`) |
+| Offline fraction filter | `exclude_unstable_episodes.py` | Exclude if already `excluded` **or** unstable-frame fraction **`>` `DEFAULT_UNSTABLE_FRACTION_EXCLUDE` (0.25)** |
+
+Dataset layout / CLI: [`batched-sysid-dataset.md`](batched-sysid-dataset.md).
 
 ### `BatchedStabilityReport`
 
@@ -172,6 +185,17 @@ All vectorized across the batch dimension; no per-env Python loop.
    detail: this is the one core check that needs one step of memory — a single `(num_envs, 3)`
    "previous apple_pos" tensor owned by the monitor instance, not exposed as report state.)
 
+Optional construction args `initial_unstable` / `initial_reason` (default
+`"ik_bootstrap_not_converged"`) fold sticky IK-bootstrap failures into every subsequent
+report. Helper `ik_bootstrap_unstable_mask(env, num_envs)` reads build-time IK envelope
+results; collect uses it to seed both the monitor and `EnvDisableController`.
+
+### `hard_blowup_mask(report)`
+
+Returns a bool mask **only** for NaN/Inf reason codes and sticky `"ik_bootstrap_not_converged"`.
+Force/torque/speed cap reasons are **omitted**. Collect soft-disable uses this mask so a
+single wrench-cap frame does not stop recording or mark the episode `excluded`.
+
 ## Plugin compatibility (fail-fast construction)
 
 Chosen behavior: **fail fast at construction**, not at first `check()` call, and not silently
@@ -233,24 +257,35 @@ synthetic-tensor pattern used in `apple_pick_sim/tests/test_batched_hold_quasi_s
    `known_obs_keys={"ft_wrist", "tcp_velocity"}` → `pytest.raises(ValueError, match="phase")`,
    and the error message names the plugin's `name`.
 5. **Threshold overrides:** `StabilityThresholds(max_force_n=10.0)` flags a force magnitude
-   (e.g. 15 N) that would pass under the default `200.0` threshold.
+   (e.g. 15 N) that would pass under the default `50.0` threshold.
 6. **Apple-speed memory check:** first `check()` call does not raise/flag due to missing
    previous-position state; second call with a large `apple_pos` jump does flag
    `"apple_speed_exceeded"`.
+7. **`hard_blowup_mask`:** force-cap reasons alone → not hard; NaN reasons → hard.
 
-All tests operate on plain CPU `torch.Tensor`s in a hand-built `obs` dict (no live env,
-gymnasium marker, or GPU required) — fast, deterministic, and consistent with how
+Related consumer tests (not in the monitor unit file):
+`test_env_disable_controller.py`, `test_exclude_unstable_episodes.py`,
+`test_batched_sysid_collect.py` (manifest `excluded` only for sticky disable).
+
+All monitor unit tests operate on plain CPU `torch.Tensor`s in a hand-built `obs` dict (no
+live env, gymnasium marker, or GPU required) — fast, deterministic, and consistent with how
 `test_batched_hold_quasi_static.py` tests its synthetic arrays.
 
-Validation command (once implemented): `uv run --env-file pytest.env python -m pytest
-apple_pick_gym/tests/test_batched_stability_monitor.py -q`
+Validation:
 
-## Follow-ups (explicitly out of scope here)
+```bash
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_gym/tests/test_batched_stability_monitor.py \
+  apple_pick_gym/tests/test_env_disable_controller.py \
+  apple_pick_gym/tests/test_exclude_unstable_episodes.py \
+  apple_pick_gym/tests/test_batched_sysid_collect.py -q
+```
+
+## Follow-ups
 
 - A concrete `HoldQualityStabilityPlugin` implementing the sys-ID `force_cv` / mean-drift /
   TCP-excursion checks online (phase-gated on `obs["phase"]`), reusing
   `StiffnessIdHoldThresholds` from `batched_hold_quasi_static.py`.
-- Wiring a stability-aware `on_step` callback into `collect_batched_quasi_static_dataset` (or a
-  sibling helper) that consumes `BatchedStabilityReport` to skip recording/writing frames for
-  envs flagged unstable, and annotates manifest rows accordingly.
-- Any automatic action (freeze/terminate) beyond report-only, if a future use case needs it.
+- Deeper online-monitor retune beyond the scene wrench caps (optional).
+- Any automatic freeze/terminate inside the env itself (monitor + collect remain
+  caller-owned; soft-disable is already in `EnvDisableController`).

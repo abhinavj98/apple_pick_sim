@@ -100,7 +100,10 @@ def woody_segment_pos_mse_hold_aggregated(
     hold_idx: np.ndarray,
     aggregation: Literal["mean", "median"],
 ) -> dict[str, float]:
-    """Per-segment MSE combining one hold-aggregate (mean/median) per endpoint."""
+    """Per-segment MSE combining one hold-aggregate (mean/median) per endpoint.
+
+    Flattens ``hold_idx`` into a single bag before aggregating (legacy flat-hold metric).
+    """
     names = [str(name) for name in junction_names]
     if not names or not _has_woody_data(replay, names) or not _has_woody_data(recorded, names):
         return {}
@@ -127,6 +130,49 @@ def woody_segment_pos_mse_hold_aggregated(
             ]
         )
         out[name] = _mse(rep.reshape(1, -1), rec.reshape(1, -1))
+    return out
+
+
+def woody_segment_pos_mse_paired_holds(
+    *,
+    replay: Mapping[str, Any],
+    recorded: Mapping[str, Any],
+    junction_names: Sequence[str],
+    n: int,
+    hold_index_lists: Sequence[np.ndarray],
+    aggregation: Literal["mean", "median"] = "median",
+) -> dict[str, float]:
+    """Per-segment MSE: median/mean within each hold, then mean over holds."""
+    names = [str(name) for name in junction_names]
+    if not names or not _has_woody_data(replay, names) or not _has_woody_data(recorded, names):
+        return {}
+    holds = [np.asarray(h, dtype=np.int64).reshape(-1) for h in hold_index_lists]
+    holds = [h for h in holds if h.size > 0]
+    if not holds:
+        return _woody_nan_dict(names)
+
+    out: dict[str, float] = {}
+    for name in names:
+        per_hold: list[float] = []
+        for hold_idx in holds:
+            start_rep = _as_woody_2d(replay, "woody_part_start_pos", name, n)[hold_idx]
+            end_rep = _as_woody_2d(replay, "woody_part_end_pos", name, n)[hold_idx]
+            start_rec = _as_woody_2d(recorded, "woody_part_start_pos", name, n)[hold_idx]
+            end_rec = _as_woody_2d(recorded, "woody_part_end_pos", name, n)[hold_idx]
+            rep = np.concatenate(
+                [
+                    _aggregate_rows(start_rep, aggregation=aggregation),
+                    _aggregate_rows(end_rep, aggregation=aggregation),
+                ]
+            )
+            rec = np.concatenate(
+                [
+                    _aggregate_rows(start_rec, aggregation=aggregation),
+                    _aggregate_rows(end_rec, aggregation=aggregation),
+                ]
+            )
+            per_hold.append(_mse(rep.reshape(1, -1), rec.reshape(1, -1)))
+        out[name] = float(np.mean(np.asarray(per_hold, dtype=np.float64)))
     return out
 
 

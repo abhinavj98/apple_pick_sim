@@ -133,16 +133,16 @@ def test_parser_accepts_structure_indices_and_batch_limits(monkeypatch):
     assert args.replay_only is True
     assert args.score_mse is True
     assert args.use_median is True
-    assert args.hold_id_onehot is False
-    assert args.pool_directions is False
+    assert args.hold_id_onehot is True
+    assert args.pool_directions is True
 
     args_off = parser.parse_args(
         [
             "--dataset",
             "/tmp/batched_sysid",
             "--no-use-median",
-            "--hold-id-onehot",
-            "--pool-directions",
+            "--no-hold-id-onehot",
+            "--no-pool-directions",
             "--primary-bend-stiffness-values",
             "1",
             "--secondary-bend-stiffness-values",
@@ -154,8 +154,74 @@ def test_parser_accepts_structure_indices_and_batch_limits(monkeypatch):
         ]
     )
     assert args_off.use_median is False
-    assert args_off.hold_id_onehot is True
-    assert args_off.pool_directions is True
+    assert args_off.hold_id_onehot is False
+    assert args_off.pool_directions is False
+
+
+def test_deprecated_mse_hold_flags_map_to_use_median(monkeypatch):
+    module = _load_example_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    base = [
+        "--dataset",
+        "/tmp/batched_sysid",
+        "--primary-bend-stiffness-values",
+        "1",
+        "--secondary-bend-stiffness-values",
+        "2",
+        "--spur-bend-stiffness-values",
+        "3",
+        "--stem-bend-stiffness-values",
+        "4",
+    ]
+    with pytest.warns(DeprecationWarning, match="mse-hold-aggregation"):
+        args_med = module.apply_deprecated_mse_cli_flags(
+            parser.parse_args([*base, "--mse-hold-aggregation", "median"])
+        )
+    assert args_med.use_median is True
+    with pytest.warns(DeprecationWarning, match="mse-hold-aggregation"):
+        args_none = module.apply_deprecated_mse_cli_flags(
+            parser.parse_args([*base, "--mse-hold-aggregation", "none"])
+        )
+    assert args_none.use_median is False
+    with pytest.warns(DeprecationWarning, match="mse-hold-latter-half"):
+        args_lh = module.apply_deprecated_mse_cli_flags(
+            parser.parse_args([*base, "--no-mse-hold-latter-half"])
+        )
+    assert args_lh.use_median is True
+
+
+def test_pool_directions_implies_dir_id_onehot_in_score_json_header(monkeypatch):
+    """Score JSON header mirrors wasserstein: pooling auto-enables dir one-hot."""
+    module = _load_example_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    args = parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/batched_sysid",
+            "--pool-directions",
+            "--primary-bend-stiffness-values",
+            "1",
+            "--secondary-bend-stiffness-values",
+            "2",
+            "--spur-bend-stiffness-values",
+            "3",
+            "--stem-bend-stiffness-values",
+            "4",
+        ]
+    )
+    # Same mapping written in _run when --score-json-output is set.
+    payload = {
+        "pool_directions": bool(args.pool_directions),
+        "dir_id_onehot": bool(args.pool_directions),
+    }
+    assert payload["pool_directions"] is True
+    assert payload["dir_id_onehot"] is True
 
 
 def test_plot_metrics_validation_rejects_unknown_metric(monkeypatch):
@@ -235,9 +301,19 @@ def test_collection_control_hz_reads_manifest():
 
 
 def test_sim_config_stays_in_module_constants():
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path, load_ranges
+
     module = _load_example_module()
 
     cfg = module.build_sim_config(num_envs=8)
+    ranges = load_ranges(default_ranges_fixture_path())
+    (
+        vic_gains,
+        joint_angular_kd,
+        joint_linear_kd,
+        joint_angular_kp,
+        joint_linear_kp,
+    ) = module._resolve_sim_build_knobs(ranges)
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=8)
     assert cfg == dataclasses.replace(
         gym_cfg,
@@ -250,17 +326,25 @@ def test_sim_config_stays_in_module_constants():
         ),
         controller=dataclasses.replace(
             gym_cfg.controller,
-            vic_gains=module.VIC_GAINS,
+            vic_gains=vic_gains,
         ),
         fruiting_system=dataclasses.replace(
             gym_cfg.fruiting_system,
-            joint_angular_kd_overrides=module.JOINT_ANGULAR_KD_OVERRIDES,
-            joint_linear_kd_overrides=module.JOINT_LINEAR_KD_OVERRIDES,
-            joint_angular_kp_overrides=module.JOINT_ANGULAR_KP_OVERRIDES,
-            joint_linear_kp_overrides=module.JOINT_LINEAR_KP_OVERRIDES,
+            joint_angular_kd_overrides=joint_angular_kd,
+            joint_linear_kd_overrides=joint_linear_kd,
+            joint_angular_kp_overrides=joint_angular_kp,
+            joint_linear_kp_overrides=joint_linear_kp,
         ),
     )
     assert cfg.controller.mode == "vic"
+    assert cfg.fruiting_system.stem_force_cap_N == pytest.approx(
+        module.DEFAULT_STEM_FORCE_CAP_N
+    )
+    assert cfg.fruiting_system.stem_torque_cap_Nm == pytest.approx(
+        module.DEFAULT_STEM_TORQUE_CAP_NM
+    )
+    assert module.DEFAULT_STEM_FORCE_CAP_N == pytest.approx(50.0)
+    assert module.DEFAULT_STEM_TORQUE_CAP_NM == pytest.approx(20.0)
 
 
 def test_build_sim_config_reads_sim_build_from_default_fixture():

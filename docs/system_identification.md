@@ -87,19 +87,23 @@ Amplitude bounds from §2.1 apply here as well.
 
 MMD compares **distributions** of transitions; encoding must respect causality without 1:1 time alignment.
 
+**Shipped feature contract (dims, hold/median bags, pooling one-hots, gates):** see `docs/sysid-transition-features.md`.
+
 ### 3.1 State Definition
 
-Observable state $s_t$ at time $t$:
+**Protocol intent** (field + future chirp phases) vs **shipped hold-phase bags** (`STATE_VECTOR_FIELDS` in `mmd_features.py`; dims and layout in `docs/sysid-transition-features.md`):
 
-| Symbol | Description |
-| --- | --- |
-| $P_{\text{nodes}}$ | 3D positions of tracked branch joints/spring endpoints (when available) |
-| $v_{ee}$ | End-effector Cartesian velocity (3D) |
-| $W_{ee}$ | Measured interaction wrench (3D force, 3D torque) |
-| $\phi_{\text{exc}}$ | Excitation context: trajectory type (quasi-static / translational chirp / torsional chirp) and **instantaneous frequency** $f(t)$ for chirps (continuous feature, not one-hot over discrete bins) |
-| $\hat{u}$ | Unit excitation direction (hemisphere sample or rotation axis) |
+| Symbol | Protocol meaning | Shipped hold bags |
+| --- | --- | --- |
+| $W_{ee}$ | Interaction wrench (3D force, 3D torque) | `ft_wrist` (6) |
+| $v_{ee}$ | End-effector velocity | `tcp_velocity` (6: linear + angular) |
+| — | Recorded drive signal | `action` (6) |
+| — | TCP / fruit pose | `tcp_pos` (3), `apple_pos` (3) |
+| $P_{\text{nodes}}$ | Tracked branch/spring endpoints when available | `woody_part_{start,end}_pos` (\(3N_j\) each) + `woody_bending_angles` (\(N_j\)); total \(D_s=24+7N_j\) |
+| \(\phi_{\text{exc}}\) | Trajectory type + chirp frequency \(f(t)\) | Not columns of \(s_t\); `excitation_type` is auxiliary / bag metadata. Instantaneous \(f(t)\) is for §2.2 chirps (not hold bags today) |
+| \(\hat{u}\) | Unit excitation direction | Recorded as `excitation_direction`; bags key by `dir_idx` (optional dir one-hot only when pooling) |
 
-**Observability:** Field data may not include all $P_{\text{nodes}}$ (occlusion, no markers). If only wrench + EE kinematics are reliable, reduce $s_t$ explicitly—do not assume full internal node coordinates in $P$ for MMD.
+**Observability:** Field data may not include all woody endpoints (occlusion, no markers). If only wrench + EE kinematics are reliable, reduce \(s_t\) explicitly—do not assume full internal node coordinates for MMD.
 
 **Replay initialization bundle:** M3.0.3 requires a separate initial-observation bundle before transition features are built. At minimum this includes schema/episode metadata, control rate, recorded TCP actions, TCP pose/twist, bias-corrected F/T wrench, apple pose, woody endpoint observations with junction labels, grasp/weld transform, and robot/fruiting/camera/F/T calibration transforms. This bundle replaces privileged simulator arrays such as `body_q`, `body_qd`, joint buffers, VBD previous-state buffers, and controller target transforms; see `docs/digital-twin.md` for the replacement map.
 
@@ -107,17 +111,19 @@ Observable state $s_t$ at time $t$:
 
 Markovian flow (not absolute pose alone):
 
-$$v_t = [s_t,\, \Delta s_t], \quad \Delta s_t = s_{t+1} - s_t$$
+$$v = [s,\, \Delta s]$$
+
+Shipped hold bags support frame→frame \(\Delta s\) or hold→hold median \(\Delta s\) (`--use-median`, CLI default on), optional `--hold-id-onehot`, and optional `--pool-directions` (appends dir one-hot and pools bags). **No latter-half burn-in** in the feature builders. Full contract: `docs/sysid-transition-features.md`.
 
 ### 3.3 Pre-Processing
 
 - **Time sync:** Simulator $\Delta t$ matches real sensor polling rate.
-- **Z-score normalization:** Zero mean, unit variance per feature dimension before MMD so Newton-scale wrench does not dominate meter-scale position.
+- **Z-score normalization:** Zero mean, unit variance per feature dimension before MMD so Newton-scale wrench does not dominate meter-scale position (GT fit per direction bag, or one pooled bag when `--pool-directions`).
 - **Replay fidelity:** Each CEM rollout is driven by the **recorded EE velocity telemetry** from the field run, not a re-synthesized chirp. Phase/amplitude mismatch otherwise inflates MMD for the wrong reason.
 
 ### 3.4 CEM data pooling
 
-Run CEM **per excitation direction** first (separate $P$, $Q$ per $\hat{u}$). After convergence, compare $\theta$ across directions: direction-dependent parameters (likely $K$) vs shared parameters (likely $M$). Avoid pooling all directions into one MMD pool early—that smears anisotropic stiffness.
+Run CEM **per excitation direction** first (separate \(P\), \(Q\) per \(\hat{u}\)). After convergence, compare \(\theta\) across directions: direction-dependent parameters (likely \(K\)) vs shared parameters (likely \(M\)). Default scoring keeps per-direction bags for that reason. Optional CLI `--pool-directions` (with dir one-hot) is a shipped Sinkhorn experiment path (`gate_pooled_dirs`); it is not the CEM default.
 
 ## 4. Optimization: Cross-Entropy Method (CEM)
 
@@ -170,7 +176,7 @@ The batched in-process grid (`apple_pick_gym/batched_envs/batched_sysid_mmd_grid
 
 **Opt-in digital twin:** CLI `--infer-params` switches build params to `infer_base_params_for_structure` (obs-inferred geometry). Independent of `--use-snapshot` (privileged state restore). Infer-only fidelity floor remains deferred V.4.2.1. Online unstable-env signal during collect/grid: `docs/batched-stability-monitor-design.md`.
 
-**Current scoring mitigations (not yet V.5.1 hardening):** `stable` frame mask in `mmd_features.py`, median hold aggregation in `trajectory_hold_aggregated_mse`, candidate `disqualified` flags in grid viz, hold impulse flags in `batched_hold_quasi_static.py`.
+**Current scoring mitigations (not yet V.5.1 hardening):** `stable` frame mask in `mmd_features.py` (masks samples inside holds; does not split segments), CLI `--use-median` / `--hold-id-onehot` / `--pool-directions` on `example_batched_sysid_mmd_grid.py`, median hold MSE via `trajectory_hold_aggregated_mse`, named gates in `scripts/gate_sysid_gt_sinkhorn.sh`, candidate `disqualified` flags in grid viz, hold impulse flags in `batched_hold_quasi_static.py`. Feature contract: `docs/sysid-transition-features.md`.
 
 **Tests:** `test_true_params_for_structure_returns_exact_sampled_params`, `test_gt_bend_stiffness_candidate_from_structure_reads_true_stiffness`, `test_replay_structure_uses_true_params_geometry`.
 
@@ -233,9 +239,9 @@ uv run python apple_pick_gym/examples/run_system_identification.py \
 For each candidate the script prints mean/max replay errors for TCP force,
 TCP torque, TCP position, TCP velocity, apple position, and woody endpoints.
 When `--mmd-output` is set, it also computes the stiffness diagnostic objective:
-hold-phase biased MMD² over per-direction transition features, with the first
-half of each hold segment discarded before feature construction. It writes
-`mmd_results.csv` plus a compact diagnostic plot bundle:
+hold-phase biased MMD² over per-direction transition features from
+`build_transition_features_by_direction` (**full** hold segments; no latter-half
+burn-in). It writes `mmd_results.csv` plus a compact diagnostic plot bundle:
 `mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and
 `mmd_stiffness_sensitivity.png`. This remains a diagnostic grid search, not
 simulator tuning or CEM.
@@ -243,9 +249,12 @@ simulator tuning or CEM.
 ### Sinkhorn ranking validation (2026-07-08)
 
 Alongside hold MSE on the batched stiffness grid, a **Geomloss Sinkhorn**
-objective on the same hold-phase transition bags \(v_t=[s_t,\Delta s_t]\) is
-**shipped** (`apple_pick_sim/system_id/wasserstein.py`, `wasserstein_ranking.py`;
-CLI `--score-wasserstein` on `example_batched_sysid_mmd_grid.py`). Design:
+objective on the same hold-phase transition bags \(v=[s,\Delta s]\) (+ optional
+one-hots) is **shipped** (`apple_pick_sim/system_id/wasserstein.py`,
+`wasserstein_ranking.py`; CLI `--score-wasserstein` on
+`example_batched_sysid_mmd_grid.py`). Feature/CLI contract (median, hold-id,
+pool→dir one-hot): `docs/sysid-transition-features.md`. Named GT-rank gates:
+`scripts/gate_sysid_gt_sinkhorn.sh`. Design:
 `docs/specs/2026-07-08-wasserstein-sysid-ranking-design.md`. This does not
 replace §4 CEM/MMD until ranking evidence supports it (V.5.1 hardens GT preference
 further). On the legacy single-env path, the default initializer is observation-only
@@ -290,6 +299,10 @@ Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0
 | `apple_pick_gym/envs/apple_pick_sysid_env.py` | Gym env (`ApplePickSysId-v0`) |
 | `apple_pick_gym/examples/example_gym_sysid.py` | Interactive demo: viewer, per-step logging, mean hold forces |
 | `apple_pick_sim/system_id/run_quasi_static.py` | Headless smoke runner (no viewer) |
+| `apple_pick_sim/system_id/mmd_features.py` | Hold transition bags: state matrix, median/frame modes, `stable` mask, hold/dir one-hots |
+| `apple_pick_sim/system_id/wasserstein.py` | Sinkhorn scoring; `pool_directions` → `dir_id_onehot` + `POOLED_DIRECTION_KEY` |
+| `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` | Batched grid CLI (`--use-median`, `--hold-id-onehot`, `--pool-directions`, deprecated `--mse-hold-*`) |
+| `scripts/gate_sysid_gt_sinkhorn.sh` | Named Sinkhorn GT-rank gates (`gate_median_hold`, `gate_hold_id`, `gate_pooled_dirs`) |
 
 ### Fibonacci hemisphere
 

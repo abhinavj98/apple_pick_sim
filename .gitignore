@@ -41,6 +41,8 @@ tmp/
 *~
 .DS_Store
 Thumbs.db
-scripts
+scripts/**
+!scripts/collect_and_rank_sysid_gt.sh
+!scripts/gate_sysid_gt_sinkhorn.sh
 sweep_runs
 tmp*/

@@ -1,5 +1,7 @@
 # Batched sys-ID dataset (v1)
 
+**Last reviewed:** 2026-07-15
+
 Parallel quasi-static collection from
 [`example_batched_collect_sysid_data.py`](../apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py)
 writes a **batched_sysid_v1** layout optimized for training and analysis over a
@@ -60,7 +62,28 @@ Manifest `episodes[]` may include:
 | `excluded` | bool | When true, default grid load/replay skips this `(structure, direction)` |
 | `excluded_reason` | string or null | e.g. `"stability_blowup"` |
 
-Missing `excluded` is treated as false (legacy datasets). Collect soft-disable and the offline tool `python -m apple_pick_gym.batched_envs.exclude_unstable_episodes` set these when any frame has `stable=False`.
+Missing `excluded` is treated as false (legacy datasets).
+
+**How `excluded` gets set (two stages):**
+
+1. **Collect** (`collect_batched_quasi_static_dataset`): marks `excluded=True` only for
+   sticky soft-disabled envs — NaN/Inf or IK-bootstrap failures via
+   `EnvDisableController` + `hard_blowup_mask`. Force/torque/speed cap frames are written
+   with parquet `stable=False` but **do not** exclude the episode at collect time.
+2. **Offline tool** (`exclude_unstable_episodes`): exclude if already `excluded` **or** the
+   fraction of `stable=False` frames is **`>` 0.25**
+   (`DEFAULT_UNSTABLE_FRACTION_EXCLUDE`). A single force-cap hit must not wipe an episode.
+   Already-excluded rows stay excluded (reason preserved when present).
+
+Grid / load paths skip `excluded` episodes by default (`include_excluded=False`; CLI
+`--include-excluded` for debug). Online monitor thresholds and soft-disable ownership:
+[`batched-stability-monitor-design.md`](batched-stability-monitor-design.md).
+
+```bash
+# Write manifest.filtered.json (default); use --inplace to rewrite manifest.json
+uv run python -m apple_pick_gym.batched_envs.exclude_unstable_episodes \
+  --dataset /path/to/batched_sysid_dataset
+```
 
 Full `fruiting_system_params` live in each episode parquet (not duplicated in `structures[]`).
 
@@ -119,8 +142,9 @@ Required columns:
 | `ft_wrist` | f32×6 | Wrist F/T |
 
 Bonus columns: `sim_time`, `amplitude_m`, `raw_ft_wrist`, `tcp_pos`, `tcp_quat`,
-`apple_pos`, `apple_quat`, `robot_joint_q`, `woody_part_force`, plus dynamic
-`woody_start__<junction>` / `woody_end__<junction>` pairs.
+`apple_pos`, `apple_quat`, `robot_joint_q`, `woody_part_force`, `stable` (per-frame online
+monitor: `False` = blow-up/unsafe, **not** QS quality; one `False` does not imply manifest
+`excluded`), plus dynamic `woody_start__<junction>` / `woody_end__<junction>` pairs.
 
 Unlike the legacy layout, batched episode frames omit `episode_id` and `dir_idx`
 (always one direction per file).
@@ -227,6 +251,17 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py 
 ## Tests
 
 - `apple_pick_sim/tests/test_batched_trajectory_store.py` — writer/loader roundtrip
-- `apple_pick_gym/tests/test_batched_sysid_collect.py` — end-to-end collect
+- `apple_pick_gym/tests/test_batched_sysid_collect.py` — end-to-end collect; `excluded` only for sticky soft-disable
+- `apple_pick_gym/tests/test_env_disable_controller.py` — sticky soft-disable masks
+- `apple_pick_gym/tests/test_exclude_unstable_episodes.py` — offline fraction `> 0.25` policy
+- `apple_pick_gym/tests/test_batched_stability_monitor.py` — online thresholds / `hard_blowup_mask`
 - `apple_pick_gym/tests/test_batched_sysid_replay_fidelity.py` — collect → legacy materialize → replay (full `fruiting_system_params`; infer-only fidelity floor is deferred V.4.2.1)
 - `apple_pick_gym/tests/test_batched_replay_export.py` — MMD grid replay export roundtrip
+
+```bash
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_gym/tests/test_batched_sysid_collect.py \
+  apple_pick_gym/tests/test_exclude_unstable_episodes.py \
+  apple_pick_gym/tests/test_env_disable_controller.py \
+  apple_pick_gym/tests/test_batched_stability_monitor.py -q
+```

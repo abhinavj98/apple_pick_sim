@@ -38,15 +38,27 @@ is still present.
 
 ## Hold metrics
 
-Default scoring uses `--use-median` (full hold windows, no latter-half burn-in):
+Default scoring uses `--use-median` (full hold windows, no latter-half burn-in).
+Bag layout, one-hots, and dims: `docs/sysid-transition-features.md`.
 
 | Path | Behavior |
 |------|----------|
 | Console `--score-mse` with `--use-median` | `trajectory_paired_hold_median_mse` — paired median(replay) vs median(GT) per hold |
-| Wasserstein with `--use-median` | Hold→hold median bags `[s_i, Δs_i]`; optional `--hold-id-onehot` / `--pool-directions` |
+| Wasserstein with `--use-median` | Hold→hold median bags `[s_i, Δs_i]`; optional `--hold-id-onehot` / `--pool-directions` (latter auto-appends dir one-hot) |
 | `--no-use-median` | Frame-wise MSE and frame→frame bags on full holds |
 
+Deprecated CLI (still accepted): `--mse-hold-aggregation` maps to `--use-median` /
+`--no-use-median`; `--mse-hold-latter-half` is a no-op (full holds always).
+
 Named gates: `scripts/gate_sysid_gt_sinkhorn.sh --gate gate_median_hold|gate_hold_id|gate_pooled_dirs`.
+
+Grid viz woody metrics (`apple_pick_gym/grid_viz_metrics.py`):
+
+- `woody_segment_pos_mse_paired_holds` — aggregate within each hold, then mean over holds (default median path)
+- `woody_segment_pos_mse_hold_aggregated` — legacy flat bag over all hold frames
+
+By default the grid skips manifest episodes with `excluded: true` (collect sticky
+disable or offline `exclude_unstable_episodes`); pass `--include-excluded` only for debug.
 
 `GridVizRow` also reports `n_directions_all` / `n_directions_hold`: the number
 of directions with valid metrics. Cross-direction means require all directions
@@ -86,12 +98,14 @@ Grid replay reads `manifest.collection.control_hz` (falls back to module
 ## Tests
 
 - `apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py` — pre-weld strip,
-  action tensor shape, frame alignment, trajectory MSE/hold aggregation
+  action tensor shape, frame alignment, trajectory MSE / paired-hold median /
+  legacy hold aggregation, manifest `excluded` load skip
 - `apple_pick_gym/tests/test_batched_sysid_grid_viz_table.py` — viz row GT ranking
 - `apple_pick_gym/tests/test_batched_sysid_grid_viz_integration.py` — end-to-end
   GT preference on a tiny collected dataset
 - `apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py` —
-  manifest `control_hz` resolution
+  manifest `control_hz`, `--use-median` / deprecated hold flags, `--hold-id-onehot` /
+  `--pool-directions`
 
 ## Validation
 
@@ -109,7 +123,7 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py 
   --plot-output tmp/mmd_grid_test_slow_xs_fixed --grid-values-are-gt-multipliers \
   --primary-bend-stiffness-values 0.005,100.5 --spur-bend-stiffness-values 1 \
   --stem-bend-stiffness-values 0.005,100.5 --secondary-bend-stiffness-values 1 \
-  --mse-hold-aggregation median
+  --use-median
 ```
 
 Expect GT candidate (`dist_log_gt = 0`) to rank best or near-best on hold metrics

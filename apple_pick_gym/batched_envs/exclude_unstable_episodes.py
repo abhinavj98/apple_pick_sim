@@ -1,4 +1,9 @@
-"""Mark batched_sysid_v1 episodes excluded when any frame has stable=False."""
+"""Mark batched_sysid_v1 episodes excluded when unstable-frame fraction is high.
+
+Default policy: exclude if ``excluded`` is already true, or if the fraction of
+``stable=False`` frames exceeds ``DEFAULT_UNSTABLE_FRACTION_EXCLUDE`` (0.25).
+A single force-cap hit must not wipe an episode.
+"""
 
 from __future__ import annotations
 
@@ -95,7 +100,11 @@ def exclude_unstable_episodes(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Mark batched_sysid_v1 episodes excluded if any frame is unstable."
+        description=(
+            "Mark batched_sysid_v1 episodes excluded when the unstable-frame "
+            f"fraction exceeds {DEFAULT_UNSTABLE_FRACTION_EXCLUDE} "
+            "(already-excluded rows stay excluded)."
+        )
     )
     parser.add_argument("--dataset", type=Path, required=True, help="Dataset root directory")
     parser.add_argument(

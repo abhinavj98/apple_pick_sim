@@ -58,7 +58,7 @@
 - Batched recorded-action replay (`replay_batched_sysid_structure`)
 - **V.4.3** in-process GPU-batched stiffness grid: MSE + Sinkhorn Wasserstein + Plotly viz (`example_batched_sysid_mmd_grid.py`; alignment notes in `docs/sysid-mmd-grid-replay-alignment.md`)
 - **V.5.1 mid-slice — stable collect / replay:** soft-disable during collect (`EnvDisableController`, sticky on NaN/IK); manifest `excluded` / `excluded_reason`; offline `exclude_unstable_episodes` (exclude when unstable-frame **fraction > 0.25**, preserve already-excluded); online stability force/torque caps **50 N** / **20 N·m** (`docs/batched-stability-monitor-design.md`); scripts `scripts/collect_and_rank_sysid_gt.sh`, `scripts/gate_sysid_gt_sinkhorn.sh` (design: `docs/superpowers/specs/2026-07-12-sysid-stable-collect-replay-design.md`)
-- **V.5.1 mid-slice — scoring / features:** transition-feature contract (`docs/sysid-transition-features.md`); hold→hold median bags (`--use-median` CLI default; deprecated `--mse-hold-aggregation` / `--mse-hold-latter-half`); optional `--hold-id-onehot`, `--pool-directions` (forces dir one-hot); named Sinkhorn gates `gate_median_hold` / `gate_hold_id` / `gate_pooled_dirs` via `scripts/gate_sysid_gt_sinkhorn.sh`; `sysid_gate_report.py` + grid-viz paired-hold woody MSE helper
+- **V.5.1 mid-slice — scoring / features:** transition-feature contract (`docs/sysid-transition-features.md`); CLI defaults `--use-median` / `--hold-id-onehot` / `--pool-directions` **on** (pool forces dir one-hot; disable with `--no-*`; deprecated `--mse-hold-aggregation` / `--mse-hold-latter-half`); named Sinkhorn gates via `scripts/gate_sysid_gt_sinkhorn.sh` (script default `GATE=gate_pooled_dirs`; also `gate_median_hold` / `gate_hold_id`); `sysid_gate_report.py` + grid-viz paired-hold woody MSE helper
 
 **Existing mitigations to build on (not yet a full hardening stage):** `mmd_features.py` `stable` mask, median hold aggregation / hold→hold median bags, grid-viz candidate `disqualified` flags, hold impulse flags in `batched_hold_quasi_static.py`, online `batched_stability_monitor` (`docs/batched-stability-monitor-design.md`), soft-disable + exclude-fraction policy above.
 
@@ -96,7 +96,7 @@
 
 - [ ] **V.5.1 — Harden loss calculation in `example_batched_sysid_mmd_grid.py` (Next; mid-slice precursors shipped):**
   - [x] Soft-disable + manifest `excluded` / offline exclude (unstable-frame fraction > 0.25) + stability caps 50 N / 20 N·m
-  - [x] Documented transition-feature / Sinkhorn scoring contract (`docs/sysid-transition-features.md`) + named gate CLI (`scripts/gate_sysid_gt_sinkhorn.sh`: `gate_median_hold` / `gate_hold_id` / `gate_pooled_dirs`)
+  - [x] Documented transition-feature / Sinkhorn scoring contract (`docs/sysid-transition-features.md`) + named gate CLI (`scripts/gate_sysid_gt_sinkhorn.sh`; default `gate_pooled_dirs`, also `gate_median_hold` / `gate_hold_id`)
   - [ ] GT consistently ranks best on hold MSE / Wasserstein (and MMD when wired) under known-good datasets
   - [ ] Any further outlier / unstable-frame / direction handling still required for that GT preference
   - [ ] Optional CLI `--score-mmd` exposing `evaluate_batched_mmd_grid`
@@ -293,10 +293,11 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_exclude_unstable_episodes.py \
   apple_pick_gym/tests/test_sysid_gate_report.py -q
 
-# Optional Sinkhorn gate wrapper (not a full slow e2e; needs a dataset path)
+# Optional Sinkhorn gate wrapper (not a full slow e2e; needs GPU + long runtime)
+# Default GATE=gate_pooled_dirs (matches CLI pool/hold-id defaults):
+# bash scripts/gate_sysid_gt_sinkhorn.sh
 # bash scripts/gate_sysid_gt_sinkhorn.sh --gate gate_median_hold
 # bash scripts/gate_sysid_gt_sinkhorn.sh --gate gate_hold_id
-# bash scripts/gate_sysid_gt_sinkhorn.sh --gate gate_pooled_dirs
 ```
 
 **Stop and ask the maintainer when:**

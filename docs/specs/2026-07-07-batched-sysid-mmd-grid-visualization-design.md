@@ -1,5 +1,8 @@
 # Batched sysID MMD grid — visualization design (RMSE/MSE landscape)
 
+> **Hold MSE note (2026-07-15):** console `--score-mse` with `--use-median` uses `trajectory_paired_hold_median_mse` (not the legacy flat `trajectory_hold_aggregated_mse` bag). See `docs/sysid-mmd-grid-replay-alignment.md`.
+
+
 **Status: Implemented** (2026-07-07+) — see `apple_pick_gym/grid_viz_*.py` and tests under `apple_pick_gym/tests/test_batched_sysid_grid_viz_*.py`. This file remains a historical design note.
 
 Date: 2026-07-07  

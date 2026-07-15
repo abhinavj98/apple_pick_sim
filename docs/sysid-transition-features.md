@@ -131,13 +131,15 @@ v = [s,\ \Delta s,\ \mathrm{hold\_id\ one\text{-}hot},\ \mathrm{dir\_idx\ one\te
 
 ### Named Sinkhorn gates
 
-From `scripts/gate_sysid_gt_sinkhorn.sh` (`SCORE_EXTRA`):
+From `scripts/gate_sysid_gt_sinkhorn.sh` (`SCORE_EXTRA`). Script default
+`GATE=gate_pooled_dirs` (same as the batched grid CLI defaults); override with
+`--gate …`.
 
 | Gate | Flags |
 | ---- | ----- |
 | `gate_median_hold` | `--use-median --no-hold-id-onehot --no-pool-directions` |
 | `gate_hold_id` | `--use-median --hold-id-onehot --no-pool-directions` |
-| `gate_pooled_dirs` | `--use-median --hold-id-onehot --pool-directions` |
+| `gate_pooled_dirs` (**script default**) | `--use-median --hold-id-onehot --pool-directions` |
 
 ---
 

@@ -2,6 +2,11 @@
 
 **Status: Implemented** (2026-07-08+) — see `apple_pick_sim/system_id/wasserstein.py`, `wasserstein_ranking.py`, and `--score-wasserstein` on `example_batched_sysid_mmd_grid.py`. This file remains a historical design note.
 
+> **Superseded for bag layout (2026-07-15):** hold bags are **full** hold segments
+> (no latter-half burn-in); shipped CLI defaults use hold→hold **median** transitions
+> with optional hold-id / pooled-dir one-hots. Canonical contract:
+> [`docs/sysid-transition-features.md`](../sysid-transition-features.md).
+
 Date: 2026-07-08  
 Branch: `feature/batched-sysid-mmd`  
 Scope: ranking validation only — Sinkhorn beside MSE on the batched stiffness grid. No CMA-ES loop, no GPU-only bag pipeline, no MMD CLI wiring.

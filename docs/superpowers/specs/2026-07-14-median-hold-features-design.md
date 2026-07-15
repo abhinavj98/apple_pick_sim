@@ -1,5 +1,12 @@
 # Median hold features + named Sinkhorn gates
 
+> **Amendment (2026-07-15):** Batched grid CLI defaults `--use-median`,
+> `--hold-id-onehot`, and `--pool-directions` **on**. Gate harness default is
+> `GATE=gate_pooled_dirs`. Canonical contract: `docs/sysid-transition-features.md`.
+> `scripts/compare_sysid_gates.sh` is a local helper (still under `scripts/**`
+> gitignore; not tracked).
+
+
 Date: 2026-07-14  
 Branch: `feature/sysid-stable-collect`
 
@@ -16,15 +23,14 @@ Pass bar: GT Sinkhorn `gt_rank <= 2`, GT not disqualified. Geometry: `total_move
 ## CLI
 
 - `--use-median` / `--no-use-median` (default on)
-- `--hold-id-onehot` / `--pool-directions`
+- `--hold-id-onehot` / `--pool-directions` (CLI defaults **on**; `--no-*` to disable)
 - `--score-json-output` for gate harness
 
 ## Harness
 
 ```bash
+bash scripts/gate_sysid_gt_sinkhorn.sh   # default gate_pooled_dirs
 bash scripts/gate_sysid_gt_sinkhorn.sh --gate gate_median_hold
 bash scripts/gate_sysid_gt_sinkhorn.sh --gate gate_hold_id
-bash scripts/gate_sysid_gt_sinkhorn.sh --gate gate_pooled_dirs
-bash scripts/compare_sysid_gates.sh \
-  --gate_median_hold <dir1> --gate_hold_id <dir2> --gate_pooled_dirs <dir3>
+# optional local (untracked): scripts/compare_sysid_gates.sh …
 ```

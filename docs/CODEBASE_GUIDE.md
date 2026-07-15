@@ -75,7 +75,7 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): `ApplePickBatchedBaseEnv`, `ApplePickBatchedVicEnv`, `ApplePickBatchedSysIdEnv`, `batched_sysid_collect.py`, `batched_sysid_mmd_grid.py`, `batched_stability_monitor.py`, `env_disable_controller.py` (soft-disable on NaN/IK), `exclude_unstable_episodes.py` (offline exclude when unstable-frame fraction > 0.25), `sysid_gate_report.py` |
 | `apple_pick_gym/batched_examples/` | `example_batched_collect_sysid_data.py`, `example_batched_sysid_mmd_grid.py`, `example_batched_gym_keyboard.py` |
 | `apple_pick_gym/grid_viz_*.py` | Plotly / table / report helpers for batched stiffness-grid ranking (incl. paired-hold woody MSE) |
-| `scripts/` | Staged sys-ID helpers: `collect_and_rank_sysid_gt.sh`, `gate_sysid_gt_sinkhorn.sh` (`gate_median_hold` / `gate_hold_id` / `gate_pooled_dirs`) |
+| `scripts/` | Staged sys-ID helpers: `collect_and_rank_sysid_gt.sh`, `gate_sysid_gt_sinkhorn.sh` (default `gate_pooled_dirs`; also `gate_median_hold` / `gate_hold_id`) |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |
 | `docs/` | This documentation set (below). `docs/specs/` holds dated point-in-time design notes (historical once stamped Implemented) |
 

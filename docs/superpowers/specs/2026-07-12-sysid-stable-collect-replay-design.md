@@ -1,5 +1,13 @@
 # Sys-ID stable collect & replay (blow-up isolation)
 
+> **Amendment (2026-07-15, matches shipped code):** soft-disable / collect
+> `excluded` uses **sticky NaN/Inf + IK only** (`hard_blowup_mask`), not every
+> force/speed-cap frame. Offline `exclude_unstable_episodes` uses unstable-frame
+> **fraction > 0.25** (not “any `stable=False`”). Force/torque monitor caps are
+> **50 N / 20 N·m**. See `docs/batched-stability-monitor-design.md` and
+> `docs/batched-sysid-dataset.md`.
+
+
 **Date:** 2026-07-12  
 **Status:** Approved for planning  
 **Roadmap:** V.5.1 (loss / grid hardening precursor — crash-safe collect/replay)  

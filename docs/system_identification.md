@@ -113,7 +113,7 @@ Markovian flow (not absolute pose alone):
 
 $$v = [s,\, \Delta s]$$
 
-Shipped hold bags support frame→frame \(\Delta s\) or hold→hold median \(\Delta s\) (`--use-median`, CLI default on), optional `--hold-id-onehot`, and optional `--pool-directions` (appends dir one-hot and pools bags). **No latter-half burn-in** in the feature builders. Full contract: `docs/sysid-transition-features.md`.
+Shipped hold bags support frame→frame \(\Delta s\) or hold→hold median \(\Delta s\). Batched grid CLI defaults: `--use-median`, `--hold-id-onehot`, and `--pool-directions` **on** (pool appends dir one-hot and merges bags; disable with `--no-*`). Library helpers still default `use_median=False` / no pooling. **No latter-half burn-in** in the feature builders. Full contract: `docs/sysid-transition-features.md`.
 
 ### 3.3 Pre-Processing
 
@@ -123,7 +123,7 @@ Shipped hold bags support frame→frame \(\Delta s\) or hold→hold median \(\De
 
 ### 3.4 CEM data pooling
 
-Run CEM **per excitation direction** first (separate \(P\), \(Q\) per \(\hat{u}\)). After convergence, compare \(\theta\) across directions: direction-dependent parameters (likely \(K\)) vs shared parameters (likely \(M\)). Default scoring keeps per-direction bags for that reason. Optional CLI `--pool-directions` (with dir one-hot) is a shipped Sinkhorn experiment path (`gate_pooled_dirs`); it is not the CEM default.
+Run CEM **per excitation direction** first (separate \(P\), \(Q\) per \(\hat{u}\)). After convergence, compare \(\theta\) across directions: direction-dependent parameters (likely \(K\)) vs shared parameters (likely \(M\)). Planned CEM still uses per-direction bags. The **shipped** batched grid CLI currently defaults to pooled Sinkhorn (`--pool-directions` + dir one-hot; `gate_pooled_dirs`); pass `--no-pool-directions` for per-direction bags.
 
 ## 4. Optimization: Cross-Entropy Method (CEM)
 
@@ -176,7 +176,7 @@ The batched in-process grid (`apple_pick_gym/batched_envs/batched_sysid_mmd_grid
 
 **Opt-in digital twin:** CLI `--infer-params` switches build params to `infer_base_params_for_structure` (obs-inferred geometry). Independent of `--use-snapshot` (privileged state restore). Infer-only fidelity floor remains deferred V.4.2.1. Online unstable-env signal during collect/grid: `docs/batched-stability-monitor-design.md`.
 
-**Current scoring mitigations (not yet V.5.1 hardening):** `stable` frame mask in `mmd_features.py` (masks samples inside holds; does not split segments), CLI `--use-median` / `--hold-id-onehot` / `--pool-directions` on `example_batched_sysid_mmd_grid.py`, median hold MSE via `trajectory_hold_aggregated_mse`, named gates in `scripts/gate_sysid_gt_sinkhorn.sh`, candidate `disqualified` flags in grid viz, hold impulse flags in `batched_hold_quasi_static.py`. Feature contract: `docs/sysid-transition-features.md`.
+**Current scoring mitigations (not yet V.5.1 hardening):** `stable` frame mask in `mmd_features.py` (masks samples inside holds; does **not** split hold segments), CLI defaults `--use-median` / `--hold-id-onehot` / `--pool-directions` on `example_batched_sysid_mmd_grid.py`, console median hold MSE via `trajectory_paired_hold_median_mse` (legacy flat bag still in `trajectory_hold_aggregated_mse`), named gates in `scripts/gate_sysid_gt_sinkhorn.sh` (default `gate_pooled_dirs`), candidate `disqualified` flags in grid viz, hold impulse flags in `batched_hold_quasi_static.py`. Feature contract: `docs/sysid-transition-features.md`.
 
 **Tests:** `test_true_params_for_structure_returns_exact_sampled_params`, `test_gt_bend_stiffness_candidate_from_structure_reads_true_stiffness`, `test_replay_structure_uses_true_params_geometry`.
 

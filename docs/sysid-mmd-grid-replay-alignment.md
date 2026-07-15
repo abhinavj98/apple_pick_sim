@@ -32,25 +32,27 @@ pre-weld rows once via `strip_pre_weld_rows()` in
 After stripping, `recorded[i]` aligns with replay step `i` (same action applied,
 post-step observation compared).
 
-Metric helpers (`trajectory_mse`, `trajectory_hold_aggregated_mse`,
-`grid_viz_table.replay_vs_recorded_errors`) fail fast if a leading pre-weld row
-is still present.
+Metric helpers (`trajectory_mse`, `trajectory_paired_hold_median_mse`,
+`trajectory_hold_aggregated_mse`, `grid_viz_table.replay_vs_recorded_errors`) fail
+fast if a leading pre-weld row is still present.
 
 ## Hold metrics
 
-Default scoring uses `--use-median` (full hold windows, no latter-half burn-in).
-Bag layout, one-hots, and dims: `docs/sysid-transition-features.md`.
+Grid CLI defaults: `--use-median`, `--hold-id-onehot`, and `--pool-directions` **on**
+(full hold windows; no latter-half burn-in). Feature layout / dims:
+`docs/sysid-transition-features.md`.
 
 | Path | Behavior |
 |------|----------|
 | Console `--score-mse` with `--use-median` | `trajectory_paired_hold_median_mse` — paired median(replay) vs median(GT) per hold |
-| Wasserstein with `--use-median` | Hold→hold median bags `[s_i, Δs_i]`; optional `--hold-id-onehot` / `--pool-directions` (latter auto-appends dir one-hot) |
+| Wasserstein with `--use-median` | Hold→hold median bags `[s_i, Δs_i]`; CLI-default `--hold-id-onehot` / `--pool-directions` (pool auto-appends dir one-hot) |
 | `--no-use-median` | Frame-wise MSE and frame→frame bags on full holds |
 
 Deprecated CLI (still accepted): `--mse-hold-aggregation` maps to `--use-median` /
 `--no-use-median`; `--mse-hold-latter-half` is a no-op (full holds always).
 
-Named gates: `scripts/gate_sysid_gt_sinkhorn.sh --gate gate_median_hold|gate_hold_id|gate_pooled_dirs`.
+Named gates: `scripts/gate_sysid_gt_sinkhorn.sh` defaults to `gate_pooled_dirs`
+(also `--gate gate_median_hold|gate_hold_id`).
 
 Grid viz woody metrics (`apple_pick_gym/grid_viz_metrics.py`):
 

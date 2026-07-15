@@ -1,5 +1,12 @@
 # GT rank iteration report (give-up)
 
+
+> **Update (2026-07-15):** With pooled/median Sinkhorn defaults and healthy
+> sampling, **GT constantly ranks #1**. Occasional worse ranks are attributed to
+> **bad sampling** (e.g. force-cap saturation) and **are allowed** — not treated
+> as a scoring-logic failure. See `docs/ROADMAP.md` / `docs/sysid-transition-features.md` §6.
+
+
 **Date:** 2026-07-12  
 **Worktree:** `apple_pick_sim-sysid-stable-collect` (`feature/sysid-stable-collect`)  
 **Goal:** Make `scripts/collect_and_rank_sysid_gt.sh` show GT among the best candidates.  

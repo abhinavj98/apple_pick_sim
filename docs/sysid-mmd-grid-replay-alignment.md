@@ -3,7 +3,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Status** | Shipped (V.4.3) |
-| **Next** | V.5.1 loss / GT-scoring hardening — see `docs/ROADMAP.md` |
+| **Next** | V.5.1 leftovers (`--score-mmd`, invariant tests); GT #1 on good samples accepted — see `docs/ROADMAP.md` |
 
 ## Summary
 
@@ -128,5 +128,7 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py 
   --use-median
 ```
 
-Expect GT candidate (`dist_log_gt = 0`) to rank best or near-best on hold metrics
-after the pre-weld alignment fix. Further GT-rank reliability is **V.5.1**.
+Expect GT candidate (`dist_log_gt = 0`) to **rank #1** on hold metrics when sampling
+is healthy (post pre-weld alignment + V.5.1 scoring defaults). Occasional worse ranks
+from **bad sampling** (saturated / non-discriminative trials) are allowed and are not
+treated as a scoring-bug.

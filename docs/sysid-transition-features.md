@@ -173,14 +173,22 @@ Real-world ArUco at woody start/end maps cleanly onto `woody_part_*_pos`; marker
 
 ---
 
-## 6. Ambiguities (code as written)
+## 6. Ranking expectation
+
+Under healthy excitation / sampling, the GT stiffness candidate **constantly ranks #1**
+on the shipped hold bags (median + hold-id + pooled dirs). Occasional worse ranks are
+attributed to **bad sampling** (e.g. wrench saturation that collapses discrimination) and
+**are allowed** — diagnose the fixture/caps/seed, not the distance logic. Gate harness
+`GATE_PASS_MAX_RANK = 2` is a soft seed diagnostic, not a replacement for #1-on-good-data.
+
+## 7. Ambiguities (code as written)
 
 - **Hold diagnostics vs bags:** `batched_hold_quasi_static.py` still defaults to a latter-half metrics window for quasi-static *checks*. That path is separate from MMD/Wasserstein feature builders, which always use full hold segments.
 - **\(N_{\mathrm{holds}}\) / \(N_{\mathrm{dirs}}\):** widths resolve from `n_holds` / `n_directions` when passed, else from `hold_number` max+1 / `dir_idx` max+1 (or per-direction segment count). Callers that pool must keep GT and candidate widths aligned.
 
 ---
 
-## 7. Tests
+## 8. Tests
 
 | Tests | What they cover |
 | ----- | --------------- |

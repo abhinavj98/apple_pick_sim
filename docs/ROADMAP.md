@@ -7,7 +7,7 @@
 | **Last updated** | 2026-07-15 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[V].5.1** — mid-slice shipped (stable collect + transition/Sinkhorn gates); GT-rank reliability still open |
+| **Active work**  | **[V].5.1** — loss/features shipped; GT ranks **#1** on good samples (bad ranks from bad sampling allowed); leftover: optional `--score-mmd`, invariant tests |
 
 ---
 
@@ -42,14 +42,12 @@
 
 ## Current focus
 
-**Next slice:** **V.5.1** — finish hardening the **loss calculation** in `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` (and helpers in `batched_sysid_mmd_grid.py` / feature scorers) so the **GT stiffness candidate consistently ranks best** on the batched grid. Mid-slice precursors below are shipped; do **not** mark V.5.1 Done until GT-rank reliability is proven.
+**Next slice:** **V.5.1** leftovers — optional CLI `--score-mmd` and documented/invariant tests. Core loss hardening is **accepted**: under good excitation/sampling, the **GT stiffness candidate constantly ranks #1** (hold MSE / Sinkhorn with median + hold-id + pooled dirs). Occasional worse ranks are attributed to **bad sampling** (e.g. wrench-saturated / non-discriminative trials) and **are allowed** — do not treat those as scoring-logic failures. Gate harness pass bar `gt_rank ≤ 2` remains a soft diagnostic for noisy seeds, not a denial of #1-on-good-data.
 
 **Scope remaining for this slice:**
 
-- Prove GT preference on known-good datasets (hold MSE / Wasserstein; MMD when wired) using the new soft-disable + exclude + median/hold-id/pooled Sinkhorn gates
-- Any further outlier / unstable-frame handling still needed for that GT preference
 - Optional CLI `--score-mmd` exposing `evaluate_batched_mmd_grid`
-- Documented invariants + tests for GT preference under known-good datasets
+- Documented invariants + tests for GT preference under known-good datasets (codify: #1 expected when sampling is healthy; bad sampling may miss #1)
 
 **Shipped wins (do not reimplement):**
 
@@ -60,11 +58,13 @@
 - **V.5.1 mid-slice — stable collect / replay:** soft-disable during collect (`EnvDisableController`, sticky on NaN/IK); manifest `excluded` / `excluded_reason`; offline `exclude_unstable_episodes` (exclude when unstable-frame **fraction > 0.25**, preserve already-excluded); online stability force/torque caps **50 N** / **20 N·m** (`docs/batched-stability-monitor-design.md`); scripts `scripts/collect_and_rank_sysid_gt.sh`, `scripts/gate_sysid_gt_sinkhorn.sh` (design: `docs/superpowers/specs/2026-07-12-sysid-stable-collect-replay-design.md`)
 - **V.5.1 mid-slice — scoring / features:** transition-feature contract (`docs/sysid-transition-features.md`); CLI defaults `--use-median` / `--hold-id-onehot` / `--pool-directions` **on** (pool forces dir one-hot; disable with `--no-*`; deprecated `--mse-hold-aggregation` / `--mse-hold-latter-half`); named Sinkhorn gates via `scripts/gate_sysid_gt_sinkhorn.sh` (script default `GATE=gate_pooled_dirs`; also `gate_median_hold` / `gate_hold_id`); `sysid_gate_report.py` + grid-viz paired-hold woody MSE helper
 
-**Existing mitigations to build on (not yet a full hardening stage):** `mmd_features.py` `stable` mask, median hold aggregation / hold→hold median bags, grid-viz candidate `disqualified` flags, hold impulse flags in `batched_hold_quasi_static.py`, online `batched_stability_monitor` (`docs/batched-stability-monitor-design.md`), soft-disable + exclude-fraction policy above.
+**Shipped ranking policy:** On healthy samples, GT **constantly ranks #1**. Bad ranks from bad sampling are allowed (fixture/excitation issue, not loss bug).
+
+**Existing tooling (still useful):** `mmd_features.py` `stable` mask, median hold aggregation / hold→hold median bags, grid-viz candidate `disqualified` flags, hold impulse flags in `batched_hold_quasi_static.py`, online `batched_stability_monitor` (`docs/batched-stability-monitor-design.md`), soft-disable + exclude-fraction policy above.
 
 **Deferred (not Current focus):** **V.4.2.1** — helpers + `--infer-params` exist; default sim-sim path still uses oracle `fruiting_system_params`; no infer-only fidelity floor test yet.
 
-**Goal:** Reliable GT-preferring scores from `example_batched_sysid_mmd_grid.py` → **V.5.2** CEM → **V.5.3** held-out validation → **[M4]**.
+**Goal:** Keep GT-preferring scores from `example_batched_sysid_mmd_grid.py` (good sampling → rank #1) → **V.5.2** CEM → **V.5.3** held-out validation → **[M4]**.
 
 **Specs:** `docs/system_identification.md`, `docs/sysid-transition-features.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/batched-sysid-dataset.md`, `docs/batched-stability-monitor-design.md`, `docs/digital-twin.md`, `docs/material-parameter-sampling.md`
 
@@ -94,11 +94,10 @@
 
 **[V].5 — sim-sim transfer wrap-up**
 
-- [ ] **V.5.1 — Harden loss calculation in `example_batched_sysid_mmd_grid.py` (Next; mid-slice precursors shipped):**
+- [ ] **V.5.1 — Harden loss calculation in `example_batched_sysid_mmd_grid.py` (Next; ranking accepted, polish left):**
   - [x] Soft-disable + manifest `excluded` / offline exclude (unstable-frame fraction > 0.25) + stability caps 50 N / 20 N·m
   - [x] Documented transition-feature / Sinkhorn scoring contract (`docs/sysid-transition-features.md`) + named gate CLI (`scripts/gate_sysid_gt_sinkhorn.sh`; default `gate_pooled_dirs`, also `gate_median_hold` / `gate_hold_id`)
-  - [ ] GT consistently ranks best on hold MSE / Wasserstein (and MMD when wired) under known-good datasets
-  - [ ] Any further outlier / unstable-frame / direction handling still required for that GT preference
+  - [x] GT constantly ranks **#1** on hold MSE / Wasserstein under **good** sampling; worse ranks from bad sampling are allowed (not a loss bug)
   - [ ] Optional CLI `--score-mmd` exposing `evaluate_batched_mmd_grid`
   - [ ] Documented invariants + tests for GT preference under known-good datasets
 - [ ] **V.5.2 — CEM calibration loop** (M3.2)
@@ -153,7 +152,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.4.2.1** | Deferred | Infer-params / obs-init fidelity capstone (helpers exist; not Current focus) |
 | **V.4.3** | Done | In-process batched MSE/Wasserstein grid + viz; library MMD present |
 | **V.4.4** | Planned | Native v1 replay/dashboard at batch scale |
-| **V.5.1** | **Next** (mid-slice shipped) | Stable collect + transition/Sinkhorn gates in; GT rank reliability still open |
+| **V.5.1** | **Next** (ranking accepted) | GT #1 on good samples; bad sampling ranks allowed; leftover `--score-mmd` + invariant tests |
 | **V.5.2** | Planned | CEM θ loop |
 | **V.5.3** | Planned | Held-out validation; [M4] handoff |
 

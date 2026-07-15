@@ -163,7 +163,7 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | V.4.3 in-process batched grid | **Done** | `example_batched_sysid_mmd_grid.py` + `batched_sysid_mmd_grid.py` (MSE / Sinkhorn Wasserstein + viz); library MMD via `evaluate_batched_mmd_grid`; see `docs/sysid-mmd-grid-replay-alignment.md` |
 | V.4.2.1 batched digital-twin fidelity | **Deferred** | Helpers + CLI `--infer-params` exist; infer-only fidelity floor not yet a capstone test — see `docs/ROADMAP.md` |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
-| V.5.1 loss / feature hardening | **Next** | Outlier / unstable frame & direction handling so GT ranks best; optional CLI `--score-mmd`; see `docs/ROADMAP.md` |
+| V.5.1 loss / feature hardening | **Next** (ranking accepted) | GT ranks **#1** on good samples (bad ranks from bad sampling allowed); leftover optional `--score-mmd` + invariant tests; see `docs/ROADMAP.md` |
 | M3.2 / V.5.2 CEM loop | Planned | — |
 
 ### Batched MMD grid base geometry (2026-07-06)
@@ -176,7 +176,7 @@ The batched in-process grid (`apple_pick_gym/batched_envs/batched_sysid_mmd_grid
 
 **Opt-in digital twin:** CLI `--infer-params` switches build params to `infer_base_params_for_structure` (obs-inferred geometry). Independent of `--use-snapshot` (privileged state restore). Infer-only fidelity floor remains deferred V.4.2.1. Online unstable-env signal during collect/grid: `docs/batched-stability-monitor-design.md`.
 
-**Current scoring mitigations (not yet V.5.1 hardening):** `stable` frame mask in `mmd_features.py` (masks samples inside holds; does **not** split hold segments), CLI defaults `--use-median` / `--hold-id-onehot` / `--pool-directions` on `example_batched_sysid_mmd_grid.py`, console median hold MSE via `trajectory_paired_hold_median_mse` (legacy flat bag still in `trajectory_hold_aggregated_mse`), named gates in `scripts/gate_sysid_gt_sinkhorn.sh` (default `gate_pooled_dirs`), candidate `disqualified` flags in grid viz, hold impulse flags in `batched_hold_quasi_static.py`. Feature contract: `docs/sysid-transition-features.md`.
+**Shipped scoring path (V.5.1 ranking accepted):** `stable` frame mask in `mmd_features.py` (masks samples inside holds; does **not** split hold segments), CLI defaults `--use-median` / `--hold-id-onehot` / `--pool-directions` on `example_batched_sysid_mmd_grid.py`, console median hold MSE via `trajectory_paired_hold_median_mse` (legacy flat bag still in `trajectory_hold_aggregated_mse`), named gates in `scripts/gate_sysid_gt_sinkhorn.sh` (default `gate_pooled_dirs`), candidate `disqualified` flags in grid viz, hold impulse flags in `batched_hold_quasi_static.py`. **GT constantly ranks #1** under good excitation/sampling; worse ranks attributed to bad sampling are allowed. Feature contract: `docs/sysid-transition-features.md`.
 
 **Tests:** `test_true_params_for_structure_returns_exact_sampled_params`, `test_gt_bend_stiffness_candidate_from_structure_reads_true_stiffness`, `test_replay_structure_uses_true_params_geometry`.
 

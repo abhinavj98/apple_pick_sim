@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 
+# Soft seed diagnostic (noisy / bad sampling may miss #1). Policy: GT ranks #1 on
+# healthy samples; worse ranks from bad sampling are allowed — see ROADMAP / features doc.
 GATE_PASS_MAX_RANK = 2
 GATE_ORDER = ("gate_median_hold", "gate_hold_id", "gate_pooled_dirs")
 

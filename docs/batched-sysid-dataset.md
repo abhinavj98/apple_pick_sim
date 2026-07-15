@@ -11,7 +11,7 @@ writes a **batched_sysid_v1** layout optimized for training and analysis over a
 [`example_batched_sysid_mmd_grid.py`](../apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py)
 (MSE / Wasserstein + viz). Alignment contract:
 [`sysid-mmd-grid-replay-alignment.md`](sysid-mmd-grid-replay-alignment.md).
-Status / next (V.5.1 loss hardening): [`ROADMAP.md`](ROADMAP.md).
+Status / next (**V.5.2** CEM): [`ROADMAP.md`](ROADMAP.md).
 
 Single-env collection (`example_gym_sysid.py`) still uses the legacy layout in
 [`sysid-trajectory-storage.md`](sysid-trajectory-storage.md).
@@ -178,8 +178,7 @@ woody anchors) plus `params_fingerprint` / fixture metadata, without relying on
 the full params blob alone. Helpers live in
 `apple_pick_sim/system_id/parquet_init.py` and
 `batched_digital_twin_init.py`; grid CLI `--infer-params` already wires infer
-build params. Native v1 replay dashboard remains V.4.4. Current focus is V.5.1
-loss hardening (`docs/ROADMAP.md`).
+build params. V.4.4 tooling shipped; Current focus is **V.5.2** CEM (`docs/ROADMAP.md`).
 
 ## Collect command
 

@@ -8,7 +8,7 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-07-15 (V.5.1: GT ranks #1 on good samples; bad-sampling misses allowed — see `docs/ROADMAP.md`) |
+| **Last reviewed** | 2026-07-15 (V.3 / V.4 / V.5.1 Done; next **V.5.2** CEM — see `docs/ROADMAP.md`) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
@@ -128,8 +128,9 @@ Organized by question, not by filename — each doc listed once, under its prima
 
 | Gap | Detail | Where documented |
 | --- | ------ | ----------------- |
-| Loss / GT scoring hardening (V.5.1) | Shipped scoring path: soft-disable + exclude-fraction collect, transition features, median/hold-id/pooled Sinkhorn. **GT constantly ranks #1** when sampling is healthy; occasional bad ranks from bad sampling are allowed. Leftover: optional `--score-mmd`, invariant tests | `docs/ROADMAP.md`, `docs/sysid-transition-features.md`, `docs/system_identification.md` |
-| Batched digital-twin fidelity (V.4.2.1) | Helpers + `--infer-params` exist; default sim-sim uses oracle `true_params_for_structure`; no infer-only fidelity floor test yet (deferred, not Current focus) | `docs/ROADMAP.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/digital-twin.md` |
+| Loss / GT scoring hardening (V.5.1) | **Done.** Soft-disable + exclude-fraction collect, transition features, median/hold-id/pooled Sinkhorn. GT ranks #1 on healthy samples; bad-sampling misses allowed. Primary scorer is Wasserstein; optional `--score-mmd` is later cleanup | `docs/ROADMAP.md`, `docs/sysid-transition-features.md`, `docs/system_identification.md` |
+| CEM calibration (V.5.2) | **Next** — θ loop on batched Sinkhorn/MSE scores | `docs/ROADMAP.md`, `docs/system_identification.md` §4 |
+| Batched digital-twin fidelity (V.4.2.1) | Done as shipped helpers + `--infer-params`; infer-only fidelity floor optional cleanup (not Current focus) | `docs/ROADMAP.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/digital-twin.md` |
 | `real_world_proxy.json` topology | Nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`. The two fixtures for the same physical proxy build different topologies | `docs/real-world-proxy.md` |
 
 ## Conventions worth knowing before editing docs or code

@@ -82,7 +82,7 @@ uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 ```
 
-## Gym (V.3.3 done; V.3.4–V.3.5 remain)
+## Gym (V.3 Done)
 
 Gym envs still build via explicit import:
 
@@ -91,8 +91,8 @@ from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 ```
 
 Batched gym (`ApplePickBatchedBaseEnv` / Vic / SysId) already uses
-`BatchedHeterogeneousCoupledSim`. Migrating legacy single-world gym envs/examples
-to that backend at `num_envs=1` is tracked in ROADMAP **V.3.4–V.3.5**.
+`BatchedHeterogeneousCoupledSim`. Legacy single-world gym envs/examples on that
+backend at `num_envs=1` are marked **Done** in ROADMAP **V.3.4–V.3.5**.
 
 ## Diagnostics
 

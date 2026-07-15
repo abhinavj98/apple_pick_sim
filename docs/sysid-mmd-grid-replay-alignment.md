@@ -3,7 +3,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Status** | Shipped (V.4.3) |
-| **Next** | V.5.1 leftovers (`--score-mmd`, invariant tests); GT #1 on good samples accepted — see `docs/ROADMAP.md` |
+| **Next** | **V.5.2** CEM calibration loop; V.5.1 Done (optional `--score-mmd` cleanup later) — see `docs/ROADMAP.md` |
 
 ## Summary
 
@@ -89,7 +89,7 @@ grasp point by design.
 These flags are independent. Snapshot is privileged **state**, not privileged **params**.
 Grid MSE/Wasserstein debugging currently defaults to oracle params. Infer-only
 fidelity floor (V.4.2.1) is **deferred** — helpers and `--infer-params` exist;
-a dedicated capstone test is not Current focus (`docs/ROADMAP.md`).
+a dedicated capstone test is optional cleanup (`docs/ROADMAP.md`).
 
 ## Collection / replay sim config
 

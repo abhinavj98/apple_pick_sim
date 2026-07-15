@@ -161,10 +161,10 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | M3.0.4 digital-twin fixture catalog | **Done** | `digital_twin_fixture_catalog.json`, example obs JSON, `test_digital_twin.py`; see `docs/digital-twin.md` |
 | V.4.2 batched parallel collection | **Done** | `ApplePickBatchedSysIdEnv`, `batched_sysid_v1` layout; see `docs/batched-sysid-dataset.md` |
 | V.4.3 in-process batched grid | **Done** | `example_batched_sysid_mmd_grid.py` + `batched_sysid_mmd_grid.py` (MSE / Sinkhorn Wasserstein + viz); library MMD via `evaluate_batched_mmd_grid`; see `docs/sysid-mmd-grid-replay-alignment.md` |
-| V.4.2.1 batched digital-twin fidelity | **Deferred** | Helpers + CLI `--infer-params` exist; infer-only fidelity floor not yet a capstone test — see `docs/ROADMAP.md` |
+| V.4.2.1 batched digital-twin fidelity | **Done** | Helpers + CLI `--infer-params` shipped; infer-only fidelity floor optional cleanup — see `docs/ROADMAP.md` |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
-| V.5.1 loss / feature hardening | **Next** (ranking accepted) | GT ranks **#1** on good samples (bad ranks from bad sampling allowed); leftover optional `--score-mmd` + invariant tests; see `docs/ROADMAP.md` |
-| M3.2 / V.5.2 CEM loop | Planned | — |
+| V.5.1 loss / feature hardening | **Done** | GT ranks **#1** on good samples (bad ranks from bad sampling allowed); Wasserstein primary; optional `--score-mmd` cleanup later; see `docs/ROADMAP.md` |
+| V.5.2 / M3.2 CEM calibration | **Next** | θ loop on batched Sinkhorn / MSE scores (`docs/system_identification.md` §4); see `docs/ROADMAP.md` |
 
 ### Batched MMD grid base geometry (2026-07-06)
 
@@ -256,8 +256,8 @@ one-hots) is **shipped** (`apple_pick_sim/system_id/wasserstein.py`,
 pool→dir one-hot): `docs/sysid-transition-features.md`. Named GT-rank gates:
 `scripts/gate_sysid_gt_sinkhorn.sh`. Design:
 `docs/specs/2026-07-08-wasserstein-sysid-ranking-design.md`. This does not
-replace §4 CEM/MMD until ranking evidence supports it (V.5.1 hardens GT preference
-further). On the legacy single-env path, the default initializer is observation-only
+replace §4 CEM: **V.5.1 Done** (GT preference on good samples; Wasserstein primary);
+**V.5.2** is the CEM calibration loop. On the legacy single-env path, the default initializer is observation-only
 Parquet replay; use `--use-snapshot` only for privileged sim-to-sim debugging against
 `initial_states/*.npz`.
 

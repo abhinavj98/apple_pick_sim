@@ -71,6 +71,26 @@ def test_parser_defaults_and_required_args(monkeypatch):
     assert "--num-directions" not in option_strings
 
 
+def test_parser_rejects_nonpositive_overlay_candidate_cap(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "--dataset",
+                "/tmp/gt",
+                "--output",
+                "/tmp/rank",
+                "--max-overlay-candidates",
+                "0",
+            ]
+        )
+
+
 def test_resolve_structure_indices_defaults_to_all_structures():
     module = _load_module()
     dataset = MagicMock()
@@ -1011,6 +1031,46 @@ def test_run_records_export_error_without_discarding_ranking(monkeypatch, tmp_pa
 
     report = json.loads((output_dir / "ranking.json").read_text(encoding="utf-8"))
     assert report["structures"][0]["export_error"] == "export failed"
+
+
+def test_run_records_structure_path_collision_and_still_attempts_export(
+    monkeypatch, tmp_path
+):
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+    _configure_task5_run(monkeypatch, module, evaluation)
+    monkeypatch.setattr(
+        module,
+        "evaluate_youngs_modulus_candidates",
+        lambda **_kwargs: evaluation,
+    )
+    export_calls: list[dict] = []
+
+    def record_export(*_args, **kwargs):
+        export_calls.append(dict(kwargs))
+        return len(evaluation.scores)
+
+    monkeypatch.setattr(
+        module,
+        "export_replay_candidates_for_structure",
+        record_export,
+    )
+    output_dir = tmp_path / "rank"
+    output_dir.mkdir()
+    (output_dir / "structure_000").write_text("path collision", encoding="utf-8")
+
+    module._run(
+        _task5_run_args(module, output_dir, export_replays=True),
+        argparse.ArgumentParser(),
+        viewer=MagicMock(),
+    )
+
+    report = json.loads((output_dir / "ranking.json").read_text(encoding="utf-8"))
+    structure = report["structures"][0]
+    assert structure["overlay_error"]
+    assert "structure_000" in structure["overlay_error"]
+    assert structure["export_error"] is None
+    assert len(export_calls) == 1
 
 
 def test_run_all_fail_writes_authoritative_skipped_report(monkeypatch, tmp_path):

@@ -252,14 +252,14 @@ def _finalize_structure_outputs(
 ) -> dict[str, Any]:
     row = _structure_result_to_json(evaluation)
     structure_dir = output_dir / f"structure_{int(evaluation.structure_idx):03d}"
-    structure_dir.mkdir(parents=True, exist_ok=True)
 
-    overlay_indices = select_overlay_candidate_indices(
-        evaluation.scores,
-        max_candidates=int(getattr(args, "max_overlay_candidates", 8)),
-    )
-    if overlay_indices:
-        try:
+    try:
+        structure_dir.mkdir(parents=True, exist_ok=True)
+        overlay_indices = select_overlay_candidate_indices(
+            evaluation.scores,
+            max_candidates=int(getattr(args, "max_overlay_candidates", 8)),
+        )
+        if overlay_indices:
             overlay_eps = overlay_episodes_from_replay_evaluation(
                 evaluation,
                 overlay_indices,
@@ -273,8 +273,8 @@ def _finalize_structure_outputs(
                     f"{int(evaluation.structure_idx)}"
                 ),
             )
-        except Exception as exc:
-            row["overlay_error"] = str(exc)
+    except Exception as exc:
+        row["overlay_error"] = str(exc)
 
     if bool(args.export_replays):
         try:
@@ -307,6 +307,13 @@ def _finalize_structure_outputs(
             row["export_error"] = str(exc)
 
     return row
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be >= 1")
+    return parsed
 
 
 def _resolve_sim_build_knobs(ranges: dict) -> tuple[
@@ -572,7 +579,7 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--max-overlay-candidates",
-        type=int,
+        type=_positive_int,
         default=8,
         help="Cap overlay candidates per structure (Task 5).",
     )

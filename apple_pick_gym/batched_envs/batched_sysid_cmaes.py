@@ -17,6 +17,7 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
 )
 from apple_pick_sim.fruiting_system import params as fs
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
+from apple_pick_sim.system_id.batched_digital_twin_init import true_params_for_structure
 from apple_pick_sim.system_id.wasserstein import (
     prepare_gt_wasserstein_context,
     score_candidate_wasserstein,
@@ -128,10 +129,8 @@ def gt_youngs_modulus_candidate_from_structure(
     dataset: BatchedSysIdDataset,
     structure_idx: int,
 ) -> YoungsModulusCandidate:
-    import apple_pick_gym.batched_envs.batched_sysid_cmaes as _mod
-
     return youngs_modulus_candidate_from_params(
-        _mod.true_params_for_structure(dataset, int(structure_idx))
+        true_params_for_structure(dataset, int(structure_idx))
     )
 
 
@@ -157,11 +156,6 @@ def maybe_include_gt_candidate(
     if not include_gt or any(youngs_modulus_values_match(item, gt) for item in items):
         return items
     return [*items, gt]
-
-
-from apple_pick_sim.system_id.batched_digital_twin_init import (  # noqa: E402
-    true_params_for_structure,
-)
 
 
 @dataclass(frozen=True)

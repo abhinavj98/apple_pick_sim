@@ -109,13 +109,16 @@ def assign_pull_directions(
     min_world_z: float | None = 0.0,
     shared_across_structures: bool = False,
 ) -> list[np.ndarray]:
-    """Assign pull directions in candidate-major environment order.
+    """Assign pull directions in structure-major environment order.
 
-    By default, directions are derived independently from each structure's
-    settled stem/apple pose. With ``shared_across_structures=True``, derive the
-    direction set once from structure 0 and broadcast the exact world-frame
-    vectors to every structure. The latter is required for controlled parameter
-    sweeps where actions must differ only by candidate parameters.
+    Environments are laid out as ``structure_0`` direction block, then
+    ``structure_1`` direction block, and so on (each block has
+    ``num_directions`` consecutive env indices). By default, directions are
+    derived independently from each structure's settled stem/apple pose. With
+    ``shared_across_structures=True``, derive the direction set once from
+    structure 0 and broadcast the exact world-frame vectors to every structure.
+    The latter is required for controlled parameter sweeps where actions must
+    differ only by candidate parameters.
     """
     scene = env._sim.scene
     layout = env._sim.layout

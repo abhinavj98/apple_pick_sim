@@ -1216,8 +1216,7 @@ def recorded_metadata_by_env(
 
 
 class SysIdReplayCandidate(Protocol):
-    def apply_to(self, base: FruitingSystemParams) -> FruitingSystemParams:
-        raise NotImplementedError
+    def apply_to(self, base: FruitingSystemParams) -> FruitingSystemParams: ...
 
 
 class BendStiffnessCandidate(NamedTuple):

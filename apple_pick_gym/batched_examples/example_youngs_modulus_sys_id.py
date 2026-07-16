@@ -2,7 +2,7 @@
 
 Replay recorded actions from an existing ``batched_sysid_v1`` dataset over a
 Cartesian log10-E grid for each structure, score candidates with pooled hold-phase
-Sinkhorn loss, and hand off structured results for reporting (Task 5).
+Sinkhorn loss, and hand off structured results for reporting.
 
 Run from repo root::
 
@@ -98,6 +98,15 @@ def _json_log10(value: float) -> float | None:
     return _json_float(math.log10(finite_value))
 
 
+def _per_direction_sinkhorn_to_json(
+    per_direction_sinkhorn: dict[int, float],
+) -> dict[str, float | None]:
+    return {
+        str(int(direction)): _json_float(loss)
+        for direction, loss in per_direction_sinkhorn.items()
+    }
+
+
 def _candidate_to_json_row(score: Any) -> dict[str, Any]:
     candidate = score.candidate
     return {
@@ -113,6 +122,9 @@ def _candidate_to_json_row(score: Any) -> dict[str, Any]:
             _json_log10(candidate.stem),
         ],
         "aggregate_sinkhorn": _json_float(score.aggregate_sinkhorn),
+        "per_direction_sinkhorn": _per_direction_sinkhorn_to_json(
+            score.per_direction_sinkhorn
+        ),
         "rank": int(score.rank) if score.rank is not None else None,
         "is_gt": bool(score.is_gt),
         "instability_fraction": _json_float(score.instability_fraction),
@@ -273,6 +285,8 @@ def _finalize_structure_outputs(
                     f"{int(evaluation.structure_idx)}"
                 ),
             )
+        else:
+            row["overlay_error"] = "no_eligible_candidates_for_overlay"
     except Exception as exc:
         row["overlay_error"] = str(exc)
 
@@ -511,7 +525,7 @@ def _make_parser() -> argparse.ArgumentParser:
         "--output",
         type=str,
         required=True,
-        help="Directory for ranking reports and overlays (Task 5).",
+        help="Directory for ranking reports and overlays.",
     )
     p.add_argument(
         "--structure-indices",
@@ -575,13 +589,13 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--export-replays",
         action="store_true",
-        help="Export per-candidate replay mini-datasets (Task 5).",
+        help="Export per-candidate replay mini-datasets.",
     )
     p.add_argument(
         "--max-overlay-candidates",
         type=_positive_int,
         default=8,
-        help="Cap overlay candidates per structure (Task 5).",
+        help="Cap overlay candidates per structure.",
     )
     p.add_argument(
         "--fail-fast",

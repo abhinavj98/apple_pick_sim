@@ -244,7 +244,12 @@ uv run --env-file pytest.env python \
 ```
 
 Outputs: `ranking.json` (per-structure and aggregate rankings), per-structure
-`youngs_modulus_overlay.html`, and optional replay mini-datasets. Design:
+`youngs_modulus_overlay.html`, and optional replay mini-datasets. Replay export
+reuses the legacy `candidate_stiffnesses` metadata container name from the bend-
+stiffness grid path; in this workflow its keys are explicit Young's-modulus
+fields (`primary_e_pa`, `spur_e_pa`, `stem_e_pa`). Full applied material
+parameters for each replay candidate remain in episode `fruiting_system_params`
+metadata. Design:
 `docs/superpowers/specs/2026-07-16-youngs-modulus-grid-replay-ranking-design.md`.
 
 ```bash

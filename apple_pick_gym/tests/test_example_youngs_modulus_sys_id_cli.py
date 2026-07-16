@@ -739,12 +739,15 @@ def test_structure_result_to_json_schema():
         },
         "log10_e": [8.0, 7.5, 7.0],
         "aggregate_sinkhorn": 0.2,
+        "per_direction_sinkhorn": {"0": 0.2},
         "rank": 2,
         "is_gt": True,
         "instability_fraction": 0.0,
         "disqualified": False,
         "disqualification_reason": None,
     }
+    winner_row = next(c for c in row["candidates"] if c["candidate_index"] == 0)
+    assert winner_row["per_direction_sinkhorn"] == {"0": 0.125}
 
 
 def test_winner_summary_uses_authoritative_rank_one():
@@ -921,6 +924,61 @@ def test_run_writes_ranking_json_and_calls_export_with_direction_indices(
             "stem_e_pa": score.candidate.stem,
         }
         assert replays is evaluation.replay_episodes[candidate_index]
+
+
+def test_structure_result_serializes_non_finite_per_direction_sinkhorn_as_null():
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+    evaluation.scores[0] = dataclasses.replace(
+        evaluation.scores[0],
+        per_direction_sinkhorn={0: float("nan"), 2: 0.125, 5: float("inf")},
+    )
+
+    row = module._structure_result_to_json(evaluation)
+    encoded = json.dumps(row, allow_nan=False)
+
+    assert encoded
+    per_dir = row["candidates"][0]["per_direction_sinkhorn"]
+    assert per_dir == {"0": None, "2": 0.125, "5": None}
+
+
+def test_finalize_structure_outputs_sets_overlay_error_when_no_eligible_candidates(
+    monkeypatch, tmp_path
+):
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+    evaluation.scores = [
+        dataclasses.replace(
+            score,
+            rank=None,
+            disqualified=True,
+            disqualification_reason="unstable",
+        )
+        for score in evaluation.scores
+    ]
+
+    dataset = MagicMock()
+    output_dir = tmp_path / "rank"
+    args = SimpleNamespace(max_overlay_candidates=8, export_replays=False)
+
+    overlay_called = False
+
+    def fail_if_called(*_args, **_kwargs):
+        nonlocal overlay_called
+        overlay_called = True
+        raise AssertionError("overlay HTML should not be written")
+
+    monkeypatch.setattr(module, "write_youngs_modulus_overlay_html", fail_if_called)
+
+    row = module._finalize_structure_outputs(
+        dataset=dataset,
+        evaluation=evaluation,
+        output_dir=output_dir,
+        args=args,
+    )
+
+    assert row["overlay_error"] == "no_eligible_candidates_for_overlay"
+    assert overlay_called is False
 
 
 def test_run_records_overlay_error_without_discarding_ranking(monkeypatch, tmp_path):

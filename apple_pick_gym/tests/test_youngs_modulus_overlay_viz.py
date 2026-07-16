@@ -254,6 +254,19 @@ def test_select_overlay_candidate_indices_top_k_plus_gt():
     assert selected == [0, 1, 4]
 
 
+def test_select_overlay_candidate_indices_capacity_one_keeps_winner():
+    from apple_pick_gym.youngs_modulus_overlay_viz import (
+        select_overlay_candidate_indices,
+    )
+
+    scores = [
+        _make_score(candidate_index=0, rank=1),
+        _make_score(candidate_index=1, rank=2, is_gt=True),
+    ]
+
+    assert select_overlay_candidate_indices(scores, max_candidates=1) == [0]
+
+
 def test_select_overlay_candidate_indices_empty_when_all_disqualified():
     from apple_pick_gym.youngs_modulus_overlay_viz import (
         select_overlay_candidate_indices,

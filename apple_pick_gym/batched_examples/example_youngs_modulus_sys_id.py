@@ -91,49 +91,58 @@ def _json_float(value: float | None) -> float | None:
     return out
 
 
+def _json_log10(value: float) -> float | None:
+    finite_value = _json_float(value)
+    if finite_value is None or finite_value <= 0.0:
+        return None
+    return _json_float(math.log10(finite_value))
+
+
 def _candidate_to_json_row(score: Any) -> dict[str, Any]:
     candidate = score.candidate
     return {
         "candidate_index": int(score.candidate_index),
         "youngs_modulus_pa": {
-            "primary": float(candidate.primary),
-            "spur": float(candidate.spur),
-            "stem": float(candidate.stem),
+            "primary": _json_float(candidate.primary),
+            "spur": _json_float(candidate.spur),
+            "stem": _json_float(candidate.stem),
         },
         "log10_e": [
-            math.log10(float(candidate.primary)),
-            math.log10(float(candidate.spur)),
-            math.log10(float(candidate.stem)),
+            _json_log10(candidate.primary),
+            _json_log10(candidate.spur),
+            _json_log10(candidate.stem),
         ],
-        "aggregate_sinkhorn": _json_float(float(score.aggregate_sinkhorn)),
+        "aggregate_sinkhorn": _json_float(score.aggregate_sinkhorn),
         "rank": int(score.rank) if score.rank is not None else None,
         "is_gt": bool(score.is_gt),
-        "instability_fraction": _json_float(float(score.instability_fraction)),
+        "instability_fraction": _json_float(score.instability_fraction),
         "disqualified": bool(score.disqualified),
         "disqualification_reason": score.disqualification_reason,
     }
 
 
 def _winner_summary(evaluation: YoungsModulusEvaluation) -> dict[str, Any] | None:
-    eligible = [
-        score
-        for score in evaluation.scores
-        if not score.disqualified and math.isfinite(float(score.aggregate_sinkhorn))
-    ]
-    if not eligible:
+    winner = next((score for score in evaluation.scores if score.rank == 1), None)
+    if winner is None:
         return None
-    winner = min(eligible, key=lambda score: (float(score.aggregate_sinkhorn), int(score.candidate_index)))
     gt = evaluation.gt_candidate
-    log10_error = {
-        segment: math.log10(float(getattr(winner.candidate, segment)))
-        - math.log10(float(getattr(gt, segment)))
-        for segment in ("primary", "spur", "stem")
-    }
-    relative_error = {
-        segment: abs(float(getattr(winner.candidate, segment)) - float(getattr(gt, segment)))
-        / abs(float(getattr(gt, segment)))
-        for segment in ("primary", "spur", "stem")
-    }
+    log10_error: dict[str, float | None] = {}
+    relative_error: dict[str, float | None] = {}
+    for segment in ("primary", "spur", "stem"):
+        winner_value = _json_float(getattr(winner.candidate, segment))
+        gt_value = _json_float(getattr(gt, segment))
+        winner_log10 = _json_log10(getattr(winner.candidate, segment))
+        gt_log10 = _json_log10(getattr(gt, segment))
+        log10_error[segment] = (
+            _json_float(winner_log10 - gt_log10)
+            if winner_log10 is not None and gt_log10 is not None
+            else None
+        )
+        relative_error[segment] = (
+            _json_float(abs(winner_value - gt_value) / abs(gt_value))
+            if winner_value is not None and gt_value not in (None, 0.0)
+            else None
+        )
     return {
         "candidate_index": int(winner.candidate_index),
         "log10_error": log10_error,
@@ -150,14 +159,14 @@ def _structure_result_to_json(evaluation: YoungsModulusEvaluation) -> dict[str, 
     return {
         "structure_idx": int(evaluation.structure_idx),
         "gt_youngs_modulus_pa": {
-            "primary": float(gt.primary),
-            "spur": float(gt.spur),
-            "stem": float(gt.stem),
+            "primary": _json_float(gt.primary),
+            "spur": _json_float(gt.spur),
+            "stem": _json_float(gt.stem),
         },
         "gt_log10_e": [
-            math.log10(float(gt.primary)),
-            math.log10(float(gt.spur)),
-            math.log10(float(gt.stem)),
+            _json_log10(gt.primary),
+            _json_log10(gt.spur),
+            _json_log10(gt.stem),
         ],
         "fixed_secondary_e_pa": _json_float(evaluation.fixed_secondary_e_pa),
         "direction_indices": [int(d) for d in evaluation.direction_indices],
@@ -187,15 +196,6 @@ def _aggregate_ranking_report(
         key = str(int(rank))
         gt_rank_histogram[key] = gt_rank_histogram.get(key, 0) + 1
 
-    winner_primary_log10_errors: list[float] = []
-    for row in structure_rows:
-        winner = row.get("winner")
-        if winner is None:
-            continue
-        err = winner.get("log10_error", {}).get("primary")
-        if err is not None and math.isfinite(float(err)):
-            winner_primary_log10_errors.append(float(err))
-
     winner_log10_error_mean: dict[str, float | None] = {
         "primary": None,
         "spur": None,
@@ -210,7 +210,7 @@ def _aggregate_ranking_report(
             and math.isfinite(float(row["winner"]["log10_error"][segment]))
         ]
         if values:
-            winner_log10_error_mean[segment] = float(sum(values) / len(values))
+            winner_log10_error_mean[segment] = _json_float(sum(values) / len(values))
 
     return {
         "dataset": str(dataset),
@@ -234,7 +234,7 @@ def _write_ranking_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         tmp_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
         os.replace(tmp_path, path)

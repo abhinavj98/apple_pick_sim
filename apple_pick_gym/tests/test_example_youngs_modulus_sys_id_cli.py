@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib.util
+import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -619,6 +622,76 @@ def _evaluation_with_scores(*, structure_idx: int = 0):
     )
 
 
+def _task5_run_args(module, output, *, export_replays: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        dataset="/tmp/gt",
+        output=str(output),
+        structure_indices=None,
+        log10_e_primary="8.0",
+        log10_e_spur="7.5",
+        log10_e_stem="7.0",
+        include_gt_candidate=True,
+        max_candidates=0,
+        max_envs_per_batch=0,
+        seed=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        export_replays=bool(export_replays),
+        max_overlay_candidates=8,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=module.SETTLE_GRAVITY_RAMP,
+        settle_quiet_every=module.SETTLE_QUIET_EVERY,
+        show_pull_direction=False,
+        viewer="null",
+    )
+
+
+def _configure_task5_run(monkeypatch, module, evaluation, *, num_structures: int = 1):
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "control_hz": 30.0,
+            "num_directions": 2,
+            "ranges_path": "/tmp/ranges.json",
+            "topology_seed": 42,
+        }
+    }
+    dataset.structure_summaries.return_value = [{} for _ in range(num_structures)]
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(
+        module,
+        "candidates_from_log10_cli",
+        lambda **_kwargs: [cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)],
+    )
+    monkeypatch.setattr(
+        module,
+        "gt_youngs_modulus_candidate_from_structure",
+        lambda *_args, **_kwargs: evaluation.gt_candidate,
+    )
+    monkeypatch.setattr(
+        module,
+        "maybe_include_gt_candidate",
+        lambda candidates, _gt, *, include_gt: list(candidates),
+    )
+    monkeypatch.setattr(module, "load_ranges", lambda _path: {})
+    monkeypatch.setattr(
+        module,
+        "build_sim_config",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        module,
+        "write_youngs_modulus_overlay_html",
+        lambda *_args, **_kwargs: Path("/tmp/overlay.html"),
+    )
+    return dataset
+
+
 def test_structure_result_to_json_schema():
     module = _load_module()
     evaluation = _evaluation_with_scores()
@@ -632,7 +705,7 @@ def test_structure_result_to_json_schema():
     assert row["gt_rank"] == 2
     assert row["winner"]["candidate_index"] == 0
     assert row["winner"]["log10_error"]["primary"] == pytest.approx(
-        __import__("math").log10(1.2e8) - __import__("math").log10(1.0e8)
+        math.log10(1.2e8) - math.log10(1.0e8)
     )
     assert row["winner"]["relative_error"]["primary"] == pytest.approx(0.2)
 
@@ -652,6 +725,49 @@ def test_structure_result_to_json_schema():
         "disqualified": False,
         "disqualification_reason": None,
     }
+
+
+def test_winner_summary_uses_authoritative_rank_one():
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+    evaluation.scores[0] = dataclasses.replace(
+        evaluation.scores[0],
+        aggregate_sinkhorn=0.5,
+        rank=1,
+    )
+    evaluation.scores[1] = dataclasses.replace(
+        evaluation.scores[1],
+        aggregate_sinkhorn=0.1,
+        rank=2,
+    )
+
+    assert module._winner_summary(evaluation)["candidate_index"] == 0
+
+
+def test_structure_result_serializes_non_finite_floats_as_null():
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+    non_finite = cmaes.YoungsModulusCandidate(float("nan"), float("inf"), 1.0e7)
+    evaluation.gt_candidate = non_finite
+    evaluation.scores[0] = dataclasses.replace(
+        evaluation.scores[0],
+        candidate=non_finite,
+        aggregate_sinkhorn=float("nan"),
+        instability_fraction=float("inf"),
+        rank=1,
+    )
+
+    row = module._structure_result_to_json(evaluation)
+    encoded = json.dumps(row, allow_nan=False)
+
+    assert encoded
+    assert row["gt_youngs_modulus_pa"]["primary"] is None
+    assert row["gt_youngs_modulus_pa"]["spur"] is None
+    assert row["gt_log10_e"][:2] == [None, None]
+    assert row["candidates"][0]["youngs_modulus_pa"]["primary"] is None
+    assert row["candidates"][0]["log10_e"][:2] == [None, None]
+    assert row["winner"]["log10_error"]["primary"] is None
+    assert row["winner"]["relative_error"]["primary"] is None
 
 
 def test_aggregate_ranking_report_summaries_and_skips():
@@ -771,7 +887,20 @@ def test_run_writes_ranking_json_and_calls_export_with_direction_indices(
     assert report["structures"]
     assert report["aggregate"]["n_evaluated"] == 1
     assert len(export_calls) == 1
-    assert export_calls[0]["source_direction_indices"] == evaluation.direction_indices
+    export_call = export_calls[0]
+    assert export_call["source_direction_indices"] == evaluation.direction_indices
+    specs_and_replays = export_call["specs_and_replays"]
+    assert len(specs_and_replays) == len(evaluation.scores)
+    for candidate_index, (spec, replays) in enumerate(specs_and_replays):
+        score = evaluation.scores[candidate_index]
+        assert spec.candidate_index == candidate_index
+        assert spec.params is evaluation.applied_params[candidate_index]
+        assert spec.stiffnesses == {
+            "primary_e_pa": score.candidate.primary,
+            "spur_e_pa": score.candidate.spur,
+            "stem_e_pa": score.candidate.stem,
+        }
+        assert replays is evaluation.replay_episodes[candidate_index]
 
 
 def test_run_records_overlay_error_without_discarding_ranking(monkeypatch, tmp_path):
@@ -856,3 +985,55 @@ def test_run_records_overlay_error_without_discarding_ranking(monkeypatch, tmp_p
         (output_dir / "ranking.json").read_text(encoding="utf-8")
     )
     assert report["structures"][0]["overlay_error"] == "overlay failed"
+
+
+def test_run_records_export_error_without_discarding_ranking(monkeypatch, tmp_path):
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+    _configure_task5_run(monkeypatch, module, evaluation)
+    monkeypatch.setattr(
+        module,
+        "evaluate_youngs_modulus_candidates",
+        lambda **_kwargs: evaluation,
+    )
+
+    def fail_export(*_args, **_kwargs):
+        raise RuntimeError("export failed")
+
+    monkeypatch.setattr(module, "export_replay_candidates_for_structure", fail_export)
+    output_dir = tmp_path / "rank"
+
+    module._run(
+        _task5_run_args(module, output_dir, export_replays=True),
+        argparse.ArgumentParser(),
+        viewer=MagicMock(),
+    )
+
+    report = json.loads((output_dir / "ranking.json").read_text(encoding="utf-8"))
+    assert report["structures"][0]["export_error"] == "export failed"
+
+
+def test_run_all_fail_writes_authoritative_skipped_report(monkeypatch, tmp_path):
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+    _configure_task5_run(monkeypatch, module, evaluation, num_structures=2)
+
+    def fail_evaluation(**kwargs):
+        raise RuntimeError(f"structure {kwargs['structure_idx']} failed")
+
+    monkeypatch.setattr(module, "evaluate_youngs_modulus_candidates", fail_evaluation)
+    output_dir = tmp_path / "rank"
+
+    result = module._run(
+        _task5_run_args(module, output_dir, export_replays=False),
+        argparse.ArgumentParser(),
+        viewer=MagicMock(),
+    )
+
+    report = json.loads((output_dir / "ranking.json").read_text(encoding="utf-8"))
+    assert report["structures"] == []
+    assert report["skipped_structures"] == [
+        {"structure_idx": 0, "error": "structure 0 failed"},
+        {"structure_idx": 1, "error": "structure 1 failed"},
+    ]
+    assert result["ranking"] == report

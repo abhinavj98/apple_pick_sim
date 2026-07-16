@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
+import math
 import os
 import sys
 import time
@@ -31,10 +33,16 @@ from apple_pick_gym.batched_examples.example_batched_sysid_mmd_grid import (
     parse_comma_separated_ints,
 )
 from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
+    YoungsModulusEvaluation,
     YoungsModulusScoringConfig,
     evaluate_youngs_modulus_candidates,
     gt_youngs_modulus_candidate_from_structure,
     maybe_include_gt_candidate,
+)
+from apple_pick_gym.youngs_modulus_overlay_viz import (
+    overlay_episodes_from_replay_evaluation,
+    select_overlay_candidate_indices,
+    write_youngs_modulus_overlay_html,
 )
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
@@ -50,6 +58,10 @@ from apple_pick_sim.fruiting_system import (
 )
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+from apple_pick_sim.system_id.batched_replay_export import (
+    ReplayCandidateSpec,
+    export_replay_candidates_for_structure,
+)
 
 CONTROL_HZ = 30.0
 SUB_DT = 1.0 / 1800.0
@@ -68,6 +80,233 @@ JOINT_ANGULAR_KD_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES
 JOINT_LINEAR_KD_OVERRIDES = EXAMPLE_JOINT_LINEAR_KD_OVERRIDES
 JOINT_ANGULAR_KP_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES
 JOINT_LINEAR_KP_OVERRIDES = EXAMPLE_JOINT_LINEAR_KP_OVERRIDES
+
+
+def _json_float(value: float | None) -> float | None:
+    if value is None:
+        return None
+    out = float(value)
+    if not math.isfinite(out):
+        return None
+    return out
+
+
+def _candidate_to_json_row(score: Any) -> dict[str, Any]:
+    candidate = score.candidate
+    return {
+        "candidate_index": int(score.candidate_index),
+        "youngs_modulus_pa": {
+            "primary": float(candidate.primary),
+            "spur": float(candidate.spur),
+            "stem": float(candidate.stem),
+        },
+        "log10_e": [
+            math.log10(float(candidate.primary)),
+            math.log10(float(candidate.spur)),
+            math.log10(float(candidate.stem)),
+        ],
+        "aggregate_sinkhorn": _json_float(float(score.aggregate_sinkhorn)),
+        "rank": int(score.rank) if score.rank is not None else None,
+        "is_gt": bool(score.is_gt),
+        "instability_fraction": _json_float(float(score.instability_fraction)),
+        "disqualified": bool(score.disqualified),
+        "disqualification_reason": score.disqualification_reason,
+    }
+
+
+def _winner_summary(evaluation: YoungsModulusEvaluation) -> dict[str, Any] | None:
+    eligible = [
+        score
+        for score in evaluation.scores
+        if not score.disqualified and math.isfinite(float(score.aggregate_sinkhorn))
+    ]
+    if not eligible:
+        return None
+    winner = min(eligible, key=lambda score: (float(score.aggregate_sinkhorn), int(score.candidate_index)))
+    gt = evaluation.gt_candidate
+    log10_error = {
+        segment: math.log10(float(getattr(winner.candidate, segment)))
+        - math.log10(float(getattr(gt, segment)))
+        for segment in ("primary", "spur", "stem")
+    }
+    relative_error = {
+        segment: abs(float(getattr(winner.candidate, segment)) - float(getattr(gt, segment)))
+        / abs(float(getattr(gt, segment)))
+        for segment in ("primary", "spur", "stem")
+    }
+    return {
+        "candidate_index": int(winner.candidate_index),
+        "log10_error": log10_error,
+        "relative_error": relative_error,
+    }
+
+
+def _structure_result_to_json(evaluation: YoungsModulusEvaluation) -> dict[str, Any]:
+    gt = evaluation.gt_candidate
+    gt_rank = next(
+        (int(score.rank) for score in evaluation.scores if score.is_gt and score.rank is not None),
+        None,
+    )
+    return {
+        "structure_idx": int(evaluation.structure_idx),
+        "gt_youngs_modulus_pa": {
+            "primary": float(gt.primary),
+            "spur": float(gt.spur),
+            "stem": float(gt.stem),
+        },
+        "gt_log10_e": [
+            math.log10(float(gt.primary)),
+            math.log10(float(gt.spur)),
+            math.log10(float(gt.stem)),
+        ],
+        "fixed_secondary_e_pa": _json_float(evaluation.fixed_secondary_e_pa),
+        "direction_indices": [int(d) for d in evaluation.direction_indices],
+        "candidates": [_candidate_to_json_row(score) for score in evaluation.scores],
+        "winner": _winner_summary(evaluation),
+        "gt_rank": gt_rank,
+        "overlay_error": None,
+        "export_error": None,
+    }
+
+
+def _aggregate_ranking_report(
+    structure_rows: list[dict[str, Any]],
+    skipped_structures: list[dict[str, Any]],
+    *,
+    dataset: str,
+    output: str,
+    scoring: YoungsModulusScoringConfig,
+) -> dict[str, Any]:
+    gt_ranks = [
+        int(row["gt_rank"])
+        for row in structure_rows
+        if row.get("gt_rank") is not None
+    ]
+    gt_rank_histogram: dict[str, int] = {}
+    for rank in gt_ranks:
+        key = str(int(rank))
+        gt_rank_histogram[key] = gt_rank_histogram.get(key, 0) + 1
+
+    winner_primary_log10_errors: list[float] = []
+    for row in structure_rows:
+        winner = row.get("winner")
+        if winner is None:
+            continue
+        err = winner.get("log10_error", {}).get("primary")
+        if err is not None and math.isfinite(float(err)):
+            winner_primary_log10_errors.append(float(err))
+
+    winner_log10_error_mean: dict[str, float | None] = {
+        "primary": None,
+        "spur": None,
+        "stem": None,
+    }
+    for segment in ("primary", "spur", "stem"):
+        values = [
+            float(row["winner"]["log10_error"][segment])
+            for row in structure_rows
+            if row.get("winner") is not None
+            and row["winner"].get("log10_error", {}).get(segment) is not None
+            and math.isfinite(float(row["winner"]["log10_error"][segment]))
+        ]
+        if values:
+            winner_log10_error_mean[segment] = float(sum(values) / len(values))
+
+    return {
+        "dataset": str(dataset),
+        "output": str(output),
+        "scoring": dataclasses.asdict(scoring),
+        "structures": structure_rows,
+        "skipped_structures": list(skipped_structures),
+        "aggregate": {
+            "n_structures": int(len(structure_rows) + len(skipped_structures)),
+            "n_evaluated": int(len(structure_rows)),
+            "n_skipped": int(len(skipped_structures)),
+            "gt_rank_histogram": gt_rank_histogram,
+            "winner_log10_error_mean": winner_log10_error_mean,
+            "winner_primary_log10_error_mean": winner_log10_error_mean["primary"],
+        },
+    }
+
+
+def _write_ranking_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def _finalize_structure_outputs(
+    *,
+    dataset: BatchedSysIdDataset,
+    evaluation: YoungsModulusEvaluation,
+    output_dir: Path,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    row = _structure_result_to_json(evaluation)
+    structure_dir = output_dir / f"structure_{int(evaluation.structure_idx):03d}"
+    structure_dir.mkdir(parents=True, exist_ok=True)
+
+    overlay_indices = select_overlay_candidate_indices(
+        evaluation.scores,
+        max_candidates=int(getattr(args, "max_overlay_candidates", 8)),
+    )
+    if overlay_indices:
+        try:
+            overlay_eps = overlay_episodes_from_replay_evaluation(
+                evaluation,
+                overlay_indices,
+            )
+            write_youngs_modulus_overlay_html(
+                overlay_eps,
+                structure_dir / "youngs_modulus_overlay.html",
+                max_overlay_candidates=int(getattr(args, "max_overlay_candidates", 8)),
+                title=(
+                    f"Young's modulus overlay — structure "
+                    f"{int(evaluation.structure_idx)}"
+                ),
+            )
+        except Exception as exc:
+            row["overlay_error"] = str(exc)
+
+    if bool(args.export_replays):
+        try:
+            specs_and_replays = []
+            for score in evaluation.scores:
+                cand_idx = int(score.candidate_index)
+                specs_and_replays.append(
+                    (
+                        ReplayCandidateSpec(
+                            candidate_index=cand_idx,
+                            params=evaluation.applied_params[cand_idx],
+                            stiffnesses={
+                                "primary_e_pa": float(score.candidate.primary),
+                                "spur_e_pa": float(score.candidate.spur),
+                                "stem_e_pa": float(score.candidate.stem),
+                            },
+                        ),
+                        evaluation.replay_episodes[cand_idx],
+                    )
+                )
+            export_replay_candidates_for_structure(
+                output_dir,
+                source_dataset=dataset,
+                source_structure_idx=int(evaluation.structure_idx),
+                specs_and_replays=specs_and_replays,
+                source_direction_indices=evaluation.direction_indices,
+                command_argv=sys.argv,
+            )
+        except Exception as exc:
+            row["export_error"] = str(exc)
+
+    return row
 
 
 def _resolve_sim_build_knobs(ranges: dict) -> tuple[
@@ -574,8 +813,36 @@ def _run(
             )
             print(f"ERROR structure {int(structure_idx)}: {message}")
 
-    if args.export_replays:
-        print("NOTE: --export-replays is not implemented yet (Task 5).")
+    structure_rows: list[dict[str, Any]] = []
+    skipped_structures: list[dict[str, Any]] = []
+    for row in structure_results:
+        if row.get("error") is not None:
+            skipped_structures.append(
+                {
+                    "structure_idx": int(row["structure_idx"]),
+                    "error": str(row["error"]),
+                }
+            )
+            continue
+        evaluation = row.get("evaluation")
+        assert evaluation is not None
+        structure_rows.append(
+            _finalize_structure_outputs(
+                dataset=dataset,
+                evaluation=evaluation,
+                output_dir=output_dir,
+                args=args,
+            )
+        )
+
+    ranking_payload = _aggregate_ranking_report(
+        structure_rows,
+        skipped_structures,
+        dataset=str(args.dataset),
+        output=str(output_dir),
+        scoring=scoring,
+    )
+    _write_ranking_json_atomic(output_dir / "ranking.json", ranking_payload)
 
     return {
         "dataset": str(args.dataset),
@@ -584,6 +851,7 @@ def _run(
         "num_directions": int(num_directions),
         "scoring": scoring,
         "structure_results": structure_results,
+        "ranking": ranking_payload,
     }
 
 

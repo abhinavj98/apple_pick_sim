@@ -575,3 +575,284 @@ def test_candidates_for_structure_enforces_max_candidates(monkeypatch):
             structure_idx=0,
             parser=parser,
         )
+
+
+def _evaluation_with_scores(*, structure_idx: int = 0):
+    from apple_pick_sim.fruiting_system import params as fs
+    from apple_pick_sim.tests.conftest import RANGES_FIXTURE
+
+    base = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=0)
+    gt = cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7)
+    winner = cmaes.YoungsModulusCandidate(1.2e8, 10**7.5, 1.0e7)
+    scores = [
+        cmaes.YoungsModulusCandidateScore(
+            candidate_index=0,
+            candidate=winner,
+            aggregate_sinkhorn=0.125,
+            per_direction_sinkhorn={0: 0.125},
+            instability_fraction=0.0,
+            disqualified=False,
+            disqualification_reason=None,
+            rank=1,
+            is_gt=False,
+        ),
+        cmaes.YoungsModulusCandidateScore(
+            candidate_index=1,
+            candidate=gt,
+            aggregate_sinkhorn=0.2,
+            per_direction_sinkhorn={0: 0.2},
+            instability_fraction=0.0,
+            disqualified=False,
+            disqualification_reason=None,
+            rank=2,
+            is_gt=True,
+        ),
+    ]
+    return cmaes.YoungsModulusEvaluation(
+        structure_idx=int(structure_idx),
+        gt_candidate=gt,
+        fixed_secondary_e_pa=5.0e7,
+        direction_indices=(0, 2),
+        scores=scores,
+        replay_episodes=[[], []],
+        applied_params=[winner.apply_to(base), gt.apply_to(base)],
+    )
+
+
+def test_structure_result_to_json_schema():
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+
+    row = module._structure_result_to_json(evaluation)
+
+    assert row["structure_idx"] == 0
+    assert row["fixed_secondary_e_pa"] == pytest.approx(5.0e7)
+    assert row["direction_indices"] == [0, 2]
+    assert row["gt_log10_e"] == pytest.approx([8.0, 7.5, 7.0])
+    assert row["gt_rank"] == 2
+    assert row["winner"]["candidate_index"] == 0
+    assert row["winner"]["log10_error"]["primary"] == pytest.approx(
+        __import__("math").log10(1.2e8) - __import__("math").log10(1.0e8)
+    )
+    assert row["winner"]["relative_error"]["primary"] == pytest.approx(0.2)
+
+    gt_row = next(c for c in row["candidates"] if c["is_gt"])
+    assert gt_row == {
+        "candidate_index": 1,
+        "youngs_modulus_pa": {
+            "primary": 1e8,
+            "spur": 10**7.5,
+            "stem": 1e7,
+        },
+        "log10_e": [8.0, 7.5, 7.0],
+        "aggregate_sinkhorn": 0.2,
+        "rank": 2,
+        "is_gt": True,
+        "instability_fraction": 0.0,
+        "disqualified": False,
+        "disqualification_reason": None,
+    }
+
+
+def test_aggregate_ranking_report_summaries_and_skips():
+    module = _load_module()
+    evaluation = _evaluation_with_scores(structure_idx=0)
+    structure_rows = [module._structure_result_to_json(evaluation)]
+    errors = [{"structure_idx": 1, "error": "structure 1 failed"}]
+
+    report = module._aggregate_ranking_report(
+        structure_rows,
+        errors,
+        dataset="/tmp/gt",
+        output="/tmp/rank",
+        scoring=cmaes.YoungsModulusScoringConfig(use_median=True),
+    )
+
+    assert report["dataset"] == "/tmp/gt"
+    assert report["output"] == "/tmp/rank"
+    assert len(report["structures"]) == 1
+    assert report["skipped_structures"] == errors
+    assert report["aggregate"]["n_evaluated"] == 1
+    assert report["aggregate"]["n_skipped"] == 1
+    assert report["aggregate"]["gt_rank_histogram"]["2"] == 1
+
+
+def test_run_writes_ranking_json_and_calls_export_with_direction_indices(
+    monkeypatch, tmp_path
+):
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "control_hz": 30.0,
+            "num_directions": 2,
+            "ranges_path": "/tmp/ranges.json",
+            "topology_seed": 42,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(
+        module,
+        "candidates_from_log10_cli",
+        lambda **_kwargs: [cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)],
+    )
+    monkeypatch.setattr(
+        module,
+        "gt_youngs_modulus_candidate_from_structure",
+        lambda *_args, **_kwargs: evaluation.gt_candidate,
+    )
+    monkeypatch.setattr(
+        module,
+        "maybe_include_gt_candidate",
+        lambda candidates, _gt, *, include_gt: list(candidates),
+    )
+    monkeypatch.setattr(
+        module,
+        "evaluate_youngs_modulus_candidates",
+        lambda **_kwargs: evaluation,
+    )
+    monkeypatch.setattr(module, "load_ranges", lambda _path: {})
+    monkeypatch.setattr(
+        module,
+        "build_sim_config",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        module,
+        "write_youngs_modulus_overlay_html",
+        lambda *_args, **_kwargs: tmp_path / "overlay.html",
+    )
+
+    export_calls: list[dict] = []
+
+    def fake_export(*_args, **kwargs):
+        export_calls.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(module, "export_replay_candidates_for_structure", fake_export)
+
+    output_dir = tmp_path / "rank"
+    args = SimpleNamespace(
+        dataset="/tmp/gt",
+        output=str(output_dir),
+        structure_indices=None,
+        log10_e_primary="8.0",
+        log10_e_spur="7.5",
+        log10_e_stem="7.0",
+        include_gt_candidate=True,
+        max_candidates=0,
+        max_envs_per_batch=0,
+        seed=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        export_replays=True,
+        max_overlay_candidates=8,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=module.SETTLE_GRAVITY_RAMP,
+        settle_quiet_every=module.SETTLE_QUIET_EVERY,
+        show_pull_direction=False,
+        viewer="null",
+    )
+
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+
+    ranking_path = output_dir / "ranking.json"
+    assert ranking_path.is_file()
+    report = __import__("json").loads(ranking_path.read_text(encoding="utf-8"))
+    assert report["structures"]
+    assert report["aggregate"]["n_evaluated"] == 1
+    assert len(export_calls) == 1
+    assert export_calls[0]["source_direction_indices"] == evaluation.direction_indices
+
+
+def test_run_records_overlay_error_without_discarding_ranking(monkeypatch, tmp_path):
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "control_hz": 30.0,
+            "num_directions": 2,
+            "ranges_path": "/tmp/ranges.json",
+            "topology_seed": 42,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(
+        module,
+        "candidates_from_log10_cli",
+        lambda **_kwargs: [cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)],
+    )
+    monkeypatch.setattr(
+        module,
+        "gt_youngs_modulus_candidate_from_structure",
+        lambda *_args, **_kwargs: evaluation.gt_candidate,
+    )
+    monkeypatch.setattr(
+        module,
+        "maybe_include_gt_candidate",
+        lambda candidates, _gt, *, include_gt: list(candidates),
+    )
+    monkeypatch.setattr(
+        module,
+        "evaluate_youngs_modulus_candidates",
+        lambda **_kwargs: evaluation,
+    )
+    monkeypatch.setattr(module, "load_ranges", lambda _path: {})
+    monkeypatch.setattr(
+        module,
+        "build_sim_config",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("overlay failed")
+
+    monkeypatch.setattr(module, "write_youngs_modulus_overlay_html", boom)
+
+    output_dir = tmp_path / "rank"
+    args = SimpleNamespace(
+        dataset="/tmp/gt",
+        output=str(output_dir),
+        structure_indices=None,
+        log10_e_primary="8.0",
+        log10_e_spur="7.5",
+        log10_e_stem="7.0",
+        include_gt_candidate=True,
+        max_candidates=0,
+        max_envs_per_batch=0,
+        seed=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        export_replays=False,
+        max_overlay_candidates=8,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=module.SETTLE_GRAVITY_RAMP,
+        settle_quiet_every=module.SETTLE_QUIET_EVERY,
+        show_pull_direction=False,
+        viewer="null",
+    )
+
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+
+    report = __import__("json").loads(
+        (output_dir / "ranking.json").read_text(encoding="utf-8")
+    )
+    assert report["structures"][0]["overlay_error"] == "overlay failed"

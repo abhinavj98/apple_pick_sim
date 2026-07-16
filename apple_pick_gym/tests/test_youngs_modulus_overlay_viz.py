@@ -206,3 +206,144 @@ def test_dataset_adapter_strips_pre_weld_frame():
         PHASE_TO_INT["hold"],
     ]
     assert episodes[0].tcp_pos[:, 0].tolist() == pytest.approx([1.0, 1.1])
+
+
+def _make_score(
+    *,
+    candidate_index: int,
+    rank: int | None,
+    is_gt: bool = False,
+    disqualified: bool = False,
+):
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    log10 = 8.0 + 0.1 * candidate_index
+    candidate = cmaes.YoungsModulusCandidate(
+        primary=10.0**log10,
+        spur=10**7.5,
+        stem=1.0e7,
+    )
+    return cmaes.YoungsModulusCandidateScore(
+        candidate_index=int(candidate_index),
+        candidate=candidate,
+        aggregate_sinkhorn=0.1 * (rank or 999),
+        per_direction_sinkhorn={0: 0.1},
+        instability_fraction=0.0,
+        disqualified=bool(disqualified),
+        disqualification_reason="replay_instability" if disqualified else None,
+        rank=rank,
+        is_gt=bool(is_gt),
+    )
+
+
+def test_select_overlay_candidate_indices_top_k_plus_gt():
+    from apple_pick_gym.youngs_modulus_overlay_viz import (
+        select_overlay_candidate_indices,
+    )
+
+    scores = [
+        _make_score(candidate_index=0, rank=1),
+        _make_score(candidate_index=1, rank=2),
+        _make_score(candidate_index=2, rank=3),
+        _make_score(candidate_index=3, rank=4),
+        _make_score(candidate_index=4, rank=5, is_gt=True),
+    ]
+
+    selected = select_overlay_candidate_indices(scores, max_candidates=3)
+
+    assert selected == [0, 1, 4]
+
+
+def test_select_overlay_candidate_indices_empty_when_all_disqualified():
+    from apple_pick_gym.youngs_modulus_overlay_viz import (
+        select_overlay_candidate_indices,
+    )
+
+    scores = [
+        _make_score(candidate_index=0, rank=None, disqualified=True),
+        _make_score(candidate_index=1, rank=None, disqualified=True, is_gt=True),
+    ]
+
+    assert select_overlay_candidate_indices(scores, max_candidates=3) == []
+
+
+def test_overlay_episodes_from_replay_evaluation_preserves_sparse_direction_ids():
+    import math
+
+    import numpy as np
+
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+    from apple_pick_gym.youngs_modulus_overlay_viz import (
+        overlay_episodes_from_replay_evaluation,
+    )
+
+    n = 6
+    t = np.linspace(0.0, 1.0, n, dtype=np.float64)
+    phase = np.full(n, PHASE_TO_INT["move_out"], dtype=np.int8)
+    pull = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    ft = np.arange(n * 6, dtype=np.float64).reshape(n, 6)
+    tcp = np.arange(n * 3, dtype=np.float64).reshape(n, 3)
+
+    def replay_for_candidate(*, candidate_index: int, direction_idx: int, stable: bool):
+        return {
+            "phase": phase.copy(),
+            "ft_wrist": ft + float(candidate_index),
+            "tcp_pos": tcp + float(candidate_index),
+            "dir_idx": np.full(n, int(direction_idx), dtype=np.int32),
+            "excitation_direction": np.tile(pull, (n, 1)),
+            "stable": np.full(n, stable, dtype=bool),
+        }
+
+    gt = cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7)
+    candidate = cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)
+    scores = [
+        cmaes.YoungsModulusCandidateScore(
+            candidate_index=0,
+            candidate=candidate,
+            aggregate_sinkhorn=0.2,
+            per_direction_sinkhorn={2: 0.2},
+            instability_fraction=0.0,
+            disqualified=False,
+            disqualification_reason=None,
+            rank=1,
+            is_gt=False,
+        ),
+        cmaes.YoungsModulusCandidateScore(
+            candidate_index=1,
+            candidate=gt,
+            aggregate_sinkhorn=0.1,
+            per_direction_sinkhorn={2: 0.1},
+            instability_fraction=0.0,
+            disqualified=False,
+            disqualification_reason=None,
+            rank=2,
+            is_gt=True,
+        ),
+    ]
+    evaluation = cmaes.YoungsModulusEvaluation(
+        structure_idx=0,
+        gt_candidate=gt,
+        fixed_secondary_e_pa=5.0e7,
+        direction_indices=(2,),
+        scores=scores,
+        replay_episodes=[
+            [replay_for_candidate(candidate_index=0, direction_idx=2, stable=True)],
+            [replay_for_candidate(candidate_index=1, direction_idx=2, stable=False)],
+        ],
+        applied_params=[],
+    )
+
+    episodes = overlay_episodes_from_replay_evaluation(evaluation, [0, 1])
+
+    assert len(episodes) == 2
+    by_candidate = {ep.structure_idx: ep for ep in episodes}
+    assert by_candidate[0].direction_idx == 2
+    assert by_candidate[1].direction_idx == 2
+    assert by_candidate[0].candidate_label == candidate.short_label()
+    assert by_candidate[0].log10_e == pytest.approx(
+        tuple(math.log10(v) for v in candidate)
+    )
+    assert by_candidate[0].excluded is False
+    assert by_candidate[1].excluded is True
+    np.testing.assert_array_equal(by_candidate[0].ft_wrist, ft)
+    np.testing.assert_array_equal(by_candidate[0].tcp_pos, tcp)

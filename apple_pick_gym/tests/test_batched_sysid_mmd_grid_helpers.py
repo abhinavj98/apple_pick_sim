@@ -410,6 +410,104 @@ def test_actions_tensor_from_recorded_frame_shape_and_device():
     np.testing.assert_array_equal(out.numpy(), recorded[:, 1, :])
 
 
+def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeypatch):
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _sample_params(seed=0)
+    candidate_0 = cmaes.YoungsModulusCandidate(primary=1.0e8, spur=2.0e7, stem=3.0e7)
+    candidate_1 = cmaes.YoungsModulusCandidate(primary=2.0e8, spur=3.0e7, stem=4.0e7)
+    n_trajectory_frames = 2
+    build_calls: list[dict] = []
+
+    def mock_build_env_fn(**kwargs):
+        build_calls.append(kwargs)
+        num_envs = int(kwargs["num_envs"])
+        env = MagicMock()
+        env.device = torch.device("cpu")
+
+        def _batched_obs() -> dict:
+            woody_part_info: dict[str, dict[str, torch.Tensor]] = {}
+            for name in ("joint_a", "joint_b"):
+                woody_part_info[name] = {
+                    "anchors_pos": torch.zeros(num_envs, 6, dtype=torch.float32),
+                    "anchor_force": torch.zeros(num_envs, 6, dtype=torch.float32),
+                }
+            return {
+                "woody_part_info": woody_part_info,
+                "apple_pos": torch.zeros(num_envs, 3, dtype=torch.float32),
+                "tcp_force": torch.zeros(num_envs, 6, dtype=torch.float32),
+                "tcp_velocity": torch.zeros(num_envs, 6, dtype=torch.float32),
+                "ft_wrist": torch.zeros(num_envs, 6, dtype=torch.float32),
+                "raw_ft_wrist": torch.zeros(num_envs, 6, dtype=torch.float32),
+                "tcp_pos": torch.zeros(num_envs, 3, dtype=torch.float32),
+                "tcp_quat": torch.zeros(num_envs, 4, dtype=torch.float32),
+                "apple_quat": torch.zeros(num_envs, 4, dtype=torch.float32),
+                "robot_joint_q": torch.zeros(num_envs, 7, dtype=torch.float32),
+                "excitation_type": torch.zeros(num_envs, dtype=torch.long),
+                "excitation_f_inst": torch.zeros(num_envs, dtype=torch.float32),
+                "excitation_direction": torch.zeros(num_envs, 3, dtype=torch.float32),
+            }
+
+        env._last_obs = _batched_obs()
+        env.reset = MagicMock()
+        env.step = MagicMock(side_effect=lambda _actions: setattr(env, "_last_obs", _batched_obs()))
+        env.close = MagicMock()
+        env.sysid_numpy_obs = MagicMock(
+            return_value=_sysid_numpy_obs_for_frame(
+                frame_idx=0,
+                junction_names=["joint_a", "joint_b"],
+            )
+        )
+        return env
+
+    dataset = MagicMock()
+
+    def load_episode_obs_arrays(structure_idx: int, direction_idx: int) -> dict:
+        del structure_idx
+        return _recorded_arrays_for_replay(
+            n_frames=n_trajectory_frames,
+            direction_idx=direction_idx,
+        )
+
+    dataset.load_episode_obs_arrays.side_effect = load_episode_obs_arrays
+    dataset.load_episode_metadata.return_value = {
+        "junction_names": ["joint_a", "joint_b"],
+        "pull_direction": [1.0, 0.0, 0.0],
+    }
+
+    monkeypatch.setattr(grid, "base_params_for_replay", lambda *_a, **_k: base)
+    monkeypatch.setattr(grid, "initialize_batched_env_from_dataset", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        grid,
+        "ik_bootstrap_unstable_mask",
+        lambda _env, num_envs: torch.zeros(int(num_envs), dtype=torch.bool),
+    )
+    monkeypatch.setattr(
+        grid,
+        "gripper_proxy_from_episode_metadata",
+        lambda _meta: MagicMock(),
+    )
+
+    collectors = grid.replay_batched_sysid_structure(
+        dataset=dataset,
+        structure_idx=0,
+        candidates=[candidate_0, candidate_1],
+        num_directions=2,
+        seed=0,
+        build_env_fn=mock_build_env_fn,
+        direction_indices=[0, 2],
+    )
+
+    assert build_calls[0]["per_env_params"] == [
+        candidate_0.apply_to(base),
+        candidate_0.apply_to(base),
+        candidate_1.apply_to(base),
+        candidate_1.apply_to(base),
+    ]
+    assert collectors.to_arrays(0)["dir_idx"][0] == 0
+    assert collectors.to_arrays(1)["dir_idx"][0] == 2
+
+
 def test_replay_candidates_for_structure_threads_on_step(monkeypatch):
     calls: list[tuple[int, int]] = []
 

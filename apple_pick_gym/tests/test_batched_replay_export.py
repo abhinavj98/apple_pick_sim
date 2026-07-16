@@ -265,6 +265,123 @@ def test_write_replay_candidate_dataset_skip_existing(tmp_path: Path):
     assert ds.load_episode_obs_arrays(0, 0)["ft_wrist"].shape[0] == 3
 
 
+def _mock_sparse_source_dataset(tmp_path: Path) -> BatchedSysIdDataset:
+    """Source GT with episodes only at sparse direction indices 0 and 2."""
+    out = tmp_path / "source_gt_sparse"
+    episodes: list[dict] = []
+    for direction_idx in (0, 2):
+        meta = _synthetic_gt_metadata(direction_idx=direction_idx)
+        from apple_pick_sim.system_id.batched_trajectory_store import BatchedEpisodeWriter, episode_filename
+
+        writer = BatchedEpisodeWriter(episode_id=meta["episode_id"])
+        gt_arrays = _synthetic_replay_arrays(n_frames=3, direction_idx=direction_idx)
+        for frame_idx in range(3):
+            obs = {
+                "excitation_type": 0,
+                "excitation_direction": gt_arrays["excitation_direction"][frame_idx],
+                "tcp_velocity": gt_arrays["tcp_velocity"][frame_idx],
+                "ft_wrist": gt_arrays["ft_wrist"][frame_idx],
+                "raw_ft_wrist": gt_arrays["ft_wrist"][frame_idx],
+                "tcp_pos": gt_arrays["tcp_pos"][frame_idx],
+                "apple_pos": gt_arrays["apple_pos"][frame_idx],
+                "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+                "apple_quat": np.array([0.0, 0.1, 0.0, 0.995], dtype=np.float32),
+                "robot_joint_q": np.zeros(7, dtype=np.float32),
+                "woody_part_force": np.zeros(12, dtype=np.float32),
+                "woody_part_start_pos": {
+                    name: gt_arrays["woody_part_start_pos"][name][frame_idx]
+                    for name in gt_arrays["junction_names"]
+                },
+                "woody_part_end_pos": {
+                    name: gt_arrays["woody_part_end_pos"][name][frame_idx]
+                    for name in gt_arrays["junction_names"]
+                },
+            }
+            phase_name = ("move_out", "hold", "hold")[frame_idx]
+            writer.record_step(
+                step_idx=frame_idx,
+                sim_time=float(frame_idx) / 30.0,
+                phase=phase_name,
+                amplitude_m=0.02 * float(frame_idx),
+                action=gt_arrays["action"][frame_idx],
+                obs=obs,
+            )
+        rel = episode_filename(0, direction_idx)
+        writer.save(out / rel, meta)
+        episodes.append(
+            {
+                "structure_idx": 0,
+                "direction_idx": direction_idx,
+                "env_idx": direction_idx,
+                "filename": rel,
+                "episode_id": meta["episode_id"],
+                "pull_direction": meta["pull_direction"],
+                "n_frames": writer.n_frames,
+            }
+        )
+    write_manifest(
+        out,
+        command_argv=["test"],
+        collection={
+            "seed": 0,
+            "topology_seed": 42,
+            "num_structures": 1,
+            "num_directions": 3,
+            "control_hz": 30.0,
+            "ranges_path": str(RANGES_FIXTURE),
+        },
+        structures=[
+            {
+                "structure_idx": 0,
+                "params_fingerprint": "{}",
+                "junction_names": ["joint_0", "joint_1"],
+                "n_woody_parts": 2,
+            }
+        ],
+        episodes=episodes,
+        overwrite=True,
+    )
+    return BatchedSysIdDataset(out)
+
+
+def test_export_replay_candidates_sparse_source_direction_ids(tmp_path: Path):
+    source = _mock_sparse_source_dataset(tmp_path)
+    base = _sample_params(seed=0)
+    candidate = grid.BendStiffnessCandidate(5.0, 1.0, 6.0, 7.0)
+    replay_d0 = _synthetic_replay_arrays(n_frames=3, direction_idx=0)
+    replay_d2 = _synthetic_replay_arrays(n_frames=3, direction_idx=2)
+    spec = ReplayCandidateSpec(
+        candidate_index=0,
+        params=candidate.apply_to(base),
+        stiffnesses={
+            "primary": candidate.primary,
+            "secondary": candidate.secondary,
+            "spur": candidate.spur,
+            "stem": candidate.stem,
+        },
+    )
+    export_dir = tmp_path / "replay_sparse"
+
+    n = export_replay_candidates_for_structure(
+        export_dir,
+        source_dataset=source,
+        source_structure_idx=0,
+        specs_and_replays=[(spec, [replay_d0, replay_d2])],
+        source_direction_indices=[0, 2],
+    )
+
+    assert n == 1
+    out = candidate_replay_dir(export_dir, structure_idx=0, candidate_index=0)
+    assert (out / "episodes" / "s00_d00.parquet").is_file()
+    assert (out / "episodes" / "s00_d02.parquet").is_file()
+    assert not (out / "episodes" / "s00_d01.parquet").exists()
+
+    ds = BatchedSysIdDataset(out)
+    entries = ds.episode_entries()
+    assert sorted(entry["direction_idx"] for entry in entries) == [0, 2]
+    assert ds.manifest["collection"]["num_directions"] == 2
+
+
 def test_export_replay_candidates_for_structure_with_collectors(tmp_path: Path):
     source = _mock_source_dataset(tmp_path, num_directions=2)
     base = _sample_params(seed=0)

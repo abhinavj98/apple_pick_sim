@@ -194,6 +194,28 @@ def _write_replay_episode_parquet(
     return writer.save(path, dict(episode_metadata))
 
 
+def _resolve_source_direction_indices(
+    specs_and_replays: Sequence[
+        tuple[ReplayCandidateSpec, Sequence[Mapping[str, Any]]]
+    ],
+    requested: Sequence[int] | None,
+) -> tuple[int, ...]:
+    if not specs_and_replays:
+        return ()
+    replay_count = len(specs_and_replays[0][1])
+    direction_ids = (
+        tuple(range(replay_count))
+        if requested is None
+        else tuple(int(value) for value in requested)
+    )
+    for _spec, replays in specs_and_replays:
+        if len(replays) != len(direction_ids):
+            raise ValueError(
+                "source_direction_indices length must match replay episode count"
+            )
+    return direction_ids
+
+
 def write_replay_candidate_dataset(
     candidate_dir: Path | str,
     *,
@@ -203,6 +225,7 @@ def write_replay_candidate_dataset(
     replay_eps_by_direction: Sequence[Mapping[str, Any]],
     command_argv: Sequence[str] | None = None,
     skip_existing: bool = False,
+    source_direction_indices: Sequence[int] | None = None,
 ) -> Path | None:
     """Write one candidate replay mini-dataset (manifest + episode parquets)."""
     out = Path(candidate_dir)
@@ -213,30 +236,42 @@ def write_replay_candidate_dataset(
     if num_directions < 1:
         raise ValueError("replay_eps_by_direction must be non-empty")
 
+    direction_ids = (
+        tuple(range(num_directions))
+        if source_direction_indices is None
+        else tuple(int(value) for value in source_direction_indices)
+    )
+    if len(direction_ids) != num_directions:
+        raise ValueError(
+            "source_direction_indices length must match replay episode count"
+        )
+
     collection = source_dataset.manifest.get("collection", {})
     control_hz = float(collection.get("control_hz", 30.0))
     source_root = str(source_dataset.dataset_dir.resolve())
 
     episodes: list[dict[str, Any]] = []
     metadata_rows: list[dict[str, Any]] = []
-    for direction_idx, replay in enumerate(replay_eps_by_direction):
+    for source_direction_idx, replay in zip(
+        direction_ids, replay_eps_by_direction, strict=True
+    ):
         gt_meta = source_dataset.load_episode_metadata(
             int(source_structure_idx),
-            int(direction_idx),
+            int(source_direction_idx),
         )
         gt_recorded = source_dataset.load_episode_obs_arrays(
             int(source_structure_idx),
-            int(direction_idx),
+            int(source_direction_idx),
         )
         episode_id = str(uuid4())
         ep_meta = _build_replay_episode_metadata(
             gt_metadata=gt_meta,
             candidate_params=spec.params,
-            direction_idx=int(direction_idx),
+            direction_idx=int(source_direction_idx),
             episode_id=episode_id,
             mini_structure_idx=0,
         )
-        rel = episode_filename(0, int(direction_idx))
+        rel = episode_filename(0, int(source_direction_idx))
         writer_path = out / rel
         _write_replay_episode_parquet(
             writer_path,
@@ -249,8 +284,8 @@ def write_replay_candidate_dataset(
         episodes.append(
             {
                 "structure_idx": 0,
-                "direction_idx": int(direction_idx),
-                "env_idx": int(direction_idx),
+                "direction_idx": int(source_direction_idx),
+                "env_idx": int(source_direction_idx),
                 "filename": rel,
                 "episode_id": episode_id,
                 "pull_direction": ep_meta["pull_direction"],
@@ -298,10 +333,15 @@ def export_replay_candidates_for_structure(
     source_dataset: BatchedSysIdDataset,
     source_structure_idx: int,
     specs_and_replays: Sequence[tuple[ReplayCandidateSpec, Sequence[Mapping[str, Any]]]],
+    source_direction_indices: Sequence[int] | None = None,
     command_argv: Sequence[str] | None = None,
     skip_existing: bool = False,
 ) -> int:
     """Export replay trajectories for all candidates of one structure."""
+    direction_ids = _resolve_source_direction_indices(
+        specs_and_replays,
+        source_direction_indices,
+    )
     n_written = 0
     for spec, replay_eps in specs_and_replays:
         out = candidate_replay_dir(
@@ -317,6 +357,7 @@ def export_replay_candidates_for_structure(
             replay_eps_by_direction=replay_eps,
             command_argv=command_argv,
             skip_existing=bool(skip_existing),
+            source_direction_indices=direction_ids,
         )
         if result is not None:
             n_written += 1

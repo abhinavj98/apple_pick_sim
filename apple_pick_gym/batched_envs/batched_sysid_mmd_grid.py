@@ -848,11 +848,11 @@ def direction_episodes_from_collectors(
 
 
 def chunk_candidates(
-    candidates: Sequence[BendStiffnessCandidate],
+    candidates: Sequence[SysIdReplayCandidate],
     *,
     max_envs_per_batch: int,
     num_directions: int,
-) -> list[list[BendStiffnessCandidate]]:
+) -> list[list[SysIdReplayCandidate]]:
     """Split candidates so each chunk fits ``max_envs_per_batch`` parallel envs."""
     items = list(candidates)
     if not items:
@@ -873,7 +873,7 @@ def replay_candidates_for_structure(
     *,
     dataset: BatchedSysIdDataset,
     structure_idx: int,
-    candidates: Sequence[BendStiffnessCandidate],
+    candidates: Sequence[SysIdReplayCandidate],
     num_directions: int,
     seed: int | None = None,
     build_env_fn: Callable[..., Any],
@@ -1215,6 +1215,11 @@ def recorded_metadata_by_env(
     return out
 
 
+class SysIdReplayCandidate(Protocol):
+    def apply_to(self, base: FruitingSystemParams) -> FruitingSystemParams:
+        raise NotImplementedError
+
+
 class BendStiffnessCandidate(NamedTuple):
     """One grid point for segment bend stiffnesses."""
 
@@ -1372,7 +1377,7 @@ def replay_batched_sysid_structure(
     *,
     dataset: BatchedSysIdDataset,
     structure_idx: int,
-    candidates: Sequence[BendStiffnessCandidate],
+    candidates: Sequence[SysIdReplayCandidate],
     num_directions: int,
     seed: int | None = None,
     build_env_fn: Callable[..., Any],

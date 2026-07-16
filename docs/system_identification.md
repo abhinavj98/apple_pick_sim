@@ -165,6 +165,7 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
 | V.5.1 loss / feature hardening | **Done** | GT ranks **#1** on good samples (bad ranks from bad sampling allowed); Wasserstein primary; optional `--score-mmd` cleanup later; see `docs/ROADMAP.md` |
 | V.5.2 / M3.2 CEM calibration | **Next** | θ loop on batched Sinkhorn / MSE scores (`docs/system_identification.md` §4); see `docs/ROADMAP.md` |
+| V.5.2 E-grid replay + ranking | **Done** | `example_youngs_modulus_sys_id.py` + `batched_sysid_cmaes.py`; GT E from episode `fruiting_system_params`, secondary E fixed; see below |
 
 ### Batched MMD grid base geometry (2026-07-06)
 
@@ -200,6 +201,61 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py 
   --secondary-bend-stiffness-values 1e-4 \
   --spur-bend-stiffness-values 1e-4 \
   --stem-bend-stiffness-values 1e-4,2e-4
+```
+
+### Young's-modulus E-grid replay and ranking (V.5.2)
+
+Dataset-driven system identification over a Cartesian log10-E grid for primary,
+spur, and stem rods. Ground-truth collection stays in
+`example_batched_collect_sysid_data.py`; ranking and overlays are in
+`example_youngs_modulus_sys_id.py`.
+
+**Base parameters:** `true_params_for_structure` deserializes each structure's
+recorded `fruiting_system_params` metadata. `YoungsModulusCandidate.apply_to`
+changes only primary, spur, and stem Young's modulus via `set_rod_youngs_modulus`
+(re-deriving bend stiffness/damping). Geometry, topology, density, damping
+ratio, apple parameters, and **secondary E remain fixed** at their stored GT
+values.
+
+**GT candidate:** when `--include-gt-candidate` is enabled (default), the exact
+GT primary/spur/stem E from episode metadata are inserted into the candidate
+grid before replay.
+
+**Scoring / ranking:** recorded actions are replayed per candidate; hold-phase
+transition bags are scored with pooled-direction Sinkhorn Wasserstein (same
+contract as V.5.1). Eligible candidates are ranked ascending by loss. On
+**healthy** samples (good excitation, not excluded/unstable), GT is expected to
+rank **#1**; worse ranks from bad sampling remain allowed.
+
+**Two-step smoke** (collect then rank):
+
+```bash
+uv run --env-file pytest.env python \
+  apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
+  --viewer null --num-structures 1 --num-directions 2 --max-steps 80 \
+  --output tmp/youngs_gt_smoke --overwrite
+
+uv run --env-file pytest.env python \
+  apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
+  --viewer null --dataset tmp/youngs_gt_smoke \
+  --output tmp/youngs_grid_rank_smoke \
+  --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
+  --include-gt-candidate --max-candidates 8 --overwrite
+```
+
+Outputs: `ranking.json` (per-structure and aggregate rankings), per-structure
+`youngs_modulus_overlay.html`, and optional replay mini-datasets. Design:
+`docs/superpowers/specs/2026-07-16-youngs-modulus-grid-replay-ranking-design.md`.
+
+```bash
+uv run --env-file pytest.env python -m pytest -p no:launch_testing \
+  apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
+  apple_pick_gym/tests/test_batched_sysid_youngs_grid.py \
+  apple_pick_gym/tests/test_batched_replay_export.py \
+  apple_pick_gym/tests/test_youngs_modulus_overlay_viz.py \
+  apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
+  apple_pick_sim/tests/test_wasserstein.py \
+  apple_pick_sim/tests/test_mmd_features.py -q
 ```
 
 ### Legacy single-env MMD grid
@@ -302,6 +358,8 @@ Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0
 | `apple_pick_sim/system_id/mmd_features.py` | Hold transition bags: state matrix, median/frame modes, `stable` mask, hold/dir one-hots |
 | `apple_pick_sim/system_id/wasserstein.py` | Sinkhorn scoring; `pool_directions` → `dir_id_onehot` + `POOLED_DIRECTION_KEY` |
 | `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` | Batched grid CLI (`--use-median`, `--hold-id-onehot`, `--pool-directions`, deprecated `--mse-hold-*`) |
+| `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py` | Dataset-driven Young's-modulus E-grid replay + Sinkhorn ranking + overlay HTML |
+| `apple_pick_gym/youngs_modulus_overlay_viz.py` | Faceted Plotly overlay for E-grid replay candidates |
 | `scripts/gate_sysid_gt_sinkhorn.sh` | Named Sinkhorn GT-rank gates (`gate_median_hold`, `gate_hold_id`, `gate_pooled_dirs`) |
 
 ### Fibonacci hemisphere

@@ -54,9 +54,9 @@
 
 - `YoungsModulusCandidate` / `log10` maps + `set_rod_youngs_modulus` (`batched_sysid_cmaes.py`, `params.py`)
 - Keyboard E-grid teleop with soft-disable: `example_batched_youngs_modulus_keyboard.py`
-- Collect × direction + faceted Plotly overlay: `example_batched_youngs_modulus_collect_viz.py` / `youngs_modulus_overlay_viz.py`
-- Design: `docs/superpowers/specs/2026-07-15-sysid-cmaes-youngs-modulus-design.md`
-- Still open: GT recorded-action replay for E candidates, pycma ask/tell loop, aggregate fit report
+- Dataset-driven E-grid replay + ranking + faceted Plotly overlay: `example_youngs_modulus_sys_id.py` / `youngs_modulus_overlay_viz.py` (collect via `example_batched_collect_sysid_data.py`)
+- Design: `docs/superpowers/specs/2026-07-15-sysid-cmaes-youngs-modulus-design.md`, `docs/superpowers/specs/2026-07-16-youngs-modulus-grid-replay-ranking-design.md`
+- Still open: pycma ask/tell loop, aggregate fit report
 
 **Shipped wins (do not reimplement):**
 
@@ -113,7 +113,7 @@
   - [x] GT constantly ranks **#1** on hold MSE / Wasserstein under **good** sampling; worse ranks from bad sampling are allowed (not a loss bug)
   - [x] Primary scorer is **Wasserstein** (Sinkhorn); optional CLI `--score-mmd` deferred as cleanup (library MMD already exists)
 - [ ] **V.5.2 — CEM calibration loop** (M3.2) — **Next**
-  - [x] First interactive cut: `YoungsModulusCandidate` + keyboard E-grid + collect overlay viz (GT replay + pycma loop still open)
+  - [x] First interactive cut: `YoungsModulusCandidate` + keyboard E-grid + dataset-driven E-grid replay/ranking overlay (`example_youngs_modulus_sys_id.py`; pycma loop still open)
 - [ ] **V.5.3 — Held-out sim-sim validation** + [M4] handoff criteria
 
 **[M3] parallel infra** (optional alongside [V])
@@ -305,19 +305,31 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_exclude_unstable_episodes.py \
   apple_pick_gym/tests/test_sysid_gate_report.py -q
 
-# [V].5.2 Young's-modulus candidate + E-grid examples (first interactive cut)
-uv run --env-file pytest.env python -m pytest \
+# [V].5.2 Young's-modulus candidate + E-grid replay/ranking (first interactive cut)
+uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
+  apple_pick_gym/tests/test_batched_sysid_youngs_grid.py \
+  apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py \
+  apple_pick_gym/tests/test_batched_replay_export.py \
   apple_pick_gym/tests/test_youngs_modulus_overlay_viz.py \
-  apple_pick_gym/tests/test_example_batched_youngs_modulus_cli.py -q
+  apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
+  apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py \
+  apple_pick_sim/tests/test_wasserstein.py \
+  apple_pick_sim/tests/test_mmd_features.py -q
 uv run python apple_pick_gym/batched_examples/example_batched_youngs_modulus_keyboard.py \
   --viewer null --max-steps 60 \
   --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0
-uv run python apple_pick_gym/batched_examples/example_batched_youngs_modulus_collect_viz.py \
-  --viewer null --num-directions 2 --max-steps 80 \
-  --settle-substeps 200 \
+# Two-step collect → rank (GT E from episode fruiting_system_params; secondary E fixed)
+uv run --env-file pytest.env python \
+  apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
+  --viewer null --num-structures 1 --num-directions 2 --max-steps 80 \
+  --output tmp/youngs_gt_smoke --overwrite
+uv run --env-file pytest.env python \
+  apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
+  --viewer null --dataset tmp/youngs_gt_smoke \
+  --output tmp/youngs_grid_rank_smoke \
   --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
-  --output /tmp/youngs_e_grid_smoke --overwrite
+  --include-gt-candidate --max-candidates 8 --overwrite
 
 # Optional Sinkhorn gate wrapper (not a full slow e2e; needs GPU + long runtime)
 # Default GATE=gate_pooled_dirs (matches CLI pool/hold-id defaults):

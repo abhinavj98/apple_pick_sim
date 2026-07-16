@@ -164,8 +164,8 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | V.4.2.1 batched digital-twin fidelity | **Done** | Helpers + CLI `--infer-params` shipped; infer-only fidelity floor optional cleanup — see `docs/ROADMAP.md` |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
 | V.5.1 loss / feature hardening | **Done** | GT ranks **#1** on good samples (bad ranks from bad sampling allowed); Wasserstein primary; optional `--score-mmd` cleanup later; see `docs/ROADMAP.md` |
-| V.5.2 / M3.2 CEM calibration | **Next** | θ loop on batched Sinkhorn / MSE scores (`docs/system_identification.md` §4); see `docs/ROADMAP.md` |
-| V.5.2 E-grid replay + ranking | **Done** | `example_youngs_modulus_sys_id.py` + `batched_sysid_cmaes.py`; GT E from episode `fruiting_system_params`, secondary E fixed; see below |
+| V.5.2 / M3.2 parent CMA/CEM calibration loop | **Next** | θ optimization loop on batched Sinkhorn / MSE scores (`docs/system_identification.md` §4); its E-grid replay/ranking prerequisite is complete; see `docs/ROADMAP.md` |
+| V.5.2 prerequisite: E-grid replay + ranking | **Done** | Completed sub-slice: `example_youngs_modulus_sys_id.py` + `batched_sysid_cmaes.py`; GT E from episode `fruiting_system_params`, secondary E fixed at stored GT when present; see below |
 
 ### Batched MMD grid base geometry (2026-07-06)
 
@@ -214,8 +214,8 @@ spur, and stem rods. Ground-truth collection stays in
 recorded `fruiting_system_params` metadata. `YoungsModulusCandidate.apply_to`
 changes only primary, spur, and stem Young's modulus via `set_rod_youngs_modulus`
 (re-deriving bend stiffness/damping). Geometry, topology, density, damping
-ratio, apple parameters, and **secondary E remain fixed** at their stored GT
-values.
+ratio, apple parameters, and **secondary E remain fixed at stored GT when
+present**.
 
 **GT candidate:** when `--include-gt-candidate` is enabled (default), the exact
 GT primary/spur/stem E from episode metadata are inserted into the candidate
@@ -251,9 +251,11 @@ Outputs: `ranking.json` (per-structure and aggregate rankings), per-structure
 uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
   apple_pick_gym/tests/test_batched_sysid_youngs_grid.py \
+  apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py \
   apple_pick_gym/tests/test_batched_replay_export.py \
   apple_pick_gym/tests/test_youngs_modulus_overlay_viz.py \
   apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
+  apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py \
   apple_pick_sim/tests/test_wasserstein.py \
   apple_pick_sim/tests/test_mmd_features.py -q
 ```

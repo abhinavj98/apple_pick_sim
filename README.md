@@ -366,7 +366,8 @@ uv run --env-file pytest.env python -m pytest \
 # Young's-modulus E-grid replay + ranking (V.5.2; dataset-driven, two-step)
 # Step 1: collect GT trajectories; step 2: replay recorded actions over a log10-E grid.
 # GT primary/spur/stem E come from each structure's episode fruiting_system_params;
-# secondary E stays fixed at its stored GT value. On healthy samples, GT ranks #1.
+# secondary E stays fixed at its stored GT value when present. On healthy samples,
+# GT ranks #1.
 uv run --env-file pytest.env python \
   apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
   --viewer null --num-structures 1 --num-directions 2 --max-steps 80 \
@@ -380,9 +381,13 @@ uv run --env-file pytest.env python \
 uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
   apple_pick_gym/tests/test_batched_sysid_youngs_grid.py \
+  apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py \
   apple_pick_gym/tests/test_batched_replay_export.py \
   apple_pick_gym/tests/test_youngs_modulus_overlay_viz.py \
-  apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py -q
+  apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
+  apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py \
+  apple_pick_sim/tests/test_wasserstein.py \
+  apple_pick_sim/tests/test_mmd_features.py -q
 
 # Legacy single-env bend-stiffness / MMD grid (legacy Parquet layout only)
 uv run python apple_pick_gym/examples/run_system_identification.py \

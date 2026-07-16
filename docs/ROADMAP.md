@@ -319,7 +319,8 @@ uv run --env-file pytest.env python -m pytest -p no:launch_testing \
 uv run python apple_pick_gym/batched_examples/example_batched_youngs_modulus_keyboard.py \
   --viewer null --max-steps 60 \
   --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0
-# Two-step collect → rank (GT E from episode fruiting_system_params; secondary E fixed)
+# Two-step collect → rank (GT E from episode fruiting_system_params;
+# secondary E fixed at stored GT when present)
 uv run --env-file pytest.env python \
   apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
   --viewer null --num-structures 1 --num-directions 2 --max-steps 80 \

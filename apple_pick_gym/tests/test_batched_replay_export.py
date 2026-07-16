@@ -379,7 +379,7 @@ def test_export_replay_candidates_sparse_source_direction_ids(tmp_path: Path):
     ds = BatchedSysIdDataset(out)
     entries = ds.episode_entries()
     assert sorted(entry["direction_idx"] for entry in entries) == [0, 2]
-    assert ds.manifest["collection"]["num_directions"] == 2
+    assert ds.manifest["collection"]["num_directions"] == 3
 
 
 def test_export_replay_candidates_for_structure_with_collectors(tmp_path: Path):

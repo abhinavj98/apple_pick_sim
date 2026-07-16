@@ -249,6 +249,13 @@ def write_replay_candidate_dataset(
     collection = source_dataset.manifest.get("collection", {})
     control_hz = float(collection.get("control_hz", 30.0))
     source_root = str(source_dataset.dataset_dir.resolve())
+    source_direction_width = collection.get("num_directions")
+    direction_space_width = max(direction_ids) + 1
+    if source_direction_width is not None:
+        direction_space_width = max(
+            direction_space_width,
+            int(source_direction_width),
+        )
 
     episodes: list[dict[str, Any]] = []
     metadata_rows: list[dict[str, Any]] = []
@@ -314,7 +321,7 @@ def write_replay_candidate_dataset(
         collection={
             **collection,
             "num_structures": 1,
-            "num_directions": num_directions,
+            "num_directions": direction_space_width,
         },
         structures=structures,
         episodes=episodes,

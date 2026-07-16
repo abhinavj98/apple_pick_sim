@@ -128,6 +128,16 @@ def test_assign_pull_directions_unit_vectors():
             assert abs(float(np.linalg.norm(d)) - 1.0) < 1e-5
         assert not np.allclose(dirs[0], dirs[1], atol=1e-3)
         assert not np.allclose(dirs[2], dirs[3], atol=1e-3)
+
+        shared = assign_pull_directions(
+            env,
+            num_structures=2,
+            num_directions=2,
+            shared_across_structures=True,
+        )
+        assert np.allclose(shared[0], shared[2], atol=1e-12)
+        assert np.allclose(shared[1], shared[3], atol=1e-12)
+        assert not np.allclose(shared[0], shared[1], atol=1e-3)
     finally:
         env.close()
 

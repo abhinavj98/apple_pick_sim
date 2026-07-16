@@ -50,6 +50,14 @@
 - Elite selection, covariance update, noise floor — see `docs/system_identification.md` §4
 - Keep GT preference on known-good datasets as a loop sanity check
 
+**V.5.2 progress (interactive E-grid cut):**
+
+- `YoungsModulusCandidate` / `log10` maps + `set_rod_youngs_modulus` (`batched_sysid_cmaes.py`, `params.py`)
+- Keyboard E-grid teleop with soft-disable: `example_batched_youngs_modulus_keyboard.py`
+- Collect × direction + faceted Plotly overlay: `example_batched_youngs_modulus_collect_viz.py` / `youngs_modulus_overlay_viz.py`
+- Design: `docs/superpowers/specs/2026-07-15-sysid-cmaes-youngs-modulus-design.md`
+- Still open: GT recorded-action replay for E candidates, pycma ask/tell loop, aggregate fit report
+
 **Shipped wins (do not reimplement):**
 
 - **V.3** full: batched heterogeneous sim API + gym (V.3.1–V.3.5)
@@ -105,6 +113,7 @@
   - [x] GT constantly ranks **#1** on hold MSE / Wasserstein under **good** sampling; worse ranks from bad sampling are allowed (not a loss bug)
   - [x] Primary scorer is **Wasserstein** (Sinkhorn); optional CLI `--score-mmd` deferred as cleanup (library MMD already exists)
 - [ ] **V.5.2 — CEM calibration loop** (M3.2) — **Next**
+  - [x] First interactive cut: `YoungsModulusCandidate` + keyboard E-grid + collect overlay viz (GT replay + pycma loop still open)
 - [ ] **V.5.3 — Held-out sim-sim validation** + [M4] handoff criteria
 
 **[M3] parallel infra** (optional alongside [V])
@@ -295,6 +304,20 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_env_disable_controller.py \
   apple_pick_gym/tests/test_exclude_unstable_episodes.py \
   apple_pick_gym/tests/test_sysid_gate_report.py -q
+
+# [V].5.2 Young's-modulus candidate + E-grid examples (first interactive cut)
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
+  apple_pick_gym/tests/test_youngs_modulus_overlay_viz.py \
+  apple_pick_gym/tests/test_example_batched_youngs_modulus_cli.py -q
+uv run python apple_pick_gym/batched_examples/example_batched_youngs_modulus_keyboard.py \
+  --viewer null --max-steps 60 \
+  --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0
+uv run python apple_pick_gym/batched_examples/example_batched_youngs_modulus_collect_viz.py \
+  --viewer null --num-directions 2 --max-steps 80 \
+  --settle-substeps 200 \
+  --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
+  --output /tmp/youngs_e_grid_smoke --overwrite
 
 # Optional Sinkhorn gate wrapper (not a full slow e2e; needs GPU + long runtime)
 # Default GATE=gate_pooled_dirs (matches CLI pool/hold-id defaults):

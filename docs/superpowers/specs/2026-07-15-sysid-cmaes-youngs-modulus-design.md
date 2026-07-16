@@ -191,3 +191,18 @@ Reuse without reimplementing: `replay_batched_sysid_structure` / grid batching h
 | Validation report | Mean relative error vs true + spread/cov |
 | Rederive | Full material→VBD from \(E\), not bend-only patch |
 | Acceptance | Includes short **GPU smoke** (schema + exit 0; not flaky CI gate) |
+
+## First interactive slice (shipped 2026-07-15)
+
+Shipped ahead of the full CMA loop for visual verification:
+
+| Piece | Location |
+| ----- | -------- |
+| `YoungsModulusCandidate` + log10 maps | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` |
+| `set_rod_youngs_modulus` | `apple_pick_sim/fruiting_system/params.py` |
+| Keyboard E-grid + soft-disable | `apple_pick_gym/batched_examples/example_batched_youngs_modulus_keyboard.py` |
+| Collect × directions + faceted overlay HTML | `example_batched_youngs_modulus_collect_viz.py`, `youngs_modulus_overlay_viz.py` |
+
+Overlay hygiene: facet by pull direction; norms ‖F‖/‖T‖/‖Δtcp‖ by default; `--max-overlay-candidates` (default 8); phase as vrects; excluded episodes omitted.
+
+Still open for V.5.2: GT recorded-action replay eval adapter, pycma ask/tell, aggregate fit report, `cma` dependency.

@@ -51,6 +51,7 @@ from apple_pick_sim.fruiting_system.params import (
     sample_params,
     sample_params_no_overlap,
     set_rod_bend_stiffness,
+    set_rod_youngs_modulus,
     TOPOLOGY_LINEAR_CHAIN,
     TOPOLOGY_T_JUNCTION,
 )
@@ -124,6 +125,7 @@ __all__ = [
     "rod_params_from_material",
     "rod_params_from_vbd_targets",
     "set_rod_bend_stiffness",
+    "set_rod_youngs_modulus",
     "TOPOLOGY_LINEAR_CHAIN",
     "TOPOLOGY_T_JUNCTION",
     "run_rollout",

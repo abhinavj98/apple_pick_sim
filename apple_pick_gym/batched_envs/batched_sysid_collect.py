@@ -107,7 +107,16 @@ def assign_pull_directions(
     num_structures: int,
     num_directions: int,
     min_world_z: float | None = 0.0,
+    shared_across_structures: bool = False,
 ) -> list[np.ndarray]:
+    """Assign pull directions in candidate-major environment order.
+
+    By default, directions are derived independently from each structure's
+    settled stem/apple pose. With ``shared_across_structures=True``, derive the
+    direction set once from structure 0 and broadcast the exact world-frame
+    vectors to every structure. The latter is required for controlled parameter
+    sweeps where actions must differ only by candidate parameters.
+    """
     scene = env._sim.scene
     layout = env._sim.layout
     if layout is None:
@@ -118,7 +127,11 @@ def assign_pull_directions(
     d_count = int(num_directions)
     bq = scene.cable.state_0.body_q.numpy().reshape(-1, 7)
 
+    reference_dirs: list[np.ndarray] | None = None
     for s in range(s_count):
+        if shared_across_structures and reference_dirs is not None:
+            per_env.extend(direction.copy() for direction in reference_dirs)
+            continue
         rep = s * d_count
         apple_idx = int(layout.apple_body_indices[rep])
         apple_pos = bq[apple_idx, :3]
@@ -131,8 +144,12 @@ def assign_pull_directions(
             robot_vec,
             min_world_z=min_world_z,
         )
-        for d in range(d_count):
-            per_env.append(np.asarray(dirs[d], dtype=np.float64))
+        structure_dirs = [
+            np.asarray(dirs[d], dtype=np.float64) for d in range(d_count)
+        ]
+        if shared_across_structures:
+            reference_dirs = structure_dirs
+        per_env.extend(structure_dirs)
     return per_env
 
 
@@ -411,6 +428,7 @@ def collect_batched_quasi_static_dataset(
     overwrite: bool = False,
     append_timestamp: bool = True,
     pull_direction_min_world_z: float | None = 0.0,
+    shared_pull_directions_across_structures: bool = False,
     stability_thresholds: StabilityThresholds | None = None,
     save_snapshot: bool = False,
 ) -> Path:
@@ -433,6 +451,7 @@ def collect_batched_quasi_static_dataset(
         num_structures=int(num_structures),
         num_directions=int(num_directions),
         min_world_z=pull_direction_min_world_z,
+        shared_across_structures=bool(shared_pull_directions_across_structures),
     )
     reference_traj = QuasiStaticTrajectory(
         np.asarray(per_env_directions[0], dtype=np.float64).reshape(1, 3),

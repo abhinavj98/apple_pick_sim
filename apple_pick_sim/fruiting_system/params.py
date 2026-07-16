@@ -1047,6 +1047,73 @@ def set_rod_bend_stiffness(
     return out
 
 
+def _rod_has_fixed_axial_stretch(rod: RodParams, *, rel_tol: float = 1e-5) -> bool:
+    """True when stored stretch knobs differ from beam-theory stretch at current ``E``."""
+    beam = rod_params_from_material(
+        rod.youngs_modulus_pa,
+        rod.damping_ratio,
+        rod.length,
+        rod.radius,
+        rod.density,
+        rod.num_segments,
+        rod.direction,
+    )
+    return not (
+        math.isclose(
+            rod.stretch_stiffness,
+            beam.stretch_stiffness,
+            rel_tol=rel_tol,
+            abs_tol=1e-9,
+        )
+        and math.isclose(
+            rod.stretch_damping,
+            beam.stretch_damping,
+            rel_tol=rel_tol,
+            abs_tol=1e-9,
+        )
+    )
+
+
+def set_rod_youngs_modulus(
+    params: FruitingSystemParams,
+    segment: str,
+    youngs_modulus_pa: float,
+) -> FruitingSystemParams:
+    """Return a copy with absolute Young's modulus on one rod segment.
+
+    Re-derives bend (and, when stretch was beam-consistent, stretch) via
+    :func:`rod_params_from_material`. Freezes geometry and ``damping_ratio``.
+    If the base rod's axial stretch differs from beam theory (e.g. fixture
+    ``vbd_stretch_fixed``), those stretch knobs are preserved.
+    """
+    if youngs_modulus_pa <= 0.0:
+        raise ValueError("youngs_modulus_pa must be positive")
+    if segment not in ("primary", "secondary", "spur", "stem"):
+        raise ValueError(f"Unknown segment {segment!r}")
+    out = copy_fruiting_params(params)
+    rod = getattr(out, segment)
+    if rod is None:
+        raise ValueError(f"Segment {segment!r} is disabled in params")
+    stretch_kw: dict[str, float] = {}
+    if _rod_has_fixed_axial_stretch(rod):
+        stretch_kw = {
+            "stretch_stiffness": float(rod.stretch_stiffness),
+            "stretch_damping": float(rod.stretch_damping),
+        }
+    new_rod = rod_params_from_material(
+        float(youngs_modulus_pa),
+        rod.damping_ratio,
+        rod.length,
+        rod.radius,
+        rod.density,
+        rod.num_segments,
+        rod.direction,
+        **stretch_kw,
+    )
+    setattr(out, segment, new_rod)
+    return out
+
+
 def enabled_rod_segments(params: FruitingSystemParams) -> tuple[str, ...]:
     """Rod segment names present in ``params``."""
     return tuple(

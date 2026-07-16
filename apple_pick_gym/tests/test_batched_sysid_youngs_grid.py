@@ -219,10 +219,16 @@ def test_evaluator_ranks_finite_eligible_scores_and_marks_gt(
     assert evaluation.scores[2].disqualification_reason == "replay_instability"
 
 
-def test_evaluator_uses_all_original_usable_direction_ids(
+@pytest.mark.parametrize(
+    ("configured_n_directions", "expected_scoring_n_directions"),
+    [(None, 5), (3, 3)],
+)
+def test_evaluator_uses_source_direction_width_for_sparse_ids(
     monkeypatch: pytest.MonkeyPatch,
     gt_params: fs.FruitingSystemParams,
     gt_candidate: cmaes.YoungsModulusCandidate,
+    configured_n_directions: int | None,
+    expected_scoring_n_directions: int,
 ):
     replay_call: dict = {}
     dataset = MagicMock()
@@ -231,6 +237,7 @@ def test_evaluator_uses_all_original_usable_direction_ids(
         {"structure_idx": 0, "direction_idx": 2},
     ]
     gt_context_calls: list[dict] = []
+    score_calls: list[dict] = []
 
     monkeypatch.setattr(cmaes, "true_params_for_structure", lambda _ds, _idx: gt_params)
     monkeypatch.setattr(
@@ -270,9 +277,12 @@ def test_evaluator_uses_all_original_usable_direction_ids(
     monkeypatch.setattr(
         cmaes,
         "score_candidate_wasserstein",
-        lambda **kwargs: _wasserstein_result(
-            candidate_index=int(kwargs["candidate_index"]),
-            aggregate=0.1,
+        lambda **kwargs: (
+            score_calls.append(dict(kwargs))
+            or _wasserstein_result(
+                candidate_index=int(kwargs["candidate_index"]),
+                aggregate=0.1,
+            )
         ),
     )
 
@@ -280,15 +290,19 @@ def test_evaluator_uses_all_original_usable_direction_ids(
         dataset=dataset,
         structure_idx=0,
         candidates=[gt_candidate],
-        num_directions=3,
+        num_directions=5,
         build_env_fn=MagicMock(),
-        scoring=cmaes.YoungsModulusScoringConfig(n_holds=5, n_directions=3),
+        scoring=cmaes.YoungsModulusScoringConfig(
+            n_holds=5,
+            n_directions=configured_n_directions,
+        ),
     )
 
     assert evaluation.direction_indices == (0, 2)
     assert replay_call["direction_indices"] == [0, 2]
     assert replay_call["num_directions"] == 2
-    assert gt_context_calls[0]["n_directions"] == 3
+    assert gt_context_calls[0]["n_directions"] == expected_scoring_n_directions
+    assert score_calls[0]["n_directions"] == expected_scoring_n_directions
 
 
 def test_evaluator_disqualifies_non_finite_sinkhorn(

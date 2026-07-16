@@ -225,6 +225,11 @@ def evaluate_youngs_modulus_candidates(
     )
     direction_indices = tuple(int(d) for d in direction_indices_list)
     num_usable_directions = len(direction_indices_list)
+    scoring_n_directions = (
+        int(num_directions)
+        if scoring.n_directions is None
+        else int(scoring.n_directions)
+    )
 
     recorded = load_recorded_episodes_for_structure(
         dataset,
@@ -239,7 +244,7 @@ def evaluate_youngs_modulus_candidates(
         hold_id_onehot=bool(scoring.hold_id_onehot),
         n_holds=scoring.n_holds,
         pool_directions=bool(scoring.pool_directions),
-        n_directions=scoring.n_directions,
+        n_directions=scoring_n_directions,
     )
     collectors = replay_candidates_for_structure(
         dataset=dataset,
@@ -314,7 +319,7 @@ def evaluate_youngs_modulus_candidates(
             hold_id_onehot=bool(scoring.hold_id_onehot),
             n_holds=scoring.n_holds,
             pool_directions=bool(scoring.pool_directions),
-            n_directions=scoring.n_directions,
+            n_directions=scoring_n_directions,
         )
 
         if w_result.missing_directions:

@@ -15,6 +15,14 @@ def _base_primary_spur_stem(seed: int = 0) -> fs.FruitingSystemParams:
     return fs.sample_params(ranges, seed=seed, omit=("secondary",))
 
 
+def _base_primary_spur_stem_with_secondary(seed: int = 0) -> fs.FruitingSystemParams:
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    params = fs.sample_params(ranges, seed=seed)
+    assert params.primary is not None and params.spur is not None and params.stem is not None
+    assert params.secondary is not None
+    return params
+
+
 def test_iter_youngs_modulus_candidates_cartesian_product():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
@@ -51,15 +59,25 @@ def test_candidates_from_log10_e_and_round_trip():
 def test_apply_to_sets_e_rederives_bend_freezes_geometry_and_zeta():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
-    base = _base_primary_spur_stem()
-    assert base.secondary is None
+    base = _base_primary_spur_stem_with_secondary()
+    assert base.secondary is not None
     assert base.primary is not None and base.spur is not None and base.stem is not None
+    base_secondary = base.secondary
 
     e_p, e_sp, e_st = 5.0e8, 4.0e7, 2.0e7
     out = cmaes.YoungsModulusCandidate(primary=e_p, spur=e_sp, stem=e_st).apply_to(base)
 
-    assert out.secondary is None
+    assert out.secondary is not None
     assert out.primary is not None and out.spur is not None and out.stem is not None
+    assert out.secondary.youngs_modulus_pa == pytest.approx(base_secondary.youngs_modulus_pa)
+    assert out.secondary.damping_ratio == pytest.approx(base_secondary.damping_ratio)
+    assert out.secondary.length == pytest.approx(base_secondary.length)
+    assert out.secondary.radius == pytest.approx(base_secondary.radius)
+    assert out.secondary.density == pytest.approx(base_secondary.density)
+    assert out.secondary.num_segments == base_secondary.num_segments
+    assert out.secondary.direction == base_secondary.direction
+    assert out.secondary.bend_stiffness == pytest.approx(base_secondary.bend_stiffness)
+    assert out.secondary.bend_damping == pytest.approx(base_secondary.bend_damping)
 
     for rod, e_new, base_rod in (
         (out.primary, e_p, base.primary),
@@ -191,3 +209,32 @@ def test_candidates_from_log10_e_rejects_wrong_length():
 
     with pytest.raises(ValueError, match="3"):
         cmaes.candidates_from_log10_e((8.0, 7.0))
+
+
+def test_gt_candidate_reads_lossless_structure_params(monkeypatch):
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    gt_params = _base_primary_spur_stem_with_secondary()
+    monkeypatch.setattr(cmaes, "true_params_for_structure", lambda _dataset, _idx: gt_params)
+
+    candidate = cmaes.gt_youngs_modulus_candidate_from_structure(object(), 3)
+
+    assert candidate == cmaes.YoungsModulusCandidate(
+        primary=gt_params.primary.youngs_modulus_pa,
+        spur=gt_params.spur.youngs_modulus_pa,
+        stem=gt_params.stem.youngs_modulus_pa,
+    )
+    assert gt_params.secondary is not None
+
+
+def test_maybe_include_gt_candidate_is_configurable_and_deduplicates_in_log_space():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    gt = cmaes.YoungsModulusCandidate(1e8, 10**7.5, 1e7)
+    near = cmaes.YoungsModulusCandidate(
+        10 ** (8.0 + 5e-10), 10**7.5, 1e7
+    )
+
+    assert cmaes.maybe_include_gt_candidate([near], gt, include_gt=True) == [near]
+    assert cmaes.maybe_include_gt_candidate([], gt, include_gt=False) == []
+    assert cmaes.maybe_include_gt_candidate([], gt, include_gt=True) == [gt]

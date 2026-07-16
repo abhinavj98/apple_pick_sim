@@ -9,10 +9,13 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Sequence
 from itertools import product
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from apple_pick_sim.fruiting_system import params as fs
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
+
+if TYPE_CHECKING:
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
 
 
 class YoungsModulusCandidate(NamedTuple):
@@ -103,3 +106,43 @@ def youngs_modulus_candidate_from_params(
         spur=float(params.spur.youngs_modulus_pa),
         stem=float(params.stem.youngs_modulus_pa),
     )
+
+
+def gt_youngs_modulus_candidate_from_structure(
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+) -> YoungsModulusCandidate:
+    import apple_pick_gym.batched_envs.batched_sysid_cmaes as _mod
+
+    return youngs_modulus_candidate_from_params(
+        _mod.true_params_for_structure(dataset, int(structure_idx))
+    )
+
+
+def youngs_modulus_values_match(
+    left: YoungsModulusCandidate,
+    right: YoungsModulusCandidate,
+    *,
+    log10_atol: float = 1e-9,
+) -> bool:
+    return all(
+        math.isclose(math.log10(a), math.log10(b), rel_tol=0.0, abs_tol=log10_atol)
+        for a, b in zip(left, right, strict=True)
+    )
+
+
+def maybe_include_gt_candidate(
+    candidates: Sequence[YoungsModulusCandidate],
+    gt: YoungsModulusCandidate,
+    *,
+    include_gt: bool,
+) -> list[YoungsModulusCandidate]:
+    items = list(candidates)
+    if not include_gt or any(youngs_modulus_values_match(item, gt) for item in items):
+        return items
+    return [*items, gt]
+
+
+from apple_pick_sim.system_id.batched_digital_twin_init import (  # noqa: E402
+    true_params_for_structure,
+)

@@ -59,18 +59,23 @@ def _meta(episode_id: str, *, direction_idx: int) -> dict:
     }
 
 
-def _write_two_episode_dataset(tmp_path: Path) -> Path:
-    for direction_idx, stable in ((0, True), (1, False)):
+def _write_two_episode_dataset(
+    tmp_path: Path,
+    *,
+    stability_by_direction: tuple[tuple[bool, ...], ...] = ((True,), (False,)),
+) -> Path:
+    for direction_idx, stability in enumerate(stability_by_direction):
         writer = BatchedEpisodeWriter(episode_id=f"ep-{direction_idx}")
-        writer.record_step(
-            step_idx=0,
-            sim_time=0.0,
-            phase="hold",
-            amplitude_m=0.0,
-            action=np.zeros(6, dtype=np.float32),
-            obs=_synthetic_obs(),
-            stable=stable,
-        )
+        for step_idx, stable in enumerate(stability):
+            writer.record_step(
+                step_idx=step_idx,
+                sim_time=float(step_idx) / 30.0,
+                phase="hold",
+                amplitude_m=0.0,
+                action=np.zeros(6, dtype=np.float32),
+                obs=_synthetic_obs(),
+                stable=stable,
+            )
         writer.save(
             tmp_path / episode_filename(0, direction_idx),
             _meta(f"ep-{direction_idx}", direction_idx=direction_idx),
@@ -78,7 +83,11 @@ def _write_two_episode_dataset(tmp_path: Path) -> Path:
     write_manifest(
         tmp_path,
         command_argv=["collect.py"],
-        collection={"seed": 0, "num_structures": 1, "num_directions": 2},
+        collection={
+            "seed": 0,
+            "num_structures": 1,
+            "num_directions": len(stability_by_direction),
+        },
         structures=[
             {
                 "structure_idx": 0,
@@ -94,7 +103,7 @@ def _write_two_episode_dataset(tmp_path: Path) -> Path:
                 "filename": episode_filename(0, 0),
                 "episode_id": "ep-0",
                 "pull_direction": [0.0, 1.0, 0.0],
-                "n_frames": 1,
+                "n_frames": len(stability_by_direction[0]),
             },
             {
                 "structure_idx": 0,
@@ -103,7 +112,7 @@ def _write_two_episode_dataset(tmp_path: Path) -> Path:
                 "filename": episode_filename(0, 1),
                 "episode_id": "ep-1",
                 "pull_direction": [0.0, 1.0, 0.0],
-                "n_frames": 1,
+                "n_frames": len(stability_by_direction[1]),
             },
         ],
         overwrite=True,
@@ -121,6 +130,26 @@ def test_exclude_ignores_single_unstable_frame(tmp_path: Path):
     assert eps[0]["excluded"] is False
     assert eps[1]["excluded"] is True
     assert eps[1]["excluded_reason"] == "stability_blowup"
+
+
+def test_exclude_uses_strict_25_percent_instability_boundary(tmp_path: Path):
+    root = _write_two_episode_dataset(
+        tmp_path,
+        stability_by_direction=(
+            (False, True, True, True),
+            (False, False, True, True),
+        ),
+    )
+
+    exclude_unstable_episodes(root, inplace=False)
+
+    episodes = BatchedSysIdDataset(
+        root,
+        manifest_name=FILTERED_MANIFEST_NAME,
+    ).episode_entries()
+    assert episodes[0]["excluded"] is False
+    assert episodes[1]["excluded"] is True
+    assert episodes[1]["excluded_reason"] == "stability_blowup"
 
 
 def test_exclude_inplace_backs_up_then_rewrites(tmp_path: Path):

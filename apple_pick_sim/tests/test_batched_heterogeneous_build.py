@@ -67,6 +67,82 @@ def per_env_params(ranges):
     )
 
 
+def _per_env_recorded_weld_grippers() -> tuple[GripperProxyConfig, ...]:
+    base = GripperProxyConfig(
+        mass=0.5,
+        shape="cylinder",
+        cylinder_radius=0.05,
+        cylinder_half_height=0.07,
+        fix_to_apple=True,
+    )
+    return (
+        dataclasses.replace(
+            base,
+            weld_direction=(0.0, 0.0, -1.0),
+            weld_reference_pos=(0.0, 0.4, 0.7),
+            weld_reference_quat=(0.0, 0.0, 0.0, 1.0),
+        ),
+        dataclasses.replace(
+            base,
+            weld_direction=(1.0, 0.0, 0.0),
+            weld_reference_pos=(0.1, 0.3, 0.8),
+            weld_reference_quat=(0.0, 0.0, 0.70710678, 0.70710678),
+        ),
+    )
+
+
+def test_per_env_gripper_validation_rejects_length_and_structural_mismatch():
+    per_env_grippers = _per_env_recorded_weld_grippers()
+    base = per_env_grippers[0]
+
+    with pytest.raises(ValueError, match="per_env_grippers length"):
+        build_module._normalize_per_env_grippers(
+            base,
+            per_env_grippers[:1],
+            num_envs=2,
+            fix_to_apple=True,
+        )
+
+    bad_shape = (
+        per_env_grippers[0],
+        dataclasses.replace(per_env_grippers[1], shape="box"),
+    )
+    with pytest.raises(ValueError, match="structural gripper"):
+        build_module._normalize_per_env_grippers(
+            base,
+            bad_shape,
+            num_envs=2,
+            fix_to_apple=True,
+        )
+
+
+@requires_fr3
+def test_per_world_recorded_weld_poses_produce_distinct_proxy_offsets(
+    ranges, per_env_params
+):
+    per_env_grippers = _per_env_recorded_weld_grippers()
+    cfg = dataclasses.replace(
+        _vbd_only_config(),
+        robot=RobotConfig(
+            kind="fr3",
+            step_mode="vbd_only",
+            fix_to_apple=True,
+            gripper=per_env_grippers[0],
+        ),
+    )
+
+    result = build_batched_heterogeneous_scene(
+        cfg,
+        per_env_params,
+        ranges,
+        per_env_grippers=per_env_grippers,
+    )
+
+    assert result.scene.per_world_proxy_offsets is not None
+    assert len(result.scene.per_world_proxy_offsets) == 2
+    assert result.scene.per_world_proxy_offsets[0] != result.scene.per_world_proxy_offsets[1]
+
+
 def _vbd_only_config(*, settle_substeps: int = 0) -> BatchedHeterogeneousCoupledSimConfig:
     return dataclasses.replace(
         BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=_NUM_ENVS),

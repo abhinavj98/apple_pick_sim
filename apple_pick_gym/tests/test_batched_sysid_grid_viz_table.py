@@ -43,48 +43,36 @@ def _episode(*, phase: np.ndarray, tcp_shift: float, ft_shift: float, woody_shif
     }
 
 
-def test_build_grid_viz_rows_disqualifies_unstable_replay():
+def test_build_grid_viz_rows_uses_strict_25_percent_instability_boundary():
     from apple_pick_gym.grid_viz_table import build_grid_viz_rows
 
-    phase = np.array([0, 1, 1, 1, 1, 1, 1, 1, 1, 2], dtype=np.int8)
+    phase = np.array([0, 1, 1, 1, 1, 1, 1, 2], dtype=np.int8)
     recorded_eps = [_episode(phase=phase, tcp_shift=0.0, ft_shift=0.0)]
     gt = _Cand(1.0, 0.0, 2.0, 3.0)
-    candidates = [gt]
+    far = _Cand(10.0, 0.0, 2.0, 3.0)
 
-    stable_replay = _episode(phase=phase, tcp_shift=0.0, ft_shift=0.0, woody_shift=0.0)
-    unstable_replay = _episode(phase=phase, tcp_shift=0.0, ft_shift=0.0, woody_shift=0.0)
-    unstable_replay["stable"] = np.ones(phase.shape[0], dtype=bool)
-    unstable_replay["stable"][2] = False
-    unstable_replay["stable"][3] = False
+    at_boundary = _episode(phase=phase, tcp_shift=0.0, ft_shift=0.0, woody_shift=0.0)
+    at_boundary["stable"][[2, 3]] = False
+    above_boundary = _episode(phase=phase, tcp_shift=1.0, ft_shift=1.0, woody_shift=1.0)
+    above_boundary["stable"][[2, 3, 4]] = False
 
     rows = build_grid_viz_rows(
         structure_idx=0,
-        candidates=candidates,
+        candidates=[gt, far],
         gt_candidate=gt,
         recorded_eps=recorded_eps,
-        replay_eps_by_candidate=[[unstable_replay]],
+        replay_eps_by_candidate=[[at_boundary], [above_boundary]],
         hold_phase_value=1,
         pos_weights=(1.0, 1.0),
         dist_keys=("primary", "spur", "stem"),
         hold_aggregation="none",
     )
-    assert rows[0].disqualified is True
-    assert rows[0].unstable_fraction_all > 0.10
-    assert rows[0].rank_combined == float("inf")
-
-    rows_stable = build_grid_viz_rows(
-        structure_idx=0,
-        candidates=candidates,
-        gt_candidate=gt,
-        recorded_eps=recorded_eps,
-        replay_eps_by_candidate=[[stable_replay]],
-        hold_phase_value=1,
-        pos_weights=(1.0, 1.0),
-        dist_keys=("primary", "spur", "stem"),
-        hold_aggregation="none",
-    )
-    assert rows_stable[0].disqualified is False
-    assert rows_stable[0].rank_combined == pytest.approx(1.0)
+    assert rows[0].unstable_fraction_all == pytest.approx(0.25)
+    assert rows[0].disqualified is False
+    assert rows[0].rank_combined == pytest.approx(1.0)
+    assert rows[1].unstable_fraction_all == pytest.approx(0.375)
+    assert rows[1].disqualified is True
+    assert rows[1].rank_combined == float("inf")
 
 
 def test_build_grid_viz_rows_marks_gt_and_prefers_gt_errors():

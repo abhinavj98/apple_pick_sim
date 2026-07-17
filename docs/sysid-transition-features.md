@@ -11,16 +11,19 @@ biased MMD and Sinkhorn (Wasserstein) scoring on hold-phase quasi-static data.
 | GT z-score + MMD² | `apple_pick_sim/system_id/mmd.py` |
 | Sinkhorn bags + pooling | `apple_pick_sim/system_id/wasserstein.py` |
 | CLI flags | `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` |
+| Young's-modulus complete scoring | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` |
 | Named gates | `scripts/gate_sysid_gt_sinkhorn.sh` |
+| Young's multi-seed gate | `scripts/gate_youngs_modulus_sysid.sh` |
 
-Related: `docs/system_identification.md` §3, `docs/specs/2026-07-08-wasserstein-sysid-ranking-design.md`,
-`docs/sysid-mmd-grid-replay-alignment.md`.
+Related: `docs/system_identification.md` §3,
+`docs/sysid-mmd-grid-replay-alignment.md`, and
+`docs/youngs-modulus-sysid.md`.
 
 ## Document status
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-07-15 |
+| **Last reviewed** | 2026-07-17 |
 | **Scope** | Features as implemented for hold-phase MMD/Wasserstein (not chirp / full-traj damping bags) |
 
 ---
@@ -118,6 +121,27 @@ Pooled Sinkhorn path (`wasserstein.py`):
 2. Concatenate all directions into one bag keyed by `POOLED_DIRECTION_KEY = -1`.
 3. Fit one GT z-score on the pooled bag; score candidates with Sinkhorn.
 
+### Complete candidate scoring
+
+`prepare_gt_wasserstein_scoring_context()` retains both a pooled context and
+independently normalized physical-direction contexts.
+`score_candidate_wasserstein_complete()` verifies that every expected physical
+direction has a usable bag before producing pooled fitness. Missing or empty
+bags return candidate-local invalid results rather than aborting a structure.
+
+The pooled aggregate and per-direction diagnostics are intentionally different
+quantities:
+
+- pooled fitness uses one GT normalization fitted after concatenation and
+  drives ranking/optimization;
+- each physical-direction diagnostic uses its own GT normalization; and
+- `POOLED_DIRECTION_KEY` is internal and must not appear in serialized
+  `per_direction_sinkhorn`.
+
+Non-finite internal scores serialize as JSON `null`. The exact empty-bag
+disqualified shape may use a null aggregate, an empty per-direction map, and a
+null rank. See `docs/youngs-modulus-sysid.md` for the report contract.
+
 Full pooled row (with both extras, as in `gate_pooled_dirs`):
 
 \[
@@ -175,11 +199,12 @@ Real-world ArUco at woody start/end maps cleanly onto `woody_part_*_pos`; marker
 
 ## 6. Ranking expectation
 
-Under healthy excitation / sampling, the GT stiffness candidate **constantly ranks #1**
-on the shipped hold bags (median + hold-id + pooled dirs). Occasional worse ranks are
-attributed to **bad sampling** (e.g. wrench saturation that collapses discrimination) and
-**are allowed** — diagnose the fixture/caps/seed, not the distance logic. Gate harness
-`GATE_PASS_MAX_RANK = 2` is a soft seed diagnostic, not a replacement for #1-on-good-data.
+Under healthy excitation / sampling, GT should rank first on the shipped hold
+bags (median + hold-id + pooled directions). Occasional worse ranks from bad
+sampling are allowed and should trigger fixture/cap/seed diagnosis rather than
+an automatic feature change. The Young's-modulus operational gate uses a
+strict majority per seed (three of five by default), with every configured seed
+required to pass.
 
 ## 7. Ambiguities (code as written)
 
@@ -193,8 +218,10 @@ attributed to **bad sampling** (e.g. wrench saturation that collapses discrimina
 | Tests | What they cover |
 | ----- | --------------- |
 | `apple_pick_sim/tests/test_mmd_features.py` | State layout, woody flatten order, bending angles, hold segments (no split on `stable`), median / one-hot transitions, no latter-half burn-in |
-| `apple_pick_sim/tests/test_wasserstein.py` | Per-dir vs pooled context, Sinkhorn identical≈0, pooling + dir one-hot (`POOLED_DIRECTION_KEY`) |
+| `apple_pick_sim/tests/test_wasserstein.py` | Per-dir vs pooled context, completeness, sparse physical IDs, singleton bags, pooling + dir one-hot |
 | `apple_pick_sim/tests/test_mmd.py` | Normalization + biased MMD² |
+| `apple_pick_gym/tests/test_batched_sysid_youngs_grid.py` | Complete scorer integration and candidate-local disqualification |
+| `apple_pick_gym/tests/test_youngs_modulus_gate_report.py` | Strict-JSON GT evidence and strict-majority gate |
 
 ```bash
 uv run --env-file pytest.env python -m pytest \

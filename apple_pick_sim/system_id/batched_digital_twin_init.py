@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
+import dataclasses
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -217,15 +217,20 @@ def true_params_for_structure(
     return fruiting_params_from_json(str(serialized))
 
 
-def initialize_batched_env_from_dataset(
+@dataclasses.dataclass(frozen=True)
+class ReplayEpisodeSource:
+    """Dataset episode used to initialize one replay environment."""
+
+    structure_idx: int
+    direction_idx: int
+
+
+def initialize_batched_env_from_episode_sources(
     env: Any,
     dataset: BatchedSysIdDataset,
-    *,
-    structure_idx: int,
-    num_directions: int,
-    direction_indices: Sequence[int] | None = None,
+    sources: Sequence[ReplayEpisodeSource],
 ) -> None:
-    """Apply pre-weld joint and VIC target state from a batched sys-ID dataset.
+    """Apply each world's pre-weld state from its explicit dataset episode.
 
     Uses episode metadata (``initial_robot_joint_q``, ``initial_tcp_pos``,
     ``initial_tcp_quat``) which captures the robot state right after ``env.reset()``
@@ -233,6 +238,13 @@ def initialize_batched_env_from_dataset(
     avoids the spurious force transient that would arise from initialising with
     ``step_idx=0`` data (which is recorded *after* the first move step).
     """
+    source_list = tuple(sources)
+    if len(source_list) != int(env.num_envs):
+        raise ValueError(
+            f"sources length ({len(source_list)}) must match "
+            f"env.num_envs ({env.num_envs})"
+        )
+
     import newton
 
     scene = env._sim.scene
@@ -240,73 +252,54 @@ def initialize_batched_env_from_dataset(
     if layout is None:
         raise RuntimeError("batched scene missing layout")
 
+    robot_targets = (scene.robot_state_0, scene.robot_model)
+    joint_buffers = [
+        (target, target.joint_q.numpy().copy(), target.joint_qd.numpy().copy())
+        for target in robot_targets
+    ]
     vic = scene.vic_controller
-    target_pos = None
-    target_rot = None
-    if vic is not None:
-        target_pos = vic._target_pos_wp.numpy().copy()
-        target_rot = vic._target_rot_wp.numpy().copy()
-
-    dirs = (
-        [int(d) for d in direction_indices]
-        if direction_indices is not None
-        else list(range(int(num_directions)))
+    target_pos = None if vic is None else vic._target_pos_wp.numpy().copy()
+    target_rot = None if vic is None else vic._target_rot_wp.numpy().copy()
+    vic_default = getattr(scene, "vic_jt_default_dof_pos", None)
+    legacy_default_row = None
+    vic_default_batched = getattr(scene, "vic_jt_default_dof_pos_batched", None)
+    default_rows = (
+        None if vic_default_batched is None else vic_default_batched.numpy().copy()
     )
-    if not dirs:
-        raise ValueError("direction_indices must be non-empty")
-    if len(dirs) != int(num_directions):
-        raise ValueError(
-            f"len(direction_indices)={len(dirs)} != num_directions={int(num_directions)}"
+
+    for env_idx, source in enumerate(source_list):
+        arrays = dataset.load_episode_obs_arrays(
+            source.structure_idx, source.direction_idx
         )
-
-    for env_idx in range(env.num_envs):
-        direction_idx = int(dirs[int(env_idx) % len(dirs)])
-        arrays = dataset.load_episode_obs_arrays(structure_idx, direction_idx)
-        meta = dataset.load_episode_metadata(structure_idx, direction_idx)
-        world = int(env_idx)
-
-        # Prefer metadata initial values (captured right after env.reset(), before any
-        # trajectory step) so the initialized EE position matches the cable-settle
-        # equilibrium.  Fall back to the first trajectory frame only when metadata keys
-        # are absent (legacy datasets).
+        meta = dataset.load_episode_metadata(
+            source.structure_idx, source.direction_idx
+        )
         q = _array_or_none(meta.get("initial_robot_joint_q"), 7)
         if q is None:
             q = _frame_array_at_step(arrays, "robot_joint_q", FIRST_TRAJECTORY_STEP_IDX, 7)
         if q is None:
             raise ValueError(
                 "missing initial robot_joint_q for "
-                f"structure={structure_idx} direction={direction_idx} "
+                f"structure={source.structure_idx} "
+                f"direction={source.direction_idx} "
                 f"(env_idx={env_idx})"
             )
-
-        q_slice = layout.joint_q_slice(world)
-        qd_slice = layout.joint_qd_slice(world)
         q_flat = q.reshape(-1)
-        zeros_qd = np.zeros(qd_slice.stop - qd_slice.start, dtype=np.float32)
+        q_slice = layout.joint_q_slice(env_idx)
+        qd_slice = layout.joint_qd_slice(env_idx)
+        for _target, joint_q, joint_qd in joint_buffers:
+            joint_q[q_slice] = q_flat
+            joint_qd[qd_slice] = 0.0
 
-        for target in (scene.robot_state_0, scene.robot_model):
-            jq = target.joint_q.numpy().copy()
-            jqd = target.joint_qd.numpy().copy()
-            jq[q_slice] = q_flat
-            jqd[qd_slice] = zeros_qd
-            target.joint_q.assign(jq)
-            target.joint_qd.assign(jqd)
-
-        vic_default = getattr(scene, "vic_jt_default_dof_pos", None)
-        if vic_default is not None:
-            default_q = q_flat.copy()
-            if default_q.shape[0] > 6:
-                default_q[6] = 0.0
-            vic_default.assign(default_q)
-
-        vic_default_batched = getattr(scene, "vic_jt_default_dof_pos_batched", None)
-        if vic_default_batched is not None:
-            default_rows = vic_default_batched.numpy().copy()
-            row = q_flat.copy()
-            if row.shape[0] > 6:
-                row[6] = 0.0
-            default_rows[world, : row.shape[0]] = row
-            vic_default_batched.assign(default_rows)
+        if default_rows is not None:
+            default_row = q_flat.copy()
+            if default_row.shape[0] > 6:
+                default_row[6] = 0.0
+            default_rows[env_idx, : default_row.shape[0]] = default_row
+        elif vic_default is not None and len(source_list) == 1:
+            legacy_default_row = q_flat.copy()
+            if legacy_default_row.shape[0] > 6:
+                legacy_default_row[6] = 0.0
 
         if target_pos is not None and target_rot is not None:
             tcp_pos = _array_or_none(meta.get("initial_tcp_pos"), 3)
@@ -316,18 +309,25 @@ def initialize_batched_env_from_dataset(
             if tcp_quat is None:
                 tcp_quat = _frame_array_at_step(arrays, "tcp_quat", FIRST_TRAJECTORY_STEP_IDX, 4)
             if tcp_pos is not None and tcp_quat is not None:
-                target_pos[world] = tcp_pos
-                target_rot[world] = tcp_quat
+                target_pos[env_idx] = tcp_pos
+                target_rot[env_idx] = tcp_quat
 
-        excitation_direction = arrays["excitation_direction"][0]
         env.set_excitation_context(
             env_idx,
             ExcitationContext(
                 type="quasi_static",
                 f_inst=0.0,
-                direction=excitation_direction,
+                direction=arrays["excitation_direction"][0],
             ),
         )
+
+    for target, joint_q, joint_qd in joint_buffers:
+        target.joint_q.assign(joint_q)
+        target.joint_qd.assign(joint_qd)
+    if vic_default_batched is not None and default_rows is not None:
+        vic_default_batched.assign(default_rows)
+    elif vic_default is not None and legacy_default_row is not None:
+        vic_default.assign(legacy_default_row)
 
     newton.eval_fk(
         scene.robot_model,
@@ -346,3 +346,34 @@ def initialize_batched_env_from_dataset(
         vic._sync_target_tf_from_device()
         vic.stage_targets_to_scene(scene)
     scene.vic_target_twist = fr3_robot.EEVelocity()
+
+
+def initialize_batched_env_from_dataset(
+    env: Any,
+    dataset: BatchedSysIdDataset,
+    *,
+    structure_idx: int,
+    num_directions: int,
+    direction_indices: Sequence[int] | None = None,
+) -> None:
+    """Initialize replay worlds from one structure, cycling physical directions."""
+    dirs = (
+        [int(d) for d in direction_indices]
+        if direction_indices is not None
+        else list(range(int(num_directions)))
+    )
+    if not dirs:
+        raise ValueError("direction_indices must be non-empty")
+    if len(dirs) != int(num_directions):
+        raise ValueError(
+            f"len(direction_indices)={len(dirs)} != num_directions={int(num_directions)}"
+        )
+
+    sources = tuple(
+        ReplayEpisodeSource(
+            structure_idx=int(structure_idx),
+            direction_idx=int(dirs[env_idx % len(dirs)]),
+        )
+        for env_idx in range(int(env.num_envs))
+    )
+    initialize_batched_env_from_episode_sources(env, dataset, sources)

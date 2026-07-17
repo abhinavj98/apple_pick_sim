@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Callable
 
 import numpy as np
@@ -194,6 +195,7 @@ def build_heterogeneous_coupled_cable_scene(
     base_pos: tuple[float, float, float],
     robot_base_pos: tuple[float, float, float] | None,
     gripper_proxy: GripperProxyConfig,
+    gripper_proxies: Sequence[GripperProxyConfig] | None = None,
     enable_apple_woody_collisions: bool = True,
     enable_proxy_woody_collisions: bool = True,
 ) -> tuple[CoupledCableScene, tuple[tuple[float, float, float, float, float, float, float] | None, ...]]:
@@ -203,16 +205,25 @@ def build_heterogeneous_coupled_cable_scene(
     if num_envs < 1:
         raise ValueError("build_heterogeneous_coupled_cable_scene requires num_envs >= 1")
     _assert_uniform_topology(params_list)
+    configs = (
+        tuple(gripper_proxies)
+        if gripper_proxies is not None
+        else tuple(gripper_proxy for _ in params_list)
+    )
+    if len(configs) != num_envs:
+        raise ValueError(
+            f"gripper_proxies length ({len(configs)}) must match params_list ({num_envs})"
+        )
 
     outer = _new_fruiting_builder()
     populate_results: list[CoupledCablePopulateResult] = []
-    for params_w in params_list:
+    for params_w, gripper_w in zip(params_list, configs, strict=True):
         sub = _new_fruiting_builder()
         pop = _populate_coupled_cable_builder(
             sub,
             params_w,
             base_pos,
-            gripper_proxy=gripper_proxy,
+            gripper_proxy=gripper_w,
             robot_base_pos=robot_base_pos,
         )
         _prepare_cable_template_builder_for_replicate(
@@ -234,7 +245,7 @@ def build_heterogeneous_coupled_cable_scene(
     bodies_per_world = _assert_uniform_world_entity_gaps(model, num_envs)
     tpl = populate_results[0]
 
-    if gripper_proxy.fix_to_apple and tpl.artifacts.apple_body is not None:
+    if configs[0].fix_to_apple and tpl.artifacts.apple_body is not None:
         from apple_pick_sim.fruiting_system.build import prescribe_body_vbd_on_model
 
         prescribed: list[int] = []
@@ -260,7 +271,7 @@ def build_heterogeneous_coupled_cable_scene(
         fruiting_fixed_joints=tuple(tpl.artifacts.fruiting_fixed_joints),
         cable_joint_indices=tuple(tpl.artifacts.cable_joint_indices),
         gripper_proxy_body=tpl.proxy_body,
-        gripper_proxy_config=gripper_proxy,
+        gripper_proxy_config=configs[0],
         gripper_proxy_apple_joint=tpl.proxy_apple_joint,
         gripper_proxy_offset_in_apple_frame=tpl.proxy_offset_in_apple,
         gripper_proxy_vis_offset=tpl.vis_offset,

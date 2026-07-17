@@ -12,6 +12,7 @@ from typing import Any, Callable, Literal, NamedTuple, Protocol
 from apple_pick_gym.batched_envs.batched_sysid_collect import broadcast_structure_params
 from apple_pick_gym.batched_envs.batched_stability_monitor import (
     BatchedStabilityMonitor,
+    DEFAULT_UNSTABLE_FRACTION_THRESHOLD,
     hard_blowup_mask,
     ik_bootstrap_unstable_mask,
 )
@@ -56,7 +57,7 @@ from apple_pick_sim.fruiting_system.params import FruitingSystemParams
 
 ROD_SEGMENTS: tuple[str, ...] = ("primary", "secondary", "spur", "stem")
 
-UNSTABLE_DISQUALIFY_THRESHOLD = 0.10
+UNSTABLE_DISQUALIFY_THRESHOLD = DEFAULT_UNSTABLE_FRACTION_THRESHOLD
 
 
 def _stable_mask_arrays(

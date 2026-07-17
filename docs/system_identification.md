@@ -4,7 +4,12 @@
 
 Develop a high-fidelity, tunable simulation model of an apple-branch system. The physical system is modeled as a topological network of spatial springs and masses (primary branch, secondary branch, spur, stem), solved via VBD (Variational Body Dynamics). Rod **material** parameters (Young's modulus \(E\), damping ratio \(\zeta\)) and geometry are identified from real-world kinematic and force/torque (F/T) telemetry; VBD stiffness/damping are **derived** at sample time (`docs/material-parameter-sampling.md`).
 
-Optimization uses the **Cross-Entropy Method (CEM)** against field data, with **Maximum Mean Discrepancy (MMD)** as the objective so we avoid strict time-pairing requirements of L2 regression. Before optimizer selection is finalized, M3 must verify observation-only replay in sim-to-sim: treat a differently tuned simulator as ground truth, reconstruct the tunable simulator from collectable observations, replay the same recorded actions, and measure the reconstruction error floor.
+The immediate calibration path uses **CMA-ES** with complete pooled Sinkhorn
+fitness over replayed hold transitions. Before real-data optimization, M3 must
+verify observation-only replay in sim-to-sim: treat a differently tuned
+simulator as ground truth, reconstruct the tunable simulator from collectable
+observations, replay the same recorded actions, and measure the reconstruction
+error floor. MMD remains available as a library diagnostic.
 
 Observation-only replay and digital-twin reconstruction requirements live in `docs/digital-twin.md`.
 
@@ -53,15 +58,15 @@ uv run python apple_pick_gym/examples/visualize_pull_directions.py \
 
 **Purpose:** Identify natural frequencies and bandwidth of each node. Primary branch resonates lower; stem/spur higher.
 
-**Chirp vs discrete frequencies (CEM + MMD):** Use a **true continuous chirp**, not a small set of discrete sine tones.
+**Chirp vs discrete frequencies (future dynamic identification):** Use a **true continuous chirp**, not a small set of discrete sine tones.
 
 | | Log chirp | Discrete frequencies |
 | --- | --- | --- |
 | Resonance capture | Sweeps through $\omega_n = \sqrt{K/M}$ automatically | $B$ is weakly identifiable unless a tone lands near $\omega_n$ |
-| MMD landscape | Continuous manifold in $[s_t, \Delta s_t]$; better-conditioned CEM loss | Isolated periodic orbits; parameter degeneracy (many $\theta$ match the same orbits) |
-| Cost per CEM eval | One run per direction | ~3–4× (settling per tone) |
+| Objective landscape | Continuous manifold in $[s_t, \Delta s_t]$; better-conditioned distributional loss | Isolated periodic orbits; parameter degeneracy (many $\theta$ match the same orbits) |
+| Cost per optimizer eval | One run per direction | ~3–4× (settling per tone) |
 
-Reserve **discrete steady-state tones** for **held-out validation** after CEM converges on chirp data—not as the primary excitation.
+Reserve **discrete steady-state tones** for **held-out validation** after the dynamic optimizer converges on chirp data—not as the primary excitation.
 
 **Execution:**
 
@@ -70,7 +75,7 @@ Reserve **discrete steady-state tones** for **held-out validation** after CEM co
 - Amplitude scales as **$A \propto 1/f$** (approximately constant velocity amplitude) to limit stem snap and kinematic faults at high frequency.
 - For **nonlinearity checks**: repeat 2–3 representative directions at **50% and 100%** of the §2.1 safe amplitude. Large parameter shifts between levels imply a nonlinear stiffness term.
 
-**Post-processing (analysis / debug, not CEM input):** FRF peaks from wrench signals via FFT or Welch’s method help interpret fitted $K$, $B$, $M$; the solver does not “interpolate diagonal dynamics” automatically.
+**Post-processing (analysis / debug, not optimizer input):** FRF peaks from wrench signals via FFT or Welch’s method help interpret fitted $K$, $B$, $M$; the solver does not “interpolate diagonal dynamics” automatically.
 
 ### 2.3 Pure Torsional Excitation (rotational impedance)
 
@@ -119,36 +124,46 @@ Shipped hold bags support frame→frame \(\Delta s\) or hold→hold median \(\De
 
 - **Time sync:** Simulator $\Delta t$ matches real sensor polling rate.
 - **Z-score normalization:** Zero mean, unit variance per feature dimension before MMD so Newton-scale wrench does not dominate meter-scale position (GT fit per direction bag, or one pooled bag when `--pool-directions`).
-- **Replay fidelity:** Each CEM rollout is driven by the **recorded EE velocity telemetry** from the field run, not a re-synthesized chirp. Phase/amplitude mismatch otherwise inflates MMD for the wrong reason.
+- **Replay fidelity:** Each optimizer rollout is driven by the **recorded EE velocity telemetry** from the source run, not a re-synthesized chirp. Phase/amplitude mismatch otherwise inflates the objective for the wrong reason.
 
-### 3.4 CEM data pooling
+### 3.4 Optimizer data pooling
 
-Run CEM **per excitation direction** first (separate \(P\), \(Q\) per \(\hat{u}\)). After convergence, compare \(\theta\) across directions: direction-dependent parameters (likely \(K\)) vs shared parameters (likely \(M\)). Planned CEM still uses per-direction bags. The **shipped** batched grid CLI currently defaults to pooled Sinkhorn (`--pool-directions` + dir one-hot; `gate_pooled_dirs`); pass `--no-pool-directions` for per-direction bags.
+The accepted V.5.2 objective is one complete pooled Sinkhorn loss per
+structure/candidate. Physical-direction identity is retained with a fixed-width
+one-hot before pooling; independently normalized per-direction losses remain
+diagnostics and do not drive optimizer updates. See
+`docs/youngs-modulus-sysid.md`.
 
-## 4. Optimization: Cross-Entropy Method (CEM)
+## 4. Optimization: CMA-ES
 
-Tune simulation parameters $\theta$ (geometry where free, rod \(E\), \(\zeta\), apple mass scalars). Derived VBD knobs are not independent CEM dimensions unless legacy fixtures are in use.
+The immediate V.5.2 optimizer is a separate pycma ask/tell loop for each
+selected structure:
 
-**Reframing of $\theta$:** rather than fitting raw, geometry-entangled
-$K$/$B$ per segment, fit Young's modulus $E$, damping ratio $\zeta$, and density
-$\rho$ — geometry-invariant quantities that transfer correctly across domain-randomized
-`radius`/`length`/`num_segments`, and which the §2.1/§2.2 excitation phases already
-separate cleanly (quasi-static → $E$; chirp resonance peak location vs. width/decay →
-$\rho$ vs. $\zeta$). Derivation, formulas, and a numerical `ω_n·dt` stability guard for
-the resulting domain randomization: `docs/material-parameter-sampling.md` ("Derivation" section).
+\[
+\theta = \log_{10}([E_\mathrm{primary}, E_\mathrm{spur}, E_\mathrm{stem}]).
+\]
 
-1. **Initialize:** $\mathcal{N}(\mu_0, \Sigma_0)$ with broad $\Sigma_0$.
-2. **Sample:** $N \approx 50$–$100$ candidate $\theta_i$.
-3. **Simulate:** VBD with each $\theta_i$, initialized from the observation-derived digital twin, driven by **identical** recorded $v_{ee}(t)$; extract transition samples.
-4. **Evaluate:**
+Bounds come from the associated ranges fixture and initialization is the
+component-wise midpoint in bounded log space, not recorded GT. Geometry,
+damping ratio, density, mass, secondary E, and all other non-fitted fields
+remain fixed for this slice. Derived VBD knobs are rebuilt from candidate E;
+they are not independent optimizer dimensions.
 
-$$L(\theta) = \text{MMD}^2(P, Q)$$
+1. **Ask:** obtain one bounded CMA-ES population.
+2. **Replay:** evaluate the population with the fused candidate scheduler and
+   identical recorded actions.
+3. **Score:** use complete pooled hold-phase Sinkhorn fitness.
+4. **Tell:** preserve population order; substitute deterministic finite
+   penalties only when a generation retains at least one eligible candidate.
+5. **Stop:** honor the generation cap or pycma's native stop criteria.
+6. **Measure:** explicitly replay the final distribution mean and report it as
+   the fitted estimate.
+7. **Aggregate:** summarize fitted means and covariance across successful
+   structures.
 
-Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median heuristic.
-
-5. **Update:** Elite top $\rho\%$ lowest MMD; refit $\mu$, $\Sigma$ on elites; add noise floor $\epsilon \mathbf{I}$.
-6. **Iterate** until MMD plateaus.
-7. **Validate** on held-out discrete-frequency or alternate-amplitude trajectories (§2.2).
+The Cartesian grid remains a separate diagnostic CLI. The optimizer and pycma
+dependency are not implemented yet. The active design is
+`docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`.
 
 ## Tests and implementation
 
@@ -163,9 +178,9 @@ Use an **anisotropic RBF kernel**; per-dimension bandwidth $\sigma$ via median h
 | V.4.3 in-process batched grid | **Done** | `example_batched_sysid_mmd_grid.py` + `batched_sysid_mmd_grid.py` (MSE / Sinkhorn Wasserstein + viz); library MMD via `evaluate_batched_mmd_grid`; see `docs/sysid-mmd-grid-replay-alignment.md` |
 | V.4.2.1 batched digital-twin fidelity | **Done** | Helpers + CLI `--infer-params` shipped; infer-only fidelity floor optional cleanup — see `docs/ROADMAP.md` |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
-| V.5.1 loss / feature hardening | **Done** | GT ranks **#1** on good samples (bad ranks from bad sampling allowed); Wasserstein primary; optional `--score-mmd` cleanup later; see `docs/ROADMAP.md` |
-| V.5.2 / M3.2 parent CMA/CEM calibration loop | **Next** | θ optimization loop on batched Sinkhorn / MSE scores (`docs/system_identification.md` §4); its E-grid replay/ranking prerequisite is complete; see `docs/ROADMAP.md` |
-| V.5.2 prerequisite: E-grid replay + ranking | **Done** | Completed sub-slice: `example_youngs_modulus_sys_id.py` + `batched_sysid_cmaes.py`; GT E from episode `fruiting_system_params`, secondary E fixed at stored GT when present; see below |
+| V.5.1 loss / feature hardening | **Done** | GT should rank first on healthy samples; bad-sampling misses remain diagnostic and the operational gate uses a strict majority; Wasserstein primary |
+| V.5.2 CMA-ES calibration loop | **Next** | Separate pycma entry point over primary/spur/stem log10-E using pooled Sinkhorn fitness; see §4, `docs/youngs-modulus-sysid.md`, and `docs/ROADMAP.md` |
+| V.5.2 prerequisites: E-grid, complete scoring, gate, fused replay | **Implemented; fused acceptance pending** | Dataset-driven grid, structure-local reports, strict-majority gate, and multi-structure scheduler are present; clean independent/fused benchmark and low-cap acceptance remain open |
 
 ### Batched MMD grid base geometry (2026-07-06)
 
@@ -177,7 +192,7 @@ The batched in-process grid (`apple_pick_gym/batched_envs/batched_sysid_mmd_grid
 
 **Opt-in digital twin:** CLI `--infer-params` switches build params to `infer_base_params_for_structure` (obs-inferred geometry). Independent of `--use-snapshot` (privileged state restore). Infer-only fidelity floor remains deferred V.4.2.1. Online unstable-env signal during collect/grid: `docs/batched-stability-monitor-design.md`.
 
-**Shipped scoring path (V.5.1 ranking accepted):** `stable` frame mask in `mmd_features.py` (masks samples inside holds; does **not** split hold segments), CLI defaults `--use-median` / `--hold-id-onehot` / `--pool-directions` on `example_batched_sysid_mmd_grid.py`, console median hold MSE via `trajectory_paired_hold_median_mse` (legacy flat bag still in `trajectory_hold_aggregated_mse`), named gates in `scripts/gate_sysid_gt_sinkhorn.sh` (default `gate_pooled_dirs`), candidate `disqualified` flags in grid viz, hold impulse flags in `batched_hold_quasi_static.py`. **GT constantly ranks #1** under good excitation/sampling; worse ranks attributed to bad sampling are allowed. Feature contract: `docs/sysid-transition-features.md`.
+**Shipped scoring path (V.5.1 ranking accepted):** `stable` frame mask in `mmd_features.py` (masks samples inside holds; does **not** split hold segments), CLI defaults `--use-median` / `--hold-id-onehot` / `--pool-directions` on `example_batched_sysid_mmd_grid.py`, console median hold MSE via `trajectory_paired_hold_median_mse` (legacy flat bag still in `trajectory_hold_aggregated_mse`), named gates in `scripts/gate_sysid_gt_sinkhorn.sh` (default `gate_pooled_dirs`), candidate `disqualified` flags in grid viz, hold impulse flags in `batched_hold_quasi_static.py`. GT should rank first under healthy excitation/sampling; worse bad-sampling ranks remain diagnostic. Feature contract: `docs/sysid-transition-features.md`.
 
 **Tests:** `test_true_params_for_structure_returns_exact_sampled_params`, `test_gt_bend_stiffness_candidate_from_structure_reads_true_stiffness`, `test_replay_structure_uses_true_params_geometry`.
 
@@ -205,65 +220,17 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py 
 
 ### Young's-modulus E-grid replay and ranking (V.5.2)
 
-Dataset-driven system identification over a Cartesian log10-E grid for primary,
-spur, and stem rods. Ground-truth collection stays in
-`example_batched_collect_sysid_data.py`; ranking and overlays are in
-`example_youngs_modulus_sys_id.py`.
+The shipped diagnostic replays `batched_sysid_v1` actions over structure-local
+Cartesian log10-E grids for primary, spur, and stem. It now uses complete
+pooled Sinkhorn scoring and defaults to a fused
+structure × candidate × physical-direction schedule, while preserving
+structure-local rankings, artifacts, and scalar fallback. The repeatable gate
+requires a strict majority of GT-rank-one structures for every configured seed.
 
-**Base parameters:** `true_params_for_structure` deserializes each structure's
-recorded `fruiting_system_params` metadata. `YoungsModulusCandidate.apply_to`
-changes only primary, spur, and stem Young's modulus via `set_rod_youngs_modulus`
-(re-deriving bend stiffness/damping). Geometry, topology, density, damping
-ratio, apple parameters, and **secondary E remain fixed at stored GT when
-present**.
-
-**GT candidate:** when `--include-gt-candidate` is enabled (default), the exact
-GT primary/spur/stem E from episode metadata are inserted into the candidate
-grid before replay.
-
-**Scoring / ranking:** recorded actions are replayed per candidate; hold-phase
-transition bags are scored with pooled-direction Sinkhorn Wasserstein (same
-contract as V.5.1). Eligible candidates are ranked ascending by loss. On
-**healthy** samples (good excitation, not excluded/unstable), GT is expected to
-rank **#1**; worse ranks from bad sampling remain allowed.
-
-**Two-step smoke** (collect then rank):
-
-```bash
-uv run --env-file pytest.env python \
-  apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
-  --viewer null --num-structures 1 --num-directions 2 --max-steps 80 \
-  --output tmp/youngs_gt_smoke --overwrite
-
-uv run --env-file pytest.env python \
-  apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
-  --viewer null --dataset tmp/youngs_gt_smoke \
-  --output tmp/youngs_grid_rank_smoke \
-  --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
-  --include-gt-candidate --max-candidates 8 --overwrite
-```
-
-Outputs: `ranking.json` (per-structure and aggregate rankings), per-structure
-`youngs_modulus_overlay.html`, and optional replay mini-datasets. Replay export
-reuses the legacy `candidate_stiffnesses` metadata container name from the bend-
-stiffness grid path; in this workflow its keys are explicit Young's-modulus
-fields (`primary_e_pa`, `spur_e_pa`, `stem_e_pa`). Full applied material
-parameters for each replay candidate remain in episode `fruiting_system_params`
-metadata. Design:
-`docs/superpowers/specs/2026-07-16-youngs-modulus-grid-replay-ranking-design.md`.
-
-```bash
-uv run --env-file pytest.env python -m pytest -p no:launch_testing \
-  apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
-  apple_pick_gym/tests/test_batched_sysid_youngs_grid.py \
-  apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py \
-  apple_pick_gym/tests/test_batched_replay_export.py \
-  apple_pick_gym/tests/test_youngs_modulus_overlay_viz.py \
-  apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
-  apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py \
-  apple_pick_sim/tests/test_wasserstein.py \
-  apple_pick_sim/tests/test_mmd_features.py -q
-```
+See `docs/youngs-modulus-sysid.md` for the material conversion, replay identity,
+compatibility and chunking rules, report schema, gate policy, code map, and
+canonical commands. Shared transition-vector details remain in
+`docs/sysid-transition-features.md`.
 
 ### Legacy single-env MMD grid
 
@@ -307,7 +274,7 @@ hold-phase biased MMD² over per-direction transition features from
 burn-in). It writes `mmd_results.csv` plus a compact diagnostic plot bundle:
 `mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and
 `mmd_stiffness_sensitivity.png`. This remains a diagnostic grid search, not
-simulator tuning or CEM.
+simulator tuning or CMA-ES.
 
 ### Sinkhorn ranking validation (2026-07-08)
 
@@ -317,10 +284,9 @@ one-hots) is **shipped** (`apple_pick_sim/system_id/wasserstein.py`,
 `wasserstein_ranking.py`; CLI `--score-wasserstein` on
 `example_batched_sysid_mmd_grid.py`). Feature/CLI contract (median, hold-id,
 pool→dir one-hot): `docs/sysid-transition-features.md`. Named GT-rank gates:
-`scripts/gate_sysid_gt_sinkhorn.sh`. Design:
-`docs/specs/2026-07-08-wasserstein-sysid-ranking-design.md`. This does not
-replace §4 CEM: **V.5.1 Done** (GT preference on good samples; Wasserstein primary);
-**V.5.2** is the CEM calibration loop. On the legacy single-env path, the default initializer is observation-only
+`scripts/gate_sysid_gt_sinkhorn.sh`. This does not replace §4 calibration:
+**V.5.1 Done** (GT preference on good samples; Wasserstein primary);
+**V.5.2** next adds the separate CMA-ES loop. On the legacy single-env path, the default initializer is observation-only
 Parquet replay; use `--use-snapshot` only for privileged sim-to-sim debugging against
 `initial_states/*.npz`.
 
@@ -363,11 +329,14 @@ Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0
 | `apple_pick_gym/examples/example_gym_sysid.py` | Interactive demo: viewer, per-step logging, mean hold forces |
 | `apple_pick_sim/system_id/run_quasi_static.py` | Headless smoke runner (no viewer) |
 | `apple_pick_sim/system_id/mmd_features.py` | Hold transition bags: state matrix, median/frame modes, `stable` mask, hold/dir one-hots |
-| `apple_pick_sim/system_id/wasserstein.py` | Sinkhorn scoring; `pool_directions` → `dir_id_onehot` + `POOLED_DIRECTION_KEY` |
+| `apple_pick_sim/system_id/wasserstein.py` | Sinkhorn scoring; internal pooled bag may use `POOLED_DIRECTION_KEY=-1`, but Young's `ranking.json` `per_direction_sinkhorn` exposes physical direction IDs only |
 | `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` | Batched grid CLI (`--use-median`, `--hold-id-onehot`, `--pool-directions`, deprecated `--mse-hold-*`) |
 | `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py` | Dataset-driven Young's-modulus E-grid replay + Sinkhorn ranking + overlay HTML |
+| `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py` | Stable slot planning, chunking, and fused multi-structure replay |
+| `apple_pick_gym/batched_envs/youngs_modulus_gate_report.py` | Strict per-seed and aggregate Young's gate reports |
 | `apple_pick_gym/youngs_modulus_overlay_viz.py` | Faceted Plotly overlay for E-grid replay candidates |
 | `scripts/gate_sysid_gt_sinkhorn.sh` | Named Sinkhorn GT-rank gates (`gate_median_hold`, `gate_hold_id`, `gate_pooled_dirs`) |
+| `scripts/gate_youngs_modulus_sysid.sh` | Multi-seed collect → exclude → rank → strict-majority gate |
 
 ### Fibonacci hemisphere
 

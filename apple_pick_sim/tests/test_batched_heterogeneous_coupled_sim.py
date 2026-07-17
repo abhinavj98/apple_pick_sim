@@ -22,7 +22,11 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_coupled_sim import (
     BatchedHeterogeneousCoupledSim,
 )
 from apple_pick_sim.coupled_fruiting.settled_checkpoint import SettledCheckpoint
-from apple_pick_sim.fruiting_system import load_ranges, sample_heterogeneous_params_list
+from apple_pick_sim.fruiting_system import (
+    GripperProxyConfig,
+    load_ranges,
+    sample_heterogeneous_params_list,
+)
 
 from conftest import requires_fr3
 
@@ -101,6 +105,19 @@ def _vic_cacheable_config(*, settle_substeps: int = 8) -> BatchedHeterogeneousCo
         _cacheable_config(settle_substeps=settle_substeps),
         controller=ControllerConfig(mode="vic"),
     )
+
+
+def test_per_env_grippers_reject_settle_cache_reuse(ranges, per_env_params):
+    per_env_grippers = tuple(GripperProxyConfig() for _ in range(_NUM_ENVS))
+
+    with pytest.raises(ValueError, match="per_env_grippers require use_settle_cache=False"):
+        BatchedHeterogeneousCoupledSim(
+            _vbd_only_config(),
+            per_env_params,
+            ranges,
+            per_env_grippers=per_env_grippers,
+            use_settle_cache=True,
+        )
 
 
 @requires_fr3

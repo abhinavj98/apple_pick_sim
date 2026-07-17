@@ -29,9 +29,11 @@ from apple_pick_sim.system_id.batched_trajectory_store import (
 )
 from apple_pick_sim.fruiting_system import fruiting_params_from_json
 from apple_pick_sim.system_id.batched_digital_twin_init import (
+    ReplayEpisodeSource,
     digital_twin_obs_from_batched_episode,
     gripper_proxy_from_episode_metadata,
     infer_base_params_for_structure,
+    initialize_batched_env_from_episode_sources,
     initialize_batched_env_from_dataset,
     true_params_for_structure,
 )
@@ -58,6 +60,194 @@ requires_fr3 = pytest.mark.skipif(
     not fr3_assets_available(),
     reason="Requires bundled assets/fr3 and usd-core",
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class ExpectedSource:
+    structure_idx: int
+    direction_idx: int
+
+
+class _FakeArray:
+    def __init__(self, value):
+        self.value = np.asarray(value, dtype=np.float32)
+        self.assign_calls = 0
+
+    def numpy(self):
+        return self.value.copy()
+
+    def assign(self, value):
+        self.assign_calls += 1
+        self.value = np.asarray(value, dtype=np.float32).copy()
+
+
+class _FakeLayout:
+    @staticmethod
+    def joint_q_slice(env_idx: int) -> slice:
+        return slice(7 * env_idx, 7 * (env_idx + 1))
+
+    @staticmethod
+    def joint_qd_slice(env_idx: int) -> slice:
+        return slice(7 * env_idx, 7 * (env_idx + 1))
+
+
+def _mock_episode_sources_env():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    robot_state = SimpleNamespace(
+        joint_q=_FakeArray(np.full(14, -1.0)),
+        joint_qd=_FakeArray(np.full(14, -1.0)),
+    )
+    robot_model = SimpleNamespace(
+        joint_q=_FakeArray(np.full(14, -2.0)),
+        joint_qd=_FakeArray(np.full(14, -2.0)),
+    )
+    vic = SimpleNamespace(
+        _target_pos_wp=_FakeArray(np.full((2, 3), -3.0)),
+        _target_rot_wp=_FakeArray(np.full((2, 4), -4.0)),
+        _sync_target_tf_from_device=MagicMock(),
+        stage_targets_to_scene=MagicMock(),
+    )
+    scene = SimpleNamespace(
+        robot_state_0=robot_state,
+        robot_model=robot_model,
+        robot_control=object(),
+        vic_controller=vic,
+        vic_jt_default_dof_pos=_FakeArray(np.full(7, -5.0)),
+        vic_jt_default_dof_pos_batched=_FakeArray(np.full((2, 7), -6.0)),
+    )
+    env = SimpleNamespace(
+        num_envs=2,
+        _sim=SimpleNamespace(scene=scene, layout=_FakeLayout()),
+        set_excitation_context=MagicMock(),
+    )
+    return env
+
+
+def _mock_episode_sources_dataset():
+    from unittest.mock import MagicMock
+
+    dataset = MagicMock()
+
+    def arrays(structure_idx: int, direction_idx: int):
+        sentinel = 10 * structure_idx + direction_idx
+        return {
+            "excitation_direction": np.asarray([[sentinel, 1.0, 0.0]], dtype=np.float32),
+            "robot_joint_q": np.full((1, 7), sentinel + 100, dtype=np.float32),
+            "tcp_pos": np.full((1, 3), sentinel + 200, dtype=np.float32),
+            "tcp_quat": np.full((1, 4), sentinel + 300, dtype=np.float32),
+        }
+
+    dataset.load_episode_obs_arrays.side_effect = arrays
+    dataset.load_episode_metadata.side_effect = lambda structure_idx, direction_idx: {}
+    return dataset
+
+
+def test_initialize_batched_env_from_episode_sources_routes_each_world(monkeypatch):
+    import newton
+
+    monkeypatch.setattr(newton, "eval_fk", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "apple_pick_sim.system_id.batched_digital_twin_init.init_robot_mujoco_step_buffers",
+        lambda scene: None,
+    )
+    monkeypatch.setattr(
+        "apple_pick_sim.system_id.batched_digital_twin_init.fr3_robot."
+        "hold_mujoco_actuator_targets_at_state",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "apple_pick_sim.system_id.batched_digital_twin_init.fr3_robot.EEVelocity",
+        lambda: object(),
+    )
+    env = _mock_episode_sources_env()
+    dataset = _mock_episode_sources_dataset()
+    sources = (
+        ReplayEpisodeSource(structure_idx=0, direction_idx=2),
+        ReplayEpisodeSource(structure_idx=3, direction_idx=0),
+    )
+
+    initialize_batched_env_from_episode_sources(env, dataset, sources)
+
+    for target in (env._sim.scene.robot_state_0, env._sim.scene.robot_model):
+        np.testing.assert_allclose(target.joint_q.value.reshape(2, 7), [[102] * 7, [130] * 7])
+        np.testing.assert_allclose(target.joint_qd.value, 0.0)
+        assert target.joint_q.assign_calls == 1
+        assert target.joint_qd.assign_calls == 1
+    np.testing.assert_allclose(
+        env._sim.scene.vic_jt_default_dof_pos_batched.value,
+        [[102, 102, 102, 102, 102, 102, 0], [130, 130, 130, 130, 130, 130, 0]],
+    )
+    assert env._sim.scene.vic_jt_default_dof_pos_batched.assign_calls == 1
+    assert env._sim.scene.vic_jt_default_dof_pos.assign_calls == 0
+    np.testing.assert_allclose(env._sim.scene.vic_controller._target_pos_wp.value, [[202] * 3, [230] * 3])
+    np.testing.assert_allclose(
+        env._sim.scene.vic_controller._target_rot_wp.value, [[302] * 4, [330] * 4]
+    )
+    assert [call.args[0] for call in env.set_excitation_context.call_args_list] == [0, 1]
+    np.testing.assert_allclose(
+        [call.args[1].direction for call in env.set_excitation_context.call_args_list],
+        [
+            np.asarray([2.0, 1.0, 0.0]) / np.sqrt(5.0),
+            np.asarray([30.0, 1.0, 0.0]) / np.sqrt(901.0),
+        ],
+    )
+    assert dataset.load_episode_obs_arrays.call_args_list == [
+        ((0, 2),),
+        ((3, 0),),
+    ]
+    assert dataset.load_episode_metadata.call_args_list == [
+        ((0, 2),),
+        ((3, 0),),
+    ]
+
+
+def test_initialize_batched_env_from_episode_sources_rejects_wrong_source_count():
+    env = _mock_episode_sources_env()
+
+    with pytest.raises(ValueError, match="sources length"):
+        initialize_batched_env_from_episode_sources(
+            env,
+            _mock_episode_sources_dataset(),
+            (ReplayEpisodeSource(0, 0),),
+        )
+
+
+def test_initialize_batched_env_from_dataset_delegates_with_physical_direction_ids(monkeypatch):
+    from types import SimpleNamespace
+
+    captured = {}
+
+    def capture_sources(env, dataset, sources):
+        captured["env"] = env
+        captured["dataset"] = dataset
+        captured["sources"] = tuple(sources)
+
+    monkeypatch.setattr(
+        "apple_pick_sim.system_id.batched_digital_twin_init."
+        "initialize_batched_env_from_episode_sources",
+        capture_sources,
+    )
+    env = SimpleNamespace(num_envs=4)
+    dataset = object()
+
+    initialize_batched_env_from_dataset(
+        env,
+        dataset,
+        structure_idx=3,
+        num_directions=2,
+        direction_indices=(2, 7),
+    )
+
+    assert captured["env"] is env
+    assert captured["dataset"] is dataset
+    assert captured["sources"] == (
+        ReplayEpisodeSource(3, 2),
+        ReplayEpisodeSource(3, 7),
+        ReplayEpisodeSource(3, 2),
+        ReplayEpisodeSource(3, 7),
+    )
 
 
 def _test_sim_config(*, num_envs: int) -> BatchedHeterogeneousCoupledSimConfig:

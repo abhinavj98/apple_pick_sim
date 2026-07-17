@@ -4,6 +4,18 @@ Replay recorded actions from an existing ``batched_sysid_v1`` dataset over a
 Cartesian log10-E grid for each structure, score candidates with pooled hold-phase
 Sinkhorn loss, and hand off structured results for reporting.
 
+``ranking.json`` candidate fields (schema names unchanged):
+
+- ``aggregate_sinkhorn``: pooled optimizer/ranking fitness across complete
+  directions (direction one-hot features when pooling is enabled). Non-finite
+  values serialize as JSON ``null``.
+- ``per_direction_sinkhorn``: independently normalized diagnostic losses keyed
+  by physical source direction ID strings (never the internal pooled bag key
+  ``-1``).
+- Missing/empty bags: candidate is unranked (``rank`` is ``null``),
+  ``disqualified`` is true, and ``disqualification_reason`` names the cause
+  (for example ``empty_transition_bag``).
+
 Run from repo root::
 
     uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \\
@@ -36,6 +48,7 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     YoungsModulusEvaluation,
     YoungsModulusScoringConfig,
     evaluate_youngs_modulus_candidates,
+    evaluate_youngs_modulus_structures,
     gt_youngs_modulus_candidate_from_structure,
     maybe_include_gt_candidate,
 )
@@ -101,6 +114,11 @@ def _json_log10(value: float) -> float | None:
 def _per_direction_sinkhorn_to_json(
     per_direction_sinkhorn: dict[int, float],
 ) -> dict[str, float | None]:
+    """Serialize physical-direction diagnostic losses for ``ranking.json``.
+
+    Keys are physical source direction IDs as decimal strings. Non-finite losses
+    become ``None`` (JSON ``null``). An empty map stays ``{}``.
+    """
     return {
         str(int(direction)): _json_float(loss)
         for direction, loss in per_direction_sinkhorn.items()
@@ -108,6 +126,12 @@ def _per_direction_sinkhorn_to_json(
 
 
 def _candidate_to_json_row(score: Any) -> dict[str, Any]:
+    """Serialize one candidate score row for ``ranking.json``.
+
+    ``aggregate_sinkhorn`` is the pooled ranking fitness; non-finite values are
+    ``null``. ``per_direction_sinkhorn`` keeps physical direction IDs only.
+    Disqualified/empty candidates keep ``rank=null`` and the evaluator reason.
+    """
     candidate = score.candidate
     return {
         "candidate_index": int(score.candidate_index),
@@ -483,7 +507,12 @@ def _make_build_env_fn(
         per_env_params: list,
         max_episode_steps: int,
         gripper=None,
+        per_env_grippers=None,
     ) -> ApplePickBatchedSysIdEnv:
+        if gripper is not None and per_env_grippers is not None:
+            raise ValueError(
+                "scalar gripper and per_env_grippers cannot both be provided"
+            )
         sim_config = build_sim_config(
             num_envs=num_envs,
             device=device,
@@ -506,6 +535,7 @@ def _make_build_env_fn(
             topology_seed=int(topology_seed),
             use_settle_cache=False,
             per_env_params=per_env_params,
+            per_env_grippers=per_env_grippers,
             control_hz=float(control_hz),
             sim_config=sim_config,
         )
@@ -545,6 +575,15 @@ def _make_parser() -> argparse.ArgumentParser:
         help=(
             "Chunk candidates so chunk_size*num_directions <= this "
             f"(default {MAX_ENVS_PER_BATCH}; 0 = no chunking)."
+        ),
+    )
+    p.add_argument(
+        "--multi-structure-batch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Replay compatible structures in one flattened GPU batch "
+            "(disable for parity/debug baseline)."
         ),
     )
     p.add_argument(
@@ -751,7 +790,7 @@ def _run(
     use_viewer = graphical or getattr(args, "viewer", None) != "null"
     show_pull_direction = bool(args.show_pull_direction) and graphical
     frame_dt = 1.0 / float(control_hz)
-    viewer_state: dict[str, object] = {"initialized": False}
+    viewer_state: dict[str, object] = {"model": None}
 
     def on_step(*, frame_idx: int, env: object) -> bool:
         if hasattr(viewer, "is_running") and not viewer.is_running():
@@ -766,13 +805,16 @@ def _run(
         if scene is None:
             return True
 
-        if not viewer_state["initialized"]:
-            viewer.set_model(scene.cable.model)
+        active_model = scene.cable.model
+        if viewer_state.get("model") is not active_model:
+            viewer.set_model(active_model)
             if graphical and getattr(env, "num_envs", 1) > 1:
                 viewer.set_world_offsets(tuple(sim.config.runtime.env_spacing))
-            if hasattr(viewer, "hide_loading_splash"):
+            if viewer_state.get("model") is None and hasattr(
+                viewer, "hide_loading_splash"
+            ):
                 viewer.hide_loading_splash()
-            viewer_state["initialized"] = True
+            viewer_state["model"] = active_model
 
         hz = float(getattr(sim.config.runtime, "control_hz", control_hz))
         sim_time = float(frame_idx) / max(hz, 1e-9)
@@ -788,51 +830,131 @@ def _run(
             time.sleep(max(0.0, frame_dt))
         return True
 
-    structure_results: list[dict[str, Any]] = []
+    candidates_by_structure: dict[int, list] = {}
+    candidate_errors: dict[int, str] = {}
     for structure_idx in structure_indices:
         try:
-            candidates = _candidates_for_structure(
+            candidates_by_structure[int(structure_idx)] = _candidates_for_structure(
                 dataset,
                 args,
                 int(structure_idx),
                 parser=parser,
             )
-            evaluation = evaluate_youngs_modulus_candidates(
-                dataset=dataset,
-                structure_idx=int(structure_idx),
-                candidates=candidates,
-                num_directions=int(num_directions),
-                build_env_fn=build_env_fn,
-                scoring=scoring,
-                max_envs_per_batch=int(args.max_envs_per_batch),
-                seed=replay_seed,
-                include_excluded=bool(args.include_excluded),
-                on_step=on_step,
-                replay_sim_config=replay_sim_config,
+        except Exception as exc:
+            if bool(args.fail_fast):
+                raise
+            candidate_errors[int(structure_idx)] = str(exc)
+
+    structure_results: list[dict[str, Any]] = []
+    if bool(getattr(args, "multi_structure_batch", False)):
+        requested = tuple(
+            (structure_idx, candidates_by_structure[structure_idx])
+            for structure_idx in structure_indices
+            if structure_idx in candidates_by_structure
+        )
+        batch = evaluate_youngs_modulus_structures(
+            dataset=dataset,
+            structures=requested,
+            num_directions=int(num_directions),
+            build_env_fn=build_env_fn,
+            scoring=scoring,
+            max_envs_per_batch=int(args.max_envs_per_batch),
+            seed=replay_seed,
+            include_excluded=bool(args.include_excluded),
+            fail_fast=bool(args.fail_fast),
+            on_step=on_step,
+            replay_sim_config=replay_sim_config,
+        )
+        for structure_idx in structure_indices:
+            evaluation = batch.evaluations.get(int(structure_idx))
+            error = candidate_errors.get(
+                int(structure_idx), batch.errors.get(int(structure_idx))
             )
             structure_results.append(
                 {
                     "structure_idx": int(structure_idx),
                     "evaluation": evaluation,
-                    "error": None,
+                    "error": error,
                 }
             )
+        failed_count = sum(row["error"] is not None for row in structure_results)
+        fused_count = max(
+            0, int(batch.prepared_structures) - len(batch.retried_structures)
+        )
+        print(
+            f"structures prepared={int(batch.prepared_structures)} "
+            f"fused={fused_count} retried={len(batch.retried_structures)} "
+            f"failed={failed_count}"
+        )
+        diagnostics = batch.replay_diagnostics
+        if diagnostics is None:
+            print("candidate_blocks=0 flattened_envs=0 chunks=0 chunk_envs=()")
+            build_seconds = 0.0
+            replay_seconds = 0.0
+        else:
             print(
-                f"structure {int(structure_idx)}: "
-                f"candidates={len(candidates)} directions={num_directions}"
+                f"candidate_blocks={int(diagnostics.candidate_blocks)} "
+                f"flattened_envs={int(diagnostics.flattened_envs)} "
+                f"chunks={len(diagnostics.chunk_env_counts)} "
+                f"chunk_envs={diagnostics.chunk_env_counts}"
             )
-        except Exception as exc:
-            if bool(args.fail_fast):
-                raise
-            message = str(exc)
-            structure_results.append(
-                {
-                    "structure_idx": int(structure_idx),
-                    "evaluation": None,
-                    "error": message,
-                }
-            )
-            print(f"ERROR structure {int(structure_idx)}: {message}")
+            build_seconds = float(diagnostics.build_seconds)
+            replay_seconds = float(diagnostics.replay_seconds)
+        print(
+            f"build_settle_seconds={build_seconds:.6f} "
+            f"replay_seconds={replay_seconds:.6f} "
+            f"scoring_seconds={float(batch.scoring_seconds):.6f} "
+            f"total_seconds={float(batch.total_seconds):.6f}"
+        )
+    else:
+        for structure_idx in structure_indices:
+            if int(structure_idx) in candidate_errors:
+                structure_results.append(
+                    {
+                        "structure_idx": int(structure_idx),
+                        "evaluation": None,
+                        "error": candidate_errors[int(structure_idx)],
+                    }
+                )
+                continue
+            candidates = candidates_by_structure[int(structure_idx)]
+            try:
+                evaluation = evaluate_youngs_modulus_candidates(
+                    dataset=dataset,
+                    structure_idx=int(structure_idx),
+                    candidates=candidates,
+                    num_directions=int(num_directions),
+                    build_env_fn=build_env_fn,
+                    scoring=scoring,
+                    max_envs_per_batch=int(args.max_envs_per_batch),
+                    seed=replay_seed,
+                    include_excluded=bool(args.include_excluded),
+                    on_step=on_step,
+                    replay_sim_config=replay_sim_config,
+                )
+                structure_results.append(
+                    {
+                        "structure_idx": int(structure_idx),
+                        "evaluation": evaluation,
+                        "error": None,
+                    }
+                )
+                print(
+                    f"structure {int(structure_idx)}: "
+                    f"candidates={len(candidates)} directions={num_directions}"
+                )
+            except Exception as exc:
+                if bool(args.fail_fast):
+                    raise
+                message = str(exc)
+                structure_results.append(
+                    {
+                        "structure_idx": int(structure_idx),
+                        "evaluation": None,
+                        "error": message,
+                    }
+                )
+                print(f"ERROR structure {int(structure_idx)}: {message}")
 
     structure_rows: list[dict[str, Any]] = []
     skipped_structures: list[dict[str, Any]] = []

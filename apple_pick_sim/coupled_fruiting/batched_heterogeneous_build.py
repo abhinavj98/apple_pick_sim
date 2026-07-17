@@ -92,6 +92,7 @@ def build_batched_heterogeneous_scene(
     per_env_params: Sequence[FruitingSystemParams],
     ranges: dict,
     *,
+    per_env_grippers: Sequence[GripperProxyConfig] | None = None,
     viewer: Any | None = None,
     settled_checkpoint: SettledCheckpoint | None = None,
 ) -> BatchedHeterogeneousBuildResult:
@@ -109,6 +110,18 @@ def build_batched_heterogeneous_scene(
 
     vbd_only = config.robot.step_mode == "vbd_only"
     fix_to_apple = config.robot.fix_to_apple
+    weld_grippers = _normalize_per_env_grippers(
+        config.robot.gripper,
+        per_env_grippers,
+        num_envs=config.runtime.num_envs,
+        fix_to_apple=True,
+    )
+    free_grippers = _normalize_per_env_grippers(
+        config.robot.gripper,
+        per_env_grippers,
+        num_envs=config.runtime.num_envs,
+        fix_to_apple=False,
+    )
     settle_substeps = int(config.scene.settle_substeps)
     sim_dt = float(config.runtime.sub_dt)
     collect_diag = config.settle_diagnostics is not None
@@ -140,18 +153,28 @@ def build_batched_heterogeneous_scene(
     linear_kp_overrides = dict(config.fruiting_system.joint_linear_kp_overrides)
 
     if fix_to_apple and not vbd_only:
-        gripper_weld = _gripper_proxy(config, fix_to_apple=True)
+        gripper_weld = weld_grippers[0]
         if settled_checkpoint is not None:
-            gripper_free = _gripper_proxy(config, fix_to_apple=False)
+            gripper_free = free_grippers[0]
             settled = build_fn(
                 ranges,
                 params,
-                **_builder_kwargs(config, gripper=gripper_free, vbd_only=True),
+                **_builder_kwargs(
+                    config,
+                    gripper=gripper_free,
+                    per_env_grippers=free_grippers,
+                    vbd_only=True,
+                ),
             )
             settled.cable.state_0.body_q.assign(settled_checkpoint.body_q)
             settled.cable.state_1.body_q.assign(settled_checkpoint.body_q)
             pre_weld_tree_obs = _capture_pre_weld_tree_obs(settled)
-            weld_kw = _builder_kwargs(config, gripper=gripper_weld, vbd_only=False)
+            weld_kw = _builder_kwargs(
+                config,
+                gripper=gripper_weld,
+                per_env_grippers=weld_grippers,
+                vbd_only=False,
+            )
             weld_kw["skip_ik_bootstrap"] = True
             weld_kw["defer_template_robot_bootstrap"] = True
             scene = build_fn(ranges, params, **weld_kw)
@@ -166,11 +189,16 @@ def build_batched_heterogeneous_scene(
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None
         else:
-            gripper_free = _gripper_proxy(config, fix_to_apple=False)
+            gripper_free = free_grippers[0]
             settled = build_fn(
                 ranges,
                 params,
-                **_builder_kwargs(config, gripper=gripper_free, vbd_only=True),
+                **_builder_kwargs(
+                    config,
+                    gripper=gripper_free,
+                    per_env_grippers=free_grippers,
+                    vbd_only=True,
+                ),
             )
             _apply_joint_penalty_overrides(
                 settled,
@@ -190,7 +218,12 @@ def build_batched_heterogeneous_scene(
             )
             settled_body_q = capture_body_q_numpy(settled.cable.state_0.body_q)
             pre_weld_tree_obs = _capture_pre_weld_tree_obs(settled)
-            weld_kw = _builder_kwargs(config, gripper=gripper_weld, vbd_only=False)
+            weld_kw = _builder_kwargs(
+                config,
+                gripper=gripper_weld,
+                per_env_grippers=weld_grippers,
+                vbd_only=False,
+            )
             weld_kw["skip_ik_bootstrap"] = True
             weld_kw["defer_template_robot_bootstrap"] = True
             scene = build_fn(ranges, params, **weld_kw)
@@ -205,12 +238,14 @@ def build_batched_heterogeneous_scene(
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None
     else:
+        active_grippers = weld_grippers if fix_to_apple else free_grippers
         scene = build_fn(
             ranges,
             params,
             **_builder_kwargs(
                 config,
-                gripper=_gripper_proxy(config),
+                gripper=active_grippers[0],
+                per_env_grippers=active_grippers,
                 vbd_only=vbd_only,
             ),
         )
@@ -279,14 +314,23 @@ def _require_fr3_assets() -> None:
         )
 
 
-def _gripper_proxy(
-    config: BatchedHeterogeneousCoupledSimConfig,
+_GRIPPER_STRUCTURAL_FIELDS = (
+    "mass",
+    "shape",
+    "cylinder_radius",
+    "cylinder_half_height",
+    "box_half_extents",
+    "label",
+    "fix_to_apple",
+)
+
+
+def _gripper_with_fix_mode(
+    gripper: GripperProxyConfig,
     *,
-    fix_to_apple: bool | None = None,
+    fix_to_apple: bool,
 ) -> GripperProxyConfig:
-    fix = config.robot.fix_to_apple if fix_to_apple is None else fix_to_apple
-    gripper = config.robot.gripper
-    if not fix:
+    if not fix_to_apple:
         return dataclasses.replace(
             gripper,
             fix_to_apple=False,
@@ -304,10 +348,55 @@ def _gripper_proxy(
     )
 
 
+def _normalize_per_env_grippers(
+    base: GripperProxyConfig,
+    per_env_grippers: Sequence[GripperProxyConfig] | None,
+    *,
+    num_envs: int,
+    fix_to_apple: bool,
+) -> tuple[GripperProxyConfig, ...]:
+    raw = (
+        tuple(per_env_grippers)
+        if per_env_grippers is not None
+        else tuple(base for _ in range(int(num_envs)))
+    )
+    if len(raw) != int(num_envs):
+        raise ValueError(
+            f"per_env_grippers length ({len(raw)}) must match num_envs ({num_envs})"
+        )
+    normalized = tuple(
+        _gripper_with_fix_mode(item, fix_to_apple=bool(fix_to_apple))
+        for item in raw
+    )
+    reference = normalized[0]
+    for env_idx, item in enumerate(normalized[1:], start=1):
+        mismatched = [
+            name
+            for name in _GRIPPER_STRUCTURAL_FIELDS
+            if getattr(item, name) != getattr(reference, name)
+        ]
+        if mismatched:
+            raise ValueError(
+                "structural gripper mismatch at env "
+                f"{env_idx}: {', '.join(mismatched)}"
+            )
+    return normalized
+
+
+def _gripper_proxy(
+    config: BatchedHeterogeneousCoupledSimConfig,
+    *,
+    fix_to_apple: bool | None = None,
+) -> GripperProxyConfig:
+    fix = config.robot.fix_to_apple if fix_to_apple is None else fix_to_apple
+    return _gripper_with_fix_mode(config.robot.gripper, fix_to_apple=bool(fix))
+
+
 def _builder_kwargs(
     config: BatchedHeterogeneousCoupledSimConfig,
     *,
     gripper: GripperProxyConfig,
+    per_env_grippers: Sequence[GripperProxyConfig] | None = None,
     vbd_only: bool,
 ) -> dict[str, Any]:
     scene_cfg = config.scene
@@ -321,6 +410,7 @@ def _builder_kwargs(
         "enable_apple_woody_collisions": scene_cfg.enable_apple_woody_collisions,
         "enable_proxy_woody_collisions": scene_cfg.enable_proxy_woody_collisions,
         "gripper_proxy": gripper,
+        "per_env_gripper_proxies": per_env_grippers,
         "vbd_only": vbd_only,
         "base_pos": scene_cfg.fruiting_base_pos,
         "robot_base_pos": robot_cfg.robot_base_pos,

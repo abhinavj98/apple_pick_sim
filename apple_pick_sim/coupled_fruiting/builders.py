@@ -402,6 +402,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
     enable_apple_woody_collisions: bool = True,
     enable_proxy_woody_collisions: bool = True,
     gripper_proxy: GripperProxyConfig | None = None,
+    per_env_gripper_proxies: Sequence[GripperProxyConfig] | None = None,
     cable_collision_pipeline: Any | None = None,
     mujoco_solver_kwargs: dict[str, Any] | None = None,
     usd_path: str | Path | None = None,
@@ -430,9 +431,23 @@ def build_heterogeneous_coupled_fruiting_fr3(
     _ = omit
     params = list(params_list)
     num_envs = len(params)
+    gripper_proxies = (
+        tuple(per_env_gripper_proxies)
+        if per_env_gripper_proxies is not None
+        else None
+    )
+    if gripper_proxies is not None and len(gripper_proxies) != num_envs:
+        raise ValueError(
+            f"per_env_gripper_proxies length ({len(gripper_proxies)}) "
+            f"must match params_list ({num_envs})"
+        )
     if gripper_proxy is None:
-        gripper_proxy = GripperProxyConfig(
-            mass=fr3_robot.EE_MASS_KG,
+        gripper_proxy = (
+            gripper_proxies[0]
+            if gripper_proxies
+            else GripperProxyConfig(
+                mass=fr3_robot.EE_MASS_KG,
+            )
         )
     fix = bool(gripper_proxy.fix_to_apple)
     _validate_batched_options(
@@ -446,7 +461,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
             base_pos=base_pos,
             device=device,
             enable_self_collisions=enable_self_collisions,
-            gripper_proxy=gripper_proxy,
+            gripper_proxy=gripper_proxies[0] if gripper_proxies else gripper_proxy,
             cable_collision_pipeline=cable_collision_pipeline,
             mujoco_solver_kwargs=mujoco_solver_kwargs,
             usd_path=usd_path,
@@ -472,6 +487,9 @@ def build_heterogeneous_coupled_fruiting_fr3(
         base_pos=resolved_base,
         robot_base_pos=resolved_robot_base,
         gripper_proxy=gripper_proxy,
+        gripper_proxies=gripper_proxies,
+        enable_apple_woody_collisions=enable_apple_woody_collisions,
+        enable_proxy_woody_collisions=enable_proxy_woody_collisions,
     )
     pipe = (
         cable_collision_pipeline

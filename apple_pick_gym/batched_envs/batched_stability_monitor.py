@@ -14,6 +14,9 @@ from apple_pick_sim.coupled_fruiting.scene import (
 )
 
 
+DEFAULT_UNSTABLE_FRACTION_THRESHOLD = 0.25
+
+
 @dataclasses.dataclass(frozen=True)
 class StabilityThresholds:
     max_force_n: float = DEFAULT_STEM_FORCE_CAP_N

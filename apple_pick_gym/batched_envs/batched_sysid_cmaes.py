@@ -7,6 +7,7 @@ the interactive E-grid demos. The full pycma loop lands in a later slice.
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from itertools import product
@@ -17,10 +18,14 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
 )
 from apple_pick_sim.fruiting_system import params as fs
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
-from apple_pick_sim.system_id.batched_digital_twin_init import true_params_for_structure
+from apple_pick_sim.system_id.batched_digital_twin_init import (
+    gripper_proxy_from_episode_metadata,
+    true_params_for_structure,
+)
 from apple_pick_sim.system_id.wasserstein import (
-    prepare_gt_wasserstein_context,
-    score_candidate_wasserstein,
+    WassersteinScoringContext,
+    prepare_gt_wasserstein_scoring_context,
+    score_candidate_wasserstein_complete,
 )
 from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     UNSTABLE_DISQUALIFY_THRESHOLD,
@@ -29,6 +34,14 @@ from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     replay_candidates_for_structure,
     replay_instability_fraction_all_frames,
     resolve_direction_indices,
+)
+from apple_pick_gym.batched_envs.batched_sysid_multi_replay import (
+    MultiStructureReplayDiagnostics,
+    ReplayFusionIncompatible,
+    ReplaySlotKey,
+    ReplayStructureRequest,
+    build_replay_candidate_blocks,
+    replay_multi_structure_candidate_blocks,
 )
 
 if TYPE_CHECKING:
@@ -192,93 +205,142 @@ class YoungsModulusEvaluation:
     applied_params: list[FruitingSystemParams]
 
 
-def evaluate_youngs_modulus_candidates(
+@dataclass(frozen=True)
+class PreparedYoungsModulusStructure:
+    """Structure-local immutable inputs shared by scalar and fused replay."""
+
+    replay_request: ReplayStructureRequest
+    candidates: tuple[YoungsModulusCandidate, ...]
+    gt_candidate: YoungsModulusCandidate
+    fixed_secondary_e_pa: float | None
+    direction_indices: tuple[int, ...]
+    recorded_episodes: tuple[dict[str, Any], ...]
+    gt_context: WassersteinScoringContext
+    scoring_n_directions: int
+
+
+@dataclass
+class YoungsModulusBatchEvaluation:
+    evaluations: dict[int, YoungsModulusEvaluation]
+    errors: dict[int, str]
+    replay_diagnostics: MultiStructureReplayDiagnostics | None
+    retried_structures: tuple[int, ...]
+    prepared_structures: int = 0
+    scoring_seconds: float = 0.0
+    total_seconds: float = 0.0
+
+
+def prepare_youngs_modulus_structure(
     *,
     dataset: BatchedSysIdDataset,
     structure_idx: int,
     candidates: Sequence[YoungsModulusCandidate],
     num_directions: int,
-    build_env_fn: Callable[..., Any],
     scoring: YoungsModulusScoringConfig,
-    max_envs_per_batch: int = 0,
-    seed: int | None = None,
     include_excluded: bool = False,
-    on_step: Callable[..., bool] | None = None,
-    replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
-) -> YoungsModulusEvaluation:
-    """Replay, score, and rank Young's-modulus candidates for one structure."""
-    candidate_list = list(candidates)
+) -> PreparedYoungsModulusStructure:
+    """Load and prepare one structure without running physical replay."""
+    candidate_list = tuple(candidates)
     if not candidate_list:
         raise ValueError("candidates must be non-empty")
-
-    direction_indices_list = resolve_direction_indices(
+    resolved = resolve_direction_indices(
         dataset,
         structure_idx=int(structure_idx),
         num_directions=int(num_directions),
         include_excluded=bool(include_excluded),
     )
-    direction_indices = tuple(int(d) for d in direction_indices_list)
-    num_usable_directions = len(direction_indices_list)
+    direction_indices = tuple(int(direction_idx) for direction_idx in resolved)
+    recorded = tuple(
+        load_recorded_episodes_for_structure(
+            dataset,
+            structure_idx=int(structure_idx),
+            num_directions=len(direction_indices),
+            direction_indices=direction_indices,
+            include_excluded=bool(include_excluded),
+        )
+    )
+    if len(recorded) != len(direction_indices):
+        raise RuntimeError(
+            "recorded episode count does not match resolved direction count: "
+            f"{len(recorded)} != {len(direction_indices)}"
+        )
     scoring_n_directions = (
         int(num_directions)
         if scoring.n_directions is None
         else int(scoring.n_directions)
     )
-
-    recorded = load_recorded_episodes_for_structure(
-        dataset,
-        structure_idx=int(structure_idx),
-        num_directions=num_usable_directions,
-        direction_indices=direction_indices_list,
-        include_excluded=bool(include_excluded),
-    )
-    gt_context = prepare_gt_wasserstein_context(
+    gt_context = prepare_gt_wasserstein_scoring_context(
         recorded,
         use_median=bool(scoring.use_median),
         hold_id_onehot=bool(scoring.hold_id_onehot),
         n_holds=scoring.n_holds,
-        pool_directions=bool(scoring.pool_directions),
         n_directions=scoring_n_directions,
     )
-    collectors = replay_candidates_for_structure(
-        dataset=dataset,
-        structure_idx=int(structure_idx),
+    base_params = true_params_for_structure(dataset, int(structure_idx))
+    gt_candidate = youngs_modulus_candidate_from_params(base_params)
+    fixed_secondary_e_pa = (
+        None
+        if base_params.secondary is None
+        else float(base_params.secondary.youngs_modulus_pa)
+    )
+    first_direction_idx = direction_indices[0]
+    gripper = gripper_proxy_from_episode_metadata(
+        dataset.load_episode_metadata(int(structure_idx), first_direction_idx)
+    )
+    recorded_by_direction = dict(zip(direction_indices, recorded, strict=True))
+    return PreparedYoungsModulusStructure(
+        replay_request=ReplayStructureRequest(
+            structure_idx=int(structure_idx),
+            candidates=candidate_list,
+            direction_indices=direction_indices,
+            base_params=base_params,
+            recorded_by_direction=recorded_by_direction,
+            gripper=gripper,
+        ),
         candidates=candidate_list,
-        num_directions=num_usable_directions,
-        direction_indices=direction_indices_list,
-        seed=seed,
-        build_env_fn=build_env_fn,
-        max_envs_per_batch=int(max_envs_per_batch),
-        on_step=on_step,
-        replay_sim_config=replay_sim_config,
-        use_oracle_params=True,
-        include_excluded=bool(include_excluded),
+        gt_candidate=gt_candidate,
+        fixed_secondary_e_pa=fixed_secondary_e_pa,
+        direction_indices=direction_indices,
+        recorded_episodes=recorded,
+        gt_context=gt_context,
+        scoring_n_directions=scoring_n_directions,
     )
 
-    base_params = true_params_for_structure(dataset, int(structure_idx))
-    gt_candidate = gt_youngs_modulus_candidate_from_structure(dataset, int(structure_idx))
-    fixed_secondary_e_pa: float | None = None
-    if base_params.secondary is not None:
-        fixed_secondary_e_pa = float(base_params.secondary.youngs_modulus_pa)
-    applied_params = [candidate.apply_to(base_params) for candidate in candidate_list]
 
+def score_prepared_youngs_modulus_structure(
+    prepared: PreparedYoungsModulusStructure,
+    *,
+    replay_by_key: dict[ReplaySlotKey, dict[str, Any]],
+    scoring: YoungsModulusScoringConfig,
+) -> YoungsModulusEvaluation:
+    """Score routed replay using original structure/candidate/direction identity."""
+    scoring_n_directions = int(prepared.scoring_n_directions)
     provisional: list[YoungsModulusCandidateScore] = []
     replay_episodes: list[list[dict[str, Any]]] = []
 
-    for candidate_index, candidate in enumerate(candidate_list):
-        replay_eps = direction_episodes_from_collectors(
-            collectors,
-            candidate_index=int(candidate_index),
-            num_directions=num_usable_directions,
-        )
-        replay_episodes.append(replay_eps)
-
-        direction_instability = [
-            replay_instability_fraction_all_frames(
-                replay=replay_eps[dir_local],
-                recorded=recorded[dir_local],
+    for local_candidate_idx, candidate in enumerate(prepared.candidates):
+        keys = tuple(
+            ReplaySlotKey(
+                structure_idx=prepared.replay_request.structure_idx,
+                local_candidate_idx=local_candidate_idx,
+                direction_idx=direction_idx,
             )
-            for dir_local in range(num_usable_directions)
+            for direction_idx in prepared.direction_indices
+        )
+        for key, direction_idx in zip(keys, prepared.direction_indices, strict=True):
+            if (
+                key.structure_idx != prepared.replay_request.structure_idx
+                or key.local_candidate_idx != local_candidate_idx
+                or key.direction_idx != direction_idx
+            ):
+                raise RuntimeError(f"invalid routed replay key: {key}")
+        replay_eps = [replay_by_key[key] for key in keys]
+        replay_episodes.append(replay_eps)
+        direction_instability = [
+            replay_instability_fraction_all_frames(replay=replay, recorded=recorded)
+            for replay, recorded in zip(
+                replay_eps, prepared.recorded_episodes, strict=True
+            )
         ]
         finite_instability = [
             float(fraction)
@@ -288,25 +350,21 @@ def evaluate_youngs_modulus_candidates(
         instability_fraction = (
             max(finite_instability) if finite_instability else float("nan")
         )
-
-        disqualified = False
-        disqualification_reason: str | None = None
-        if any(
+        disqualified = any(
             math.isfinite(float(fraction))
             and float(fraction) > float(UNSTABLE_DISQUALIFY_THRESHOLD)
             for fraction in direction_instability
-        ):
-            disqualified = True
-            disqualification_reason = "replay_instability"
+        )
+        disqualification_reason = "replay_instability" if disqualified else None
 
-        w_result = score_candidate_wasserstein(
-            candidate_index=int(candidate_index),
+        w_result = score_candidate_wasserstein_complete(
+            candidate_index=local_candidate_idx,
             stiffnesses={
                 "primary_e_pa": float(candidate.primary),
                 "spur_e_pa": float(candidate.spur),
                 "stem_e_pa": float(candidate.stem),
             },
-            gt_context=gt_context,
+            gt_context=prepared.gt_context,
             replay_observations=replay_eps,
             device=scoring.device,
             use_median=bool(scoring.use_median),
@@ -315,21 +373,29 @@ def evaluate_youngs_modulus_candidates(
             pool_directions=bool(scoring.pool_directions),
             n_directions=scoring_n_directions,
         )
-
+        if int(w_result.candidate_index) != local_candidate_idx:
+            raise RuntimeError(
+                "Wasserstein scorer candidate index mismatch: "
+                f"expected {local_candidate_idx}, got {w_result.candidate_index}"
+            )
         if w_result.missing_directions:
             disqualified = True
             if disqualification_reason is None:
-                disqualification_reason = "missing_directions"
-
+                expected = set(prepared.gt_context.expected_directions)
+                missing = {int(direction) for direction in w_result.missing_directions}
+                disqualification_reason = (
+                    "empty_transition_bag"
+                    if expected and missing == expected
+                    else "missing_directions"
+                )
         aggregate_sinkhorn = float(w_result.aggregate_sinkhorn)
         if not math.isfinite(aggregate_sinkhorn):
             disqualified = True
             if disqualification_reason is None:
                 disqualification_reason = "non_finite_sinkhorn"
-
         provisional.append(
             YoungsModulusCandidateScore(
-                candidate_index=int(candidate_index),
+                candidate_index=local_candidate_idx,
                 candidate=candidate,
                 aggregate_sinkhorn=aggregate_sinkhorn,
                 per_direction_sinkhorn=dict(w_result.per_direction_sinkhorn),
@@ -337,7 +403,7 @@ def evaluate_youngs_modulus_candidates(
                 disqualified=bool(disqualified),
                 disqualification_reason=disqualification_reason,
                 rank=None,
-                is_gt=youngs_modulus_values_match(candidate, gt_candidate),
+                is_gt=youngs_modulus_values_match(candidate, prepared.gt_candidate),
             )
         )
 
@@ -351,10 +417,8 @@ def evaluate_youngs_modulus_candidates(
         key=lambda score: (score.aggregate_sinkhorn, score.candidate_index),
     )
     rank_by_index = {
-        score.candidate_index: rank
-        for rank, score in enumerate(ordered, start=1)
+        score.candidate_index: rank for rank, score in enumerate(ordered, start=1)
     }
-
     scores = [
         YoungsModulusCandidateScore(
             candidate_index=score.candidate_index,
@@ -369,13 +433,203 @@ def evaluate_youngs_modulus_candidates(
         )
         for score in provisional
     ]
-
+    base_params = prepared.replay_request.base_params
     return YoungsModulusEvaluation(
-        structure_idx=int(structure_idx),
-        gt_candidate=gt_candidate,
-        fixed_secondary_e_pa=fixed_secondary_e_pa,
-        direction_indices=direction_indices,
+        structure_idx=prepared.replay_request.structure_idx,
+        gt_candidate=prepared.gt_candidate,
+        fixed_secondary_e_pa=prepared.fixed_secondary_e_pa,
+        direction_indices=prepared.direction_indices,
         scores=scores,
         replay_episodes=replay_episodes,
-        applied_params=applied_params,
+        applied_params=[
+            candidate.apply_to(base_params) for candidate in prepared.candidates
+        ],
+    )
+
+
+def evaluate_youngs_modulus_candidates(
+    *,
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+    candidates: Sequence[YoungsModulusCandidate],
+    num_directions: int,
+    build_env_fn: Callable[..., Any],
+    scoring: YoungsModulusScoringConfig,
+    max_envs_per_batch: int = 0,
+    seed: int | None = None,
+    include_excluded: bool = False,
+    on_step: Callable[..., bool] | None = None,
+    replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
+) -> YoungsModulusEvaluation:
+    """Compatibility wrapper using scalar per-structure physical replay."""
+    prepared = prepare_youngs_modulus_structure(
+        dataset=dataset,
+        structure_idx=int(structure_idx),
+        candidates=candidates,
+        num_directions=int(num_directions),
+        scoring=scoring,
+        include_excluded=bool(include_excluded),
+    )
+    collectors = replay_candidates_for_structure(
+        dataset=dataset,
+        structure_idx=int(structure_idx),
+        candidates=prepared.candidates,
+        num_directions=len(prepared.direction_indices),
+        direction_indices=prepared.direction_indices,
+        seed=seed,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=int(max_envs_per_batch),
+        on_step=on_step,
+        replay_sim_config=replay_sim_config,
+        use_oracle_params=True,
+        include_excluded=bool(include_excluded),
+    )
+    replay_by_key: dict[ReplaySlotKey, dict[str, Any]] = {}
+    for candidate_index in range(len(prepared.candidates)):
+        replay_eps = direction_episodes_from_collectors(
+            collectors,
+            candidate_index=candidate_index,
+            num_directions=len(prepared.direction_indices),
+        )
+        for direction_idx, replay in zip(
+            prepared.direction_indices, replay_eps, strict=True
+        ):
+            replay_by_key[
+                ReplaySlotKey(
+                    structure_idx=int(structure_idx),
+                    local_candidate_idx=candidate_index,
+                    direction_idx=direction_idx,
+                )
+            ] = replay
+    return score_prepared_youngs_modulus_structure(
+        prepared,
+        replay_by_key=replay_by_key,
+        scoring=scoring,
+    )
+
+
+def evaluate_youngs_modulus_structures(
+    *,
+    dataset: BatchedSysIdDataset,
+    structures: Sequence[tuple[int, Sequence[YoungsModulusCandidate]]],
+    num_directions: int,
+    build_env_fn: Callable[..., Any],
+    scoring: YoungsModulusScoringConfig,
+    max_envs_per_batch: int = 0,
+    seed: int | None = None,
+    include_excluded: bool = False,
+    fail_fast: bool = False,
+    on_step: Callable[..., bool] | None = None,
+    replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
+) -> YoungsModulusBatchEvaluation:
+    """Prepare independently, replay compatibly in fused chunks, and score."""
+    total_started = time.perf_counter()
+    prepared_by_idx: dict[int, PreparedYoungsModulusStructure] = {}
+    errors: dict[int, str] = {}
+    structures_by_idx: dict[int, tuple[YoungsModulusCandidate, ...]] = {}
+    for structure_idx, candidates in structures:
+        idx = int(structure_idx)
+        if idx in structures_by_idx:
+            raise ValueError(f"duplicate structure_idx request: {idx}")
+        structures_by_idx[idx] = tuple(candidates)
+        try:
+            prepared_by_idx[idx] = prepare_youngs_modulus_structure(
+                dataset=dataset,
+                structure_idx=idx,
+                candidates=structures_by_idx[idx],
+                num_directions=int(num_directions),
+                scoring=scoring,
+                include_excluded=bool(include_excluded),
+            )
+        except Exception as exc:
+            if fail_fast:
+                raise
+            errors[idx] = str(exc)
+
+    evaluations: dict[int, YoungsModulusEvaluation] = {}
+    retried: list[int] = []
+    replay_diagnostics: MultiStructureReplayDiagnostics | None = None
+    scoring_seconds = 0.0
+
+    def scalar_retry(structure_idx: int) -> None:
+        if structure_idx in retried:
+            return
+        retried.append(structure_idx)
+        try:
+            evaluations[structure_idx] = evaluate_youngs_modulus_candidates(
+                dataset=dataset,
+                structure_idx=structure_idx,
+                candidates=structures_by_idx[structure_idx],
+                num_directions=int(num_directions),
+                build_env_fn=build_env_fn,
+                scoring=scoring,
+                max_envs_per_batch=int(max_envs_per_batch),
+                seed=seed,
+                include_excluded=bool(include_excluded),
+                on_step=on_step,
+                replay_sim_config=replay_sim_config,
+            )
+        except Exception as exc:
+            if fail_fast:
+                raise
+            errors[structure_idx] = str(exc)
+
+    prepared_items = tuple(prepared_by_idx.values())
+    if prepared_items:
+        try:
+            blocks = build_replay_candidate_blocks(
+                tuple(item.replay_request for item in prepared_items)
+            )
+        except ReplayFusionIncompatible:
+            for structure_idx in prepared_by_idx:
+                scalar_retry(structure_idx)
+        else:
+            outcome = replay_multi_structure_candidate_blocks(
+                dataset=dataset,
+                blocks=blocks,
+                build_env_fn=build_env_fn,
+                max_envs_per_batch=int(max_envs_per_batch),
+                seed=seed,
+                fail_fast=bool(fail_fast),
+                on_step=on_step,
+            )
+            replay_diagnostics = outcome.diagnostics
+            for structure_idx, prepared in prepared_by_idx.items():
+                if structure_idx in outcome.failed_structures:
+                    scalar_retry(structure_idx)
+                    continue
+                scoring_started = time.perf_counter()
+                try:
+                    evaluations[structure_idx] = (
+                        score_prepared_youngs_modulus_structure(
+                            prepared,
+                            replay_by_key=outcome.replay_by_key,
+                            scoring=scoring,
+                        )
+                    )
+                except Exception as exc:
+                    if fail_fast:
+                        raise
+                    errors[structure_idx] = str(exc)
+                finally:
+                    scoring_seconds += time.perf_counter() - scoring_started
+
+    ordered_evaluations = {
+        structure_idx: evaluations[structure_idx]
+        for structure_idx in structures_by_idx
+        if structure_idx in evaluations
+    }
+    ordered_errors = {
+        structure_idx: errors[structure_idx]
+        for structure_idx in structures_by_idx
+        if structure_idx in errors and structure_idx not in evaluations
+    }
+    return YoungsModulusBatchEvaluation(
+        evaluations=ordered_evaluations,
+        errors=ordered_errors,
+        replay_diagnostics=replay_diagnostics,
+        retried_structures=tuple(retried),
+        prepared_structures=len(prepared_by_idx),
+        scoring_seconds=float(scoring_seconds),
+        total_seconds=float(time.perf_counter() - total_started),
     )

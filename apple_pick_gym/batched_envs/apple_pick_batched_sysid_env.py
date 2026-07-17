@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -14,6 +14,9 @@ from apple_pick_gym.batched_envs.apple_pick_batched_base_env import ApplePickBat
 from apple_pick_gym.batched_envs.batched_sysid_world_info import per_world_sysid_reset_info
 from apple_pick_gym.batched_envs.obs_torch import sysid_numpy_obs_from_batched
 from apple_pick_sim.system_id.excitation_state import ExcitationContext
+
+if TYPE_CHECKING:
+    from apple_pick_sim.fruiting_system import GripperProxyConfig
 
 _EXCITATION_TYPE_TO_INT: dict[str, int] = {
     "quasi_static": 0,
@@ -38,6 +41,7 @@ class ApplePickBatchedSysIdEnv(ApplePickBatchedBaseEnv):
         topology_seed: int = 42,
         use_settle_cache: bool = False,
         per_env_params: Sequence[Any] | None = None,
+        per_env_grippers: Sequence[GripperProxyConfig] | None = None,
         control_hz: float = 60.0,
     ) -> None:
         import dataclasses
@@ -83,6 +87,7 @@ class ApplePickBatchedSysIdEnv(ApplePickBatchedBaseEnv):
             topology_seed=topology_seed,
             use_settle_cache=use_settle_cache,
             per_env_params=per_env_params,
+            per_env_grippers=per_env_grippers,
         )
 
         dev = self.device

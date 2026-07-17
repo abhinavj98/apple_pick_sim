@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
+from apple_pick_gym.batched_envs.apple_pick_batched_base_env import ApplePickBatchedBaseEnv
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
     ControllerConfig,
@@ -92,6 +93,26 @@ _SYSID_OBS_KEYS = frozenset(
         "excitation_direction",
     }
 )
+
+
+def test_batched_sysid_env_forwards_per_env_grippers(monkeypatch):
+    per_env_grippers = (object(), object())
+    captured: dict[str, object] = {}
+
+    def _fake_base_init(self, **kwargs):
+        captured.update(kwargs)
+        self.num_envs = int(kwargs["num_envs"])
+        self.device = torch.device("cpu")
+
+    monkeypatch.setattr(ApplePickBatchedBaseEnv, "__init__", _fake_base_init)
+
+    ApplePickBatchedSysIdEnv(
+        num_envs=2,
+        per_env_grippers=per_env_grippers,
+        use_settle_cache=False,
+    )
+
+    assert captured["per_env_grippers"] is per_env_grippers
 
 
 @gymnasium_available

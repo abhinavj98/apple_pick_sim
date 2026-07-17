@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from pathlib import Path
 from collections.abc import Sequence
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -20,6 +20,9 @@ except Exception as e:  # pragma: no cover
 import torch
 
 from apple_pick_gym.batched_envs.obs_torch import obs_dict_from_bufs
+
+if TYPE_CHECKING:
+    from apple_pick_sim.fruiting_system import GripperProxyConfig
 
 
 class ApplePickBatchedBaseEnv(gym.Env, ABC):
@@ -40,6 +43,7 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
         topology_seed: int = 42,
         use_settle_cache: bool = False,
         per_env_params: Sequence[Any] | None = None,
+        per_env_grippers: Sequence[GripperProxyConfig] | None = None,
     ) -> None:
         if render_mode not in (None, "none"):
             raise ValueError("Only headless operation is supported (render_mode=None).")
@@ -91,6 +95,7 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
             cfg,
             params_list,
             ranges,
+            per_env_grippers=per_env_grippers,
             use_settle_cache=use_settle_cache,
         )
         self._sim.capture_episode_snapshot()

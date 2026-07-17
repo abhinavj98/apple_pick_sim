@@ -286,7 +286,7 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Compute per-candidate Sinkhorn divergence on hold transition bags "
-            "(requires geomloss + torch; see docs/specs/2026-07-08-wasserstein-sysid-ranking-design.md)."
+            "(requires geomloss + torch; see docs/sysid-transition-features.md)."
         ),
     )
     p.add_argument(

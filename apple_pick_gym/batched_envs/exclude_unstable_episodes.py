@@ -15,6 +15,9 @@ from typing import Any
 
 import numpy as np
 
+from apple_pick_gym.batched_envs.batched_stability_monitor import (
+    DEFAULT_UNSTABLE_FRACTION_THRESHOLD,
+)
 from apple_pick_sim.system_id import BatchedSysIdDataset
 
 EXCLUDED_REASON_STABILITY_BLOWUP = "stability_blowup"
@@ -22,7 +25,7 @@ FILTERED_MANIFEST_NAME = "manifest.filtered.json"
 PRE_EXCLUDE_BACKUP_NAME = "manifest.pre_exclude.json"
 
 
-DEFAULT_UNSTABLE_FRACTION_EXCLUDE = 0.25
+DEFAULT_UNSTABLE_FRACTION_EXCLUDE = DEFAULT_UNSTABLE_FRACTION_THRESHOLD
 
 
 def _episode_unstable_fraction(dataset: BatchedSysIdDataset, episode: dict[str, Any]) -> float:

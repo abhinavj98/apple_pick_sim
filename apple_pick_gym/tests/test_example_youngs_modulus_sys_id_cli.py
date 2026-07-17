@@ -9,11 +9,16 @@ import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
+import apple_pick_gym.batched_envs as batched_envs_package
 from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
+    BatchedHeterogeneousCoupledSimConfig,
+)
+from apple_pick_sim.fruiting_system.params import GripperProxyConfig
 
 
 def _load_module():
@@ -29,6 +34,53 @@ def _load_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_build_env_closure_forwards_per_env_grippers_and_rejects_scalar_conflict(
+    monkeypatch,
+):
+    module = _load_module()
+    captured: list[dict] = []
+
+    class FakeEnv:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+    monkeypatch.setattr(module, "load_ranges", lambda _path: {})
+    monkeypatch.setattr(
+        module,
+        "build_sim_config",
+        lambda **kwargs: BatchedHeterogeneousCoupledSimConfig.gym_defaults(
+            num_envs=kwargs["num_envs"]
+        ),
+    )
+    monkeypatch.setattr(batched_envs_package, "ApplePickBatchedSysIdEnv", FakeEnv)
+    build_env = module._make_build_env_fn(
+        ranges_path="/tmp/ranges.json",
+        topology_seed=4,
+        control_hz=30.0,
+    )
+    grippers = [
+        GripperProxyConfig(weld_direction=(1.0, 0.0, 0.0)),
+        GripperProxyConfig(weld_direction=(0.0, 1.0, 0.0)),
+    ]
+
+    build_env(
+        num_envs=2,
+        per_env_params=["p0", "p1"],
+        per_env_grippers=grippers,
+        max_episode_steps=3,
+    )
+
+    assert captured[0]["per_env_grippers"] == grippers
+    with pytest.raises(ValueError, match="scalar gripper.*per_env_grippers"):
+        build_env(
+            num_envs=2,
+            per_env_params=["p0", "p1"],
+            per_env_grippers=grippers,
+            max_episode_steps=3,
+            gripper=GripperProxyConfig(),
+        )
 
 
 def test_parser_defaults_and_required_args(monkeypatch):
@@ -57,6 +109,16 @@ def test_parser_defaults_and_required_args(monkeypatch):
     assert args.max_candidates == 0
     assert args.max_overlay_candidates == 8
     assert args.fail_fast is False
+    assert args.multi_structure_batch is True
+    assert parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/gt",
+            "--output",
+            "/tmp/rank",
+            "--no-multi-structure-batch",
+        ]
+    ).multi_structure_batch is False
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--output", "/tmp/rank"])
@@ -668,6 +730,7 @@ def _task5_run_args(module, output, *, export_replays: bool) -> SimpleNamespace:
         settle_quiet_every=module.SETTLE_QUIET_EVERY,
         show_pull_direction=False,
         viewer="null",
+        multi_structure_batch=False,
     )
 
 
@@ -942,6 +1005,55 @@ def test_structure_result_serializes_non_finite_per_direction_sinkhorn_as_null()
     assert per_dir == {"0": None, "2": 0.125, "5": None}
 
 
+def test_structure_result_serializes_physical_sparse_direction_diagnostics():
+    """Pooled ranking JSON keys diagnostics by physical source direction IDs."""
+    module = _load_module()
+    pooled_loss = 0.137
+    evaluation = _evaluation_with_scores()
+    evaluation.direction_indices = (0, 2, 4)
+    evaluation.scores[0] = dataclasses.replace(
+        evaluation.scores[0],
+        aggregate_sinkhorn=pooled_loss,
+        per_direction_sinkhorn={0: 0.11, 2: 0.13, 4: 0.17},
+    )
+
+    row = module._structure_result_to_json(evaluation)
+    candidate_row = row["candidates"][0]
+
+    assert candidate_row["aggregate_sinkhorn"] == pytest.approx(pooled_loss)
+    assert set(candidate_row["per_direction_sinkhorn"]) == {"0", "2", "4"}
+    assert "-1" not in candidate_row["per_direction_sinkhorn"]
+    assert candidate_row["per_direction_sinkhorn"] == {
+        "0": pytest.approx(0.11),
+        "2": pytest.approx(0.13),
+        "4": pytest.approx(0.17),
+    }
+
+
+def test_structure_result_serializes_empty_candidate_as_strict_json():
+    """Empty bags serialize as null aggregate, empty diagnostics, and a reason."""
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+    evaluation.scores[0] = dataclasses.replace(
+        evaluation.scores[0],
+        aggregate_sinkhorn=float("nan"),
+        per_direction_sinkhorn={},
+        rank=None,
+        disqualified=True,
+        disqualification_reason="empty_transition_bag",
+    )
+
+    row = module._structure_result_to_json(evaluation)
+    candidate_row = row["candidates"][0]
+
+    assert candidate_row["aggregate_sinkhorn"] is None
+    assert candidate_row["per_direction_sinkhorn"] == {}
+    assert candidate_row["rank"] is None
+    assert candidate_row["disqualified"] is True
+    assert candidate_row["disqualification_reason"] == "empty_transition_bag"
+    json.dumps(candidate_row, allow_nan=False)
+
+
 def test_finalize_structure_outputs_sets_overlay_error_when_no_eligible_candidates(
     monkeypatch, tmp_path
 ):
@@ -1155,3 +1267,60 @@ def test_run_all_fail_writes_authoritative_skipped_report(monkeypatch, tmp_path)
         {"structure_idx": 1, "error": "structure 1 failed"},
     ]
     assert result["ranking"] == report
+
+
+def test_run_fused_default_preserves_requested_order_and_rebinds_each_chunk_model(
+    monkeypatch, tmp_path
+):
+    module = _load_module()
+    evaluation_4 = _evaluation_with_scores(structure_idx=4)
+    evaluation_1 = _evaluation_with_scores(structure_idx=1)
+    _configure_task5_run(monkeypatch, module, evaluation_4, num_structures=5)
+    monkeypatch.setattr(module, "_render_frame", lambda *_args, **_kwargs: None)
+    captured: list[dict] = []
+    model_0 = object()
+    model_1 = object()
+
+    def fake_fused(**kwargs):
+        captured.append(dict(kwargs))
+        for model in (model_0, model_1):
+            sim = SimpleNamespace(
+                scene=SimpleNamespace(cable=SimpleNamespace(model=model)),
+                config=SimpleNamespace(
+                    runtime=SimpleNamespace(control_hz=30.0, env_spacing=(2.0, 2.0, 2.0))
+                ),
+            )
+            kwargs["on_step"](frame_idx=0, env=SimpleNamespace(_sim=sim, _last_obs={}))
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={4: evaluation_4, 1: evaluation_1},
+            errors={},
+            replay_diagnostics=cmaes.MultiStructureReplayDiagnostics(
+                candidate_blocks=4,
+                flattened_envs=8,
+                chunk_env_counts=(4, 4),
+                failed_chunk_indices=(),
+                build_seconds=0.1,
+                replay_seconds=0.2,
+            ),
+            retried_structures=(),
+            prepared_structures=2,
+            scoring_seconds=0.3,
+            total_seconds=0.6,
+        )
+
+    monkeypatch.setattr(module, "evaluate_youngs_modulus_structures", fake_fused)
+    args = _task5_run_args(module, tmp_path / "rank", export_replays=False)
+    args.structure_indices = (4, 1)
+    args.multi_structure_batch = True
+    args.viewer = "usd"
+    viewer = MagicMock()
+
+    result = module._run(args, argparse.ArgumentParser(), viewer=viewer)
+
+    assert len(captured) == 1
+    assert [idx for idx, _candidates in captured[0]["structures"]] == [4, 1]
+    assert [row["structure_idx"] for row in result["structure_results"]] == [4, 1]
+    assert viewer.set_model.call_args_list == [
+        call(model_0),
+        call(model_1),
+    ]

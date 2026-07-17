@@ -5,7 +5,7 @@
 
 | Field             | Value          |
 | ----------------- | -------------- |
-| **Last reviewed** | 2026-06-30     |
+| **Last reviewed** | 2026-07-17     |
 | **Owner**         | Abhinav        |
 | **Related**       | `./ROADMAP.md` |
 
@@ -34,7 +34,7 @@ Build an apple-picking simulator whose parameters are grounded in and refined ag
 4. **Replayable observation data:** Define the smallest real-world observable bundle needed to initialize and replay sys-ID episodes without privileged simulator arrays, then use sim-to-sim tests to quantify the drift introduced by partial state information.
 5. **Digital-twin scene reconstruction:** Use calibrated geometry observations and named fixture catalogs to rebuild fruiting-system topology, base poses, apple/stem frames, and grasp transforms before tuning dynamics.
 6. **Real-world data:** Collect trajectories with the same (or closely matched) policy and sensing assumptions used in simulation, so datasets align across the sim–real gap.
-7. **Calibration loop:** Use real-world observations together with gradients, sensitivity information, or black-box objectives from the Newton-based simulator to update physical and scene parameters, tightening agreement where it matters for manipulation.
+7. **Calibration loop:** First verify parameter recovery and held-out improvement in sim-to-sim experiments, then use real-world observations together with gradients, sensitivity information, or black-box objectives to update physical and scene parameters where agreement matters for manipulation.
 8. **Manipulation Policy:** Then learn a final apple-picking policy via RL in this fine-tuned simulation
 
 
@@ -49,7 +49,8 @@ Build an apple-picking simulator whose parameters are grounded in and refined ag
 | Policy and data alignment     | Documented policy interface; real logs can be ingested next to sim rollouts without ad hoc rewrites                             | Formats and observation spaces stay versioned                                                                      |
 | Observation-only replay       | With privileged snapshots withheld, sim-to-sim replay initialized from observations has bounded drift against privileged replay | Drift metrics include TCP/apple pose, woody marker positions, and F/T error over the same recorded action sequence |
 | Digital-twin reconstruction   | A named fixture built from calibration observations recreates geometry/topology well enough for replay and parameter tuning     | Start with sim-to-sim ground truth fixtures before real-world reconstruction                                       |
-| Parameter updates improve fit | Quantitative comparison (e.g. force, pose, or event error) drops on a held-out real segment after calibration                   | Exact metric chosen in roadmap; may evolve                                                                         |
+| Sim-to-sim calibration        | Recovered material parameters or predicted behavior improve on held-out simulated structures or trajectories              | Required before real-data collection becomes the acceptance dependency                                             |
+| Real-data calibration         | Quantitative comparison (e.g. force, pose, or event error) drops on a held-out real segment after calibration             | Ultimate sim-to-real criterion after M4 data collection; exact metric chosen in roadmap                            |
 
 
 
@@ -100,7 +101,7 @@ Explicit boundaries so work does not expand by default.
 | Term                                  | Definition                                                                                                                                                                                                     |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Newton**                            | The physics engine used as a submodule (`newton/`) for this project’s dynamics.                                                                                                                                |
-| **AVBD**                              | A solver / formulation class in Newton sauited to stiff multibody and contact-heavy models; referenced when discussing stable stiff simulation.                                                                |
+| **AVBD**                              | A solver / formulation class in Newton suited to stiff multibody and contact-heavy models; referenced when discussing stable stiff simulation.                                                                 |
 | **Fruiting system**                   | The branch, stem, leaf, and fruit arrangement treated as one configurable scene or asset family.                                                                                                               |
 | **Sim-to-real**                       | Closing the gap between simulated and physical behavior (forces, timing, contacts, sensing).                                                                                                                   |
 | **Zero-payload gravity compensation** | Arm feedforward cancels link gravity only; fruit mass is treated as an external EE load (sim: Model A zero-g + stem harvest; real: no apple term in gravity comp).                                             |

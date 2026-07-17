@@ -22,7 +22,7 @@ from apple_pick_sim.coupled_fruiting.settled_checkpoint import (
     SettledCheckpoint,
     settle_cache_path_for,
 )
-from apple_pick_sim.fruiting_system import FruitingSystemParams
+from apple_pick_sim.fruiting_system import FruitingSystemParams, GripperProxyConfig
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.controllers.batched_action_twists import clip_action_tensor
 
@@ -36,6 +36,7 @@ class BatchedHeterogeneousCoupledSim:
         per_env_params: Sequence[FruitingSystemParams],
         ranges: dict,
         *,
+        per_env_grippers: Sequence[GripperProxyConfig] | None = None,
         viewer: Any | None = None,
         use_settle_cache: bool = False,
         force_settle: bool = False,
@@ -44,9 +45,14 @@ class BatchedHeterogeneousCoupledSim:
         config.validate()
         self._config = config
         self._per_env_params = tuple(per_env_params)
+        self._per_env_grippers = (
+            tuple(per_env_grippers) if per_env_grippers is not None else None
+        )
         self._ranges = ranges
         self._device = config.resolve_device()
         self._sim_time = 0.0
+        if self._per_env_grippers is not None and use_settle_cache:
+            raise ValueError("per_env_grippers require use_settle_cache=False")
 
         cache_path = settle_cache_path_for(
             config,
@@ -77,6 +83,7 @@ class BatchedHeterogeneousCoupledSim:
             config,
             self._per_env_params,
             ranges,
+            per_env_grippers=self._per_env_grippers,
             viewer=build_viewer,
             settled_checkpoint=loaded_checkpoint,
         )

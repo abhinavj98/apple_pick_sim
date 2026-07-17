@@ -179,7 +179,7 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 
 ### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, and in-process stiffness grid: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3; Current focus [V].5.1).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, and in-process stiffness grid: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3; Current focus [V].5.2 CMA-ES).
 
 ```bash
 # Headless smoke (settle→weld)
@@ -367,7 +367,8 @@ uv run --env-file pytest.env python -m pytest \
 # Step 1: collect GT trajectories; step 2: replay recorded actions over a log10-E grid.
 # GT primary/spur/stem E come from each structure's episode fruiting_system_params;
 # secondary E stays fixed at its stored GT value when present. On healthy samples,
-# GT ranks #1.
+# GT should rank #1. Compatible structures use fused replay by default; add
+# --no-multi-structure-batch for scalar parity/debugging.
 uv run --env-file pytest.env python \
   apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
   --viewer null --num-structures 1 --num-directions 2 --max-steps 80 \
@@ -379,15 +380,22 @@ uv run --env-file pytest.env python \
   --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
   --include-gt-candidate --max-candidates 8 --overwrite
 uv run --env-file pytest.env python -m pytest -p no:launch_testing \
+  apple_pick_sim/tests/test_batched_heterogeneous_build.py \
+  apple_pick_sim/tests/test_batched_digital_twin_init.py \
+  apple_pick_sim/tests/test_wasserstein.py \
   apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
+  apple_pick_gym/tests/test_batched_sysid_multi_replay.py \
   apple_pick_gym/tests/test_batched_sysid_youngs_grid.py \
   apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py \
   apple_pick_gym/tests/test_batched_replay_export.py \
   apple_pick_gym/tests/test_youngs_modulus_overlay_viz.py \
   apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
   apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py \
-  apple_pick_sim/tests/test_wasserstein.py \
-  apple_pick_sim/tests/test_mmd_features.py -q
+  apple_pick_gym/tests/test_youngs_modulus_gate_report.py \
+  apple_pick_gym/tests/test_gate_youngs_modulus_sysid_script.py -q
+
+# Full multi-seed gate (expensive; 3 seeds x 5 structures x 5 directions by default)
+bash scripts/gate_youngs_modulus_sysid.sh
 
 # Legacy single-env bend-stiffness / MMD grid (legacy Parquet layout only)
 uv run python apple_pick_gym/examples/run_system_identification.py \

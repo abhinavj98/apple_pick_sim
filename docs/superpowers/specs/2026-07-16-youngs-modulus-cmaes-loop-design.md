@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-16  
 **Roadmap slice:** V.5.2 — continuous Young's-modulus calibration  
-**Status:** Approved; implementation pending
+**Status:** Approved; implementation complete — Task 8 verification passed (focused/full tests + CUDA 5×5 acceptance, 2026-07-17)
+**Implementation notes:** `docs/youngs-modulus-cmaes-implementation.md`
 
 ## Purpose
 
@@ -35,6 +36,8 @@ path documented in `docs/youngs-modulus-sysid.md`.
 - Preserve the best sampled candidate and final covariance as diagnostics.
 - Produce a final-mean-versus-recorded-GT overlay for each successful structure.
 - Add pycma (`cma`) to the Gym tooling dependencies.
+- Preserve the existing grid gate and add separate CMA-ES fit-integrity gate
+  artifacts.
 
 ## Non-goals
 
@@ -68,18 +71,22 @@ The existing library boundary is extended:
 The optimizer uses pycma's direct ask/tell interface:
 
 ```text
-for each selected structure
-  -> resolve log10-E bounds and midpoint
-  -> CMAEvolutionStrategy(midpoint, sigma, bounds)
-  -> ask() for one population
-  -> map vectors to YoungsModulusCandidate
-  -> one chunked fused replay for structure x candidate x direction
-  -> convert eligible Sinkhorn scores to fitness values
-  -> tell(samples, fitness)
-  -> repeat until max generations or native stop
-  -> ask no further samples
-  -> explicitly evaluate final distribution mean
-  -> write structure result and final-mean overlay
+initialize one optimizer per selected structure
+while any optimizer is active
+  -> remove optimizers already stopped by cap or native criteria
+  -> ask() once from every active optimizer
+  -> preserve each optimizer's returned sample order
+  -> map vectors to per-structure YoungsModulusCandidate populations
+  -> one logical fused evaluation for active structure x candidate x direction
+     (physical replay may be chunked or retried through the existing fallback)
+  -> route scores by structure and local candidate index
+  -> compute penalties independently within each structure
+  -> tell(original samples, aligned fitness) independently per successful structure
+  -> fail only structures with invalid generation results
+  -> snapshot newly stopped bounded phenotype means
+ask no further samples
+explicitly evaluate all stopped means in one fused final-mean wave
+write successful structure overlays
 aggregate successful structure fits
 ```
 
@@ -105,10 +112,24 @@ segments. Convert each pair to log10 space. The initial CMA mean is the
 component-wise midpoint of those log-space bounds. This avoids using stored GT
 as optimizer input.
 
+The resolved ranges file is the complete replay fixture: it supplies both the
+three optimizer bounds and any `sim_build` controls used to construct replay
+environments. An explicit `--ranges` therefore overrides both. Relative CLI and
+manifest paths are resolved from the command's current working directory and
+the report records the resulting absolute path. Missing or malformed paths fail
+before optimizer construction. CMA-specific validation must not rely only on
+the generic ranges validator: it explicitly rejects missing, null, non-numeric,
+non-finite, non-positive, equal, and reversed bounds.
+
 The initial sigma is CLI-configurable and expressed in log10 decades, with a
-default of `0.25`. pycma bounds keep all samples within the fixture ranges. The
-implementation records the resolved physical and log-space bounds, midpoint,
-sigma, population size, seed, and stop options in the report.
+default of `1.0`. Before bound effects, this makes two standard deviations span
+`mean +/- 2` decades, corresponding to `mean / 100` through `mean * 100`.
+This is statistical exploration rather than a guarantee that a finite random
+population contains samples at both extremes. pycma bounds keep all samples
+within the fixture ranges, so a fixture bound closer than two decades truncates
+that side of the intended exploration. Reject non-positive or non-finite sigma
+values. The implementation records the resolved physical and log-space bounds,
+midpoint, sigma, population size, seed, and stop options in the report.
 
 ## Per-generation evaluation
 
@@ -116,8 +137,10 @@ sigma, population size, seed, and stop options in the report.
 structure. Convert the vectors to `YoungsModulusCandidate` values in Pa and
 pass all selected structure/population pairs to
 `evaluate_youngs_modulus_structures(...)`. Compatible structures share the
-same fused schedule; incompatible or affected failed structures retain the
-implemented scalar fallback.
+same fused schedule. The current fallback is preserved exactly: a compatibility
+mismatch makes the entire submitted group replay through per-structure scalar
+evaluation, while a fused runtime failure retries only affected structures
+from scratch through scalar evaluation.
 
 The evaluator stack already:
 
@@ -134,12 +157,19 @@ The evaluator stack already:
 Candidate order returned by pycma must remain aligned with evaluator candidate
 indices when fitness values are passed to `tell()`.
 
+The coordinator validates every asked population before replay: population
+length matches the optimizer, every vector has length three, values are finite
+and within the bounded phenotype domain, and returned evaluations contain each
+candidate index exactly once. `tell()` receives the original sample objects
+returned by `ask()`, in their original order.
+
 For a generation with at least one finite eligible score, every disqualified or
 non-finite candidate receives the deterministic finite penalty
 `worst_finite + max(1.0, abs(worst_finite))`. The report records the original
 disqualification reason and the substituted penalty. If no candidate in a
 generation is eligible, fail that structure rather than updating CMA-ES from
-an arbitrary all-penalty population.
+an arbitrary all-penalty population. If the prescribed penalty overflows or is
+otherwise non-finite, fail that structure without calling `tell()`.
 
 ## Stopping and fitted estimate
 
@@ -148,11 +178,17 @@ Each structure stops when either:
 - the number of completed generations reaches `--max-generations`; or
 - `CMAEvolutionStrategy.stop()` reports a native pycma convergence condition.
 
-Record the exact stop reason. A generation cap is mandatory so command cost is
-bounded; `--max-generations` defaults to `10`.
+Record all stop evidence. `stop_kind` is `generation_cap`, `pycma`, or `both`;
+the report also contains the complete strict-JSON pycma stop-condition mapping
+and completed-generation count. Check native criteria and the cap before each
+`ask()` and after every successful `tell()`. A generation cap is mandatory so
+command cost is bounded; `--max-generations` defaults to `10`.
 
-After stopping, evaluate the final CMA distribution mean once through the same
-replay and scoring path. This explicitly measured point is the fitted
+After stopping, snapshot `CMAEvolutionStrategy.result.xfavorite`, pycma's
+bounded phenotype-space distribution mean. Do not use the internal genotype
+`es.mean` or the best sampled point. After no optimizer remains active,
+evaluate all snapshots once through one logical multi-structure replay and
+scoring wave. This explicitly measured point is the fitted
 Young's-modulus estimate for structure-level errors and cross-structure
 aggregation. If the final mean is disqualified or non-finite, fail the
 structure instead of silently substituting the best sampled point.
@@ -160,6 +196,12 @@ structure instead of silently substituting the best sampled point.
 Also report the best sampled candidate and its measured score. It is diagnostic
 and does not replace the final mean. Record the final log-space covariance so
 the optimizer's remaining uncertainty and parameter coupling are inspectable.
+Specifically record pycma's internal shape matrix `C`, global `sigma`,
+`sigma_vec.scaling`, phenotype coordinate standard deviations, and the
+effective unbounded optimizer-coordinate covariance
+`sigma**2 * diag(sigma_vec.scaling) @ C @ diag(sigma_vec.scaling)`. Do not label
+this matrix as the exact covariance of the nonlinearly bounded phenotype
+distribution.
 
 ## New CLI
 
@@ -173,12 +215,28 @@ Add CMA-specific controls:
 - `--max-generations`
 - `--population-size` (optional; pycma default when omitted)
 - `--initial-sigma-log10`
-- `--cma-seed` (default `0`)
+- `--cma-seed` (default `0`, accepted as a deterministic application seed)
 
 The existing `--seed` continues to control replay behavior and retains its
 manifest fallback. `--cma-seed` controls optimizer sampling. Each structure
 uses a deterministic seed derived from the base CMA seed and the structure
-index so independent optimizers do not reuse identical random streams.
+index so independent optimizers do not reuse identical random streams. Because
+pycma treats seed `0` as time-based and otherwise uses NumPy's global RNG by
+default, do not pass the CLI seed directly as pycma's `seed` option. Derive a
+stable positive 32-bit effective seed from the base seed and structure index,
+construct a dedicated NumPy `Generator` for each optimizer, pass its
+`standard_normal` method as pycma's `randn` option, and set pycma `seed` to
+`np.nan`. Derive it with
+`SeedSequence([base_seed % 2**32, structure_idx % 2**32]).generate_state(1,
+dtype=np.uint32)[0]`, remap zero to one, and reject a collision among selected
+structures rather than silently sharing streams. Record both the base and
+effective seeds and test repeated interleaved optimizers.
+
+Construct pycma with the midpoint and sigma as positional arguments and an
+options mapping containing `bounds=[lower_log10, upper_log10]`,
+`randn=generator.standard_normal`, `seed=np.nan`, and disabled library
+verbosity. Include `popsize` only when `--population-size` is supplied. Lock and
+test the resolved `cma` version through `uv.lock`.
 
 Do not expose grid-only and grid-artifact controls on the CMA-ES command:
 
@@ -195,17 +253,30 @@ CMA-ES command continues past a failed structure, records its error, and fits
 the remaining structures by default. `--fail-fast` aborts immediately on the
 first structure error for debugging.
 
+`--multi-structure-batch` remains default-on. `--no-multi-structure-batch`
+selects the scalar parity/debug path. Small fused-versus-scalar Sinkhorn
+differences are accepted as numerical noise and are not a release-blocking
+exact-equality requirement.
+
 ## Reports and artifacts
 
-Write one strict-JSON CMA-ES report under `--output`. Update it atomically after
-each completed or failed structure so earlier expensive fits survive a later
-structure failure.
+Write `<output>/cmaes_report.json` as strict JSON. Write an initial report before
+the first replay, then update it atomically after each generation wave, failure,
+stop transition, final-mean evaluation, and overlay attempt. This preserves
+completed histories and failure evidence even though successful stopped means
+are deliberately queued for one fused final evaluation.
+
+Each structure has one report status: `active`,
+`stopped_pending_final_evaluation`, `fitted`, or `failed`. Failures include a
+machine-readable stage (`prepare`, `generation_evaluation`, `all_invalid`,
+`penalty`, or `final_mean`) plus a human-readable message. Overlay failure is
+recorded as a separate artifact error and does not change `fitted` status.
 
 For every successful structure report:
 
 - resolved bounds and initial mean in log10-E and Pa;
-- CMA seed, sigma, population size, generations, evaluation count, and stop
-  reason;
+- CMA base/effective seed, sigma, population size, generations, evaluation
+  counts, and complete stop evidence;
 - per-generation sample vectors, raw Sinkhorn scores, substituted fitness
   values, disqualification metadata, distribution mean, and covariance;
 - final mean in log10-E and Pa;
@@ -213,10 +284,28 @@ For every successful structure report:
   scores;
 - best sampled vector and score;
 - stored GT E and log10-E for evaluation only;
-- final-mean log-space and relative errors to GT.
+- final-mean log-space and relative errors to GT (`gt_diagnostics`);
+- `evaluated_history_extrema`: component-wise min/max of samples actually
+  submitted in CMA populations (`ask_samples_log10`), in log10-E and Pa
+  (`null` before the first population).
 
-Covariance fields represent the actual scaled search covariance in log10-E
-coordinates, not pycma's unscaled internal shape matrix.
+Per-generation distribution fields explicitly distinguish the distribution
+used by `ask()` from the post-`tell()` distribution. Covariance fields use the
+effective unbounded optimizer-coordinate definition above, not pycma's
+unscaled shape matrix and not an exact bounded-phenotype covariance.
+
+Report separate counters:
+
+- `completed_generations`: successful `tell()` calls;
+- `optimizer_samples_told`: population samples included in successful
+  `tell()` calls;
+- `replay_candidate_evaluations`: population and final-mean candidates
+  submitted logically for scoring;
+- `final_mean_evaluations`: zero or one;
+- physical environment slots and scalar retry attempts from replay
+  diagnostics.
+
+Scalar retries do not increment pycma's logical optimizer evaluation count.
 
 Write
 `structure_XXX/youngs_modulus_overlay.html` using the final mean's explicit
@@ -235,6 +324,15 @@ Across successful structures report:
 The aggregate min/max values are not automatically approved
 domain-randomization bounds. A later slice must decide how to reject poor fits
 and whether to use extrema, robust quantiles, covariance, or safety margins.
+Sample covariance uses `ddof=1`; covariance and standard deviation are JSON
+`null` when fewer than two structures fit. All means, extrema, and errors are
+component-wise.
+
+The existing grid ranking gate remains unchanged. Add separate
+`gate_youngs_modulus_cmaes.sh` and `youngs_modulus_cmaes_gate_report.py`
+artifacts that validate report completeness, finite explicitly scored final
+means, bounds membership, coherent counts, and stop evidence. This integrity
+gate does not impose a GT-error threshold.
 
 ## Error handling
 
@@ -247,6 +345,14 @@ and whether to use extrema, robust quantiles, covariance, or safety margins.
 - Optional overlay errors remain isolated from the numeric report.
 - If every requested structure fails, the command exits nonzero.
 - Existing non-empty output directories still require `--overwrite`.
+- Partial numeric success exits zero unless `--fail-fast` aborted the command.
+- A global ranges/configuration error or unexpected top-level batch-evaluator
+  error aborts nonzero after atomically recording available evidence.
+- Closing the viewer cancels the command: do not call `tell()` with truncated
+  replay, checkpoint cancellation evidence, and exit nonzero.
+- `--overwrite` does not make stale files authoritative: clear CMA-owned report
+  and selected-structure overlay targets before starting, and trust only
+  artifacts referenced by the current report.
 
 ## Testing
 
@@ -260,43 +366,66 @@ Fast tests cover:
    override behavior.
 3. Candidate conversion and ask/evaluate/tell order with a deterministic fake
    optimizer/evaluator.
-4. Population ordering and candidate-by-direction batching.
-5. Invalid-candidate penalty ordering and all-invalid generation failure.
-6. Generation-cap and native-stop behavior with recorded stop reasons.
-7. Explicit final-mean evaluation and rejection of an invalid final mean.
-8. Independence of per-structure optimizers and seeds.
+4. Synchronized active-set waves, stable
+   structure/candidate/direction routing, chunking, and scalar fallback.
+5. Invalid-candidate penalties, overflow, and all-invalid generation failure.
+6. Independent generation-cap/native-stop timing and complete stop evidence.
+7. One fused bounded-`xfavorite` final wave and rejection of an invalid final
+   mean.
+8. Independence and reproducibility of interleaved optimizer-owned RNGs.
 9. Per-generation, per-structure, and aggregate report math, including strict
    JSON and diagnostic min/max.
-10. Atomic report persistence and default continue-versus-fail-fast behavior.
+10. Atomic progress persistence, structured failures, cancellation, and
+    continue-versus-fail-fast behavior.
 11. Final-mean overlay selection and isolation of overlay failures.
-12. Parser additions and removal of grid-only options.
+12. New parser controls, absence of grid-only controls on the CMA command, and
+    unchanged grid CLI/gate contracts.
 13. Existing candidate application, replay, Wasserstein, and overlay tests
     remain green.
+14. Real-pycma bounded synthetic bowls with distinct per-structure optima,
+    repeated interleaved-run determinism, and NumPy/pycma strict-JSON values.
+15. Separate CMA integrity-gate parsing and existing ranking-gate regression.
 
-Use a deterministic synthetic bowl objective to show that the CMA mean moves
-toward a known optimum without running physics in fast tests. This validates
-orchestration, not pycma internals.
+Use deterministic synthetic bowl objectives to show that independent CMA means
+move toward distinct known optima without running physics. Fake optimizers test
+the coordinator protocol; one real-pycma test validates the adapter and bounded
+phenotype handling rather than re-testing pycma convergence comprehensively.
 
 Manual CUDA acceptance:
 
 1. Collect or reuse a small healthy `batched_sysid_v1` dataset.
-2. Run CMA-ES for one structure, a small population, and a few generations.
+2. Run CMA-ES for multiple structures, a small population, and a few
+   generations with default fused batching.
 3. Confirm successful exit, multiple ask/tell generations, an explicitly
-   scored final mean, strict report schema, and a readable final-mean overlay.
+   scored fused final-mean wave, independent histories/stop evidence, strict
+   report schema, and readable final-mean overlays.
 4. Report final mean, best sample, stored GT, Sinkhorn scores, and stop reason.
+5. Run a small `--no-multi-structure-batch` debug smoke and compare report
+   structure and control flow; exact Sinkhorn equality is not required because
+   small fused/scalar numerical differences are accepted as noise.
+6. After a full build, collect **5 structures × 5 directions**, run CMA-ES, and
+   report optimized final means versus stored true parameters, each structure's
+   `evaluated_history_extrema` min/max, and final covariance diagnostics.
 
 The smoke need not enforce a universal fit-error threshold; held-out acceptance
-belongs to V.5.3.
+belongs to V.5.3. **Task 8 verification passed 2026-07-17** (artifacts under
+`tmp/task8_cuda_acceptance/`; see `docs/youngs-modulus-cmaes-implementation.md`).
 
 ## Success criteria
 
 - The new script is CMA-ES-only; the existing grid script remains available.
 - Every selected structure receives an independent bounded pycma run.
-- Each generation is evaluated through one chunked batched replay path.
-- Stored GT is used only for reporting, never initialization or fitness.
+- Active structures advance in synchronized generation waves evaluated through
+  the fused structure × population × direction path, subject to physical
+  chunking and existing scalar retries.
+- Stored GT E parameters are used only for reporting, never initialization or
+  fitness; recorded observations remain the fitness target and non-fitted
+  oracle structure parameters remain frozen during replay.
 - The final distribution mean is explicitly replayed, scored, and reported as
   the fitted estimate.
 - Per-structure fits and aggregate statistics survive partial failures.
 - Final-mean overlays compare each fit with recorded GT behavior.
-- Fast tests pass and the documented CUDA smoke is runnable.
+- Fast tests pass and the documented CUDA smoke (including the 5×5 collect
+  report above) is executed and recorded; until then the design remains
+  verification-pending rather than complete.
 - Domain-randomization range selection remains explicitly deferred.

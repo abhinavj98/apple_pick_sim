@@ -161,9 +161,12 @@ they are not independent optimizer dimensions.
 7. **Aggregate:** summarize fitted means and covariance across successful
    structures.
 
-The Cartesian grid remains a separate diagnostic CLI. The optimizer and pycma
-dependency are not implemented yet. The active design is
+The Cartesian grid remains a separate diagnostic CLI. The optimizer path is
+implemented as `example_youngs_modulus_cmaes.py` with notes in
+`docs/youngs-modulus-cmaes-implementation.md`. Design:
 `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`.
+Verification (focused/full tests + CUDA acceptance) **passed** 2026-07-17 —
+V.5.2 is Done in `docs/ROADMAP.md`.
 
 ## Tests and implementation
 
@@ -179,8 +182,8 @@ dependency are not implemented yet. The active design is
 | V.4.2.1 batched digital-twin fidelity | **Done** | Helpers + CLI `--infer-params` shipped; infer-only fidelity floor optional cleanup — see `docs/ROADMAP.md` |
 | M3.0 §2.2–2.3 chirps / torsion | Planned | — |
 | V.5.1 loss / feature hardening | **Done** | GT should rank first on healthy samples; bad-sampling misses remain diagnostic and the operational gate uses a strict majority; Wasserstein primary |
-| V.5.2 CMA-ES calibration loop | **Next** | Separate pycma entry point over primary/spur/stem log10-E using pooled Sinkhorn fitness; see §4, `docs/youngs-modulus-sysid.md`, and `docs/ROADMAP.md` |
-| V.5.2 prerequisites: E-grid, complete scoring, gate, fused replay | **Implemented; fused acceptance pending** | Dataset-driven grid, structure-local reports, strict-majority gate, and multi-structure scheduler are present; clean independent/fused benchmark and low-cap acceptance remain open |
+| V.5.2 CMA-ES calibration loop | **Done** | Separate pycma entry point over primary/spur/stem log10-E using pooled Sinkhorn fitness; Task 8 verification passed 2026-07-17 — see §4, `docs/youngs-modulus-cmaes-implementation.md`, `docs/youngs-modulus-sysid.md`, and `docs/ROADMAP.md` |
+| V.5.2 prerequisites: E-grid, complete scoring, ranking gate, fused replay | **Implemented; fused acceptance pending** | Dataset-driven grid, structure-local reports, strict-majority ranking gate, and multi-structure scheduler are present; clean independent/fused benchmark and low-cap acceptance remain open |
 
 ### Batched MMD grid base geometry (2026-07-06)
 
@@ -286,7 +289,8 @@ one-hots) is **shipped** (`apple_pick_sim/system_id/wasserstein.py`,
 pool→dir one-hot): `docs/sysid-transition-features.md`. Named GT-rank gates:
 `scripts/gate_sysid_gt_sinkhorn.sh`. This does not replace §4 calibration:
 **V.5.1 Done** (GT preference on good samples; Wasserstein primary);
-**V.5.2** next adds the separate CMA-ES loop. On the legacy single-env path, the default initializer is observation-only
+**V.5.2** CMA-ES calibration **Done**
+(`docs/youngs-modulus-cmaes-implementation.md`). On the legacy single-env path, the default initializer is observation-only
 Parquet replay; use `--use-snapshot` only for privileged sim-to-sim debugging against
 `initial_states/*.npz`.
 

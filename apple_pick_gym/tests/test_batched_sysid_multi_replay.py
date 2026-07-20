@@ -319,10 +319,34 @@ def test_chunk_replay_candidate_blocks_is_deterministic_and_atomic():
     chunks = multi.chunk_replay_candidate_blocks(blocks, max_envs_per_batch=4)
 
     assert [[len(block.slots) for block in chunk] for chunk in chunks] == [[2, 2], [2]]
-    assert multi.chunk_replay_candidate_blocks(blocks, max_envs_per_batch=0) == (blocks,)
+    # Unlimited env budget still keeps distinct structures in separate physical
+    # chunks — cross-structure heterogeneous batches can collapse trajectories.
+    unlimited = multi.chunk_replay_candidate_blocks(blocks, max_envs_per_batch=0)
+    assert [[block.structure_idx for block in chunk] for chunk in unlimited] == [
+        [4, 4],
+        [1],
+    ]
+    assert tuple(block for chunk in unlimited for block in chunk) == blocks
     assert tuple(block for chunk in chunks for block in chunk) == blocks
     with pytest.raises(ValueError, match="must fit one candidate direction block"):
         multi.chunk_replay_candidate_blocks(blocks, max_envs_per_batch=1)
+
+
+def test_chunk_replay_candidate_blocks_never_mixes_structures_even_under_cap():
+    # One candidate each (2 dirs → 2 envs). Cap of 4 would fit both structures
+    # together, but chunks must stay structure-homogeneous.
+    blocks = multi.build_replay_candidate_blocks(
+        (
+            _request(4, candidates=(_Candidate(40.0),)),
+            _request(1, params=_request(4).base_params, candidates=(_Candidate(10.0),)),
+        )
+    )
+    chunks = multi.chunk_replay_candidate_blocks(blocks, max_envs_per_batch=4)
+    assert [[block.structure_idx for block in chunk] for chunk in chunks] == [
+        [4],
+        [1],
+    ]
+    assert [[len(block.slots) for block in chunk] for chunk in chunks] == [[2], [2]]
 
 
 class _FakeEnv:
@@ -574,6 +598,31 @@ def test_replay_multi_structure_fail_fast_reraises_original_exception(
             build_env_fn=build_env_fn,
             max_envs_per_batch=2,
             fail_fast=True,
+        )
+
+
+def test_replay_multi_structure_propagates_sysid_replay_cancelled(
+    _fake_replay_runtime,
+):
+    params = _params(4)
+    blocks = multi.build_replay_candidate_blocks(
+        (_request(4, params=params), _request(1, params=params))
+    )
+
+    def build_env_fn(**kwargs):
+        return _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+
+    def on_step(*, frame_idx: int, env) -> bool:
+        raise multi.SysIdReplayCancelled("viewer closed")
+
+    with pytest.raises(multi.SysIdReplayCancelled, match="viewer closed"):
+        multi.replay_multi_structure_candidate_blocks(
+            dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+            blocks=blocks,
+            build_env_fn=build_env_fn,
+            max_envs_per_batch=0,
+            fail_fast=False,
+            on_step=on_step,
         )
 
 

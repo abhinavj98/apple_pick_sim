@@ -10,6 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gym = [
+    "cma>=4.4.4",
     "dash>=4.2.0",
     "geomloss>=0.2.6",
     "gymnasium>=1.0.0",

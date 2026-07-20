@@ -7,7 +7,7 @@
 | **Last updated** | 2026-07-17 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[V].5.2** — CMA-ES via pycma; grid/scoring/gate/fused prerequisites implemented |
+| **Active work**  | **[V].5.3** — held-out sim-sim validation (V.5.2 CMA-ES Done) |
 
 ---
 
@@ -34,7 +34,7 @@
 | **[V].1–2** | Done | Batched `replicate(N)`, heterogeneous per-env DR, fixtures, runtime actions (`docs/vectorized-coupled-fruiting.md`) |
 | **[V].3** | Done | Sim API + batched gym (V.3.1–V.3.5) |
 | **[V].4** | Done | Parallel collect, batched replay, in-process MSE/Wasserstein grid, tooling |
-| **[V].5** | **Now** | V.5.1 Done → **CMA-ES** (V.5.2) → held-out validation (V.5.3); absorbs former **[S]** / M3.2 |
+| **[V].5** | **Now** | V.5.1–V.5.2 Done → held-out validation (V.5.3); absorbs former **[S]** / M3.2 |
 | **[M4]** | Later | Real-data collection — after **V.5** |
 | **[M5]** | Later | Final pick policy |
 
@@ -42,26 +42,30 @@
 
 ## Current focus
 
-**Next slice:** **V.5.2 — separate CMA-ES calibration loop** (former M3.2). Use pycma ask/tell over bounded log10-E for each selected structure and evaluate each population with the shipped fused replay + complete pooled Sinkhorn objective.
+**Next slice:** **V.5.3 — held-out sim-sim validation**. **V.5.2 Done** — separate CMA-ES calibration loop verified (focused/full suites, CLI checks, CUDA collect 5×5 → fused CMA + scalar smoke; artifacts under `tmp/task8_cuda_acceptance/`).
 
 **Scope for this slice:**
 
 - Fit only primary, spur, and stem Young's modulus; keep geometry, damping, density, mass, secondary E, and other fields fixed
-- Add a separate `example_youngs_modulus_cmaes.py`; retain the Cartesian grid as a diagnostic/gate command
+- Separate `example_youngs_modulus_cmaes.py`; retain the Cartesian grid as a diagnostic/gate command
 - Bounded midpoint initialization, fused generation evaluation, explicit final-mean replay, per-structure fit reports, and cross-structure statistics
 - Keep stored GT for evaluation/reporting only, not initialization or fitness
 
-**V.5.2 prerequisites and progress:**
+**V.5.2 progress:**
 
 - `YoungsModulusCandidate` / `log10` maps + `set_rod_youngs_modulus` (`batched_sysid_cmaes.py`, `params.py`)
 - Keyboard E-grid teleop with soft-disable: `example_batched_youngs_modulus_keyboard.py`
 - Dataset-driven E-grid replay + ranking + faceted Plotly overlay: `example_youngs_modulus_sys_id.py` / `youngs_modulus_overlay_viz.py` (collect via `example_batched_collect_sysid_data.py`)
 - Complete scoring: pooled Sinkhorn fitness, physical per-direction diagnostics, direction completeness, candidate-local invalid handling, strict JSON
-- Multi-seed Young's gate: `gate_youngs_modulus_sysid.sh` + `youngs_modulus_gate_report.py`; strict majority per seed (3/5 by default), all seeds required to pass
-- Fused multi-structure grid replay: stable structure/candidate/direction keys, whole-candidate chunking, per-env episode initialization, scalar fallback; enabled by default
+- Multi-seed Young's **ranking** gate: `gate_youngs_modulus_sysid.sh` + `youngs_modulus_gate_report.py`; strict majority per seed (3/5 by default), all seeds required to pass
+- Fused multi-structure grid/CMA replay: stable structure/candidate/direction keys, whole-candidate chunking, per-env episode initialization, scalar fallback; enabled by default
+- Separate CMA-ES CLI + coordinator: `example_youngs_modulus_cmaes.py`, `fit_youngs_modulus_structures` / generation waves in `batched_sysid_cmaes.py`, atomic `cmaes_report.json`, final-mean overlays
+- Separate CMA **integrity** gate (no GT-error threshold): `gate_youngs_modulus_cmaes.sh` + `youngs_modulus_cmaes_gate_report.py`
 - Fused implementation is present, but clean independent/fused timing, low-cap parity, build count, and peak-memory acceptance remain pending
-- Canonical implementation: `docs/youngs-modulus-sysid.md`; active future design: `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`
-- Still open: pycma dependency and ask/tell orchestration, final-mean evaluation, aggregate fit report
+- Canonical grid contract: `docs/youngs-modulus-sysid.md`; CMA design: `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`; CMA notes: `docs/youngs-modulus-cmaes-implementation.md`
+- Task 8 verification **passed** (2026-07-17): focused CMA/multi-replay/CLI/gate/overlay suites, grid CLI/gate regressions, full Gym suite, repo non-slow gate, both `--help` checks, strict JSON/cancel evidence, CUDA 5×5 fused CMA + scalar smoke with validation reports (`tmp/task8_cuda_acceptance/`)
+
+**Specs:** `docs/system_identification.md`, `docs/youngs-modulus-sysid.md`, `docs/youngs-modulus-cmaes-implementation.md`, `docs/sysid-transition-features.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/batched-sysid-dataset.md`, `docs/batched-stability-monitor-design.md`, `docs/digital-twin.md`, `docs/material-parameter-sampling.md`
 
 **Shipped wins (do not reimplement):**
 
@@ -73,7 +77,7 @@
 - **V.4.2** parallel GT collection (`batched_sysid_v1`, `example_batched_collect_sysid_data.py`)
 - Batched recorded-action replay (`replay_batched_sysid_structure`)
 - **V.4.3** in-process GPU-batched stiffness grid: MSE + Sinkhorn Wasserstein + Plotly viz (`example_batched_sysid_mmd_grid.py`; alignment notes in `docs/sysid-mmd-grid-replay-alignment.md`)
-- **V.5.1 — stable collect / replay:** soft-disable during collect (`EnvDisableController`, sticky on NaN/IK); manifest `excluded` / `excluded_reason`; offline `exclude_unstable_episodes` (exclude when unstable-frame **fraction > 0.25**, preserve already-excluded); online stability force/torque caps **50 N** / **20 N·m** (`docs/batched-stability-monitor-design.md`); scripts `scripts/collect_and_rank_sysid_gt.sh`, `scripts/gate_sysid_gt_sinkhorn.sh`
+- **V.5.1 — stable collect / replay:** soft-disable during collect (`EnvDisableController`, sticky on NaN/IK); manifest `excluded` / `excluded_reason`; offline `exclude_unstable_episodes` (exclude when unstable-frame **fraction > 0.25**, preserve already-excluded); online stability force/torque caps **100 N** / **40 N·m** (`docs/batched-stability-monitor-design.md`); scripts `scripts/collect_and_rank_sysid_gt.sh`, `scripts/gate_sysid_gt_sinkhorn.sh`
 - **V.5.1 — scoring / features:** transition-feature contract (`docs/sysid-transition-features.md`); CLI defaults `--use-median` / `--hold-id-onehot` / `--pool-directions` **on** (pool forces dir one-hot; disable with `--no-*`; deprecated `--mse-hold-aggregation` / `--mse-hold-latter-half`); named Sinkhorn gates via `scripts/gate_sysid_gt_sinkhorn.sh` (script default `GATE=gate_pooled_dirs`; also `gate_median_hold` / `gate_hold_id`); `sysid_gate_report.py` + grid-viz paired-hold woody MSE helper
 
 **Shipped ranking policy:** GT should rank first on healthy samples. Bad ranks from bad sampling remain diagnostic, and the Young's operational gate requires a strict majority per seed rather than universal rank one.
@@ -83,8 +87,6 @@
 **Deferred / later cleanup (not Current focus):** optional CLI `--score-mmd` (library MMD exists; **replaced by Wasserstein** for ranking — wire flag later if needed); V.4.2.1 infer-only fidelity floor (helpers/`--infer-params` exist; oracle default is fine for the current CMA-ES path).
 
 **Goal:** **V.5.2** CMA-ES on GT-preferring batched scores → **V.5.3** held-out sim-sim validation → **[M4]**.
-
-**Specs:** `docs/system_identification.md`, `docs/youngs-modulus-sysid.md`, `docs/sysid-transition-features.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/batched-sysid-dataset.md`, `docs/batched-stability-monitor-design.md`, `docs/digital-twin.md`, `docs/material-parameter-sampling.md`
 
 **Build on (do not reimplement):**
 
@@ -113,16 +115,17 @@
 **[V].5 — sim-sim transfer wrap-up**
 
 - [x] **V.5.1 — Harden loss calculation in `example_batched_sysid_mmd_grid.py`:**
-  - [x] Soft-disable + manifest `excluded` / offline exclude (unstable-frame fraction > 0.25) + stability caps 50 N / 20 N·m
+  - [x] Soft-disable + manifest `excluded` / offline exclude (unstable-frame fraction > 0.25) + stability caps 100 N / 40 N·m
   - [x] Documented transition-feature / Sinkhorn scoring contract (`docs/sysid-transition-features.md`) + named gate CLI (`scripts/gate_sysid_gt_sinkhorn.sh`; default `gate_pooled_dirs`, also `gate_median_hold` / `gate_hold_id`)
   - [x] GT preference is established on healthy samples; the operational gate uses a strict majority per seed and preserves bad-sampling misses for diagnosis
   - [x] Primary scorer is **Wasserstein** (Sinkhorn); optional CLI `--score-mmd` deferred as cleanup (library MMD already exists)
-- [ ] **V.5.2 — CMA-ES calibration loop** (M3.2) — **Next**
+- [x] **V.5.2 — CMA-ES calibration loop** (M3.2) — **Done**
   - [x] `YoungsModulusCandidate` + keyboard E-grid + dataset-driven replay/ranking overlay
-  - [x] Complete pooled scoring + physical-direction diagnostics + strict-majority multi-seed gate
+  - [x] Complete pooled scoring + physical-direction diagnostics + strict-majority multi-seed ranking gate
   - [x] Fused multi-structure replay implementation (clean performance/low-cap acceptance pending)
-  - [ ] Separate pycma ask/tell CLI + explicit final-mean evaluation + aggregate fit report
-- [ ] **V.5.3 — Held-out sim-sim validation** + [M4] handoff criteria
+  - [x] Separate pycma ask/tell CLI + explicit final-mean evaluation + aggregate fit report + integrity gate
+  - [x] Focused/full test suites, CLI checks, and CUDA acceptance (5 structures × 5 directions; report optimized vs GT, evaluated-history min/max, final covariance)
+- [ ] **V.5.3 — Held-out sim-sim validation** + [M4] handoff criteria — **Next**
 
 **[M3] parallel infra** (optional alongside [V])
 
@@ -148,7 +151,7 @@ Key M1 docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md
 | M3.0.4 | Done | Fixture catalog + example obs JSON committed; `test_digital_twin.py` passes (`docs/digital-twin.md`) |
 | M3.0.5 | Planned | §2.2–2.3 trajectories → V.4 backend |
 | M3.1.2 | Done (→ V.5.1) | Harden loss calc in `example_batched_sysid_mmd_grid.py` |
-| M3.2 | → V.5.2 (Next) | CMA-ES calibration |
+| M3.2 | → V.5.2 Done | CMA-ES calibration verified |
 
 ### [V] Batched vectorization
 
@@ -174,8 +177,8 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.4.3** | Done | In-process batched MSE/Wasserstein grid + viz; library MMD present |
 | **V.4.4** | Done | Gate/collect scripts + batch tooling; further dashboard polish optional |
 | **V.5.1** | Done | GT #1 on good samples; Wasserstein primary; `--score-mmd` cleanup later |
-| **V.5.2** | **Next** | CMA-ES loop; grid/scoring/gate/fused prerequisites implemented |
-| **V.5.3** | Planned | Held-out validation; [M4] handoff |
+| **V.5.2** | Done | CMA-ES loop verified (tests + CUDA 5×5 acceptance) |
+| **V.5.3** | **Next** | Held-out validation; [M4] handoff |
 
 Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Public API reference: `docs/coupled-sim-api.md`.
 
@@ -313,7 +316,7 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_exclude_unstable_episodes.py \
   apple_pick_gym/tests/test_sysid_gate_report.py -q
 
-# [V].5.2 Young's-modulus grid, complete scoring, fused replay, and gate
+# [V].5.2 Young's-modulus grid, complete scoring, fused replay, and ranking gate
 uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_sim/tests/test_batched_heterogeneous_build.py \
   apple_pick_sim/tests/test_batched_digital_twin_init.py \
@@ -326,6 +329,18 @@ uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_gym/tests/test_youngs_modulus_overlay_viz.py \
   apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
   apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py \
+  apple_pick_gym/tests/test_youngs_modulus_gate_report.py \
+  apple_pick_gym/tests/test_gate_youngs_modulus_sysid_script.py -q
+
+# [V].5.2 CMA-ES loop + integrity gate (Done; Task 8 verification passed 2026-07-17)
+uv run --env-file pytest.env python -m pytest -p no:launch_testing \
+  apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
+  apple_pick_gym/tests/test_batched_sysid_cmaes_loop.py \
+  apple_pick_gym/tests/test_batched_sysid_multi_replay.py \
+  apple_pick_gym/tests/test_example_youngs_modulus_cmaes_cli.py \
+  apple_pick_gym/tests/test_youngs_modulus_cmaes_gate_report.py \
+  apple_pick_gym/tests/test_gate_youngs_modulus_cmaes_script.py \
+  apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
   apple_pick_gym/tests/test_youngs_modulus_gate_report.py \
   apple_pick_gym/tests/test_gate_youngs_modulus_sysid_script.py -q
 
@@ -345,9 +360,18 @@ uv run --env-file pytest.env python \
   --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
   --include-gt-candidate --max-candidates 8 --overwrite
 
+# Separate CMA-ES fit on the same dataset layout (requires healthy collect):
+# uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+#   --viewer null --dataset tmp/youngs_gt_smoke --output tmp/youngs_cmaes_smoke \
+#   --max-generations 10 --cma-seed 0 --overwrite
+
 # Add --no-multi-structure-batch above for the scalar parity/debug path.
-# Full Young's multi-seed gate (expensive; defaults to 3 seeds x 5 structures x 5 directions):
+# Full Young's multi-seed ranking gate (expensive; defaults to 3 seeds x 5 structures x 5 directions):
 # bash scripts/gate_youngs_modulus_sysid.sh
+# Full Young's multi-seed CMA integrity gate (expensive; same default collect size; no GT-error threshold):
+# bash scripts/gate_youngs_modulus_cmaes.sh
+# CUDA acceptance (Task 8 passed): collect 5x5, fused CMA-ES, scalar smoke, and
+# validation reports under tmp/task8_cuda_acceptance/ (see implementation notes).
 
 # Optional Sinkhorn gate wrapper (not a full slow e2e; needs GPU + long runtime)
 # Default GATE=gate_pooled_dirs (matches CLI pool/hold-id defaults):

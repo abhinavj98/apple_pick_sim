@@ -238,3 +238,238 @@ def test_maybe_include_gt_candidate_is_configurable_and_deduplicates_in_log_spac
     assert cmaes.maybe_include_gt_candidate([near], gt, include_gt=True) == [near]
     assert cmaes.maybe_include_gt_candidate([], gt, include_gt=False) == []
     assert cmaes.maybe_include_gt_candidate([], gt, include_gt=True) == [gt]
+
+
+# --- Task 1: bounds, sigma, RNG, pycma options ---
+
+
+def _valid_youngs_ranges() -> dict:
+    return {
+        "primary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
+        "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+        "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+        "secondary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e8}},
+    }
+
+
+def test_default_initial_sigma_log10_is_one_decade():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    assert cmaes.DEFAULT_INITIAL_SIGMA_LOG10 == 1.0
+    # Before bound effects, mean +/- 2 sigma spans +/- 2 decades.
+    assert 10.0 ** (2.0 * cmaes.DEFAULT_INITIAL_SIGMA_LOG10) == pytest.approx(100.0)
+
+
+def test_extract_youngs_modulus_cma_bounds_from_fixture_paths():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    assert bounds.primary.physical_min_pa == 1.0e7
+    assert bounds.primary.physical_max_pa == 1.0e9
+    assert bounds.spur.physical_min_pa == 1.0e6
+    assert bounds.stem.physical_max_pa == 1.0e7
+    assert bounds.primary.log10_min == pytest.approx(math.log10(1.0e7))
+    assert bounds.primary.log10_max == pytest.approx(math.log10(1.0e9))
+    assert bounds.primary.log10_midpoint == pytest.approx(
+        0.5 * (math.log10(1.0e7) + math.log10(1.0e9))
+    )
+    assert bounds.log10_lower == pytest.approx(
+        (math.log10(1.0e7), math.log10(1.0e6), math.log10(1.0e5))
+    )
+    assert bounds.log10_upper == pytest.approx(
+        (math.log10(1.0e9), math.log10(1.0e8), math.log10(1.0e7))
+    )
+    assert bounds.log10_midpoint == pytest.approx(
+        (
+            0.5 * (math.log10(1.0e7) + math.log10(1.0e9)),
+            0.5 * (math.log10(1.0e6) + math.log10(1.0e8)),
+            0.5 * (math.log10(1.0e5) + math.log10(1.0e7)),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate,match",
+    [
+        (lambda r: r["primary"].pop("youngs_modulus_pa"), "primary"),
+        (lambda r: r["spur"]["youngs_modulus_pa"].pop("min"), "spur"),
+        (lambda r: r["stem"]["youngs_modulus_pa"].__setitem__("max", None), "stem"),
+        (lambda r: r["primary"]["youngs_modulus_pa"].__setitem__("min", "bad"), "primary"),
+        (lambda r: r["spur"]["youngs_modulus_pa"].__setitem__("min", float("nan")), "spur"),
+        (lambda r: r["stem"]["youngs_modulus_pa"].__setitem__("max", float("inf")), "stem"),
+        (lambda r: r["primary"]["youngs_modulus_pa"].__setitem__("min", 0.0), "primary"),
+        (lambda r: r["spur"]["youngs_modulus_pa"].__setitem__("min", -1.0), "spur"),
+        (
+            lambda r: r["stem"]["youngs_modulus_pa"].__setitem__("min", 1.0e7)
+            or r["stem"]["youngs_modulus_pa"].__setitem__("max", 1.0e7),
+            "stem",
+        ),
+        (
+            lambda r: r["primary"]["youngs_modulus_pa"].__setitem__("min", 1.0e9)
+            or r["primary"]["youngs_modulus_pa"].__setitem__("max", 1.0e7),
+            "primary",
+        ),
+    ],
+)
+def test_extract_youngs_modulus_cma_bounds_rejects_invalid(mutate, match):
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    ranges = _valid_youngs_ranges()
+    mutate(ranges)
+    with pytest.raises(ValueError, match=match):
+        cmaes.extract_youngs_modulus_cma_bounds(ranges)
+
+
+@pytest.mark.parametrize("sigma", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+def test_validate_initial_sigma_log10_rejects_non_positive_or_non_finite(sigma):
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    with pytest.raises(ValueError, match="initial.sigma|sigma"):
+        cmaes.validate_initial_sigma_log10(sigma)
+
+
+def test_validate_initial_sigma_log10_accepts_positive_finite():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    assert cmaes.validate_initial_sigma_log10(1.0) == 1.0
+    assert cmaes.validate_initial_sigma_log10(0.25) == 0.25
+
+
+def test_derive_structure_cma_seed_is_stable_positive_and_remaps_zero():
+    import numpy as np
+    from numpy.random import SeedSequence
+
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    seed = cmaes.derive_structure_cma_seed(base_seed=0, structure_idx=3)
+    expected = int(
+        SeedSequence([0 % 2**32, 3 % 2**32]).generate_state(1, dtype=np.uint32)[0]
+    )
+    if expected == 0:
+        expected = 1
+    assert seed == expected
+    assert 1 <= seed <= 2**32 - 1
+    assert cmaes.derive_structure_cma_seed(0, 3) == seed
+
+
+def test_derive_structure_cma_seeds_rejects_selected_structure_collisions(monkeypatch):
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    monkeypatch.setattr(
+        cmaes,
+        "derive_structure_cma_seed",
+        lambda base_seed, structure_idx: 7,
+    )
+    with pytest.raises(ValueError, match="collision|collide|duplicate"):
+        cmaes.derive_structure_cma_seeds(base_seed=0, structure_indices=(0, 1))
+
+
+def test_build_pycma_options_include_bounds_randn_nan_seed_and_optional_popsize():
+    import numpy as np
+
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    rng = np.random.default_rng(1)
+    randn = cmaes.make_pycma_randn(rng)
+    options = cmaes.build_pycma_options(bounds, randn=randn)
+    assert options["bounds"] == [list(bounds.log10_lower), list(bounds.log10_upper)]
+    assert options["randn"] is randn
+    assert np.isnan(options["seed"])
+    assert options["verbose"] == -9
+    assert "popsize" not in options
+
+    options_pop = cmaes.build_pycma_options(
+        bounds, randn=randn, population_size=8
+    )
+    assert options_pop["popsize"] == 8
+
+
+def test_create_structure_cma_optimizer_uses_midpoint_sigma_and_dedicated_rng():
+    import cma
+    import numpy as np
+
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    es, effective_seed, rng = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_sigma_log10=1.0,
+        base_seed=0,
+        structure_idx=2,
+        population_size=6,
+    )
+    assert isinstance(es, cma.CMAEvolutionStrategy)
+    assert effective_seed == cmaes.derive_structure_cma_seed(0, 2)
+    assert isinstance(rng, np.random.Generator)
+    assert list(es.mean) == pytest.approx(list(bounds.log10_midpoint))
+    assert es.sigma == pytest.approx(1.0)
+    assert es.opts["popsize"] == 6
+    assert np.isnan(es.opts["seed"])
+
+
+def test_interleaved_structure_optimizers_are_deterministic_and_distinct():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+
+    def _run_once():
+        es0, _, _ = cmaes.create_structure_cma_optimizer(
+            bounds, base_seed=0, structure_idx=0, population_size=4
+        )
+        es1, _, _ = cmaes.create_structure_cma_optimizer(
+            bounds, base_seed=0, structure_idx=1, population_size=4
+        )
+        out0 = []
+        out1 = []
+        for _ in range(3):
+            s0 = es0.ask()
+            s1 = es1.ask()
+            out0.append([list(map(float, row)) for row in s0])
+            out1.append([list(map(float, row)) for row in s1])
+            fitness0 = [
+                float(sum((x - m) ** 2 for x, m in zip(row, (7.0, 6.0, 5.0))))
+                for row in s0
+            ]
+            fitness1 = [
+                float(sum((x - m) ** 2 for x, m in zip(row, (8.0, 7.0, 6.0))))
+                for row in s1
+            ]
+            es0.tell(s0, fitness0)
+            es1.tell(s1, fitness1)
+        return out0, out1
+
+    first0, first1 = _run_once()
+    second0, second1 = _run_once()
+    assert first0 == second0
+    assert first1 == second1
+    assert first0 != first1
+
+
+def test_sigma_exploration_is_truncated_by_fixture_bounds():
+    """Default sigma intends +/-2 decades, but fixture bounds remain authoritative."""
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    narrow = {
+        "primary": {"youngs_modulus_pa": {"min": 1.0e8, "max": 2.0e8}},
+        "spur": {"youngs_modulus_pa": {"min": 1.0e7, "max": 2.0e7}},
+        "stem": {"youngs_modulus_pa": {"min": 1.0e6, "max": 2.0e6}},
+    }
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(narrow)
+    # Half-width in log10 decades is far below 2.0 for each segment.
+    for seg in (bounds.primary, bounds.spur, bounds.stem):
+        half_width = 0.5 * (seg.log10_max - seg.log10_min)
+        assert half_width < 2.0 * cmaes.DEFAULT_INITIAL_SIGMA_LOG10
+    es, _, _ = cmaes.create_structure_cma_optimizer(
+        bounds, base_seed=0, structure_idx=0, population_size=12
+    )
+    samples = es.ask()
+    for row in samples:
+        for value, lo, hi in zip(row, bounds.log10_lower, bounds.log10_upper, strict=True):
+            assert lo - 1e-9 <= float(value) <= hi + 1e-9
+
+
+def test_pycma_dependency_is_importable():
+    import cma
+
+    assert hasattr(cma, "CMAEvolutionStrategy")

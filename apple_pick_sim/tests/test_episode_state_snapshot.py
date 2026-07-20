@@ -45,7 +45,9 @@ def _vic_gym_config(*, num_envs: int = _NUM_ENVS) -> BatchedHeterogeneousCoupled
         robot=RobotConfig(
             kind="fr3",
             step_mode="coupled",
-            fix_to_apple=True,
+            # Unfixed TCP so VIC actions produce a measurable state change for
+            # capture/restore round-trips (fix_to_apple can keep TCP stationary).
+            fix_to_apple=False,
             skip_ik_bootstrap=True,
             defer_template_robot_bootstrap=True,
         ),

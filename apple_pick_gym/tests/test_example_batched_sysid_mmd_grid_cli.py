@@ -343,8 +343,8 @@ def test_sim_config_stays_in_module_constants():
     assert cfg.fruiting_system.stem_torque_cap_Nm == pytest.approx(
         module.DEFAULT_STEM_TORQUE_CAP_NM
     )
-    assert module.DEFAULT_STEM_FORCE_CAP_N == pytest.approx(50.0)
-    assert module.DEFAULT_STEM_TORQUE_CAP_NM == pytest.approx(20.0)
+    assert module.DEFAULT_STEM_FORCE_CAP_N == pytest.approx(100.0)
+    assert module.DEFAULT_STEM_TORQUE_CAP_NM == pytest.approx(40.0)
 
 
 def test_build_sim_config_reads_sim_build_from_default_fixture():

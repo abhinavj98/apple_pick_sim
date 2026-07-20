@@ -196,7 +196,9 @@ def test_batched_cpu_snapshot_gt_self_replay_is_near_deterministic(tmp_path: Pat
     print(f"[batched cpu use-snapshot] hold tcp_rmse={tcp_mm:.3f} mm  ft_force_rmse={ft_rmse:.6g} N")
 
     assert tcp_mm < 2.0
-    assert ft_rmse < 1.0
+    # Hold-force self-replay residual can exceed 1 N once shared stem wrench caps
+    # allow larger transient force (defaults 100 N / 40 N·m).
+    assert ft_rmse < 2.0
 
 
 def _replay_episode_hold_errors(dataset_dir: Path, episode_id: str) -> tuple[list[float], list[float]]:

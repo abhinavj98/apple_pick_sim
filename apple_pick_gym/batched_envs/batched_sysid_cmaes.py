@@ -1,17 +1,20 @@
 """CMA-ES / Young's-modulus candidate helpers for batched sys-ID (V.5.2).
 
-This module currently owns the material candidate type and log10 maps used by
-the interactive E-grid demos. The full pycma loop lands in a later slice.
+Owns material candidate maps, bounded pycma construction, synchronized
+generation waves, and fit reporting for the separate CMA-ES entry point.
 """
 
 from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from itertools import product
 from typing import TYPE_CHECKING, Any, NamedTuple
+
+import cma
+import numpy as np
 
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
@@ -40,12 +43,16 @@ from apple_pick_gym.batched_envs.batched_sysid_multi_replay import (
     ReplayFusionIncompatible,
     ReplaySlotKey,
     ReplayStructureRequest,
+    SysIdReplayCancelled,
     build_replay_candidate_blocks,
     replay_multi_structure_candidate_blocks,
 )
 
 if TYPE_CHECKING:
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+
+DEFAULT_INITIAL_SIGMA_LOG10 = 1.0
+_UINT32_MOD = 2**32
 
 
 class YoungsModulusCandidate(NamedTuple):
@@ -172,6 +179,195 @@ def maybe_include_gt_candidate(
 
 
 @dataclass(frozen=True)
+class SegmentYoungsModulusBounds:
+    physical_min_pa: float
+    physical_max_pa: float
+    log10_min: float
+    log10_max: float
+    log10_midpoint: float
+
+
+@dataclass(frozen=True)
+class YoungsModulusCmaBounds:
+    primary: SegmentYoungsModulusBounds
+    spur: SegmentYoungsModulusBounds
+    stem: SegmentYoungsModulusBounds
+
+    @property
+    def log10_lower(self) -> tuple[float, float, float]:
+        return (
+            self.primary.log10_min,
+            self.spur.log10_min,
+            self.stem.log10_min,
+        )
+
+    @property
+    def log10_upper(self) -> tuple[float, float, float]:
+        return (
+            self.primary.log10_max,
+            self.spur.log10_max,
+            self.stem.log10_max,
+        )
+
+    @property
+    def log10_midpoint(self) -> tuple[float, float, float]:
+        return (
+            self.primary.log10_midpoint,
+            self.spur.log10_midpoint,
+            self.stem.log10_midpoint,
+        )
+
+
+def _require_positive_finite_number(value: Any, *, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be numeric")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{field} must be finite")
+    if number <= 0.0:
+        raise ValueError(f"{field} must be positive")
+    return number
+
+
+def _segment_youngs_bounds(ranges: Mapping[str, Any], segment: str) -> SegmentYoungsModulusBounds:
+    segment_payload = ranges.get(segment)
+    if not isinstance(segment_payload, Mapping):
+        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+    youngs = segment_payload.get("youngs_modulus_pa")
+    if not isinstance(youngs, Mapping):
+        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+    if "min" not in youngs or "max" not in youngs:
+        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+    if youngs.get("min") is None or youngs.get("max") is None:
+        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+    physical_min = _require_positive_finite_number(
+        youngs["min"], field=f"{segment}.youngs_modulus_pa.min"
+    )
+    physical_max = _require_positive_finite_number(
+        youngs["max"], field=f"{segment}.youngs_modulus_pa.max"
+    )
+    if physical_min >= physical_max:
+        raise ValueError(
+            f"{segment} youngs_modulus_pa bounds must satisfy min < max"
+        )
+    log10_min = math.log10(physical_min)
+    log10_max = math.log10(physical_max)
+    return SegmentYoungsModulusBounds(
+        physical_min_pa=physical_min,
+        physical_max_pa=physical_max,
+        log10_min=log10_min,
+        log10_max=log10_max,
+        log10_midpoint=0.5 * (log10_min + log10_max),
+    )
+
+
+def extract_youngs_modulus_cma_bounds(
+    ranges: Mapping[str, Any],
+) -> YoungsModulusCmaBounds:
+    """Extract immutable primary/spur/stem Young's bounds from a ranges fixture."""
+    return YoungsModulusCmaBounds(
+        primary=_segment_youngs_bounds(ranges, "primary"),
+        spur=_segment_youngs_bounds(ranges, "spur"),
+        stem=_segment_youngs_bounds(ranges, "stem"),
+    )
+
+
+def validate_initial_sigma_log10(sigma: float) -> float:
+    """Reject non-positive or non-finite initial sigma (log10 decades)."""
+    if isinstance(sigma, bool) or not isinstance(sigma, (int, float)):
+        raise ValueError("initial sigma must be numeric")
+    value = float(sigma)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("initial sigma must be positive and finite")
+    return value
+
+
+def derive_structure_cma_seed(base_seed: int, structure_idx: int) -> int:
+    """Derive a stable positive 32-bit seed for one structure optimizer."""
+    sequence = np.random.SeedSequence(
+        [int(base_seed) % _UINT32_MOD, int(structure_idx) % _UINT32_MOD]
+    )
+    seed = int(sequence.generate_state(1, dtype=np.uint32)[0])
+    return 1 if seed == 0 else seed
+
+
+def derive_structure_cma_seeds(
+    base_seed: int,
+    structure_indices: Sequence[int],
+) -> dict[int, int]:
+    """Map selected structure indices to distinct effective CMA seeds."""
+    seeds: dict[int, int] = {}
+    seen: dict[int, int] = {}
+    for structure_idx in structure_indices:
+        idx = int(structure_idx)
+        effective = derive_structure_cma_seed(int(base_seed), idx)
+        if effective in seen:
+            raise ValueError(
+                "effective CMA seed collision between selected structures "
+                f"{seen[effective]} and {idx}"
+            )
+        seen[effective] = idx
+        seeds[idx] = effective
+    return seeds
+
+
+def make_pycma_randn(generator: np.random.Generator) -> Callable[..., Any]:
+    """Adapt ``Generator.standard_normal`` to pycma's ``randn(*size)`` calling style."""
+
+    def randn(*size: int) -> Any:
+        if not size:
+            return float(generator.standard_normal())
+        if len(size) == 1:
+            return generator.standard_normal(size=int(size[0]))
+        return generator.standard_normal(size=tuple(int(dim) for dim in size))
+
+    return randn
+
+
+def build_pycma_options(
+    bounds: YoungsModulusCmaBounds,
+    *,
+    randn: Callable[..., Any],
+    population_size: int | None = None,
+) -> dict[str, Any]:
+    """Build pycma options for bounded log10-E search with an owned RNG."""
+    options: dict[str, Any] = {
+        "bounds": [list(bounds.log10_lower), list(bounds.log10_upper)],
+        "randn": randn,
+        "seed": np.nan,
+        "verbose": -9,
+    }
+    if population_size is not None:
+        options["popsize"] = int(population_size)
+    return options
+
+
+def create_structure_cma_optimizer(
+    bounds: YoungsModulusCmaBounds,
+    *,
+    initial_sigma_log10: float = DEFAULT_INITIAL_SIGMA_LOG10,
+    base_seed: int,
+    structure_idx: int,
+    population_size: int | None = None,
+) -> tuple[cma.CMAEvolutionStrategy, int, np.random.Generator]:
+    """Construct one bounded pycma optimizer with a dedicated NumPy Generator."""
+    sigma = validate_initial_sigma_log10(initial_sigma_log10)
+    effective_seed = derive_structure_cma_seed(int(base_seed), int(structure_idx))
+    rng = np.random.default_rng(effective_seed)
+    options = build_pycma_options(
+        bounds,
+        randn=make_pycma_randn(rng),
+        population_size=population_size,
+    )
+    es = cma.CMAEvolutionStrategy(
+        list(bounds.log10_midpoint),
+        float(sigma),
+        options,
+    )
+    return es, effective_seed, rng
+
+
+@dataclass(frozen=True)
 class YoungsModulusScoringConfig:
     use_median: bool = True
     hold_id_onehot: bool = True
@@ -228,6 +424,9 @@ class YoungsModulusBatchEvaluation:
     prepared_structures: int = 0
     scoring_seconds: float = 0.0
     total_seconds: float = 0.0
+    # Exact candidate×usable-direction slots per prepared structure (includes
+    # scoring-failed-but-replayed). Empty when the caller did not prepare.
+    physical_slots_by_structure: dict[int, int] = field(default_factory=dict)
 
 
 def prepare_youngs_modulus_structure(
@@ -541,6 +740,8 @@ def evaluate_youngs_modulus_structures(
                 scoring=scoring,
                 include_excluded=bool(include_excluded),
             )
+        except SysIdReplayCancelled:
+            raise
         except Exception as exc:
             if fail_fast:
                 raise
@@ -569,10 +770,17 @@ def evaluate_youngs_modulus_structures(
                 on_step=on_step,
                 replay_sim_config=replay_sim_config,
             )
+        except SysIdReplayCancelled:
+            raise
         except Exception as exc:
             if fail_fast:
                 raise
             errors[structure_idx] = str(exc)
+
+    physical_slots_by_structure = {
+        int(idx): len(prepared.candidates) * len(prepared.direction_indices)
+        for idx, prepared in prepared_by_idx.items()
+    }
 
     prepared_items = tuple(prepared_by_idx.values())
     if prepared_items:
@@ -607,6 +815,8 @@ def evaluate_youngs_modulus_structures(
                             scoring=scoring,
                         )
                     )
+                except SysIdReplayCancelled:
+                    raise
                 except Exception as exc:
                     if fail_fast:
                         raise
@@ -632,4 +842,853 @@ def evaluate_youngs_modulus_structures(
         prepared_structures=len(prepared_by_idx),
         scoring_seconds=float(scoring_seconds),
         total_seconds=float(time.perf_counter() - total_started),
+        physical_slots_by_structure=physical_slots_by_structure,
     )
+
+
+class CmaGenerationFailure(Exception):
+    """Structure-local CMA generation failure with a machine-readable stage."""
+
+    def __init__(self, stage: str, message: str):
+        super().__init__(message)
+        self.stage = str(stage)
+        self.message = str(message)
+
+
+@dataclass(frozen=True)
+class CmaDistributionSnapshot:
+    mean_log10: tuple[float, float, float]
+    sigma: float
+    covariance: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CmaGenerationRecord:
+    generation_index: int
+    structure_idx: int
+    ask_samples_log10: tuple[tuple[float, float, float], ...]
+    candidates: tuple[YoungsModulusCandidate, ...]
+    raw_scores: tuple[YoungsModulusCandidateScore, ...]
+    penalized_fitness: tuple[float, ...]
+    penalty_metadata: tuple[dict[str, Any], ...]
+    ask_distribution: CmaDistributionSnapshot
+    post_tell_distribution: CmaDistributionSnapshot
+    wave_seconds: float | None = None
+
+
+@dataclass
+class StructureCmaState:
+    structure_idx: int
+    optimizer: Any
+    bounds: YoungsModulusCmaBounds
+    effective_seed: int
+    population_size: int
+    status: str = "active"
+    completed_generations: int = 0
+    optimizer_samples_told: int = 0
+    generations: list[CmaGenerationRecord] = field(default_factory=list)
+    failure: CmaGenerationFailure | None = None
+    stop_kind: str | None = None
+    stop_conditions: dict[str, Any] = field(default_factory=dict)
+    final_mean_log10: tuple[float, float, float] | None = None
+    best_sample_log10: tuple[float, float, float] | None = None
+    best_sample_fitness: float | None = None
+    final_evaluation: YoungsModulusEvaluation | None = None
+    gt_candidate: YoungsModulusCandidate | None = None
+    artifact_errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CmaGenerationWaveResult:
+    records: dict[int, CmaGenerationRecord]
+    failures: dict[int, CmaGenerationFailure]
+    batch_evaluation: YoungsModulusBatchEvaluation | None
+
+
+def _optimizer_mean_log10(optimizer: Any) -> tuple[float, float, float]:
+    mean = getattr(optimizer, "mean", None)
+    if mean is None and hasattr(optimizer, "result"):
+        mean = getattr(optimizer.result, "xfavorite", None)
+    if mean is None:
+        raise ValueError("optimizer does not expose a mean")
+    values = tuple(float(v) for v in mean)
+    if len(values) != 3:
+        raise ValueError(f"optimizer mean must have length 3, got {len(values)}")
+    return values  # type: ignore[return-value]
+
+
+def _optimizer_sigma(optimizer: Any) -> float:
+    return float(getattr(optimizer, "sigma", float("nan")))
+
+
+def snapshot_optimizer_distribution(optimizer: Any) -> CmaDistributionSnapshot:
+    return CmaDistributionSnapshot(
+        mean_log10=_optimizer_mean_log10(optimizer),
+        sigma=_optimizer_sigma(optimizer),
+        covariance=optimizer_covariance_diagnostics(optimizer),
+    )
+
+
+def _validate_ask_population(
+    samples: Sequence[Any],
+    *,
+    population_size: int,
+    bounds: YoungsModulusCmaBounds,
+) -> tuple[tuple[float, float, float], ...]:
+    if len(samples) != int(population_size):
+        raise CmaGenerationFailure(
+            "generation_evaluation",
+            f"ask population size {len(samples)} != {population_size}",
+        )
+    parsed: list[tuple[float, float, float]] = []
+    lower = bounds.log10_lower
+    upper = bounds.log10_upper
+    for sample in samples:
+        if len(sample) != 3:
+            raise CmaGenerationFailure(
+                "generation_evaluation",
+                f"ask sample must have length 3, got {len(sample)}",
+            )
+        values = tuple(float(v) for v in sample)
+        if not all(math.isfinite(v) for v in values):
+            raise CmaGenerationFailure(
+                "generation_evaluation",
+                "ask sample contains non-finite values",
+            )
+        for value, lo, hi in zip(values, lower, upper, strict=True):
+            if value < lo - 1e-9 or value > hi + 1e-9:
+                raise CmaGenerationFailure(
+                    "generation_evaluation",
+                    "ask sample outside phenotype bounds",
+                )
+        parsed.append(values)  # type: ignore[arg-type]
+    return tuple(parsed)
+
+
+def _require_complete_candidate_indices(
+    scores: Sequence[YoungsModulusCandidateScore],
+    *,
+    population_size: int,
+) -> None:
+    indices = [int(score.candidate_index) for score in scores]
+    expected = list(range(int(population_size)))
+    if sorted(indices) != expected or len(indices) != len(expected):
+        raise CmaGenerationFailure(
+            "generation_evaluation",
+            f"candidate indices must be exactly 0..{population_size - 1}, got {indices}",
+        )
+
+
+def generation_score_summary(
+    penalty_metadata: Sequence[Mapping[str, Any]],
+    *,
+    penalized_fitness: Sequence[float],
+) -> dict[str, Any]:
+    """Summarize eligible and penalized Sinkhorn scores for one generation.
+
+    Sample variance/std use ``ddof=1`` and are JSON ``null`` when fewer than two
+    values are available in that category.
+    """
+
+    def _stats(values: Sequence[float]) -> tuple[float | None, float | None, float | None]:
+        finite = [float(v) for v in values if math.isfinite(float(v))]
+        if not finite:
+            return None, None, None
+        mean = float(sum(finite) / len(finite))
+        if len(finite) < 2:
+            return mean, None, None
+        var = float(sum((v - mean) ** 2 for v in finite) / (len(finite) - 1))
+        return mean, var, float(math.sqrt(var))
+
+    eligible = [
+        float(meta["raw_aggregate_sinkhorn"])
+        for meta in penalty_metadata
+        if (not bool(meta.get("penalized")))
+        and meta.get("raw_aggregate_sinkhorn") is not None
+        and math.isfinite(float(meta["raw_aggregate_sinkhorn"]))
+    ]
+    eligible_mean, eligible_var, eligible_std = _stats(eligible)
+    penalized_mean, penalized_var, penalized_std = _stats(penalized_fitness)
+    n_penalized = sum(1 for meta in penalty_metadata if bool(meta.get("penalized")))
+    return {
+        "n_eligible": int(len(eligible)),
+        "n_penalized": int(n_penalized),
+        "eligible_mean": eligible_mean,
+        "eligible_variance": eligible_var,
+        "eligible_std": eligible_std,
+        "best_eligible": float(min(eligible)) if eligible else None,
+        "penalized_mean": penalized_mean,
+        "penalized_variance": penalized_var,
+        "penalized_std": penalized_std,
+    }
+
+
+def penalize_youngs_modulus_scores(
+    scores: Sequence[YoungsModulusCandidateScore],
+) -> tuple[list[float], list[dict[str, Any]]]:
+    """Replace invalid scores with worst_finite + max(1, abs(worst_finite))."""
+    ordered = sorted(scores, key=lambda score: int(score.candidate_index))
+    _require_complete_candidate_indices(ordered, population_size=len(ordered))
+    eligible = [
+        float(score.aggregate_sinkhorn)
+        for score in ordered
+        if (not score.disqualified) and math.isfinite(float(score.aggregate_sinkhorn))
+    ]
+    if not eligible:
+        raise CmaGenerationFailure(
+            "all_invalid",
+            "no eligible finite scores in generation",
+        )
+    worst_finite = max(eligible)
+    penalty = worst_finite + max(1.0, abs(worst_finite))
+    if not math.isfinite(penalty):
+        raise CmaGenerationFailure(
+            "penalty",
+            "penalty overflowed to a non-finite value",
+        )
+    fitness: list[float] = []
+    metadata: list[dict[str, Any]] = []
+    for score in ordered:
+        raw = float(score.aggregate_sinkhorn)
+        invalid = bool(score.disqualified) or (not math.isfinite(raw))
+        value = penalty if invalid else raw
+        fitness.append(float(value))
+        metadata.append(
+            {
+                "candidate_index": int(score.candidate_index),
+                "penalized": bool(invalid),
+                "raw_aggregate_sinkhorn": raw,
+                "fitness": float(value),
+                "disqualification_reason": score.disqualification_reason,
+            }
+        )
+    return fitness, metadata
+
+
+def _update_best_sample(
+    state: StructureCmaState,
+    *,
+    samples_log10: Sequence[tuple[float, float, float]],
+    fitness: Sequence[float],
+) -> None:
+    for sample, value in zip(samples_log10, fitness, strict=True):
+        if not math.isfinite(float(value)):
+            continue
+        if state.best_sample_fitness is None or float(value) < float(
+            state.best_sample_fitness
+        ):
+            state.best_sample_fitness = float(value)
+            state.best_sample_log10 = tuple(float(v) for v in sample)  # type: ignore[assignment]
+
+
+def run_cma_generation_wave(
+    active_states: Mapping[int, StructureCmaState],
+    *,
+    evaluate_fn: Callable[..., YoungsModulusBatchEvaluation],
+    generation_index: int,
+) -> CmaGenerationWaveResult:
+    """Ask all active optimizers once, evaluate fused, then tell independently."""
+    if not active_states:
+        return CmaGenerationWaveResult(records={}, failures={}, batch_evaluation=None)
+
+    ordered_indices = list(active_states.keys())
+    ask_samples: dict[int, Any] = {}
+    ask_log10: dict[int, tuple[tuple[float, float, float], ...]] = {}
+    ask_distributions: dict[int, CmaDistributionSnapshot] = {}
+    structure_candidates: list[tuple[int, tuple[YoungsModulusCandidate, ...]]] = []
+    failures: dict[int, CmaGenerationFailure] = {}
+    records: dict[int, CmaGenerationRecord] = {}
+
+    for structure_idx in ordered_indices:
+        state = active_states[structure_idx]
+        try:
+            ask_distributions[structure_idx] = snapshot_optimizer_distribution(
+                state.optimizer
+            )
+            samples = state.optimizer.ask()
+            ask_samples[structure_idx] = samples
+            parsed = _validate_ask_population(
+                samples,
+                population_size=state.population_size,
+                bounds=state.bounds,
+            )
+            ask_log10[structure_idx] = parsed
+            candidates = tuple(candidates_from_log10_e(row) for row in parsed)
+            structure_candidates.append((int(structure_idx), candidates))
+        except CmaGenerationFailure as exc:
+            state.failure = exc
+            state.status = "failed"
+            failures[structure_idx] = exc
+
+    if not structure_candidates:
+        return CmaGenerationWaveResult(
+            records={},
+            failures=failures,
+            batch_evaluation=None,
+        )
+
+    batch_started = time.perf_counter()
+    batch = evaluate_fn(structures=structure_candidates, wave_kind="generation")
+    wave_seconds = float(time.perf_counter() - batch_started)
+
+    for structure_idx, _candidates in structure_candidates:
+        state = active_states[structure_idx]
+        try:
+            if structure_idx in batch.errors:
+                raise CmaGenerationFailure(
+                    "generation_evaluation",
+                    str(batch.errors[structure_idx]),
+                )
+            if structure_idx not in batch.evaluations:
+                raise CmaGenerationFailure(
+                    "generation_evaluation",
+                    "missing evaluation for structure",
+                )
+            evaluation = batch.evaluations[structure_idx]
+            _require_complete_candidate_indices(
+                evaluation.scores,
+                population_size=state.population_size,
+            )
+            score_by_index = {
+                int(score.candidate_index): score for score in evaluation.scores
+            }
+            ordered_scores = tuple(
+                score_by_index[i] for i in range(state.population_size)
+            )
+            fitness, metadata = penalize_youngs_modulus_scores(ordered_scores)
+            samples = ask_samples[structure_idx]
+            state.optimizer.tell(samples, fitness)
+            state.completed_generations += 1
+            state.optimizer_samples_told += len(fitness)
+            _update_best_sample(
+                state,
+                samples_log10=ask_log10[structure_idx],
+                fitness=fitness,
+            )
+            record = CmaGenerationRecord(
+                generation_index=int(generation_index),
+                structure_idx=int(structure_idx),
+                ask_samples_log10=ask_log10[structure_idx],
+                candidates=tuple(
+                    score.candidate for score in ordered_scores
+                ),
+                raw_scores=ordered_scores,
+                penalized_fitness=tuple(fitness),
+                penalty_metadata=tuple(metadata),
+                ask_distribution=ask_distributions[structure_idx],
+                post_tell_distribution=snapshot_optimizer_distribution(
+                    state.optimizer
+                ),
+                wave_seconds=wave_seconds,
+            )
+            state.generations.append(record)
+            records[structure_idx] = record
+        except CmaGenerationFailure as exc:
+            state.failure = exc
+            state.status = "failed"
+            failures[structure_idx] = exc
+
+    return CmaGenerationWaveResult(
+        records=records,
+        failures=failures,
+        batch_evaluation=batch,
+    )
+
+
+@dataclass(frozen=True)
+class YoungsModulusCmaFitResult:
+    states: dict[int, StructureCmaState]
+    fitted_structure_indices: tuple[int, ...]
+    failed_structure_indices: tuple[int, ...]
+    generation_waves: int
+    final_mean_batch: YoungsModulusBatchEvaluation | None
+    timing: dict[str, Any] = field(default_factory=dict)
+
+
+def snapshot_xfavorite_log10(optimizer: Any) -> tuple[float, float, float]:
+    """Snapshot pycma's bounded phenotype mean (``result.xfavorite``)."""
+    result = getattr(optimizer, "result", None)
+    favorite = getattr(result, "xfavorite", None)
+    if favorite is None:
+        raise ValueError("optimizer.result.xfavorite is unavailable")
+    values = tuple(float(v) for v in favorite)
+    if len(values) != 3:
+        raise ValueError(f"xfavorite must have length 3, got {len(values)}")
+    return values  # type: ignore[return-value]
+
+
+def optimizer_covariance_diagnostics(optimizer: Any) -> dict[str, Any]:
+    """Report C, sigma, scaling, phenotype std, and effective unbounded covariance."""
+    C = np.asarray(optimizer.C, dtype=float)
+    if C.ndim != 2 or C.shape[0] != C.shape[1]:
+        raise ValueError(f"optimizer.C must be square 2-d, got shape {C.shape}")
+    n = int(C.shape[0])
+    sigma = float(optimizer.sigma)
+    scaling = np.asarray(optimizer.sigma_vec.scaling, dtype=float).reshape(-1)
+    if scaling.size == 1:
+        scaling = np.full(n, float(scaling.item()), dtype=float)
+    elif scaling.size != n:
+        raise ValueError(
+            f"sigma_vec.scaling length {scaling.size} does not match C dim {n}"
+        )
+    scale_diag = np.diag(scaling)
+    effective = (sigma**2) * (scale_diag @ C @ scale_diag)
+    phenotype_std = tuple(
+        float(v) for v in (sigma * scaling * np.sqrt(np.diag(C)))
+    )
+    return {
+        "C": C.tolist(),
+        "sigma": sigma,
+        "sigma_vec_scaling": scaling.tolist(),
+        "phenotype_std": phenotype_std,
+        "effective_unbounded_covariance": effective.tolist(),
+    }
+
+
+def _stop_mapping(optimizer: Any) -> dict[str, Any]:
+    stop = optimizer.stop()
+    if stop is None:
+        return {}
+    if isinstance(stop, dict):
+        return dict(stop)
+    return {"stop": stop}
+
+
+def _apply_stop_transition(
+    state: StructureCmaState,
+    *,
+    max_generations: int,
+) -> bool:
+    """Return True when the structure newly transitions to stopped_pending_final."""
+    if state.status != "active":
+        return False
+    stop_map = _stop_mapping(state.optimizer)
+    hit_cap = int(state.completed_generations) >= int(max_generations)
+    hit_pycma = bool(stop_map)
+    if not hit_cap and not hit_pycma:
+        return False
+    if hit_cap and hit_pycma:
+        state.stop_kind = "both"
+    elif hit_cap:
+        state.stop_kind = "generation_cap"
+    else:
+        state.stop_kind = "pycma"
+    state.stop_conditions = stop_map
+    state.final_mean_log10 = snapshot_xfavorite_log10(state.optimizer)
+    state.status = "stopped_pending_final_evaluation"
+    return True
+
+
+def _evaluate_final_means(
+    pending_states: Mapping[int, StructureCmaState],
+    *,
+    evaluate_fn: Callable[..., YoungsModulusBatchEvaluation],
+) -> YoungsModulusBatchEvaluation | None:
+    if not pending_states:
+        return None
+    structures: list[tuple[int, tuple[YoungsModulusCandidate, ...]]] = []
+    for structure_idx, state in pending_states.items():
+        if state.final_mean_log10 is None:
+            state.status = "failed"
+            state.failure = CmaGenerationFailure(
+                "final_mean",
+                "missing final mean snapshot",
+            )
+            continue
+        candidate = candidates_from_log10_e(state.final_mean_log10)
+        structures.append((int(structure_idx), (candidate,)))
+    if not structures:
+        return None
+    batch = evaluate_fn(structures=structures, wave_kind="final_mean")
+    for structure_idx, _cands in structures:
+        state = pending_states[structure_idx]
+        try:
+            if structure_idx in batch.errors:
+                raise CmaGenerationFailure(
+                    "final_mean",
+                    str(batch.errors[structure_idx]),
+                )
+            if structure_idx not in batch.evaluations:
+                raise CmaGenerationFailure(
+                    "final_mean",
+                    "missing final-mean evaluation",
+                )
+            evaluation = batch.evaluations[structure_idx]
+            if len(evaluation.scores) != 1 or int(evaluation.scores[0].candidate_index) != 0:
+                raise CmaGenerationFailure(
+                    "final_mean",
+                    "final-mean evaluation must use candidate index 0",
+                )
+            score = evaluation.scores[0]
+            if score.disqualified or not math.isfinite(float(score.aggregate_sinkhorn)):
+                raise CmaGenerationFailure(
+                    "final_mean",
+                    score.disqualification_reason or "final mean invalid",
+                )
+            state.final_evaluation = evaluation
+            state.status = "fitted"
+        except CmaGenerationFailure as exc:
+            state.failure = exc
+            state.status = "failed"
+    return batch
+
+
+def fit_youngs_modulus_structures(
+    states: Mapping[int, StructureCmaState],
+    *,
+    max_generations: int,
+    evaluate_fn: Callable[..., YoungsModulusBatchEvaluation],
+    on_progress: Callable[[Mapping[int, StructureCmaState]], None] | None = None,
+) -> YoungsModulusCmaFitResult:
+    """Coordinate synchronized waves until active optimizers stop, then score means."""
+    if int(max_generations) <= 0:
+        raise ValueError("max_generations must be positive")
+    ordered = {int(idx): states[idx] for idx in states}
+    for state in ordered.values():
+        _apply_stop_transition(state, max_generations=max_generations)
+    if on_progress is not None:
+        on_progress(ordered)
+
+    fit_started = time.perf_counter()
+    wave_timings: list[dict[str, Any]] = []
+    generation_waves = 0
+    while True:
+        active = {
+            idx: state
+            for idx, state in ordered.items()
+            if state.status == "active"
+        }
+        if not active:
+            break
+        wave = run_cma_generation_wave(
+            active,
+            evaluate_fn=evaluate_fn,
+            generation_index=generation_waves,
+        )
+        if wave.records:
+            seconds = float(next(iter(wave.records.values())).wave_seconds or 0.0)
+        else:
+            seconds = 0.0
+        wave_timings.append(
+            {
+                "wave_index": int(generation_waves),
+                "wave_kind": "generation",
+                "seconds": seconds,
+                "active_structure_indices": [int(idx) for idx in active],
+            }
+        )
+        generation_waves += 1
+        for idx, state in active.items():
+            if idx in wave.failures:
+                continue
+            _apply_stop_transition(state, max_generations=max_generations)
+        if on_progress is not None:
+            on_progress(ordered)
+
+    pending = {
+        idx: state
+        for idx, state in ordered.items()
+        if state.status == "stopped_pending_final_evaluation"
+    }
+    final_started = time.perf_counter()
+    final_batch = _evaluate_final_means(pending, evaluate_fn=evaluate_fn)
+    if pending:
+        wave_timings.append(
+            {
+                "wave_index": int(generation_waves),
+                "wave_kind": "final_mean",
+                "seconds": float(time.perf_counter() - final_started),
+                "active_structure_indices": [int(idx) for idx in pending],
+            }
+        )
+    if on_progress is not None:
+        on_progress(ordered)
+
+    fitted = tuple(
+        idx for idx, state in ordered.items() if state.status == "fitted"
+    )
+    failed = tuple(
+        idx for idx, state in ordered.items() if state.status == "failed"
+    )
+    return YoungsModulusCmaFitResult(
+        states=dict(ordered),
+        fitted_structure_indices=fitted,
+        failed_structure_indices=failed,
+        generation_waves=generation_waves,
+        final_mean_batch=final_batch,
+        timing={
+            "fit_seconds": float(time.perf_counter() - fit_started),
+            "waves": wave_timings,
+        },
+    )
+
+
+def to_strict_jsonable(value: Any) -> Any:
+    """Recursively convert values to strict-JSON-safe Python builtins."""
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"non-finite JSON value: {number}")
+        return number
+    if isinstance(value, (int,)) and not isinstance(value, bool):
+        return int(value)
+    if isinstance(value, np.ndarray):
+        return to_strict_jsonable(value.tolist())
+    if isinstance(value, Mapping):
+        return {str(key): to_strict_jsonable(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [to_strict_jsonable(item) for item in value]
+    if isinstance(value, YoungsModulusCandidate):
+        return {
+            "primary": to_strict_jsonable(value.primary),
+            "spur": to_strict_jsonable(value.spur),
+            "stem": to_strict_jsonable(value.stem),
+        }
+    raise TypeError(f"value is not strict-JSON serializable: {type(value)!r}")
+
+
+def _candidate_to_e_list(candidate: YoungsModulusCandidate) -> list[float]:
+    return [float(candidate.primary), float(candidate.spur), float(candidate.stem)]
+
+
+def _candidate_to_log10_list(candidate: YoungsModulusCandidate) -> list[float]:
+    return [
+        math.log10(float(candidate.primary)),
+        math.log10(float(candidate.spur)),
+        math.log10(float(candidate.stem)),
+    ]
+
+
+def evaluated_history_extrema(
+    generations: Sequence[CmaGenerationRecord],
+) -> dict[str, list[float] | None]:
+    """Component-wise extrema of samples actually submitted in CMA populations."""
+    samples = [
+        sample
+        for generation in generations
+        for sample in generation.ask_samples_log10
+    ]
+    if not samples:
+        return {
+            "min_log10_e": None,
+            "max_log10_e": None,
+            "min_e_pa": None,
+            "max_e_pa": None,
+        }
+
+    log10_samples = np.asarray(samples, dtype=float)
+    min_log10 = log10_samples.min(axis=0)
+    max_log10 = log10_samples.max(axis=0)
+    return {
+        "min_log10_e": min_log10.tolist(),
+        "max_log10_e": max_log10.tolist(),
+        "min_e_pa": np.power(10.0, min_log10).tolist(),
+        "max_e_pa": np.power(10.0, max_log10).tolist(),
+    }
+
+
+def structure_cma_report_snapshot(
+    state: StructureCmaState,
+    *,
+    base_seed: int,
+    initial_sigma_log10: float,
+    replay_candidate_evaluations: int = 0,
+    final_mean_evaluations: int = 0,
+    physical_env_slots: int = 0,
+    scalar_retries: int = 0,
+) -> dict[str, Any]:
+    """Build a per-structure CMA report fragment."""
+    bounds = state.bounds
+    try:
+        covariance = optimizer_covariance_diagnostics(state.optimizer)
+    except (AttributeError, TypeError, ValueError):
+        covariance = None
+
+    generations = []
+    for record in state.generations:
+        generations.append(
+            {
+                "generation_index": int(record.generation_index),
+                "ask_samples_log10": [list(row) for row in record.ask_samples_log10],
+                "penalized_fitness": list(record.penalized_fitness),
+                "penalty_metadata": list(record.penalty_metadata),
+                "score_summary": generation_score_summary(
+                    record.penalty_metadata,
+                    penalized_fitness=record.penalized_fitness,
+                ),
+                "wave_seconds": (
+                    None
+                    if record.wave_seconds is None
+                    else float(record.wave_seconds)
+                ),
+                "raw_scores": [
+                    {
+                        "candidate_index": int(score.candidate_index),
+                        "aggregate_sinkhorn": float(score.aggregate_sinkhorn),
+                        "disqualified": bool(score.disqualified),
+                        "disqualification_reason": score.disqualification_reason,
+                        "per_direction_sinkhorn": {
+                            str(k): float(v)
+                            for k, v in score.per_direction_sinkhorn.items()
+                        },
+                    }
+                    for score in record.raw_scores
+                ],
+                "ask_distribution": {
+                    "mean_log10": list(record.ask_distribution.mean_log10),
+                    "sigma": float(record.ask_distribution.sigma),
+                    "covariance": record.ask_distribution.covariance,
+                },
+                "post_tell_distribution": {
+                    "mean_log10": list(record.post_tell_distribution.mean_log10),
+                    "sigma": float(record.post_tell_distribution.sigma),
+                    "covariance": record.post_tell_distribution.covariance,
+                },
+            }
+        )
+
+    final_mean = None
+    if state.final_mean_log10 is not None:
+        mean_candidate = candidates_from_log10_e(state.final_mean_log10)
+        final_mean = {
+            "log10_e": list(state.final_mean_log10),
+            "e_pa": _candidate_to_e_list(mean_candidate),
+        }
+        if state.final_evaluation is not None and state.final_evaluation.scores:
+            score = state.final_evaluation.scores[0]
+            final_mean["aggregate_sinkhorn"] = float(score.aggregate_sinkhorn)
+            final_mean["per_direction_sinkhorn"] = {
+                str(k): float(v) for k, v in score.per_direction_sinkhorn.items()
+            }
+
+    best_sample = None
+    if state.best_sample_log10 is not None:
+        best_candidate = candidates_from_log10_e(state.best_sample_log10)
+        best_sample = {
+            "log10_e": list(state.best_sample_log10),
+            "e_pa": _candidate_to_e_list(best_candidate),
+            "fitness": state.best_sample_fitness,
+        }
+
+    gt = None
+    if state.gt_candidate is not None:
+        gt = {
+            "e_pa": _candidate_to_e_list(state.gt_candidate),
+            "log10_e": _candidate_to_log10_list(state.gt_candidate),
+        }
+
+    failure = None
+    if state.failure is not None:
+        failure = {
+            "stage": state.failure.stage,
+            "message": state.failure.message,
+        }
+
+    return {
+        "structure_idx": int(state.structure_idx),
+        "status": str(state.status),
+        "base_seed": int(base_seed),
+        "effective_seed": int(state.effective_seed),
+        "initial_sigma_log10": float(initial_sigma_log10),
+        "population_size": int(state.population_size),
+        "bounds": {
+            "physical_min_pa": [
+                bounds.primary.physical_min_pa,
+                bounds.spur.physical_min_pa,
+                bounds.stem.physical_min_pa,
+            ],
+            "physical_max_pa": [
+                bounds.primary.physical_max_pa,
+                bounds.spur.physical_max_pa,
+                bounds.stem.physical_max_pa,
+            ],
+            "log10_lower": list(bounds.log10_lower),
+            "log10_upper": list(bounds.log10_upper),
+            "log10_midpoint": list(bounds.log10_midpoint),
+        },
+        "completed_generations": int(state.completed_generations),
+        "optimizer_samples_told": int(state.optimizer_samples_told),
+        "replay_candidate_evaluations": int(replay_candidate_evaluations),
+        "final_mean_evaluations": int(final_mean_evaluations),
+        "physical_env_slots": int(physical_env_slots),
+        "scalar_retries": int(scalar_retries),
+        "stop_kind": state.stop_kind,
+        "stop_conditions": dict(state.stop_conditions),
+        "generations": generations,
+        "final_mean": final_mean,
+        "best_sample": best_sample,
+        "gt": gt,
+        "evaluated_history_extrema": evaluated_history_extrema(state.generations),
+        "covariance": covariance,
+        "failure": failure,
+        "artifact_errors": list(state.artifact_errors),
+    }
+
+
+def aggregate_fitted_youngs_modulus_stats(
+    *,
+    fitted_candidates: Sequence[YoungsModulusCandidate],
+    gt_candidates: Sequence[YoungsModulusCandidate],
+    requested_count: int,
+    failed_count: int,
+) -> dict[str, Any]:
+    """Component-wise cross-structure aggregate statistics for fitted means."""
+    fitted_count = len(fitted_candidates)
+    if fitted_count == 0:
+        return {
+            "requested_structures": int(requested_count),
+            "fitted_structures": 0,
+            "failed_structures": int(failed_count),
+            "mean_log10_e": None,
+            "geometric_mean_e_pa": None,
+            "mean_e_pa": None,
+            "min_e_pa": None,
+            "max_e_pa": None,
+            "mean_gt_e_pa": None,
+            "sample_cov_log10_e": None,
+            "sample_std_log10_e": None,
+        }
+
+    e_matrix = np.asarray(
+        [_candidate_to_e_list(candidate) for candidate in fitted_candidates],
+        dtype=float,
+    )
+    log_matrix = np.log10(e_matrix)
+    mean_log10 = log_matrix.mean(axis=0)
+    geometric_mean = 10.0 ** mean_log10
+    mean_e = e_matrix.mean(axis=0)
+    min_e = e_matrix.min(axis=0)
+    max_e = e_matrix.max(axis=0)
+
+    mean_gt = None
+    if gt_candidates:
+        gt_matrix = np.asarray(
+            [_candidate_to_e_list(candidate) for candidate in gt_candidates],
+            dtype=float,
+        )
+        mean_gt = gt_matrix.mean(axis=0).tolist()
+
+    if fitted_count < 2:
+        cov = None
+        std = None
+    else:
+        cov = np.cov(log_matrix, rowvar=False, ddof=1).tolist()
+        std = np.std(log_matrix, axis=0, ddof=1).tolist()
+
+    return {
+        "requested_structures": int(requested_count),
+        "fitted_structures": int(fitted_count),
+        "failed_structures": int(failed_count),
+        "mean_log10_e": mean_log10.tolist(),
+        "geometric_mean_e_pa": geometric_mean.tolist(),
+        "mean_e_pa": mean_e.tolist(),
+        "min_e_pa": min_e.tolist(),
+        "max_e_pa": max_e.tolist(),
+        "mean_gt_e_pa": mean_gt,
+        "sample_cov_log10_e": cov,
+        "sample_std_log10_e": std,
+    }

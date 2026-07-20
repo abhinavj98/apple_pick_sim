@@ -207,13 +207,13 @@ def _candidate_stiffnesses(candidate: BendStiffnessCandidate) -> dict[str, float
     }
 
 
-def _combine_transition_features(episodes: list[dict]) -> dict[tuple[float, float, float], np.ndarray]:
+def _combine_transition_features(episodes: list[dict]) -> dict[int, np.ndarray]:
     from apple_pick_sim.system_id.mmd_features import build_transition_features_by_direction
 
-    parts: dict[tuple[float, float, float], list[np.ndarray]] = {}
+    parts: dict[int, list[np.ndarray]] = {}
     for arrays in episodes:
         for direction, features in build_transition_features_by_direction(arrays).items():
-            parts.setdefault(direction, []).append(features)
+            parts.setdefault(int(direction), []).append(features)
     return {
         direction: np.concatenate(chunks, axis=0)
         for direction, chunks in sorted(parts.items())
@@ -221,7 +221,7 @@ def _combine_transition_features(episodes: list[dict]) -> dict[tuple[float, floa
     }
 
 
-def _prepare_gt_mmd_context(recorded_episodes: list[dict]) -> dict[tuple[float, float, float], MmdDirectionContext]:
+def _prepare_gt_mmd_context(recorded_episodes: list[dict]) -> dict[int, MmdDirectionContext]:
     from apple_pick_sim.system_id.mmd import (
         apply_normalization,
         fit_gt_normalization,
@@ -232,12 +232,12 @@ def _prepare_gt_mmd_context(recorded_episodes: list[dict]) -> dict[tuple[float, 
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
-    context: dict[tuple[float, float, float], MmdDirectionContext] = {}
+    context: dict[int, MmdDirectionContext] = {}
     for direction, gt_features in gt_by_direction.items():
         stats = fit_gt_normalization(gt_features)
         gt_norm = apply_normalization(gt_features, stats)
         bandwidth = rbf_bandwidth_median(gt_norm)
-        context[direction] = MmdDirectionContext(
+        context[int(direction)] = MmdDirectionContext(
             gt_norm=gt_norm,
             stats=stats,
             bandwidth=bandwidth,
@@ -249,14 +249,14 @@ def _compute_candidate_mmd_result(
     *,
     candidate_index: int,
     candidate: BendStiffnessCandidate,
-    gt_context: dict[tuple[float, float, float], MmdDirectionContext],
+    gt_context: dict[int, MmdDirectionContext],
     replay_observations: list[dict],
 ):
     from apple_pick_sim.system_id.mmd import apply_normalization, biased_mmd2
     from apple_pick_sim.system_id.mmd_results import MmdCandidateResult
 
     candidate_by_direction = _combine_transition_features(replay_observations)
-    per_direction: dict[tuple[float, float, float], float] = {}
+    per_direction: dict[int, float] = {}
     for direction, context in gt_context.items():
         candidate_features = candidate_by_direction.get(direction)
         if candidate_features is None:
@@ -268,7 +268,7 @@ def _compute_candidate_mmd_result(
                 f"{direction}: gt={context.gt_norm.shape[1]} candidate={candidate_features.shape[1]}"
             )
         candidate_norm = apply_normalization(candidate_features, context.stats)
-        per_direction[direction] = biased_mmd2(
+        per_direction[int(direction)] = biased_mmd2(
             context.gt_norm,
             candidate_norm,
             context.bandwidth,
@@ -290,7 +290,7 @@ def _print_mmd_ranking(results: list) -> None:
     print("\nMMD candidate ranking (lower is better):")
     for rank, result in enumerate(rank_results(results), start=1):
         direction_bits = " ".join(
-            f"d=({direction[0]:+.3f},{direction[1]:+.3f},{direction[2]:+.3f})={loss:.6g}"
+            f"d={int(direction)}={loss:.6g}"
             for direction, loss in sorted(result.per_direction_mmd2.items())
         )
         print(

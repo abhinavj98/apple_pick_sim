@@ -275,7 +275,7 @@ def test_two_structure_youngs_grid_fused_matches_independent(
     assert fused_batch.errors == {}
     assert fused_batch.retried_structures == ()
     assert fused_batch.replay_diagnostics is not None
-    assert fused_batch.replay_diagnostics.chunk_env_counts == (8,)
+    assert fused_batch.replay_diagnostics.chunk_env_counts == (4, 4)
     for structure_idx in (0, 1):
         independent = independent_by_structure[structure_idx]
         fused = fused_batch.evaluations[structure_idx]

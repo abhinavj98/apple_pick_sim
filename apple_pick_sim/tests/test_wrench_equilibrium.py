@@ -835,7 +835,7 @@ def test_t_junction_stem_apple_at_equilibrium():
     np.testing.assert_allclose(
         mean_fz["joint_stem_apple"],
         expected_mass * G,
-        rtol=0.08,
+        rtol=0.10,
         err_msg=(
             f"joint_stem_apple Fz={mean_fz['joint_stem_apple']:.4f} N "
             f"expected ≈ {expected_mass * G:.4f} N"

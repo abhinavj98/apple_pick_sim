@@ -8,7 +8,7 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-07-17 (V.5.2 prerequisites implemented; CMA-ES next — see `docs/ROADMAP.md`) |
+| **Last reviewed** | 2026-07-17 (V.5.2 CMA-ES Done — see `docs/ROADMAP.md`) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
@@ -72,10 +72,10 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | `apple_pick_sim/examples/` | One runnable script per capability; `example_batched_heterogeneous_coupled_sim.py` is the canonical batched heterogeneous example |
 | `apple_pick_sim/fixtures/` | `fruiting_system_ranges_*.json` (geometry/material DR; variance proxy may include optional top-level `sim_build` for VIC + joint overrides), `digital_twin_fixture_catalog.json`, `digital_twin_obs_straight_rod_initial.json` |
 | `apple_pick_gym/envs/` | Legacy single-world: `apple_pick_base_env.py` → `apple_pick_coupled_env.py` → `apple_pick_vic_env.py` → `apple_pick_sysid_env.py`, `apple_pick_replay_env.py` |
-| `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): batched envs/collection/grid, `batched_sysid_cmaes.py` (Young's candidates and scoring), `batched_sysid_multi_replay.py` (stable fused scheduling), stability/soft-disable/exclusion, `sysid_gate_report.py`, `youngs_modulus_gate_report.py` |
-| `apple_pick_gym/batched_examples/` | Parallel collect/grid examples plus `example_youngs_modulus_sys_id.py` (dataset-driven fused E-grid); future CMA-ES uses a separate entry point |
+| `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): batched envs/collection/grid, `batched_sysid_cmaes.py` (Young's candidates, scoring, CMA-ES orchestration), `batched_sysid_multi_replay.py` (stable fused scheduling), stability/soft-disable/exclusion, `sysid_gate_report.py`, `youngs_modulus_gate_report.py` (ranking), `youngs_modulus_cmaes_gate_report.py` (CMA integrity) |
+| `apple_pick_gym/batched_examples/` | Parallel collect/grid examples plus `example_youngs_modulus_sys_id.py` (dataset-driven fused E-grid) and `example_youngs_modulus_cmaes.py` (separate CMA-ES fit) |
 | `apple_pick_gym/grid_viz_*.py` | Plotly / table / report helpers for batched stiffness-grid ranking (incl. paired-hold woody MSE) |
-| `scripts/` | Staged sys-ID helpers: `collect_and_rank_sysid_gt.sh`, `gate_sysid_gt_sinkhorn.sh`, and `gate_youngs_modulus_sysid.sh` (multi-seed strict-majority gate) |
+| `scripts/` | Staged sys-ID helpers: `collect_and_rank_sysid_gt.sh`, `gate_sysid_gt_sinkhorn.sh`, `gate_youngs_modulus_sysid.sh` (multi-seed ranking gate), `gate_youngs_modulus_cmaes.sh` (multi-seed CMA integrity gate) |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |
 | `docs/` | This documentation set (below). `docs/specs/` holds dated point-in-time design notes (historical once stamped Implemented) |
 
@@ -112,7 +112,8 @@ Organized by question, not by filename — each doc listed once, under its prima
 ### "How does system identification / sys-ID work?"
 
 - `docs/system_identification.md` — the full M3 protocol (excitation trajectories and CMA-ES direction) **plus an implementation-notes appendix** for the shipped §2.1 quasi-static stepped mapping (trajectory phases, Fibonacci hemisphere, code map, tests).
-- **`docs/youngs-modulus-sysid.md`** — canonical implemented E-grid, complete scoring, fused replay, report, gate, and verification contract; also defines the handoff to a separate CMA-ES command.
+- **`docs/youngs-modulus-sysid.md`** — canonical implemented E-grid, complete scoring, fused replay, ranking report/gate, and verification contract; handoff pointer to the separate CMA-ES command.
+- **`docs/youngs-modulus-cmaes-implementation.md`** — CMA-ES loop behavior, counters, reports, gate, tests, and uv commands (V.5.2 verified).
 - `docs/sysid-transition-features.md` — **MMD/Wasserstein state vector and transition-bag layout** (\(s\), \([s,\Delta s]\), median/hold one-hots, pooling, gate flags).
 - `docs/sysid-trajectory-storage.md` — legacy single-env Parquet schema, collection/replay commands, dataset dashboard.
 - `docs/batched-sysid-dataset.md` — **batched_sysid_v1** layout for parallel collection (`example_batched_collect_sysid_data.py`).
@@ -130,7 +131,7 @@ Organized by question, not by filename — each doc listed once, under its prima
 | Gap | Detail | Where documented |
 | --- | ------ | ----------------- |
 | Loss / GT scoring hardening (V.5.1) | **Done.** Soft-disable + exclude-fraction collect, transition features, median/hold-id/pooled Sinkhorn. GT should rank first on healthy samples; bad-sampling misses remain diagnostic and the operational gate uses a strict majority. | `docs/ROADMAP.md`, `docs/sysid-transition-features.md`, `docs/system_identification.md` |
-| CMA-ES calibration (V.5.2) | **Next** — separate pycma loop over primary/spur/stem log10-E using fused pooled-Sinkhorn evaluation | `docs/ROADMAP.md`, `docs/system_identification.md` §4, active dated design |
+| CMA-ES calibration (V.5.2) | Done — separate pycma loop over primary/spur/stem log10-E using fused pooled-Sinkhorn evaluation | `docs/ROADMAP.md`, `docs/system_identification.md` §4, `docs/youngs-modulus-cmaes-implementation.md`, design spec |
 | Fused Young's grid acceptance | Implementation present; clean independent/fused timing, low-cap parity, build count, and peak-memory evidence pending | `docs/youngs-modulus-sysid.md`, `docs/ROADMAP.md` |
 | Batched digital-twin fidelity (V.4.2.1) | Done as shipped helpers + `--infer-params`; infer-only fidelity floor optional cleanup (not Current focus) | `docs/ROADMAP.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/digital-twin.md` |
 | `real_world_proxy.json` topology | Nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`. The two fixtures for the same physical proxy build different topologies | `docs/real-world-proxy.md` |

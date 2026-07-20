@@ -89,15 +89,15 @@ apple-speed check (see below).
 ```python
 @dataclass(frozen=True)
 class StabilityThresholds:
-    max_force_n: float = 50.0        # reuse DEFAULT_STEM_FORCE_CAP_N (scene.py)
-    max_torque_nm: float = 20.0      # reuse DEFAULT_STEM_TORQUE_CAP_NM (scene.py)
+    max_force_n: float = 100.0       # reuse DEFAULT_STEM_FORCE_CAP_N (scene.py)
+    max_torque_nm: float = 40.0      # reuse DEFAULT_STEM_TORQUE_CAP_NM (scene.py)
     max_tcp_speed_mps: float = 5.0
     max_apple_speed_mps: float = 5.0
 ```
 
 Defaults intentionally reuse the existing wrench-cap constants from
-`apple_pick_sim/coupled_fruiting/scene.py` (`DEFAULT_STEM_FORCE_CAP_N = 50.0`,
-`DEFAULT_STEM_TORQUE_CAP_NM = 20.0`) so "force/torque at cap" and "monitor-flagged unstable"
+`apple_pick_sim/coupled_fruiting/scene.py` (`DEFAULT_STEM_FORCE_CAP_N = 100.0`,
+`DEFAULT_STEM_TORQUE_CAP_NM = 40.0`) so "force/torque at cap" and "monitor-flagged unstable"
 refer to the same physical limit already enforced elsewhere in the sim.
 
 **Meaning of `stable` / `report.unstable`:** blow-up / unsafe (NaN/Inf, force/torque caps,
@@ -257,7 +257,7 @@ synthetic-tensor pattern used in `apple_pick_sim/tests/test_batched_hold_quasi_s
    `known_obs_keys={"ft_wrist", "tcp_velocity"}` → `pytest.raises(ValueError, match="phase")`,
    and the error message names the plugin's `name`.
 5. **Threshold overrides:** `StabilityThresholds(max_force_n=10.0)` flags a force magnitude
-   (e.g. 15 N) that would pass under the default `50.0` threshold.
+   (e.g. 15 N) that would pass under the default `100.0` threshold.
 6. **Apple-speed memory check:** first `check()` call does not raise/flag due to missing
    previous-position state; second call with a large `apple_pos` jump does flag
    `"apple_speed_exceeded"`.

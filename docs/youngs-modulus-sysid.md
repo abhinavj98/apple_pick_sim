@@ -6,7 +6,7 @@
 | --- | --- |
 | **Last reviewed** | 2026-07-17 |
 | **Roadmap slice** | V.5.2 |
-| **Status** | Grid, complete scoring, fused replay, and gate implemented; CMA-ES pending |
+| **Status** | Grid, complete scoring, fused replay, ranking gate, and separate CMA-ES CLI/gate verified (V.5.2 Done) |
 
 This is the canonical implementation reference for dataset-driven
 Young's-modulus system identification. `docs/system_identification.md` owns the
@@ -28,9 +28,12 @@ candidates rank by ascending pooled Sinkhorn fitness, with local candidate
 index as the deterministic tie-breaker. The command writes `ranking.json`,
 one overlay per structure, and optional candidate replay datasets.
 
-The grid remains a diagnostic and acceptance tool. The planned CMA-ES loop is
-a separate entry point that will consume the same candidate evaluator; it does
-not replace this command.
+The grid remains a diagnostic and acceptance tool. The separate CMA-ES loop is
+`example_youngs_modulus_cmaes.py`; it reuses the same candidate evaluator /
+fused replay path and does not replace this command. See
+`docs/youngs-modulus-cmaes-implementation.md` and
+`docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`.
+V.5.2 verification (Task 8) passed 2026-07-17.
 
 ## Complete Sinkhorn scoring
 
@@ -108,6 +111,10 @@ for a strict majority (at least three of five by default). The overall gate
 passes only when every seed passes. This operational gate intentionally does
 not require every healthy structure to rank GT first. Logs and strict-JSON
 summaries are preserved on failure.
+
+The separate CMA integrity gate (`scripts/gate_youngs_modulus_cmaes.sh`) does
+not replace this ranking gate and does not impose a GT-error threshold. See
+`docs/youngs-modulus-cmaes-implementation.md`.
 
 ## Code map
 

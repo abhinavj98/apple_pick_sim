@@ -129,13 +129,28 @@ def test_trajectory_debug_formatters(monkeypatch):
 
 
 def test_sim_config_stays_in_module_constants():
+    from apple_pick_sim.fruiting_system import default_ranges_fixture_path, load_ranges
+
     module = _load_example_module()
 
     cfg = module.build_sim_config(num_envs=4)
+    ranges = load_ranges(default_ranges_fixture_path())
+    (
+        vic_gains,
+        joint_angular_kd,
+        joint_linear_kd,
+        joint_angular_kp,
+        joint_linear_kp,
+    ) = module._resolve_sim_build_knobs(ranges)
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=4)
     assert cfg == dataclasses.replace(
         gym_cfg,
-        runtime=dataclasses.replace(gym_cfg.runtime, control_hz=module.CONTROL_HZ),
+        runtime=dataclasses.replace(
+            gym_cfg.runtime,
+            control_hz=module.CONTROL_HZ,
+            sub_dt=module.SUB_DT,
+            env_spacing=module.ENV_SPACING,
+        ),
         scene=dataclasses.replace(
             gym_cfg.scene,
             settle_substeps=module.SETTLE_SUBSTEPS,
@@ -144,14 +159,14 @@ def test_sim_config_stays_in_module_constants():
         ),
         controller=dataclasses.replace(
             gym_cfg.controller,
-            vic_gains=module.VIC_GAINS,
+            vic_gains=vic_gains,
         ),
         fruiting_system=dataclasses.replace(
             gym_cfg.fruiting_system,
-            joint_angular_kd_overrides=module.JOINT_ANGULAR_KD_OVERRIDES,
-            joint_linear_kd_overrides=module.JOINT_LINEAR_KD_OVERRIDES,
-            joint_angular_kp_overrides=module.JOINT_ANGULAR_KP_OVERRIDES,
-            joint_linear_kp_overrides=module.JOINT_LINEAR_KP_OVERRIDES,
+            joint_angular_kd_overrides=joint_angular_kd,
+            joint_linear_kd_overrides=joint_linear_kd,
+            joint_angular_kp_overrides=joint_angular_kp,
+            joint_linear_kp_overrides=joint_linear_kp,
         ),
     )
 

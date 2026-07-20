@@ -33,6 +33,14 @@ class ReplayFusionIncompatible(ValueError):
     """Valid replay requests cannot share one heterogeneous Newton model."""
 
 
+class SysIdReplayCancelled(RuntimeError):
+    """Replay aborted by an external cancel signal (e.g. viewer closed).
+
+    Must propagate through fused and scalar replay paths without being treated
+    as a structure-local failure or triggering scalar retries.
+    """
+
+
 class SysIdReplayCandidate(Protocol):
     def apply_to(self, base: FruitingSystemParams) -> FruitingSystemParams: ...
 
@@ -272,27 +280,39 @@ def chunk_replay_candidate_blocks(
     *,
     max_envs_per_batch: int,
 ) -> tuple[tuple[ReplayCandidateBlock, ...], ...]:
-    """Greedily chunk complete candidate-direction blocks without splitting."""
+    """Greedily chunk complete candidate-direction blocks without splitting.
+
+    Physical chunks never mix distinct ``structure_idx`` values. Cross-structure
+    heterogeneous batches can collapse per-direction trajectories, so even an
+    unlimited ``max_envs_per_batch`` keeps one structure per chunk.
+    """
     items = tuple(blocks)
     if not items:
         return ()
     limit = int(max_envs_per_batch)
-    if limit <= 0:
-        return (items,)
-    if any(len(block.slots) > limit for block in items):
+    if any(limit > 0 and len(block.slots) > limit for block in items):
         raise ValueError(
             f"max_envs_per_batch ({limit}) must fit one candidate direction block"
         )
     chunks: list[tuple[ReplayCandidateBlock, ...]] = []
     current: list[ReplayCandidateBlock] = []
     current_envs = 0
+    current_structure: int | None = None
     for block in items:
-        if current and current_envs + len(block.slots) > limit:
+        block_envs = len(block.slots)
+        structure_idx = int(block.structure_idx)
+        structure_break = current_structure is not None and structure_idx != current_structure
+        capacity_break = (
+            limit > 0 and current and current_envs + block_envs > limit
+        )
+        if structure_break or capacity_break:
             chunks.append(tuple(current))
             current = []
             current_envs = 0
+            current_structure = None
         current.append(block)
-        current_envs += len(block.slots)
+        current_envs += block_envs
+        current_structure = structure_idx
     if current:
         chunks.append(tuple(current))
     return tuple(chunks)
@@ -439,6 +459,8 @@ def replay_multi_structure_candidate_blocks(
                 replay_by_key[slot.key] = collectors.to_arrays(env_idx)
             _synchronize_device()
             replay_seconds += time.perf_counter() - replay_started
+        except SysIdReplayCancelled:
+            raise
         except Exception as exc:
             if fail_fast:
                 raise

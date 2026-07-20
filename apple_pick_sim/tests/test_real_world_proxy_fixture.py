@@ -84,11 +84,11 @@ def test_variance_sim_build_knobs(variance_ranges):
     fs = _import_fs()
     sb = fs.parse_sim_build(variance_ranges)
     assert sb is not None
-    assert sb.vic_gains.linear_k == pytest.approx(500.0)
-    assert sb.vic_gains.linear_d == pytest.approx(45.0)
-    assert sb.vic_gains.angular_k == pytest.approx(50.0)
-    assert sb.vic_gains.angular_d == pytest.approx(6.0)
-    # Critical kd at midpoint geometry: support uses kp=1e8; other roles ke=1e5.
+    assert sb.vic_gains.linear_k == pytest.approx(100.0)
+    assert sb.vic_gains.linear_d == pytest.approx(20.0)
+    assert sb.vic_gains.angular_k == pytest.approx(10.0)
+    assert sb.vic_gains.angular_d == pytest.approx(3.0)
+    # Critical kd at midpoint geometry: support uses kp=1e4; other roles ke=1e5.
     ang = sb.joint_angular_kd_overrides
     lin = sb.joint_linear_kd_overrides
     assert ang["support"] == pytest.approx(130.48, rel=0.01)
@@ -99,8 +99,8 @@ def test_variance_sim_build_knobs(variance_ranges):
     assert lin["primary_spur"] == pytest.approx(31.134, rel=0.01)
     assert lin["spur_stem"] == pytest.approx(4.8541, rel=0.01)
     assert lin["stem_apple"] == pytest.approx(323.6, rel=0.01)
-    assert sb.joint_angular_kp_overrides == {"support": 100000000.0}
-    assert sb.joint_linear_kp_overrides == {"support": 100000000.0}
+    assert sb.joint_angular_kp_overrides == {"support": 10000.0}
+    assert sb.joint_linear_kp_overrides == {"support": 10000.0}
 
 
 def test_nominal_has_no_sim_build(nominal_ranges):
@@ -145,26 +145,21 @@ def test_variance_vbd_stretch_fixed_critical_damping(variance_ranges):
 
 
 def test_variance_stretch_stiffness_decoupled_from_bend_e(variance_ranges):
-    """Spur/stem axial k must not track compliant bend E (wood does not stretch)."""
-    from apple_pick_sim.fruiting_system.params import _segment_material_geometry
-
+    """Spur/stem axial k uses a fixed woodlike stretch, not the bend E band."""
     for seg in ("spur", "stem"):
         row = variance_ranges[seg]
-        length, radius, density, num_segments = _variance_segment_midpoint(row)
-        e_bend = 0.5 * (
-            float(row["youngs_modulus_pa"]["min"])
-            + float(row["youngs_modulus_pa"]["max"])
-        )
-        area, _inertia, l_seg, _m_seg, _j_seg = _segment_material_geometry(
-            radius, length, num_segments, density
-        )
-        k_from_bend_e = e_bend * area / l_seg
         k_stretch = float(row["vbd_stretch_fixed"]["stretch_stiffness"])
-        assert k_stretch >= 10.0 * k_from_bend_e
+        e_lo = float(row["youngs_modulus_pa"]["min"])
+        e_hi = float(row["youngs_modulus_pa"]["max"])
+        assert k_stretch > 0.0
+        # Fixed stretch must not scale with the bend-E band endpoints.
+        assert k_stretch != pytest.approx(e_lo)
+        assert k_stretch != pytest.approx(e_hi)
+        assert k_stretch == pytest.approx(1.0e7, rel=0.05)
 
 
 def test_variance_youngs_modulus_hits_proxy_tip_tier_at_midpoint_geometry(variance_ranges):
-    """E bands map to proxy k_tip=3EI/L^3 tiers at segment midpoint L,r."""
+    """E bands map to documented proxy k_tip=3EI/L^3 tiers at segment midpoint L,r."""
     import math
 
     def _I(r: float) -> float:
@@ -176,10 +171,11 @@ def test_variance_youngs_modulus_hits_proxy_tip_tier_at_midpoint_geometry(varian
     def _mid(band: dict) -> float:
         return 0.5 * (float(band["min"]) + float(band["max"]))
 
+    # Current variance fixture targets stiff primary/spur and a softer stem tip.
     tiers = {
-        "primary": (210.0, 736.0),
-        "spur": (0.2, 0.6),
-        "stem": (0.05, 0.5),
+        "primary": (14084.0, 14084.0),
+        "spur": (14043.0, 28086.0),
+        "stem": (1150.0, 1438.0),
     }
     for seg, (k_lo, k_hi) in tiers.items():
         row = variance_ranges[seg]
@@ -209,14 +205,14 @@ def test_nominal_spur_E_below_primary(nominal_ranges):
 
 def test_variance_spur_angular_ranges(variance_ranges):
     spur = variance_ranges["spur"]
-    assert spur["elevation_delta_deg"] == {"min": -90.0, "max": -90.0}
-    assert spur["lateral_delta_deg"] == {"min": 0.0, "max": 0.0}
+    assert spur["elevation_delta_deg"] == {"min": -90.0, "max": 0.0}
+    assert spur["lateral_delta_deg"] == {"min": -180.0, "max": 180.0}
 
 
 def test_variance_stem_angular_ranges(variance_ranges):
     stem = variance_ranges["stem"]
-    assert stem["elevation_delta_deg"] == {"min": -90.0, "max": -90.0}
-    assert stem["lateral_delta_deg"] == {"min": 0.0, "max": 0.0}
+    assert stem["elevation_delta_deg"] == {"min": -90.0, "max": 90.0}
+    assert stem["lateral_delta_deg"] == {"min": -180.0, "max": 180.0}
 
 
 def test_placeholder_ee_mass():

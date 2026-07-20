@@ -45,5 +45,6 @@ scripts/**
 !scripts/collect_and_rank_sysid_gt.sh
 !scripts/gate_sysid_gt_sinkhorn.sh
 !scripts/gate_youngs_modulus_sysid.sh
+!scripts/gate_youngs_modulus_cmaes.sh
 sweep_runs
 tmp*/

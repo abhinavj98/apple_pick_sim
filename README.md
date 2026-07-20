@@ -379,23 +379,40 @@ uv run --env-file pytest.env python \
   --output tmp/youngs_grid_rank_smoke \
   --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
   --include-gt-candidate --max-candidates 8 --overwrite
+
+# Separate CMA-ES fit (same dataset layout; writes cmaes_report.json + overlays).
+# See docs/youngs-modulus-cmaes-implementation.md. Verification/CUDA acceptance
+# remain open in docs/ROADMAP.md — do not treat V.5.2 as Done until Task 8.
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --viewer null --dataset tmp/youngs_gt_smoke --output tmp/youngs_cmaes_smoke \
+  --max-generations 10 --cma-seed 0 --overwrite
+
 uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_sim/tests/test_batched_heterogeneous_build.py \
   apple_pick_sim/tests/test_batched_digital_twin_init.py \
   apple_pick_sim/tests/test_wasserstein.py \
   apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
+  apple_pick_gym/tests/test_batched_sysid_cmaes_loop.py \
   apple_pick_gym/tests/test_batched_sysid_multi_replay.py \
   apple_pick_gym/tests/test_batched_sysid_youngs_grid.py \
   apple_pick_gym/tests/test_batched_sysid_mmd_grid_helpers.py \
   apple_pick_gym/tests/test_batched_replay_export.py \
   apple_pick_gym/tests/test_youngs_modulus_overlay_viz.py \
   apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
+  apple_pick_gym/tests/test_example_youngs_modulus_cmaes_cli.py \
   apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py \
   apple_pick_gym/tests/test_youngs_modulus_gate_report.py \
-  apple_pick_gym/tests/test_gate_youngs_modulus_sysid_script.py -q
+  apple_pick_gym/tests/test_gate_youngs_modulus_sysid_script.py \
+  apple_pick_gym/tests/test_youngs_modulus_cmaes_gate_report.py \
+  apple_pick_gym/tests/test_gate_youngs_modulus_cmaes_script.py -q
 
-# Full multi-seed gate (expensive; 3 seeds x 5 structures x 5 directions by default)
+# Full multi-seed ranking gate (expensive; 3 seeds x 5 structures x 5 directions by default)
 bash scripts/gate_youngs_modulus_sysid.sh
+# Full multi-seed CMA integrity gate (expensive; same default collect size; no GT-error threshold)
+bash scripts/gate_youngs_modulus_cmaes.sh
+# CUDA acceptance after full build (Task 8; unexecuted until run): collect 5x5,
+# fit CMA-ES, report optimized vs stored true E, evaluated-history min/max, and
+# final covariance — see docs/youngs-modulus-cmaes-implementation.md.
 
 # Legacy single-env bend-stiffness / MMD grid (legacy Parquet layout only)
 uv run python apple_pick_gym/examples/run_system_identification.py \

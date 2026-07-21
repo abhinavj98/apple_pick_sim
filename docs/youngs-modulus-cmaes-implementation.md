@@ -4,15 +4,16 @@
 
 | Field | Value |
 | --- | --- |
-| **Last reviewed** | 2026-07-17 |
+| **Last reviewed** | 2026-07-21 |
 | **Roadmap slice** | V.5.2 |
-| **Status** | Implementation verified complete (Task 8 focused/full suites + CUDA 5×5 acceptance, 2026-07-17) |
+| **Status** | Implementation verified complete (Task 8 focused/full suites + CUDA 5×5 acceptance, 2026-07-17); docs aligned to `CMA_SEARCH_PARAMS` search-box defaults |
 | **Design** | `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md` |
 | **Grid contract** | Unchanged — `docs/youngs-modulus-sysid.md` |
 
-Human-readable notes for the separate bounded pycma loop. The Cartesian-grid
-CLI, ranking report, and ranking gate remain the diagnostic/acceptance path
-documented in `docs/youngs-modulus-sysid.md`.
+Human-readable notes for the separate pycma loop (default search box: start
+mean ± 2 log10 decades). The Cartesian-grid CLI, ranking report, and ranking
+gate remain the diagnostic/acceptance path documented in
+`docs/youngs-modulus-sysid.md`.
 
 ## Behavior summary
 
@@ -32,16 +33,30 @@ logical fused wave (one candidate per structure). That measured final mean is
 the fitted estimate. Best sampled candidates and covariance diagnostics remain
 reporting-only.
 
-Stored GT E is never used for initialization or fitness. Bounds and replay
-`sim_build` knobs come from one resolved ranges fixture (`--ranges`, else
-manifest `collection.ranges_path`). Relative paths resolve from the process
-CWD; the report stores the absolute path. Missing ranges fail before optimizer
-construction — there is no unrelated default-fixture fallback.
+Stored GT E is never used for initialization or fitness. The ranges fixture
+(`--ranges`, else manifest `collection.ranges_path`) remains required for
+replay `sim_build` knobs and for optional `"bounds_midpoint"` init. Relative
+paths resolve from the process CWD; the report stores the absolute path.
+Missing ranges fail before optimizer construction — there is no unrelated
+default-fixture fallback. The fixture `youngs_modulus_pa` ε-bands are **not**
+the default CMA search box (the variance proxy primary band is too narrow).
 
-Default controls: `--max-generations=10`, `--initial-sigma-log10=1.0`,
-`--cma-seed=0`, `--multi-structure-batch` on. Before bound truncation, sigma
-`1.0` makes roughly two decades (`mean/100` … `mean*100`) a two-standard-
-deviation exploration range; fixture bounds remain authoritative.
+Default controls live in ``CMA_SEARCH_PARAMS`` inside
+``example_youngs_modulus_cmaes.py``:
+
+| Knob | Default |
+| --- | --- |
+| `initial_mean_log10` | explicit variance-fixture midpoint vector (not GT; `"bounds_midpoint"` still available) |
+| `initial_sigma_log10` | `2.0` |
+| `population_size` | `15` |
+| `max_generations` | `10` |
+| `cma_seed` | `0` (gate overrides via `--cma-seed`) |
+| `search_bounds_log10` | start mean ± 2 log10 decades (`None` = unbounded) |
+
+``--multi-structure-batch`` remains on by default. Before search-box truncation,
+sigma `2.0` makes two standard deviations span roughly four decades; the
+default ±2-decade search box truncates that exploration. Structure `bounds` in
+`cmaes_report.json` are the active **search** box (JSON `null` when unbounded).
 
 ## Log-space math and covariance terminology
 
@@ -49,6 +64,9 @@ deviation exploration range; fixture bounds remain authoritative.
 - Invalid/disqualified samples in a generation with at least one finite eligible
   score receive penalty `worst_finite + max(1, abs(worst_finite))`. Overflow or
   an all-invalid generation fails that structure without `tell()`.
+- Per-generation `ask_distribution` / `post_tell_distribution` `mean_log10` is
+  the bounded phenotype mean (`es.result.xfavorite`), not the internal genotype
+  `es.mean` (which BoundTransform may leave slightly outside the physical box).
 - Per-structure covariance in `cmaes_report.json` reports pycma `C`, global
   `sigma`, `sigma_vec.scaling`, phenotype-coordinate standard deviations, and
   effective unbounded optimizer-coordinate covariance
@@ -140,13 +158,15 @@ CMA fit (from repo root):
 uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --dataset /tmp/batched_sysid_dataset \
   --output /tmp/youngs_cmaes \
-  --max-generations 10 --cma-seed 0 --viewer null --overwrite
+  --viewer null --overwrite
 ```
 
-CMA-specific controls: `--ranges`, `--max-generations`, optional
-`--population-size`, `--initial-sigma-log10`, `--cma-seed`. Grid-only controls
-(`--log10-e-*`, `--include-gt-candidate`, `--max-candidates`, `--export-replays`,
-`--max-overlay-candidates`) are absent.
+Edit ``CMA_SEARCH_PARAMS`` in ``example_youngs_modulus_cmaes.py`` for mean,
+sigma, population size, max generations, bounds, and default CMA seed.
+``--cma-seed`` overrides ``CMA_SEARCH_PARAMS["cma_seed"]``. CLI still accepts
+``--ranges`` plus shared dataset/replay/viewer knobs.
+Grid-only controls (`--log10-e-*`, `--include-gt-candidate`, `--max-candidates`,
+`--export-replays`, `--max-overlay-candidates`) are absent.
 
 Integrity gate (no GT-error threshold; defaults seeds `0,1,2`, five structures,
 five directions):
@@ -156,14 +176,14 @@ bash scripts/gate_youngs_modulus_cmaes.sh
 ```
 
 Optional env overrides include `SEEDS`, `NUM_STRUCTURES`, `NUM_DIRECTIONS`,
-`MAX_GENERATIONS`, `INITIAL_SIGMA_LOG10`, `POPULATION_SIZE`, `RANGES`.
-
+`RANGES`. The gate passes ``--cma-seed "${SEED}"`` so each SEEDS job varies both
+collect and optimizer RNG; other CMA knobs stay in `CMA_SEARCH_PARAMS`.
 ## Tests
 
 | Module | Catches |
 | --- | --- |
 | `test_batched_sysid_cmaes_candidate.py` | Bounds, sigma, dedicated RNG/`seed=np.nan`, interleaved determinism, pycma import |
-| `test_batched_sysid_cmaes_loop.py` | Wave routing, penalties, independent stop, `xfavorite`, covariance, report extrema/aggregates |
+| `test_batched_sysid_cmaes_loop.py` | Wave routing, penalties, independent stop, fit + generation-report `xfavorite` (not genotype `mean`), covariance, report extrema/aggregates |
 | `test_batched_sysid_multi_replay.py` | Fused slot planning, structure-homogeneous chunks, routing |
 | `test_example_youngs_modulus_cmaes_cli.py` | Parser contract, ranges resolution, atomic report, continue/fail-fast, overlay isolation, exact `physical_env_slots` attribution |
 | `test_youngs_modulus_cmaes_gate_report.py` | Integrity evidence, no GT threshold, strict JSON finalize |

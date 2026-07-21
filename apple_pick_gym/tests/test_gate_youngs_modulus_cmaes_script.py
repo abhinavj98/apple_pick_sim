@@ -28,8 +28,8 @@ def test_script_uses_strict_mode_repo_root_and_expected_defaults() -> None:
     assert 'RETRY_SLEEP_S="${RETRY_SLEEP_S:-5}"' in script
     assert 'REPORT_ROOT="${REPORT_ROOT:-tmp/youngs_modulus_cmaes_gate_reports/${TS}}"' in script
     assert 'DATASET_PREFIX="${DATASET_PREFIX:-tmp/youngs_modulus_cmaes_gate}"' in script
-    assert 'MAX_GENERATIONS="${MAX_GENERATIONS:-10}"' in script
-    assert 'INITIAL_SIGMA_LOG10="${INITIAL_SIGMA_LOG10:-1.0}"' in script
+    assert "MAX_GENERATIONS=" not in script
+    assert "INITIAL_SIGMA_LOG10=" not in script
 
 
 def test_script_runs_all_seed_stages_with_seed_specific_artifacts() -> None:
@@ -50,9 +50,11 @@ def test_script_runs_all_seed_stages_with_seed_specific_artifacts() -> None:
 
     assert "example_youngs_modulus_cmaes.py" in script
     assert '--output "${CMAES_OUTPUT}"' in script
+    # Gate varies optimizer seed with SEEDS; other search knobs stay in CMA_SEARCH_PARAMS.
     assert '--cma-seed "${SEED}"' in script
-    assert '--max-generations "${MAX_GENERATIONS}"' in script
-    assert '--initial-sigma-log10 "${INITIAL_SIGMA_LOG10}"' in script
+    assert "--max-generations" not in script
+    assert "--initial-sigma-log10" not in script
+    assert "--population-size" not in script
     assert 'local CMAES_JSON="${CMAES_OUTPUT}/cmaes_report.json"' in script
 
     assert "-m apple_pick_gym.batched_envs.youngs_modulus_cmaes_gate_report" in script
@@ -61,11 +63,10 @@ def test_script_runs_all_seed_stages_with_seed_specific_artifacts() -> None:
     assert '--out-summary "${SEED_SUMMARY}"' in script
 
 
-def test_script_forwards_optional_cma_controls_not_grid_ranking_controls() -> None:
+def test_script_forwards_optional_ranges_not_grid_ranking_or_search_controls() -> None:
     script = _script()
 
-    assert 'if [[ -n "${POPULATION_SIZE:-}" ]]; then' in script
-    assert 'CMAES_ARGS+=(--population-size "${POPULATION_SIZE}")' in script
+    assert "POPULATION_SIZE" not in script
     assert 'if [[ -n "${RANGES:-}" ]]; then' in script
     assert 'CMAES_ARGS+=(--ranges "${RANGES}")' in script
 

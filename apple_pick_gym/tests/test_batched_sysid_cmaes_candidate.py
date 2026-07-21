@@ -364,25 +364,49 @@ def test_derive_structure_cma_seeds_rejects_selected_structure_collisions(monkey
         cmaes.derive_structure_cma_seeds(base_seed=0, structure_indices=(0, 1))
 
 
-def test_build_pycma_options_include_bounds_randn_nan_seed_and_optional_popsize():
+def test_build_pycma_options_omit_bounds_include_randn_nan_seed_and_optional_popsize():
     import numpy as np
 
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
-    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
     rng = np.random.default_rng(1)
     randn = cmaes.make_pycma_randn(rng)
-    options = cmaes.build_pycma_options(bounds, randn=randn)
-    assert options["bounds"] == [list(bounds.log10_lower), list(bounds.log10_upper)]
+    options = cmaes.build_pycma_options(randn=randn)
+    assert "bounds" not in options
     assert options["randn"] is randn
     assert np.isnan(options["seed"])
     assert options["verbose"] == -9
     assert "popsize" not in options
 
-    options_pop = cmaes.build_pycma_options(
-        bounds, randn=randn, population_size=8
-    )
+    options_pop = cmaes.build_pycma_options(randn=randn, population_size=8)
     assert options_pop["popsize"] == 8
+
+
+def test_resolve_initial_mean_log10_bounds_midpoint_and_explicit():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    assert cmaes.resolve_initial_mean_log10("bounds_midpoint", bounds) == pytest.approx(
+        list(bounds.log10_midpoint)
+    )
+    explicit = (
+        bounds.log10_lower[0] + 0.1,
+        bounds.log10_lower[1] + 0.1,
+        bounds.log10_lower[2] + 0.1,
+    )
+    assert cmaes.resolve_initial_mean_log10(explicit, bounds) == pytest.approx(list(explicit))
+
+
+def test_resolve_initial_mean_log10_allows_outside_fixture_box():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    outside = (
+        bounds.log10_upper[0] + 1.0,
+        bounds.log10_midpoint[1],
+        bounds.log10_midpoint[2],
+    )
+    assert cmaes.resolve_initial_mean_log10(outside, bounds) == pytest.approx(list(outside))
 
 
 def test_create_structure_cma_optimizer_uses_midpoint_sigma_and_dedicated_rng():
@@ -406,6 +430,31 @@ def test_create_structure_cma_optimizer_uses_midpoint_sigma_and_dedicated_rng():
     assert es.sigma == pytest.approx(1.0)
     assert es.opts["popsize"] == 6
     assert np.isnan(es.opts["seed"])
+    assert es.opts.get("bounds") in (None, [None, None])
+
+
+def test_create_structure_cma_optimizer_uses_explicit_initial_mean():
+    import cma
+
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    mean = (
+        bounds.log10_lower[0] + 0.25,
+        bounds.log10_lower[1] + 0.25,
+        bounds.log10_lower[2] + 0.25,
+    )
+    es, _, _ = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_mean_log10=mean,
+        initial_sigma_log10=0.5,
+        base_seed=1,
+        structure_idx=0,
+        population_size=4,
+    )
+    assert isinstance(es, cma.CMAEvolutionStrategy)
+    assert list(es.result.xfavorite) == pytest.approx(list(mean))
+    assert es.sigma == pytest.approx(0.5)
 
 
 def test_interleaved_structure_optimizers_are_deterministic_and_distinct():
@@ -446,8 +495,8 @@ def test_interleaved_structure_optimizers_are_deterministic_and_distinct():
     assert first0 != first1
 
 
-def test_sigma_exploration_is_truncated_by_fixture_bounds():
-    """Default sigma intends +/-2 decades, but fixture bounds remain authoritative."""
+def test_sigma_exploration_is_not_clipped_to_fixture_bounds():
+    """With sigma larger than the fixture box, ask samples may leave the box."""
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
     narrow = {
@@ -456,7 +505,6 @@ def test_sigma_exploration_is_truncated_by_fixture_bounds():
         "stem": {"youngs_modulus_pa": {"min": 1.0e6, "max": 2.0e6}},
     }
     bounds = cmaes.extract_youngs_modulus_cma_bounds(narrow)
-    # Half-width in log10 decades is far below 2.0 for each segment.
     for seg in (bounds.primary, bounds.spur, bounds.stem):
         half_width = 0.5 * (seg.log10_max - seg.log10_min)
         assert half_width < 2.0 * cmaes.DEFAULT_INITIAL_SIGMA_LOG10
@@ -464,9 +512,29 @@ def test_sigma_exploration_is_truncated_by_fixture_bounds():
         bounds, base_seed=0, structure_idx=0, population_size=12
     )
     samples = es.ask()
+    outside = False
     for row in samples:
         for value, lo, hi in zip(row, bounds.log10_lower, bounds.log10_upper, strict=True):
-            assert lo - 1e-9 <= float(value) <= hi + 1e-9
+            if float(value) < lo - 1e-9 or float(value) > hi + 1e-9:
+                outside = True
+    assert outside, "expected at least one ask sample outside the narrow fixture box"
+
+
+def test_validate_ask_population_allows_outside_fixture_box():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    outside = (
+        (
+            bounds.log10_upper[0] + 2.0,
+            bounds.log10_lower[1] - 2.0,
+            bounds.log10_midpoint[2],
+        ),
+    )
+    parsed = cmaes._validate_ask_population(
+        outside, population_size=1, bounds=bounds
+    )
+    assert parsed == outside
 
 
 def test_pycma_dependency_is_importable():

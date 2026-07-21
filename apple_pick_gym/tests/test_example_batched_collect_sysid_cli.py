@@ -51,7 +51,8 @@ def test_collection_and_trajectory_cli_defaults(monkeypatch):
     assert args.save_snapshot is False
     assert args.settle_substeps is None
     assert args.settle_gravity_ramp is False
-    assert args.settle_quiet_every is None
+    assert args.settle_quiet_every == 350
+    assert module.SETTLE_QUIET_EVERY == 350
     assert args.ranges_path is None
     assert args.movement_per_step_m == 0.02
     assert args.total_movement_m == 0.10

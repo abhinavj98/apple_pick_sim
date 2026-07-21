@@ -10,8 +10,11 @@ Run from repo root::
 
     uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \\
         --dataset /tmp/batched_sysid_dataset \\
-        --output /tmp/youngs_cmaes \\
-        --max-generations 10 --cma-seed 0
+        --output /tmp/youngs_cmaes
+
+Edit ``CMA_SEARCH_PARAMS`` below to change optimizer search knobs (mean, sigma,
+population, generations, bounds). ``--cma-seed`` overrides
+``CMA_SEARCH_PARAMS["cma_seed"]`` so the multi-seed gate can vary optimizer RNG.
 
 """
 
@@ -34,7 +37,6 @@ from apple_pick_gym.batched_examples.example_batched_sysid_mmd_grid import (
 )
 from apple_pick_gym.batched_examples import example_youngs_modulus_sys_id as _grid
 from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
-    DEFAULT_INITIAL_SIGMA_LOG10,
     CmaGenerationFailure,
     StructureCmaState,
     YoungsModulusBatchEvaluation,
@@ -49,6 +51,8 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     extract_youngs_modulus_cma_bounds,
     fit_youngs_modulus_structures,
     gt_youngs_modulus_candidate_from_structure,
+    normalize_search_bounds_log10,
+    resolve_initial_mean_log10,
     structure_cma_report_snapshot,
     to_strict_jsonable,
     validate_initial_sigma_log10,
@@ -80,6 +84,27 @@ _positive_int = _grid._positive_int
 
 # Shared cancel type from the multi-replay dependency layer.
 ViewerCancelled = SysIdReplayCancelled
+
+# Sole source of truth for CMA search knobs (edit here; not exposed on CLI).
+# initial_mean_log10: start mean in log10-E [primary, spur, stem], or
+# "bounds_midpoint" to derive midpoints from the loaded fixture.
+# search_bounds_log10: None = unbounded search; or
+#   {"lower": [p, s, t], "upper": [p, s, t]} in log10-E.
+# Absolute safety box (not fixture ε-bands): primary 1–100 GPa, spur/stem 0.1–10 GPa.
+_CMA_SEARCH_LOG10_LOWER = [9.0, 8.0, 8.0]  # P: 1 GPa; Sp/St: 0.1 GPa
+_CMA_SEARCH_LOG10_UPPER = [11.0, 10.0, 10.0]  # P: 100 GPa; Sp/St: 10 GPa
+_CMA_MEAN_LOG10 = [_CMA_SEARCH_LOG10_LOWER[i] + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i]) for i in range(3)]
+CMA_SEARCH_PARAMS: dict[str, Any] = {
+    "initial_mean_log10": list(_CMA_MEAN_LOG10),
+    "initial_sigma_log10": 0.5,
+    "population_size": 15,
+    "max_generations": 10,
+    "cma_seed": 56,
+    "search_bounds_log10": {
+        "lower": _CMA_SEARCH_LOG10_LOWER,
+        "upper": _CMA_SEARCH_LOG10_UPPER,
+    },
+}
 
 
 def accumulate_cma_batch_counters(
@@ -246,6 +271,7 @@ def _build_cmaes_report_payload(
     output: str,
     ranges_path: str,
     base_seed: int,
+    initial_mean_log10: tuple[float, float, float] | list[float] | None,
     initial_sigma_log10: float,
     max_generations: int,
     scoring: YoungsModulusScoringConfig,
@@ -253,6 +279,9 @@ def _build_cmaes_report_payload(
     command_error: str | None = None,
     counter_totals: dict[str, int] | None = None,
     timing: dict[str, Any] | None = None,
+    population_size: int | None = None,
+    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    | None = None,
 ) -> dict[str, Any]:
     counters = counter_totals or {}
     structures: dict[str, Any] = {}
@@ -298,8 +327,19 @@ def _build_cmaes_report_payload(
         "ranges_path": str(ranges_path),
         "cma": {
             "base_seed": int(base_seed),
+            "initial_mean_log10": list(initial_mean_log10)
+            if initial_mean_log10 is not None
+            else None,
             "initial_sigma_log10": float(initial_sigma_log10),
             "max_generations": int(max_generations),
+            "population_size": population_size,
+            "search_bounds_log10": None
+            if search_bounds_log10 is None
+            else {
+                "lower": list(search_bounds_log10[0]),
+                "upper": list(search_bounds_log10[1]),
+            },
+            "search_params_source": "CMA_SEARCH_PARAMS",
         },
         "scoring": {
             "use_median": bool(scoring.use_median),
@@ -378,28 +418,13 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--max-generations",
-        type=_positive_int,
-        default=10,
-        help="Generation cap per structure (default 10).",
-    )
-    p.add_argument(
-        "--population-size",
-        type=_positive_int,
-        default=None,
-        help="Optional pycma population size (default: pycma choice).",
-    )
-    p.add_argument(
-        "--initial-sigma-log10",
-        type=float,
-        default=DEFAULT_INITIAL_SIGMA_LOG10,
-        help="Initial CMA sigma in log10 decades (default 1.0).",
-    )
-    p.add_argument(
         "--cma-seed",
         type=int,
-        default=0,
-        help="Application CMA base seed (default 0); not passed directly to pycma.",
+        default=None,
+        help=(
+            "Application CMA base seed (overrides CMA_SEARCH_PARAMS['cma_seed']; "
+            "not passed directly to pycma)."
+        ),
     )
     p.add_argument(
         "--include-excluded",
@@ -495,8 +520,27 @@ def _run(
     ranges_path = _resolve_ranges_path(args, collection)
     ranges = load_ranges(str(ranges_path))
     bounds = extract_youngs_modulus_cma_bounds(ranges)
-    initial_sigma = validate_initial_sigma_log10(float(args.initial_sigma_log10))
-    base_seed = int(args.cma_seed)
+    search = CMA_SEARCH_PARAMS
+    initial_mean = resolve_initial_mean_log10(search["initial_mean_log10"], bounds)
+    initial_sigma = validate_initial_sigma_log10(float(search["initial_sigma_log10"]))
+    if getattr(args, "cma_seed", None) is not None:
+        base_seed = int(args.cma_seed)
+    else:
+        base_seed = int(search["cma_seed"])
+    max_generations = int(search["max_generations"])
+    if max_generations < 1:
+        raise SystemExit("CMA_SEARCH_PARAMS['max_generations'] must be >= 1")
+    population_size = search["population_size"]
+    if population_size is not None:
+        population_size = int(population_size)
+        if population_size < 1:
+            raise SystemExit("CMA_SEARCH_PARAMS['population_size'] must be >= 1")
+    try:
+        search_bounds_log10 = normalize_search_bounds_log10(
+            search.get("search_bounds_log10")
+        )
+    except ValueError as exc:
+        raise SystemExit(f"CMA_SEARCH_PARAMS['search_bounds_log10']: {exc}") from exc
 
     topology_seed = int(collection.get("topology_seed", 42))
     control_hz = _collection_control_hz(collection)
@@ -541,10 +585,12 @@ def _run(
     for structure_idx in structure_indices:
         es, effective_seed, _rng = create_structure_cma_optimizer(
             bounds,
+            initial_mean_log10=initial_mean,
             initial_sigma_log10=initial_sigma,
             base_seed=base_seed,
             structure_idx=int(structure_idx),
-            population_size=args.population_size,
+            population_size=population_size,
+            search_bounds_log10=search_bounds_log10,
         )
         state = StructureCmaState(
             structure_idx=int(structure_idx),
@@ -552,6 +598,7 @@ def _run(
             bounds=bounds,
             effective_seed=int(effective_seed),
             population_size=int(es.popsize),
+            search_bounds_log10=search_bounds_log10,
         )
         try:
             state.gt_candidate = gt_youngs_modulus_candidate_from_structure(
@@ -588,13 +635,16 @@ def _run(
             output=str(output_dir),
             ranges_path=str(ranges_path),
             base_seed=base_seed,
+            initial_mean_log10=initial_mean,
             initial_sigma_log10=initial_sigma,
-            max_generations=int(args.max_generations),
+            max_generations=int(max_generations),
             scoring=scoring,
             command_status=command_status,
             command_error=command_error,
             counter_totals=counters,
             timing=timing,
+            population_size=population_size,
+            search_bounds_log10=search_bounds_log10,
         )
         _write_cmaes_report_atomic(report_path, payload)
 
@@ -756,7 +806,7 @@ def _run(
     try:
         fit_result = fit_youngs_modulus_structures(
             states,
-            max_generations=int(args.max_generations),
+            max_generations=int(max_generations),
             evaluate_fn=evaluate_fn,
             on_progress=on_progress,
         )

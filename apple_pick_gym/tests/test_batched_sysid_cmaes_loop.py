@@ -593,6 +593,32 @@ def test_fit_youngs_modulus_structures_stops_independently_and_scores_final_mean
     assert states[1].stop_kind in {"generation_cap", "pycma", "both"}
 
 
+def test_snapshot_optimizer_distribution_mean_uses_phenotype_xfavorite():
+    """Report mean_log10 must be phenotype ``xfavorite``, not genotype ``mean``.
+
+    With BoundTransform, ``es.mean`` can sit slightly outside the physical box
+    while ``result.xfavorite`` stays in phenotype (bounded log10-E) coordinates.
+    """
+
+    class PhenotypeMeanOptimizer(FakeOptimizer):
+        def __init__(self):
+            super().__init__(
+                samples=[[8.95, 7.0, 6.0]],
+                mean=[8.901, 7.0, 6.0],
+            )
+            self._favorite = [8.903, 7.0, 6.0]
+
+        @property
+        def result(self):
+            return type("R", (), {"xfavorite": list(self._favorite)})()
+
+    opt = PhenotypeMeanOptimizer()
+    snap = cmaes.snapshot_optimizer_distribution(opt)
+    assert snap.mean_log10 == pytest.approx((8.903, 7.0, 6.0))
+    assert tuple(opt.mean) == pytest.approx((8.901, 7.0, 6.0))
+    assert snap.mean_log10 != pytest.approx(tuple(opt.mean))
+
+
 def test_fit_uses_xfavorite_not_mean_or_xbest():
     bounds = _bounds()
 
@@ -1316,7 +1342,7 @@ def test_structure_report_snapshot_includes_required_fields_and_counters():
     assert snapshot["final_mean_evaluations"] == 1
     assert snapshot["physical_env_slots"] == 12
     assert snapshot["scalar_retries"] == 2
-    assert snapshot["bounds"]["log10_midpoint"] == list(bounds.log10_midpoint)
+    assert snapshot["bounds"] is None
     assert snapshot["final_mean"]["log10_e"] == [7.0, 6.0, 5.0]
     assert snapshot["best_sample"]["fitness"] == 1.25
     assert snapshot["gt"]["e_pa"] == [1e8, 1e7, 1e6]

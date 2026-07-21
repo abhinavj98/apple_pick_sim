@@ -385,8 +385,8 @@ uv run --env-file pytest.env python \
 # remain open in docs/ROADMAP.md — do not treat V.5.2 as Done until Task 8.
 uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --viewer null --dataset tmp/youngs_gt_smoke --output tmp/youngs_cmaes_smoke \
-  --max-generations 10 --cma-seed 0 --overwrite
-
+  --overwrite
+# Edit CMA_SEARCH_PARAMS in that example for mean/sigma/popsize/gens/seed.
 uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_sim/tests/test_batched_heterogeneous_build.py \
   apple_pick_sim/tests/test_batched_digital_twin_init.py \

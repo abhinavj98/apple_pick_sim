@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-16  
 **Roadmap slice:** V.5.2 — continuous Young's-modulus calibration  
-**Status:** Approved; implementation complete — Task 8 verification passed (focused/full tests + CUDA 5×5 acceptance, 2026-07-17)
+**Status:** Approved; implementation complete — Task 8 verification passed (focused/full tests + CUDA 5×5 acceptance, 2026-07-17). Bounds/init amended 2026-07-21 to match `CMA_SEARCH_PARAMS` search-box defaults.
 **Implementation notes:** `docs/youngs-modulus-cmaes-implementation.md`
 
 ## Purpose
@@ -28,7 +28,11 @@ path documented in `docs/youngs-modulus-sysid.md`.
 - Evaluate every generation's population in parallel with the existing
   candidate-by-direction batched replay.
 - Use pooled hold-phase Sinkhorn Wasserstein as the fitness.
-- Initialize at the midpoint of fixture-derived log-space bounds, not at GT.
+- Initialize from `CMA_SEARCH_PARAMS` (default: explicit log10-E start mean,
+  not recorded GT; optional `"bounds_midpoint"` uses fixture midpoints).
+- Constrain search with `CMA_SEARCH_PARAMS["search_bounds_log10"]` (default:
+  start mean ± 2 log10 decades), not the narrow fixture `youngs_modulus_pa`
+  ε-bands. `None` allows unbounded search.
 - Stop on either a configured generation cap or pycma's native convergence
   criteria.
 - Explicitly replay and score the final distribution mean, and treat it as the
@@ -99,37 +103,62 @@ independent acceptance diagnostics.
 
 ## Bounds and initialization
 
-Search bounds come from `youngs_modulus_pa.min/max` for primary, spur, and stem
-in the ranges fixture associated with the dataset:
+Two roles are separated: the ranges fixture for replay construction (and
+optional midpoint init), versus the CMA search box in `CMA_SEARCH_PARAMS`.
+
+### Ranges fixture (replay / optional midpoint)
+
+Resolve the ranges fixture associated with the dataset:
 
 1. Use an explicit `--ranges` path when supplied.
 2. Otherwise use the dataset manifest's `collection.ranges_path`.
 3. If neither resolves to a loadable fixture, fail clearly. Do not silently
-   substitute unrelated default bounds.
+   substitute an unrelated default fixture.
 
-Bounds must be finite, positive, ordered, and present for all three fitted
-segments. Convert each pair to log10 space. The initial CMA mean is the
-component-wise midpoint of those log-space bounds. This avoids using stored GT
-as optimizer input.
+The fixture remains required before optimizer construction. It supplies
+`sim_build` controls for replay environments and
+`youngs_modulus_pa.min/max` for primary/spur/stem when
+`initial_mean_log10 == "bounds_midpoint"`. Fixture bounds must be finite,
+positive, ordered, and present for all three fitted segments. Relative CLI and
+manifest paths resolve from the process CWD; the report stores the absolute
+path. CMA-specific validation must not rely only on the generic ranges
+validator: it explicitly rejects missing, null, non-numeric, non-finite,
+non-positive, equal, and reversed segment bounds.
 
-The resolved ranges file is the complete replay fixture: it supplies both the
-three optimizer bounds and any `sim_build` controls used to construct replay
-environments. An explicit `--ranges` therefore overrides both. Relative CLI and
-manifest paths are resolved from the command's current working directory and
-the report records the resulting absolute path. Missing or malformed paths fail
-before optimizer construction. CMA-specific validation must not rely only on
-the generic ranges validator: it explicitly rejects missing, null, non-numeric,
-non-finite, non-positive, equal, and reversed bounds.
+The fixture `youngs_modulus_pa` box is **not** the default CMA search
+constraint. In the variance proxy fixture the primary band is essentially a
+point (~0.5 Pa wide), which cannot support meaningful CMA exploration.
 
-The initial sigma is CLI-configurable and expressed in log10 decades, with a
-default of `1.0`. Before bound effects, this makes two standard deviations span
-`mean +/- 2` decades, corresponding to `mean / 100` through `mean * 100`.
-This is statistical exploration rather than a guarantee that a finite random
-population contains samples at both extremes. pycma bounds keep all samples
-within the fixture ranges, so a fixture bound closer than two decades truncates
-that side of the intended exploration. Reject non-positive or non-finite sigma
-values. The implementation records the resolved physical and log-space bounds,
-midpoint, sigma, population size, seed, and stop options in the report.
+### Search box and start mean (`CMA_SEARCH_PARAMS`)
+
+Search clipping and ask validation use `search_bounds_log10`:
+
+- default: an explicit log10-E box around the coded start mean with half-width
+  `_CMA_BOUND_HALF_WIDTH_LOG10 = 2.0` (mean ± 2 decades → factor \(100\) each
+  side), **not** the narrow fixture ε-bands;
+- `None`: unbounded search (omit pycma `bounds`; ask validation skips the
+  phenotype box; the integrity gate checks only `e_pa == 10**log10_e`).
+
+When `search_bounds_log10` is set, construct pycma with
+`bounds=[lower_log10, upper_log10]` and keep samples inside that box.
+
+Default start mean is an explicit length-3 log10-E vector matching the
+variance-fixture midpoints (still not structure GT). Setting
+`initial_mean_log10` to `"bounds_midpoint"` instead derives the component-wise
+midpoint of the loaded fixture's log-space bounds.
+
+Default `initial_sigma_log10` is `2.0` (log10 decades). Before search-box
+truncation, two standard deviations span `mean +/- 4` decades; the default
+±2-decade search box truncates that exploration. Reject non-positive or
+non-finite sigma. Record the active search bounds (or JSON `null` when
+unbounded), start mean, sigma, population size, seed, and stop options in the
+report. Structure `bounds` in `cmaes_report.json` are the **search** box, not
+the fixture ε-bands.
+
+Default `CMA_SEARCH_PARAMS` knobs (edit in
+`example_youngs_modulus_cmaes.py`): `initial_mean_log10` = variance midpoints,
+`initial_sigma_log10=2.0`, `population_size=15`, `max_generations=10`,
+`cma_seed=0`, `search_bounds_log10` = mean ± 2 decades.
 
 ## Per-generation evaluation
 
@@ -158,8 +187,9 @@ Candidate order returned by pycma must remain aligned with evaluator candidate
 indices when fitness values are passed to `tell()`.
 
 The coordinator validates every asked population before replay: population
-length matches the optimizer, every vector has length three, values are finite
-and within the bounded phenotype domain, and returned evaluations contain each
+length matches the optimizer, every vector has length three, values are finite,
+and (when a search box is configured) lie within that phenotype domain, and
+returned evaluations contain each
 candidate index exactly once. `tell()` receives the original sample objects
 returned by `ask()`, in their original order.
 
@@ -175,14 +205,14 @@ otherwise non-finite, fail that structure without calling `tell()`.
 
 Each structure stops when either:
 
-- the number of completed generations reaches `--max-generations`; or
+- the number of completed generations reaches `CMA_SEARCH_PARAMS["max_generations"]`; or
 - `CMAEvolutionStrategy.stop()` reports a native pycma convergence condition.
 
 Record all stop evidence. `stop_kind` is `generation_cap`, `pycma`, or `both`;
 the report also contains the complete strict-JSON pycma stop-condition mapping
 and completed-generation count. Check native criteria and the cap before each
 `ask()` and after every successful `tell()`. A generation cap is mandatory so
-command cost is bounded; `--max-generations` defaults to `10`.
+command cost is bounded; `max_generations` defaults to `10`.
 
 After stopping, snapshot `CMAEvolutionStrategy.result.xfavorite`, pycma's
 bounded phenotype-space distribution mean. Do not use the internal genotype
@@ -209,20 +239,30 @@ The separate command reuses dataset, structure selection, replay, scoring,
 viewer, settling, overwrite, batching, seed, multi-structure batching, and
 fail-fast controls that remain meaningful.
 
-Add CMA-specific controls:
+Add CMA-specific controls on the CLI only for dataset/replay wiring:
 
 - `--ranges`
-- `--max-generations`
-- `--population-size` (optional; pycma default when omitted)
-- `--initial-sigma-log10`
-- `--cma-seed` (default `0`, accepted as a deterministic application seed)
+
+Search initialization and loop knobs live in module-level
+`CMA_SEARCH_PARAMS` inside `example_youngs_modulus_cmaes.py`:
+
+- `initial_mean_log10` (`"bounds_midpoint"` or an explicit length-3 log10-E vector;
+  default is the explicit variance-fixture midpoint vector)
+- `initial_sigma_log10` (default `2.0`)
+- `population_size` (default `15`; `None` → pycma default)
+- `max_generations` (default `10`)
+- `cma_seed` (application base seed; not passed directly to pycma; default `0`)
+- `search_bounds_log10` (`None` = unbounded, or `{"lower","upper"}` length-3
+  log10-E vectors; default is start mean ± 2 decades)
 
 The existing `--seed` continues to control replay behavior and retains its
-manifest fallback. `--cma-seed` controls optimizer sampling. Each structure
+manifest fallback. Default `cma_seed` comes from `CMA_SEARCH_PARAMS`; `--cma-seed`
+overrides it (the integrity gate passes `--cma-seed "${SEED}"` so each SEEDS job
+varies both collect and optimizer RNG). Each structure
 uses a deterministic seed derived from the base CMA seed and the structure
 index so independent optimizers do not reuse identical random streams. Because
 pycma treats seed `0` as time-based and otherwise uses NumPy's global RNG by
-default, do not pass the CLI seed directly as pycma's `seed` option. Derive a
+default, do not pass the application seed directly as pycma's `seed` option. Derive a
 stable positive 32-bit effective seed from the base seed and structure index,
 construct a dedicated NumPy `Generator` for each optimizer, pass its
 `standard_normal` method as pycma's `randn` option, and set pycma `seed` to
@@ -232,12 +272,12 @@ dtype=np.uint32)[0]`, remap zero to one, and reject a collision among selected
 structures rather than silently sharing streams. Record both the base and
 effective seeds and test repeated interleaved optimizers.
 
-Construct pycma with the midpoint and sigma as positional arguments and an
-options mapping containing `bounds=[lower_log10, upper_log10]`,
-`randn=generator.standard_normal`, `seed=np.nan`, and disabled library
-verbosity. Include `popsize` only when `--population-size` is supplied. Lock and
+Construct pycma with the resolved mean and sigma as positional arguments and an
+options mapping containing `randn=generator.standard_normal`, `seed=np.nan`,
+and disabled library verbosity. Include `bounds=[lower_log10, upper_log10]`
+only when `search_bounds_log10` is set; omit bounds for unbounded search.
+Include `popsize` only when `population_size` is supplied. Lock and
 test the resolved `cma` version through `uv.lock`.
-
 Do not expose grid-only and grid-artifact controls on the CMA-ES command:
 
 - `--log10-e-primary`
@@ -274,7 +314,8 @@ recorded as a separate artifact error and does not change `fitted` status.
 
 For every successful structure report:
 
-- resolved bounds and initial mean in log10-E and Pa;
+- active search bounds (or JSON `null` when unbounded) and initial mean in
+  log10-E and Pa;
 - CMA base/effective seed, sigma, population size, generations, evaluation
   counts, and complete stop evidence;
 - per-generation sample vectors, raw Sinkhorn scores, substituted fitness
@@ -331,7 +372,8 @@ component-wise.
 The existing grid ranking gate remains unchanged. Add separate
 `gate_youngs_modulus_cmaes.sh` and `youngs_modulus_cmaes_gate_report.py`
 artifacts that validate report completeness, finite explicitly scored final
-means, bounds membership, coherent counts, and stop evidence. This integrity
+means, search-bounds membership when bounds are present (skip membership when
+unbounded / `bounds` is null), coherent counts, and stop evidence. This integrity
 gate does not impose a GT-error threshold.
 
 ## Error handling

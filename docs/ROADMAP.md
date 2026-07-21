@@ -363,8 +363,8 @@ uv run --env-file pytest.env python \
 # Separate CMA-ES fit on the same dataset layout (requires healthy collect):
 # uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
 #   --viewer null --dataset tmp/youngs_gt_smoke --output tmp/youngs_cmaes_smoke \
-#   --max-generations 10 --cma-seed 0 --overwrite
-
+#   --overwrite
+# (edit CMA_SEARCH_PARAMS in example_youngs_modulus_cmaes.py for search knobs)
 # Add --no-multi-structure-batch above for the scalar parity/debug path.
 # Full Young's multi-seed ranking gate (expensive; defaults to 3 seeds x 5 structures x 5 directions):
 # bash scripts/gate_youngs_modulus_sysid.sh

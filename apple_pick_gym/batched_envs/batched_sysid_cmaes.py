@@ -282,6 +282,83 @@ def validate_initial_sigma_log10(sigma: float) -> float:
     return value
 
 
+def resolve_initial_mean_log10(
+    spec: Any,
+    bounds: YoungsModulusCmaBounds,
+) -> tuple[float, float, float]:
+    """Resolve CMA start mean in log10-E coordinates.
+
+    ``\"bounds_midpoint\"`` (or ``None``) uses fixture midpoints. Otherwise
+    ``spec`` must be a length-3 finite numeric sequence (fixture box is not a
+    search constraint unless ``search_bounds_log10`` is configured).
+    """
+    if spec is None or spec == "bounds_midpoint":
+        return bounds.log10_midpoint
+    try:
+        values = tuple(float(v) for v in spec)
+    except TypeError as exc:
+        raise ValueError(
+            "initial_mean_log10 must be 'bounds_midpoint' or a length-3 sequence"
+        ) from exc
+    if len(values) != 3:
+        raise ValueError(
+            f"initial_mean_log10 must have length 3, got {len(values)}"
+        )
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError("initial_mean_log10 must be finite")
+    return values  # type: ignore[return-value]
+
+
+def normalize_search_bounds_log10(
+    spec: Any,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    """Parse CMA search box; ``None`` means unbounded (no pycma clipping).
+
+    Accepted forms:
+    - ``None`` → unbounded
+    - ``{"lower": [p,s,t], "upper": [p,s,t]}`` in log10-E
+    """
+    if spec is None:
+        return None
+    if not isinstance(spec, Mapping):
+        raise ValueError(
+            "search_bounds_log10 must be None or a mapping with lower/upper"
+        )
+    if "lower" not in spec or "upper" not in spec:
+        raise ValueError("search_bounds_log10 requires 'lower' and 'upper'")
+    try:
+        lower = tuple(float(v) for v in spec["lower"])
+        upper = tuple(float(v) for v in spec["upper"])
+    except TypeError as exc:
+        raise ValueError(
+            "search_bounds_log10 lower/upper must be length-3 sequences"
+        ) from exc
+    if len(lower) != 3 or len(upper) != 3:
+        raise ValueError("search_bounds_log10 lower/upper must have length 3")
+    if not all(math.isfinite(v) for v in (*lower, *upper)):
+        raise ValueError("search_bounds_log10 lower/upper must be finite")
+    for lo, hi in zip(lower, upper, strict=True):
+        if lo >= hi:
+            raise ValueError("search_bounds_log10 requires lower < upper per axis")
+    return lower, upper  # type: ignore[return-value]
+
+
+def search_bounds_report_payload(
+    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    | None,
+) -> dict[str, Any] | None:
+    """JSON fragment for active CMA search bounds; ``None`` when unbounded."""
+    if search_bounds_log10 is None:
+        return None
+    lower, upper = search_bounds_log10
+    return {
+        "log10_lower": list(lower),
+        "log10_upper": list(upper),
+        "physical_min_pa": [float(10.0**v) for v in lower],
+        "physical_max_pa": [float(10.0**v) for v in upper],
+    }
+
+
 def derive_structure_cma_seed(base_seed: int, structure_idx: int) -> int:
     """Derive a stable positive 32-bit seed for one structure optimizer."""
     sequence = np.random.SeedSequence(
@@ -325,18 +402,21 @@ def make_pycma_randn(generator: np.random.Generator) -> Callable[..., Any]:
 
 
 def build_pycma_options(
-    bounds: YoungsModulusCmaBounds,
     *,
     randn: Callable[..., Any],
     population_size: int | None = None,
+    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    | None = None,
 ) -> dict[str, Any]:
-    """Build pycma options for bounded log10-E search with an owned RNG."""
+    """Build pycma options; omit bounds when ``search_bounds_log10`` is None."""
     options: dict[str, Any] = {
-        "bounds": [list(bounds.log10_lower), list(bounds.log10_upper)],
         "randn": randn,
         "seed": np.nan,
         "verbose": -9,
     }
+    if search_bounds_log10 is not None:
+        lower, upper = search_bounds_log10
+        options["bounds"] = [list(lower), list(upper)]
     if population_size is not None:
         options["popsize"] = int(population_size)
     return options
@@ -345,22 +425,29 @@ def build_pycma_options(
 def create_structure_cma_optimizer(
     bounds: YoungsModulusCmaBounds,
     *,
+    initial_mean_log10: Sequence[float] | None = None,
     initial_sigma_log10: float = DEFAULT_INITIAL_SIGMA_LOG10,
     base_seed: int,
     structure_idx: int,
     population_size: int | None = None,
+    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    | None = None,
 ) -> tuple[cma.CMAEvolutionStrategy, int, np.random.Generator]:
-    """Construct one bounded pycma optimizer with a dedicated NumPy Generator."""
+    """Construct one pycma optimizer (bounded only when search bounds are set)."""
     sigma = validate_initial_sigma_log10(initial_sigma_log10)
+    mean = resolve_initial_mean_log10(
+        "bounds_midpoint" if initial_mean_log10 is None else initial_mean_log10,
+        bounds,
+    )
     effective_seed = derive_structure_cma_seed(int(base_seed), int(structure_idx))
     rng = np.random.default_rng(effective_seed)
     options = build_pycma_options(
-        bounds,
         randn=make_pycma_randn(rng),
         population_size=population_size,
+        search_bounds_log10=search_bounds_log10,
     )
     es = cma.CMAEvolutionStrategy(
-        list(bounds.log10_midpoint),
+        list(mean),
         float(sigma),
         options,
     )
@@ -896,6 +983,10 @@ class StructureCmaState:
     final_evaluation: YoungsModulusEvaluation | None = None
     gt_candidate: YoungsModulusCandidate | None = None
     artifact_errors: list[str] = field(default_factory=list)
+    # Active CMA box; None means unbounded (report bounds JSON null).
+    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]] | None = (
+        None
+    )
 
 
 @dataclass(frozen=True)
@@ -906,15 +997,13 @@ class CmaGenerationWaveResult:
 
 
 def _optimizer_mean_log10(optimizer: Any) -> tuple[float, float, float]:
-    mean = getattr(optimizer, "mean", None)
-    if mean is None and hasattr(optimizer, "result"):
-        mean = getattr(optimizer.result, "xfavorite", None)
-    if mean is None:
-        raise ValueError("optimizer does not expose a mean")
-    values = tuple(float(v) for v in mean)
-    if len(values) != 3:
-        raise ValueError(f"optimizer mean must have length 3, got {len(values)}")
-    return values  # type: ignore[return-value]
+    """Bounded phenotype mean in log10-E (``result.xfavorite``, not genotype ``mean``).
+
+    With BoundTransform, pycma's internal ``es.mean`` can sit slightly outside the
+    physical box; ``result.xfavorite`` is the mapped phenotype center that ask()
+    samples and the fitted estimate already use.
+    """
+    return snapshot_xfavorite_log10(optimizer)
 
 
 def _optimizer_sigma(optimizer: Any) -> float:
@@ -934,15 +1023,16 @@ def _validate_ask_population(
     *,
     population_size: int,
     bounds: YoungsModulusCmaBounds,
+    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    | None = None,
 ) -> tuple[tuple[float, float, float], ...]:
+    del bounds  # fixture ranges are not the search box unless search_bounds_log10 is set
     if len(samples) != int(population_size):
         raise CmaGenerationFailure(
             "generation_evaluation",
             f"ask population size {len(samples)} != {population_size}",
         )
     parsed: list[tuple[float, float, float]] = []
-    lower = bounds.log10_lower
-    upper = bounds.log10_upper
     for sample in samples:
         if len(sample) != 3:
             raise CmaGenerationFailure(
@@ -955,12 +1045,14 @@ def _validate_ask_population(
                 "generation_evaluation",
                 "ask sample contains non-finite values",
             )
-        for value, lo, hi in zip(values, lower, upper, strict=True):
-            if value < lo - 1e-9 or value > hi + 1e-9:
-                raise CmaGenerationFailure(
-                    "generation_evaluation",
-                    "ask sample outside phenotype bounds",
-                )
+        if search_bounds_log10 is not None:
+            lower, upper = search_bounds_log10
+            for value, lo, hi in zip(values, lower, upper, strict=True):
+                if value < lo - 1e-9 or value > hi + 1e-9:
+                    raise CmaGenerationFailure(
+                        "generation_evaluation",
+                        "ask sample outside search bounds",
+                    )
         parsed.append(values)  # type: ignore[arg-type]
     return tuple(parsed)
 
@@ -1111,6 +1203,7 @@ def run_cma_generation_wave(
                 samples,
                 population_size=state.population_size,
                 bounds=state.bounds,
+                search_bounds_log10=state.search_bounds_log10,
             )
             ask_log10[structure_idx] = parsed
             candidates = tuple(candidates_from_log10_e(row) for row in parsed)
@@ -1502,7 +1595,6 @@ def structure_cma_report_snapshot(
     scalar_retries: int = 0,
 ) -> dict[str, Any]:
     """Build a per-structure CMA report fragment."""
-    bounds = state.bounds
     try:
         covariance = optimizer_covariance_diagnostics(state.optimizer)
     except (AttributeError, TypeError, ValueError):
@@ -1595,21 +1687,7 @@ def structure_cma_report_snapshot(
         "effective_seed": int(state.effective_seed),
         "initial_sigma_log10": float(initial_sigma_log10),
         "population_size": int(state.population_size),
-        "bounds": {
-            "physical_min_pa": [
-                bounds.primary.physical_min_pa,
-                bounds.spur.physical_min_pa,
-                bounds.stem.physical_min_pa,
-            ],
-            "physical_max_pa": [
-                bounds.primary.physical_max_pa,
-                bounds.spur.physical_max_pa,
-                bounds.stem.physical_max_pa,
-            ],
-            "log10_lower": list(bounds.log10_lower),
-            "log10_upper": list(bounds.log10_upper),
-            "log10_midpoint": list(bounds.log10_midpoint),
-        },
+        "bounds": search_bounds_report_payload(state.search_bounds_log10),
         "completed_generations": int(state.completed_generations),
         "optimizer_samples_told": int(state.optimizer_samples_told),
         "replay_candidate_evaluations": int(replay_candidate_evaluations),

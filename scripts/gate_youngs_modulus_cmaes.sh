@@ -30,8 +30,6 @@ TOPOLOGY_SEED="${TOPOLOGY_SEED:-42}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_SLEEP_S="${RETRY_SLEEP_S:-5}"
 DATASET_PREFIX="${DATASET_PREFIX:-tmp/youngs_modulus_cmaes_gate}"
-MAX_GENERATIONS="${MAX_GENERATIONS:-10}"
-INITIAL_SIGMA_LOG10="${INITIAL_SIGMA_LOG10:-1.0}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT_ROOT="${REPORT_ROOT:-tmp/youngs_modulus_cmaes_gate_reports/${TS}}"
 
@@ -71,10 +69,10 @@ if [[ -n "${SETTLE_GRAVITY_RAMP+x}" ]]; then
   esac
 fi
 
+# Other CMA search knobs (mean/sigma/popsize/max gens/bounds) live in
+# apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py::CMA_SEARCH_PARAMS.
+# Gate passes --cma-seed so SEEDS varies both collect and optimizer RNG.
 CMAES_ARGS=()
-if [[ -n "${POPULATION_SIZE:-}" ]]; then
-  CMAES_ARGS+=(--population-size "${POPULATION_SIZE}")
-fi
 if [[ -n "${RANGES:-}" ]]; then
   CMAES_ARGS+=(--ranges "${RANGES}")
 fi
@@ -140,8 +138,6 @@ run_seed() {
       --dataset "${DATASET}" \
       --output "${CMAES_OUTPUT}" \
       --cma-seed "${SEED}" \
-      --max-generations "${MAX_GENERATIONS}" \
-      --initial-sigma-log10 "${INITIAL_SIGMA_LOG10}" \
       --viewer null \
       --overwrite \
       "${CMAES_ARGS[@]}" \

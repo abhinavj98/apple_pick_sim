@@ -87,6 +87,236 @@ def _evaluation(
     )
 
 
+def test_cma_search_params_dict_is_sole_search_truth_source():
+    module = _load_module()
+    params = module.CMA_SEARCH_PARAMS
+    assert set(params) >= {
+        "initial_mean_log10",
+        "initial_sigma_log10",
+        "population_size",
+        "max_generations",
+        "cma_seed",
+    }
+    # Absolute box: P 1–100 GPa [9,11]; Sp/St 0.1–10 GPa [8,10]; mean at mid.
+    assert params["initial_mean_log10"] == [10.0, 9.0, 9.0]
+    assert params["initial_sigma_log10"] == 0.5
+    assert params["population_size"] == 15
+    assert params["max_generations"] == 10
+    assert params["cma_seed"] == 56
+    assert params["search_bounds_log10"] == {
+        "lower": [9.0, 8.0, 8.0],
+        "upper": [11.0, 10.0, 10.0],
+    }
+
+
+def test_run_reads_search_knobs_from_cma_search_params_only(monkeypatch, tmp_path):
+    module = _load_module()
+    output_dir = tmp_path / "cma_out"
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "control_hz": 30.0,
+            "num_directions": 2,
+            "ranges_path": str(ranges_path),
+            "topology_seed": 42,
+            "seed": 7,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}, {}]
+
+    fit_calls: list[dict] = []
+    create_calls: list[dict] = []
+
+    def fake_create(bounds, **kwargs):
+        create_calls.append(dict(kwargs))
+        es, seed, rng = cmaes.create_structure_cma_optimizer(bounds, **kwargs)
+        return es, seed, rng
+
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+        fit_calls.append({"max_generations": max_generations})
+        for state in states.values():
+            state.status = "fitted"
+            state.final_mean_log10 = tuple(state.bounds.log10_midpoint)
+            state.final_evaluation = _evaluation(
+                state.structure_idx,
+                [cmaes.candidates_from_log10_e(state.final_mean_log10)],
+                [0.1],
+            )
+            state.gt_candidate = state.final_evaluation.gt_candidate
+        if on_progress is not None:
+            on_progress(states)
+        return cmaes.YoungsModulusCmaFitResult(
+            states=dict(states),
+            fitted_structure_indices=tuple(sorted(states)),
+            failed_structure_indices=(),
+            generation_waves=1,
+            final_mean_batch=None,
+        )
+
+    monkeypatch.setattr(
+        module,
+        "CMA_SEARCH_PARAMS",
+        {
+            "initial_mean_log10": "bounds_midpoint",
+            "initial_sigma_log10": 0.4,
+            "population_size": 5,
+            "max_generations": 3,
+            "cma_seed": 11,
+            "search_bounds_log10": None,
+        },
+    )
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    monkeypatch.setattr(module, "build_sim_config", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(module, "_make_build_env_fn", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(module, "create_structure_cma_optimizer", fake_create)
+    monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
+    monkeypatch.setattr(
+        module,
+        "gt_youngs_modulus_candidate_from_structure",
+        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+    )
+    monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
+
+    args = SimpleNamespace(
+        dataset="/tmp/gt",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert fit_calls[0]["max_generations"] == 3
+    assert create_calls
+    assert create_calls[0]["initial_sigma_log10"] == 0.4
+    assert create_calls[0]["population_size"] == 5
+    assert create_calls[0]["base_seed"] == 11
+    report = json.loads((output_dir / "cmaes_report.json").read_text(encoding="utf-8"))
+    assert report["cma"]["max_generations"] == 3
+    assert report["cma"]["initial_sigma_log10"] == 0.4
+    assert report["cma"]["base_seed"] == 11
+    assert report["cma"]["population_size"] == 5
+    assert report["cma"]["search_params_source"] == "CMA_SEARCH_PARAMS"
+
+
+def test_run_cli_cma_seed_overrides_cma_search_params(monkeypatch, tmp_path):
+    module = _load_module()
+    output_dir = tmp_path / "cma_out"
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "control_hz": 30.0,
+            "num_directions": 2,
+            "ranges_path": str(ranges_path),
+            "topology_seed": 42,
+            "seed": 7,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}, {}]
+
+    create_calls: list[dict] = []
+
+    def fake_create(bounds, **kwargs):
+        create_calls.append(dict(kwargs))
+        es, seed, rng = cmaes.create_structure_cma_optimizer(bounds, **kwargs)
+        return es, seed, rng
+
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+        for state in states.values():
+            state.status = "fitted"
+            state.final_mean_log10 = tuple(state.bounds.log10_midpoint)
+            state.final_evaluation = _evaluation(
+                state.structure_idx,
+                [cmaes.candidates_from_log10_e(state.final_mean_log10)],
+                [0.1],
+            )
+            state.gt_candidate = state.final_evaluation.gt_candidate
+        if on_progress is not None:
+            on_progress(states)
+        return cmaes.YoungsModulusCmaFitResult(
+            states=dict(states),
+            fitted_structure_indices=tuple(sorted(states)),
+            failed_structure_indices=(),
+            generation_waves=1,
+            final_mean_batch=None,
+        )
+
+    monkeypatch.setattr(
+        module,
+        "CMA_SEARCH_PARAMS",
+        {
+            "initial_mean_log10": "bounds_midpoint",
+            "initial_sigma_log10": 0.4,
+            "population_size": 5,
+            "max_generations": 3,
+            "cma_seed": 11,
+            "search_bounds_log10": None,
+        },
+    )
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    monkeypatch.setattr(module, "build_sim_config", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(module, "_make_build_env_fn", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(module, "create_structure_cma_optimizer", fake_create)
+    monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
+    monkeypatch.setattr(
+        module,
+        "gt_youngs_modulus_candidate_from_structure",
+        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+    )
+    monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
+
+    args = SimpleNamespace(
+        dataset="/tmp/gt",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=2,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert create_calls[0]["base_seed"] == 2
+    report = json.loads((output_dir / "cmaes_report.json").read_text(encoding="utf-8"))
+    assert report["cma"]["base_seed"] == 2
+
+
 def test_parser_cma_defaults_and_required_args(monkeypatch):
     module = _load_module()
     import newton.examples
@@ -102,16 +332,18 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
             "/tmp/cma",
         ]
     )
-    assert args.max_generations == 10
-    assert args.initial_sigma_log10 == 1.0
-    assert args.cma_seed == 0
-    assert args.population_size is None
+    assert not hasattr(args, "max_generations")
+    assert not hasattr(args, "initial_sigma_log10")
+    assert not hasattr(args, "population_size")
+    assert args.cma_seed is None
     assert args.ranges is None
     assert args.multi_structure_batch is True
     assert args.fail_fast is False
     assert args.use_median is True
     assert args.hold_id_onehot is True
     assert args.pool_directions is True
+    assert module.SETTLE_QUIET_EVERY == 350
+    assert args.settle_quiet_every == 350
 
     assert parser.parse_args(
         [
@@ -122,6 +354,12 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
             "--no-multi-structure-batch",
         ]
     ).multi_structure_batch is False
+    assert (
+        parser.parse_args(
+            ["--dataset", "/tmp/gt", "--output", "/tmp/cma", "--cma-seed", "7"]
+        ).cma_seed
+        == 7
+    )
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--output", "/tmp/cma"])
@@ -132,9 +370,10 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
         for option in action.option_strings
     }
     assert "--ranges" in option_strings
-    assert "--max-generations" in option_strings
-    assert "--population-size" in option_strings
-    assert "--initial-sigma-log10" in option_strings
+    # Mean/sigma/popsize/gens live in CMA_SEARCH_PARAMS; cma_seed is CLI-overridable.
+    assert "--max-generations" not in option_strings
+    assert "--population-size" not in option_strings
+    assert "--initial-sigma-log10" not in option_strings
     assert "--cma-seed" in option_strings
     # Grid-only controls must stay off the CMA command.
     assert "--log10-e-primary" not in option_strings
@@ -480,10 +719,6 @@ def test_run_viewer_cancel_checkpoints_cancelled_and_exits_nonzero(
         output=str(output_dir),
         structure_indices=None,
         ranges=None,
-        max_generations=3,
-        population_size=4,
-        initial_sigma_log10=1.0,
-        cma_seed=0,
         max_envs_per_batch=0,
         seed=None,
         include_excluded=False,
@@ -528,10 +763,12 @@ def test_write_cmaes_report_atomic_is_strict_and_includes_extrema_covariance(tmp
         output=str(tmp_path),
         ranges_path="/tmp/ranges.json",
         base_seed=0,
+        initial_mean_log10=bounds.log10_midpoint,
         initial_sigma_log10=1.0,
         max_generations=10,
         scoring=cmaes.YoungsModulusScoringConfig(),
         command_status="running",
+        population_size=4,
     )
     module._write_cmaes_report_atomic(path, payload)
     assert path.is_file()
@@ -610,6 +847,18 @@ def test_run_writes_initial_report_before_fit_and_progress_updates(monkeypatch, 
     monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
     monkeypatch.setattr(
         module,
+        "CMA_SEARCH_PARAMS",
+        {
+            "initial_mean_log10": "bounds_midpoint",
+            "initial_sigma_log10": 1.0,
+            "population_size": 4,
+            "max_generations": 3,
+            "cma_seed": 0,
+            "search_bounds_log10": None,
+        },
+    )
+    monkeypatch.setattr(
+        module,
         "build_sim_config",
         lambda **_kwargs: SimpleNamespace(),
     )
@@ -637,10 +886,6 @@ def test_run_writes_initial_report_before_fit_and_progress_updates(monkeypatch, 
         output=str(output_dir),
         structure_indices=None,
         ranges=None,
-        max_generations=3,
-        population_size=4,
-        initial_sigma_log10=1.0,
-        cma_seed=0,
         max_envs_per_batch=0,
         seed=None,
         include_excluded=False,
@@ -735,10 +980,6 @@ def test_run_continues_after_structure_failure_unless_fail_fast(monkeypatch, tmp
         output=str(output_dir),
         structure_indices=None,
         ranges=None,
-        max_generations=2,
-        population_size=None,
-        initial_sigma_log10=1.0,
-        cma_seed=0,
         max_envs_per_batch=0,
         seed=None,
         include_excluded=False,
@@ -810,10 +1051,6 @@ def test_run_all_failed_sets_exit_nonzero(monkeypatch, tmp_path):
         output=str(output_dir),
         structure_indices=None,
         ranges=None,
-        max_generations=2,
-        population_size=None,
-        initial_sigma_log10=1.0,
-        cma_seed=0,
         max_envs_per_batch=0,
         seed=None,
         include_excluded=False,
@@ -897,10 +1134,6 @@ def test_run_records_overlay_error_without_invalidating_fitted(monkeypatch, tmp_
         output=str(output_dir),
         structure_indices=None,
         ranges=None,
-        max_generations=1,
-        population_size=None,
-        initial_sigma_log10=1.0,
-        cma_seed=0,
         max_envs_per_batch=0,
         seed=None,
         include_excluded=False,
@@ -974,10 +1207,6 @@ def test_run_fail_fast_aborts_on_global_evaluator_error(monkeypatch, tmp_path):
         output=str(output_dir),
         structure_indices=None,
         ranges=None,
-        max_generations=2,
-        population_size=None,
-        initial_sigma_log10=1.0,
-        cma_seed=0,
         max_envs_per_batch=0,
         seed=None,
         include_excluded=False,

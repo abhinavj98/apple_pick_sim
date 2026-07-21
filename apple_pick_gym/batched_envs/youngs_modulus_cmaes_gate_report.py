@@ -257,8 +257,8 @@ def extract_structure_evidence(structure: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"structure {structure_idx} status must be fitted")
 
     bounds = structure.get("bounds")
-    if not isinstance(bounds, dict):
-        raise ValueError(f"structure {structure_idx} bounds must be an object")
+    if bounds is not None and not isinstance(bounds, dict):
+        raise ValueError(f"structure {structure_idx} bounds must be null or an object")
 
     final_mean = structure.get("final_mean")
     if not isinstance(final_mean, dict):
@@ -271,7 +271,15 @@ def extract_structure_evidence(structure: dict[str, Any]) -> dict[str, Any]:
         final_mean.get("e_pa"),
         field=f"structure {structure_idx} final_mean.e_pa",
     )
-    _within_bounds(log10_e, e_pa, bounds, structure_idx=structure_idx)
+    if bounds is None:
+        for log_component, e_component in zip(log10_e, e_pa):
+            expected = 10.0**log_component
+            if not math.isclose(e_component, expected, rel_tol=1e-9, abs_tol=1e-12):
+                raise ValueError(
+                    f"structure {structure_idx} final mean e_pa must match 10**log10_e"
+                )
+    else:
+        _within_bounds(log10_e, e_pa, bounds, structure_idx=structure_idx)
 
     if "aggregate_sinkhorn" not in final_mean:
         raise ValueError(

@@ -88,17 +88,10 @@ def test_variance_sim_build_knobs(variance_ranges):
     assert sb.vic_gains.linear_d == pytest.approx(20.0)
     assert sb.vic_gains.angular_k == pytest.approx(10.0)
     assert sb.vic_gains.angular_d == pytest.approx(3.0)
-    # Critical kd at midpoint geometry: support uses kp=1e4; other roles ke=1e5.
-    ang = sb.joint_angular_kd_overrides
-    lin = sb.joint_linear_kd_overrides
-    assert ang["support"] == pytest.approx(130.48, rel=0.01)
-    assert ang["primary_spur"] == pytest.approx(0.25651, rel=0.01)
-    assert ang["spur_stem"] == pytest.approx(0.01527, rel=0.01)
-    assert ang["stem_apple"] == pytest.approx(10.233, rel=0.01)
-    assert lin["support"] == pytest.approx(4718.7, rel=0.01)
-    assert lin["primary_spur"] == pytest.approx(31.134, rel=0.01)
-    assert lin["spur_stem"] == pytest.approx(4.8541, rel=0.01)
-    assert lin["stem_apple"] == pytest.approx(323.6, rel=0.01)
+    # Joint weld damping via ζ (kd = ζ·2·√(k·I/m)); mutually exclusive with absolute kd maps.
+    assert sb.joint_damping_ratio == pytest.approx(0.2)
+    assert sb.joint_angular_kd_overrides == {}
+    assert sb.joint_linear_kd_overrides == {}
     assert sb.joint_angular_kp_overrides == {"support": 10000.0}
     assert sb.joint_linear_kp_overrides == {"support": 10000.0}
 

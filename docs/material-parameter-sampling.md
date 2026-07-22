@@ -73,35 +73,24 @@ Per rod segment, optional. When present, both keys are required (strictly positi
 
 ### Optional top-level `sim_build` (VIC + joint overrides)
 
-Ranges JSON may include an optional **file-level** (not per-segment) `sim_build` block so batched examples share one source of truth for TCP VIC gains and FIXED-joint kp/kd overrides:
+Ranges JSON may include an optional **file-level** (not per-segment) `sim_build` block so batched examples share one source of truth for TCP VIC gains and FIXED-joint damping / kp:
 
 ```json
 "sim_build": {
   "vic_gains": {
-    "linear_k": 200.0,
-    "linear_d": 10.0,
+    "linear_k": 100.0,
+    "linear_d": 20.0,
     "angular_k": 10.0,
-    "angular_d": 1.0
+    "angular_d": 3.0
   },
-  "joint_angular_kd_overrides": {
-    "support": 0.3,
-    "primary_spur": 0.3,
-    "spur_stem": 0.3,
-    "stem_apple": 0.3
-  },
-  "joint_linear_kd_overrides": {
-    "support": 0.3,
-    "primary_spur": 0.3,
-    "spur_stem": 0.3,
-    "stem_apple": 0.3
-  },
-  "joint_angular_kp_overrides": { "support": 2000.0 },
-  "joint_linear_kp_overrides": { "support": 2000.0 }
+  "joint_damping_ratio": 0.2,
+  "joint_angular_kp_overrides": { "support": 10000.0 },
+  "joint_linear_kp_overrides": { "support": 10000.0 }
 }
 ```
 
 - **Optional:** omit the key entirely; `load_ranges` still succeeds. `parse_sim_build(ranges)` returns `None`.
-- **When present:** `vic_gains` (all four keys) is required; joint override maps are optional. Values must be finite floats ≥ 0. Joint roles are `support`, `primary_spur`, `spur_stem`, `stem_apple`.
+- **When present:** `vic_gains` (all four keys) is required. Prefer **`joint_damping_ratio`** (ζ in `[0, 1]`) to derive absolute kd at build (`kd = ζ·2·√(k·I/m)`); absolute `joint_*_kd_overrides` remain supported but are **mutually exclusive** with `joint_damping_ratio`. Joint roles are `support`, `primary_spur`, `spur_stem`, `stem_apple`.
 - **Canonical ship:** `fruiting_system_ranges_real_world_proxy_variance.json`. Consumed by `example_batched_heterogeneous_coupled_sim.py`, `example_batched_collect_sysid_data.py`, and `example_batched_sysid_mmd_grid.py` (Python `EXAMPLE_JOINT_*` / VIC constants remain fallbacks when `sim_build` is absent).
 - **API:** `parse_sim_build` in `apple_pick_sim/fruiting_system/params.py`. Tuning notes: `docs/damping-tuning.md`. Design: `docs/specs/2026-07-10-fixture-sim-build-knobs-design.md`.
 

@@ -6,6 +6,7 @@ import dataclasses
 import inspect
 import math
 import random
+from collections.abc import Mapping, Sequence
 from typing import Any, Iterable
 
 import numpy as np
@@ -1034,14 +1035,67 @@ def _apply_batched_joint_kd_kernel(
     template_joint_indices: wp.array(dtype=wp.int32),
     kd_values: wp.array(dtype=wp.float32),
     joints_per_world: int,
+    n_templates: int,
     kd_slot: int,
     joint_penalty_kd: wp.array(dtype=wp.float32),
 ):
-    """Patch one penalty-kd slot for one (env, matched-template-joint) pair."""
+    """Patch one penalty-kd slot for one (env, matched-template-joint) pair.
+
+    ``kd_values`` is length ``num_envs * n_templates``, indexed as
+    ``w * n_templates + k`` (broadcast callers expand a single role map).
+    """
     w, k = wp.tid()
     global_joint = w * joints_per_world + template_joint_indices[k]
     c0 = joint_constraint_start[global_joint]
-    joint_penalty_kd[c0 + kd_slot] = kd_values[k]
+    joint_penalty_kd[c0 + kd_slot] = kd_values[w * n_templates + k]
+
+
+def _normalize_batched_label_kd(
+    label_kd: Mapping[str, float] | None,
+    label_kd_per_env: Sequence[Mapping[str, float]] | None,
+    *,
+    num_envs: int,
+) -> list[dict[str, float]]:
+    """Return per-env label->kd maps (broadcast ``label_kd`` when given)."""
+    if (label_kd is None) == (label_kd_per_env is None):
+        raise ValueError("provide exactly one of label_kd or label_kd_per_env")
+    if label_kd is not None:
+        return [{str(k): float(v) for k, v in label_kd.items()} for _ in range(int(num_envs))]
+    if len(label_kd_per_env) != int(num_envs):
+        raise ValueError(
+            f"label_kd_per_env length {len(label_kd_per_env)} != num_envs={num_envs}"
+        )
+    keys0 = set(label_kd_per_env[0].keys())
+    out: list[dict[str, float]] = []
+    for env_idx, mapping in enumerate(label_kd_per_env):
+        if set(mapping.keys()) != keys0:
+            raise ValueError(
+                "label_kd_per_env maps must share the same keys; "
+                f"env0={sorted(keys0)} env{env_idx}={sorted(mapping.keys())}"
+            )
+        out.append({str(k): float(v) for k, v in mapping.items()})
+    return out
+
+
+def _batched_kd_values_from_per_env(
+    matched_by_key: dict[str, list[int]],
+    per_env_label_kd: Sequence[Mapping[str, float]],
+    template_idx_np: np.ndarray,
+) -> np.ndarray:
+    """Pack ``(num_envs, n_templates)`` kd values in row-major order."""
+    n_templates = int(len(template_idx_np))
+    num_envs = int(len(per_env_label_kd))
+    kd_np = np.empty(num_envs * n_templates, dtype=np.float32)
+    for w, label_kd in enumerate(per_env_label_kd):
+        kd_by_template = {
+            int(j): float(label_kd[key])
+            for key, indices in matched_by_key.items()
+            for j in indices
+        }
+        base = w * n_templates
+        for k, template_j in enumerate(template_idx_np):
+            kd_np[base + k] = kd_by_template[int(template_j)]
+    return kd_np
 
 
 def set_fruiting_joint_angular_kd(
@@ -1113,23 +1167,24 @@ def set_fruiting_joint_angular_kd(
 def set_fruiting_joint_angular_kd_batched(
     solver: newton.solvers.SolverVBD,
     template_fruiting_fixed_joints: Iterable[tuple[int, str]],
-    label_kd: dict[str, float],
+    label_kd: dict[str, float] | None = None,
     *,
+    label_kd_per_env: Sequence[Mapping[str, float]] | None = None,
     num_envs: int,
     joints_per_world: int,
 ) -> dict[str, list[int]]:
     """Vectorized per-role angular kd patch across every env of a batched SolverVBD.
 
     Same substring-match semantics as :func:`set_fruiting_joint_angular_kd`, applied to
-    ``template_fruiting_fixed_joints`` (world-0 labels) and broadcast to every env via
-    a single ``wp.launch`` — no per-env Python loop, no full ``joint_penalty_kd`` host
-    round trip. Requires uniform topology across envs (already asserted by
-    ``build_heterogeneous_coupled_cable_scene`` / replicate builds).
+    ``template_fruiting_fixed_joints`` (world-0 labels) via a single ``wp.launch``.
+    Pass either ``label_kd`` (broadcast to all envs) or ``label_kd_per_env`` (one map
+    per env, same keys). Requires uniform topology across envs.
 
     Args:
         solver: Constructed VBD solver whose ``joint_penalty_kd`` array will be patched.
         template_fruiting_fixed_joints: World-0 ``(joint_index, label)`` pairs.
-        label_kd: Substring label -> absolute angular damping [N·m·s/rad].
+        label_kd: Substring label -> absolute angular damping [N·m·s/rad] (broadcast).
+        label_kd_per_env: Per-env label->kd maps (mutually exclusive with ``label_kd``).
         num_envs: Number of VBD worlds in the batched model.
         joints_per_world: Joint count per world (from ``BatchedEnvLayout.joints_per_world``
             or ``model.joint_world_start`` gap).
@@ -1142,11 +1197,21 @@ def set_fruiting_joint_angular_kd_batched(
         ValueError: Negative ``kd``, ambiguous/unmatched keys, wrong batch dimensions,
             or joints without an angular constraint slot.
     """
+    per_env_label_kd = _normalize_batched_label_kd(
+        label_kd, label_kd_per_env, num_envs=num_envs
+    )
     matched_by_key = _match_fruiting_joint_labels(
-        template_fruiting_fixed_joints, label_kd
+        template_fruiting_fixed_joints, per_env_label_kd[0]
     )
     if not matched_by_key:
         return {}
+    # Validate non-negative kd on every env (env0 already checked by match).
+    for env_idx, env_kd in enumerate(per_env_label_kd[1:], start=1):
+        _match_fruiting_joint_labels(
+            template_fruiting_fixed_joints,
+            env_kd,
+            param_name=f"label_kd_per_env[{env_idx}]",
+        )
 
     if num_envs < 1:
         raise ValueError(f"num_envs must be >= 1, got {num_envs}.")
@@ -1173,13 +1238,9 @@ def set_fruiting_joint_angular_kd_batched(
     _validate_template_joint_angular_slots(solver, template_indices)
 
     template_idx_np = np.asarray(template_indices, dtype=np.int32)
-    kd_by_template = {
-        j: float(label_kd[key])
-        for key, indices in matched_by_key.items()
-        for j in indices
-    }
-    kd_np = np.asarray(
-        [kd_by_template[int(j)] for j in template_idx_np], dtype=np.float32
+    n_templates = int(len(template_idx_np))
+    kd_np = _batched_kd_values_from_per_env(
+        matched_by_key, per_env_label_kd, template_idx_np
     )
 
     device = solver.joint_penalty_kd.device
@@ -1189,19 +1250,22 @@ def set_fruiting_joint_angular_kd_batched(
 
     wp.launch(
         _apply_batched_joint_kd_kernel,
-        dim=(int(num_envs), int(len(template_idx_np))),
+        dim=(int(num_envs), n_templates),
         inputs=[
             solver.joint_constraint_start,
             template_idx_wp,
             kd_wp,
             int(joints_per_world),
+            n_templates,
             int(ang_slot),
             solver.joint_penalty_kd,
         ],
         device=device,
     )
 
-    return _global_matched_joint_indices(matched_by_key, num_envs=num_envs, joints_per_world=joints_per_world)
+    return _global_matched_joint_indices(
+        matched_by_key, num_envs=num_envs, joints_per_world=joints_per_world
+    )
 
 
 def _global_matched_joint_indices(
@@ -1276,19 +1340,30 @@ def set_fruiting_joint_linear_kd(
 def set_fruiting_joint_linear_kd_batched(
     solver: newton.solvers.SolverVBD,
     template_fruiting_fixed_joints: Iterable[tuple[int, str]],
-    label_kd: dict[str, float],
+    label_kd: dict[str, float] | None = None,
     *,
+    label_kd_per_env: Sequence[Mapping[str, float]] | None = None,
     num_envs: int,
     joints_per_world: int,
 ) -> dict[str, list[int]]:
     """Vectorized per-role linear kd patch across every env of a batched SolverVBD."""
+    per_env_label_kd = _normalize_batched_label_kd(
+        label_kd, label_kd_per_env, num_envs=num_envs
+    )
     matched_by_key = _match_fruiting_joint_labels(
         template_fruiting_fixed_joints,
-        label_kd,
+        per_env_label_kd[0],
         value_label="linear kd",
     )
     if not matched_by_key:
         return {}
+    for env_idx, env_kd in enumerate(per_env_label_kd[1:], start=1):
+        _match_fruiting_joint_labels(
+            template_fruiting_fixed_joints,
+            env_kd,
+            param_name=f"label_kd_per_env[{env_idx}]",
+            value_label="linear kd",
+        )
 
     if num_envs < 1:
         raise ValueError(f"num_envs must be >= 1, got {num_envs}.")
@@ -1315,13 +1390,9 @@ def set_fruiting_joint_linear_kd_batched(
     _validate_template_joint_linear_slots(solver, template_indices)
 
     template_idx_np = np.asarray(template_indices, dtype=np.int32)
-    kd_by_template = {
-        j: float(label_kd[key])
-        for key, indices in matched_by_key.items()
-        for j in indices
-    }
-    kd_np = np.asarray(
-        [kd_by_template[int(j)] for j in template_idx_np], dtype=np.float32
+    n_templates = int(len(template_idx_np))
+    kd_np = _batched_kd_values_from_per_env(
+        matched_by_key, per_env_label_kd, template_idx_np
     )
 
     device = solver.joint_penalty_kd.device
@@ -1331,12 +1402,13 @@ def set_fruiting_joint_linear_kd_batched(
 
     wp.launch(
         _apply_batched_joint_kd_kernel,
-        dim=(int(num_envs), int(len(template_idx_np))),
+        dim=(int(num_envs), n_templates),
         inputs=[
             solver.joint_constraint_start,
             template_idx_wp,
             kd_wp,
             int(joints_per_world),
+            n_templates,
             int(lin_slot),
             solver.joint_penalty_kd,
         ],

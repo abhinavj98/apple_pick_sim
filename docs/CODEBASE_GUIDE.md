@@ -8,7 +8,7 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-07-17 (V.5.2 CMA-ES Done — see `docs/ROADMAP.md`) |
+| **Last reviewed** | 2026-07-22 (README CMA-ES sim-to-sim how-to; V.5.2 Done — see `docs/ROADMAP.md`) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
@@ -107,13 +107,14 @@ Organized by question, not by filename — each doc listed once, under its prima
 
 - `docs/material-parameter-sampling.md` — the shipped `(E, ζ)` → derived VBD-stiffness/damping sampling contract, **plus a "Derivation" appendix** explaining why raw independent sampling is unstable and the physics behind the fix. Also documents optional top-level `sim_build` (VIC + joint kp/kd) on ranges JSON.
 - `docs/real-world-proxy.md` — bench-proxy geometry, placement, stiffness tiers, and a still-open topology mismatch between the nominal and variance proxy fixtures (see its "Topology caveat").
-- `docs/damping-tuning.md` — practical damping tuning notes; variance fixture `sim_build` is the canonical copy of batched-example VIC/joint overrides.
+- `docs/damping-tuning.md` — practical damping tuning notes; variance fixture `sim_build` (`joint_damping_ratio` / joint kp) is the canonical copy for batched-example weld damping.
 
 ### "How does system identification / sys-ID work?"
 
 - `docs/system_identification.md` — the full M3 protocol (excitation trajectories and CMA-ES direction) **plus an implementation-notes appendix** for the shipped §2.1 quasi-static stepped mapping (trajectory phases, Fibonacci hemisphere, code map, tests).
 - **`docs/youngs-modulus-sysid.md`** — canonical implemented E-grid, complete scoring, fused replay, ranking report/gate, and verification contract; handoff pointer to the separate CMA-ES command.
 - **`docs/youngs-modulus-cmaes-implementation.md`** — CMA-ES loop behavior, counters, reports, gate, tests, and uv commands (V.5.2 verified).
+- **README → CMA-ES sim-to-sim transfer** — copy-paste collect → fit → gate commands for Young's-modulus CMA-ES (`example_batched_collect_sysid_data.py` then `example_youngs_modulus_cmaes.py`).
 - `docs/sysid-transition-features.md` — **MMD/Wasserstein state vector and transition-bag layout** (\(s\), \([s,\Delta s]\), median/hold one-hots, pooling, gate flags).
 - `docs/sysid-trajectory-storage.md` — legacy single-env Parquet schema, collection/replay commands, dataset dashboard.
 - `docs/batched-sysid-dataset.md` — **batched_sysid_v1** layout for parallel collection (`example_batched_collect_sysid_data.py`).

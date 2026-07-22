@@ -3,7 +3,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Status** | Shipped (V.4.3) |
-| **Next** | **V.5.2** CEM calibration loop; V.5.1 Done (optional `--score-mmd` cleanup later) — see `docs/ROADMAP.md` |
+| **Next** | **V.5.3** held-out sim-sim validation (V.5.1–V.5.2 Done; optional `--score-mmd` cleanup later) — see `docs/ROADMAP.md` |
 
 ## Summary
 

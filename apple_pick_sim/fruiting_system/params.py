@@ -423,6 +423,7 @@ _SIM_BUILD_JOINT_ROLES = frozenset({"support", "primary_spur", "spur_stem", "ste
 _SIM_BUILD_ALLOWED_KEYS = frozenset(
     {
         "vic_gains",
+        "joint_damping_ratio",
         "joint_angular_kd_overrides",
         "joint_linear_kd_overrides",
         "joint_angular_kp_overrides",
@@ -451,6 +452,7 @@ class SimBuildConfig:
     joint_linear_kd_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     joint_angular_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     joint_linear_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
+    joint_damping_ratio: float | None = None
 
 
 def _coerce_xyz_triplet(raw: object, *, field: str) -> tuple[float, float, float]:
@@ -466,6 +468,14 @@ def _coerce_nonnegative_float(raw: object, *, field: str) -> float:
         raise ValueError(f"{field} must be a finite float >= 0") from exc
     if not math.isfinite(value) or value < 0.0:
         raise ValueError(f"{field} must be a finite float >= 0, got {raw!r}")
+    return value
+
+
+def _coerce_unit_interval_float(raw: object, *, field: str) -> float:
+    """Finite float in ``[0, 1]`` (damping ratio)."""
+    value = _coerce_nonnegative_float(raw, field=field)
+    if value > 1.0:
+        raise ValueError(f"{field} must be <= 1, got {raw!r}")
     return value
 
 
@@ -504,6 +514,12 @@ def _coerce_vic_gains(raw: object) -> VicGainsConfig:
     )
 
 
+def _coerce_joint_damping_ratio(raw: object) -> float | None:
+    if raw is None:
+        return None
+    return _coerce_unit_interval_float(raw, field="sim_build.joint_damping_ratio")
+
+
 def _validate_sim_build(block: object) -> None:
     """Raise ValueError if ``sim_build`` is present but invalid."""
     if block is None:
@@ -516,6 +532,7 @@ def _validate_sim_build(block: object) -> None:
     if "vic_gains" not in block:
         raise ValueError("sim_build.vic_gains is required when sim_build is present")
     _coerce_vic_gains(block["vic_gains"])
+    zeta = _coerce_joint_damping_ratio(block.get("joint_damping_ratio"))
     for field in (
         "joint_angular_kd_overrides",
         "joint_linear_kd_overrides",
@@ -524,6 +541,17 @@ def _validate_sim_build(block: object) -> None:
     ):
         if field in block:
             _coerce_joint_overrides(block[field], field=field)
+    ang_kd = _coerce_joint_overrides(
+        block.get("joint_angular_kd_overrides"), field="joint_angular_kd_overrides"
+    )
+    lin_kd = _coerce_joint_overrides(
+        block.get("joint_linear_kd_overrides"), field="joint_linear_kd_overrides"
+    )
+    if zeta is not None and (ang_kd or lin_kd):
+        raise ValueError(
+            "sim_build.joint_damping_ratio is mutually exclusive with "
+            "joint_angular_kd_overrides / joint_linear_kd_overrides"
+        )
 
 
 def parse_sim_build(ranges: dict) -> SimBuildConfig | None:
@@ -533,6 +561,7 @@ def parse_sim_build(ranges: dict) -> SimBuildConfig | None:
         return None
     if not isinstance(block, dict):
         raise ValueError("sim_build must be a JSON object")
+    _validate_sim_build(block)
     return SimBuildConfig(
         vic_gains=_coerce_vic_gains(block["vic_gains"]),
         joint_angular_kd_overrides=_coerce_joint_overrides(
@@ -547,6 +576,7 @@ def parse_sim_build(ranges: dict) -> SimBuildConfig | None:
         joint_linear_kp_overrides=_coerce_joint_overrides(
             block.get("joint_linear_kp_overrides"), field="joint_linear_kp_overrides"
         ),
+        joint_damping_ratio=_coerce_joint_damping_ratio(block.get("joint_damping_ratio")),
     )
 
 

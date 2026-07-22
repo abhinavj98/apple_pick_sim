@@ -144,13 +144,16 @@ selected structure:
 \]
 
 Bounds for the CMA search box come from `CMA_SEARCH_PARAMS["search_bounds_log10"]`
-(default: start mean ± 2 log10 decades; `None` = unbounded), not the narrow
-fixture `youngs_modulus_pa` ε-bands. Default initialization is an explicit
-log10-E start mean (variance-fixture midpoints), not recorded GT; optional
-`"bounds_midpoint"` uses the loaded fixture midpoints. Geometry,
-damping ratio, density, mass, secondary E, and all other non-fitted fields
-remain fixed for this slice. Derived VBD knobs are rebuilt from candidate E;
-they are not independent optimizer dimensions.
+(shipped default: absolute 0.1–100 GPa / \(\log_{10} E \in [8, 11]\) per role;
+`None` = unbounded), not the narrow fixture `youngs_modulus_pa` ε-bands.
+Default initialization is the search-box midpoint `[9.5, 9.5, 9.5]`, not
+recorded GT; optional `"bounds_midpoint"` uses the loaded fixture midpoints.
+Geometry, damping ratio, density, mass, secondary E, and all other non-fitted
+fields remain fixed for this slice. Derived VBD knobs are rebuilt from
+candidate E; they are not independent optimizer dimensions.
+
+Runnable collect → fit commands: **README.md** → **CMA-ES sim-to-sim transfer
+(Young's modulus)**.
 
 1. **Ask:** obtain one bounded CMA-ES population.
 2. **Replay:** evaluate the population with the fused candidate scheduler and

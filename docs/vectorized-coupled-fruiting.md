@@ -434,4 +434,4 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --viewer null 
 | `separate_worlds` on CPU pytest | `separate_worlds=True` when `num_envs > 1` |
 | IK / settle drift across worlds | Per-world settled copy; co-located replicate; V.2 per-env IK bootstrap; runtime per-env IK scatter |
 | Per-env actions vs broadcast confusion | FR3 teleop uses `BatchedTemplateIK.scatter_to_model`; `broadcast_joint_q_from_world0` is homogeneous bootstrap / placeholder only — not used on the heterogeneous FR3 path |
-| CEM wants fast θ sweeps | Per-env K/B scatter is shipped (build-time); recorded-action replay + MSE/Wasserstein grid shipped (V.4.3); V.5.1 Done; **V.5.2** CEM is Current focus — see `docs/ROADMAP.md` |
+| CMA-ES wants fast θ sweeps | Per-env K/B scatter is shipped (build-time); recorded-action replay + MSE/Wasserstein grid shipped (V.4.3); V.5.1–V.5.2 Done; Current focus **V.5.3** held-out sim-sim validation — see `docs/ROADMAP.md` |

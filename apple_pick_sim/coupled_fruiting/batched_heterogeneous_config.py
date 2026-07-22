@@ -170,6 +170,9 @@ class FruitingSystemConfig:
     )
     joint_angular_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     joint_linear_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
+    # When set, build expands ζ → absolute kd (mutually exclusive with non-empty kd maps
+    # in ranges JSON). Absolute kd override dicts above are then ignored at apply time.
+    joint_damping_ratio: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)

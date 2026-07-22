@@ -4,7 +4,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Roadmap slice** | M3.0.3 (observation-only replay init) **Done**; M3.0.4 (digital-twin fixture catalog) **Done**; V.4.2.1 helpers/`--infer-params` **Done** (infer-only floor optional cleanup) — see `docs/ROADMAP.md` (Current focus is **V.5.2** CEM) |
+| **Roadmap slice** | M3.0.3 (observation-only replay init) **Done**; M3.0.4 (digital-twin fixture catalog) **Done**; V.4.2.1 helpers/`--infer-params` **Done** (infer-only floor optional cleanup) — see `docs/ROADMAP.md` (Current focus is **V.5.3**) |
 | **Related docs** | `docs/system_identification.md`, `docs/sysid-trajectory-storage.md`, `docs/batched-sysid-dataset.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/gym-observation-contract.md`, `docs/real-world-proxy.md` |
 
 This document merges the observation-only-replay spec and the geometry-reconstruction implementation notes that used to live in two separate files (`observation-replay-digital-twin.md`, `digital-twin-from-obs-implementation.md`).

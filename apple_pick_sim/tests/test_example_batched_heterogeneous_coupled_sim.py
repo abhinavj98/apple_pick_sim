@@ -113,6 +113,7 @@ def test_config_from_args_matches_defaults_without_cli_overrides():
         joint_linear_kd,
         joint_angular_kp,
         joint_linear_kp,
+        joint_damping_ratio,
     ) = _resolve_sim_build_knobs(load_ranges(default_ranges_fixture_path()))
 
     assert cfg.runtime.num_envs == base.runtime.num_envs
@@ -132,6 +133,7 @@ def test_config_from_args_matches_defaults_without_cli_overrides():
     assert cfg.fruiting_system.joint_linear_kd_overrides == joint_linear_kd
     assert cfg.fruiting_system.joint_angular_kp_overrides == joint_angular_kp
     assert cfg.fruiting_system.joint_linear_kp_overrides == joint_linear_kp
+    assert cfg.fruiting_system.joint_damping_ratio == joint_damping_ratio
 
 
 def test_joint_kd_overrides_stay_in_module_constants():
@@ -156,6 +158,7 @@ def test_joint_kd_overrides_stay_in_module_constants():
         joint_linear_kd,
         joint_angular_kp,
         joint_linear_kp,
+        joint_damping_ratio,
     ) = _resolve_sim_build_knobs(load_ranges(default_ranges_fixture_path()))
     assert cfg.fruiting_system == dataclasses.replace(
         base.fruiting_system,
@@ -163,6 +166,7 @@ def test_joint_kd_overrides_stay_in_module_constants():
         joint_linear_kd_overrides=joint_linear_kd,
         joint_angular_kp_overrides=joint_angular_kp,
         joint_linear_kp_overrides=joint_linear_kp,
+        joint_damping_ratio=joint_damping_ratio,
     )
     args = _make_parser().parse_args([])
     assert args.vic_linear_k is None

@@ -1157,6 +1157,63 @@ def penalize_youngs_modulus_scores(
     return fitness, metadata
 
 
+# After this many additional ask()/evaluate cycles still all-DQ, fall back to a
+# flat-penalty tell so CMA can move/shrink instead of killing the structure.
+DEFAULT_ALL_INVALID_REASKS = 3
+ALL_INVALID_FLAT_PENALTY = 1.0e12
+
+
+def flat_penalize_all_invalid_scores(
+    scores: Sequence[YoungsModulusCandidateScore],
+    *,
+    flat_penalty: float = ALL_INVALID_FLAT_PENALTY,
+) -> tuple[list[float], list[dict[str, Any]]]:
+    """Assign a uniform huge fitness when no eligible scores exist.
+
+    Used only after re-asks are exhausted so ``tell()`` still updates the
+    distribution away from an unstable region.
+    """
+    ordered = sorted(scores, key=lambda score: int(score.candidate_index))
+    _require_complete_candidate_indices(ordered, population_size=len(ordered))
+    penalty = float(flat_penalty)
+    if not math.isfinite(penalty) or penalty <= 0.0:
+        raise CmaGenerationFailure(
+            "penalty",
+            f"flat penalty must be a positive finite value, got {penalty}",
+        )
+    fitness: list[float] = []
+    metadata: list[dict[str, Any]] = []
+    for score in ordered:
+        raw = float(score.aggregate_sinkhorn)
+        fitness.append(penalty)
+        metadata.append(
+            {
+                "candidate_index": int(score.candidate_index),
+                "penalized": True,
+                "raw_aggregate_sinkhorn": raw,
+                "fitness": penalty,
+                "disqualification_reason": score.disqualification_reason,
+                "flat_penalty_tell": True,
+            }
+        )
+    return fitness, metadata
+
+
+def _annotate_penalty_metadata(
+    metadata: list[dict[str, Any]],
+    *,
+    all_invalid_reasks: int,
+) -> list[dict[str, Any]]:
+    if int(all_invalid_reasks) <= 0:
+        return metadata
+    out: list[dict[str, Any]] = []
+    for meta in metadata:
+        annotated = dict(meta)
+        annotated["all_invalid_reasks"] = int(all_invalid_reasks)
+        out.append(annotated)
+    return out
+
+
 def _update_best_sample(
     state: StructureCmaState,
     *,
@@ -1178,11 +1235,21 @@ def run_cma_generation_wave(
     *,
     evaluate_fn: Callable[..., YoungsModulusBatchEvaluation],
     generation_index: int,
+    all_invalid_reasks: int = DEFAULT_ALL_INVALID_REASKS,
 ) -> CmaGenerationWaveResult:
-    """Ask all active optimizers once, evaluate fused, then tell independently."""
+    """Ask active optimizers, evaluate fused, then tell independently.
+
+    If a structure's population is entirely disqualified (`all_invalid`):
+    1. re-``ask()`` / re-evaluate up to ``all_invalid_reasks`` more times, then
+    2. if still all-DQ, ``tell()`` with :data:`ALL_INVALID_FLAT_PENALTY` so CMA
+       can move/shrink instead of failing the structure.
+
+    Pass ``all_invalid_reasks=0`` to keep the legacy fail-without-tell behavior.
+    """
     if not active_states:
         return CmaGenerationWaveResult(records={}, failures={}, batch_evaluation=None)
 
+    reask_budget = max(0, int(all_invalid_reasks))
     ordered_indices = list(active_states.keys())
     ask_samples: dict[int, Any] = {}
     ask_log10: dict[int, tuple[tuple[float, float, float], ...]] = {}
@@ -1190,24 +1257,94 @@ def run_cma_generation_wave(
     structure_candidates: list[tuple[int, tuple[YoungsModulusCandidate, ...]]] = []
     failures: dict[int, CmaGenerationFailure] = {}
     records: dict[int, CmaGenerationRecord] = {}
+    reask_counts: dict[int, int] = {idx: 0 for idx in ordered_indices}
+    wave_seconds = 0.0
+    last_batch: YoungsModulusBatchEvaluation | None = None
+
+    def _ask_structure(structure_idx: int) -> tuple[int, tuple[YoungsModulusCandidate, ...]]:
+        state = active_states[structure_idx]
+        ask_distributions[structure_idx] = snapshot_optimizer_distribution(
+            state.optimizer
+        )
+        samples = state.optimizer.ask()
+        ask_samples[structure_idx] = samples
+        parsed = _validate_ask_population(
+            samples,
+            population_size=state.population_size,
+            bounds=state.bounds,
+            search_bounds_log10=state.search_bounds_log10,
+        )
+        ask_log10[structure_idx] = parsed
+        candidates = tuple(candidates_from_log10_e(row) for row in parsed)
+        return (int(structure_idx), candidates)
+
+    def _commit_tell(
+        structure_idx: int,
+        *,
+        ordered_scores: tuple[YoungsModulusCandidateScore, ...],
+        fitness: list[float],
+        metadata: list[dict[str, Any]],
+        update_best: bool,
+    ) -> None:
+        state = active_states[structure_idx]
+        samples = ask_samples[structure_idx]
+        state.optimizer.tell(samples, fitness)
+        state.completed_generations += 1
+        state.optimizer_samples_told += len(fitness)
+        if update_best:
+            _update_best_sample(
+                state,
+                samples_log10=ask_log10[structure_idx],
+                fitness=fitness,
+            )
+        annotated = _annotate_penalty_metadata(
+            metadata,
+            all_invalid_reasks=reask_counts.get(structure_idx, 0),
+        )
+        record = CmaGenerationRecord(
+            generation_index=int(generation_index),
+            structure_idx=int(structure_idx),
+            ask_samples_log10=ask_log10[structure_idx],
+            candidates=tuple(score.candidate for score in ordered_scores),
+            raw_scores=ordered_scores,
+            penalized_fitness=tuple(fitness),
+            penalty_metadata=tuple(annotated),
+            ask_distribution=ask_distributions[structure_idx],
+            post_tell_distribution=snapshot_optimizer_distribution(state.optimizer),
+            wave_seconds=wave_seconds,
+        )
+        state.generations.append(record)
+        records[structure_idx] = record
+
+    def _ordered_scores_from_evaluation(
+        structure_idx: int,
+        batch: YoungsModulusBatchEvaluation,
+    ) -> tuple[YoungsModulusCandidateScore, ...]:
+        state = active_states[structure_idx]
+        if structure_idx in batch.errors:
+            raise CmaGenerationFailure(
+                "generation_evaluation",
+                str(batch.errors[structure_idx]),
+            )
+        if structure_idx not in batch.evaluations:
+            raise CmaGenerationFailure(
+                "generation_evaluation",
+                "missing evaluation for structure",
+            )
+        evaluation = batch.evaluations[structure_idx]
+        _require_complete_candidate_indices(
+            evaluation.scores,
+            population_size=state.population_size,
+        )
+        score_by_index = {
+            int(score.candidate_index): score for score in evaluation.scores
+        }
+        return tuple(score_by_index[i] for i in range(state.population_size))
 
     for structure_idx in ordered_indices:
         state = active_states[structure_idx]
         try:
-            ask_distributions[structure_idx] = snapshot_optimizer_distribution(
-                state.optimizer
-            )
-            samples = state.optimizer.ask()
-            ask_samples[structure_idx] = samples
-            parsed = _validate_ask_population(
-                samples,
-                population_size=state.population_size,
-                bounds=state.bounds,
-                search_bounds_log10=state.search_bounds_log10,
-            )
-            ask_log10[structure_idx] = parsed
-            candidates = tuple(candidates_from_log10_e(row) for row in parsed)
-            structure_candidates.append((int(structure_idx), candidates))
+            structure_candidates.append(_ask_structure(structure_idx))
         except CmaGenerationFailure as exc:
             state.failure = exc
             state.status = "failed"
@@ -1220,71 +1357,78 @@ def run_cma_generation_wave(
             batch_evaluation=None,
         )
 
+    pending = {int(idx) for idx, _ in structure_candidates}
     batch_started = time.perf_counter()
-    batch = evaluate_fn(structures=structure_candidates, wave_kind="generation")
+    last_batch = evaluate_fn(structures=structure_candidates, wave_kind="generation")
     wave_seconds = float(time.perf_counter() - batch_started)
 
-    for structure_idx, _candidates in structure_candidates:
-        state = active_states[structure_idx]
-        try:
-            if structure_idx in batch.errors:
-                raise CmaGenerationFailure(
-                    "generation_evaluation",
-                    str(batch.errors[structure_idx]),
+    while pending:
+        still_pending: set[int] = set()
+        for structure_idx in sorted(pending):
+            state = active_states[structure_idx]
+            try:
+                ordered_scores = _ordered_scores_from_evaluation(
+                    structure_idx, last_batch
                 )
-            if structure_idx not in batch.evaluations:
-                raise CmaGenerationFailure(
-                    "generation_evaluation",
-                    "missing evaluation for structure",
+                try:
+                    fitness, metadata = penalize_youngs_modulus_scores(ordered_scores)
+                except CmaGenerationFailure as exc:
+                    if exc.stage != "all_invalid":
+                        raise
+                    if reask_counts[structure_idx] < reask_budget:
+                        reask_counts[structure_idx] += 1
+                        still_pending.add(structure_idx)
+                        continue
+                    if reask_budget <= 0 and reask_counts[structure_idx] == 0:
+                        # Legacy: no re-asks configured → fail without tell.
+                        raise
+                    fitness, metadata = flat_penalize_all_invalid_scores(ordered_scores)
+                    _commit_tell(
+                        structure_idx,
+                        ordered_scores=ordered_scores,
+                        fitness=fitness,
+                        metadata=metadata,
+                        update_best=False,
+                    )
+                    continue
+                _commit_tell(
+                    structure_idx,
+                    ordered_scores=ordered_scores,
+                    fitness=fitness,
+                    metadata=metadata,
+                    update_best=True,
                 )
-            evaluation = batch.evaluations[structure_idx]
-            _require_complete_candidate_indices(
-                evaluation.scores,
-                population_size=state.population_size,
-            )
-            score_by_index = {
-                int(score.candidate_index): score for score in evaluation.scores
-            }
-            ordered_scores = tuple(
-                score_by_index[i] for i in range(state.population_size)
-            )
-            fitness, metadata = penalize_youngs_modulus_scores(ordered_scores)
-            samples = ask_samples[structure_idx]
-            state.optimizer.tell(samples, fitness)
-            state.completed_generations += 1
-            state.optimizer_samples_told += len(fitness)
-            _update_best_sample(
-                state,
-                samples_log10=ask_log10[structure_idx],
-                fitness=fitness,
-            )
-            record = CmaGenerationRecord(
-                generation_index=int(generation_index),
-                structure_idx=int(structure_idx),
-                ask_samples_log10=ask_log10[structure_idx],
-                candidates=tuple(
-                    score.candidate for score in ordered_scores
-                ),
-                raw_scores=ordered_scores,
-                penalized_fitness=tuple(fitness),
-                penalty_metadata=tuple(metadata),
-                ask_distribution=ask_distributions[structure_idx],
-                post_tell_distribution=snapshot_optimizer_distribution(
-                    state.optimizer
-                ),
-                wave_seconds=wave_seconds,
-            )
-            state.generations.append(record)
-            records[structure_idx] = record
-        except CmaGenerationFailure as exc:
-            state.failure = exc
-            state.status = "failed"
-            failures[structure_idx] = exc
+            except CmaGenerationFailure as exc:
+                state.failure = exc
+                state.status = "failed"
+                failures[structure_idx] = exc
+
+        if not still_pending:
+            break
+
+        retry_candidates: list[tuple[int, tuple[YoungsModulusCandidate, ...]]] = []
+        for structure_idx in sorted(still_pending):
+            state = active_states[structure_idx]
+            try:
+                retry_candidates.append(_ask_structure(structure_idx))
+            except CmaGenerationFailure as exc:
+                state.failure = exc
+                state.status = "failed"
+                failures[structure_idx] = exc
+                still_pending.discard(structure_idx)
+
+        if not retry_candidates:
+            break
+
+        batch_started = time.perf_counter()
+        last_batch = evaluate_fn(structures=retry_candidates, wave_kind="generation")
+        wave_seconds += float(time.perf_counter() - batch_started)
+        pending = {int(idx) for idx, _ in retry_candidates}
 
     return CmaGenerationWaveResult(
         records=records,
         failures=failures,
-        batch_evaluation=batch,
+        batch_evaluation=last_batch,
     )
 
 

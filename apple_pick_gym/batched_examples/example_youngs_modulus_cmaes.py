@@ -90,9 +90,9 @@ ViewerCancelled = SysIdReplayCancelled
 # "bounds_midpoint" to derive midpoints from the loaded fixture.
 # search_bounds_log10: None = unbounded search; or
 #   {"lower": [p, s, t], "upper": [p, s, t]} in log10-E.
-# Absolute safety box (not fixture ε-bands): primary 1–100 GPa, spur/stem 0.1–10 GPa.
-_CMA_SEARCH_LOG10_LOWER = [9.0, 8.0, 8.0]  # P: 1 GPa; Sp/St: 0.1 GPa
-_CMA_SEARCH_LOG10_UPPER = [11.0, 10.0, 10.0]  # P: 100 GPa; Sp/St: 10 GPa
+# Absolute safety box (not fixture ε-bands): all roles 0.1–100 GPa (log10 8–11).
+_CMA_SEARCH_LOG10_LOWER = [8.0, 8.0, 8.0]  # 0.1 GPa
+_CMA_SEARCH_LOG10_UPPER = [11.0, 11.0, 11.0]  # 100 GPa
 _CMA_MEAN_LOG10 = [_CMA_SEARCH_LOG10_LOWER[i] + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i]) for i in range(3)]
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),

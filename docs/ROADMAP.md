@@ -360,12 +360,12 @@ uv run --env-file pytest.env python \
   --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
   --include-gt-candidate --max-candidates 8 --overwrite
 
-# Separate CMA-ES fit on the same dataset layout (requires healthy collect):
+# Separate CMA-ES fit (collect → fit → gates): see README.md
+# "CMA-ES sim-to-sim transfer (Young's modulus)" and
+# docs/youngs-modulus-cmaes-implementation.md
 # uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
 #   --viewer null --dataset tmp/youngs_gt_smoke --output tmp/youngs_cmaes_smoke \
 #   --overwrite
-# (edit CMA_SEARCH_PARAMS in example_youngs_modulus_cmaes.py for search knobs)
-# Add --no-multi-structure-batch above for the scalar parity/debug path.
 # Full Young's multi-seed ranking gate (expensive; defaults to 3 seeds x 5 structures x 5 directions):
 # bash scripts/gate_youngs_modulus_sysid.sh
 # Full Young's multi-seed CMA integrity gate (expensive; same default collect size; no GT-error threshold):

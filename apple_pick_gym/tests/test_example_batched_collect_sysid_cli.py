@@ -142,6 +142,7 @@ def test_sim_config_stays_in_module_constants():
         joint_linear_kd,
         joint_angular_kp,
         joint_linear_kp,
+        joint_damping_ratio,
     ) = module._resolve_sim_build_knobs(ranges)
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=4)
     assert cfg == dataclasses.replace(
@@ -168,6 +169,7 @@ def test_sim_config_stays_in_module_constants():
             joint_linear_kd_overrides=joint_linear_kd,
             joint_angular_kp_overrides=joint_angular_kp,
             joint_linear_kp_overrides=joint_linear_kp,
+            joint_damping_ratio=joint_damping_ratio,
         ),
     )
 
@@ -183,6 +185,8 @@ def test_build_sim_config_reads_sim_build_from_default_fixture():
     assert cfg.controller.vic_gains.linear_k == pytest.approx(sb.vic_gains.linear_k)
     assert cfg.fruiting_system.joint_angular_kd_overrides == sb.joint_angular_kd_overrides
     assert cfg.fruiting_system.joint_angular_kp_overrides == sb.joint_angular_kp_overrides
+    assert cfg.fruiting_system.joint_damping_ratio == sb.joint_damping_ratio
+    assert cfg.fruiting_system.joint_damping_ratio == pytest.approx(0.2)
 
 
 def test_build_sim_config_settle_quiet_every_override():

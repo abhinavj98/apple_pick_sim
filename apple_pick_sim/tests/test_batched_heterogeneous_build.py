@@ -202,6 +202,11 @@ def test_diagnostics_gated_on(ranges, per_env_params):
 @requires_fr3
 def test_joint_damping_overrides_applied_before_settle(ranges, per_env_params, monkeypatch):
     """Settle must see per-role angular and linear kd (e.g. stem_apple), not only post-weld globals."""
+    from apple_pick_sim.fruiting_system.joint_kd_scaling import (
+        scale_joint_kd_overrides,
+        youngs_modulus_ref_from_ranges,
+    )
+
     stem_angular_at_settle: list[float] = []
     stem_linear_at_settle: list[float] = []
     real_settle = build_module._run_vbd_settle
@@ -226,10 +231,17 @@ def test_joint_damping_overrides_applied_before_settle(ranges, per_env_params, m
         ),
     )
     build_batched_heterogeneous_scene(cfg, per_env_params, ranges)
+    ref_e = youngs_modulus_ref_from_ranges(ranges)
+    expect_ang = scale_joint_kd_overrides(angular_overrides, per_env_params[0], ref_e)[
+        "stem_apple"
+    ]
+    expect_lin = scale_joint_kd_overrides(linear_overrides, per_env_params[0], ref_e)[
+        "stem_apple"
+    ]
     assert len(stem_angular_at_settle) == 1
-    assert stem_angular_at_settle[0] == pytest.approx(7.5)
+    assert stem_angular_at_settle[0] == pytest.approx(expect_ang)
     assert len(stem_linear_at_settle) == 1
-    assert stem_linear_at_settle[0] == pytest.approx(42.0)
+    assert stem_linear_at_settle[0] == pytest.approx(expect_lin)
 
 
 @requires_fr3
@@ -258,6 +270,11 @@ def test_kd_overrides_on_result_and_applied(ranges, per_env_params):
 
 @requires_fr3
 def test_joint_damping_overrides_applied_on_final_scene(ranges, per_env_params):
+    from apple_pick_sim.fruiting_system.joint_kd_scaling import (
+        scale_joint_kd_overrides,
+        youngs_modulus_ref_from_ranges,
+    )
+
     angular_overrides = {"stem_apple": 12.0}
     linear_overrides = {"stem_apple": 88.0}
     cfg = dataclasses.replace(
@@ -275,8 +292,68 @@ def test_joint_damping_overrides_applied_on_final_scene(ranges, per_env_params):
         j for j, lab in result.scene.cable.fruiting_fixed_joints if "stem_apple" in lab
     )
     solver = result.scene.cable.solver
-    assert _angular_kd_at_joint(solver, j_stem_apple) == pytest.approx(12.0)
-    assert _linear_kd_at_joint(solver, j_stem_apple) == pytest.approx(88.0)
+    ref_e = youngs_modulus_ref_from_ranges(ranges)
+    expect_ang = scale_joint_kd_overrides(angular_overrides, per_env_params[0], ref_e)[
+        "stem_apple"
+    ]
+    expect_lin = scale_joint_kd_overrides(linear_overrides, per_env_params[0], ref_e)[
+        "stem_apple"
+    ]
+    assert _angular_kd_at_joint(solver, j_stem_apple) == pytest.approx(expect_ang)
+    assert _linear_kd_at_joint(solver, j_stem_apple) == pytest.approx(expect_lin)
+
+
+@requires_fr3
+def test_joint_kd_scales_with_stem_youngs_modulus_per_env(ranges):
+    """Distal kd tracks √(E/E_ref) per env; support stays at fixture kd."""
+    import math
+
+    from apple_pick_sim.fruiting_system import set_rod_youngs_modulus
+    from apple_pick_sim.fruiting_system.joint_kd_scaling import (
+        youngs_modulus_ref_from_ranges,
+    )
+
+    del ranges  # T-junction fixture owns support joints
+    t_junction_ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
+    t_params = sample_heterogeneous_params_list(
+        t_junction_ranges, topology_seed=7, num_envs=_NUM_ENVS
+    )
+    t_ref = youngs_modulus_ref_from_ranges(t_junction_ranges)
+    t_stiff = [
+        set_rod_youngs_modulus(p, "stem", 10.0 * t_ref["stem"]) for p in t_params
+    ]
+    angular_overrides = {"stem_apple": 4.0, "support": 9.0}
+    linear_overrides = {"stem_apple": 5.0, "support": 11.0}
+    cfg = dataclasses.replace(
+        _vbd_only_config(),
+        fruiting_system=dataclasses.replace(
+            _vbd_only_config().fruiting_system,
+            joint_angular_kd_overrides=angular_overrides,
+            joint_linear_kd_overrides=linear_overrides,
+        ),
+    )
+    result = build_batched_heterogeneous_scene(cfg, t_stiff, t_junction_ranges)
+    layout = result.scene.layout
+    assert layout is not None
+    solver = result.scene.cable.solver
+    j_stem = next(
+        j for j, lab in result.scene.cable.fruiting_fixed_joints if "stem_apple" in lab
+    )
+    j_support = next(
+        j
+        for j, lab in result.scene.cable.fruiting_fixed_joints
+        if "primary_support_left" in lab
+    )
+    scale = math.sqrt(10.0)
+    for w in range(layout.num_envs):
+        base = w * layout.joints_per_world
+        assert _angular_kd_at_joint(solver, base + j_stem) == pytest.approx(4.0 * scale)
+        assert _linear_kd_at_joint(solver, base + j_stem) == pytest.approx(5.0 * scale)
+        assert _angular_kd_at_joint(solver, base + j_support) == pytest.approx(9.0)
+        assert _linear_kd_at_joint(solver, base + j_support) == pytest.approx(11.0)
+    # Metadata keeps fixture (unscaled) values.
+    assert result.joint_angular_kd_overrides["stem_apple"] == pytest.approx(4.0)
+    assert result.joint_angular_kd_overrides["support"] == pytest.approx(9.0)
 
 
 def _angular_kd_at_joint(solver, global_joint_index: int) -> float:
@@ -403,8 +480,57 @@ def test_kd_overrides_filtered_to_matching_joint_labels(ranges, per_env_params):
 
 
 @requires_fr3
+def test_joint_damping_ratio_expands_to_underdamped_kd_on_t_junction():
+    """Variance fixture ζ=0.2 yields support/stem_apple angular kd ≪ old absolute maps."""
+    from apple_pick_sim.fruiting_system.joint_kd_scaling import (
+        scale_joint_kd_overrides,
+        youngs_modulus_ref_from_ranges,
+    )
+
+    t_junction_ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
+    params = sample_heterogeneous_params_list(
+        t_junction_ranges, topology_seed=42, num_envs=_NUM_ENVS
+    )
+    cfg = dataclasses.replace(
+        _vbd_only_config(settle_substeps=0),
+        fruiting_system=dataclasses.replace(
+            _vbd_only_config().fruiting_system,
+            joint_angular_kd_overrides={},
+            joint_linear_kd_overrides={},
+            joint_angular_kp_overrides={"support": 10000.0},
+            joint_linear_kp_overrides={"support": 10000.0},
+            joint_damping_ratio=0.2,
+        ),
+    )
+    result = build_batched_heterogeneous_scene(cfg, params, t_junction_ranges)
+    ang = result.joint_angular_kd_overrides
+    assert "support" in ang and "stem_apple" in ang
+    assert ang["support"] < 5.0
+    assert ang["stem_apple"] < 2.0
+    ref_e = youngs_modulus_ref_from_ranges(t_junction_ranges)
+    expect = scale_joint_kd_overrides(ang, params[0], ref_e)
+    j_support = next(
+        j for j, lab in result.scene.cable.fruiting_fixed_joints if "support" in lab
+    )
+    j_stem = next(
+        j for j, lab in result.scene.cable.fruiting_fixed_joints if "stem_apple" in lab
+    )
+    assert _angular_kd_at_joint(result.scene.cable.solver, j_support) == pytest.approx(
+        expect["support"], rel=1e-5
+    )
+    assert _angular_kd_at_joint(result.scene.cable.solver, j_stem) == pytest.approx(
+        expect["stem_apple"], rel=1e-5
+    )
+
+
+@requires_fr3
 def test_spur_stem_kd_applied_on_t_junction_topology():
     """T-junction builds apply spur_stem kd overrides (straight-rod fixture drops them)."""
+    from apple_pick_sim.fruiting_system.joint_kd_scaling import (
+        scale_joint_kd_overrides,
+        youngs_modulus_ref_from_ranges,
+    )
+
     t_junction_ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
     params = sample_heterogeneous_params_list(
         t_junction_ranges, topology_seed=7, num_envs=_NUM_ENVS
@@ -426,8 +552,11 @@ def test_spur_stem_kd_applied_on_t_junction_topology():
         j for j, lab in result.scene.cable.fruiting_fixed_joints if "spur_stem" in lab
     )
     solver = result.scene.cable.solver
-    assert _angular_kd_at_joint(solver, j_spur_stem) == pytest.approx(0.35)
-    assert _linear_kd_at_joint(solver, j_spur_stem) == pytest.approx(0.45)
+    ref_e = youngs_modulus_ref_from_ranges(t_junction_ranges)
+    expect_ang = scale_joint_kd_overrides(angular_overrides, params[0], ref_e)["spur_stem"]
+    expect_lin = scale_joint_kd_overrides(linear_overrides, params[0], ref_e)["spur_stem"]
+    assert _angular_kd_at_joint(solver, j_spur_stem) == pytest.approx(expect_ang)
+    assert _linear_kd_at_joint(solver, j_spur_stem) == pytest.approx(expect_lin)
 
 
 @requires_fr3

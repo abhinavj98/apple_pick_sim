@@ -97,15 +97,15 @@ def test_cma_search_params_dict_is_sole_search_truth_source():
         "max_generations",
         "cma_seed",
     }
-    # Absolute box: P 1–100 GPa [9,11]; Sp/St 0.1–10 GPa [8,10]; mean at mid.
-    assert params["initial_mean_log10"] == [10.0, 9.0, 9.0]
+    # Absolute box: all roles 0.1–100 GPa [8,11]; mean at mid.
+    assert params["initial_mean_log10"] == [9.5, 9.5, 9.5]
     assert params["initial_sigma_log10"] == 0.5
     assert params["population_size"] == 15
     assert params["max_generations"] == 10
     assert params["cma_seed"] == 56
     assert params["search_bounds_log10"] == {
-        "lower": [9.0, 8.0, 8.0],
-        "upper": [11.0, 10.0, 10.0],
+        "lower": [8.0, 8.0, 8.0],
+        "upper": [11.0, 11.0, 11.0],
     }
 
 

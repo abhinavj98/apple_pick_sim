@@ -144,6 +144,52 @@ def test_set_fruiting_joint_angular_kd_batched_patches_all_envs(ranges):
         assert _angular_kd_at_joint(cable.solver, base + j_stem_apple) == pytest.approx(0.25)
 
 
+def test_set_fruiting_joint_angular_kd_batched_per_env_values(ranges):
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    num_envs = int(cable.model.world_count)
+    assert num_envs >= 2
+    joints_per_world = _joints_per_world(cable)
+    j_stem_apple = _template_joint_by_label(cable.fruiting_fixed_joints, "stem_apple")
+
+    per_env = [{"stem_apple": 0.1 + float(w)} for w in range(num_envs)]
+    set_fruiting_joint_angular_kd_batched(
+        cable.solver,
+        cable.fruiting_fixed_joints,
+        label_kd_per_env=per_env,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+
+    for w in range(num_envs):
+        global_joint = w * joints_per_world + j_stem_apple
+        assert _angular_kd_at_joint(cable.solver, global_joint) == pytest.approx(
+            0.1 + float(w)
+        )
+
+
+def test_set_fruiting_joint_linear_kd_batched_per_env_values(ranges):
+    cable = _build_batched_cable_for_joint_kd(ranges)
+    num_envs = int(cable.model.world_count)
+    assert num_envs >= 2
+    joints_per_world = _joints_per_world(cable)
+    j_stem_apple = _template_joint_by_label(cable.fruiting_fixed_joints, "stem_apple")
+
+    per_env = [{"stem_apple": 1.0 + 10.0 * float(w)} for w in range(num_envs)]
+    set_fruiting_joint_linear_kd_batched(
+        cable.solver,
+        cable.fruiting_fixed_joints,
+        label_kd_per_env=per_env,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+
+    for w in range(num_envs):
+        global_joint = w * joints_per_world + j_stem_apple
+        assert _linear_kd_at_joint(cable.solver, global_joint) == pytest.approx(
+            1.0 + 10.0 * float(w)
+        )
+
+
 def test_set_fruiting_joint_angular_kd_batched_leaves_unmatched_joints_at_default(ranges):
     cable = _build_batched_cable_for_joint_kd(ranges)
     num_envs = int(cable.model.world_count)

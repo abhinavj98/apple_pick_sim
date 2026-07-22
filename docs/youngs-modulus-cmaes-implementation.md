@@ -4,16 +4,17 @@
 
 | Field | Value |
 | --- | --- |
-| **Last reviewed** | 2026-07-21 |
+| **Last reviewed** | 2026-07-22 |
 | **Roadmap slice** | V.5.2 |
-| **Status** | Implementation verified complete (Task 8 focused/full suites + CUDA 5×5 acceptance, 2026-07-17); docs aligned to `CMA_SEARCH_PARAMS` search-box defaults |
+| **Status** | Implementation verified complete (Task 8 focused/full suites + CUDA 5×5 acceptance, 2026-07-17); docs aligned to shipped `CMA_SEARCH_PARAMS` (0.1–100 GPa box) |
 | **Design** | `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md` |
 | **Grid contract** | Unchanged — `docs/youngs-modulus-sysid.md` |
+| **README how-to** | `README.md` → **CMA-ES sim-to-sim transfer (Young's modulus)** |
 
-Human-readable notes for the separate pycma loop (default search box: start
-mean ± 2 log10 decades). The Cartesian-grid CLI, ranking report, and ranking
-gate remain the diagnostic/acceptance path documented in
-`docs/youngs-modulus-sysid.md`.
+Human-readable notes for the separate pycma loop (default search box: absolute
+0.1–100 GPa / \(\log_{10} E \in [8, 11]\) per role). The Cartesian-grid CLI,
+ranking report, and ranking gate remain the diagnostic/acceptance path
+documented in `docs/youngs-modulus-sysid.md`.
 
 ## Behavior summary
 
@@ -46,16 +47,14 @@ Default controls live in ``CMA_SEARCH_PARAMS`` inside
 
 | Knob | Default |
 | --- | --- |
-| `initial_mean_log10` | explicit variance-fixture midpoint vector (not GT; `"bounds_midpoint"` still available) |
-| `initial_sigma_log10` | `2.0` |
+| `initial_mean_log10` | midpoint of the search box: `[9.5, 9.5, 9.5]` (not GT; `"bounds_midpoint"` still available) |
+| `initial_sigma_log10` | `0.5` |
 | `population_size` | `15` |
 | `max_generations` | `10` |
-| `cma_seed` | `0` (gate overrides via `--cma-seed`) |
-| `search_bounds_log10` | start mean ± 2 log10 decades (`None` = unbounded) |
+| `cma_seed` | `56` (gate overrides via `--cma-seed`) |
+| `search_bounds_log10` | absolute 0.1–100 GPa: `lower=[8,8,8]`, `upper=[11,11,11]` (`None` = unbounded) |
 
-``--multi-structure-batch`` remains on by default. Before search-box truncation,
-sigma `2.0` makes two standard deviations span roughly four decades; the
-default ±2-decade search box truncates that exploration. Structure `bounds` in
+``--multi-structure-batch`` remains on by default. Structure `bounds` in
 `cmaes_report.json` are the active **search** box (JSON `null` when unbounded).
 
 ## Log-space math and covariance terminology
@@ -152,13 +151,21 @@ Dependency: `cma` (pycma) on the `gym` extra, currently locked at `4.4.4`.
 
 ## CLI and gate interfaces
 
-CMA fit (from repo root):
+Canonical copy-paste how-to (collect → fit → gates): **README.md** section
+**CMA-ES sim-to-sim transfer (Young's modulus)**. Short form from repo root:
 
 ```bash
+# 1) Collect GT trajectories
+uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
+  --viewer null --num-structures 2 --num-directions 3 --max-steps 200 \
+  --output tmp/youngs_cmaes_dataset --overwrite
+
+# 2) Fit CMA-ES (primary/spur/stem log10-E)
 uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
-  --dataset /tmp/batched_sysid_dataset \
-  --output /tmp/youngs_cmaes \
-  --viewer null --overwrite
+  --viewer null \
+  --dataset tmp/youngs_cmaes_dataset \
+  --output tmp/youngs_cmaes_fit \
+  --overwrite
 ```
 
 Edit ``CMA_SEARCH_PARAMS`` in ``example_youngs_modulus_cmaes.py`` for mean,
@@ -178,6 +185,7 @@ bash scripts/gate_youngs_modulus_cmaes.sh
 Optional env overrides include `SEEDS`, `NUM_STRUCTURES`, `NUM_DIRECTIONS`,
 `RANGES`. The gate passes ``--cma-seed "${SEED}"`` so each SEEDS job varies both
 collect and optimizer RNG; other CMA knobs stay in `CMA_SEARCH_PARAMS`.
+
 ## Tests
 
 | Module | Catches |

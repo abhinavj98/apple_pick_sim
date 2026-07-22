@@ -400,7 +400,8 @@ def test_generation_wave_cancel_propagates_and_skips_tell():
     assert state.status == "active"
 
 
-def test_generation_wave_all_invalid_does_not_tell():
+def test_generation_wave_all_invalid_reasks_zero_still_fails():
+    """Opt-out: zero re-asks keeps the old fail-without-tell behavior."""
     bounds = _bounds()
     samples = [[7.0, 6.0, 5.0], [7.1, 6.1, 5.1]]
     state = cmaes.StructureCmaState(
@@ -431,9 +432,113 @@ def test_generation_wave_all_invalid_does_not_tell():
         {0: state},
         evaluate_fn=evaluate_fn,
         generation_index=0,
+        all_invalid_reasks=0,
     )
     assert state.optimizer.told == []
     assert wave.failures[0].stage == "all_invalid"
+    assert state.status == "failed"
+
+
+def test_generation_wave_all_invalid_reasks_then_recovers():
+    """Re-ask at same mean/σ until a population has eligible scores."""
+    bounds = _bounds()
+    opt = FakeOptimizer(samples=[[7.0, 6.0, 5.0], [7.1, 6.1, 5.1]])
+    state = cmaes.StructureCmaState(
+        structure_idx=0,
+        optimizer=opt,
+        bounds=bounds,
+        effective_seed=1,
+        population_size=2,
+    )
+    eval_calls = {"n": 0}
+
+    def evaluate_fn(*, structures, **_kwargs):
+        eval_calls["n"] += 1
+        idx, cands = structures[0]
+        # First two populations fully unstable; third has one eligible.
+        bad = {0, 1} if eval_calls["n"] < 3 else {1}
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={
+                int(idx): _evaluation(
+                    int(idx),
+                    list(cands),
+                    [1.0, 2.0],
+                    disqualified=bad,
+                )
+            },
+            errors={},
+            replay_diagnostics=None,
+            retried_structures=(),
+        )
+
+    wave = cmaes.run_cma_generation_wave(
+        {0: state},
+        evaluate_fn=evaluate_fn,
+        generation_index=0,
+        all_invalid_reasks=3,
+    )
+    assert state.status == "active"
+    assert state.failure is None
+    assert 0 not in wave.failures
+    assert eval_calls["n"] == 3
+    assert opt.ask_count == 3
+    assert len(opt.told) == 1
+    assert state.completed_generations == 1
+    # Normal penalty path: eligible 1.0, DQ gets 1.0 + max(1,1) = 2.0
+    assert opt.told[0][1] == pytest.approx([1.0, 2.0])
+    record = wave.records[0]
+    assert record.penalty_metadata[0].get("all_invalid_reasks") == 2
+
+
+def test_generation_wave_all_invalid_exhausted_uses_flat_penalty_tell():
+    """After re-asks still all-DQ → tell with flat penalty (structure stays active)."""
+    bounds = _bounds()
+    opt = FakeOptimizer(samples=[[7.0, 6.0, 5.0], [7.1, 6.1, 5.1]])
+    state = cmaes.StructureCmaState(
+        structure_idx=0,
+        optimizer=opt,
+        bounds=bounds,
+        effective_seed=1,
+        population_size=2,
+    )
+    eval_calls = {"n": 0}
+
+    def evaluate_fn(*, structures, **_kwargs):
+        eval_calls["n"] += 1
+        idx, cands = structures[0]
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={
+                int(idx): _evaluation(
+                    int(idx),
+                    list(cands),
+                    [1.0, 2.0],
+                    disqualified={0, 1},
+                )
+            },
+            errors={},
+            replay_diagnostics=None,
+            retried_structures=(),
+        )
+
+    wave = cmaes.run_cma_generation_wave(
+        {0: state},
+        evaluate_fn=evaluate_fn,
+        generation_index=0,
+        all_invalid_reasks=3,
+    )
+    assert state.status == "active"
+    assert state.failure is None
+    assert 0 not in wave.failures
+    # 1 initial + 3 re-asks
+    assert eval_calls["n"] == 4
+    assert opt.ask_count == 4
+    assert len(opt.told) == 1
+    assert state.completed_generations == 1
+    flat = float(cmaes.ALL_INVALID_FLAT_PENALTY)
+    assert opt.told[0][1] == pytest.approx([flat, flat])
+    record = wave.records[0]
+    assert all(m.get("flat_penalty_tell") for m in record.penalty_metadata)
+    assert record.penalty_metadata[0].get("all_invalid_reasks") == 3
 
 
 # --- Task 3: coordinator + final means ---

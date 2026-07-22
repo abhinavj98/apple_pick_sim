@@ -30,8 +30,9 @@ one overlay per structure, and optional candidate replay datasets.
 
 The grid remains a diagnostic and acceptance tool. The separate CMA-ES loop is
 `example_youngs_modulus_cmaes.py`; it reuses the same candidate evaluator /
-fused replay path and does not replace this command. See
-`docs/youngs-modulus-cmaes-implementation.md` and
+fused replay path and does not replace this command. Runnable collect → fit
+commands: **README.md** → **CMA-ES sim-to-sim transfer (Young's modulus)**.
+Notes: `docs/youngs-modulus-cmaes-implementation.md`; design:
 `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`.
 V.5.2 verification (Task 8) passed 2026-07-17.
 

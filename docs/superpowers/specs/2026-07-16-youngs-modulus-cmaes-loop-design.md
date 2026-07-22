@@ -2,8 +2,8 @@
 
 **Date:** 2026-07-16  
 **Roadmap slice:** V.5.2 — continuous Young's-modulus calibration  
-**Status:** Approved; implementation complete — Task 8 verification passed (focused/full tests + CUDA 5×5 acceptance, 2026-07-17). Bounds/init amended 2026-07-21 to match `CMA_SEARCH_PARAMS` search-box defaults.
-**Implementation notes:** `docs/youngs-modulus-cmaes-implementation.md`
+**Status:** Approved; implementation complete — Task 8 verification passed (focused/full tests + CUDA 5×5 acceptance, 2026-07-17). Search-box defaults amended 2026-07-22 to match shipped `CMA_SEARCH_PARAMS` (absolute 0.1–100 GPa).
+**Implementation notes / how-to:** `docs/youngs-modulus-cmaes-implementation.md`; README → **CMA-ES sim-to-sim transfer**.
 
 ## Purpose
 
@@ -31,8 +31,8 @@ path documented in `docs/youngs-modulus-sysid.md`.
 - Initialize from `CMA_SEARCH_PARAMS` (default: explicit log10-E start mean,
   not recorded GT; optional `"bounds_midpoint"` uses fixture midpoints).
 - Constrain search with `CMA_SEARCH_PARAMS["search_bounds_log10"]` (default:
-  start mean ± 2 log10 decades), not the narrow fixture `youngs_modulus_pa`
-  ε-bands. `None` allows unbounded search.
+  absolute 0.1–100 GPa / \(\log_{10} E \in [8, 11]\) per role), not the narrow
+  fixture `youngs_modulus_pa` ε-bands. `None` allows unbounded search.
 - Stop on either a configured generation cap or pycma's native convergence
   criteria.
 - Explicitly replay and score the final distribution mean, and treat it as the
@@ -133,32 +133,29 @@ point (~0.5 Pa wide), which cannot support meaningful CMA exploration.
 
 Search clipping and ask validation use `search_bounds_log10`:
 
-- default: an explicit log10-E box around the coded start mean with half-width
-  `_CMA_BOUND_HALF_WIDTH_LOG10 = 2.0` (mean ± 2 decades → factor \(100\) each
-  side), **not** the narrow fixture ε-bands;
+- default: absolute safety box 0.1–100 GPa
+  (`lower=[8,8,8]`, `upper=[11,11,11]` in log10-E), **not** the narrow fixture
+  ε-bands;
 - `None`: unbounded search (omit pycma `bounds`; ask validation skips the
   phenotype box; the integrity gate checks only `e_pa == 10**log10_e`).
 
 When `search_bounds_log10` is set, construct pycma with
 `bounds=[lower_log10, upper_log10]` and keep samples inside that box.
 
-Default start mean is an explicit length-3 log10-E vector matching the
-variance-fixture midpoints (still not structure GT). Setting
-`initial_mean_log10` to `"bounds_midpoint"` instead derives the component-wise
-midpoint of the loaded fixture's log-space bounds.
+Default start mean is the search-box midpoint `[9.5, 9.5, 9.5]` (still not
+structure GT). Setting `initial_mean_log10` to `"bounds_midpoint"` instead
+derives the component-wise midpoint of the loaded fixture's log-space bounds.
 
-Default `initial_sigma_log10` is `2.0` (log10 decades). Before search-box
-truncation, two standard deviations span `mean +/- 4` decades; the default
-±2-decade search box truncates that exploration. Reject non-positive or
+Default `initial_sigma_log10` is `0.5` (log10 decades). Reject non-positive or
 non-finite sigma. Record the active search bounds (or JSON `null` when
 unbounded), start mean, sigma, population size, seed, and stop options in the
 report. Structure `bounds` in `cmaes_report.json` are the **search** box, not
 the fixture ε-bands.
 
 Default `CMA_SEARCH_PARAMS` knobs (edit in
-`example_youngs_modulus_cmaes.py`): `initial_mean_log10` = variance midpoints,
-`initial_sigma_log10=2.0`, `population_size=15`, `max_generations=10`,
-`cma_seed=0`, `search_bounds_log10` = mean ± 2 decades.
+`example_youngs_modulus_cmaes.py`): `initial_mean_log10=[9.5,9.5,9.5]`,
+`initial_sigma_log10=0.5`, `population_size=15`, `max_generations=10`,
+`cma_seed=56`, `search_bounds_log10` = `[8,8,8]`–`[11,11,11]`.
 
 ## Per-generation evaluation
 
@@ -247,13 +244,13 @@ Search initialization and loop knobs live in module-level
 `CMA_SEARCH_PARAMS` inside `example_youngs_modulus_cmaes.py`:
 
 - `initial_mean_log10` (`"bounds_midpoint"` or an explicit length-3 log10-E vector;
-  default is the explicit variance-fixture midpoint vector)
-- `initial_sigma_log10` (default `2.0`)
+  default `[9.5, 9.5, 9.5]`)
+- `initial_sigma_log10` (default `0.5`)
 - `population_size` (default `15`; `None` → pycma default)
 - `max_generations` (default `10`)
-- `cma_seed` (application base seed; not passed directly to pycma; default `0`)
+- `cma_seed` (application base seed; not passed directly to pycma; default `56`)
 - `search_bounds_log10` (`None` = unbounded, or `{"lower","upper"}` length-3
-  log10-E vectors; default is start mean ± 2 decades)
+  log10-E vectors; default absolute 0.1–100 GPa / `[8,8,8]`–`[11,11,11]`)
 
 The existing `--seed` continues to control replay behavior and retains its
 manifest fallback. Default `cma_seed` comes from `CMA_SEARCH_PARAMS`; `--cma-seed`

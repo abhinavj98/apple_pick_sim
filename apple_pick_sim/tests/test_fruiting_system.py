@@ -268,6 +268,46 @@ def test_load_ranges_sim_build_optional_joint_overrides():
     assert sb is not None
     assert sb.joint_angular_kd_overrides == {}
     assert sb.joint_linear_kp_overrides == {}
+    assert sb.joint_damping_ratio is None
+
+
+def test_parse_sim_build_accepts_joint_damping_ratio():
+    fs = _import_module()
+    block = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "joint_damping_ratio": 0.2,
+        "joint_angular_kp_overrides": {"support": 10000.0},
+        "joint_linear_kp_overrides": {"support": 10000.0},
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), block)
+    sb = fs.parse_sim_build(fs.load_ranges(path))
+    assert sb is not None
+    assert sb.joint_damping_ratio == pytest.approx(0.2)
+    assert sb.joint_angular_kd_overrides == {}
+    assert sb.joint_linear_kd_overrides == {}
+
+
+def test_parse_sim_build_rejects_joint_damping_ratio_with_absolute_kd():
+    fs = _import_module()
+    bad = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "joint_damping_ratio": 0.2,
+        "joint_angular_kd_overrides": {"support": 1.0},
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), bad)
+    with pytest.raises(ValueError, match="joint_damping_ratio.*mutually exclusive|mutually exclusive"):
+        fs.load_ranges(path)
+
+
+def test_parse_sim_build_rejects_joint_damping_ratio_out_of_range():
+    fs = _import_module()
+    bad = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "joint_damping_ratio": 1.5,
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), bad)
+    with pytest.raises(ValueError, match="joint_damping_ratio"):
+        fs.load_ranges(path)
 
 
 # ---------------------------------------------------------------------------

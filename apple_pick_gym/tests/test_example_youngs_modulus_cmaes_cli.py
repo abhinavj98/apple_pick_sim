@@ -98,12 +98,111 @@ def test_cma_search_params_dict_is_sole_search_truth_source():
         "cma_seed",
     }
     # Absolute box: all roles 0.1–100 GPa [8,11]; mean at mid.
+    # Expanded from the former asymmetric box (primary [9,11], spur/stem [8,10]).
     assert params["initial_mean_log10"] == [9.5, 9.5, 9.5]
     assert params["initial_sigma_log10"] == 0.5
     assert params["population_size"] == 15
     assert params["max_generations"] == 10
     assert params["cma_seed"] == 56
     assert params["search_bounds_log10"] == {
+        "lower": [8.0, 8.0, 8.0],
+        "upper": [11.0, 11.0, 11.0],
+    }
+    normalized = cmaes.normalize_search_bounds_log10(params["search_bounds_log10"])
+    assert normalized == ((8.0, 8.0, 8.0), (11.0, 11.0, 11.0))
+
+
+def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
+    """Default CMA_SEARCH_PARAMS box must reach create_structure_cma_optimizer."""
+    module = _load_module()
+    output_dir = tmp_path / "cma_out"
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "control_hz": 30.0,
+            "num_directions": 2,
+            "ranges_path": str(ranges_path),
+            "topology_seed": 42,
+            "seed": 7,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+
+    create_calls: list[dict] = []
+
+    def fake_create(bounds, **kwargs):
+        create_calls.append(dict(kwargs))
+        return cmaes.create_structure_cma_optimizer(bounds, **kwargs)
+
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+        del max_generations, evaluate_fn
+        for state in states.values():
+            state.status = "fitted"
+            state.final_mean_log10 = (9.5, 9.5, 9.5)
+            state.final_evaluation = _evaluation(
+                state.structure_idx,
+                [cmaes.candidates_from_log10_e(state.final_mean_log10)],
+                [0.1],
+            )
+            state.gt_candidate = state.final_evaluation.gt_candidate
+        if on_progress is not None:
+            on_progress(states)
+        return cmaes.YoungsModulusCmaFitResult(
+            states=dict(states),
+            fitted_structure_indices=tuple(sorted(states)),
+            failed_structure_indices=(),
+            generation_waves=1,
+            final_mean_batch=None,
+        )
+
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    monkeypatch.setattr(module, "build_sim_config", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(module, "_make_build_env_fn", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(module, "create_structure_cma_optimizer", fake_create)
+    monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
+    monkeypatch.setattr(
+        module,
+        "gt_youngs_modulus_candidate_from_structure",
+        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+    )
+    monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
+
+    args = SimpleNamespace(
+        dataset="/tmp/gt",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert create_calls
+    assert create_calls[0]["search_bounds_log10"] == (
+        (8.0, 8.0, 8.0),
+        (11.0, 11.0, 11.0),
+    )
+    assert create_calls[0]["initial_mean_log10"] == pytest.approx([9.5, 9.5, 9.5])
+    report = json.loads((output_dir / "cmaes_report.json").read_text(encoding="utf-8"))
+    assert report["cma"]["search_bounds_log10"] == {
         "lower": [8.0, 8.0, 8.0],
         "upper": [11.0, 11.0, 11.0],
     }
@@ -342,8 +441,8 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
     assert args.use_median is True
     assert args.hold_id_onehot is True
     assert args.pool_directions is True
-    assert module.SETTLE_QUIET_EVERY == 350
-    assert args.settle_quiet_every == 350
+    assert module.SETTLE_QUIET_EVERY == 300
+    assert args.settle_quiet_every == 300
 
     assert parser.parse_args(
         [

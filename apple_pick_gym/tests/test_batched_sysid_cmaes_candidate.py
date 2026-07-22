@@ -537,6 +537,68 @@ def test_validate_ask_population_allows_outside_fixture_box():
     assert parsed == outside
 
 
+# Shipped CMA absolute safety box: all roles 0.1–100 GPa (log10 8–11).
+# Former asymmetric box was primary [9,11], spur/stem [8,10].
+_SHIPPED_SEARCH_BOUNDS_LOG10 = ((8.0, 8.0, 8.0), (11.0, 11.0, 11.0))
+
+
+def test_validate_ask_population_rejects_outside_search_bounds():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    outside = ((7.9, 9.5, 9.5),)
+    with pytest.raises(cmaes.CmaGenerationFailure, match="outside search bounds"):
+        cmaes._validate_ask_population(
+            outside,
+            population_size=1,
+            bounds=bounds,
+            search_bounds_log10=_SHIPPED_SEARCH_BOUNDS_LOG10,
+        )
+    outside_high = ((9.5, 11.1, 9.5),)
+    with pytest.raises(cmaes.CmaGenerationFailure, match="outside search bounds"):
+        cmaes._validate_ask_population(
+            outside_high,
+            population_size=1,
+            bounds=bounds,
+            search_bounds_log10=_SHIPPED_SEARCH_BOUNDS_LOG10,
+        )
+
+
+def test_validate_ask_population_accepts_expanded_box_former_asymmetric_exterior():
+    """Points excluded by old [9,11]/[8,10]/[8,10] box must pass under [8,11]^3."""
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    # primary lower 9→8, spur/stem upper 10→11
+    interior = ((8.5, 10.5, 10.5),)
+    parsed = cmaes._validate_ask_population(
+        interior,
+        population_size=1,
+        bounds=bounds,
+        search_bounds_log10=_SHIPPED_SEARCH_BOUNDS_LOG10,
+    )
+    assert parsed == interior
+
+
+def test_create_structure_cma_optimizer_passes_search_bounds_to_pycma():
+    import cma
+
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    es, _, _ = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_mean_log10=(9.5, 9.5, 9.5),
+        initial_sigma_log10=0.5,
+        base_seed=0,
+        structure_idx=0,
+        population_size=4,
+        search_bounds_log10=_SHIPPED_SEARCH_BOUNDS_LOG10,
+    )
+    assert isinstance(es, cma.CMAEvolutionStrategy)
+    assert es.opts["bounds"] == [[8.0, 8.0, 8.0], [11.0, 11.0, 11.0]]
+
+
 def test_pycma_dependency_is_importable():
     import cma
 

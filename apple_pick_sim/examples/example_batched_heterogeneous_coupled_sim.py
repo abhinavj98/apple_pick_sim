@@ -255,11 +255,11 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--settle-quiet-every",
         type=int,
-        default=None,
+        default=300,
         metavar="N",
         help=(
             "Zero all fruiting-system body twists every N VBD settle substeps "
-            "(device-side; default: off)."
+            "(device-side; default: 300)."
         ),
     )
     parser.add_argument(

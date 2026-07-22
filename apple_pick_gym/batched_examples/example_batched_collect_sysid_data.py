@@ -69,7 +69,7 @@ SUB_DT = 1.0 / 1800.0
 ENV_SPACING = (2.0, 2.0, 2.0)
 SETTLE_SUBSTEPS = 5000
 SETTLE_GRAVITY_RAMP = False
-SETTLE_QUIET_EVERY: int | None = 350
+SETTLE_QUIET_EVERY: int | None = 300
 VIC_GAINS = ImpedanceGains(
     linear_k=200.0,
     linear_d=10.0,
@@ -331,7 +331,7 @@ def _make_parser() -> argparse.ArgumentParser:
         metavar="N",
         help=(
             "Zero all fruiting-system body twists every N VBD settle substeps "
-            "(device-side; default: off)."
+            "(device-side; default: 300)."
         ),
     )
     return p

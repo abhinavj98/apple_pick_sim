@@ -65,6 +65,7 @@ def test_defaults_preset_constructs_and_validates():
     assert cfg.robot.per_env_ik is True
     assert cfg.robot.ik_bootstrap_iterations == IK_BOOTSTRAP_DEFAULT_ITERATIONS
     assert cfg.scene.settle_substeps == 5000
+    assert cfg.scene.settle_quiet_every == 300
     assert cfg.fruiting_system.stem_coupling_gain == DEFAULT_STEM_COUPLING_GAIN
     assert cfg.controller.mode == "vic"
     assert cfg.controller.linear_speed == pytest.approx(1.0)
@@ -72,6 +73,31 @@ def test_defaults_preset_constructs_and_validates():
     assert cfg.settle_diagnostics is not None
     assert cfg.settle_diagnostics.enabled is True
     assert cfg.obs is None
+
+
+def test_example_cli_settle_quiet_every_default_is_300(monkeypatch):
+    """Canonical example defaults periodic settle quiet to every 300 VBD substeps."""
+    import argparse
+    import importlib.util
+    import sys
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "examples"
+        / "example_batched_heterogeneous_coupled_sim.py"
+    )
+    mod_name = "example_batched_heterogeneous_coupled_sim_under_test"
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module
+    spec.loader.exec_module(module)
+
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    args = module._make_parser().parse_args([])
+    assert args.settle_quiet_every == 300
 
 
 def test_gym_defaults_preset():

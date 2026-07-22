@@ -66,7 +66,7 @@ def test_cache_key_includes_settle_quiet_every(config, ranges, per_env_params):
     key_on = build_cache_key(quiet_cfg, ranges, per_env_params)
     assert key_off != key_on
     assert "quiet_every=100" in key_on
-    assert "quiet_every=0" in key_off
+    assert "quiet_every=300" in key_off
 
 
 def test_save_load_roundtrip(tmp_path, config, ranges, per_env_params):

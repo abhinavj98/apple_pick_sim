@@ -91,6 +91,8 @@ def test_parser_defaults_and_grid_args(monkeypatch):
     assert args.secondary_bend_stiffness_values == (10.0,)
     assert args.spur_bend_stiffness_values == (100.0,)
     assert args.stem_bend_stiffness_values == (1000.0, 2000.0)
+    assert module.SETTLE_QUIET_EVERY == 300
+    assert args.settle_quiet_every == 300
 
 
 def test_parser_accepts_structure_indices_and_batch_limits(monkeypatch):

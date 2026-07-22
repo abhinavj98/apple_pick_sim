@@ -129,7 +129,7 @@ class SceneSettleCollisionConfig:
     fruiting_base_pos: tuple[float, float, float] | None = None
     settle_substeps: int = 5000
     settle_gravity_ramp: bool = False
-    settle_quiet_every: int | None = None
+    settle_quiet_every: int | None = 300
     settle_max_speed_m_s: float = 0.05
     enable_self_collisions: bool = False
     enable_apple_woody_collisions: bool = True

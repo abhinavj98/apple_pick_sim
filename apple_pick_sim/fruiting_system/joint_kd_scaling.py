@@ -120,8 +120,8 @@ def joint_kd_from_damping_ratio(
     joint label are omitted.
     """
     z = float(zeta)
-    if not math.isfinite(z) or z < 0.0 or z > 1.0:
-        raise ValueError(f"zeta must be in [0, 1], got {zeta!r}")
+    if not math.isfinite(z) or z < 0.0:
+        raise ValueError(f"zeta must be >= 0, got {zeta!r}")
     if float(default_ke) <= 0.0:
         raise ValueError(f"default_ke must be positive, got {default_ke}")
 
@@ -171,5 +171,5 @@ def joint_kd_from_damping_ratio(
                 f"kp for role {role!r} must be positive, got ang={k_ang} lin={k_lin}"
             )
         angular[role] = z * 2.0 * math.sqrt(k_ang * i_max)
-        linear[role] = z * 2.0 * math.sqrt(k_lin * m)
+        linear[role] = z * 2.0 * math.sqrt(k_lin * m) 
     return angular, linear

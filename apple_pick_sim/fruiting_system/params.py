@@ -517,7 +517,7 @@ def _coerce_vic_gains(raw: object) -> VicGainsConfig:
 def _coerce_joint_damping_ratio(raw: object) -> float | None:
     if raw is None:
         return None
-    return _coerce_unit_interval_float(raw, field="sim_build.joint_damping_ratio")
+    return _coerce_nonnegative_float(raw, field="sim_build.joint_damping_ratio")
 
 
 def _validate_sim_build(block: object) -> None:

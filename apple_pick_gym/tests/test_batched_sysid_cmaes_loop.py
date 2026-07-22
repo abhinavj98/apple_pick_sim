@@ -541,6 +541,142 @@ def test_generation_wave_all_invalid_exhausted_uses_flat_penalty_tell():
     assert record.penalty_metadata[0].get("all_invalid_reasks") == 3
 
 
+def test_generation_wave_real_pycma_all_invalid_reasks_then_tell():
+    """Real pycma: all-invalid → re-ask → tell advances countiter / xfavorite."""
+    import cma
+
+    bounds = _bounds()
+    search = ((6.0, 5.0, 4.0), (10.0, 9.0, 8.0))
+    es, seed, _ = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_mean_log10=(8.0, 7.0, 6.0),
+        initial_sigma_log10=0.5,
+        base_seed=42,
+        structure_idx=0,
+        population_size=4,
+        search_bounds_log10=search,
+    )
+    assert isinstance(es, cma.CMAEvolutionStrategy)
+    countiter_before = int(es.countiter)
+    state = cmaes.StructureCmaState(
+        structure_idx=0,
+        optimizer=es,
+        bounds=bounds,
+        effective_seed=seed,
+        population_size=4,
+        search_bounds_log10=search,
+    )
+    eval_calls = {"n": 0}
+
+    def evaluate_fn(*, structures, **_kwargs):
+        eval_calls["n"] += 1
+        idx, cands = structures[0]
+        # First two populations fully DQ; third leaves candidate 0 eligible.
+        bad = set(range(len(cands))) if eval_calls["n"] < 3 else set(range(1, len(cands)))
+        sinkhorns = [1.0 + 0.1 * i for i in range(len(cands))]
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={
+                int(idx): _evaluation(
+                    int(idx),
+                    list(cands),
+                    sinkhorns,
+                    disqualified=bad,
+                )
+            },
+            errors={},
+            replay_diagnostics=None,
+            retried_structures=(),
+        )
+
+    wave = cmaes.run_cma_generation_wave(
+        {0: state},
+        evaluate_fn=evaluate_fn,
+        generation_index=0,
+        all_invalid_reasks=3,
+    )
+    assert state.status == "active"
+    assert state.failure is None
+    assert 0 not in wave.failures
+    assert eval_calls["n"] == 3
+    assert state.completed_generations == 1
+    assert int(es.countiter) == countiter_before + 1
+    favorite = list(es.result.xfavorite)
+    assert len(favorite) == 3
+    assert all(math.isfinite(float(v)) for v in favorite)
+    record = wave.records[0]
+    assert record.penalty_metadata[0].get("all_invalid_reasks") == 2
+    assert not any(m.get("flat_penalty_tell") for m in record.penalty_metadata)
+
+
+def test_generation_wave_real_pycma_all_invalid_exhausted_flat_tell():
+    """Real pycma: exhausted re-asks still tell with flat penalty (no fail)."""
+    import cma
+
+    bounds = _bounds()
+    search = ((6.0, 5.0, 4.0), (10.0, 9.0, 8.0))
+    es, seed, _ = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_mean_log10=(8.0, 7.0, 6.0),
+        initial_sigma_log10=0.5,
+        base_seed=7,
+        structure_idx=0,
+        population_size=4,
+        search_bounds_log10=search,
+    )
+    assert isinstance(es, cma.CMAEvolutionStrategy)
+    countiter_before = int(es.countiter)
+    state = cmaes.StructureCmaState(
+        structure_idx=0,
+        optimizer=es,
+        bounds=bounds,
+        effective_seed=seed,
+        population_size=4,
+        search_bounds_log10=search,
+    )
+    eval_calls = {"n": 0}
+
+    def evaluate_fn(*, structures, **_kwargs):
+        eval_calls["n"] += 1
+        idx, cands = structures[0]
+        bad = set(range(len(cands)))
+        sinkhorns = [1.0 + 0.1 * i for i in range(len(cands))]
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={
+                int(idx): _evaluation(
+                    int(idx),
+                    list(cands),
+                    sinkhorns,
+                    disqualified=bad,
+                )
+            },
+            errors={},
+            replay_diagnostics=None,
+            retried_structures=(),
+        )
+
+    wave = cmaes.run_cma_generation_wave(
+        {0: state},
+        evaluate_fn=evaluate_fn,
+        generation_index=0,
+        all_invalid_reasks=2,
+    )
+    assert state.status == "active"
+    assert state.failure is None
+    assert 0 not in wave.failures
+    # 1 initial + 2 re-asks
+    assert eval_calls["n"] == 3
+    assert state.completed_generations == 1
+    assert int(es.countiter) == countiter_before + 1
+    favorite = list(es.result.xfavorite)
+    assert len(favorite) == 3
+    assert all(math.isfinite(float(v)) for v in favorite)
+    record = wave.records[0]
+    assert all(m.get("flat_penalty_tell") for m in record.penalty_metadata)
+    assert record.penalty_metadata[0].get("all_invalid_reasks") == 2
+    flat = float(cmaes.ALL_INVALID_FLAT_PENALTY)
+    assert all(float(m["fitness"]) == pytest.approx(flat) for m in record.penalty_metadata)
+
+
 # --- Task 3: coordinator + final means ---
 
 

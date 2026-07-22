@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-16  
 **Roadmap slice:** V.5.2 — continuous Young's-modulus calibration  
-**Status:** Approved; implementation complete — Task 8 verification passed (focused/full tests + CUDA 5×5 acceptance, 2026-07-17). Search-box defaults amended 2026-07-22 to match shipped `CMA_SEARCH_PARAMS` (absolute 0.1–100 GPa).
+**Status:** Approved; implementation complete — Task 8 verification passed (focused/full tests + CUDA 5×5 acceptance, 2026-07-17). Search-box defaults amended 2026-07-22 to match shipped `CMA_SEARCH_PARAMS` (absolute 0.1–100 GPa). All-invalid recovery and joint-kd ζ-hold amended 2026-07-22 (see Error handling / Non-goals).
 **Implementation notes / how-to:** `docs/youngs-modulus-cmaes-implementation.md`; README → **CMA-ES sim-to-sim transfer**.
 
 ## Purpose
@@ -51,11 +51,21 @@ path documented in `docs/youngs-modulus-sysid.md`.
   later decision.
 - Fitting damping ratio, density, geometry, apple parameters, or secondary E.
 - Sharing one optimizer or one fitted E vector across structures.
-- Changing replay semantics, Wasserstein features, instability policy, or the
-  material-to-VBD conversion.
+- Changing Wasserstein features, instability policy, or the material-to-VBD
+  conversion (except the joint-kd ζ-hold amendment below).
 - Changing or removing the Cartesian-grid ranking command, candidate replay
   export, or top-ranked grid overlays.
 - Held-out validation, real-data acceptance criteria, or new excitation types.
+
+**Amendment (2026-07-22) — joint-kd ζ-hold:** distal FIXED-joint penalty `kd`
+scales as \(\sqrt{E / E_{\mathrm{ref}}}\) per env, with
+`E_ref = youngs_modulus_ref_from_ranges` (geometric mid of fixture
+`youngs_modulus_pa` bands), **not** the CMA search-box midpoint. Rationale:
+hold joint weld ζ roughly constant while searching \(E\) (still not fitting
+damping). This **changes replay rankings** versus pre-ζ-hold gates; re-baseline
+`scripts/gate_youngs_modulus_cmaes.sh` and the ranking gate after merge.
+Fixture weld ζ ships as `sim_build.joint_damping_ratio` (see
+`docs/damping-tuning.md`).
 
 ## Architecture
 
@@ -379,7 +389,16 @@ gate does not impose a GT-error threshold.
   optimization.
 - Missing required rods or unusable structure metadata fails that structure.
 - A structure with no usable directions fails that structure.
-- An all-invalid generation fails that structure.
+- An all-invalid generation (every sample disqualified / non-finite) does
+  **not** fail by default: `run_cma_generation_wave` re-`ask()`s / re-evaluates
+  up to `DEFAULT_ALL_INVALID_REASKS` (3) more times at the same generation
+  index, then if still all-invalid calls `tell()` with a uniform flat fitness
+  `ALL_INVALID_FLAT_PENALTY` (`1e12`). The structure stays active; penalty
+  metadata records `flat_penalty_tell` and `all_invalid_reasks`. Identical flat
+  fitnesses give CMA no relative ranking signal — intentional so the generation
+  is not aborted and the distribution can move/shrink. Pass
+  `all_invalid_reasks=0` to restore legacy fail-without-`tell()`. No CLI knob
+  in this slice (library default only).
 - A disqualified or non-finite final mean fails that structure.
 - Optional overlay errors remain isolated from the numeric report.
 - If every requested structure fails, the command exits nonzero.
@@ -407,7 +426,9 @@ Fast tests cover:
    optimizer/evaluator.
 4. Synchronized active-set waves, stable
    structure/candidate/direction routing, chunking, and scalar fallback.
-5. Invalid-candidate penalties, overflow, and all-invalid generation failure.
+5. Invalid-candidate penalties, overflow, all-invalid re-ask / flat-penalty
+   `tell()`, and `all_invalid_reasks=0` fail-without-tell; include a real-pycma
+   all-invalid → re-ask → tell regression (not FakeOptimizer-only).
 6. Independent generation-cap/native-stop timing and complete stop evidence.
 7. One fused bounded-`xfavorite` final wave and rejection of an invalid final
    mean.

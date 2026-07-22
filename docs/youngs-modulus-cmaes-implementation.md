@@ -6,7 +6,7 @@
 | --- | --- |
 | **Last reviewed** | 2026-07-22 |
 | **Roadmap slice** | V.5.2 |
-| **Status** | Implementation verified complete (Task 8 focused/full suites + CUDA 5×5 acceptance, 2026-07-17); docs aligned to shipped `CMA_SEARCH_PARAMS` (0.1–100 GPa box) |
+| **Status** | Implementation verified complete (Task 8 focused/full suites + CUDA 5×5 acceptance, 2026-07-17); docs aligned to shipped `CMA_SEARCH_PARAMS` (0.1–100 GPa box); all-invalid re-ask + joint-kd ζ-hold amended 2026-07-22 |
 | **Design** | `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md` |
 | **Grid contract** | Unchanged — `docs/youngs-modulus-sysid.md` |
 | **README how-to** | `README.md` → **CMA-ES sim-to-sim transfer (Young's modulus)** |
@@ -61,8 +61,13 @@ Default controls live in ``CMA_SEARCH_PARAMS`` inside
 
 - Optimizer coordinates are \(\log_{10}([E_\mathrm{primary}, E_\mathrm{spur}, E_\mathrm{stem}])\).
 - Invalid/disqualified samples in a generation with at least one finite eligible
-  score receive penalty `worst_finite + max(1, abs(worst_finite))`. Overflow or
-  an all-invalid generation fails that structure without `tell()`.
+  score receive penalty `worst_finite + max(1, abs(worst_finite))`. Overflow
+  still fails that structure without `tell()`. An **all-invalid** generation
+  (no eligible scores) defaults to re-`ask()` / re-evaluate up to
+  `DEFAULT_ALL_INVALID_REASKS` (3) more times, then `tell()` with uniform
+  `ALL_INVALID_FLAT_PENALTY` (`1e12`); the structure stays active. Flat equal
+  fitnesses give CMA no ranking signal by design (escape hatch). Pass
+  `all_invalid_reasks=0` for legacy fail-without-`tell()`.
 - Per-generation `ask_distribution` / `post_tell_distribution` `mean_log10` is
   the bounded phenotype mean (`es.result.xfavorite`), not the internal genotype
   `es.mean` (which BoundTransform may leave slightly outside the physical box).
@@ -75,6 +80,18 @@ Default controls live in ``CMA_SEARCH_PARAMS`` inside
   `ddof=1` and are JSON `null` when fewer than two structures fit.
 - `evaluated_history_extrema` is the component-wise min/max of samples actually
   submitted in CMA populations (`ask_samples_log10`), in both log10-E and Pa.
+
+## Joint-kd ζ-hold (replay amendment)
+
+Batched heterogeneous builds derive FIXED-joint angular/linear `kd` from
+`sim_build.joint_damping_ratio` (or absolute kd maps), then scale distal roles
+as \(\mathrm{kd} \propto \sqrt{E / E_{\mathrm{ref}}}\) with
+`E_ref = youngs_modulus_ref_from_ranges` (geometric mid of fixture bands).
+`E_ref` is **not** the CMA search-box midpoint / start mean. Support stays at
+base kd (no E scale). This holds joint weld ζ roughly constant across Young’s
+candidates; it is **not** fitting damping. Rankings and integrity/ranking gates
+from before this amendment need **re-baselining** after merge
+(`scripts/gate_youngs_modulus_cmaes.sh`, ranking gate).
 
 ## Logical versus physical counters
 

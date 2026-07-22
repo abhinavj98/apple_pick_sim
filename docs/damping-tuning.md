@@ -154,7 +154,11 @@ using intended `kp` per role (else Newton `ke=1e5`), then distal roles scale
 `kd ∝ √(E/E_ref)` via `scale_joint_kd_overrides`. Absolute
 `joint_angular_kd_overrides` / `joint_linear_kd_overrides` remain supported but are
 **mutually exclusive** with `joint_damping_ratio`. Variance fixture ships
-`joint_damping_ratio: 0.2` (slight underdamping).
+`joint_damping_ratio: 1.0` (critical weld damping for settle stability; raise/lower
+ζ in JSON only — do not retune cable `damping_ratio` for weld ringing). Distal
+roles then scale `kd ∝ √(E/E_ref)` so joint ζ holds approximately while Young's
+modulus candidates vary (CMA/grid replay amendment; see
+`docs/youngs-modulus-cmaes-implementation.md`).
 
 Given the inertia spread above, a **single global `rigid_joint_angular_kd` will
 generally not settle the whole chain without either under-damping primary or
@@ -395,7 +399,7 @@ damping-responsive; don't spend a damping sweep chasing `branch_path>nominal`.
 | `_DEFAULT_JOINT_LINEAR_KD_OVERRIDES` (batched config) | uniform `0.0` per role (`support`, `primary_spur`, `spur_stem`, `stem_apple`; Newton default via `FRUITING_VBD_RIGID_JOINT_LINEAR_KD`) | `batched_heterogeneous_config.py` |
 | `EXAMPLE_JOINT_*_KD_OVERRIDES` (Python fallback) | uniform `0.3` per role | `batched_heterogeneous_config.py` (used when ranges omit `sim_build`) |
 | `EXAMPLE_JOINT_*_KP_OVERRIDES` (Python fallback) | `"support": 2000.0` angular + linear | `batched_heterogeneous_config.py` |
-| `sim_build` VIC + joint (canonical variance) | VIC `100/20/10/3`; `joint_damping_ratio: 0.2`; kp `"support": 10000` | `fruiting_system_ranges_real_world_proxy_variance.json` via `parse_sim_build` |
+| `sim_build` VIC + joint (canonical variance) | VIC `100/20/10/3`; `joint_damping_ratio: 1.0`; kp `"support": 10000` | `fruiting_system_ranges_real_world_proxy_variance.json` via `parse_sim_build` |
 | `joint_*_kp_overrides` (batched config default) | empty dict | `batched_heterogeneous_config.py` (`FruitingSystemConfig`) |
 
 Update this table when any of these values change so it stays a reliable snapshot.

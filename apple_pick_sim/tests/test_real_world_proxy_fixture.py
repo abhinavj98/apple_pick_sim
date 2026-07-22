@@ -89,7 +89,7 @@ def test_variance_sim_build_knobs(variance_ranges):
     assert sb.vic_gains.angular_k == pytest.approx(10.0)
     assert sb.vic_gains.angular_d == pytest.approx(3.0)
     # Joint weld damping via ζ (kd = ζ·2·√(k·I/m)); mutually exclusive with absolute kd maps.
-    assert sb.joint_damping_ratio == pytest.approx(0.2)
+    assert sb.joint_damping_ratio == pytest.approx(1.0)
     assert sb.joint_angular_kd_overrides == {}
     assert sb.joint_linear_kd_overrides == {}
     assert sb.joint_angular_kp_overrides == {"support": 10000.0}

@@ -1,5 +1,5 @@
 {
-  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). vbd_stretch_fixed.stretch_damping is critical (ζ=1): c=2√(k·m_seg) at midpoint geometry for the listed stretch_stiffness. Bend damping_ratio is JSON-editable per rod (shipped fixed at 0.3). Joint weld damping uses sim_build.joint_damping_ratio (ζ=0.2): kd=ζ·2·√(k·I) / √(k·m) at support kp=1e4 and other-role ke=1e5, then distal roles scale kd∝√(E/E_ref). See docs/material-parameter-sampling.md, docs/damping-tuning.md, and docs/real-world-proxy.md.",
+  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). vbd_stretch_fixed.stretch_damping is critical (ζ=1): c=2√(k·m_seg) at midpoint geometry for the listed stretch_stiffness. Bend damping_ratio is JSON-editable per rod (shipped fixed at 0.3). Joint weld damping uses sim_build.joint_damping_ratio (ζ=1.0): kd=ζ·2·√(k·I) / √(k·m) at support kp=1e4 and other-role ke=1e5, then distal roles scale kd∝√(E/E_ref). See docs/material-parameter-sampling.md, docs/damping-tuning.md, and docs/real-world-proxy.md.",
   "args": {
     "spur_attach_fraction": 0.5,
     "fruiting_base_pos": [0.0, 0.4, 0.75],
@@ -31,7 +31,7 @@
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_fixed": {
       "stretch_stiffness": 10000000.405763,
-      "stretch_damping": 142.18
+      "stretch_damping": 1492.181
     }
   },
   "secondary": null,
@@ -46,7 +46,7 @@
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_fixed": {
       "stretch_stiffness": 10000000.265422,
-      "stretch_damping": 31.34
+      "stretch_damping": 311.342
     }
   },
   "stem": {

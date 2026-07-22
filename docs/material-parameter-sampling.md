@@ -83,7 +83,7 @@ Ranges JSON may include an optional **file-level** (not per-segment) `sim_build`
     "angular_k": 10.0,
     "angular_d": 3.0
   },
-  "joint_damping_ratio": 0.2,
+  "joint_damping_ratio": 1.0,
   "joint_angular_kp_overrides": { "support": 10000.0 },
   "joint_linear_kp_overrides": { "support": 10000.0 }
 }

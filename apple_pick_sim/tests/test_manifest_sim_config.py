@@ -79,12 +79,53 @@ def test_sim_config_to_manifest_dict_includes_replay_relevant_fields():
     assert recorded["joint_linear_kd_applied"]["stem_apple"] == pytest.approx(2.0)
     assert recorded["joint_angular_kp_applied"]["support"] == pytest.approx(2.0e4)
     assert recorded["joint_linear_kp_applied"]["support"] == pytest.approx(2.0e4)
+    assert recorded["joint_damping_ratio"] is None
     assert recorded["controller"]["mode"] == "vic"
     assert recorded["controller"]["vic_gains"]["linear_k"] == pytest.approx(200.0)
     assert recorded["robot"]["fix_to_apple"] is True
     assert recorded["robot"]["gripper_mass_kg"] == pytest.approx(PLACEHOLDER_EE_MASS_KG)
     assert "num_envs" not in recorded
 
+
+def test_sim_config_to_manifest_dict_records_joint_damping_ratio():
+    cfg = dataclasses.replace(
+        _sample_config(),
+        fruiting_system=dataclasses.replace(
+            _sample_config().fruiting_system,
+            joint_angular_kd_overrides={},
+            joint_linear_kd_overrides={},
+            joint_damping_ratio=10.0,
+        ),
+    )
+    recorded = sim_config_to_manifest_dict(cfg)
+    assert recorded["joint_damping_ratio"] == pytest.approx(10.0)
+    assert recorded["joint_angular_kd_overrides"] == {}
+    assert recorded["joint_linear_kd_overrides"] == {}
+
+
+def test_sim_config_manifest_mismatches_detects_joint_damping_ratio_drift():
+    recorded = sim_config_to_manifest_dict(
+        dataclasses.replace(
+            _sample_config(),
+            fruiting_system=dataclasses.replace(
+                _sample_config().fruiting_system,
+                joint_angular_kd_overrides={},
+                joint_linear_kd_overrides={},
+                joint_damping_ratio=1.0,
+            ),
+        )
+    )
+    replay = dataclasses.replace(
+        _sample_config(),
+        fruiting_system=dataclasses.replace(
+            _sample_config().fruiting_system,
+            joint_angular_kd_overrides={},
+            joint_linear_kd_overrides={},
+            joint_damping_ratio=10.0,
+        ),
+    )
+    mismatches = sim_config_manifest_mismatches(recorded, replay)
+    assert any("joint_damping_ratio" in msg for msg in mismatches)
 
 def test_sim_config_manifest_mismatches_detects_support_kp_drift():
     recorded = sim_config_to_manifest_dict(_sample_config())

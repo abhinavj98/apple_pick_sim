@@ -65,6 +65,11 @@ def sim_config_to_manifest_dict(
         "joint_linear_kp_overrides": {
             str(k): float(v) for k, v in sorted(fs_cfg.joint_linear_kp_overrides.items())
         },
+        "joint_damping_ratio": (
+            None
+            if fs_cfg.joint_damping_ratio is None
+            else float(fs_cfg.joint_damping_ratio)
+        ),
         "controller": {
             "mode": str(ctrl.mode),
             "linear_speed": float(ctrl.linear_speed),
@@ -218,6 +223,19 @@ def sim_config_manifest_mismatches(
                 "joint_linear_kp_overrides: "
                 f"manifest={dict(rec_lin_kp)!r} replay={rep_lin_kp!r}"
             )
+
+    rec_zeta = recorded.get("joint_damping_ratio", None)
+    rep_zeta = replay["joint_damping_ratio"]
+    if rec_zeta is None and rep_zeta is None:
+        pass
+    elif rec_zeta is None or rep_zeta is None:
+        mismatches.append(
+            f"joint_damping_ratio: manifest={rec_zeta!r} replay={rep_zeta!r}"
+        )
+    elif not _float_close(float(rec_zeta), float(rep_zeta)):
+        mismatches.append(
+            f"joint_damping_ratio: manifest={float(rec_zeta)!r} replay={float(rep_zeta)!r}"
+        )
 
     rec_ctrl = recorded.get("controller") or {}
     rep_ctrl = replay["controller"]

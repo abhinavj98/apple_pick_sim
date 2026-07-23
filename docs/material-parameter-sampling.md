@@ -56,20 +56,28 @@ Default constitutive mapping (segment-local):
 | `bend_stiffness` | \(E I / L_{\mathrm{seg}}\) | N·m/rad |
 | `bend_damping` | \(2 \zeta \sqrt{k_{\mathrm{bend}}\, J_{\mathrm{seg}}}\) | N·m·s/rad |
 
-\(J_{\mathrm{seg}}\) is the solid-cylinder segment moment of inertia about a transverse axis through the midpoint, making `bend_damping` dimensionally consistent. A single \(\zeta\) governs both axial and bending modes.
+\(J_{\mathrm{seg}}\) is the solid-cylinder segment moment of inertia about a transverse axis through the midpoint, making `bend_damping` dimensionally consistent. A single \(\zeta\) governs both axial and bending modes **unless** `vbd_stretch_force` overrides axial knobs (below).
 
-### Optional `vbd_stretch_fixed` override (batched VBD settling)
+### Optional `vbd_stretch_force` override (batched VBD settling)
 
-For stability-sensitive batched simulations (e.g. `example_batched_heterogeneous_coupled_sim.py` with `--only-vbd`), fixtures may pin the **axial** VBD knobs while bend DR stays on material keys:
+For stability-sensitive batched simulations, fixtures may derive **axial** VBD knobs from a max force budget while bend DR stays on material keys:
 
 ```json
-"vbd_stretch_fixed": {
-  "stretch_stiffness": 500000.0,
-  "stretch_damping": 30.0
+"vbd_stretch_force": {
+  "max_force_n": 35.0,
+  "damping_ratio": 1.0
 }
 ```
 
-Per rod segment, optional. When present, both keys are required (strictly positive). `youngs_modulus_pa` and `damping_ratio` min/max bands are still required and still drive `bend_stiffness` and `bend_damping`. Fixed stretch values are **VBD tuning constants**, not beam-theory-consistent with sampled geometry — see `fruiting_system_ranges_real_world_proxy_variance.json`.
+At `sample_params` time (and range midpoints):
+
+\[
+\delta = 0.05\, L_{\mathrm{seg}},\qquad
+k_{\mathrm{stretch}} = F_{\max}/\delta,\qquad
+c_{\mathrm{stretch}} = 2\,\zeta_{\mathrm{stretch}}\sqrt{k_{\mathrm{stretch}}\, m_{\mathrm{seg}}}
+\]
+
+Per rod segment, optional. When present, both keys are required (strictly positive). Legacy `vbd_stretch_fixed` (`stretch_stiffness` / `stretch_damping`) is rejected. `youngs_modulus_pa` and bend `damping_ratio` still drive `bend_stiffness` / `bend_damping`. See `fruiting_system_ranges_real_world_proxy_variance.json` and `stretch_knobs_from_max_force` in `apple_pick_sim/fruiting_system/params.py`.
 
 ### Optional top-level `sim_build` (VIC + joint overrides)
 

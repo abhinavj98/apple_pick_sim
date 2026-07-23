@@ -47,7 +47,10 @@ _LEGACY_ROD_STIFFNESS_RANGE_KEYS = frozenset(
     {"bend_stiffness", "bend_damping", "stretch_stiffness"}
 )
 
-_VBD_STRETCH_FIXED_KEYS = frozenset({"stretch_stiffness", "stretch_damping"})
+_VBD_STRETCH_FORCE_KEYS = frozenset({"max_force_n", "damping_ratio"})
+
+# Axial extension budget under max_force_n: δ = fraction * L_seg.
+VBD_STRETCH_EXTENSION_FRACTION: float = 0.05
 
 
 @dataclasses.dataclass
@@ -91,36 +94,36 @@ def _segment_material_geometry(
     return area, inertia, l_seg, m_seg, j_seg
 
 
-# Grain-direction axial modulus for ``vbd_stretch_fixed`` (wood is effectively
-# inextensible in simulation). Decoupled from proxy *bend* ``youngs_modulus_pa``.
-WOOD_AXIAL_YOUNGS_MODULUS_PA: float = 5e4
-VBD_AXIAL_DAMPING_RATIO: float = 0.5
-VBD_AXIAL_STRETCH_STIFFNESS_FLOOR_N_PER_M: float = 5e2
+# Axial stretch from max force + ζ (decoupled from bend youngs_modulus_pa).
 
 
-def inextensible_wood_stretch_knobs(
+def stretch_knobs_from_max_force(
+    max_force_n: float,
+    damping_ratio_axial: float,
     length: float,
     radius: float,
     density: float,
     num_segments: int,
     *,
-    youngs_modulus_axial_pa: float = WOOD_AXIAL_YOUNGS_MODULUS_PA,
-    damping_ratio_axial: float = VBD_AXIAL_DAMPING_RATIO,
-    stretch_stiffness_floor_n_per_m: float = VBD_AXIAL_STRETCH_STIFFNESS_FLOOR_N_PER_M,
+    extension_fraction: float = VBD_STRETCH_EXTENSION_FRACTION,
 ) -> tuple[float, float]:
-    """Axial VBD knobs for inextensible wood (``vbd_stretch_fixed`` policy).
+    """Derive axial VBD ``(stretch_stiffness, stretch_damping)`` from force budget.
 
-    Uses ``E_axial * A / L_seg`` with a wood-scale axial modulus, not the proxy
-    bend ``youngs_modulus_pa`` tier. ``stretch_stiffness`` is floored so joints
-    stay stiff enough that branch weight does not produce visible extension.
+    Uses ``k = F_max / (extension_fraction * L_seg)`` and
+    ``c = 2 ζ_stretch √(k m_seg)``. Bend knobs stay on ``youngs_modulus_pa``.
     """
-    area, _inertia, l_seg, m_seg, _j_seg = _segment_material_geometry(
+    if float(max_force_n) <= 0.0:
+        raise ValueError("max_force_n must be positive")
+    if float(damping_ratio_axial) <= 0.0:
+        raise ValueError("damping_ratio_axial must be positive")
+    if float(extension_fraction) <= 0.0:
+        raise ValueError("extension_fraction must be positive")
+    _area, _inertia, l_seg, m_seg, _j_seg = _segment_material_geometry(
         radius, length, num_segments, density
     )
-    k_stretch = max(
-        float(youngs_modulus_axial_pa) * area / l_seg,
-        float(stretch_stiffness_floor_n_per_m),
-    )
+    if l_seg <= 0.0:
+        raise ValueError("segment length must be positive")
+    k_stretch = float(max_force_n) / (float(extension_fraction) * l_seg)
     c_stretch = 2.0 * float(damping_ratio_axial) * math.sqrt(k_stretch * m_seg)
     return k_stretch, c_stretch
 
@@ -141,7 +144,7 @@ def rod_params_from_material(
 
     Derives VBD stiffness/damping from circular-rod beam theory (see
     ``docs/material-parameter-sampling.md``). Optional ``stretch_stiffness`` and
-    ``stretch_damping`` override the axial knobs (e.g. from JSON ``vbd_stretch_fixed``);
+    ``stretch_damping`` override the axial knobs (e.g. from JSON ``vbd_stretch_force``);
     bend knobs always follow sampled ``youngs_modulus_pa`` and ``damping_ratio``.
     """
     if youngs_modulus_pa <= 0.0:
@@ -711,15 +714,25 @@ def sample_params(
         primary_az = _s(pr, "azimuth_deg")
         primary_el = _s(pr, "elevation_deg")
         primary_dir = _direction_from_angles(primary_az, primary_el)
+        primary_length = _s(pr, "length")
+        primary_radius = _s(pr, "radius")
+        primary_density = _s(pr, "density")
+        primary_n = max(2, _si(pr, "num_segments"))
         primary = rod_params_from_material(
             _s(pr, "youngs_modulus_pa"),
             _s(pr, "damping_ratio"),
-            _s(pr, "length"),
-            _s(pr, "radius"),
-            _s(pr, "density"),
-            max(2, _si(pr, "num_segments")),
+            primary_length,
+            primary_radius,
+            primary_density,
+            primary_n,
             primary_dir,
-            **_stretch_kw_from_seg_ranges(pr),
+            **_stretch_kw_from_seg_ranges(
+                pr,
+                length=primary_length,
+                radius=primary_radius,
+                density=primary_density,
+                num_segments=primary_n,
+            ),
         )
         parent_dir = primary.direction
 
@@ -741,15 +754,25 @@ def sample_params(
         secondary_el_delta = _s(sr, "elevation_delta_deg")
         secondary_lat_delta = _s(sr, "lateral_delta_deg")
         secondary_dir = _deflect_direction(parent_dir, secondary_el_delta, secondary_lat_delta)
+        secondary_length = _s(sr, "length")
+        secondary_radius = _s(sr, "radius")
+        secondary_density = _s(sr, "density")
+        secondary_n = max(2, _si(sr, "num_segments"))
         secondary = rod_params_from_material(
             secondary_e,
             _s(sr, "damping_ratio"),
-            _s(sr, "length"),
-            _s(sr, "radius"),
-            _s(sr, "density"),
-            max(2, _si(sr, "num_segments")),
+            secondary_length,
+            secondary_radius,
+            secondary_density,
+            secondary_n,
             secondary_dir,
-            **_stretch_kw_from_seg_ranges(sr),
+            **_stretch_kw_from_seg_ranges(
+                sr,
+                length=secondary_length,
+                radius=secondary_radius,
+                density=secondary_density,
+                num_segments=secondary_n,
+            ),
         )
         parent_dir = secondary.direction
 
@@ -759,15 +782,25 @@ def sample_params(
         spur_el_delta = _s(spr, "elevation_delta_deg")
         spur_lat_delta = _s(spr, "lateral_delta_deg")
         spur_dir = _deflect_direction(parent_dir, spur_el_delta, spur_lat_delta)
+        spur_length = _s(spr, "length")
+        spur_radius = _s(spr, "radius")
+        spur_density = _s(spr, "density")
+        spur_n = max(2, _si(spr, "num_segments"))
         spur = rod_params_from_material(
             _s(spr, "youngs_modulus_pa"),
             _s(spr, "damping_ratio"),
-            _s(spr, "length"),
-            _s(spr, "radius"),
-            _s(spr, "density"),
-            max(2, _si(spr, "num_segments")),
+            spur_length,
+            spur_radius,
+            spur_density,
+            spur_n,
             spur_dir,
-            **_stretch_kw_from_seg_ranges(spr),
+            **_stretch_kw_from_seg_ranges(
+                spr,
+                length=spur_length,
+                radius=spur_radius,
+                density=spur_density,
+                num_segments=spur_n,
+            ),
         )
         parent_dir = spur.direction
 
@@ -777,15 +810,25 @@ def sample_params(
         stem_el_delta = _s(stem_r, "elevation_delta_deg")
         stem_lat_delta = _s(stem_r, "lateral_delta_deg")
         stem_dir = _deflect_direction(parent_dir, stem_el_delta, stem_lat_delta)
+        stem_length = _s(stem_r, "length")
+        stem_radius = _s(stem_r, "radius")
+        stem_density = _s(stem_r, "density")
+        stem_n = max(2, _si(stem_r, "num_segments"))
         stem = rod_params_from_material(
             _s(stem_r, "youngs_modulus_pa"),
             _s(stem_r, "damping_ratio"),
-            _s(stem_r, "length"),
-            _s(stem_r, "radius"),
-            _s(stem_r, "density"),
-            max(2, _si(stem_r, "num_segments")),
+            stem_length,
+            stem_radius,
+            stem_density,
+            stem_n,
             stem_dir,
-            **_stretch_kw_from_seg_ranges(stem_r),
+            **_stretch_kw_from_seg_ranges(
+                stem_r,
+                length=stem_length,
+                radius=stem_radius,
+                density=stem_density,
+                num_segments=stem_n,
+            ),
         )
 
     apple_radius: float | None = None
@@ -1114,7 +1157,7 @@ def set_rod_youngs_modulus(
     Re-derives bend (and, when stretch was beam-consistent, stretch) via
     :func:`rod_params_from_material`. Freezes geometry and ``damping_ratio``.
     If the base rod's axial stretch differs from beam theory (e.g. fixture
-    ``vbd_stretch_fixed``), those stretch knobs are preserved.
+    ``vbd_stretch_force``), those stretch knobs are preserved.
     """
     if youngs_modulus_pa <= 0.0:
         raise ValueError("youngs_modulus_pa must be positive")
@@ -1235,45 +1278,70 @@ def _deflect_direction(
     return (cos_el * math.cos(az), cos_el * math.sin(az), math.sin(el_new))
 
 
-def _parse_vbd_stretch_fixed(seg_data: dict) -> tuple[float, float] | None:
-    """Return fixed stretch knobs from a segment's ``vbd_stretch_fixed`` block, if present."""
-    block = seg_data.get("vbd_stretch_fixed")
+def _parse_vbd_stretch_force(seg_data: dict) -> tuple[float, float] | None:
+    """Return ``(max_force_n, damping_ratio)`` from ``vbd_stretch_force``, if present."""
+    if "vbd_stretch_fixed" in seg_data:
+        raise ValueError(
+            "vbd_stretch_fixed is removed; use vbd_stretch_force with "
+            "max_force_n and damping_ratio instead"
+        )
+    block = seg_data.get("vbd_stretch_force")
     if block is None:
         return None
     if not isinstance(block, dict):
-        raise ValueError("vbd_stretch_fixed must be a JSON object")
-    missing = _VBD_STRETCH_FIXED_KEYS - block.keys()
+        raise ValueError("vbd_stretch_force must be a JSON object")
+    missing = _VBD_STRETCH_FORCE_KEYS - block.keys()
     if missing:
         raise ValueError(
-            f"vbd_stretch_fixed missing required keys: {sorted(missing)}"
+            f"vbd_stretch_force missing required keys: {sorted(missing)}"
         )
-    extra = set(block.keys()) - _VBD_STRETCH_FIXED_KEYS
+    extra = set(block.keys()) - _VBD_STRETCH_FORCE_KEYS
     if extra:
         raise ValueError(
-            f"vbd_stretch_fixed has unknown keys: {sorted(extra)}"
+            f"vbd_stretch_force has unknown keys: {sorted(extra)}"
         )
-    k_stretch = float(block["stretch_stiffness"])
-    c_stretch = float(block["stretch_damping"])
-    if k_stretch <= 0.0:
-        raise ValueError("vbd_stretch_fixed.stretch_stiffness must be positive")
-    if c_stretch <= 0.0:
-        raise ValueError("vbd_stretch_fixed.stretch_damping must be positive")
-    return k_stretch, c_stretch
+    f_max = float(block["max_force_n"])
+    zeta = float(block["damping_ratio"])
+    if f_max <= 0.0:
+        raise ValueError("vbd_stretch_force.max_force_n must be positive")
+    if zeta <= 0.0:
+        raise ValueError("vbd_stretch_force.damping_ratio must be positive")
+    return f_max, zeta
 
 
-def _stretch_kw_from_seg_ranges(seg_data: dict) -> dict[str, float]:
+def _stretch_kw_from_seg_ranges(
+    seg_data: dict,
+    *,
+    length: float,
+    radius: float,
+    density: float,
+    num_segments: int,
+) -> dict[str, float]:
     """Keyword args for :func:`rod_params_from_material` stretch overrides."""
-    fixed = _parse_vbd_stretch_fixed(seg_data)
-    if fixed is None:
+    force = _parse_vbd_stretch_force(seg_data)
+    if force is None:
         return {}
-    return {"stretch_stiffness": fixed[0], "stretch_damping": fixed[1]}
+    k_stretch, c_stretch = stretch_knobs_from_max_force(
+        force[0],
+        force[1],
+        length,
+        radius,
+        density,
+        num_segments,
+    )
+    return {"stretch_stiffness": k_stretch, "stretch_damping": c_stretch}
 
 
-def _validate_vbd_stretch_fixed(seg: str, seg_data: dict) -> None:
-    """Validate optional ``vbd_stretch_fixed`` on a rod segment (raises on bad shape)."""
-    if "vbd_stretch_fixed" not in seg_data:
+def _validate_vbd_stretch_force(seg: str, seg_data: dict) -> None:
+    """Validate optional ``vbd_stretch_force`` (raises on bad shape / legacy key)."""
+    if "vbd_stretch_fixed" in seg_data:
+        raise ValueError(
+            f"Segment '{seg}' uses removed key vbd_stretch_fixed; "
+            "use vbd_stretch_force instead"
+        )
+    if "vbd_stretch_force" not in seg_data:
         return
-    _parse_vbd_stretch_fixed(seg_data)
+    _parse_vbd_stretch_force(seg_data)
 
 
 # ---------------------------------------------------------------------------
@@ -1319,7 +1387,7 @@ def _validate_ranges(data: dict) -> None:
                         f"Range {seg}.{key}: min ({rng['min']}) > max ({rng['max']})"
                     )
 
-        _validate_vbd_stretch_fixed(seg, seg_data)
+        _validate_vbd_stretch_force(seg, seg_data)
 
         if seg == "primary":
             for key in ("azimuth_deg", "elevation_deg"):

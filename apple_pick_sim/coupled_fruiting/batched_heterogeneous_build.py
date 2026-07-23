@@ -41,11 +41,7 @@ from apple_pick_sim.fruiting_system import (
     set_fruiting_joint_linear_kd_batched,
     set_fruiting_joint_linear_kp_batched,
 )
-from apple_pick_sim.fruiting_system.joint_kd_scaling import (
-    joint_kd_from_damping_ratio,
-    scale_joint_kd_overrides,
-    youngs_modulus_ref_from_ranges,
-)
+from apple_pick_sim.fruiting_system.joint_kd_scaling import joint_kd_from_damping_ratio
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.system_id.pre_weld_obs import capture_pre_weld_tree_obs_all_worlds
 
@@ -157,7 +153,6 @@ def build_batched_heterogeneous_scene(
     angular_kp_overrides = dict(config.fruiting_system.joint_angular_kp_overrides)
     linear_kp_overrides = dict(config.fruiting_system.joint_linear_kp_overrides)
     joint_damping_ratio = config.fruiting_system.joint_damping_ratio
-    joint_kd_ref_e = youngs_modulus_ref_from_ranges(ranges)
 
     if fix_to_apple and not vbd_only:
         gripper_weld = weld_grippers[0]
@@ -215,7 +210,6 @@ def build_batched_heterogeneous_scene(
                 linear_kp_overrides=linear_kp_overrides,
                 joint_damping_ratio=joint_damping_ratio,
                 per_env_params=params,
-                joint_kd_ref_e=joint_kd_ref_e,
             )
             stability_reports, ke_decay_reports = _run_vbd_settle(
                 settled,
@@ -268,7 +262,6 @@ def build_batched_heterogeneous_scene(
                 linear_kp_overrides=linear_kp_overrides,
                 joint_damping_ratio=joint_damping_ratio,
                 per_env_params=params,
-                joint_kd_ref_e=joint_kd_ref_e,
             )
             stability_reports, ke_decay_reports = _run_vbd_settle(
                 scene,
@@ -293,7 +286,6 @@ def build_batched_heterogeneous_scene(
         linear_kp_overrides=linear_kp_overrides,
         joint_damping_ratio=joint_damping_ratio,
         per_env_params=params,
-        joint_kd_ref_e=joint_kd_ref_e,
     )
 
     if not collect_diag:
@@ -462,9 +454,6 @@ def _matching_label_overrides(
 def _apply_joint_angular_kd_overrides(
     scene: CoupledFruitingScene,
     kd_overrides: dict[str, float],
-    *,
-    per_env_params: Sequence[FruitingSystemParams] | None = None,
-    joint_kd_ref_e: dict[str, float] | None = None,
 ) -> dict[str, float]:
     layout = scene.layout
     if layout is None or not kd_overrides:
@@ -472,40 +461,19 @@ def _apply_joint_angular_kd_overrides(
     filtered = _matching_label_overrides(scene.cable.fruiting_fixed_joints, kd_overrides)
     if not filtered:
         return {}
-    if per_env_params is not None and joint_kd_ref_e is not None:
-        if len(per_env_params) != int(layout.num_envs):
-            raise ValueError(
-                f"per_env_params length ({len(per_env_params)}) must match "
-                f"layout.num_envs ({layout.num_envs})"
-            )
-        per_env = [
-            scale_joint_kd_overrides(filtered, params, joint_kd_ref_e)
-            for params in per_env_params
-        ]
-        set_fruiting_joint_angular_kd_batched(
-            scene.cable.solver,
-            scene.cable.fruiting_fixed_joints,
-            label_kd_per_env=per_env,
-            num_envs=layout.num_envs,
-            joints_per_world=layout.joints_per_world,
-        )
-    else:
-        set_fruiting_joint_angular_kd_batched(
-            scene.cable.solver,
-            scene.cable.fruiting_fixed_joints,
-            filtered,
-            num_envs=layout.num_envs,
-            joints_per_world=layout.joints_per_world,
-        )
+    set_fruiting_joint_angular_kd_batched(
+        scene.cable.solver,
+        scene.cable.fruiting_fixed_joints,
+        filtered,
+        num_envs=layout.num_envs,
+        joints_per_world=layout.joints_per_world,
+    )
     return dict(filtered)
 
 
 def _apply_joint_linear_kd_overrides(
     scene: CoupledFruitingScene,
     kd_overrides: dict[str, float],
-    *,
-    per_env_params: Sequence[FruitingSystemParams] | None = None,
-    joint_kd_ref_e: dict[str, float] | None = None,
 ) -> dict[str, float]:
     layout = scene.layout
     if layout is None or not kd_overrides:
@@ -513,31 +481,13 @@ def _apply_joint_linear_kd_overrides(
     filtered = _matching_label_overrides(scene.cable.fruiting_fixed_joints, kd_overrides)
     if not filtered:
         return {}
-    if per_env_params is not None and joint_kd_ref_e is not None:
-        if len(per_env_params) != int(layout.num_envs):
-            raise ValueError(
-                f"per_env_params length ({len(per_env_params)}) must match "
-                f"layout.num_envs ({layout.num_envs})"
-            )
-        per_env = [
-            scale_joint_kd_overrides(filtered, params, joint_kd_ref_e)
-            for params in per_env_params
-        ]
-        set_fruiting_joint_linear_kd_batched(
-            scene.cable.solver,
-            scene.cable.fruiting_fixed_joints,
-            label_kd_per_env=per_env,
-            num_envs=layout.num_envs,
-            joints_per_world=layout.joints_per_world,
-        )
-    else:
-        set_fruiting_joint_linear_kd_batched(
-            scene.cable.solver,
-            scene.cable.fruiting_fixed_joints,
-            filtered,
-            num_envs=layout.num_envs,
-            joints_per_world=layout.joints_per_world,
-        )
+    set_fruiting_joint_linear_kd_batched(
+        scene.cable.solver,
+        scene.cable.fruiting_fixed_joints,
+        filtered,
+        num_envs=layout.num_envs,
+        joints_per_world=layout.joints_per_world,
+    )
     return dict(filtered)
 
 
@@ -590,7 +540,6 @@ def _apply_joint_penalty_overrides(
     linear_kp_overrides: dict[str, float],
     joint_damping_ratio: float | None = None,
     per_env_params: Sequence[FruitingSystemParams] | None = None,
-    joint_kd_ref_e: dict[str, float] | None = None,
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
     # kp first so weld stiffness is in place before kd patches.
     applied_angular_kp = _apply_joint_angular_kp_overrides(scene, angular_kp_overrides)
@@ -607,7 +556,7 @@ def _apply_joint_penalty_overrides(
         body_inertia = model.body_inertia.numpy()
         joint_child = model.joint_child.numpy()
         joints = list(scene.cable.fruiting_fixed_joints)
-        # Env-0 map is the reported "requested" base; per-env E-scaling still applies.
+        # Env-0 map is the reported "requested" base; per-env uses that env's m/I.
         ang_kd, lin_kd = joint_kd_from_damping_ratio(
             zeta=float(joint_damping_ratio),
             fruiting_fixed_joints=joints,
@@ -618,11 +567,10 @@ def _apply_joint_penalty_overrides(
             linear_kp_by_role=linear_kp_overrides,
             body_offset=0,
         )
-        if per_env_params is not None and joint_kd_ref_e is not None:
-            # Prefer per-env mass/inertia when expanding before E-scale.
+        if per_env_params is not None:
             per_env_ang: list[dict[str, float]] = []
             per_env_lin: list[dict[str, float]] = []
-            for w, params in enumerate(per_env_params):
+            for w, _params in enumerate(per_env_params):
                 a, l = joint_kd_from_damping_ratio(
                     zeta=float(joint_damping_ratio),
                     fruiting_fixed_joints=joints,
@@ -633,8 +581,8 @@ def _apply_joint_penalty_overrides(
                     linear_kp_by_role=linear_kp_overrides,
                     body_offset=int(w) * int(layout.bodies_per_world),
                 )
-                per_env_ang.append(scale_joint_kd_overrides(a, params, joint_kd_ref_e))
-                per_env_lin.append(scale_joint_kd_overrides(l, params, joint_kd_ref_e))
+                per_env_ang.append(a)
+                per_env_lin.append(l)
             if per_env_ang and any(per_env_ang[0].values()):
                 set_fruiting_joint_angular_kd_batched(
                     scene.cable.solver,
@@ -653,18 +601,8 @@ def _apply_joint_penalty_overrides(
                 )
             return ang_kd, lin_kd, applied_angular_kp, applied_linear_kp
 
-    applied_angular_kd = _apply_joint_angular_kd_overrides(
-        scene,
-        ang_kd,
-        per_env_params=per_env_params,
-        joint_kd_ref_e=joint_kd_ref_e,
-    )
-    applied_linear_kd = _apply_joint_linear_kd_overrides(
-        scene,
-        lin_kd,
-        per_env_params=per_env_params,
-        joint_kd_ref_e=joint_kd_ref_e,
-    )
+    applied_angular_kd = _apply_joint_angular_kd_overrides(scene, ang_kd)
+    applied_linear_kd = _apply_joint_linear_kd_overrides(scene, lin_kd)
     return applied_angular_kd, applied_linear_kd, applied_angular_kp, applied_linear_kp
 
 

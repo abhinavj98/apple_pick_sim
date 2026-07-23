@@ -74,15 +74,25 @@ def _median_range_int(block: dict, key: str) -> int:
 
 def _rod_params_from_range_median(seg_ranges: dict) -> RodParams:
     """Sample geometry/material at range midpoints with a placeholder direction."""
+    length = _median_range_scalar(seg_ranges, "length")
+    radius = _median_range_scalar(seg_ranges, "radius")
+    density = _median_range_scalar(seg_ranges, "density")
+    num_segments = max(2, _median_range_int(seg_ranges, "num_segments"))
     return rod_params_from_material(
         _median_range_scalar(seg_ranges, "youngs_modulus_pa"),
         _median_range_scalar(seg_ranges, "damping_ratio"),
-        _median_range_scalar(seg_ranges, "length"),
-        _median_range_scalar(seg_ranges, "radius"),
-        _median_range_scalar(seg_ranges, "density"),
-        max(2, _median_range_int(seg_ranges, "num_segments")),
+        length,
+        radius,
+        density,
+        num_segments,
         (1.0, 0.0, 0.0),
-        **_stretch_kw_from_seg_ranges(seg_ranges),
+        **_stretch_kw_from_seg_ranges(
+            seg_ranges,
+            length=length,
+            radius=radius,
+            density=density,
+            num_segments=num_segments,
+        ),
     )
 
 

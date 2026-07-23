@@ -57,15 +57,13 @@ path documented in `docs/youngs-modulus-sysid.md`.
   export, or top-ranked grid overlays.
 - Held-out validation, real-data acceptance criteria, or new excitation types.
 
-**Amendment (2026-07-22) — joint-kd ζ-hold:** distal FIXED-joint penalty `kd`
-scales as \(\sqrt{E / E_{\mathrm{ref}}}\) per env, with
-`E_ref = youngs_modulus_ref_from_ranges` (geometric mid of fixture
-`youngs_modulus_pa` bands), **not** the CMA search-box midpoint. Rationale:
-hold joint weld ζ roughly constant while searching \(E\) (still not fitting
-damping). This **changes replay rankings** versus pre-ζ-hold gates; re-baseline
-`scripts/gate_youngs_modulus_cmaes.sh` and the ranking gate after merge.
-Fixture weld ζ ships as `sim_build.joint_damping_ratio` (see
-`docs/damping-tuning.md`).
+**Amendment (2026-07-22 → 2026-07-23) — joint-kd from fixture ζ:** FIXED-joint
+penalty `kd` is expanded from `sim_build.joint_damping_ratio` as absolute
+`kd = ζ · 2 · √(k · I)` / `√(k · m)` per env (child mass/inertia). Weld `kd` is
+**not** scaled with Young's modulus; fixture ζ is constant across CMA/grid E
+candidates. (An earlier √(E/E_ref) distal scale was removed as incorrect for
+constant weld ζ.) Re-baseline `scripts/gate_youngs_modulus_cmaes.sh` and the
+ranking gate after damping-policy changes. See `docs/damping-tuning.md`.
 
 ## Architecture
 

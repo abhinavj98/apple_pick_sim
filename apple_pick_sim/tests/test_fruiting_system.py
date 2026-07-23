@@ -299,11 +299,24 @@ def test_parse_sim_build_rejects_joint_damping_ratio_with_absolute_kd():
         fs.load_ranges(path)
 
 
-def test_parse_sim_build_rejects_joint_damping_ratio_out_of_range():
+def test_parse_sim_build_accepts_joint_damping_ratio_above_one():
+    """Joint ζ is nonnegative (may be > 1); not limited to the unit interval."""
+    fs = _import_module()
+    block = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "joint_damping_ratio": 10.0,
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), block)
+    sb = fs.parse_sim_build(fs.load_ranges(path))
+    assert sb is not None
+    assert sb.joint_damping_ratio == pytest.approx(10.0)
+
+
+def test_parse_sim_build_rejects_negative_joint_damping_ratio():
     fs = _import_module()
     bad = {
         "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
-        "joint_damping_ratio": 1.5,
+        "joint_damping_ratio": -0.1,
     }
     path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), bad)
     with pytest.raises(ValueError, match="joint_damping_ratio"):
@@ -420,8 +433,26 @@ def test_fruiting_params_v1_deserialization():
 
 
 # ---------------------------------------------------------------------------
-# vbd_stretch_fixed override (stability tuning for batched VBD settling)
+# vbd_stretch_force override (F_max + ζ_stretch → k/c from geometry)
 # ---------------------------------------------------------------------------
+
+
+def test_stretch_knobs_from_max_force_matches_delta_fraction():
+    fs = _import_module()
+    length, radius, density, n = 0.10, 0.01, 300.0, 4
+    f_max, zeta = 35.0, 1.5
+    k, c = fs.stretch_knobs_from_max_force(
+        f_max,
+        zeta,
+        length,
+        radius,
+        density,
+        n,
+    )
+    l_seg = length / n
+    m_seg = density * math.pi * radius**2 * l_seg
+    assert k == pytest.approx(f_max / (0.05 * l_seg))
+    assert c == pytest.approx(2.0 * zeta * math.sqrt(k * m_seg))
 
 
 def test_rod_params_from_material_stretch_override():
@@ -449,25 +480,26 @@ def test_rod_params_from_material_stretch_override():
     )
 
 
-def test_load_ranges_vbd_stretch_fixed_validates():
+def test_load_ranges_vbd_stretch_force_validates():
     fs = _import_module()
     import copy
     import json
     import tempfile
 
     ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
-    ranges["primary"]["vbd_stretch_fixed"] = {
-        "stretch_stiffness": 500000.0,
-        "stretch_damping": 30.0,
+    ranges["primary"]["vbd_stretch_force"] = {
+        "max_force_n": 35.0,
+        "damping_ratio": 1.0,
     }
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(ranges, f)
         path = f.name
     loaded = fs.load_ranges(path)
-    assert loaded["primary"]["vbd_stretch_fixed"]["stretch_stiffness"] == 500000.0
+    assert loaded["primary"]["vbd_stretch_force"]["max_force_n"] == 35.0
+    assert loaded["primary"]["vbd_stretch_force"]["damping_ratio"] == 1.0
 
 
-def test_load_ranges_vbd_stretch_fixed_rejects_partial_or_nonpositive():
+def test_load_ranges_vbd_stretch_force_rejects_partial_nonpositive_legacy():
     fs = _import_module()
     import copy
     import json
@@ -476,35 +508,46 @@ def test_load_ranges_vbd_stretch_fixed_rejects_partial_or_nonpositive():
     ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
 
     bad_partial = copy.deepcopy(ranges)
-    bad_partial["primary"]["vbd_stretch_fixed"] = {"stretch_stiffness": 500000.0}
+    bad_partial["primary"]["vbd_stretch_force"] = {"max_force_n": 35.0}
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(bad_partial, f)
         path = f.name
-    with pytest.raises(ValueError, match="stretch_damping"):
+    with pytest.raises(ValueError, match="damping_ratio"):
         fs.load_ranges(path)
 
     bad_nonpositive = copy.deepcopy(ranges)
-    bad_nonpositive["primary"]["vbd_stretch_fixed"] = {
-        "stretch_stiffness": 500000.0,
-        "stretch_damping": 0.0,
+    bad_nonpositive["primary"]["vbd_stretch_force"] = {
+        "max_force_n": 35.0,
+        "damping_ratio": 0.0,
     }
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(bad_nonpositive, f)
         path = f.name
-    with pytest.raises(ValueError, match="stretch_damping"):
+    with pytest.raises(ValueError, match="damping_ratio"):
+        fs.load_ranges(path)
+
+    legacy = copy.deepcopy(ranges)
+    legacy["primary"]["vbd_stretch_fixed"] = {
+        "stretch_stiffness": 500000.0,
+        "stretch_damping": 30.0,
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(legacy, f)
+        path = f.name
+    with pytest.raises(ValueError, match="vbd_stretch_force"):
         fs.load_ranges(path)
 
 
-def test_sample_params_stretch_fixed_constant_across_seeds():
+def test_sample_params_stretch_force_derives_from_geometry():
     fs = _import_module()
     import copy
     import json
     import tempfile
 
     ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
-    ranges["primary"]["vbd_stretch_fixed"] = {
-        "stretch_stiffness": 500000.0,
-        "stretch_damping": 30.0,
+    ranges["primary"]["vbd_stretch_force"] = {
+        "max_force_n": 35.0,
+        "damping_ratio": 1.5,
     }
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(ranges, f)
@@ -513,14 +556,21 @@ def test_sample_params_stretch_fixed_constant_across_seeds():
     p0 = fs.sample_params(loaded, seed=0)
     p1 = fs.sample_params(loaded, seed=99)
     assert p0.primary is not None and p1.primary is not None
-    assert p0.primary.stretch_stiffness == pytest.approx(500000.0)
-    assert p1.primary.stretch_stiffness == pytest.approx(500000.0)
-    assert p0.primary.stretch_damping == pytest.approx(30.0)
-    assert p1.primary.stretch_damping == pytest.approx(30.0)
+    for rod in (p0.primary, p1.primary):
+        k_exp, c_exp = fs.stretch_knobs_from_max_force(
+            35.0,
+            1.5,
+            rod.length,
+            rod.radius,
+            rod.density,
+            rod.num_segments,
+        )
+        assert rod.stretch_stiffness == pytest.approx(k_exp)
+        assert rod.stretch_damping == pytest.approx(c_exp)
     assert p0.primary.bend_stiffness != pytest.approx(p1.primary.bend_stiffness)
 
 
-def test_params_from_ranges_median_honors_vbd_stretch_fixed():
+def test_params_from_ranges_median_honors_vbd_stretch_force():
     from apple_pick_sim.digital_twin.from_obs import params_from_ranges_median
 
     fs = _import_module()
@@ -529,9 +579,9 @@ def test_params_from_ranges_median_honors_vbd_stretch_fixed():
     import tempfile
 
     ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
-    ranges["primary"]["vbd_stretch_fixed"] = {
-        "stretch_stiffness": 500000.0,
-        "stretch_damping": 30.0,
+    ranges["primary"]["vbd_stretch_force"] = {
+        "max_force_n": 35.0,
+        "damping_ratio": 1.0,
     }
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(ranges, f)
@@ -539,8 +589,16 @@ def test_params_from_ranges_median_honors_vbd_stretch_fixed():
     loaded = fs.load_ranges(path)
     params = params_from_ranges_median(loaded)
     assert params.primary is not None
-    assert params.primary.stretch_stiffness == pytest.approx(500000.0)
-    assert params.primary.stretch_damping == pytest.approx(30.0)
+    k_exp, c_exp = fs.stretch_knobs_from_max_force(
+        35.0,
+        1.0,
+        params.primary.length,
+        params.primary.radius,
+        params.primary.density,
+        params.primary.num_segments,
+    )
+    assert params.primary.stretch_stiffness == pytest.approx(k_exp)
+    assert params.primary.stretch_damping == pytest.approx(c_exp)
 
 
 # ---------------------------------------------------------------------------

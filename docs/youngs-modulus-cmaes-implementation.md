@@ -81,17 +81,14 @@ Default controls live in ``CMA_SEARCH_PARAMS`` inside
 - `evaluated_history_extrema` is the component-wise min/max of samples actually
   submitted in CMA populations (`ask_samples_log10`), in both log10-E and Pa.
 
-## Joint-kd ζ-hold (replay amendment)
+## Joint-kd from fixture ζ (no E scale)
 
 Batched heterogeneous builds derive FIXED-joint angular/linear `kd` from
-`sim_build.joint_damping_ratio` (or absolute kd maps), then scale distal roles
-as \(\mathrm{kd} \propto \sqrt{E / E_{\mathrm{ref}}}\) with
-`E_ref = youngs_modulus_ref_from_ranges` (geometric mid of fixture bands).
-`E_ref` is **not** the CMA search-box midpoint / start mean. Support stays at
-base kd (no E scale). This holds joint weld ζ roughly constant across Young’s
-candidates; it is **not** fitting damping. Rankings and integrity/ranking gates
-from before this amendment need **re-baselining** after merge
-(`scripts/gate_youngs_modulus_cmaes.sh`, ranking gate).
+`sim_build.joint_damping_ratio` (or absolute kd maps) via
+`kd = ζ · 2 · √(k · I)` / `√(k · m)` using each env's child mass/inertia.
+Weld `kd` is **not** scaled with Young's modulus: fixture ζ is constant across
+CMA/grid E candidates. Rankings and integrity/ranking gates need **re-baselining**
+after damping-policy changes (`scripts/gate_youngs_modulus_cmaes.sh`, ranking gate).
 
 ## Logical versus physical counters
 

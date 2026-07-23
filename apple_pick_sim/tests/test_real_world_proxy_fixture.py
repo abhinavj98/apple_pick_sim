@@ -88,8 +88,8 @@ def test_variance_sim_build_knobs(variance_ranges):
     assert sb.vic_gains.linear_d == pytest.approx(20.0)
     assert sb.vic_gains.angular_k == pytest.approx(10.0)
     assert sb.vic_gains.angular_d == pytest.approx(3.0)
-    # Joint weld damping via ζ (kd = ζ·2·√(k·I/m)); mutually exclusive with absolute kd maps.
-    assert sb.joint_damping_ratio == pytest.approx(1.0)
+    # Joint weld damping via ζ (kd = ζ·2·√(k·I)/√(k·m)); mutually exclusive with absolute kd maps.
+    assert sb.joint_damping_ratio == pytest.approx(0.5)
     assert sb.joint_angular_kd_overrides == {}
     assert sb.joint_linear_kd_overrides == {}
     assert sb.joint_angular_kp_overrides == {"support": 10000.0}
@@ -102,9 +102,14 @@ def test_nominal_has_no_sim_build(nominal_ranges):
 
 
 def test_variance_stiffness_ordering(variance_ranges):
-    spur_max = variance_ranges["spur"]["youngs_modulus_pa"]["max"]
-    primary_min = variance_ranges["primary"]["youngs_modulus_pa"]["min"]
-    assert spur_max < primary_min
+    """Primary is wood-scale; stem min is peduncle-scale; spur may reach wood max."""
+    primary = variance_ranges["primary"]["youngs_modulus_pa"]
+    spur = variance_ranges["spur"]["youngs_modulus_pa"]
+    stem = variance_ranges["stem"]["youngs_modulus_pa"]
+    assert primary["min"] == pytest.approx(5.0e9, rel=0.01)
+    assert stem["min"] < 1.5e9  # peduncle-like floor
+    assert spur["min"] < primary["min"]
+    assert stem["min"] < primary["min"]
 
 
 def _variance_segment_midpoint(row: dict) -> tuple[float, float, float, int]:
@@ -119,40 +124,73 @@ def _variance_segment_midpoint(row: dict) -> tuple[float, float, float, int]:
     )
 
 
-def test_variance_vbd_stretch_fixed_critical_damping(variance_ranges):
-    """``vbd_stretch_fixed.stretch_damping`` is critical (ζ=1) at midpoint geometry."""
+def test_variance_vbd_stretch_force_derives_at_midpoint(variance_ranges):
+    """Axial k/c from max_force_n + ζ_stretch at midpoint geometry."""
     import math
 
-    from apple_pick_sim.fruiting_system.params import _segment_material_geometry
+    from apple_pick_sim.fruiting_system.params import stretch_knobs_from_max_force
 
-    for seg in ("primary", "spur", "stem"):
+    zeta_by_seg = {"primary": 1.0, "spur": 1.5, "stem": 3.0}
+    for seg, zeta in zeta_by_seg.items():
         row = variance_ranges[seg]
+        force = row["vbd_stretch_force"]
+        assert float(force["max_force_n"]) == pytest.approx(35.0)
+        assert float(force["damping_ratio"]) == pytest.approx(zeta)
         length, radius, density, num_segments = _variance_segment_midpoint(row)
-        _area, _inertia, _l_seg, m_seg, _j_seg = _segment_material_geometry(
-            radius, length, num_segments, density
+        k_exp, c_exp = stretch_knobs_from_max_force(
+            float(force["max_force_n"]),
+            float(force["damping_ratio"]),
+            length,
+            radius,
+            density,
+            num_segments,
         )
-        fixed = row["vbd_stretch_fixed"]
-        k = float(fixed["stretch_stiffness"])
-        c_crit = 2.0 * math.sqrt(k * m_seg)
-        assert fixed["stretch_damping"] == pytest.approx(c_crit, rel=0.01)
+        # Spot-check δ = 0.05 L_seg policy.
+        l_seg = length / num_segments
+        assert k_exp == pytest.approx(35.0 / (0.05 * l_seg))
+        assert c_exp == pytest.approx(
+            2.0 * zeta * math.sqrt(k_exp * density * math.pi * radius**2 * l_seg)
+        )
 
 
-def test_variance_stretch_stiffness_decoupled_from_bend_e(variance_ranges):
-    """Spur/stem axial k uses a fixed woodlike stretch, not the bend E band."""
+def test_variance_stretch_force_decoupled_from_bend_e(variance_ranges):
+    """Axial force policy is independent of bend youngs_modulus_pa bands."""
     for seg in ("spur", "stem"):
         row = variance_ranges[seg]
-        k_stretch = float(row["vbd_stretch_fixed"]["stretch_stiffness"])
+        f_max = float(row["vbd_stretch_force"]["max_force_n"])
         e_lo = float(row["youngs_modulus_pa"]["min"])
         e_hi = float(row["youngs_modulus_pa"]["max"])
-        assert k_stretch > 0.0
-        # Fixed stretch must not scale with the bend-E band endpoints.
-        assert k_stretch != pytest.approx(e_lo)
-        assert k_stretch != pytest.approx(e_hi)
-        assert k_stretch == pytest.approx(1.0e7, rel=0.05)
+        assert f_max > 0.0
+        assert f_max != pytest.approx(e_lo)
+        assert f_max != pytest.approx(e_hi)
 
 
-def test_variance_youngs_modulus_hits_proxy_tip_tier_at_midpoint_geometry(variance_ranges):
-    """E bands map to documented proxy k_tip=3EI/L^3 tiers at segment midpoint L,r."""
+def test_sample_params_variance_stretch_matches_force_policy(variance_ranges):
+    """sample_params derives stretch knobs from vbd_stretch_force + geometry."""
+    from apple_pick_sim.fruiting_system.params import (
+        sample_params,
+        stretch_knobs_from_max_force,
+    )
+
+    params = sample_params(variance_ranges, seed=7)
+    for seg in ("primary", "spur", "stem"):
+        rod = getattr(params, seg)
+        assert rod is not None
+        force = variance_ranges[seg]["vbd_stretch_force"]
+        k_exp, c_exp = stretch_knobs_from_max_force(
+            float(force["max_force_n"]),
+            float(force["damping_ratio"]),
+            rod.length,
+            rod.radius,
+            rod.density,
+            rod.num_segments,
+        )
+        assert rod.stretch_stiffness == pytest.approx(k_exp)
+        assert rod.stretch_damping == pytest.approx(c_exp)
+
+
+def test_variance_youngs_modulus_tip_stiffness_at_midpoint_geometry(variance_ranges):
+    """Document cantilever tip stiffness k=3EI/L^3 implied by current E bands."""
     import math
 
     def _I(r: float) -> float:
@@ -164,11 +202,11 @@ def test_variance_youngs_modulus_hits_proxy_tip_tier_at_midpoint_geometry(varian
     def _mid(band: dict) -> float:
         return 0.5 * (float(band["min"]) + float(band["max"]))
 
-    # Current variance fixture targets stiff primary/spur and a softer stem tip.
+    # Regenerated from fixture geometry + E (wood/peduncle literature bands).
     tiers = {
-        "primary": (14084.0, 14084.0),
-        "spur": (14043.0, 28086.0),
-        "stem": (1150.0, 1438.0),
+        "primary": (70422.0, 70422.0),
+        "spur": (25144.0, 502872.0),
+        "stem": (1150.0, 7191.0),
     }
     for seg, (k_lo, k_hi) in tiers.items():
         row = variance_ranges[seg]

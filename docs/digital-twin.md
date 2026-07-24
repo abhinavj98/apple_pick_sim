@@ -5,7 +5,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Roadmap slice** | M3.0.3 (observation-only replay init) **Done**; M3.0.4 (digital-twin fixture catalog) **Done**; V.4.2.1 helpers/`--infer-params` **Done** (infer-only floor optional cleanup) — see `docs/ROADMAP.md` (Current focus is **V.5.3**) |
-| **Related docs** | `docs/system_identification.md`, `docs/sysid-trajectory-storage.md`, `docs/batched-sysid-dataset.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/gym-observation-contract.md`, `docs/real-world-proxy.md` |
+| **Related docs** | `docs/system_identification.md`, `docs/sysid-trajectory-storage.md`, `docs/batched-sysid-dataset.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/gym-observation-contract.md`, `docs/real-world-proxy.md`, `docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md` |
 
 This document merges the observation-only-replay spec and the geometry-reconstruction implementation notes that used to live in two separate files (`observation-replay-digital-twin.md`, `digital-twin-from-obs-implementation.md`).
 
@@ -135,6 +135,20 @@ Workflow (analogous to settle-then-weld, but obs-driven):
 2. Infer per-rod **direction** and **length** from junction anchor positions under the straight-rod approximation (`infer_segment_geometry`).
 3. Use observed `rod_radii` when present. Take remaining non-geometric scalars (stiffness, damping, density, `num_segments`, apple density) from the **midpoint** of a base fixture JSON (`params_from_ranges_median`).
 4. Build a `CoupledCableScene` via `build_digital_twin_scene` (VBD-only; no FR3 arm).
+
+### Real-robot pre-grasp → post-grasp weld
+
+Bench episodes under `robot_replay/` split geometry into two metadata roles
+(see `robot_replay/README.md` and `docs/real-sysid-pre-post-grasp-fixes.md`):
+
+| Stage | Source | Use |
+| ----- | ------ | --- |
+| **Pre-grasp** | Non-bending woody chords + correctly placed apple (gravity largely opposed; bend ≈ 0) | Rebuild `fruiting_system` geometry, then settle in sim |
+| **Post-grasp** | Settled apple under grasp (TCP pose + approach / weld direction) | Attach the robot to that settled plant |
+
+Do **not** infer rod directions from post-grasp bent chords. Do **not** skip
+pre-grasp rebuild and weld only from a single fused row unless the contract
+explicitly allows it.
 
 ### Geometry recovery
 

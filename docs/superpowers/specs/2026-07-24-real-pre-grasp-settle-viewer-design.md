@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Draft (approved in brainstorming 2026-07-24) |
+| **Status** | Implemented |
 | **Date** | 2026-07-24 |
 | **Scope** | Plant-only: pre-grasp → `FruitingSystemParams` → settle → Newton viewer |
 | **Non-goals** | Robot, weld, trajectory/`action`, CMA-ES / full `batched_sysid_v1` writer |
@@ -53,8 +53,11 @@ settle N VBD substeps
 Newton viewer (GL) / null for smoke
 ```
 
-Optional `--dump-params out.json` writes `fruiting_params_to_dict` for inspection
-and future dataset embedding.
+Optional `--dump-params out.json` writes:
+- `fruiting_base_pos`
+- `fruiting_system_params` (`fruiting_params_to_dict`)
+- `diagnostics`: catalog-vs-chord length errors, spur/stem chord lengths,
+  `apple_pos` vs Spur→Apple chord-end error, directions used
 
 ## Pre-grasp → params mapping
 
@@ -62,9 +65,9 @@ and future dataset embedding.
 
 For T-junction / real-world proxy:
 
-- **`fruiting_base_pos`** = **start of the spur** = spur–primary **T-junction**
-  (mid-span `primary_spur` in sim). On Branch/Spur/Apple episodes this is the
-  **Branch** tracker.
+- **`fruiting_base_pos`** = measured **Branch** xyz in the parquet frame (`franka_base_o`)
+  = start of spur = spur–primary T-junction. Do not substitute the fixture default
+  base for this viewer slice.
 - **Primary** is built **horizontal through that T-junction** (proxy ±X / fixture
   primary axis), with length/radius from `parts.primary`.
 - **Spur** tracker = **spur distal end** (end of the spur chord).
@@ -77,11 +80,11 @@ Spur→Apple (stem chord).
 
 | Sim field | Source |
 | --------- | ------ |
-| `primary.direction` | Horizontal through T-junction (fixture/proxy primary axis, e.g. ±X) |
-| `primary.length` / `radius` | `parts.primary` |
+| `primary.direction` | Same as sim fixture sampling: midpoint `azimuth_deg` / `elevation_deg` from the variance fixture (real-world proxy: both 0 → horizontal **+X**) |
+| `primary.length` / `radius` | `parts.primary` (catalog); report length error vs hang chords where applicable |
 | `spur.direction` | Unit vector along spur chord: **T-junction → spur end** (Branch→Spur) |
 | `spur.length` / `radius` | `parts.spur` |
-| `stem.direction` | Unit vector **spur end → apple center** (Spur→Apple) |
+| `stem.direction` | Unit vector **spur end → `snapshot.apple_pos`** (apple COM). There is no separate stem-end tracker. Report error vs Spur→Apple woody chord end when both exist. |
 | `stem.length` / `radius` | `parts.stem` |
 | `secondary` | `null` |
 | `apple_radius` | `parts.apple.radius_m` else fixture midpoint |
@@ -89,12 +92,19 @@ Spur→Apple (stem chord).
 | `topology` | `t_junction` |
 | `spur_attach_fraction` | Fixture (default 0.5) |
 
-Materials (`youngs_modulus_pa`, `damping_ratio`, stretch knobs, `density`,
-`num_segments`) from variance fixture midpoints via existing
-`rod_params_from_material` / `build_fruiting_params_from_real` pattern.
+Materials: **density** (and apple density) from `parts.*.density_kg_m3`;
+`youngs_modulus_pa`, `damping_ratio`, stretch knobs, and `num_segments` from
+variance fixture midpoints via `rod_params_from_material` /
+`build_fruiting_params_from_real` (extend that helper to accept optional
+per-rod densities from parts).
 
-Lengths come from `parts.*`; directions from the two hang chords above. Do **not**
-share spur/stem direction. Branch→Apple is not a single rod.
+Lengths come from `parts.*` (catalog / lengthened-state). Always **print**
+absolute and relative error vs measured chords (`|Branch→Spur|` vs
+`parts.spur.length_m`, `|Spur→Apple|` vs `parts.stem.length_m`; also
+`apple_pos` vs Spur→Apple chord end when present). Length mismatch never fails
+the run — `--strict` applies only to pre-grasp bend≈0. Directions from the
+chords / `apple_pos` as above. Do **not** share spur/stem direction.
+
 
 
 
@@ -102,8 +112,8 @@ share spur/stem direction. Branch→Apple is not a single rod.
 
 - Require `pre_grasp_geometry` + woody + topology + usable `parts`.
 - Prefer `woody_bending_angles ≈ 0`; warn by default, `--strict` fails.
-- Coerce string-encoded vectors if present (known `apple_pos` quirk); plant-only
-  path does not require apple_pos for build.
+- Coerce string-encoded `apple_pos` (known quirk); **required** for stem direction
+  (spur end → apple COM).
 - Unknown topology (not Branch/Spur/Apple shared_endpoints) → fail with a clear
   message until another map is registered.
 
@@ -116,9 +126,9 @@ share spur/stem direction. Branch→Apple is not a single rod.
 | `robot_replay/example_view_pre_grasp_settle.py` | CLI: build → settle → view |
 | `robot_replay/README.md` | Document command + params-first intent |
 
-Reuse/extend helpers in `real_to_batched_sysid.py` where they already assemble
-params from measured L/r + fixture midpoints; do not require
-`step_idx == -1` or full episode ingest for this slice.
+Plant-only means no FR3 and no weld (`fix_to_apple=False`). The default free
+gripper proxy body from `generate_coupled_cable_scene` **remains** (same as
+digital-twin plant builds); do not special-case hiding it in this slice.
 
 ## CLI
 
@@ -130,13 +140,19 @@ uv run python robot_replay/example_view_pre_grasp_settle.py \
   --viewer gl
 ```
 
+Default `--settle-substeps` is **5000**. **Show settling in the viewer**: do not
+hide a long offline settle before the first frame; drive settle VBD steps while
+rendering (or interleave settle substeps with viewer frames) so the plant is
+visible as it comes to rest. After that budget, keep simulating each frame as
+above. Initial camera matches `example_digital_twin.py` (no auto look-at).
+
 Flags: `--dump-params`, `--strict`, `--viewer null` (CI/smoke), device via
 existing sim-device conventions.
 
 ## Tests
 
-- Synthetic metadata: Spur → `fruiting_base_pos`; primary axis from Branch↔Spur;
-  hang axis from Spur→Apple; parts L/r applied.
+- Synthetic metadata: Branch → `fruiting_base_pos`; spur/stem dirs from
+  Branch→Spur and Spur→`apple_pos`; parts L/r; length-error report.
 - Optional smoke on `robot_replay/s00-d00.parquet` metadata (parse only).
 - Serialization: `fruiting_params_to_dict` / `fruiting_params_from_dict` round-trip.
 - No interactive viewer in pytest.
@@ -144,8 +160,9 @@ existing sim-device conventions.
 ## Success criteria
 
 1. From `s00-d00.parquet`, converter yields valid `FruitingSystemParams` and
-   Spur-based `fruiting_base_pos`.
-2. Viewer shows a settled plant-only cable scene without FR3/weld.
+   Branch-based `fruiting_base_pos`.
+2. Viewer shows a plant-only cable scene (no FR3/weld), settles, then continues
+   simulating under gravity in the interactive loop.
 3. `--dump-params` JSON is embeddable later as episode
    `fruiting_system_params` for sim-native replay.
 

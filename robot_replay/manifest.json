@@ -1,0 +1,542 @@
+{
+  "collection": {
+    "control_hz": 30.0,
+    "max_steps": 0,
+    "n_holds": 5,
+    "num_directions": 5,
+    "num_structures": 5,
+    "ranges_path": "/home/abhinav/codes/apple_pick_sim-youngs-modulus-cmaes/apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json",
+    "seed": 0,
+    "sim_config": {
+      "controller": {
+        "angular_speed": 1.0,
+        "ik_iterations": 128,
+        "linear_speed": 1.0,
+        "mode": "vic",
+        "vic_gains": {
+          "angular_d": 3.0,
+          "angular_k": 10.0,
+          "linear_d": 20.0,
+          "linear_k": 100.0
+        }
+      },
+      "enable_apple_woody_collisions": true,
+      "enable_proxy_woody_collisions": true,
+      "enable_self_collisions": false,
+      "joint_angular_kd_applied": {
+        "primary_spur": 0.25651,
+        "spur_stem": 0.01527,
+        "stem_apple": 10.233,
+        "support": 130.48
+      },
+      "joint_angular_kd_overrides": {
+        "primary_spur": 0.25651,
+        "spur_stem": 0.01527,
+        "stem_apple": 10.233,
+        "support": 130.48
+      },
+      "joint_angular_kp_applied": {
+        "support": 10000.0
+      },
+      "joint_angular_kp_overrides": {
+        "support": 10000.0
+      },
+      "joint_linear_kd_applied": {
+        "primary_spur": 31.134,
+        "spur_stem": 4.8541,
+        "stem_apple": 323.6,
+        "support": 4718.7
+      },
+      "joint_linear_kd_overrides": {
+        "primary_spur": 31.134,
+        "spur_stem": 4.8541,
+        "stem_apple": 323.6,
+        "support": 4718.7
+      },
+      "joint_linear_kp_applied": {
+        "support": 10000.0
+      },
+      "joint_linear_kp_overrides": {
+        "support": 10000.0
+      },
+      "robot": {
+        "fix_to_apple": true,
+        "gripper_mass_kg": 0.5
+      },
+      "settle_gravity_ramp": false,
+      "settle_max_speed_m_s": 0.05,
+      "settle_substeps": 5000,
+      "stem_coupling_gain": 1.0,
+      "stem_force_cap_N": 100.0,
+      "stem_torque_cap_Nm": 40.0,
+      "sub_dt": 0.0005555555555555556
+    },
+    "topology_seed": 42,
+    "trajectory": {
+      "hold_duration_s": 1.5,
+      "move_speed_mps": 0.2,
+      "movement_per_step_m": 0.02,
+      "skip_return": true,
+      "total_movement_m": 0.1
+    }
+  },
+  "command_argv": [
+    "apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py",
+    "--num-structures",
+    "5",
+    "--num-directions",
+    "5",
+    "--output",
+    "tmp/cmaes_unbounded_5x5/dataset",
+    "--seed",
+    "0",
+    "--topology-seed",
+    "42",
+    "--overwrite",
+    "--viewer",
+    "null",
+    "--device",
+    "cuda:0"
+  ],
+  "created_at": "2026-07-21T00:05:01.091690+00:00",
+  "episodes": [
+    {
+      "direction_idx": 0,
+      "env_idx": 0,
+      "episode_id": "5c847cf9-f754-4072-b974-25457e3b9c9c",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s00_d00.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.670833568571214,
+        -0.7360653537401174,
+        0.09049927238075675
+      ],
+      "structure_idx": 0
+    },
+    {
+      "direction_idx": 1,
+      "env_idx": 1,
+      "episode_id": "412abdd3-c935-4d22-8e2d-1c36631560f9",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s00_d01.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.36843744018430263,
+        -0.9248904222743995,
+        0.09397637711425977
+      ],
+      "structure_idx": 0
+    },
+    {
+      "direction_idx": 2,
+      "env_idx": 2,
+      "episode_id": "9242e9d9-e497-439d-96d3-e6a809b04500",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s00_d02.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.8447903871675697,
+        -0.510102236001519,
+        0.16163202212284064
+      ],
+      "structure_idx": 0
+    },
+    {
+      "direction_idx": 3,
+      "env_idx": 3,
+      "episode_id": "665c3b22-2a42-484d-b86e-24a41a298af8",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s00_d03.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.5031537278558518,
+        -0.7898924780446523,
+        0.350579804428661
+      ],
+      "structure_idx": 0
+    },
+    {
+      "direction_idx": 4,
+      "env_idx": 4,
+      "episode_id": "9d29f0e7-8280-484c-be1c-5fa8c87c0b18",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s00_d04.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.08101341307597155,
+        -0.9930689040501626,
+        0.0851526788209937
+      ],
+      "structure_idx": 0
+    },
+    {
+      "direction_idx": 0,
+      "env_idx": 5,
+      "episode_id": "9cab3a1a-1f65-466c-8c9c-9d80d1487200",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s01_d00.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.7468755687032732,
+        0.6643471094051523,
+        0.028632203882707773
+      ],
+      "structure_idx": 1
+    },
+    {
+      "direction_idx": 1,
+      "env_idx": 6,
+      "episode_id": "67460aa1-cad9-40b4-8732-23d0f373fee9",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s01_d01.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.9559980728058215,
+        0.23401724224019388,
+        0.17692827678426598
+      ],
+      "structure_idx": 1
+    },
+    {
+      "direction_idx": 2,
+      "env_idx": 7,
+      "episode_id": "d0018840-e3e6-4470-a4c0-ba172887006b",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s01_d02.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.48030733406802106,
+        0.8759683488048622,
+        0.044545670188626034
+      ],
+      "structure_idx": 1
+    },
+    {
+      "direction_idx": 3,
+      "env_idx": 8,
+      "episode_id": "ff0170db-2beb-4725-9da8-c8a25c2fb2c0",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s01_d03.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.9454585742085543,
+        -0.2863513135761498,
+        0.15527720266910144
+      ],
+      "structure_idx": 1
+    },
+    {
+      "direction_idx": 4,
+      "env_idx": 9,
+      "episode_id": "84e6e69b-0e08-4e98-8727-85d2d6e4f7ed",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s01_d04.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.7999002162052026,
+        0.5275492229925579,
+        0.28609694412002873
+      ],
+      "structure_idx": 1
+    },
+    {
+      "direction_idx": 0,
+      "env_idx": 10,
+      "episode_id": "5f569588-0ad2-4c4b-af70-d39a4180ca7d",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s02_d00.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.6419113575558214,
+        -0.7658117935712565,
+        0.03849812811056817
+      ],
+      "structure_idx": 2
+    },
+    {
+      "direction_idx": 1,
+      "env_idx": 11,
+      "episode_id": "a0752534-e4b6-4ee1-90ac-9296bfb7afe7",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s02_d01.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.21463490745872285,
+        -0.9761765781991116,
+        0.031798501154289754
+      ],
+      "structure_idx": 2
+    },
+    {
+      "direction_idx": 2,
+      "env_idx": 12,
+      "episode_id": "d80e1c84-7551-42dd-90af-323abada48ee",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s02_d02.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.8338353280509373,
+        -0.5276625630600105,
+        0.1621445812820343
+      ],
+      "structure_idx": 2
+    },
+    {
+      "direction_idx": 3,
+      "env_idx": 13,
+      "episode_id": "2c93730c-55da-41fd-8c72-e39c3ece6b11",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s02_d03.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.4501309781636253,
+        -0.8578975643457513,
+        0.24777786742783423
+      ],
+      "structure_idx": 2
+    },
+    {
+      "direction_idx": 4,
+      "env_idx": 14,
+      "episode_id": "01592a17-1646-4d69-a10f-ead2c212706b",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s02_d04.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.9574805976779592,
+        -0.20643374544886775,
+        0.20153415048127715
+      ],
+      "structure_idx": 2
+    },
+    {
+      "direction_idx": 0,
+      "env_idx": 15,
+      "episode_id": "83008f07-e43a-44ea-be1f-4ee45b9f307a",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s03_d00.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.05076925593494997,
+        0.10793776662278493,
+        -0.9928604741796789
+      ],
+      "structure_idx": 3
+    },
+    {
+      "direction_idx": 1,
+      "env_idx": 16,
+      "episode_id": "5aaf54f0-7f2d-49d1-b846-d1acaf8e557b",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s03_d01.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.23467558932831775,
+        -0.032770487782894,
+        -0.9715212107328784
+      ],
+      "structure_idx": 3
+    },
+    {
+      "direction_idx": 2,
+      "env_idx": 17,
+      "episode_id": "9c738f01-d5bd-4dbd-8275-374c4e79e94a",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s03_d02.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.039511175823086706,
+        0.380352295193105,
+        -0.923997293570936
+      ],
+      "structure_idx": 3
+    },
+    {
+      "direction_idx": 3,
+      "env_idx": 18,
+      "episode_id": "44bcd2c2-ac5c-4310-a158-e09518bf9c77",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s03_d03.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.12053367518003577,
+        -0.1558935226182096,
+        -0.9803921882355446
+      ],
+      "structure_idx": 3
+    },
+    {
+      "direction_idx": 4,
+      "env_idx": 19,
+      "episode_id": "9d4e94e9-f2a2-4fe1-829f-f24bae54a30b",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s03_d04.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        0.4287590446204803,
+        0.17417480216988754,
+        -0.8864698640930856
+      ],
+      "structure_idx": 3
+    },
+    {
+      "direction_idx": 0,
+      "env_idx": 20,
+      "episode_id": "1defda60-8bd2-4838-9b4b-47d9f1ad99a2",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s04_d00.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.9892019292940404,
+        0.12523967121386098,
+        0.07612205879501921
+      ],
+      "structure_idx": 4
+    },
+    {
+      "direction_idx": 1,
+      "env_idx": 21,
+      "episode_id": "ec8aef55-4458-4fb7-8f07-d5de49995e12",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s04_d01.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.7440327365662908,
+        -0.6678962360716499,
+        0.01816328051315997
+      ],
+      "structure_idx": 4
+    },
+    {
+      "direction_idx": 2,
+      "env_idx": 22,
+      "episode_id": "d3e0f181-f601-4dd2-af4b-5e960e6e0aa9",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s04_d02.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.7842928299381401,
+        0.6178781110164997,
+        0.055779896327491696
+      ],
+      "structure_idx": 4
+    },
+    {
+      "direction_idx": 3,
+      "env_idx": 23,
+      "episode_id": "4e4cd97c-9413-41df-b82f-e341838a9dda",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s04_d03.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.9571558667055685,
+        -0.20544766483160454,
+        0.20406838031981492
+      ],
+      "structure_idx": 4
+    },
+    {
+      "direction_idx": 4,
+      "env_idx": 24,
+      "episode_id": "cbdc5a3e-2501-46ac-9793-ad08150bbd14",
+      "excluded": false,
+      "excluded_reason": null,
+      "filename": "episodes/s04_d04.parquet",
+      "n_frames": 241,
+      "pull_direction": [
+        -0.4593667091848835,
+        -0.8880158799883863,
+        0.020249034078262732
+      ],
+      "structure_idx": 4
+    }
+  ],
+  "schema_version": "batched_sysid_v1",
+  "structures": [
+    {
+      "junction_names": [
+        "primary_spur",
+        "spur_stem",
+        "stem_apple",
+        "primary_support_left",
+        "primary_support_right"
+      ],
+      "n_woody_parts": 5,
+      "params_fingerprint": "{\"apple_density\": 518.634837, \"apple_radius\": 0.058902534, \"primary_damping_ratio\": 0.18392126, \"primary_dir_x\": 1.0, \"primary_length\": 0.358714305, \"primary_num_segments\": 4, \"primary_radius\": 0.021123526, \"primary_youngs_modulus_pa\": 1000000000.310015, \"secondary_damping_ratio\": null, \"secondary_dir_x\": null, \"secondary_length\": null, \"secondary_num_segments\": null, \"secondary_radius\": null, \"secondary_youngs_modulus_pa\": null, \"spur_attach_fraction\": 0.5, \"spur_damping_ratio\": 0.29553146, \"spur_dir_z\": -0.915436, \"spur_length\": 0.09675705, \"spur_num_segments\": 4, \"spur_youngs_modulus_pa\": 362757847.375793, \"stem_damping_ratio\": 0.2951754, \"stem_dir_z\": -0.985726, \"stem_length\": 0.046764096, \"stem_num_segments\": 4, \"stem_youngs_modulus_pa\": 861784754.103487, \"topology\": \"t_junction\"}",
+      "structure_idx": 0
+    },
+    {
+      "junction_names": [
+        "primary_spur",
+        "spur_stem",
+        "stem_apple",
+        "primary_support_left",
+        "primary_support_right"
+      ],
+      "n_woody_parts": 5,
+      "params_fingerprint": "{\"apple_density\": 417.448219, \"apple_radius\": 0.056907903, \"primary_damping_ratio\": 0.19691839, \"primary_dir_x\": 1.0, \"primary_length\": 0.316231712, \"primary_num_segments\": 4, \"primary_radius\": 0.024286468, \"primary_youngs_modulus_pa\": 1000000000.502885, \"secondary_damping_ratio\": null, \"secondary_dir_x\": null, \"secondary_length\": null, \"secondary_num_segments\": null, \"secondary_radius\": null, \"secondary_youngs_modulus_pa\": null, \"spur_attach_fraction\": 0.5, \"spur_damping_ratio\": 0.29549362, \"spur_dir_z\": -0.862367, \"spur_length\": 0.082342023, \"spur_num_segments\": 4, \"spur_youngs_modulus_pa\": 404133543.599244, \"stem_damping_ratio\": 0.29007552, \"stem_dir_z\": -0.354789, \"stem_length\": 0.040477256, \"stem_num_segments\": 4, \"stem_youngs_modulus_pa\": 959479860.809785, \"topology\": \"t_junction\"}",
+      "structure_idx": 1
+    },
+    {
+      "junction_names": [
+        "primary_spur",
+        "spur_stem",
+        "stem_apple",
+        "primary_support_left",
+        "primary_support_right"
+      ],
+      "n_woody_parts": 5,
+      "params_fingerprint": "{\"apple_density\": 540.461893, \"apple_radius\": 0.042397598, \"primary_damping_ratio\": 0.18116928, \"primary_dir_x\": 1.0, \"primary_length\": 0.351022886, \"primary_num_segments\": 4, \"primary_radius\": 0.023896698, \"primary_youngs_modulus_pa\": 1000000000.681825, \"secondary_damping_ratio\": null, \"secondary_dir_x\": null, \"secondary_length\": null, \"secondary_num_segments\": null, \"secondary_radius\": null, \"secondary_youngs_modulus_pa\": null, \"spur_attach_fraction\": 0.5, \"spur_damping_ratio\": 0.26274678, \"spur_dir_z\": -0.594431, \"spur_length\": 0.095202471, \"spur_num_segments\": 4, \"spur_youngs_modulus_pa\": 417819110.686838, \"stem_damping_ratio\": 0.28652769, \"stem_dir_z\": 0.732065, \"stem_length\": 0.042596859, \"stem_num_segments\": 4, \"stem_youngs_modulus_pa\": 962221194.091953, \"topology\": \"t_junction\"}",
+      "structure_idx": 2
+    },
+    {
+      "junction_names": [
+        "primary_spur",
+        "spur_stem",
+        "stem_apple",
+        "primary_support_left",
+        "primary_support_right"
+      ],
+      "n_woody_parts": 5,
+      "params_fingerprint": "{\"apple_density\": 401.414292, \"apple_radius\": 0.056858546, \"primary_damping_ratio\": 0.16218505, \"primary_dir_x\": 1.0, \"primary_length\": 0.393402841, \"primary_num_segments\": 4, \"primary_radius\": 0.020424734, \"primary_youngs_modulus_pa\": 1000000000.436285, \"secondary_damping_ratio\": null, \"secondary_dir_x\": null, \"secondary_length\": null, \"secondary_num_segments\": null, \"secondary_radius\": null, \"secondary_youngs_modulus_pa\": null, \"spur_attach_fraction\": 0.5, \"spur_damping_ratio\": 0.28804915, \"spur_dir_z\": -0.345274, \"spur_length\": 0.084974399, \"spur_num_segments\": 4, \"spur_youngs_modulus_pa\": 437126930.43988, \"stem_damping_ratio\": 0.21050592, \"stem_dir_z\": 0.3627, \"stem_length\": 0.037801893, \"stem_num_segments\": 4, \"stem_youngs_modulus_pa\": 813293987.470184, \"topology\": \"t_junction\"}",
+      "structure_idx": 3
+    },
+    {
+      "junction_names": [
+        "primary_spur",
+        "spur_stem",
+        "stem_apple",
+        "primary_support_left",
+        "primary_support_right"
+      ],
+      "n_woody_parts": 5,
+      "params_fingerprint": "{\"apple_density\": 510.213676, \"apple_radius\": 0.041230006, \"primary_damping_ratio\": 0.1103725, \"primary_dir_x\": 1.0, \"primary_length\": 0.396685185, \"primary_num_segments\": 4, \"primary_radius\": 0.021603752, \"primary_youngs_modulus_pa\": 1000000000.53259, \"secondary_damping_ratio\": null, \"secondary_dir_x\": null, \"secondary_length\": null, \"secondary_num_segments\": null, \"secondary_radius\": null, \"secondary_youngs_modulus_pa\": null, \"spur_attach_fraction\": 0.5, \"spur_damping_ratio\": 0.27504646, \"spur_dir_z\": -0.221577, \"spur_length\": 0.093789347, \"spur_num_segments\": 4, \"spur_youngs_modulus_pa\": 294810014.186827, \"stem_damping_ratio\": 0.27144268, \"stem_dir_z\": 0.124549, \"stem_length\": 0.048043494, \"stem_num_segments\": 4, \"stem_youngs_modulus_pa\": 862065955.307826, \"topology\": \"t_junction\"}",
+      "structure_idx": 4
+    }
+  ]
+}

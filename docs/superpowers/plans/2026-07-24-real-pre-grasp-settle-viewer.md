@@ -13,10 +13,12 @@
 ## Global Constraints
 
 - Plant-only: no FR3, no weld (`GripperProxyConfig(fix_to_apple=False)`).
-- `fruiting_base_pos` = start of spur = spur–primary T-junction (**Branch** tracker).
-- Primary = horizontal through that T-junction (fixture/proxy ±X); L/r from `parts`.
-- Spur end tracker → `spur.direction` = Branch→Spur; `stem.direction` = Spur→apple center.
-- Lengths from `parts.spur` / `parts.stem` / `parts.primary`; materials from fixture midpoints.
+- `fruiting_base_pos` = measured **Branch** xyz (`franka_base_o`), start of spur / T-junction (not fixture default).
+- Primary = horizontal through T via **fixture azimuth/elevation midpoints** (proxy: +X); L/r from `parts`.
+- Spur end tracker → `spur.direction` = Branch→Spur; `stem.direction` = Spur end → **`apple_pos`** (no stem-end tracker); report error vs Spur→Apple chord end if present.
+- **Density from `parts.*.density_kg_m3`**; E/ζ/stretch/`num_segments` from fixture midpoints.
+- **Lengths and radii from `parts.*`**; always print catalog-vs-chord length errors (never fail on them). `--strict` = bend≈0 only.
+- Materials from fixture midpoints.
 - TDD: failing tests before implementation.
 - Run tests with `uv run --env-file pytest.env python -m pytest …` from repo root.
 - Prefer a feature worktree before editing production code (`.cursor/rules/worktree-feature-dev.mdc`).
@@ -344,7 +346,8 @@ git commit -m "Add pre-grasp geometry mapping helpers for real parquet."
 **Interfaces:**
 - Consumes: `PreGraspMappedGeometry`, `build_fruiting_params_from_real`
 - Produces:
-  - `fruiting_params_from_pre_grasp_parquet(path, *, fixture_path, strict=False) -> tuple[FruitingSystemParams, tuple[float,float,float]]`
+  - `fruiting_params_from_pre_grasp_parquet(path, *, fixture_path, strict=False) -> tuple[FruitingSystemParams, tuple[float,float,float], dict]`
+    (third value = diagnostics for stdout / `--dump-params`)
 
 - [ ] **Step 1: Write failing test for params assembly**
 
@@ -538,7 +541,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json"
         ),
     )
-    parser.add_argument("--settle-substeps", type=int, default=5000)
+    parser.add_argument("--settle-substeps", type=int, default=5000,
+                        help="VBD substeps for visible settle (rendered in viewer).")
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--dump-params", type=Path, default=None)
     return parser
@@ -554,7 +558,7 @@ class ExampleViewPreGraspSettle:
         self.sim_time = 0.0
 
         device = resolve_sim_device(getattr(args, "device", None))
-        params, base_pos = fruiting_params_from_pre_grasp_parquet(
+        params, base_pos, diagnostics = fruiting_params_from_pre_grasp_parquet(
             args.parquet,
             fixture_path=args.fixture,
             strict=bool(args.strict),
@@ -564,6 +568,7 @@ class ExampleViewPreGraspSettle:
             payload = {
                 "fruiting_base_pos": list(base_pos),
                 "fruiting_system_params": fruiting_params_to_dict(params),
+                "diagnostics": diagnostics,
             }
             args.dump_params.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
             print(f"Wrote {args.dump_params}")
@@ -581,11 +586,8 @@ class ExampleViewPreGraspSettle:
         )
         print(f"fruiting_base_pos (spur-primary T): {base_pos}")
         print(f"Geometry fingerprint: {geometry_fingerprint_coupled(self._scene)}")
-        if int(args.settle_substeps) > 0:
-            print(f"Settling {args.settle_substeps} VBD substeps …")
-            _settle_cable_substeps(
-                self._scene, substeps=int(args.settle_substeps), dt=self.sim_dt
-            )
+        self._settle_remaining = max(0, int(args.settle_substeps))
+        # Visible settle: consume settle_remaining inside step() while rendering.
 
         self.model = self._scene.model
         self.state_0 = self._scene.state_0
@@ -601,7 +603,24 @@ class ExampleViewPreGraspSettle:
         return None
 
     def step(self) -> None:
-        # Hold settled pose; optional light stepping if desired later
+        # During settle budget, run more substeps per frame so 5000 finishes
+        # while still showing motion; afterward one frame of normal substeps.
+        if self._settle_remaining > 0:
+            n = min(self.sim_substeps * 10, self._settle_remaining)
+            self._settle_remaining -= n
+        else:
+            n = self.sim_substeps
+        for _ in range(n):
+            self._scene.state_0.clear_forces()
+            contacts = self.model.collide(
+                self._scene.state_0, collision_pipeline=self.collision_pipeline
+            )
+            self.solver.step(
+                self._scene.state_0, self._scene.state_1, self.control, contacts, self.sim_dt
+            )
+            self._scene.state_0, self._scene.state_1 = self._scene.state_1, self._scene.state_0
+            self.state_0 = self._scene.state_0
+            self.state_1 = self._scene.state_1
         self.sim_time += self.frame_dt
 
     def render(self) -> None:

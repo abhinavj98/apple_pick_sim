@@ -62,10 +62,11 @@ and future dataset embedding.
 
 For T-junction / real-world proxy:
 
-- **`fruiting_base_pos`** = **Spur** tracker position = T-center =
-  mid-span `primary_spur` junction = where spur meets primary.
-- Not the Branch-only end of the Branch→Spur chord (that is along the primary
-  toward/away from the T, not the hang root).
+- **`fruiting_base_pos`** = tracked **spur–primary T-junction** (mid-span
+  `primary_spur` in sim). On real episodes this is the **Spur** tracker:
+  where the spur meets the primary branch.
+- Not the Branch-only end of the Branch→Spur chord (that point lies along the
+  primary toward/away from the T, not the hang root).
 
 Resolve Spur as the shared endpoint of Branch→Spur and Spur→Apple
 (`topology.start_nodes` / `end_nodes` with `shared_endpoints: true`).

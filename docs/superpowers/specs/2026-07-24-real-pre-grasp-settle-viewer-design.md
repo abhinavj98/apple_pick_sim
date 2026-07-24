@@ -63,23 +63,23 @@ and future dataset embedding.
 For T-junction / real-world proxy:
 
 - **`fruiting_base_pos`** = tracked **spur–primary T-junction** (mid-span
-  `primary_spur` in sim). On real episodes this is the **Spur** tracker:
-  where the spur meets the primary branch.
-- Not the Branch-only end of the Branch→Spur chord (that point lies along the
-  primary toward/away from the T, not the hang root).
+  `primary_spur` in sim) — where the spur meets the primary. On
+  Branch/Spur/Apple episodes this is the **Branch** tracker (start of the
+  Branch→Spur chord), not the Spur tip.
+- **Spur** tracker = **spur distal end** (end of hanging spur before stem).
+- **Apple** tracker = fruit.
 
-Resolve Spur as the shared endpoint of Branch→Spur and Spur→Apple
-(`topology.start_nodes` / `end_nodes` with `shared_endpoints: true`).
+Chord layout (`shared_endpoints`): part0 Branch→Spur, part2 Spur→Apple.
 
 ### Rods (Branch / Spur / Apple, `shared_endpoints`)
 
 | Sim field | Source |
 | --------- | ------ |
-| `primary.direction` | Unit vector along Branch↔Spur (primary axis through T-center) |
+| `primary.direction` | Fixture / proxy primary axis (e.g. ±X on real-world proxy); length/radius from `parts.primary`. Do **not** use Branch→Spur for primary — that chord is the spur. |
 | `primary.length` / `radius` | `pre_grasp_geometry.parts.primary` |
-| `spur.direction` | Unit vector along Spur→Apple (hang toward fruit) |
+| `spur.direction` | Unit vector **Branch → Spur** (T-junction / primary attach → spur end) |
 | `spur.length` / `radius` | `parts.spur` |
-| `stem.direction` | Same hang axis as spur ( Spur→Apple ) |
+| `stem.direction` | Unit vector **Spur → Apple** (spur end → fruit) |
 | `stem.length` / `radius` | `parts.stem` |
 | `secondary` | `null` |
 | `apple_radius` | `parts.apple.radius_m` else fixture midpoint |
@@ -91,9 +91,9 @@ Materials (`youngs_modulus_pa`, `damping_ratio`, stretch knobs, `density`,
 `num_segments`) from variance fixture midpoints via existing
 `rod_params_from_material` / `build_fruiting_params_from_real` pattern.
 
-**Do not** treat the three tracker chords as a naive 1:1 primary/spur/stem
-length map: Branch→Apple is not a single rod; Branch→Spur is primary-axis, not
-the hanging spur length.
+**Do not** assign the same direction to spur and stem: they use consecutive
+chords (Branch→Spur then Spur→Apple). Branch→Apple is not a single rod.
+
 
 ### Validation
 

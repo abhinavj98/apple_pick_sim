@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert real-parquet `pre_grasp_geometry` into `FruitingSystemParams` (Spur = `fruiting_base_pos` T-junction), build a plant-only VBD scene, settle, and visualize under `robot_replay/`.
+**Goal:** Convert real-parquet `pre_grasp_geometry` into `FruitingSystemParams` (Branch = `fruiting_base_pos` T-junction; spur/stem from consecutive chords), build a plant-only VBD scene, settle, and visualize under `robot_replay/`.
 
 **Architecture:** Library `real_pre_grasp_params.py` owns metadata parse + rod mapping + params assembly. CLI `example_view_pre_grasp_settle.py` builds via `generate_coupled_cable_scene(..., fix_to_apple=False)`, settles like `example_digital_twin.py`, then runs the Newton viewer. Params-first so a later dataset converter can embed the same JSON blob.
 
@@ -13,8 +13,10 @@
 ## Global Constraints
 
 - Plant-only: no FR3, no weld (`GripperProxyConfig(fix_to_apple=False)`).
-- `fruiting_base_pos` = tracked spur–primary T-junction (Spur tracker).
-- Materials from fixture midpoints; primary/spur/stem L/r from `pre_grasp_geometry.parts`; directions from Branch↔Spur and Spur→Apple chords.
+- `fruiting_base_pos` = tracked spur–primary T-junction (**Branch** tracker).
+- Spur tracker = spur distal end; Apple = fruit.
+- `spur.direction` = Branch→Spur; `stem.direction` = Spur→Apple (not shared).
+- Materials from fixture midpoints; primary/spur/stem L/r from `pre_grasp_geometry.parts`; primary axis from fixture/proxy convention.
 - TDD: failing tests before implementation.
 - Run tests with `uv run --env-file pytest.env python -m pytest …` from repo root.
 - Prefer a feature worktree before editing production code (`.cursor/rules/worktree-feature-dev.mdc`).
@@ -46,12 +48,13 @@
   - `PreGraspMappedGeometry` dataclass with fields:
     - `fruiting_base_pos: tuple[float, float, float]`
     - `primary_direction: tuple[float, float, float]`
-    - `hang_direction: tuple[float, float, float]`
+    - `spur_direction: tuple[float, float, float]`
+    - `stem_direction: tuple[float, float, float]`
     - `rod_geometry: dict[str, dict[str, float]]`  # primary/spur/stem → length_m, radius_m
     - `apple_radius_m: float | None`
     - `woody_bending_angles: np.ndarray`  # shape (3,)
 
-- [ ] **Step 1: Write failing tests for coerce + Spur base + directions**
+- [ ] **Step 1: Write failing tests for coerce + Branch T-junction base + spur/stem dirs**
 
 ```python
 # apple_pick_sim/tests/test_real_pre_grasp_params.py
@@ -83,10 +86,11 @@ def test_coerce_xyz_numpy_string():
 
 
 def _synthetic_pre_grasp_meta() -> dict:
-    # Spur at origin (T-junction); Branch along +X; Apple along -Z from Spur
-    branch = [0.05, 0.0, 0.0]
-    spur = [0.0, 0.0, 0.0]
-    apple = [0.0, 0.0, -0.06]
+    # Branch = T-junction (fruiting_base); Spur = spur end; Apple = fruit
+    # Non-collinear hang so spur/stem directions differ.
+    branch = [0.0, 0.0, 0.0]
+    spur = [0.02, 0.0, -0.10]
+    apple = [0.05, 0.0, -0.13]
     return {
         "topology": {
             "junction_names": ["Branch", "Spur", "Apple"],
@@ -133,12 +137,18 @@ def _synthetic_pre_grasp_meta() -> dict:
     }
 
 
-def test_map_pre_grasp_spur_is_fruiting_base_pos():
+def test_map_pre_grasp_branch_is_fruiting_base_pos():
     mapped = map_pre_grasp_geometry(_synthetic_pre_grasp_meta())
     assert isinstance(mapped, PreGraspMappedGeometry)
     np.testing.assert_allclose(mapped.fruiting_base_pos, (0.0, 0.0, 0.0), atol=1e-9)
-    np.testing.assert_allclose(mapped.primary_direction, (1.0, 0.0, 0.0), atol=1e-6)
-    np.testing.assert_allclose(mapped.hang_direction, (0.0, 0.0, -1.0), atol=1e-6)
+    # spur: Branch → Spur; stem: Spur → Apple (distinct)
+    spur_u = np.array([0.02, 0.0, -0.10], dtype=np.float64)
+    spur_u /= np.linalg.norm(spur_u)
+    stem_u = np.array([0.03, 0.0, -0.03], dtype=np.float64)
+    stem_u /= np.linalg.norm(stem_u)
+    np.testing.assert_allclose(mapped.spur_direction, spur_u, atol=1e-6)
+    np.testing.assert_allclose(mapped.stem_direction, stem_u, atol=1e-6)
+    assert mapped.spur_direction != mapped.stem_direction
     assert mapped.rod_geometry["primary"]["length_m"] == pytest.approx(0.2)
     assert mapped.rod_geometry["spur"]["radius_m"] == pytest.approx(0.0025)
     assert mapped.apple_radius_m == pytest.approx(0.04)
@@ -221,7 +231,8 @@ def _unit(vec: np.ndarray, *, field: str) -> tuple[float, float, float]:
 class PreGraspMappedGeometry:
     fruiting_base_pos: tuple[float, float, float]
     primary_direction: tuple[float, float, float]
-    hang_direction: tuple[float, float, float]
+    spur_direction: tuple[float, float, float]
+    stem_direction: tuple[float, float, float]
     rod_geometry: dict[str, dict[str, float]]
     apple_radius_m: float | None
     woody_bending_angles: np.ndarray
@@ -249,22 +260,23 @@ def map_pre_grasp_geometry(
 
     start9 = np.asarray(snap["woody_part_start_pos"], dtype=np.float64).reshape(9)
     end9 = np.asarray(snap["woody_part_end_pos"], dtype=np.float64).reshape(9)
-    # part0 Branch→Spur, part2 Spur→Apple
-    branch = start9[0:3]
-    spur = end9[0:3]
+    # part0 Branch→Spur (T → spur end), part2 Spur→Apple (spur end → fruit)
+    branch = start9[0:3]  # fruiting_base / spur-primary T-junction
+    spur_end = end9[0:3]
     apple = end9[6:9]
-    np.testing.assert_allclose(spur, start9[6:9], atol=1e-5, err_msg="Spur endpoints mismatch")
+    if float(np.linalg.norm(spur_end - start9[6:9])) > 1e-4:
+        raise ValueError("Spur endpoint mismatch between part0 end and part2 start")
 
     bend = np.asarray(snap.get("woody_bending_angles", [0.0, 0.0, 0.0]), dtype=np.float64).reshape(3)
     if float(np.max(np.abs(bend))) > _BEND_EPS:
         msg = f"pre-grasp woody_bending_angles not ~0: {bend.tolist()}"
         if strict:
             raise ValueError(msg)
-        # non-strict: caller may warn
 
-    primary_dir = _unit(branch - spur, field="primary_direction")  # Branch relative to T
-    # Prefer axis with Branch - Spur; if Branch is on +X from Spur, direction (+1,0,0)
-    hang_dir = _unit(apple - spur, field="hang_direction")
+    # Primary axis: proxy convention (+X); not Branch→Spur (that is the spur).
+    primary_dir = (1.0, 0.0, 0.0)
+    spur_dir = _unit(spur_end - branch, field="spur_direction")
+    stem_dir = _unit(apple - spur_end, field="stem_direction")
 
     def _lr(name: str) -> dict[str, float]:
         block = parts[name]
@@ -278,9 +290,10 @@ def map_pre_grasp_geometry(
         apple_r = float(parts["apple"]["radius_m"])
 
     return PreGraspMappedGeometry(
-        fruiting_base_pos=(float(spur[0]), float(spur[1]), float(spur[2])),
+        fruiting_base_pos=(float(branch[0]), float(branch[1]), float(branch[2])),
         primary_direction=primary_dir,
-        hang_direction=hang_dir,
+        spur_direction=spur_dir,
+        stem_direction=stem_dir,
         rod_geometry={
             "primary": _lr("primary"),
             "spur": _lr("spur"),
@@ -304,7 +317,7 @@ if float(np.linalg.norm(spur - start9[6:9])) > 1e-4:
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_real_pre_grasp_params.py::test_coerce_xyz_list \
   apple_pick_sim/tests/test_real_pre_grasp_params.py::test_coerce_xyz_numpy_string \
-  apple_pick_sim/tests/test_real_pre_grasp_params.py::test_map_pre_grasp_spur_is_fruiting_base_pos \
+  apple_pick_sim/tests/test_real_pre_grasp_params.py::test_map_pre_grasp_branch_is_fruiting_base_pos \
   apple_pick_sim/tests/test_real_pre_grasp_params.py::test_map_pre_grasp_strict_rejects_nonzero_bend \
   -q
 ```
@@ -354,8 +367,10 @@ def test_fruiting_params_from_pre_grasp_meta():
     assert params.secondary is None
     assert params.primary is not None and params.spur is not None and params.stem is not None
     np.testing.assert_allclose(params.primary.direction, (1.0, 0.0, 0.0), atol=1e-6)
-    np.testing.assert_allclose(params.spur.direction, (0.0, 0.0, -1.0), atol=1e-6)
-    np.testing.assert_allclose(params.stem.direction, (0.0, 0.0, -1.0), atol=1e-6)
+    spur_u = np.array([0.02, 0.0, -0.10]); spur_u /= np.linalg.norm(spur_u)
+    stem_u = np.array([0.03, 0.0, -0.03]); stem_u /= np.linalg.norm(stem_u)
+    np.testing.assert_allclose(params.spur.direction, spur_u, atol=1e-6)
+    np.testing.assert_allclose(params.stem.direction, stem_u, atol=1e-6)
     assert params.primary.length == pytest.approx(0.2)
     assert params.apple_radius == pytest.approx(0.04)
     blob = fruiting_params_to_dict(params)
@@ -388,8 +403,8 @@ def fruiting_params_from_pre_grasp_meta(
     mapped = map_pre_grasp_geometry(meta, strict=strict)
     directions = {
         "primary": mapped.primary_direction,
-        "spur": mapped.hang_direction,
-        "stem": mapped.hang_direction,
+        "spur": mapped.spur_direction,
+        "stem": mapped.stem_direction,
     }
     params = build_fruiting_params_from_real(
         ranges_path=fixture_path,
@@ -645,7 +660,7 @@ git commit -m "Add plant-only pre-grasp settle viewer for real parquet."
 | Spec requirement | Task |
 | ---------------- | ---- |
 | Params-first from pre_grasp | Task 2 |
-| Spur = fruiting_base_pos T-junction | Task 1 |
+| Branch = fruiting_base_pos T-junction; spur/stem consecutive chords | Task 1 |
 | Primary/hang directions + parts L/r | Task 1–2 |
 | Fixture materials | Task 2 (`build_fruiting_params_from_real`) |
 | Plant-only settle + viewer in `robot_replay/` | Task 3 |

@@ -62,24 +62,26 @@ and future dataset embedding.
 
 For T-junction / real-world proxy:
 
-- **`fruiting_base_pos`** = tracked **spur–primary T-junction** (mid-span
-  `primary_spur` in sim) — where the spur meets the primary. On
-  Branch/Spur/Apple episodes this is the **Branch** tracker (start of the
-  Branch→Spur chord), not the Spur tip.
-- **Spur** tracker = **spur distal end** (end of hanging spur before stem).
-- **Apple** tracker = fruit.
+- **`fruiting_base_pos`** = **start of the spur** = spur–primary **T-junction**
+  (mid-span `primary_spur` in sim). On Branch/Spur/Apple episodes this is the
+  **Branch** tracker.
+- **Primary** is built **horizontal through that T-junction** (proxy ±X / fixture
+  primary axis), with length/radius from `parts.primary`.
+- **Spur** tracker = **spur distal end** (end of the spur chord).
+- **Apple** tracker / apple pose = fruit **center** (mid-point of the apple).
 
-Chord layout (`shared_endpoints`): part0 Branch→Spur, part2 Spur→Apple.
+Chord layout (`shared_endpoints`): part0 Branch→Spur (spur chord), part2
+Spur→Apple (stem chord).
 
 ### Rods (Branch / Spur / Apple, `shared_endpoints`)
 
 | Sim field | Source |
 | --------- | ------ |
-| `primary.direction` | Fixture / proxy primary axis (e.g. ±X on real-world proxy); length/radius from `parts.primary`. Do **not** use Branch→Spur for primary — that chord is the spur. |
-| `primary.length` / `radius` | `pre_grasp_geometry.parts.primary` |
-| `spur.direction` | Unit vector **Branch → Spur** (T-junction / primary attach → spur end) |
+| `primary.direction` | Horizontal through T-junction (fixture/proxy primary axis, e.g. ±X) |
+| `primary.length` / `radius` | `parts.primary` |
+| `spur.direction` | Unit vector along spur chord: **T-junction → spur end** (Branch→Spur) |
 | `spur.length` / `radius` | `parts.spur` |
-| `stem.direction` | Unit vector **Spur → Apple** (spur end → fruit) |
+| `stem.direction` | Unit vector **spur end → apple center** (Spur→Apple) |
 | `stem.length` / `radius` | `parts.stem` |
 | `secondary` | `null` |
 | `apple_radius` | `parts.apple.radius_m` else fixture midpoint |
@@ -91,8 +93,9 @@ Materials (`youngs_modulus_pa`, `damping_ratio`, stretch knobs, `density`,
 `num_segments`) from variance fixture midpoints via existing
 `rod_params_from_material` / `build_fruiting_params_from_real` pattern.
 
-**Do not** assign the same direction to spur and stem: they use consecutive
-chords (Branch→Spur then Spur→Apple). Branch→Apple is not a single rod.
+Lengths come from `parts.*`; directions from the two hang chords above. Do **not**
+share spur/stem direction. Branch→Apple is not a single rod.
+
 
 
 ### Validation

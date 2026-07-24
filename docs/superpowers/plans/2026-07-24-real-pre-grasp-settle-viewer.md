@@ -13,10 +13,10 @@
 ## Global Constraints
 
 - Plant-only: no FR3, no weld (`GripperProxyConfig(fix_to_apple=False)`).
-- `fruiting_base_pos` = tracked spur–primary T-junction (**Branch** tracker).
-- Spur tracker = spur distal end; Apple = fruit.
-- `spur.direction` = Branch→Spur; `stem.direction` = Spur→Apple (not shared).
-- Materials from fixture midpoints; primary/spur/stem L/r from `pre_grasp_geometry.parts`; primary axis from fixture/proxy convention.
+- `fruiting_base_pos` = start of spur = spur–primary T-junction (**Branch** tracker).
+- Primary = horizontal through that T-junction (fixture/proxy ±X); L/r from `parts`.
+- Spur end tracker → `spur.direction` = Branch→Spur; `stem.direction` = Spur→apple center.
+- Lengths from `parts.spur` / `parts.stem` / `parts.primary`; materials from fixture midpoints.
 - TDD: failing tests before implementation.
 - Run tests with `uv run --env-file pytest.env python -m pytest …` from repo root.
 - Prefer a feature worktree before editing production code (`.cursor/rules/worktree-feature-dev.mdc`).

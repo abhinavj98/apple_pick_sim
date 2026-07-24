@@ -1,5 +1,5 @@
 {
-  "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa from wood/peduncle literature. Densities: primary/spur green Malus wood (~600-900 / 550-850 kg/m³); stem pedicel hydrated tissue (800-1000); apple unchanged. vbd_stretch_force: k=F/(0.05 L_seg), c=2 ζ_stretch √(k m_seg) at sample time; F=35 N on all rods; ζ_stretch primary=1, spur=1.5, stem=3. Bend damping_ratio=0.3. Joint weld: sim_build.joint_damping_ratio. See docs/material-parameter-sampling.md, docs/damping-tuning.md, docs/real-world-proxy.md.",
+  "_comment": "Three-layer policy (docs/damping-tuning.md): bend E+ζ from wood/peduncle literature; FIXED-joint damping via sim_build.joint_damping_ratio for settle; stretch via vbd_stretch_force k=F/(0.05 L_seg) with F=35 N (break/detach design load). Densities: primary/spur green Malus wood; stem pedicel hydrated tissue; apple unchanged. ζ_stretch primary=1, spur=1.5, stem=3. Bend damping_ratio=0.3. See docs/material-parameter-sampling.md, docs/real-world-proxy.md.",
   "args": {
     "spur_attach_fraction": 0.5,
     "fruiting_base_pos": [0.0, 0.4, 0.75],
@@ -30,7 +30,7 @@
     "youngs_modulus_pa": {"min": 5000000000.3, "max": 5000000000.8},
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_force": {
-      "max_force_n": 50.0,
+      "max_force_n": 35.0,
       "damping_ratio": 1.0
     }
   },
@@ -45,8 +45,8 @@
     "youngs_modulus_pa": {"min": 250000000.4, "max": 5000000000.9},
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_force": {
-      "max_force_n": 50.0,
-      "damping_ratio": 1.0
+      "max_force_n": 35.0,
+      "damping_ratio": 1.5
     }
   },
   "stem": {
@@ -59,8 +59,8 @@
     "youngs_modulus_pa": {"min": 800000000.4, "max": 5000000000.9},
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_force": {
-      "max_force_n": 50.0,
-      "damping_ratio": 1.0
+      "max_force_n": 35.0,
+      "damping_ratio": 3.0
     }
   },
   "apple": {

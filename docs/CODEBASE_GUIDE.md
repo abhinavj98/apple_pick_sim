@@ -107,7 +107,7 @@ Organized by question, not by filename — each doc listed once, under its prima
 
 - `docs/material-parameter-sampling.md` — the shipped `(E, ζ)` → derived VBD-stiffness/damping sampling contract, **plus a "Derivation" appendix** explaining why raw independent sampling is unstable and the physics behind the fix. Also documents optional top-level `sim_build` (VIC + joint kp/kd) on ranges JSON.
 - `docs/real-world-proxy.md` — bench-proxy geometry, placement, stiffness tiers, and a still-open topology mismatch between the nominal and variance proxy fixtures (see its "Topology caveat").
-- `docs/damping-tuning.md` — practical damping tuning notes; variance fixture `sim_build` (`joint_damping_ratio` / joint kp) is the canonical copy for batched-example weld damping.
+- `docs/damping-tuning.md` — three-layer policy: bend (real \(E,\zeta\)), FIXED-joint damping (settle), stretch (`vbd_stretch_force` max load). Variance fixture `sim_build` is the canonical copy for batched-example weld damping.
 
 ### "How does system identification / sys-ID work?"
 

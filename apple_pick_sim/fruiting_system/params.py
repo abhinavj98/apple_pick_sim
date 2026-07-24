@@ -475,7 +475,7 @@ def _coerce_nonnegative_float(raw: object, *, field: str) -> float:
 
 
 def _coerce_unit_interval_float(raw: object, *, field: str) -> float:
-    """Finite float in ``[0, 1]`` (damping ratio)."""
+    """Finite float in ``[0, 1]``."""
     value = _coerce_nonnegative_float(raw, field=field)
     if value > 1.0:
         raise ValueError(f"{field} must be <= 1, got {raw!r}")

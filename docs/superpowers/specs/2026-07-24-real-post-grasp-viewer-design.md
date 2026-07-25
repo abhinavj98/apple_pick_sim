@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Draft (brainstorming approved 2026-07-24) |
+| **Status** | Draft (brainstorming approved 2026-07-24; orient revised same day) |
 | **Date** | 2026-07-24 |
 | **Scope** | Extend pre-grasp settle viewer: long settle → TCP-anchored grasp snap → short settle; FR3 milestone |
 | **Implements first** | Slice A — proxy-only grasp (no FR3) |
@@ -19,8 +19,8 @@ Real episodes also carry `post_grasp_geometry` (grasped TCP + apple). We need a
 path that:
 
 1. Settles the rebuilt plant under gravity (as today).
-2. Applies a **grasp** that matches the real robot’s TCP pose, with the apple on
-   the catalog surface relative to that TCP.
+2. Applies a **grasp** with the apple on the catalog surface relative to the
+   measured TCP **position**, and the gripper tool axis along the weld chord.
 3. Runs a **short** post-grasp settle.
 4. Later attaches an FR3 using the same grasp inputs (slice B).
 
@@ -34,10 +34,12 @@ pre_grasp → FruitingSystemParams + free proxy scene
          → long settle (visible; quiet every N)
          → GRASP (slice A):
               warn if ||tcp−apple_meas| − r| > 0.02 m
-              proxy ← tcp_pose_4x4  (pos + quat)
+              warn if logged TCP +Z is far from ŵ (data bug; do not use logged quat)
               apple quat ← apple_pose_4x4
-              apple_welded_pos ← tcp − r · normalize(tcp − apple_meas)
+              apple_welded_pos ← tcp − r · ŵ
               warn if |apple_welded_pos − apple_meas| > 0.02 m
+              proxy at surface: pos = apple_welded + r·ŵ (= tcp pos)
+                         +Z ∥ ŵ  (look-at; tool-0 / approach axis)
               woody bodies unchanged (post–long-settle)
               fix/weld proxy to apple
          → short settle (visible; quiet every N)
@@ -49,41 +51,45 @@ pre_grasp → FruitingSystemParams + free proxy scene
 
 Let:
 
-- \(\mathbf{p}_{\mathrm{tcp}}, R_{\mathrm{tcp}}\) from `post_grasp_geometry.tcp_pose_4x4`
-  (translation must match `tcp_pos`)
+- \(\mathbf{p}_{\mathrm{tcp}}\) from `tcp_pos` / `tcp_pose_4x4` translation
 - \(\mathbf{p}_{\mathrm{apple}}^{\mathrm{meas}}, R_{\mathrm{apple}}\) from
   `apple_pose_4x4` / `apple_pos`
 - \(r\) = catalog apple radius from `pre_grasp_geometry.parts.apple.radius_m`
-  (same radius used to build the sim apple)
 
 ```text
-ŵ = normalize(p_tcp − p_apple_meas)     # apple → TCP  (weld / approach side)
+ŵ = normalize(p_tcp − p_apple_meas)     # apple → TCP  (weld / approach)
 p_apple_welded = p_tcp − r · ŵ          # force |TCP − apple| = r
 ```
 
 | Quantity | Role |
 | -------- | ---- |
-| Proxy pose | Exactly measured TCP (`tcp_pose_4x4`) |
+| Proxy **position** | Measured TCP position (via surface: \(\mathbf{p}_{\mathrm{apple}}^{\mathrm{welded}}+r\hat{w}\)) |
+| Proxy **orientation** | **Look-at:** tool **+Z ∥ \(\hat{w}\)** (existing `weld_direction` FIXED build). **Do not** use logged `tcp_pose` rotation for the weld. |
 | Apple orientation | Measured `apple_pose_4x4` quat |
 | Apple position | `p_apple_welded` (not raw measured COM) |
 | Woody | Unchanged after long settle |
 
-### Contract vs data bug
+### Orientation contract
 
-**Intended collection contract:** at post-grasp,
-\(|\mathbf{p}_{\mathrm{tcp}}-\mathbf{p}_{\mathrm{apple}}|\approx r\).
+**Intended real grasp:** tool approach (+Z) faces along the weld chord
+\(\hat{w}\). Sim enforces that with look-at.
 
-On `s00-d00.parquet`, measured distance is **~21.9 mm** vs catalog **r = 40 mm**
-(residual **~18.1 mm**). Treat as an upstream bug; do **not** silently trust
-coincidence. Viewer **warns** when residual or apple shift exceeds **2 cm**, then
-continues.
+Logged `tcp_pose_4x4` rotation on `s00-d00` has **+Z ≈ world +Y** while
+\(\hat{w}\approx(0.89,-0.39,0.25)\) (dot ≈ −0.39). Treat as a **parquet /
+frame bug**; still use \(\mathbf{p}_{\mathrm{tcp}}\) for anchoring, but
+**ignore** logged TCP quat for the FIXED joint. Optionally **warn** when
+\(|\hat{w}\cdot(+Z_{\mathrm{tcp}})|\) is below a threshold (e.g. 0.9).
 
-Both warning thresholds use the same tolerance **0.02 m**:
+### Distance contract vs data bug
+
+**Intended:** \(|\mathbf{p}_{\mathrm{tcp}}-\mathbf{p}_{\mathrm{apple}}|\approx r\).
+
+On `s00-d00`, \(d\approx 21.9\,\mathrm{mm}\), \(r=40\,\mathrm{mm}\) (residual
+\(\approx 18.1\,\mathrm{mm}\)). **Warn** if residual or apple shift exceeds
+**0.02 m**, then continue.
 
 1. \(\big|\,|\mathbf{p}_{\mathrm{tcp}}-\mathbf{p}_{\mathrm{apple}}^{\mathrm{meas}}|-r\,\big| > 0.02\)
 2. \(\lvert\mathbf{p}_{\mathrm{apple}}^{\mathrm{welded}}-\mathbf{p}_{\mathrm{apple}}^{\mathrm{meas}}\rvert > 0.02\)
-
-(On the pure chord correction, (2) equals (1) in magnitude.)
 
 ## Approach
 
@@ -91,34 +97,30 @@ Both warning thresholds use the same tolerance **0.02 m**:
 
 - Extend `robot_replay/example_view_pre_grasp_settle.py` with `--grasp-after-settle`.
 - Library helper builds an immutable **grasp plan** from parquet metadata + \(r\).
-- After long settle, apply apple `body_q` + welded proxy (rebuild welded cable
-  scene and seed woody/`body_q` from the free settle snapshot where required by
-  Newton FIXED-joint setup — prefer existing settle-then-weld / seed helpers).
-- Default without the flag remains settle-only (backward compatible).
+- After long settle, rebuild welded cable scene with
+  `GripperProxyConfig(fix_to_apple=True, weld_direction=ŵ,
+  weld_reference_pos/quat=apple welded)` — **stock look-at** (no custom FIXED
+  offset from logged TCP quat).
+- Seed woody from free settle; set apple to welded pose; quiet; short settle.
+- Default without the flag remains settle-only.
 
 ### Rejected for slice A
 
 - Weld-at-build then settle (proxy mass affects free settle).
-- In-place FIXED joint mid-run without a clear seed path.
-- Teleporting woody to post-grasp chords (defeats the intentional residual cue).
+- Baking logged TCP quat into the FIXED joint (inconsistent with +Z∥ŵ on bad dumps).
+- Teleporting woody to post-grasp chords.
 
 ## Architecture
 
 ### Library
 
-New module `apple_pick_sim/system_id/real_post_grasp_plan.py`:
+`apple_pick_sim/system_id/real_post_grasp_plan.py`:
 
-- Load `post_grasp_geometry` from dataset metadata (reuse
-  `load_dataset_metadata`).
-- Parse poses (`pose_4x4` → pos + quat `(x,y,z,w)` consistent with Newton).
-- Compute `weld_direction`, `apple_welded_pos`, diagnostics.
-- Emit warnings (stderr / `warnings.warn`) for threshold breaches; never raise
-  for the 2 cm gates alone.
-- Hard-fail on missing fields, non-finite values, or zero-length `tcp − apple`.
+- Load `post_grasp_geometry`; parse poses; compute \(\hat{w}\), welded apple,
+  residuals; optional TCP-+Z alignment diagnostic.
+- Warn on 2 cm gates / bad +Z∥ŵ; hard-fail on missing fields or zero chord.
 
-Invariant: \(\mathbf{p}_{\mathrm{apple}}^{\mathrm{welded}} + r\,\hat{w} = \mathbf{p}_{\mathrm{tcp}}\),
-so a catalog-surface weld along \(\hat{w}\) lands on the measured TCP position.
-Proxy orientation is taken from `tcp_pose_4x4` (not only the approach axis).
+Invariant: \(\mathbf{p}_{\mathrm{apple}}^{\mathrm{welded}} + r\,\hat{w} = \mathbf{p}_{\mathrm{tcp}}\).
 
 ### CLI flags (slice A)
 
@@ -128,61 +130,35 @@ Proxy orientation is taken from `tcp_pose_4x4` (not only the approach axis).
 | `--settle-substeps` | 5000 | Long free settle |
 | `--post-grasp-settle-substeps` | 500 | Short settle after grasp |
 | `--settle-quiet-every` | 300 | Quiet cadence (both phases) |
-| `--tcp-radius-warn-m` | 0.02 | Warn tolerance for \|d−r\| and apple shift |
-
-Existing pre-grasp flags (`--parquet`, `--fixture`, `--strict`, `--dump-params`,
-viewer) unchanged. Optional: extend `--dump-params` / a `--dump-grasp-plan` to
-write the grasp plan JSON.
+| `--tcp-radius-warn-m` | 0.02 | Warn tol for \|d−r\| and apple shift |
 
 ### Runtime phases
 
-1. Build free `generate_coupled_cable_scene(..., fix_to_apple=False)` from pre-grasp.
-2. Long settle (current visible settle loop + quiet).
-3. If `--grasp-after-settle`: compute plan; apply apple pose; attach proxy at TCP
-   welded to apple (`GripperProxyConfig(fix_to_apple=True, weld_direction=ŵ,
-   weld_reference_pos/quat from plan)` as needed by build APIs).
-4. Short settle + quiet.
-5. Continue VBD simulation in the viewer.
+1. Free scene from pre-grasp.
+2. Long settle.
+3. Grasp: plan → welded rebuild with `weld_direction=ŵ` + apple references → seed.
+4. Short settle.
+5. Continue sim.
 
-## Slice B (spec only; implement after A)
+## Slice B (spec only)
 
-- Same grasp plan object is the single source of truth.
-- CLI growth: e.g. `--robot fr3` after grasp/short settle builds coupled FR3 and
-  seeds from the grasped cable state (settle-then-weld / IK patterns already in
-  `coupled_fruiting`).
-- No new weld direction math; no trajectory replay in this milestone.
+Same grasp plan; FR3 later. Grasp arm seed joints from table `joint_pos` at the
+post-grasp row (not inside `post_grasp_geometry`). No trajectory replay here.
 
 ## Testing
 
-- Unit tests for grasp-plan math (synthetic TCP/apple/r).
-- Unit tests that residuals of 18 mm vs r=40 mm trigger warn helpers (capture
-  warnings); residuals within 2 cm do not.
-- Pose parse: `apple_pose_4x4` / `tcp_pose_4x4` → quat + translation consistency
-  with `*_pos` fields.
-- Optional headless smoke:
-  `--grasp-after-settle --settle-substeps 50 --post-grasp-settle-substeps 20
-  --viewer null --num-frames …`
+- Unit tests for plan math + warn thresholds.
+- Optional warn when logged TCP +Z is misaligned with \(\hat{w}\).
+- Headless smoke with `--grasp-after-settle` on `s00-d00`.
 
 ## Non-goals
 
-- Replaying episode `action` / pull trajectory.
-- CMA-ES or writing full `batched_sysid_v1` datasets.
-- Fixing upstream TCP–radius collection (document + warn only).
-- Implementing FR3 in the first coding slice.
+- Trajectory replay; CMA-ES writer; fixing upstream collection (warn only);
+  FR3 in first coding slice; custom FIXED offset from logged TCP quat.
 
 ## Success criteria
 
-- With `--grasp-after-settle`, viewer shows free settle, then grasped proxy at
-  logged TCP with apple on the r-sphere along apple→TCP, then a short settle.
-- Woody not teleported to post-grasp chords.
-- Warnings fire appropriately on `s00-d00` (~18 mm residual) but run continues.
-- Settle-only path unchanged when the new flag is off.
-- Grasp plan reusable for slice B without changing formulas.
-
-## Open implementation notes (not open design)
-
-- Exact mechanism to “apply” welded proxy after free settle (in-place seed vs
-  rebuild welded `CoupledCableScene` + copy woody `body_q`) — choose the
-  smallest path that matches existing Newton/FIXED-joint constraints during
-  implementation; behavior above is normative.
-- Quat convention must match Newton `body_q` `(x,y,z,w)`.
+- Grasp places proxy at TCP **position** with **+Z ∥ \(\hat{w}\)**; apple on
+  r-sphere; woody not teleported from post-long-settle.
+- Warnings on `s00-d00` radius residual; run continues.
+- Settle-only path unchanged without the flag.

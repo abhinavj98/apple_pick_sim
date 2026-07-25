@@ -17,8 +17,15 @@ Related: [`robot_replay/README.md`](../robot_replay/README.md),
 `docs/batched-sysid-dataset.md`, `docs/sysid-trajectory-storage.md`.
 
 **Shipped viewer (plant-only):** `robot_replay/example_view_pre_grasp_settle.py`
-rebuilds params from `pre_grasp_geometry` and settles in Newton — see
-[`docs/superpowers/specs/2026-07-24-real-pre-grasp-settle-viewer-design.md`](superpowers/specs/2026-07-24-real-pre-grasp-settle-viewer-design.md).
+rebuilds params from `pre_grasp_geometry`, settles, and optionally applies a
+post-grasp look-at weld (`--grasp-after-settle`) — see
+[`docs/superpowers/specs/2026-07-24-real-pre-grasp-settle-viewer-design.md`](superpowers/specs/2026-07-24-real-pre-grasp-settle-viewer-design.md)
+and
+[`docs/superpowers/specs/2026-07-24-real-post-grasp-viewer-design.md`](superpowers/specs/2026-07-24-real-post-grasp-viewer-design.md).
+
+**Consumer warnings (until corrected data):** `|tcp−apple|≈r`, logged TCP **+Z∥ŵ**,
+and pose-vs-`*_pos` consistency are checked in `real_post_grasp_plan.py` (warn and
+continue; tol default 2 cm for radius/shift).
 
 ---
 

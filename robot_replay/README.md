@@ -36,17 +36,16 @@ asserts: **`docs/real-sysid-pre-post-grasp-fixes.md`**.
 | `s00-d00_spur_toward_robot.parquet` | Same episode; woody hang rotated so spur aims at robot base (origin) |
 | `funified.parquet` | Additional real / fused episode artifact |
 | `manifest.json` | Collection/run manifest (sim-side batch metadata companion) |
+| `example_view_pre_grasp_settle.py` | Plant-only VBD: pre-grasp settle → optional post-grasp weld → viewer |
 | `make_spur_toward_robot_parquet.py` | Rotate hang so spur points at robot base; regenerates the variant parquet |
-
-## Pre-grasp settle viewer
 | `convert_real_to_batched_sysid_metadata.py` | CLI → batched-style episode metadata JSON |
 
 ## Pre-grasp settle viewer
 
 Rebuild `FruitingSystemParams` from `dataset_metadata.pre_grasp_geometry`
 (Branch = T-junction / `fruiting_base_pos`), build a plant-only coupled cable
-scene (free gripper proxy, no FR3 weld), settle under gravity in the viewer,
-then keep simulating.
+scene (free gripper proxy, no FR3), settle under gravity in the viewer,
+optionally apply a post-grasp look-at weld, then keep simulating.
 
 From repo root:
 
@@ -58,22 +57,35 @@ uv run python robot_replay/example_view_pre_grasp_settle.py \
   --viewer gl
 ```
 
-`--dump-params` writes `fruiting_base_pos`, the sim-native
-`fruiting_system_params` blob, and catalog-vs-chord diagnostics (for later
-dataset embedding). `--strict` fails only if pre-grasp woody bend is not ~0.
-`--settle-quiet-every N` zeros cable body twists every N settle substeps
-(default 300; `<=0` disables), matching batched settle behavior.
+Post-grasp snap (TCP-anchored surface apple; proxy +Z ∥ weld direction):
 
-Library: `apple_pick_sim/system_id/real_pre_grasp_params.py`.
+```bash
+uv run python robot_replay/example_view_pre_grasp_settle.py \
+  --parquet robot_replay/s00-d00.parquet \
+  --grasp-after-settle \
+  --post-grasp-settle-substeps 500 \
+  --tcp-radius-warn-m 0.02 \
+  --viewer gl
+```
+
+`--dump-params` writes `fruiting_base_pos`, the sim-native
+`fruiting_system_params` blob, and catalog-vs-chord diagnostics.
+`--strict` fails only if pre-grasp woody bend is not ~0.
+`--settle-quiet-every N` zeros cable twists every N settle substeps (default 300).
+Data-contract mismatches (`|TCP−apple|≠r`, logged TCP +Z ̸∥ ŵ, etc.) **warn and
+continue** — quieter once corrected parquets land.
+
+Libraries: `real_pre_grasp_params.py`, `real_post_grasp_plan.py`.
 
 Headless smoke:
 
 ```bash
 uv run python robot_replay/example_view_pre_grasp_settle.py \
   --parquet robot_replay/s00-d00.parquet \
-  --settle-substeps 100 \
-  --viewer null --num-frames 5 \
-  --dump-params /tmp/s00_d00_params.json
+  --grasp-after-settle \
+  --settle-substeps 80 \
+  --post-grasp-settle-substeps 40 \
+  --viewer null --num-frames 8
 ```
 
 ## Convert CLI

@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Draft (brainstorming approved 2026-07-24; orient revised same day) |
+| **Status** | Implemented (slice A — proxy look-at weld; FR3 deferred) |
 | **Date** | 2026-07-24 |
 | **Scope** | Extend pre-grasp settle viewer: long settle → TCP-anchored grasp snap → short settle; FR3 milestone |
 | **Implements first** | Slice A — proxy-only grasp (no FR3) |

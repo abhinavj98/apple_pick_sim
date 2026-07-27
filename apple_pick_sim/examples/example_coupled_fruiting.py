@@ -21,8 +21,10 @@ Options (Newton example parser + extras)::
 Intra-chain self collisions are **off** by default. Pass ``--enable-self-collision`` to set
 ``enable_self_collisions=True`` on the coupled cable scene (same semantics as P0 when collisions are on).
 
-``--fix-to-apple`` / ``--no-fix-to-apple`` select stem-harvest + apple co-teleport vs the default
-velocity-delta harvest (proxy-only sync).
+``--fix-to-apple`` / ``--no-fix-to-apple`` select whether the gripper proxy is **welded**
+to the apple (FIXED joint + co-teleport apple with TCP). Stem-harvest coupling is used
+whenever an apple exists (independent of weld); velocity-delta harvest applies only when
+there is no apple.
 
 Default fixture: ``fruiting_system_ranges_real_world_proxy_variance.json`` (robot at origin,
 fruiting chain at (0, 0.5, 0.95) m with domain randomization). ``robot_base_from_proxy`` is disabled when the
@@ -37,7 +39,7 @@ Select the FR3 teleop controller with ``--controller``:
 - ``direct`` — kinematic direct ``joint_q`` writes (testing / accurate pose hold).
 
 For ``vic``, tune impedance with ``--vic-linear-k``, ``--vic-linear-d``, ``--vic-angular-k``, and
-``--vic-angular-d`` (defaults 800/80 N/m and 40/4 N·m/rad).
+``--vic-angular-d`` (defaults **8000/80** N/m and **40/4** N·m/rad; batched/fixture defaults differ — see ``docs/variable-impedance-teleop.md``).
 """
 
 from __future__ import annotations
@@ -81,7 +83,7 @@ def _default_ranges_path() -> Path:
 
 
 def _fix_to_apple_from_args(args: argparse.Namespace | None) -> bool:
-    """Return whether the gripper proxy is welded to the apple (stem-harvest path)."""
+    """Return whether the gripper proxy is welded to the apple (co-teleport path)."""
     return bool(getattr(args, "fix_to_apple", False)) if args else False
 
 
@@ -290,8 +292,8 @@ def _make_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=False,
         help=(
-            "Weld gripper proxy to apple (stem-harvest + co-teleport apple with TCP). "
-            "Default: off (velocity-delta harvest, proxy-only sync)."
+            "Weld gripper proxy to apple (FIXED joint + co-teleport apple with TCP). "
+            "Stem harvest runs whenever an apple exists; default off welds free proxy only."
         ),
     )
     parser.add_argument(
@@ -376,7 +378,7 @@ class ExampleCoupledFruiting:
         fix_to_apple = _fix_to_apple_from_args(args)
         print(
             f"Gripper proxy fix_to_apple={fix_to_apple} "
-            f"({'stem-harvest' if fix_to_apple else 'velocity-delta'} coupling)."
+            f"({'welded co-teleport' if fix_to_apple else 'free proxy'})."
         )
 
         build_fn = build_coupled_fruiting_fr3

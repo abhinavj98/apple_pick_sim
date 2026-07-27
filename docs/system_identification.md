@@ -160,10 +160,14 @@ Runnable collect → fit commands: **README.md** → **CMA-ES sim-to-sim transfe
    identical recorded actions.
 3. **Score:** use complete pooled hold-phase Sinkhorn fitness.
 4. **Tell:** preserve population order; substitute deterministic finite
-   penalties only when a generation retains at least one eligible candidate.
+   penalties when a generation retains at least one eligible candidate
+   (`worst_finite + max(1, abs(worst_finite))`). An **all-invalid** generation
+   re-`ask()`s / re-evaluates up to 3 times, then `tell()`s with flat fitness
+   `1e12` (`update_best=False`) so the structure stays active; pass
+   `all_invalid_reasks=0` for legacy fail-without-`tell()`.
 5. **Stop:** honor the generation cap or pycma's native stop criteria.
-6. **Measure:** explicitly replay the final distribution mean and report it as
-   the fitted estimate.
+6. **Measure:** explicitly replay the final distribution mean (`xfavorite`) and
+   report it as the fitted estimate.
 7. **Aggregate:** summarize fitted means and covariance across successful
    structures.
 
@@ -342,11 +346,15 @@ Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0
 | `apple_pick_sim/system_id/wasserstein.py` | Sinkhorn scoring; internal pooled bag may use `POOLED_DIRECTION_KEY=-1`, but Young's `ranking.json` `per_direction_sinkhorn` exposes physical direction IDs only |
 | `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` | Batched grid CLI (`--use-median`, `--hold-id-onehot`, `--pool-directions`, deprecated `--mse-hold-*`) |
 | `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py` | Dataset-driven Young's-modulus E-grid replay + Sinkhorn ranking + overlay HTML |
+| `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` | Separate CMA-ES fit CLI (`CMA_SEARCH_PARAMS`, ask/tell coordinator) |
+| `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` | `YoungsModulusCandidate`, pycma wrappers, generation waves, `fit_youngs_modulus_structures` |
 | `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py` | Stable slot planning, chunking, and fused multi-structure replay |
-| `apple_pick_gym/batched_envs/youngs_modulus_gate_report.py` | Strict per-seed and aggregate Young's gate reports |
+| `apple_pick_gym/batched_envs/youngs_modulus_gate_report.py` | Strict per-seed and aggregate Young's **ranking** gate reports |
+| `apple_pick_gym/batched_envs/youngs_modulus_cmaes_gate_report.py` | CMA **integrity** gate (fitted structures; no GT-error threshold) |
 | `apple_pick_gym/youngs_modulus_overlay_viz.py` | Faceted Plotly overlay for E-grid replay candidates |
 | `scripts/gate_sysid_gt_sinkhorn.sh` | Named Sinkhorn GT-rank gates (`gate_median_hold`, `gate_hold_id`, `gate_pooled_dirs`) |
 | `scripts/gate_youngs_modulus_sysid.sh` | Multi-seed collect → exclude → rank → strict-majority gate |
+| `scripts/gate_youngs_modulus_cmaes.sh` | Multi-seed collect → CMA fit → integrity gate |
 
 ### Fibonacci hemisphere
 

@@ -1085,7 +1085,11 @@ def _lever_arm_tcp_to_apple_com(scene) -> np.ndarray | None:
 
 
 def _expected_tcp_stem_harvest_from_gather(scene, stem: np.ndarray) -> np.ndarray:
-    """Reference TCP wrench mirroring ``_limit_and_write_tcp_stem_wrench_kernel``."""
+    """Reference TCP wrench mirroring ``_limit_and_write_tcp_stem_wrench_kernel``.
+
+    Child-side stem (+ optional support) is gain/cap limited then **negated** for
+    wrist F/T convention (dead-weight pull on TCP).
+    """
     f_stem = np.asarray(stem[:3], dtype=np.float64)
     tau_stem = np.asarray(stem[3:], dtype=np.float64)
     f_total = f_stem.copy()
@@ -1096,13 +1100,14 @@ def _expected_tcp_stem_harvest_from_gather(scene, stem: np.ndarray) -> np.ndarra
             f_add, _ = _explicit_apple_wrench_for_scene(scene)
             f_total = f_total + f_add
         tau_total = tau_total + np.cross(r, f_total)
-    return _stem_wrench_after_coupling_limits(
+    limited = _stem_wrench_after_coupling_limits(
         f_total,
         tau_total,
         coupling_gain=scene.stem_coupling_gain,
         force_cap_N=scene.stem_force_cap_N,
         torque_cap_Nm=scene.stem_torque_cap_Nm,
     )
+    return -limited
 
 
 def _assert_tcp_matches_stem(
@@ -1189,7 +1194,7 @@ def test_fix_to_apple_tcp_harvest_applies_stem_coupling_gain():
     f_with_explicit = _stem_force_with_explicit_apple_weight(scene, stem_raw[:3])
     np.testing.assert_allclose(
         tcp_w[:3],
-        f_with_explicit * under_relax_gain,
+        -f_with_explicit * under_relax_gain,
         rtol=0.03,
         atol=0.5,
     )
@@ -1268,7 +1273,7 @@ def test_coupled_fr3_tcp_stem_load_at_hold_free_proxy():
 
 @pytest.mark.slow
 def test_coupled_fr3_tcp_stem_load_at_hold_welded():
-    """Welded: stem harvest at TCP with upward support and O(m·g) magnitude."""
+    """Welded: stem harvest at TCP with dead-weight pull and O(m·g) magnitude."""
     from apple_pick_sim.fruiting_system.params import analytic_apple_mass_kg
     from apple_pick_sim.robot import fr3_robot
 

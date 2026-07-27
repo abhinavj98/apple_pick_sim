@@ -388,6 +388,23 @@ def test_load_ranges_rejects_bend_stiffness_key():
         fs.load_ranges(path)
 
 
+def test_load_ranges_rejects_min_gt_max_on_rod_keys():
+    """Required rod ranges must validate min <= max (not only missing-key errors)."""
+    fs = _import_module()
+    import copy
+    import json
+    import tempfile
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    bad = copy.deepcopy(ranges)
+    bad["primary"]["youngs_modulus_pa"] = {"min": 2.0e9, "max": 1.0e9}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(bad, f)
+        path = f.name
+    with pytest.raises(ValueError, match=r"min \(.*\) > max"):
+        fs.load_ranges(path)
+
+
 def test_load_ranges_requires_youngs_modulus_pa():
     fs = _import_module()
     import copy

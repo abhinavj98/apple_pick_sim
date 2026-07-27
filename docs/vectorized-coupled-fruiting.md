@@ -6,7 +6,7 @@
 
 **Related:** arm/plant gravity split and RL training assumptions — `docs/mujoco-vbd-coupling-architecture.md` §2.5.
 
-> **Warning — intra-cable collisions are disabled (current default).** All coupled and standalone fruiting builds use `enable_self_collisions=False` unless explicitly overridden. `_apply_default_fruiting_collision_filters` in `apple_pick_sim/fruiting_system/build.py` filters shape pairs so woody segments, stem, apple, and gripper proxy **do not collide with each other** (only adjacent joint parent/child filters remain). Ground contact is unchanged. Do not assume apple↔branch, apple↔proxy, or woody self-contact until this is re-enabled deliberately — settle stability work (V.2.1.2) depends on the filtered default.
+> **Warning — woody self-collisions are filtered (current default).** Coupled and standalone fruiting builds use `enable_self_collisions=False` unless explicitly overridden. `_apply_default_fruiting_collision_filters` in `apple_pick_sim/fruiting_system/build.py` filters **woody↔woody** self-pairs. **Apple↔woody** and **proxy↔woody** contacts default **on** (batched CLI may expose toggles). Ground contact is unchanged. Settle stability work (V.2.1.2) depends on the woody-self filter; do not re-enable woody self-contact without re-checking settle.
 
 ---
 
@@ -92,7 +92,7 @@ ctrl = fr3_robot.Fr3BatchedEEDirectJointController(
 scene.update_fr3_ee_teleop_direct(frame_dt, ctrl)  # scatter, no broadcast
 ```
 
-A batched Gym adapter is **shipped** (`ApplePickBatchedBaseEnv` / Vic / SysId — V.3.3+). A future **`(N, act_dim)`** policy tensor path into the same scatter (without per-env Python callbacks) remains planned — see `docs/ROADMAP.md` [V] deferred.
+A batched Gym adapter is **shipped** (`ApplePickBatchedBaseEnv` / Vic / SysId — V.3.3+). Runtime `BatchedHeterogeneousCoupledSim.step(actions)` accepts device **`(N, 6)`** action tensors (coupled teleop path). Further deferred items (geometry DR on reset without rebuild, etc.) — see `docs/ROADMAP.md` [V] deferred.
 
 ---
 
@@ -130,7 +130,7 @@ Run **N independent coupled stacks** (VBD cable + MuJoCo FR3 per env) in one GPU
 - **Different actions per env** at runtime via `velocity_for_world` or action buffer → `BatchedTemplateIK.scatter_to_model`.
 - **No cross-env state/command coupling** after init (except explicit homogeneous-smoke flags).
 
-**Not yet shipped** (see `docs/ROADMAP.md` [V] track for current sequencing): geometry DR on reset without a rebuild (lengths, directions, apple radius); a batched `apple_pick_gym` adapter; policy-scale `(N, act_dim)` action tensors beyond the current `velocity_for_world` scatter.
+**Not yet shipped** (see `docs/ROADMAP.md` [V] track for current sequencing): geometry DR on reset without a rebuild (lengths, directions, apple radius). **Shipped:** batched `apple_pick_gym` adapter (V.3.3+); policy-scale `(N, 6)` action tensors via `BatchedHeterogeneousCoupledSim.step(actions)`.
 
 | Use case | θ per env | Actions | Collection |
 | -------- | --------- | ------- | ---------- |
@@ -200,7 +200,9 @@ Tests: `apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py`.
 
 Runtime stepping remains vectorized: `settle_vbd_substeps`, `coupled_substep`, and `BatchedTemplateIK.scatter_to_model` are unchanged.
 
-**Vectorization gaps (heterogeneous):** stem harvest still loops per env each substep; per-env grasp offsets and apple mass are not wired into runtime coupling after weld. Full audit and recommended fix order: [`heterogeneous-batched-vectorization-audit.md`](heterogeneous-batched-vectorization-audit.md).
+**Vectorization status (heterogeneous):** the two original P0 gaps are **fixed** — batched stem harvest (`harvest_batched_stem_tension`) and per-env grasp offsets / apple mass (`prepare_batched_stem_harvest_arrays`). Co-teleport / explicit-load flag arrays are cached at build (no per-substep realloc). See [`heterogeneous-batched-vectorization-audit.md`](heterogeneous-batched-vectorization-audit.md).
+
+**Config note:** `FruitingSystemConfig.stem_harvest_explicit_apple_weight` is currently **inert** — builders resolve explicit apple load to `True` when welded regardless of this field. Do not treat the config flag as a functional override.
 
 ---
 
@@ -311,7 +313,7 @@ Library build settings and runtime for `BatchedHeterogeneousCoupledSim` live und
 | Sub-config | Role |
 | ---------- | ---- |
 | `RuntimeConfig` | `num_envs`, `env_spacing`, device, `control_hz`, `sub_dt` |
-| `RobotConfig` | FR3/placeholder, `fix_to_apple`, gripper proxy, IK bootstrap |
+| `RobotConfig` | FR3-only (`kind="fr3"`), `fix_to_apple`, gripper proxy, IK bootstrap |
 | `SceneSettleCollisionConfig` | Fruiting base, settle substeps, AVBD collision flags |
 | `DomainRandomizationConfig` | Ranges fixture, topology seed, optional `per_env_params` inject |
 | `FruitingSystemConfig` | Stem harvest caps, joint angular kd overrides |
@@ -374,13 +376,13 @@ Module: `apple_pick_sim/tests/test_vectorized_coupled_fruiting.py`
 | `test_batched_fr3_fix_to_apple_substep_stable` | Welded batched substeps stay stable |
 | `test_batched_fr3_per_env_velocity_diverges` | `velocity_for_world(w)` diverges integrated targets |
 
-**Not yet written** (candidates for the next batched-vectorization test slice — check `docs/ROADMAP.md` before assuming these are still needed, code may have since covered them under different names):
+**Covered under other names** (heterogeneous suite — do not reimplement):
 
 | Test | Intent |
 | ---- | ------ |
-| `test_parallel_welded_ik_bootstrap_aligns_all_world_tcps` | Every env's TCP at its own proxy after bootstrap (no broadcast) |
-| `test_per_env_seed_produces_different_joint_slices_after_bootstrap` | Distinct seeds → distinct `joint_q` slices post-weld |
-| `test_per_env_stiffness_scatter` | Per-world K/B in VBD arrays matches sampled θ |
+| `test_batched_ik_bootstrap_aligns_all_proxy_targets` | Every env's TCP at its own proxy after bootstrap (no broadcast) |
+| `test_per_env_ik_produces_different_joint_q` | Distinct grasp targets → distinct `joint_q` slices post-weld |
+| *(deferred)* runtime stiffness scatter | Per-world K/B re-scatter without rebuild — ROADMAP [V] deferred |
 
 Fast unit tests: `apple_pick_sim/tests/test_batched_template_ik.py`.
 

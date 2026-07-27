@@ -153,7 +153,7 @@ Add / extend in `apple_pick_sim/tests/test_fruiting_system.py`:
 | `test_sample_params_material_mode_derives_stiffness_from_E_zeta` | Known \(E\), \(\zeta\), \(r\), \(L\), \(\rho\) → expected `stretch_stiffness`, `bend_stiffness`, `bend_damping` |
 | `test_sample_params_material_mode_primary_E_ge_secondary` | Tier ordering on \(E\) when both segments enabled |
 | `test_load_ranges_material_keys_validate` | Fixture JSON with `youngs_modulus_pa` / `damping_ratio` passes validation |
-| `test_load_ranges_legacy_stiffness_still_valid` | Old JSON keys still load during migration |
+| *(behavior)* legacy stiffness keys | `load_ranges` **rejects** deprecated `bend_stiffness` / similar keys — use material keys only |
 | `test_fruiting_params_v2_roundtrip` | Serialize / deserialize includes \(E\), \(\zeta\) |
 | `test_parse_sim_build_*` / `test_load_ranges_*sim_build*` | Optional top-level `sim_build` validate / parse |
 | `test_variance_sim_build_knobs` (`test_real_world_proxy_fixture.py`) | Variance fixture ships expected VIC + joint overrides |
@@ -204,11 +204,13 @@ Model each joint as a torsional spring-damper acting on its segment's rotational
 
 - Segment length: \(L_{seg} = \text{length}/N\)
 - Segment mass: \(m_{seg} = \rho \cdot \pi r^2 \cdot L_{seg}\)
-- Effective bending inertia (cantilevered slender-segment approximation): \(I_{eff} \approx \tfrac13 m_{seg} L_{seg}^2 = \tfrac{\pi}{3}\rho r^2 L_{seg}^3\)
-- Natural frequency: \(\omega_n = \sqrt{k_{bend}/I_{eff}}\)
-- Damping ratio: \(\zeta = \dfrac{c_{bend}}{2\sqrt{k_{bend}\cdot I_{eff}}}\)
+- Effective bending inertia (solid circular cylinder about a diameter through the CoM — shipped in `_segment_material_geometry`): \(J_{\mathrm{seg}} = m_{seg}(3r^2 + L_{seg}^2)/12\)
+- Natural frequency: \(\omega_n = \sqrt{k_{bend}/J_{\mathrm{seg}}}\)
+- Damping ratio: \(\zeta = \dfrac{c_{bend}}{2\sqrt{k_{bend}\cdot J_{\mathrm{seg}}}}\)
 
-Sampling a dimensionless damping ratio \(\zeta\) and deriving \(c_{bend} = \zeta \cdot 2\sqrt{k_{bend}\cdot I_{eff}}\) from that env's already-sampled stiffness/radius/density/length/`num_segments` makes every draw land at a controlled, geometry-consistent damping ratio instead of an absolute number that means something different for every geometry combination.
+Older notes sometimes used a cantilever slender-segment approximation \(I_{\mathrm{eff}} \approx \tfrac13 m L^2\); that is **not** what the code uses — prefer \(J_{\mathrm{seg}}\) above.
+
+Sampling a dimensionless damping ratio \(\zeta\) and deriving \(c_{bend} = \zeta \cdot 2\sqrt{k_{bend}\cdot J_{\mathrm{seg}}}\) from that env's already-sampled stiffness/radius/density/length/`num_segments` makes every draw land at a controlled, geometry-consistent damping ratio instead of an absolute number that means something different for every geometry combination.
 
 ### Deriving stiffness from Young's modulus
 

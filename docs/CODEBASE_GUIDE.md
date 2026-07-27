@@ -8,7 +8,7 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-07-22 (README CMA-ES sim-to-sim how-to; V.5.2 Done — see `docs/ROADMAP.md`) |
+| **Last reviewed** | 2026-07-27 (docs refresh: coupling/batch/CMA/robot-replay aligned to code; TCP harvest F/T sign; hot-path co-teleport cache) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
@@ -76,7 +76,7 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | `apple_pick_gym/batched_examples/` | Parallel collect/grid examples plus `example_youngs_modulus_sys_id.py` (dataset-driven fused E-grid) and `example_youngs_modulus_cmaes.py` (separate CMA-ES fit) |
 | `apple_pick_gym/grid_viz_*.py` | Plotly / table / report helpers for batched stiffness-grid ranking (incl. paired-hold woody MSE) |
 | `scripts/` | Staged sys-ID helpers: `collect_and_rank_sysid_gt.sh`, `gate_sysid_gt_sinkhorn.sh`, `gate_youngs_modulus_sysid.sh` (multi-seed ranking gate), `gate_youngs_modulus_cmaes.sh` (multi-seed CMA integrity gate) |
-| `robot_replay/` | Real-robot sys-ID episodes + convert CLI; pre-grasp rebuild / post-grasp weld contract in `README.md` |
+| `robot_replay/` | Real-robot sys-ID episodes + convert CLI; pre-grasp rebuild / post-grasp weld contract in `README.md` (woody via `rest_snapshot_during_run`) |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |
 | `docs/` | This documentation set (below). `docs/specs/` holds dated point-in-time design notes (historical once stamped Implemented) |
 
@@ -140,7 +140,7 @@ Organized by question, not by filename — each doc listed once, under its prima
 | Fused Young's grid acceptance | Implementation present; clean independent/fused timing, low-cap parity, build count, and peak-memory evidence pending | `docs/youngs-modulus-sysid.md`, `docs/ROADMAP.md` |
 | Batched digital-twin fidelity (V.4.2.1) | Done as shipped helpers + `--infer-params`; infer-only fidelity floor optional cleanup (not Current focus) | `docs/ROADMAP.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/digital-twin.md` |
 | `real_world_proxy.json` topology | Nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`. The two fixtures for the same physical proxy build different topologies | `docs/real-world-proxy.md` |
-| Real `pre_grasp` / `post_grasp` metadata | Pre = non-bending rebuild; post = settled grasp weld. Quirks: string `apple_pos`, empty `episode_id`, no `step_idx=-1` row, timestamp collision; ingest vs `real_to_batched_sysid` still mismatched | `docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md` |
+| Real `pre_grasp` / `post_grasp` metadata | Pre = non-bending rebuild (`rest_snapshot_during_run` preferred); post = settled grasp weld. Quirks: string `apple_pos`, empty `episode_id`, no `step_idx=-1` row, timestamp collision, catalog vs measured lengths (P4); ingest vs `real_to_batched_sysid` still mismatched | `docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md` |
 
 ## Conventions worth knowing before editing docs or code
 

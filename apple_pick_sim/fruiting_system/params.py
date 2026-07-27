@@ -1382,10 +1382,10 @@ def _validate_ranges(data: dict) -> None:
             rng = seg_data[key]
             if "min" not in rng or "max" not in rng:
                 raise ValueError(f"Range {seg}.{key} must have 'min' and 'max'")
-                if rng["min"] > rng["max"]:
-                    raise ValueError(
-                        f"Range {seg}.{key}: min ({rng['min']}) > max ({rng['max']})"
-                    )
+            if rng["min"] > rng["max"]:
+                raise ValueError(
+                    f"Range {seg}.{key}: min ({rng['min']}) > max ({rng['max']})"
+                )
 
         _validate_vbd_stretch_force(seg, seg_data)
 

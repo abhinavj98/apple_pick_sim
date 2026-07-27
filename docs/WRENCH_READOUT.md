@@ -221,9 +221,10 @@ interpret while preserving seed-to-seed variation in lengths and stiffness.
 ## 7. Tolerances
 
 **Rigid joint damping:** ``apple_pick_sim.fruiting_system.make_fruiting_solver_vbd``
-applies small ``rigid_joint_linear_kd`` / ``rigid_joint_angular_kd`` (constant
-``FRUITING_VBD_RIGID_JOINT_KD`` in ``fruiting_system/build.py`` via ``make_fruiting_solver_vbd``) so inter-segment FIXED
-joints settle; the viewer, headless rollouts, and ``test_wrench_equilibrium.py``
+applies small ``rigid_joint_linear_kd`` / ``rigid_joint_angular_kd`` (constants
+``FRUITING_VBD_RIGID_JOINT_LINEAR_KD`` / ``FRUITING_VBD_RIGID_JOINT_ANGULAR_KD`` in
+``fruiting_system/build.py``, default **0.0**) so inter-segment FIXED joints can be
+tuned for settle; the viewer, headless rollouts, and ``test_wrench_equilibrium.py``
 share this solver configuration.
 
 The AVBD solver uses an augmented-Lagrangian penalty method; constraint

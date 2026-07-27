@@ -337,14 +337,20 @@ Manifest keys: `joint_angular_kd_overrides`, `joint_angular_kd_applied`,
 `joint_angular_kp_applied`, `joint_linear_kp_overrides`, `joint_linear_kp_applied`
 (see `manifest_sim_config.py`).
 
-### Damping-ratio check against the current script values
+### Damping-ratio check against historical script values (stale)
+
+> **Stale analysis.** The ζ table below assumed `kd ≈ 1.0` for several joints. Shipped
+> `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD` defaults are **0.0** (`fruiting_system/build.py`);
+> variance-fixture / `sim_build` joint-kd overrides (and the snapshot table later in this
+> doc) are the canonical copy. Keep this subsection only as historical intuition for how
+> ζ scales with \(I_{\mathrm{child}}\).
 
 `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` in `batched_heterogeneous_config.py` (`FruitingSystemConfig`)
-sets uniform `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD` for
+historically set uniform non-zero kd for
 `support`, `primary_spur`, `spur_stem`, and `stem_apple`, with **no**
 `kp` override applied (see §4) — so every matched joint's `k` is Newton's default
 `rigid_joint_angular_ke = 1e5`, matching the §2 inertia table exactly (no rescaling
-needed). Plugging into `ζ = kd / kd_crit = kd / (2√(k·I_child))`:
+needed). Plugging into `ζ = kd / kd_crit = kd / (2√(k·I_child))` for **illustrative** kd≈1.0:
 
 | Joint | `I_child` (§2 estimate) | `kd_crit` at `k=1e5` | current `kd` | ζ |
 | ----- | ------------------------ | --------------------- | ------------- | --- |

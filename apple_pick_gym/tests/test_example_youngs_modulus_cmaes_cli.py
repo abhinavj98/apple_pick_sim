@@ -100,7 +100,7 @@ def test_cma_search_params_dict_is_sole_search_truth_source():
     # Absolute box: all roles 0.1–100 GPa [8,11]; mean at mid.
     # Expanded from the former asymmetric box (primary [9,11], spur/stem [8,10]).
     assert params["initial_mean_log10"] == [9.5, 9.5, 9.5]
-    assert params["initial_sigma_log10"] == 0.5
+    assert params["initial_sigma_log10"] == 1.0
     assert params["population_size"] == 15
     assert params["max_generations"] == 10
     assert params["cma_seed"] == 56

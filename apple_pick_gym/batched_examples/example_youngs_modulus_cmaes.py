@@ -96,7 +96,7 @@ _CMA_SEARCH_LOG10_UPPER = [11.0, 11.0, 11.0]  # 100 GPa
 _CMA_MEAN_LOG10 = [_CMA_SEARCH_LOG10_LOWER[i] + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i]) for i in range(3)]
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),
-    "initial_sigma_log10": 0.5,
+    "initial_sigma_log10": 1.0,
     "population_size": 15,
     "max_generations": 10,
     "cma_seed": 56,

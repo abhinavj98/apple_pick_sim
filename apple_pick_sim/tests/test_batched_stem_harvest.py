@@ -177,6 +177,8 @@ def test_prepare_batched_stem_harvest_arrays_allocates_wrench_scratch():
     assert scene.stem_harvest_wrench_t_scratch is not None
     assert int(scene.stem_harvest_wrench_f_scratch.shape[0]) == 2
     assert int(scene.stem_harvest_wrench_t_scratch.shape[0]) == 2
+    assert scene.stem_harvest_use_explicit_wp is not None
+    assert int(scene.stem_harvest_use_explicit_wp.shape[0]) == 2
 
 
 @requires_fr3

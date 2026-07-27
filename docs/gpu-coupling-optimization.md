@@ -1,6 +1,6 @@
 # GPU coupling architecture and optimization
 
-**Last updated:** 2026-07-03 (adds batched heterogeneous hot-path notes; single-env sections unchanged)
+**Last updated:** 2026-07-27 (co-teleport / explicit-flag cache; FR3-only builders)
 
 **Scope note:** Single-env sections below describe the original coupled picking path. For the **multi-env batched heterogeneous** GPU hot path (`BatchedHeterogeneousCoupledSim`), see `docs/vectorized-coupled-fruiting.md`, `docs/heterogeneous-batched-vectorization-audit.md`, and design spec `docs/superpowers/specs/2026-07-03-batched-gpu-hot-path-design.md`.
 
@@ -8,7 +8,7 @@
 
 Apple Pick Sim runs on **Newton + NVIDIA Warp**. The **coupled picking hot path** (`CoupledFruitingScene.coupled_substep`) keeps cable state, proxy mirror/harvest, and (optionally) MuJoCo Warp on the GPU. Setup, IK teleop, Gym observations, and debug readouts use the CPU with explicit `.numpy()` sync points.
 
-Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → mirror TCP to proxy (± apple) → VBD cable step → harvest wrench at TCP**.
+Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → mirror TCP to proxy (± apple) → VBD cable step → harvest wrench at TCP** (harvest writes wrist-F/T convention; see `docs/explicit-apple-load-tcp-harvest.md`).
 
 **Default device:** `cuda:0` when available (`apple_pick_sim/sim_device.py`). Override with `--device cpu` or `APPLE_PICK_SIM_DEVICE=cpu`.
 
@@ -25,12 +25,14 @@ Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → 
 | Teleop frame | `ee_*_batched.run_coupled_teleop_frame_from_actions` | Batched IK + scatter |
 | VIC torques | `vic_joint_torques_batched.py` | `wp.to_torch(joint_q)` |
 | Settle seed | `settle_seed_device.py` | Proxy alignment, cable copy, zero twists |
-| Joint broadcast | `broadcast_device.py` | Warp scatter (init + placeholder) |
+| Joint broadcast | `broadcast_device.py` | Warp scatter (init) |
+| Stem harvest | `harvest_batched_stem_tension` | Batched gather + write; uses build-time arrays |
+| Co-teleport mirror | `launch_mirror_robot_to_proxy_offset_and_apple` | Reuses `co_teleport_*_wp` cached at prepare |
 | Physics substep | `scene.coupled_substep` | Unchanged — GPU |
 
-**Still CPU (acceptable):** keyboard teleop, `velocity_for_world` callbacks, placeholder world-0 nudge on CPU device, debug/viewer `.numpy()` readouts, checkpoint `body_q` capture (once at build).
+**Still CPU (acceptable):** keyboard teleop, `velocity_for_world` callbacks, debug/viewer `.numpy()` readouts, checkpoint `body_q` capture (once at build).
 
-**Placeholder robot:** test-only / explicit `robot.kind='placeholder'` or FR3 asset fallback; not used in production `defaults()` when assets are present.
+**Robot:** FR3-only public API (`docs/coupled-sim-api.md`). Placeholder builders removed.
 
 ---
 
@@ -121,24 +123,26 @@ From repository root:
 ```bash
 # CPU + MuJoCo CPU (default stability path)
 uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
-  --robot placeholder --device cpu --mujoco-cpu \
+  --robot fr3 --device cpu --mujoco-cpu \
   --warmup-substeps 30 --bench-substeps 300
 
 # CUDA + MuJoCo CPU
 uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
-  --robot placeholder --device cuda:0 --mujoco-cpu \
+  --robot fr3 --device cuda:0 --mujoco-cpu \
   --warmup-substeps 30 --bench-substeps 300
 
 # CUDA + MuJoCo Warp (GPU robot)
 uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
-  --robot placeholder --device cuda:0 --mujoco-gpu \
+  --robot fr3 --device cuda:0 --mujoco-gpu \
   --warmup-substeps 30 --bench-substeps 300
 
 # Stem-harvest path (fix_to_apple)
 uv run python apple_pick_sim/diagnostics/benchmark_coupling.py \
-  --robot placeholder --device cuda:0 --fix-to-apple \
+  --robot fr3 --device cuda:0 --fix-to-apple \
   --warmup-substeps 30 --bench-substeps 300
 ```
+
+> Historical placeholder-robot baselines below are retained for reference; use `--robot fr3` for current builds.
 
 ## Baselines (reference machine)
 

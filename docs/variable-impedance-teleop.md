@@ -2,7 +2,7 @@
 
 Design and implementation reference for **grasped-apple pulling** with a **variable-impedance controller (VIC)** on the FR3, using the existing staggered **MuJoCo + VBD** coupling. Complements **`docs/mujoco-vbd-coupling-architecture.md`** (staggered loop) and **`docs/ROADMAP.md`** (M2 \(\pi_{\mathrm{exp}}\) / FD modes).
 
-**Status:** Implemented for physics + `example_coupled_fruiting.py` (`--dynamic-arm`, `--vic`), and for gym: `ApplePickVicEnv` (and its subclasses `ApplePickSysIdEnv`, `ApplePickReplayEnv`) default to **dynamic**, joint-torque VIC (`robot_kinematic_mode=False`, `vic_use_joint_torques=True`). Only the base `ApplePickCoupledEnv` (`ApplePickCoupled-v0`) uses **kinematic** direct-joint teleop.
+**Status:** Implemented for physics + `example_coupled_fruiting.py` (`--controller vic`, default), and for gym: `ApplePickVicEnv` (and its subclasses `ApplePickSysIdEnv`, `ApplePickReplayEnv`) default to **dynamic**, joint-torque VIC (`robot_kinematic_mode=False`, `vic_use_joint_torques=True`). Only the base `ApplePickCoupledEnv` (`ApplePickCoupled-v0`) uses **kinematic** direct-joint teleop.
 
 ---
 
@@ -28,7 +28,7 @@ Each MuJoCo substep, before `mj_solver.step`:
 
 | Symbol | Source | When computed |
 |--------|--------|----------------|
-| \(\mathbf{w}_{\mathrm{transferred}}\) | `proxy_forces[tcp]` after previous substep's **stem harvest** (`harvest_stem_tension_for_tcp`) plus optional **explicit apple weight** (`explicit_load.py`) | **Lagged** one substep (M1 design) |
+| \(\mathbf{w}_{\mathrm{transferred}}\) | `proxy_forces[tcp]` after previous substep's **stem harvest** (`harvest_stem_tension_for_tcp`) plus optional **explicit apple load** (`explicit_load.py`) | **Lagged** one substep (M1 design) |
 | \(\mathbf{w}_{\mathrm{applied}}\) | VIC impedance law (see below) using teleop `target_tf` and live TCP pose/twist | **Fresh** each MuJoCo substep |
 | \(\mathbf{w}_{\mathrm{total}}\) | Sum | Written to `coupling_forces_cache[tcp]` → `body_f[tcp]` → MuJoCo `xfrc_applied` |
 
@@ -71,7 +71,7 @@ Implementation hook: **`CoupledFruitingScene._mujoco_and_sync_proxy`** (dynamic 
 
 | Setting | Kinematic (`ApplePickCoupledEnv` only) | Dynamic (VIC — `ApplePickVicEnv` and subclasses) |
 |---------|----------------------------------------------|-----------------|
-| `robot_kinematic_mode` | `True` (builders default) | **`False`** |
+| `robot_kinematic_mode` | `True` (set by `direct` controller wiring; dataclass default is `False`) | **`False`** |
 | Teleop | `Fr3EEDirectJointController` + `update_fr3_ee_teleop_direct` | `Fr3EEImpedanceController` (`scene.vic_controller`) + `update_fr3_ee_teleop` |
 | `body_f[tcp]` | Zeroed / ignored | **Active** |
 
@@ -79,9 +79,9 @@ While `robot_kinematic_mode=True`, `coupling_forces_cache.zero_()` runs and the 
 
 ---
 
-## Joint-torque mode (default with `--vic`)
+## Joint-torque mode (default with `--controller vic`)
 
-VIC can apply the impedance law either as a **TCP body wrench** (`body_f`) or as **joint torques** (`joint_f` → MuJoCo `qfrc_applied`). Joint-torque mode is the default with `--vic`.
+VIC can apply the impedance law either as a **TCP body wrench** (`body_f`) or as **joint torques** (`joint_f` → MuJoCo `qfrc_applied`). Joint-torque mode is the default with `--controller vic`.
 
 ### Dynamically-consistent control
 
@@ -106,7 +106,7 @@ VIC can apply the impedance law either as a **TCP body wrench** (`body_f`) or as
 
 ### Enable manually
 
-`example_coupled_fruiting.py --vic` sets this up automatically. Manual wiring:
+`example_coupled_fruiting.py --controller vic` sets this up automatically. Manual wiring:
 
 ```python
 scene.vic_use_joint_torques = True
@@ -136,7 +136,7 @@ If `apply_ik_to_mujoco_control` still sets `joint_target_pos` / `joint_target_ve
 | Wrench + **soft** PD | Closer to flange impedance; tune `joint_target_ke` / `joint_target_kd` |
 | **Wrench-only** | Hold `joint_target_pos ≈ joint_q`, teleop only moves `target_tf` for \(\mathbf{w}_{\mathrm{applied}}\) |
 
-Typical post-grasp VIC (this repo's `--vic` default): teleop advances `target_tf` only; \(\mathbf{w}_{\mathrm{applied}} = K\Delta\mathbf{x} + D\Delta\mathbf{v}\) is mapped to **joint torques** (`joint_f`) via dynamically-consistent control; **joint PD off** (`joint_target_ke/kd = 0`, targets held at current `joint_q`). Plant loads stay on TCP `body_f`.
+Typical post-grasp VIC (this repo's `--controller vic` default): teleop advances `target_tf` only; \(\mathbf{w}_{\mathrm{applied}} = K\Delta\mathbf{x} + D\Delta\mathbf{v}\) is mapped to **joint torques** (`joint_f`) via dynamically-consistent control; **joint PD off** (`joint_target_ke/kd = 0`, targets held at current `joint_q`). Plant loads stay on TCP `body_f`.
 
 ---
 
@@ -149,16 +149,26 @@ Typical post-grasp VIC (this repo's `--vic` default): teleop advances `target_tf
 | VIC → joint torques | `coupled_fruiting/vic_joint_torques.py` — `find_tcp_link_idx`, `compute_joint_torques_from_wrench_torch`, `launch_apply_vic_joint_torques` |
 | VIC → spatial wrench (legacy) | `coupled_fruiting/vic_wrench.py` — `apply_vic_to_coupling_cache`, `launch_apply_vic_to_coupling_cache` |
 | Wrench sum at TCP | `coupled_fruiting/apply_wrench.py` — `_apply_spatial_wrench_to_body_f`, `_add_tcp_spatial_wrench_inplace` |
-| Dynamic substep gate | `coupled_fruiting/scene.py` → `_mujoco_robot_substep_prefix`; `--vic` uses `vic_joint_torques.apply_vic_joint_torques_to_scene` |
+| Dynamic substep gate | `coupled_fruiting/scene.py` → `_mujoco_robot_substep_prefix`; `--controller vic` uses `vic_joint_torques.apply_vic_joint_torques_to_scene` |
 | Batched VIC joint torques | `coupled_fruiting/vic_joint_torques_batched.py` — per-env wrench kernel + `launch_apply_vic_joint_torques_batched` |
 | Batched VIC teleop | `robot/fr3_robot/controllers/ee_impedance_batched.py` — `Fr3BatchedEEImpedanceController.stage_targets_to_scene` |
 | Scene fields | `CoupledFruitingScene.vic_controller`, `vic_gains`, `vic_target_tf`, `vic_target_twist`, `vic_target_positions_wp`, `vic_target_linear_vels_wp`, `vic_use_joint_torques` |
 | Joint-torque arm setup | `robot/fr3_robot/setup.py` — `configure_vic_joint_torques_arm` (zeros PD, allocates J/H buffers, `joint_f`) |
 | Lagged plant wrench | `coupled_fruiting/proxy_coupling.py` — `harvest_stem_tension_for_tcp`, `explicit_load.explicit_apple_wrench_for_stem_harvest` |
 | Settle → weld | `coupled_fruiting/settle_then_weld.py` |
-| Example CLI | `examples/example_coupled_fruiting.py` — `--dynamic-arm`, `--vic`, `--vic-*-k/d` |
+| Example CLI | `apple_pick_sim/examples/example_coupled_fruiting.py` — `--controller {vic,ee,direct}`, `--vic-*-k/d` |
 
-**Not** the home for arm VIC: `explicit_load.py` (quasi-static apple weight in **harvest** only).
+**Not** the home for arm VIC: `explicit_load.py` (quasi-static apple load in **harvest** only).
+
+### VIC gain defaults (no single canonical source)
+
+| Entry point | Linear K/D | Angular K/D |
+|-------------|------------|-------------|
+| `example_coupled_fruiting.py` argparse | **8000 / 80** N/m | **40 / 4** N·m/rad |
+| Batched Python config (`batched_heterogeneous_config.py`) | 200 / 10 | 10 / 1 |
+| Variance fixture `sim_build` | 100 / 20 | 10 / 3 |
+
+Stability comparisons across entry points are not apples-to-apples; prefer the fixture/`sim_build` values for batched sys-ID paths.
 
 ---
 
@@ -209,7 +219,7 @@ Example smoke (headless):
 
 ```bash
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py \
-  --robot fr3 --fix-to-apple --dynamic-arm --vic --viewer null --num-frames 2 \
+  --fix-to-apple --controller vic --viewer null --num-frames 2 \
   --seed 0 --json apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json
 ```
 
@@ -217,7 +227,7 @@ Interactive post-grasp demo:
 
 ```bash
 uv run python apple_pick_sim/examples/example_coupled_fruiting.py \
-  --robot fr3 --fix-to-apple --dynamic-arm --vic --fr3-keyboard --viewer gl
+  --fix-to-apple --controller vic --fr3-keyboard --viewer gl
 ```
 
 ---
@@ -232,5 +242,5 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py \
 
 ## Related docs
 
-- `docs/mujoco-vbd-coupling-architecture.md` — ownership, stem harvest, explicit apple weight
+- `docs/mujoco-vbd-coupling-architecture.md` — ownership, stem harvest, explicit apple load
 - `docs/ROADMAP.md` — M2.0 ADR, VIC / \(\pi_{\mathrm{exp}}\) FD modes

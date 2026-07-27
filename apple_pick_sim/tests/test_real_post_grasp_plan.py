@@ -115,8 +115,8 @@ def test_s00_d00_plan_smoke(parquet: Path):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         plan = post_grasp_plan_from_metadata(meta, apple_radius_m=r, warn_tol_m=0.02)
-    assert plan.tcp_radius_residual_m == pytest.approx(0.0181, abs=5e-4)
-    assert any(True for _ in caught)  # expect radius and/or +Z warns
+    assert plan.tcp_radius_residual_m == pytest.approx(0.00206, abs=5e-4)
+    assert any("poorly aligned" in str(x.message).lower() for x in caught)
     aw = np.asarray(plan.apple_pos_welded)
     w = np.asarray(plan.weld_direction)
     np.testing.assert_allclose(aw + r * w, plan.tcp_pos, atol=1e-6)

@@ -28,17 +28,20 @@ post_grasp →  weld robot TCP to settled apple (pose + approach direction)
 Full fix list, quirks (including string-encoded `apple_pos`), and compile
 asserts: **`docs/real-sysid-pre-post-grasp-fixes.md`**.
 
+**Woody snapshot selection** (`select_pre_grasp_woody_snapshot`): prefer
+`pre_grasp_geometry.rest_snapshot_during_run` when it has `woody_part_*` +
+`apple_pos`; fall back to legacy `snapshot`; never use `settled_snapshot` for
+rebuild.
+
 ## Files
 
 | Path | Role |
 | ---- | ---- |
 | `s00-d00.parquet` | Example compiled real episode (`real_static_sysid_episode` v1.0.0) |
-| `s00-d00_spur_toward_robot.parquet` | Same episode; woody hang rotated so spur aims at robot base (origin) |
 | `funified.parquet` | Additional real / fused episode artifact |
 | `manifest.json` | Collection/run manifest (sim-side batch metadata companion) |
 | `example_view_pre_grasp_settle.py` | Plant-only VBD: pre-grasp settle → optional post-grasp weld → viewer |
-| `make_spur_toward_robot_parquet.py` | Rotate hang so spur points at robot base; regenerates the variant parquet |
-| `convert_real_to_batched_sysid_metadata.py` | CLI → batched-style episode metadata JSON |
+| `convert_real_to_batched_sysid_metadata.py` | CLI → batched-style episode metadata JSON (`--weld-direction-sign`) |
 
 ## Pre-grasp settle viewer
 
@@ -99,12 +102,16 @@ uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
   --out /tmp/s00_d00_episode_meta.json
 ```
 
+Optional: `--weld-direction-sign {+1,-1}` (see CLI `--help`).
+
 Implementation: `apple_pick_sim/system_id/real_to_batched_sysid.py`.
 
 **Note:** Current converter expectations (`step_idx == -1` pre-grasp row,
 `robot_joint_q`, quats, `rod_geometry`, …) do **not** yet fully match
 `s00-d00.parquet` as compiled. See the fix doc (**C1**) before treating convert
-success as the ingest gate.
+success as the ingest gate. The settle viewer path (`real_pre_grasp_params`) is
+the supported consumer for current episodes; convert remains a separate,
+still-mismatched contract.
 
 ## Related docs
 

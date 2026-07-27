@@ -48,7 +48,7 @@ Default controls live in ``CMA_SEARCH_PARAMS`` inside
 | Knob | Default |
 | --- | --- |
 | `initial_mean_log10` | midpoint of the search box: `[9.5, 9.5, 9.5]` (not GT; `"bounds_midpoint"` still available) |
-| `initial_sigma_log10` | `0.5` |
+| `initial_sigma_log10` | `1.0` (aligned with library `DEFAULT_INITIAL_SIGMA_LOG10`; was `0.5` before 2026-07-27) |
 | `population_size` | `15` |
 | `max_generations` | `10` |
 | `cma_seed` | `56` (gate overrides via `--cma-seed`) |

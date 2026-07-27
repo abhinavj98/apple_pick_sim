@@ -154,7 +154,8 @@ Default start mean is the search-box midpoint `[9.5, 9.5, 9.5]` (still not
 structure GT). Setting `initial_mean_log10` to `"bounds_midpoint"` instead
 derives the component-wise midpoint of the loaded fixture's log-space bounds.
 
-Default `initial_sigma_log10` is `0.5` (log10 decades). Reject non-positive or
+Default `initial_sigma_log10` is `1.0` (log10 decades; matches library
+`DEFAULT_INITIAL_SIGMA_LOG10`). Reject non-positive or
 non-finite sigma. Record the active search bounds (or JSON `null` when
 unbounded), start mean, sigma, population size, seed, and stop options in the
 report. Structure `bounds` in `cmaes_report.json` are the **search** box, not
@@ -162,7 +163,7 @@ the fixture ε-bands.
 
 Default `CMA_SEARCH_PARAMS` knobs (edit in
 `example_youngs_modulus_cmaes.py`): `initial_mean_log10=[9.5,9.5,9.5]`,
-`initial_sigma_log10=0.5`, `population_size=15`, `max_generations=10`,
+`initial_sigma_log10=1.0`, `population_size=15`, `max_generations=10`,
 `cma_seed=56`, `search_bounds_log10` = `[8,8,8]`–`[11,11,11]`.
 
 ## Per-generation evaluation
@@ -202,8 +203,11 @@ For a generation with at least one finite eligible score, every disqualified or
 non-finite candidate receives the deterministic finite penalty
 `worst_finite + max(1.0, abs(worst_finite))`. The report records the original
 disqualification reason and the substituted penalty. If no candidate in a
-generation is eligible, fail that structure rather than updating CMA-ES from
-an arbitrary all-penalty population. If the prescribed penalty overflows or is
+generation is eligible, **re-`ask()` / re-evaluate** up to
+`DEFAULT_ALL_INVALID_REASKS` (3) times, then `tell()` with uniform flat fitness
+`ALL_INVALID_FLAT_PENALTY` (`1e12`, `update_best=False`) so the structure stays
+active (see Error handling amendment below). Pass `all_invalid_reasks=0` for
+legacy fail-without-`tell()`. If the prescribed penalty overflows or is
 otherwise non-finite, fail that structure without calling `tell()`.
 
 ## Stopping and fitted estimate
@@ -253,7 +257,7 @@ Search initialization and loop knobs live in module-level
 
 - `initial_mean_log10` (`"bounds_midpoint"` or an explicit length-3 log10-E vector;
   default `[9.5, 9.5, 9.5]`)
-- `initial_sigma_log10` (default `0.5`)
+- `initial_sigma_log10` (default `1.0`)
 - `population_size` (default `15`; `None` → pycma default)
 - `max_generations` (default `10`)
 - `cma_seed` (application base seed; not passed directly to pycma; default `56`)

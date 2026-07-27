@@ -53,7 +53,7 @@ world (ground plane)
 | **Primary base** | **World** (pinned, `inv_mass = 0`) | Not moved by VBD integration |
 | **Rod segments** (primary → secondary → spur → stem) | **VBD** (`add_rod` cable joints) | **VBD** |
 | **Stem–apple FIXED joint** | Child pose tied to stem + apple geometry at build time; during coupled step, apple pose may be **overridden** (see below) | **VBD** constraint solve (reaction harvested on stem path) |
-| **Apple** (`fix_to_apple=True`) | **Robot TCP** via `sync_proxy_and_apple_state` (teleport + prescribed `inv_mass = 0`) | Not free-falling; stem tension comes from VBD |
+| **Apple** (`fix_to_apple=True`) | **Robot TCP** via `launch_mirror_robot_to_proxy_and_apple` (teleport + prescribed `inv_mass = 0`) | Not free-falling; stem tension comes from VBD |
 | **Apple** (`fix_to_apple=False`) | **VBD** (free dynamics + contacts) | **VBD** |
 | **Gripper proxy** | **Robot TCP** pose copied every substep after MuJoCo | **VBD** for contact impulses; pose is kinematic input |
 | **Gripper proxy ↔ apple** | **FIXED** weld when `fix_to_apple=True`; co-teleported with TCP | Constraint kept at zero violation by sync |
@@ -65,7 +65,7 @@ world (ground plane)
 | Part | Master |
 |------|--------|
 | **TCP / EE body** | **MuJoCo** integrates pose/velocity from internal dynamics + **lagged** `body_f[tcp]` (harvested VBD load from previous substep) + any user EE wrench |
-| **Rest of arm** (placeholder: none; FR3: full chain) | **MuJoCo** |
+| **Rest of arm** (FR3 articulated chain) | **MuJoCo** |
 
 After each MuJoCo substep, the TCP state on `robot_state_0` is the **kinematic authority** for mirroring onto the cable proxy (step 3 of the coupling loop).
 
@@ -75,7 +75,7 @@ After each MuJoCo substep, the TCP state on `robot_state_0` is the **kinematic a
 |----------|-----------|
 | Robot TCP `body_q`, `body_qd` | **MuJoCo** (Model A) |
 | Proxy `body_q`, `body_qd` (after sync) | **Copied from robot TCP**, with velocity correction (see §5) |
-| Apple `body_q`, `body_qd` when `fix_to_apple=True` | **Derived from TCP** in `sync_proxy_and_apple_state` |
+| Apple `body_q`, `body_qd` when `fix_to_apple=True` | **Derived from TCP** in `launch_mirror_robot_to_proxy_and_apple` |
 | Rod backbone motion | **VBD** |
 | External load on robot TCP from fruit | **Lagged harvest** → `body_f[tcp]` next substep |
 | EE–apple contact impulses (on cable) | **VBD** collision solve on proxy/apple shapes |
@@ -88,7 +88,7 @@ After each MuJoCo substep, the TCP state on `robot_state_0` is the **kinematic a
 |------|----------------------|---------------------|----------------------|
 | FR3 link masses under gravity | **Off** — `robot_model.set_gravity((0,0,0))` in `build_fr3_robot_model_from_usd` | — | Not simulated (matches ideal gravity comp on hardware) |
 | Rod / stem / branch gravity | — | **On** — `cable.model` + `gravity_vec` | Indirectly via stem deformation and harvest |
-| Apple weight when welded (`fix_to_apple`) | — | Prescribed apple (`inv_mass = 0`); VBD does not integrate apple gravity | **`body_f[tcp]`** via stem harvest + **`-m_apple · g`** when `stem_harvest_explicit_apple_weight=True` |
+| Apple weight when welded (`fix_to_apple`) | — | Prescribed apple (`inv_mass = 0`); VBD does not integrate apple gravity | **`body_f[tcp]`** via stem harvest + explicit term, written under **wrist F/T convention** (negate child-side support/reaction → hanging fruit pulls **down**); see `docs/explicit-apple-load-tcp-harvest.md` |
 | Apple **inertia** when welded (`fix_to_apple`) | Mass-only FIXED TCP child (`apple_payload`); Model A `g` still **0** | Prescribed apple | Reflected in MuJoCo articulated dynamics; see `docs/mujoco-apple-payload.md` |
 | Apple weight when free proxy | — | VBD integrates apple gravity | **`body_f[tcp]`** via velocity-delta or stem harvest (no explicit load — avoids double-count) |
 
@@ -143,13 +143,12 @@ Train controllers that are **robust to randomized apples** under this contract:
 
 | Responsibility | Key symbols |
 |----------------|-------------|
-| Wire Model A + Model B + buffers | `build_coupled_fruiting_placeholder` |
-| Placeholder robot (until FR3 USD) | `build_placeholder_tcp_robot_model` |
+| Wire Model A + Model B + buffers | `build_coupled_fruiting_fr3` (FR3-only; placeholders removed) |
 | Authoritative substep loop | `CoupledFruitingScene.coupled_substep` |
 | MuJoCo-only / VBD-only modes | `mujoco_substep`, `vbd_substep` |
 | Apply lagged wrench to robot | `_apply_tcp_spatial_wrench_kernel` via `_apply_spatial_wrench_to_body_f` (device) |
 | Choose sync + harvest path | `_mujoco_and_sync_proxy`, stem joint discovery `_find_stem_apple_joint` |
-| Initial TCP alignment | `bootstrap_tcp_joint_from_proxy` |
+| Initial TCP alignment | `bootstrap_tcp_joint_from_proxy` / batched `BatchedTemplateIK` |
 
 **Owns runtime state:** `robot_model`, `mj_solver`, `robot_state_*`, `proxy_forces`, `coupling_forces_cache`, `stem_apple_joint_index`, stem coupling gain/caps.
 
@@ -290,11 +289,11 @@ Kinematic overwrite of `body_q` without updating `SolverVBD.body_q_prev` makes V
 | `robot_state_0.body_f` | Per-body 6-vector | (1) TCP slot only | MuJoCo step (2) |
 | `cable.state_0.body_q`, `body_qd` | Cable bodies | Sync (3), VBD (4) | VBD collide/step |
 
-`ProxyBodyRegistry` holds sorted `(robot_body_id, proxy_body_id)` pairs; M1 placeholder uses a single TCP ↔ proxy pair.
+`ProxyBodyRegistry` holds sorted `(robot_body_id, proxy_body_id)` pairs; single-env FR3 uses one TCP ↔ proxy pair (batched builds use one pair per world).
 
 ---
 
-## 7. Example step modes (`examples/examples/example_coupled_fruiting.py`)
+## 7. Example step modes (`apple_pick_sim/examples/example_coupled_fruiting.py`)
 
 | CLI flag | `CoupledFruitingScene` | Per substep | Newton viewer shows |
 |----------|------------------------|-------------|---------------------|
@@ -302,18 +301,18 @@ Kinematic overwrite of `body_q` without updating `SolverVBD.body_q_prev` makes V
 | `--only-vbd` | `vbd_substep` | VBD only | Cable tree (proxy not mirrored from robot) |
 | `--only-mjc` | `mujoco_substep` | MuJoCo → sync (no VBD, no harvest update) | Cable tree static except proxy pose from sync |
 
-**FR3 keyboard teleop** (`--robot fr3 --fr3-keyboard`): `update_fr3_ee_teleop` runs once per **frame** (IK → `joint_target_*`), then substeps call `mujoco_substep` or `coupled_substep`. Full coupled teleop with a **dynamic** arm (`--dynamic-arm --vic`, joint-torque VIC) is the current default path for post-grasp pulling — see `docs/variable-impedance-teleop.md` — and is covered by `test_vic_joint_torques_moves_arm` / `test_vic_stem_deflection_under_load`. `--only-mjc` remains available for isolating MuJoCo-only motion when debugging the coupling loop.
+**FR3 keyboard teleop** (`--fr3-keyboard`): `update_fr3_ee_teleop` runs once per **frame** (IK → `joint_target_*`), then substeps call `mujoco_substep` or `coupled_substep`. Full coupled teleop with a **dynamic** arm (`--controller vic`, joint-torque VIC; default) is the current path for post-grasp pulling — see `docs/variable-impedance-teleop.md` — and is covered by `test_vic_joint_torques_moves_arm` / `test_vic_stem_deflection_under_load`. `--only-mjc` remains available for isolating MuJoCo-only motion when debugging the coupling loop.
 
 ---
 
 ## 8. End-to-end call graph (typical run)
 
 ```
-examples/example_coupled_fruiting.py
-  └── build_coupled_fruiting_placeholder()  # or build_coupled_fruiting_fr3()
-        ├── fruiting_system.coupled.generate_coupled_cable_scene()   # Model B (re-exported from fruiting_system)
-        └── robot model (placeholder TCP or FR3 USD)           # Model A
-  └── each frame: optional update_fr3_ee_teleop(frame_dt)
+apple_pick_sim/examples/example_coupled_fruiting.py
+  └── build_coupled_fruiting_fr3()
+        ├── fruiting_system.coupled.generate_coupled_cable_scene()   # Model B
+        └── FR3 USD robot model                                      # Model A (g=0)
+  └── each frame: optional update_fr3_ee_teleop(frame_dt) / VIC teleop
   └── each substep: coupled_substep(dt)  # or mujoco_substep / vbd_substep
         ├── _mujoco_and_sync_proxy()
         │     ├── proxy_coupling.launch_mirror_robot_to_proxy*()
@@ -332,7 +331,7 @@ examples/example_coupled_fruiting.py
 | Coupled / MJC-only loop | `apple_pick_sim/tests/test_coupled_fruiting_system.py` | See `README.md` / `docs/ROADMAP.md` |
 | FR3 teleop (headless) | `test_fr3_ee_velocity_controller.py`, `test_fr3_ee_teleop_drives_mujoco_joint_targets` | `uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_fr3_ee_velocity_controller.py -q` |
 | P0 fixed-joint readouts | `apple_pick_sim/tests/test_wrench_equilibrium.py` | Documented in `docs/WRENCH_READOUT.md` |
-| Interactive FR3 teleop | `examples/example_coupled_fruiting.py --robot fr3 --only-mjc --fr3-keyboard` | See `README.md` |
+| Interactive FR3 teleop | `apple_pick_sim/examples/example_coupled_fruiting.py --only-mjc --fr3-keyboard` | See `README.md` |
 
 ---
 

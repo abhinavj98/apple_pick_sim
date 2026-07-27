@@ -287,6 +287,9 @@ def _harvest_coupling_wrenches(
                 force_cap_N=scene.stem_force_cap_N,
                 torque_cap_Nm=scene.stem_torque_cap_Nm,
                 explicit_apple_weight=scene.stem_harvest_explicit_apple_weight,
+                use_explicit_apple_weight_wp=getattr(
+                    scene, "stem_harvest_use_explicit_wp", None
+                ),
                 gravity=scene.gravity_vec,
                 robot_body_q=scene.robot_state_0.body_q,
                 device=str(scene.proxy_forces.device),
@@ -363,12 +366,19 @@ def _sync_single_proxy_after_mujoco(scene: CoupledFruitingScene, dt: float) -> N
     if use_apple_sync:
         layout = getattr(scene, "layout", None)
         if layout is not None and layout.num_envs > 1:
-            apple_ids, pos_off, grasp_off = welded_co_teleport_arrays_for_layout(
-                layout,
-                cable,
-                device=str(dev),
-                per_world_proxy_offsets=getattr(scene, "per_world_proxy_offsets", None),
-            )
+            apple_ids = getattr(scene, "co_teleport_apple_ids_wp", None)
+            pos_off = getattr(scene, "co_teleport_pos_offsets_wp", None)
+            grasp_off = getattr(scene, "co_teleport_grasp_offsets_wp", None)
+            if apple_ids is None or pos_off is None or grasp_off is None:
+                apple_ids, pos_off, grasp_off = welded_co_teleport_arrays_for_layout(
+                    layout,
+                    cable,
+                    device=str(dev),
+                    per_world_proxy_offsets=getattr(scene, "per_world_proxy_offsets", None),
+                )
+                scene.co_teleport_apple_ids_wp = apple_ids
+                scene.co_teleport_pos_offsets_wp = pos_off
+                scene.co_teleport_grasp_offsets_wp = grasp_off
             launch_mirror_robot_to_proxy_offset_and_apple(
                 robot_ids=rid,
                 proxy_ids=pid,
@@ -465,7 +475,7 @@ class CoupledFruitingScene:
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM
     stem_harvest_explicit_apple_weight: bool = False
-    """Add ``-m_apple * gravity`` to stem harvest (prescribed apple, ``inv_mass == 0``)."""
+    """Add child-side ``-m_apple * gravity`` support into stem harvest before F/T negation."""
     apple_mass_kg: float = 0.0
     """Cached ``body_mass[apple]`` at build; avoids host sync during CUDA graph capture."""
     mj_apple_payload_body_index: int | None = None
@@ -500,6 +510,14 @@ class CoupledFruitingScene:
     stem_harvest_grasp_offsets_wp: wp.array | None = None
     stem_harvest_apple_masses_wp: wp.array | None = None
     stem_harvest_use_grasp_offset_wp: wp.array | None = None
+    stem_harvest_use_explicit_wp: wp.array | None = None
+    """Cached per-env explicit-apple-load flags (build-time; avoid per-substep ``wp.full``)."""
+    stem_harvest_wrench_f_scratch: wp.array | None = None
+    stem_harvest_wrench_t_scratch: wp.array | None = None
+    co_teleport_apple_ids_wp: wp.array | None = None
+    co_teleport_pos_offsets_wp: wp.array | None = None
+    co_teleport_grasp_offsets_wp: wp.array | None = None
+    """Cached welded co-teleport arrays for multi-env TCP→proxy+apple mirror."""
 
     def update_fr3_ee_teleop(
         self,

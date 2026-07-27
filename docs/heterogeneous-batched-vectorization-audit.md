@@ -1,6 +1,6 @@
 # Heterogeneous batched vectorization audit
 
-**Last updated:** 2026-07-03 (PR2 GPU hot path — `feature/batched-gpu-hot-path`; canonical API is `BatchedHeterogeneousCoupledSim`)
+**Last updated:** 2026-07-27
 
 Audit of the batched heterogeneous coupled stack and its dependency chain against the goal of **fully vectorized** GPU stepping. Canonical batched heterogeneous API: `apple_pick_sim.coupled_fruiting.BatchedHeterogeneousCoupledSim` (thin example: `example_batched_heterogeneous_coupled_sim.py`). Flow reference: [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md); slice status: `docs/ROADMAP.md`.
 
@@ -8,15 +8,17 @@ Audit of the batched heterogeneous coupled stack and its dependency chain agains
 
 ## Executive summary
 
-The heterogeneous example's substep hot path is **fully vectorized** on CUDA + FR3; remaining gaps are one-time init cost (heterogeneous cable build, optional batched IK bootstrap) and debug/viewer readouts.
+The heterogeneous example's substep hot path is **fully vectorized** on CUDA + FR3 for physics (VBD, MuJoCo, mirror, stem harvest, VIC). Remaining gaps: one-time init cost (heterogeneous `add_world` build), frame-rate keyboard callbacks, and (until fixed) per-substep re-allocation of co-teleport / harvest flag arrays.
 
 | Priority | Gap | Status | Impact |
 | -------- | --- | ------ | ------ |
 | ~~P0~~ | Stem harvest ran a Python loop over envs every substep | **Fixed** — `harvest_batched_stem_tension` (single batched launch, `proxy_coupling.py`) is used whenever `layout.num_envs > 1` | — |
 | ~~P0~~ | Per-env grasp offsets and apple mass not wired into runtime coupling | **Fixed** — `prepare_batched_stem_harvest_arrays` bakes per-env `stem_harvest_grasp_offsets_wp` / `stem_harvest_apple_masses_wp` at build time, consumed by the batched harvest launch above; covered by `test_batched_stem_harvest.py` | — |
+| ~~P0~~ | Per-env IK bootstrap sequential over envs | **Fixed** — `_bootstrap_tcp_per_env` uses `BatchedTemplateIK` (`settle_then_weld.py`) | Init only |
 | ~~P1~~ | Action→teleop used per-env `.cpu().tolist()` and Python velocity loops | **Fixed (PR2)** — `run_coupled_teleop_frame_from_actions` + `upload_batched_twists_from_actions`; `BatchedHeterogeneousCoupledSim.step()` uses `_action_buffer` when `allocate_action_buffer=True` | Frame-rate only |
 | ~~P1~~ | VIC joint torques read `joint_q.numpy()` each substep | **Fixed (PR2)** — `wp.to_torch(state.joint_q)` in `vic_joint_torques_batched.py` | Substep hot path |
 | **P1** | Keyboard / `velocity_for_world` callback teleop | Still true | Frame-rate only; acceptable per project GPU rules |
+| ~~P1~~ | Co-teleport / harvest flag arrays rebuilt every substep | **Fixed** — cached in `prepare_batched_stem_harvest_arrays` (`co_teleport_*_wp`, `stem_harvest_use_explicit_wp`); `coupled_substep` reuses them | — |
 | **P2** | Init/build uses sequential `add_world`; settle seed host copies on CPU builds | Partially fixed (PR2) — GPU kernels for proxy alignment, cable copy, quiet twists, robot template broadcast (CUDA), legacy 1→N cable broadcast (CUDA); CPU builds keep host reference paths | One-time cost |
 
 ---
@@ -113,52 +115,22 @@ Default **library** behavior (`BatchedHeterogeneousCoupledSim` with `allocate_ac
 
 Init-time loops matter less than substep loops but block “complete” vectorization if interpreted strictly.
 
-### Initial per-env IK bootstrap after settle→weld (P0 — often the slowest startup step)
+### Initial per-env IK bootstrap after settle→weld — **fixed (uses BatchedTemplateIK)**
 
-The heterogeneous example passes `per_env_ik=True` into `seed_fix_to_apple_from_settled`. That calls `_bootstrap_tcp_per_env`, which is **not vectorized**.
+The heterogeneous path passes `per_env_ik=True` into `seed_fix_to_apple_from_settled`, which calls `_bootstrap_tcp_per_env`. That function now uses **`BatchedTemplateIK`** (`n_problems=N`, gather proxy targets → `step` → `scatter_to_model`) — **not** a Python loop over `bootstrap_articulated_tcp_from_proxy`.
 
-```python
-# settle_then_weld.py — sequential over envs
-for w in range(layout.num_envs):
-    bootstrap_articulated_tcp_from_proxy(view, tpl_robot, ..., ik_iterations=256)
-    batched_jq[c0 : c0 + coord_per] = tpl_robot.joint_q.numpy()
-```
-
-Each call goes through `bootstrap_tcp_ik_from_proxy` in `robot/fr3_robot/placement.py`, which:
-
-| Property | Init bootstrap (`bootstrap_tcp_ik_from_proxy`) | Runtime teleop (`BatchedTemplateIK`) |
+| Property | Init bootstrap (`_bootstrap_tcp_per_env`) | Runtime teleop (`BatchedTemplateIK`) |
 | -------- | ---------------------------------------------- | ------------------------------------ |
-| `IKSolver.n_problems` | **1** (single-world template) | **`num_envs`** |
-| Env loop | Python `for w in range(N)` | None — one batched solve |
-| Seed retries | Up to **4** joint-q seeds per env, sequential | Single seed row per env (from current `joint_q`) |
-| Iterations | **256** per seed attempt (heterogeneous weld path) | 128 per teleop frame (example default) |
-| Host sync | `.numpy()` on `body_q`, `joint_q` after each attempt | GPU gather/scatter; minimal host I/O |
+| `IKSolver.n_problems` | **`num_envs`** | **`num_envs`** |
+| Env loop for solve | None — one batched solve | None — one batched solve |
+| Seeds | `n_seeds` (Roberts sampler) | Current joint rows / teleop |
+| Host sync | Pose-error diagnostics may `.numpy()` | GPU gather/scatter; minimal host I/O |
 
-**Rough cost for `N` envs:** up to `N × 4 × 256` sequential IK iteration batches, plus NumPy copies and FK per attempt. For `--num-envs 4`, that is on the order of **4,000+ IK solves at init**, compared with **one** batched solve of shape `(N, dof)` if implemented like runtime teleop.
+**Follow-up (not blocking):** `_bootstrap_tcp_per_env` does not call `seed_from_state` before solving (relies on solver-internal / multi-seed init). Worth a convergence check later.
 
-The single-env bootstrap path explicitly rejects batched robot models:
+**Owner:** `coupled_fruiting/settle_then_weld.py` (`_bootstrap_tcp_per_env`), `robot/fr3_robot/batched_template_ik.py`.
 
-```python
-if int(robot_model.world_count) > 1:
-    raise ValueError(
-        "bootstrap_tcp_ik_from_proxy does not support replicated robot models; "
-        "solve IK on the single-world ik_template_robot_model and broadcast joint_q."
-    )
-```
-
-So init deliberately uses the template model one env at a time rather than `BatchedTemplateIK`.
-
-**Recommended fix:** replace `_bootstrap_tcp_per_env` with batched placement:
-
-1. GPU-gather each env’s settled **proxy** pose from `cable.state_0.body_q` (same kernel as `BatchedTemplateIK.gather_tcp_targets_from_state`, but indexed on **proxy** bodies).
-2. Set `BatchedTemplateIK` target rows (template frame) from those poses.
-3. Optionally batched multi-seed: `(N, n_seeds, dof)` or vectorized seed loop — harder but still better than `N` sequential Python loops.
-4. One `solver.step(joint_q, joint_q, iterations=256)` with `n_problems=N`.
-5. `scatter_to_model` into the batched `robot_model`.
-
-This matches the per-env IK bootstrap approach already shipped for the batched teleop path — see "Per-env robot actions (IK)" in [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md).
-
-**Owner:** `coupled_fruiting/settle_then_weld.py` (`_bootstrap_tcp_per_env`), `robot/fr3_robot/placement.py` (`bootstrap_tcp_ik_from_proxy`).
+Test: `test_batched_ik_bootstrap_aligns_all_proxy_targets` in `test_heterogeneous_coupled_fruiting.py`.
 
 ---
 
@@ -172,15 +144,18 @@ This matches the per-env IK bootstrap approach already shipped for the batched t
 
 ## Still planned (not yet implemented)
 
-Runtime K/stiffness scatter: the heterogeneous build still bakes θ at `finalize()` only — there is no runtime re-scatter of stiffness without a rebuild. Per-env runtime actions, recorded-transition gathering, geometry DR on reset, and a batched gym adapter are tracked with current slice numbers in the **`[V]` track of `docs/ROADMAP.md`** (not duplicated here to avoid drift — see the "why" note at the top of `vectorized-coupled-fruiting.md`).
+Runtime K/stiffness scatter: the heterogeneous build still bakes θ at `finalize()` only — there is no runtime re-scatter of stiffness without a rebuild. Geometry DR on reset without rebuild is tracked in the **`[V]` track of `docs/ROADMAP.md`**.
+
+**Shipped (do not list as planned):** per-env runtime actions via `step((N,6))`, recorded-transition gathering in feature code, batched gym adapter (`ApplePickBatched*`).
+
+**Known inert config:** `FruitingSystemConfig.stem_harvest_explicit_apple_weight` is not wired through `_builder_kwargs`; welded builds always enable explicit apple load via builders.
 
 ---
 
 ## Recommended implementation order (remaining items)
 
-1. **Optional: vectorize per-env IK bootstrap** — Further reduce init cost beyond current `BatchedTemplateIK` + `per_env_ik=True` wiring (multi-seed batched bootstrap).
-
-2. **Runtime K/stiffness scatter** — See ROADMAP `[V]` track (V.4 sys-ID); out of scope for PR2.
+1. **Optional: seed-from-state on init IK bootstrap** — May improve `_bootstrap_tcp_per_env` convergence.
+2. **Runtime K/stiffness scatter** — See ROADMAP `[V]` track; out of scope for hot-path hygiene.
 
 ---
 
@@ -225,7 +200,7 @@ uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.
 | `examples/example_batched_heterogeneous_coupled_sim.py` | Canonical thin CLI + viewer entry point |
 | `examples/example_batched_heterogeneous_coupled_sim.py` | Canonical batched heterogeneous CLI + viewer |
 | `coupled_fruiting/batched_build.py` | `add_world` heterogeneous cable build |
-| `coupled_fruiting/builders.py` | `build_heterogeneous_coupled_fruiting_{fr3,placeholder}` |
+| `coupled_fruiting/builders.py` | `build_heterogeneous_coupled_fruiting_fr3` (FR3-only) |
 | `coupled_fruiting/scene.py` | `coupled_substep`; stem harvest dispatch |
 | `coupled_fruiting/proxy_coupling.py` | Mirror kernels; stem / velocity-delta harvest |
 | `coupled_fruiting/settle_then_weld.py` | Init; per-env IK bootstrap |

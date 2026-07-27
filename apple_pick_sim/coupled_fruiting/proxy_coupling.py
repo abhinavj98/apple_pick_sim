@@ -405,7 +405,12 @@ def _limit_and_write_tcp_stem_wrench_kernel(
     grasp_offset: wp.transform,
     use_grasp_offset: int,
 ):
-    """Under-relax and clamp stem harvest; write spatial wrench at ``tcp_index``."""
+    """Under-relax and clamp stem harvest; write spatial wrench at ``tcp_index``.
+
+    Stem gather returns force/torque **on the apple (child)**. Before writing to
+    TCP ``body_f``, the wrench is **negated** so the arm feels a wrist-F/T-like
+    dead-weight pull (hanging fruit → downward force under default gravity).
+    """
     f_stem_at_com = force_raw[0]
     tau_stem_at_com = torque_raw[0]
     
@@ -449,8 +454,8 @@ def _limit_and_write_tcp_stem_wrench_kernel(
             tau_total_tcp = tau_total_tcp * (torque_cap_Nm / tn)
             
     wrenches[tcp_index] = wp.spatial_vector(
-        f_total_tcp[0], f_total_tcp[1], f_total_tcp[2], 
-        tau_total_tcp[0], tau_total_tcp[1], tau_total_tcp[2]
+        -f_total_tcp[0], -f_total_tcp[1], -f_total_tcp[2],
+        -tau_total_tcp[0], -tau_total_tcp[1], -tau_total_tcp[2],
     )
 
 
@@ -474,7 +479,11 @@ def _batched_limit_and_write_tcp_stem_wrench_kernel(
     grasp_offsets: wp.array(dtype=wp.transform),
     use_grasp_offset: wp.array(dtype=int),
 ):
-    """Under-relax and clamp batched stem harvest; write spatial wrench per TCP row."""
+    """Under-relax and clamp batched stem harvest; write spatial wrench per TCP row.
+
+    Same F/T sign convention as :func:`_limit_and_write_tcp_stem_wrench_kernel`
+    (negate child-side stem + explicit support before writing to TCP).
+    """
     i = wp.tid()
     tcp_index = tcp_indices[i]
     f_stem_at_com = force_raw[i]
@@ -516,12 +525,12 @@ def _batched_limit_and_write_tcp_stem_wrench_kernel(
             tau_total_tcp = tau_total_tcp * (torque_cap_Nm / tn)
 
     wrenches[tcp_index] = wp.spatial_vector(
-        f_total_tcp[0],
-        f_total_tcp[1],
-        f_total_tcp[2],
-        tau_total_tcp[0],
-        tau_total_tcp[1],
-        tau_total_tcp[2],
+        -f_total_tcp[0],
+        -f_total_tcp[1],
+        -f_total_tcp[2],
+        -tau_total_tcp[0],
+        -tau_total_tcp[1],
+        -tau_total_tcp[2],
     )
 
 
@@ -557,13 +566,18 @@ def harvest_batched_stem_tension(
     force_cap_N: float | None = None,
     torque_cap_Nm: float | None = None,
     explicit_apple_weight: bool = True,
+    use_explicit_apple_weight_wp: wp.array | None = None,
     gravity: wp.vec3 | None = None,
     robot_body_q: wp.array | None = None,
     device: str | None = None,
     out_f: wp.array | None = None,
     out_t: wp.array | None = None,
 ) -> None:
-    """Batched stem harvest for ``N`` envs: one gather + one write kernel launch."""
+    """Batched stem harvest for ``N`` envs: one gather + one write kernel launch.
+
+    Prefer ``use_explicit_apple_weight_wp`` from
+    :func:`prepare_batched_stem_harvest_arrays` to avoid per-call ``wp.full``.
+    """
     from apple_pick_sim.vbd_fixed_joint_wrenches import gather_joint_wrench_child_com_device
 
     dev = device if device is not None else str(out_robot_wrenches.device)
@@ -586,7 +600,10 @@ def harvest_batched_stem_tension(
     )
     g = gravity if gravity is not None else wp.vec3(0.0, 0.0, -9.81)
     robot_bq = robot_body_q if robot_body_q is not None else body_q_post
-    use_explicit_arr = wp.full(n, 1 if explicit_apple_weight else 0, dtype=int, device=dev)
+    if use_explicit_apple_weight_wp is not None:
+        use_explicit_arr = use_explicit_apple_weight_wp
+    else:
+        use_explicit_arr = wp.full(n, 1 if explicit_apple_weight else 0, dtype=int, device=dev)
 
     f_cap = float(force_cap_N) if force_cap_N is not None else 0.0
     t_cap = float(torque_cap_Nm) if torque_cap_Nm is not None else 0.0
@@ -658,6 +675,27 @@ def prepare_batched_stem_harvest_arrays(scene: Any, layout: Any) -> None:
     scene.stem_harvest_use_grasp_offset_wp = wp.array(use_grasp, dtype=int, device=dev)
     scene.stem_harvest_wrench_f_scratch = wp.zeros(n, dtype=wp.vec3, device=dev)
     scene.stem_harvest_wrench_t_scratch = wp.zeros(n, dtype=wp.vec3, device=dev)
+    explicit_on = 1 if bool(getattr(scene, "stem_harvest_explicit_apple_weight", False)) else 0
+    scene.stem_harvest_use_explicit_wp = wp.full(n, explicit_on, dtype=int, device=dev)
+
+    # Co-teleport arrays for welded multi-env mirror (reuse every substep).
+    if (
+        getattr(cable, "gripper_proxy_apple_joint", None) is not None
+        and default_off is not None
+    ):
+        apple_ids, pos_off, grasp_off = welded_co_teleport_arrays_for_layout(
+            layout,
+            cable,
+            device=dev,
+            per_world_proxy_offsets=per_offsets,
+        )
+        scene.co_teleport_apple_ids_wp = apple_ids
+        scene.co_teleport_pos_offsets_wp = pos_off
+        scene.co_teleport_grasp_offsets_wp = grasp_off
+    else:
+        scene.co_teleport_apple_ids_wp = None
+        scene.co_teleport_pos_offsets_wp = None
+        scene.co_teleport_grasp_offsets_wp = None
 
 
 def _harvest_stem_tension_for_tcp_cpu(
@@ -753,8 +791,10 @@ def _harvest_stem_tension_for_tcp_cpu(
                     )
                     f_total_tcp = f_total_tcp + f_apple_weight
                     tau_total_tcp = tau_total_tcp + tau_apple_weight_at_tcp
-        wrenches[tcp_body_index, :3] = f_total_tcp.astype(np.float32)
-        wrenches[tcp_body_index, 3:6] = tau_total_tcp.astype(np.float32)
+        # F/T convention at TCP: negate plant support/reaction so hanging fruit
+        # reads as a downward pull on the wrist (action-reaction vs child-side gather).
+        wrenches[tcp_body_index, :3] = (-f_total_tcp).astype(np.float32)
+        wrenches[tcp_body_index, 3:6] = (-tau_total_tcp).astype(np.float32)
     limit_stem_coupling_wrench(
         wrenches,
         tcp_body_index,

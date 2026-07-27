@@ -48,7 +48,7 @@
 
 - Fit only primary, spur, and stem Young's modulus; keep geometry, damping, density, mass, secondary E, and other fields fixed
 - Separate `example_youngs_modulus_cmaes.py`; retain the Cartesian grid as a diagnostic/gate command
-- Bounded midpoint initialization, fused generation evaluation, explicit final-mean replay, per-structure fit reports, and cross-structure statistics
+- Search-box midpoint initialization (`[9.5, 9.5, 9.5]` by default — not fixture/GT midpoint), fused generation evaluation, explicit final-mean replay, per-structure fit reports, and cross-structure statistics
 - Keep stored GT for evaluation/reporting only, not initialization or fitness
 
 **V.5.2 progress:**
@@ -200,7 +200,7 @@ Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_co
 
 ## Agent execution notes
 
-> **Warning — intra-cable collisions are disabled.** Default builds set `enable_self_collisions=False` (woody↔woody, woody↔apple, stem↔woody, apple↔proxy filtered; ground only). See `docs/vectorized-coupled-fruiting.md` and `apple_pick_sim/fruiting_system/build.py::_apply_default_fruiting_collision_filters`.
+> **Warning — woody self-collisions are filtered.** Default builds set `enable_self_collisions=False` (woody↔woody filtered; apple↔woody / proxy↔woody default on; ground unchanged). See `docs/vectorized-coupled-fruiting.md` and `apple_pick_sim/fruiting_system/build.py::_apply_default_fruiting_collision_filters`.
 
 **Repository layout:**
 

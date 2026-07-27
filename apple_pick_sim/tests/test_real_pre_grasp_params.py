@@ -98,6 +98,10 @@ def test_map_pre_grasp_branch_is_fruiting_base_pos():
     assert mapped.apple_radius_m == pytest.approx(0.04)
     assert mapped.apple_density_kg_m3 == pytest.approx(650.0)
     assert "spur_length_error" in mapped.diagnostics
+    # Stem chord = ‖spur_end − apple_CoM‖ − apple_radius (CoM is sphere center).
+    spur_to_com = float(np.linalg.norm(np.array([0.05, 0.0, -0.13]) - np.array([0.02, 0.0, -0.10])))
+    assert mapped.diagnostics["stem_spur_to_com_m"] == pytest.approx(spur_to_com)
+    assert mapped.diagnostics["stem_chord_length_m"] == pytest.approx(spur_to_com - 0.04)
 
 
 def test_map_pre_grasp_strict_rejects_nonzero_bend():
@@ -105,6 +109,38 @@ def test_map_pre_grasp_strict_rejects_nonzero_bend():
     meta["pre_grasp_geometry"]["snapshot"]["woody_bending_angles"] = [0.2, 0.0, 0.0]
     with pytest.raises(ValueError, match="bend"):
         map_pre_grasp_geometry(meta, strict=True)
+
+
+def test_map_pre_grasp_prefers_rest_snapshot_during_run():
+    """New compiler: woody lives on rest_snapshot_during_run; snapshot is TCP-only."""
+    meta = _synthetic_pre_grasp_meta()
+    pre = meta["pre_grasp_geometry"]
+    woody = pre.pop("snapshot")
+    pre["snapshot"] = {
+        "tcp_pos": [0.0, 0.9, 0.4],
+        "tcp_pose_4x4": [1.0] * 16,
+        "target_pose_4x4": [1.0] * 16,
+    }
+    # Distinct rest geometry so preference is observable.
+    branch = [1.0, 2.0, 3.0]
+    spur = [1.02, 2.0, 2.90]
+    apple = [1.05, 2.0, 2.87]
+    pre["rest_snapshot_during_run"] = {
+        "woody_part_start_pos": branch + branch + spur,
+        "woody_part_end_pos": spur + apple + apple,
+        "woody_bending_angles": [0.0, 0.0, 0.0],
+        "apple_pos": "[1.05  2.0  2.87]",  # numpy-string quirk
+    }
+    # Settled differs — must not win over rest.
+    pre["settled_snapshot"] = {
+        **woody,
+        "woody_part_start_pos": [9.0] * 9,
+        "woody_part_end_pos": [8.0] * 9,
+        "apple_pos": [9.0, 8.0, 7.0],
+    }
+    mapped = map_pre_grasp_geometry(meta)
+    np.testing.assert_allclose(mapped.fruiting_base_pos, (1.0, 2.0, 3.0), atol=1e-9)
+    assert mapped.diagnostics.get("pre_grasp_snapshot_source") == "rest_snapshot_during_run"
 
 
 def test_fruiting_params_from_pre_grasp_meta():
@@ -145,3 +181,8 @@ def test_s00_d00_pre_grasp_params_smoke(parquet: Path):
     assert params.primary is not None
     assert all(math.isfinite(x) for x in base)
     assert "spur_chord_length_m" in diagnostics
+    pre = meta["pre_grasp_geometry"]
+    if isinstance(pre.get("rest_snapshot_during_run"), dict) and (
+        "woody_part_start_pos" in pre["rest_snapshot_during_run"]
+    ):
+        assert diagnostics["pre_grasp_snapshot_source"] == "rest_snapshot_during_run"

@@ -90,6 +90,34 @@ class PreGraspMappedGeometry:
     diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+def _snapshot_has_woody(snap: Any) -> bool:
+    return (
+        isinstance(snap, dict)
+        and "woody_part_start_pos" in snap
+        and "woody_part_end_pos" in snap
+        and "apple_pos" in snap
+    )
+
+
+def select_pre_grasp_woody_snapshot(pre: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Pick the non-bending woody+apple snapshot for plant rebuild.
+
+    Prefer ``rest_snapshot_during_run`` (current compiler). Fall back to legacy
+    ``snapshot`` when it still carries woody fields. ``settled_snapshot`` is not
+    used for rebuild (different earlier camera settle).
+    """
+    rest = pre.get("rest_snapshot_during_run")
+    if _snapshot_has_woody(rest):
+        return rest, "rest_snapshot_during_run"
+    snap = pre.get("snapshot")
+    if _snapshot_has_woody(snap):
+        return snap, "snapshot"
+    raise ValueError(
+        "pre_grasp_geometry missing woody+apple snapshot: expected "
+        "rest_snapshot_during_run or snapshot with woody_part_* and apple_pos"
+    )
+
+
 def map_pre_grasp_geometry(
     meta: dict[str, Any],
     *,
@@ -106,10 +134,10 @@ def map_pre_grasp_geometry(
     pre = meta.get("pre_grasp_geometry")
     if not isinstance(pre, dict):
         raise ValueError("missing pre_grasp_geometry")
-    snap = pre.get("snapshot")
     parts = pre.get("parts")
-    if not isinstance(snap, dict) or not isinstance(parts, dict):
-        raise ValueError("pre_grasp_geometry requires snapshot and parts")
+    if not isinstance(parts, dict):
+        raise ValueError("pre_grasp_geometry requires parts")
+    snap, snap_source = select_pre_grasp_woody_snapshot(pre)
 
     start9 = np.asarray(snap["woody_part_start_pos"], dtype=np.float64).reshape(9)
     end9 = np.asarray(snap["woody_part_end_pos"], dtype=np.float64).reshape(9)
@@ -142,7 +170,14 @@ def map_pre_grasp_geometry(
         }
 
     spur_chord = float(np.linalg.norm(spur_end - branch))
-    stem_chord = float(np.linalg.norm(apple_chord_end - spur_end))
+    apple_r = float(parts["apple"]["radius_m"]) if "apple" in parts else None
+    apple_d = float(parts["apple"]["density_kg_m3"]) if "apple" in parts else None
+    # Woody Apple junction is the fruit CoM; physical stem is spur→surface.
+    spur_to_com = float(np.linalg.norm(apple_pos - spur_end))
+    if apple_r is None:
+        stem_chord = spur_to_com
+    else:
+        stem_chord = spur_to_com - float(apple_r)
     spur_L = float(parts["spur"]["length_m"])
     stem_L = float(parts["stem"]["length_m"])
     apple_vs_chord = apple_pos - apple_chord_end
@@ -154,7 +189,9 @@ def map_pre_grasp_geometry(
 
     diagnostics: dict[str, Any] = {
         "spur_chord_length_m": spur_chord,
+        "stem_spur_to_com_m": spur_to_com,
         "stem_chord_length_m": stem_chord,
+        "stem_chord_formula": "‖spur_end−apple_CoM‖−apple_radius",
         "spur_catalog_length_m": spur_L,
         "stem_catalog_length_m": stem_L,
         "spur_length_abs_error_m": abs(spur_chord - spur_L),
@@ -170,6 +207,8 @@ def map_pre_grasp_geometry(
         "stem_length_error": {
             "catalog_m": stem_L,
             "chord_m": stem_chord,
+            "spur_to_com_m": spur_to_com,
+            "apple_radius_m": apple_r,
             "abs_m": abs(stem_chord - stem_L),
             "rel": _rel_err(stem_L, stem_chord),
         },
@@ -178,10 +217,8 @@ def map_pre_grasp_geometry(
         "spur_direction": list(spur_dir),
         "stem_direction": list(stem_dir),
         "fruiting_base_pos": [float(branch[0]), float(branch[1]), float(branch[2])],
+        "pre_grasp_snapshot_source": snap_source,
     }
-
-    apple_r = float(parts["apple"]["radius_m"]) if "apple" in parts else None
-    apple_d = float(parts["apple"]["density_kg_m3"]) if "apple" in parts else None
 
     return PreGraspMappedGeometry(
         fruiting_base_pos=(float(branch[0]), float(branch[1]), float(branch[2])),
@@ -212,6 +249,7 @@ def format_pre_grasp_diagnostics(diagnostics: dict[str, Any]) -> str:
         (
             f"  stem: catalog={diagnostics['stem_catalog_length_m']:.4f} m  "
             f"chord={diagnostics['stem_chord_length_m']:.4f} m  "
+            f"(‖spur−CoM‖={diagnostics['stem_spur_to_com_m']:.4f} m − r)  "
             f"abs_err={diagnostics['stem_length_abs_error_m']:.4f} m  "
             f"rel_err={diagnostics['stem_length_rel_error']:.3%}"
         ),

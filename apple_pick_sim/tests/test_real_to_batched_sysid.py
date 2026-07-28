@@ -102,6 +102,32 @@ def test_build_fruiting_params_uses_measured_geometry_and_fixture_materials():
     assert params.primary.youngs_modulus_pa == range_midpoint(
         ranges["primary"]["youngs_modulus_pa"]
     )
+    assert params.spur_surface_offset is True
+
+
+def test_build_fruiting_params_honors_spur_surface_offset_fixture_flag(tmp_path: Path):
+    import copy
+    import json
+
+    custom = copy.deepcopy(json.loads(VARIANCE.read_text()))
+    custom["spur_surface_offset"] = False
+    path = tmp_path / "ranges.json"
+    path.write_text(json.dumps(custom))
+    params = build_fruiting_params_from_real(
+        ranges_path=path,
+        rod_geometry={
+            "primary": {"length_m": 0.31, "radius_m": 0.021},
+            "spur": {"length_m": 0.08, "radius_m": 0.009},
+            "stem": {"length_m": 0.04, "radius_m": 0.0025},
+        },
+        directions={
+            "primary": (1.0, 0.0, 0.0),
+            "spur": (0.0, 0.0, -1.0),
+            "stem": (0.0, 0.0, -1.0),
+        },
+        apple_radius_m=0.055,
+    )
+    assert params.spur_surface_offset is False
 
 
 def _write_synthetic_real(path: Path) -> None:

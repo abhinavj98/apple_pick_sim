@@ -15,9 +15,12 @@ from apple_pick_sim.system_id.real_pre_grasp_params import (
     fruiting_params_from_pre_grasp_parquet,
     load_dataset_metadata,
     map_pre_grasp_geometry,
+    primary_direction_from_fixture,
+    surface_to_centerline,
 )
 
 VARIANCE = Path("apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json")
+PRIMARY_DIR = primary_direction_from_fixture(VARIANCE)
 
 
 def test_coerce_xyz_list():
@@ -82,9 +85,12 @@ def _synthetic_pre_grasp_meta() -> dict:
 
 
 def test_map_pre_grasp_branch_is_fruiting_base_pos():
-    mapped = map_pre_grasp_geometry(_synthetic_pre_grasp_meta())
+    mapped = map_pre_grasp_geometry(_synthetic_pre_grasp_meta(), primary_dir=PRIMARY_DIR)
     assert isinstance(mapped, PreGraspMappedGeometry)
-    np.testing.assert_allclose(mapped.fruiting_base_pos, (0.0, 0.0, 0.0), atol=1e-9)
+    expected_base = surface_to_centerline(
+        (0.0, 0.0, 0.0), mapped.spur_direction, PRIMARY_DIR, 0.0125
+    )
+    np.testing.assert_allclose(mapped.fruiting_base_pos, expected_base, atol=1e-9)
     spur_u = np.array([0.02, 0.0, -0.10], dtype=np.float64)
     spur_u /= np.linalg.norm(spur_u)
     stem_u = np.array([0.03, 0.0, -0.03], dtype=np.float64)
@@ -108,7 +114,7 @@ def test_map_pre_grasp_strict_rejects_nonzero_bend():
     meta = _synthetic_pre_grasp_meta()
     meta["pre_grasp_geometry"]["snapshot"]["woody_bending_angles"] = [0.2, 0.0, 0.0]
     with pytest.raises(ValueError, match="bend"):
-        map_pre_grasp_geometry(meta, strict=True)
+        map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR, strict=True)
 
 
 def test_map_pre_grasp_prefers_rest_snapshot_during_run():
@@ -138,8 +144,9 @@ def test_map_pre_grasp_prefers_rest_snapshot_during_run():
         "woody_part_end_pos": [8.0] * 9,
         "apple_pos": [9.0, 8.0, 7.0],
     }
-    mapped = map_pre_grasp_geometry(meta)
-    np.testing.assert_allclose(mapped.fruiting_base_pos, (1.0, 2.0, 3.0), atol=1e-9)
+    mapped = map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
+    expected_base = surface_to_centerline((1.0, 2.0, 3.0), mapped.spur_direction, PRIMARY_DIR, 0.0125)
+    np.testing.assert_allclose(mapped.fruiting_base_pos, expected_base, atol=1e-9)
     assert mapped.diagnostics.get("pre_grasp_snapshot_source") == "rest_snapshot_during_run"
 
 
@@ -148,13 +155,15 @@ def test_fruiting_params_from_pre_grasp_meta():
         _synthetic_pre_grasp_meta(),
         fixture_path=VARIANCE,
     )
-    assert base == (0.0, 0.0, 0.0)
+    spur_u = np.array([0.02, 0.0, -0.10], dtype=np.float64)
+    spur_u /= np.linalg.norm(spur_u)
+    expected_base = surface_to_centerline((0.0, 0.0, 0.0), spur_u, PRIMARY_DIR, 0.0125)
+    assert base == expected_base
     assert params.topology == "t_junction"
+    assert params.spur_surface_offset is True
     assert params.secondary is None
     assert params.primary is not None and params.spur is not None and params.stem is not None
     np.testing.assert_allclose(params.primary.direction, (1.0, 0.0, 0.0), atol=1e-6)
-    spur_u = np.array([0.02, 0.0, -0.10], dtype=np.float64)
-    spur_u /= np.linalg.norm(spur_u)
     stem_u = np.array([0.03, 0.0, -0.03], dtype=np.float64)
     stem_u /= np.linalg.norm(stem_u)
     np.testing.assert_allclose(params.spur.direction, spur_u, atol=1e-6)
@@ -167,6 +176,23 @@ def test_fruiting_params_from_pre_grasp_meta():
     assert blob["schema"] == "fruiting_system_params_v2"
     assert "youngs_modulus_pa" in blob["primary"]
     assert "spur_length_rel_error" in diagnostics
+
+
+def test_map_pre_grasp_ignores_parquet_fruiting_base_pos():
+    meta = _synthetic_pre_grasp_meta()
+    meta["fruiting_base_pos"] = [99.0, 99.0, 99.0]
+    mapped = map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
+    assert mapped.fruiting_base_pos != (99.0, 99.0, 99.0)
+
+
+def test_surface_to_centerline_perpendicular_spur():
+    center = surface_to_centerline(
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, -1.0),
+        (1.0, 0.0, 0.0),
+        0.02,
+    )
+    np.testing.assert_allclose(center, (0.0, 0.0, 0.02), atol=1e-9)
 
 
 @pytest.mark.parametrize("parquet", [Path("robot_replay/s00-d00.parquet")])

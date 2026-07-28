@@ -432,6 +432,24 @@ def test_fruiting_params_v2_roundtrip():
     decoded = fs.fruiting_params_from_dict(encoded)
     assert decoded.primary.youngs_modulus_pa == pytest.approx(params.primary.youngs_modulus_pa)
     assert decoded.primary.damping_ratio == pytest.approx(params.primary.damping_ratio)
+    assert decoded.spur_surface_offset == params.spur_surface_offset
+
+
+def test_fruiting_params_from_dict_missing_spur_surface_offset_defaults_false():
+    fs = _import_module()
+    params = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=42)
+    encoded = fs.fruiting_params_to_dict(params)
+    del encoded["spur_surface_offset"]
+    decoded = fs.fruiting_params_from_dict(encoded)
+    assert decoded.spur_surface_offset is False
+
+
+def test_spur_surface_offset_parallel_direction_zero_offset():
+    fs = _import_module()
+    from apple_pick_sim.fruiting_system.build import _primary_radial_surface_offset_world
+
+    radial = _primary_radial_surface_offset_world((1.0, 0.0, 0.0), (1.0, 0.0, 0.0), 0.02)
+    np.testing.assert_allclose(np.array(radial), (0.0, 0.0, 0.0), atol=1e-9)
 
 
 def test_fruiting_params_v1_deserialization():

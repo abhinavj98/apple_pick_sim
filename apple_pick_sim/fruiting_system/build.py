@@ -417,8 +417,13 @@ def _build_t_junction_into_builder(
     )
 
     for branch_i, (name, rod) in enumerate(branch_specs):
+        radial_world = wp.vec3(0.0, 0.0, 0.0)
         if branch_i == 0:
-            branch_start = primary_points[parent_idx + 1]
+            if params.spur_surface_offset:
+                radial_world = _primary_radial_surface_offset_world(
+                    primary.direction, rod.direction, primary.radius
+                )
+            branch_start = primary_points[parent_idx + 1] + radial_world
         else:
             branch_start = prev_points[-1]
         points, quats = _make_rod_geometry(
@@ -444,12 +449,16 @@ def _build_t_junction_into_builder(
 
         if branch_i == 0:
             parent_seg_len = prev_rod.length / prev_rod.num_segments
+            parent_local_offset = wp.quat_rotate_inv(
+                primary_quats[parent_idx], radial_world
+            )
             j_link = _connect_rod_tip_to_base(
                 builder,
                 parent_body=prev_bodies[parent_idx],
                 parent_seg_length=parent_seg_len,
                 child_body=bodies[0],
                 key=f"joint_{prev_name}_{name}",
+                parent_local_offset=parent_local_offset,
             )
         else:
             parent_seg_len = prev_rod.length / prev_rod.num_segments
@@ -1783,6 +1792,21 @@ def _make_rod_geometry(
     return points, quats
 
 
+def _primary_radial_surface_offset_world(
+    primary_direction: tuple[float, float, float],
+    spur_direction: tuple[float, float, float],
+    primary_radius: float,
+) -> wp.vec3:
+    """World-frame vector from the primary centerline to its surface toward the spur."""
+    axis = wp.normalize(wp.vec3(*primary_direction))
+    d = wp.normalize(wp.vec3(*spur_direction))
+    radial = d - axis * wp.dot(d, axis)
+    radial_len = wp.length(radial)
+    if radial_len < 1e-6:
+        return wp.vec3(0.0, 0.0, 0.0)
+    return (radial / radial_len) * float(primary_radius)
+
+
 def _primary_spur_parent_body_index(num_segments: int, fraction: float) -> int:
     """Index of the primary body whose tip hosts the spur branch."""
     point_index = int(round(float(fraction) * num_segments))
@@ -1829,16 +1853,22 @@ def _connect_rod_tip_to_base(
     parent_seg_length: float,
     child_body: int,
     key: str,
+    *,
+    parent_local_offset: wp.vec3 | None = None,
 ) -> int:
     """Add a fixed joint connecting the tip of one rod to the base of the next.
 
     In rod convention, the tip of a segment body is at local (0, 0, seg_length).
     The base of the next segment body is at local (0, 0, 0).
     """
+    offset = (
+        parent_local_offset if parent_local_offset is not None else wp.vec3(0.0, 0.0, 0.0)
+    )
+    anchor = wp.vec3(0.0, 0.0, parent_seg_length) + offset
     return builder.add_joint_fixed(
         parent=parent_body,
         child=child_body,
-        parent_xform=wp.transform(wp.vec3(0.0, 0.0, parent_seg_length), wp.quat_identity()),
+        parent_xform=wp.transform(anchor, wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         label=key,
     )

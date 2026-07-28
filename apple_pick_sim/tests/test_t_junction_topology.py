@@ -24,6 +24,49 @@ def test_sample_params_defaults_to_t_junction():
     params = fs.sample_params(ranges, seed=0)
     assert params.topology == fs.TOPOLOGY_T_JUNCTION
     assert params.spur_attach_fraction == pytest.approx(0.5)
+    assert params.spur_surface_offset is True
+
+
+def test_t_junction_spur_surface_offset_false_legacy_centerline():
+    from apple_pick_sim.fruiting_system.build import _primary_radial_surface_offset_world
+
+    fs = _import_fs()
+    ranges = fs.load_ranges(PROXY_PATH)
+    params_on = fs.sample_params(ranges, seed=0)
+    params_off = fs.sample_params({**ranges, "spur_surface_offset": False}, seed=0)
+    assert params_on.spur_surface_offset is True
+    assert params_off.spur_surface_offset is False
+    scene_on = fs.generate_scene(
+        ranges, seed=0, base_pos=BASE_POS, device="cpu", enable_self_collisions=False
+    )
+    scene_off = fs.generate_scene(
+        {**ranges, "spur_surface_offset": False},
+        seed=0,
+        base_pos=BASE_POS,
+        device="cpu",
+        enable_self_collisions=False,
+    )
+
+    def _spur_anchor(scene):
+        _, child_anchors = fs.fixed_joint_anchors_world(
+            scene.model,
+            scene.state_0.body_q,
+            scene.fruiting_fixed_joints,
+        )
+        labels = [lab for _, lab in scene.fruiting_fixed_joints]
+        spur_i = labels.index("joint_primary_spur")
+        return child_anchors[spur_i * 3 : (spur_i + 1) * 3]
+
+    spur_on = np.asarray(_spur_anchor(scene_on), dtype=np.float64)
+    spur_off = np.asarray(_spur_anchor(scene_off), dtype=np.float64)
+    radial = np.array(
+        _primary_radial_surface_offset_world(
+            params_on.primary.direction, params_on.spur.direction, params_on.primary.radius
+        ),
+        dtype=np.float64,
+    )
+    assert np.linalg.norm(radial) > 1e-6
+    np.testing.assert_allclose(spur_on - spur_off, radial, atol=1e-3)
 
 
 def test_linear_chain_fixture_opt_in():
@@ -60,6 +103,8 @@ def test_t_junction_primary_endpoint_has_mass():
 
 
 def test_t_junction_center_and_support_anchors():
+    from apple_pick_sim.fruiting_system.build import _primary_radial_surface_offset_world
+
     fs = _import_fs()
     ranges = fs.load_ranges(PROXY_PATH)
     params = fs.sample_params(ranges, seed=0)
@@ -84,7 +129,27 @@ def test_t_junction_center_and_support_anchors():
     half_span = params.primary.length / 2.0
     np.testing.assert_allclose(left, center - np.array([half_span, 0.0, 0.0]), atol=1e-3)
     np.testing.assert_allclose(right, center + np.array([half_span, 0.0, 0.0]), atol=1e-3)
-    np.testing.assert_allclose(spur, center, atol=1e-3)
+    radial = np.array(
+        _primary_radial_surface_offset_world(
+            params.primary.direction, params.spur.direction, params.primary.radius
+        ),
+        dtype=np.float64,
+    )
+    scene_off = fs.generate_scene(
+        {**ranges, "spur_surface_offset": False},
+        seed=0,
+        base_pos=BASE_POS,
+        device="cpu",
+        enable_self_collisions=False,
+    )
+    _, child_off = fs.fixed_joint_anchors_world(
+        scene_off.model,
+        scene_off.state_0.body_q,
+        scene_off.fruiting_fixed_joints,
+    )
+    spur_off_i = [lab for _, lab in scene_off.fruiting_fixed_joints].index("joint_primary_spur")
+    spur_off = child_off[spur_off_i * 3 : (spur_off_i + 1) * 3]
+    np.testing.assert_allclose(spur, np.asarray(spur_off, dtype=np.float64) + radial, atol=1e-3)
 
 
 def test_t_junction_rejects_secondary():

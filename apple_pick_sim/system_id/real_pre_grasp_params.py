@@ -58,6 +58,32 @@ def _unit(vec: np.ndarray, *, field: str) -> tuple[float, float, float]:
     return (float(u[0]), float(u[1]), float(u[2]))
 
 
+def _radial_hat(primary_dir: tuple[float, float, float], spur_dir: tuple[float, float, float]) -> np.ndarray:
+    """Unit vector on the primary cross-section toward the spur (zero if parallel)."""
+    axis = np.asarray(primary_dir, dtype=np.float64)
+    axis /= max(float(np.linalg.norm(axis)), _ZERO_EPS)
+    d = np.asarray(spur_dir, dtype=np.float64)
+    d /= max(float(np.linalg.norm(d)), _ZERO_EPS)
+    radial = d - axis * float(np.dot(d, axis))
+    radial_len = float(np.linalg.norm(radial))
+    if radial_len < 1e-6:
+        return np.zeros(3, dtype=np.float64)
+    return radial / radial_len
+
+
+def surface_to_centerline(
+    spur_start_surface: tuple[float, float, float] | np.ndarray,
+    spur_dir: tuple[float, float, float],
+    primary_dir: tuple[float, float, float],
+    primary_radius_m: float,
+) -> tuple[float, float, float]:
+    """Map a dowel-surface spur-start junction to the primary centerline T-center."""
+    surface = np.asarray(spur_start_surface, dtype=np.float64).reshape(3)
+    radial_hat = _radial_hat(primary_dir, spur_dir)
+    center = surface - float(primary_radius_m) * radial_hat
+    return (float(center[0]), float(center[1]), float(center[2]))
+
+
 def _direction_from_angles(azimuth_deg: float, elevation_deg: float) -> tuple[float, float, float]:
     az = math.radians(float(azimuth_deg))
     el = math.radians(float(elevation_deg))
@@ -121,6 +147,7 @@ def select_pre_grasp_woody_snapshot(pre: dict[str, Any]) -> tuple[dict[str, Any]
 def map_pre_grasp_geometry(
     meta: dict[str, Any],
     *,
+    primary_dir: tuple[float, float, float],
     strict: bool = False,
 ) -> PreGraspMappedGeometry:
     """Map Branch/Spur/Apple shared_endpoints pre-grasp into rod geometry."""
@@ -142,7 +169,7 @@ def map_pre_grasp_geometry(
     start9 = np.asarray(snap["woody_part_start_pos"], dtype=np.float64).reshape(9)
     end9 = np.asarray(snap["woody_part_end_pos"], dtype=np.float64).reshape(9)
     # part0 Branch→Spur (T → spur end), part2 Spur→Apple
-    branch = start9[0:3]
+    spur_start_surface = start9[0:3]
     spur_end = end9[0:3]
     apple_chord_end = end9[6:9]
     if float(np.linalg.norm(spur_end - start9[6:9])) > 1e-4:
@@ -158,8 +185,16 @@ def map_pre_grasp_geometry(
         if strict:
             raise ValueError(msg)
 
-    spur_dir = _unit(spur_end - branch, field="spur_direction")
+    spur_dir = _unit(spur_end - spur_start_surface, field="spur_direction")
     stem_dir = _unit(apple_pos - spur_end, field="stem_direction")
+
+    primary_r = float(parts["primary"]["radius_m"])
+    fruiting_base = surface_to_centerline(
+        spur_start_surface, spur_dir, primary_dir, primary_r
+    )
+    surface_to_centerline_m = float(
+        np.linalg.norm(np.asarray(spur_start_surface, dtype=np.float64) - np.asarray(fruiting_base))
+    )
 
     def _geo(name: str) -> dict[str, float]:
         block = parts[name]
@@ -169,7 +204,7 @@ def map_pre_grasp_geometry(
             "density_kg_m3": float(block["density_kg_m3"]),
         }
 
-    spur_chord = float(np.linalg.norm(spur_end - branch))
+    spur_chord = float(np.linalg.norm(spur_end - spur_start_surface))
     apple_r = float(parts["apple"]["radius_m"]) if "apple" in parts else None
     apple_d = float(parts["apple"]["density_kg_m3"]) if "apple" in parts else None
     # Woody Apple junction is the fruit CoM; physical stem is spur→surface.
@@ -216,12 +251,15 @@ def map_pre_grasp_geometry(
         "apple_pos_vs_chord_end_norm_m": float(np.linalg.norm(apple_vs_chord)),
         "spur_direction": list(spur_dir),
         "stem_direction": list(stem_dir),
-        "fruiting_base_pos": [float(branch[0]), float(branch[1]), float(branch[2])],
+        "spur_start_surface": [float(spur_start_surface[0]), float(spur_start_surface[1]), float(spur_start_surface[2])],
+        "primary_surface_to_centerline_m": surface_to_centerline_m,
+        "fruiting_base_pos_source": "spur_start_surface − r_primary·radial_hat",
+        "fruiting_base_pos": list(fruiting_base),
         "pre_grasp_snapshot_source": snap_source,
     }
 
     return PreGraspMappedGeometry(
-        fruiting_base_pos=(float(branch[0]), float(branch[1]), float(branch[2])),
+        fruiting_base_pos=fruiting_base,
         spur_direction=spur_dir,
         stem_direction=stem_dir,
         rod_geometry={
@@ -268,8 +306,8 @@ def fruiting_params_from_pre_grasp_meta(
     strict: bool = False,
 ) -> tuple[FruitingSystemParams, tuple[float, float, float], dict[str, Any]]:
     """Build ``FruitingSystemParams`` + base + diagnostics from metadata dict."""
-    mapped = map_pre_grasp_geometry(meta, strict=strict)
     primary_dir = primary_direction_from_fixture(fixture_path)
+    mapped = map_pre_grasp_geometry(meta, primary_dir=primary_dir, strict=strict)
     directions = {
         "primary": primary_dir,
         "spur": mapped.spur_direction,

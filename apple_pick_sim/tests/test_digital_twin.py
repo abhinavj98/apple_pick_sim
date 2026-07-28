@@ -94,6 +94,50 @@ def test_load_save_roundtrip():
     assert loaded.rod_radii == obs.rod_radii
 
 
+def test_params_from_ranges_median_honors_spur_surface_offset():
+    """Median params read spur_surface_offset from ranges (default True when absent)."""
+    import copy
+
+    from apple_pick_sim.digital_twin.from_obs import params_from_ranges_median
+
+    fs = _import_fs()
+    ranges = fs.load_ranges(PROXY_FIXTURE)
+    assert "spur_surface_offset" not in ranges
+    assert params_from_ranges_median(ranges).spur_surface_offset is True
+
+    overridden = copy.deepcopy(ranges)
+    overridden["spur_surface_offset"] = False
+    assert params_from_ranges_median(overridden).spur_surface_offset is False
+
+
+def test_infer_params_from_obs_forwards_spur_surface_offset(tmp_path: Path):
+    """infer_params_from_obs propagates spur_surface_offset from the base fixture."""
+    import copy
+
+    dt = _import_dt()
+    fs = _import_fs()
+    custom = copy.deepcopy(json.loads(PROXY_FIXTURE.read_text()))
+    custom["spur_surface_offset"] = False
+    path = tmp_path / "ranges.json"
+    path.write_text(json.dumps(custom))
+
+    ranges = fs.load_ranges(PROXY_FIXTURE)
+    args = fs.parse_fixture_args(ranges)
+    base_pos = args.fruiting_base_pos or (0.0, 0.5, 0.95)
+    ref_params = _median_params(fs, ranges)
+    ref_scene = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=0,
+        params=ref_params,
+        base_pos=base_pos,
+        device="cpu",
+        **NO_SELF_COLLISION_KW,
+    )
+    obs = _obs_from_scene(ref_scene, fruiting_base_pos=base_pos, weld_direction=(0.0, 1.0, 0.0))
+    inferred = dt.infer_params_from_obs(obs, path)
+    assert inferred.spur_surface_offset is False
+
+
 def test_infer_params_uses_observed_rod_radii():
     """Measured rod radii override range midpoints when present."""
     dt = _import_dt()

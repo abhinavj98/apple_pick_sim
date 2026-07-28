@@ -23,6 +23,7 @@ TOPOLOGY_LINEAR_CHAIN = "linear_chain"
 ALLOWED_TOPOLOGIES = frozenset({TOPOLOGY_T_JUNCTION, TOPOLOGY_LINEAR_CHAIN})
 DEFAULT_TOPOLOGY = TOPOLOGY_T_JUNCTION
 DEFAULT_SPUR_ATTACH_FRACTION = 0.5
+DEFAULT_SPUR_SURFACE_OFFSET = True
 OVERLAP_DIRECTION_THRESHOLD: float = 0.75
 REAL_WORLD_PROXY_VARIANCE_FIXTURE = "fruiting_system_ranges_real_world_proxy_variance.json"
 
@@ -74,6 +75,7 @@ class FruitingSystemParams:
     apple_density: float | None
     topology: str = DEFAULT_TOPOLOGY
     spur_attach_fraction: float = DEFAULT_SPUR_ATTACH_FRACTION
+    spur_surface_offset: bool = DEFAULT_SPUR_SURFACE_OFFSET
 
 
 FRUITING_SYSTEM_PARAMS_SCHEMA = "fruiting_system_params_v2"
@@ -261,6 +263,7 @@ def fruiting_params_to_dict(params: FruitingSystemParams) -> dict[str, Any]:
         "apple_density": None if params.apple_density is None else float(params.apple_density),
         "topology": params.topology,
         "spur_attach_fraction": float(params.spur_attach_fraction),
+        "spur_surface_offset": bool(params.spur_surface_offset),
     }
 
 
@@ -341,6 +344,7 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
     spur_attach_fraction = float(
         row.get("spur_attach_fraction", DEFAULT_SPUR_ATTACH_FRACTION)
     )
+    spur_surface_offset = bool(row.get("spur_surface_offset", False))
     params = FruitingSystemParams(
         primary=_rod_params_from_row(row.get("primary"), field="primary"),
         secondary=_rod_params_from_row(row.get("secondary"), field="secondary"),
@@ -350,6 +354,7 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
         apple_density=None if row.get("apple_density") is None else float(row["apple_density"]),
         topology=topology,
         spur_attach_fraction=spur_attach_fraction,
+        spur_surface_offset=spur_surface_offset,
     )
     if not any((params.primary, params.secondary, params.spur, params.stem)):
         raise ValueError("at least one rod segment must be present in fruiting params")
@@ -845,6 +850,7 @@ def sample_params(
 
     topology = _topology_from_ranges(ranges)
     spur_attach_fraction = _spur_attach_fraction_from_ranges(ranges)
+    spur_surface_offset = _spur_surface_offset_from_ranges(ranges)
 
     return FruitingSystemParams(
         primary=primary,
@@ -855,6 +861,7 @@ def sample_params(
         apple_density=apple_density,
         topology=topology,
         spur_attach_fraction=spur_attach_fraction,
+        spur_surface_offset=spur_surface_offset,
     )
 
 
@@ -960,6 +967,7 @@ def _fix_topology(
         stem=_rod(p.stem, topo.stem),
         topology=topo.topology,
         spur_attach_fraction=topo.spur_attach_fraction,
+        spur_surface_offset=topo.spur_surface_offset,
     )
 
 
@@ -1033,6 +1041,7 @@ def copy_fruiting_params(params: FruitingSystemParams) -> FruitingSystemParams:
         apple_density=params.apple_density,
         topology=params.topology,
         spur_attach_fraction=params.spur_attach_fraction,
+        spur_surface_offset=params.spur_surface_offset,
     )
 
 
@@ -1230,6 +1239,7 @@ def params_fingerprint(params: FruitingSystemParams) -> dict:
         "stem_dir_z": None if st is None else round(st.direction[2], 6),
         "topology": params.topology,
         "spur_attach_fraction": round(params.spur_attach_fraction, 9),
+        "spur_surface_offset": params.spur_surface_offset,
     }
 
 
@@ -1250,6 +1260,14 @@ def _spur_attach_fraction_from_ranges(ranges: dict) -> float:
             f"spur_attach_fraction must lie in (0, 1), got {fraction}"
         )
     return fraction
+
+
+def _spur_surface_offset_from_ranges(ranges: dict) -> bool:
+    raw = ranges.get("spur_surface_offset", DEFAULT_SPUR_SURFACE_OFFSET)
+    if not isinstance(raw, bool):
+        raise ValueError(f"spur_surface_offset must be a boolean, got {raw!r}")
+    return raw
+
 
 def _direction_from_angles(azimuth_deg: float, elevation_deg: float) -> tuple[float, float, float]:
     """Convert azimuth + elevation angles (degrees) to a unit direction vector."""
@@ -1445,6 +1463,11 @@ def _validate_ranges(data: dict) -> None:
             raise ValueError(
                 f"spur_attach_fraction must lie in (0, 1), got {fraction}"
             )
+
+    if "spur_surface_offset" in data and not isinstance(data["spur_surface_offset"], bool):
+        raise ValueError(
+            f"spur_surface_offset must be a boolean, got {data['spur_surface_offset']!r}"
+        )
 
     if "sim_build" in data:
         _validate_sim_build(data["sim_build"])

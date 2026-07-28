@@ -21,6 +21,7 @@ import pyarrow.parquet as pq
 
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
+    _spur_surface_offset_from_ranges,
     fruiting_params_to_dict,
     load_ranges,
     params_fingerprint,
@@ -161,6 +162,7 @@ def build_fruiting_params_from_real(
         apple_density=apple_d,
         topology="t_junction",
         spur_attach_fraction=0.5,
+        spur_surface_offset=_spur_surface_offset_from_ranges(ranges),
     )
 
 
@@ -266,10 +268,23 @@ def build_episode_metadata_from_real(
         raise ValueError("dataset_metadata.source_metadata.robot.control_hz is required")
     control_hz = float(source_robot["control_hz"])
 
-    fruiting_base_pos = dm.get("fruiting_base_pos")
-    if fruiting_base_pos is None:
-        raise ValueError("dataset_metadata.fruiting_base_pos is required")
-    fruiting_base_pos = _as_float_list(fruiting_base_pos, 3, field="fruiting_base_pos")
+    fruiting_base_pos: list[float]
+    if isinstance(dm.get("pre_grasp_geometry"), dict):
+        from apple_pick_sim.system_id.real_pre_grasp_params import (
+            map_pre_grasp_geometry,
+            primary_direction_from_fixture,
+        )
+
+        primary_dir = primary_direction_from_fixture(fixture)
+        mapped = map_pre_grasp_geometry(dm, primary_dir=primary_dir)
+        fruiting_base_pos = [float(x) for x in mapped.fruiting_base_pos]
+    else:
+        legacy_base = dm.get("fruiting_base_pos")
+        if legacy_base is None:
+            raise ValueError(
+                "dataset_metadata requires pre_grasp_geometry or legacy fruiting_base_pos"
+            )
+        fruiting_base_pos = _as_float_list(legacy_base, 3, field="fruiting_base_pos")
 
     pull_direction = None
     if "excitation_direction" in table.column_names:

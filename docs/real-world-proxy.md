@@ -157,6 +157,47 @@ Wrench subtree cuts differ from the legacy linear chain: `joint_primary_spur` su
 only spur + stem + apple mass; each support joint carries a share of primary + branch
 load (not a simple serial subtree cut — see `docs/WRENCH_READOUT.md` §5.1).
 
+### Bench ArUco ↔ sim junctions (real episodes)
+
+Markers stay on **visible surfaces**; compile / ingest applies the known
+**real-world offset** so stored junctions match **sim centerline / CoM** frames
+(see `docs/real-sysid-pre-post-grasp-fixes.md` and
+`apple_pick_sim/system_id/real_pre_grasp_params.py`).
+
+| Tracked point | Meaning (robot frame) | Sim use |
+|---------------|------------------------|---------|
+| **Spur-start ArUco** | **Dowel–spur junction** on the primary **surface** (visible marker) | Ingest derives **`fruiting_base_pos`** on the primary **centerline**; spur **start** when `spur_surface_offset` is on (default) |
+| **Spur-end ArUco** | **Spur–stem junction** on the spur **centerline** | Spur **end** = **stem start** |
+| **Apple markers** | Apple **CoM** | `apple_pos` |
+
+There is **no separate dowel ArUco** — the spur-start tag is the dowel–spur junction on the
+dowel **surface**.
+
+**Ingest:** ignore any stored `fruiting_base_pos` in parquet metadata. Derive the sim
+T-center from the spur-start **surface** junction:
+
+```text
+radial_hat = normalize(spur_dir − (spur_dir·primary_axis)·primary_axis)
+fruiting_base_pos = spur_start_surface − r_primary · radial_hat
+```
+
+**Build:** `spur_surface_offset` defaults to **`true`**. The sim re-applies
+`+r_primary · radial_hat` at the primary→spur joint so the spur rod grows from the
+**surface** (round-trip with the marker). Set `"spur_surface_offset": false` in a
+fixture to restore legacy centerline attach.
+
+```text
+dowel–spur junction  = spur start   (spur-start ArUco, offset)
+spur–stem junction   = spur end     (spur-end ArUco, offset)
+                     = stem start
+û = normalize(apple_CoM − stem_start)
+stem_end             = apple_CoM − r_apple · û   # toward spur–stem junction
+```
+
+**Catalog `parts.spur.length_m`:** true measured axis length from **dowel–spur junction**
+→ **spur–stem junction** (surface start → stem–spur junction). Do **not** inflate by
+primary radius — sim `spur_surface_offset` (default on) handles surface attach at build time.
+
 ---
 
 ## Nominal geometry (proxy fixture)

@@ -62,6 +62,31 @@ post_grasp_geometry ──►  weld / attach the robot TCP to that
 post-grasp bent chords, and do not weld using only the pre-grasp apple if a
 settled grasp frame exists.
 
+### Marker → junction contract (real episodes)
+
+ArUco tags remain on **visible surfaces**; ingest derives sim centerline frames.
+Detail also in `docs/real-world-proxy.md` § “Bench ArUco ↔ sim junctions”.
+
+| Marker | Stored junction (robot frame) | Sim use |
+| ------ | ----------------------------- | ------- |
+| Spur-start ArUco | **Dowel–spur junction** on primary **surface** | Derive **`fruiting_base_pos`** on primary centerline; spur **start** when `spur_surface_offset` is on (default) |
+| Spur-end ArUco | **Spur–stem junction** (centerline) | Spur **end** = **stem start** |
+| Apple markers | Apple **CoM** | `apple_pos` |
+
+**Ignore** any `fruiting_base_pos` stored in parquet metadata — derive at consume time:
+
+```text
+radial_hat = normalize(spur_dir − (spur_dir·primary_axis)·primary_axis)
+fruiting_base_pos = spur_start_surface − r_primary · radial_hat
+```
+
+**Build:** `spur_surface_offset` defaults to **`true`**; sim re-applies `+r_primary · radial_hat`
+at the primary→spur joint. Set `"spur_surface_offset": false` in a fixture for legacy
+centerline attach.
+
+Catalog **spur** length: true measured dowel–spur → spur–stem junction (do **not** add
+primary radius — build handles surface attach).
+
 ---
 
 ## Known quirks (consume defensively until fixed)

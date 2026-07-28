@@ -16,6 +16,13 @@ With post-grasp snap (look-at weld, +Z ∥ ŵ)::
       --grasp-after-settle \\
       --post-grasp-settle-substeps 500 \\
       --viewer gl
+
+With robot-base RGB axes at fixture ``robot_base_pos``::
+
+    uv run python robot_replay/example_view_pre_grasp_settle.py \\
+      --parquet robot_replay/s00-d00.parquet \\
+      --robot-base-axes \\
+      --viewer gl
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from typing import Literal
 
 import newton
 import newton.examples
+import numpy as np
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.settle_then_weld import (
@@ -117,7 +125,49 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         help="Write fruiting_base_pos + fruiting_system_params + diagnostics JSON.",
     )
+    parser.add_argument(
+        "--robot-base-axes",
+        action="store_true",
+        help=(
+            "Draw robot-base-frame X/Y/Z axes as RGB arrows at robot_base_pos "
+            "(requires --viewer gl or viser)."
+        ),
+    )
+    parser.add_argument(
+        "--robot-base-axes-length",
+        type=float,
+        default=0.3,
+        help="Length [m] of each robot-base axis arrow (default 0.3).",
+    )
     return parser
+
+
+def log_robot_base_axes(
+    viewer,
+    origin: tuple[float, float, float] | None,
+    length: float,
+) -> None:
+    """Draw world-aligned RGB axes at ``origin`` (robot base). No-op if origin is None."""
+    if origin is None:
+        return
+    log_lines = getattr(viewer, "log_lines", None)
+    log_arrows = getattr(viewer, "log_arrows", None)
+    _log = log_arrows if log_arrows is not None else log_lines
+    if _log is None:
+        return
+    dev = str(getattr(viewer, "device", "cpu"))
+    o = np.array(origin, dtype=np.float32)
+    L = float(length)
+    axes = [
+        ("x", np.array([L, 0.0, 0.0], dtype=np.float32), np.array([[1.0, 0.0, 0.0]], dtype=np.float32)),
+        ("y", np.array([0.0, L, 0.0], dtype=np.float32), np.array([[0.0, 1.0, 0.0]], dtype=np.float32)),
+        ("z", np.array([0.0, 0.0, L], dtype=np.float32), np.array([[0.0, 0.0, 1.0]], dtype=np.float32)),
+    ]
+    for label, tip_offset, color in axes:
+        starts = wp.array(o.reshape(1, 3), dtype=wp.vec3, device=dev)
+        ends = wp.array((o + tip_offset).reshape(1, 3), dtype=wp.vec3, device=dev)
+        colors = wp.array(color, dtype=wp.vec3, device=dev)
+        _log(f"/debug/robot_base_axis_{label}", starts, ends, colors)
 
 
 class ExampleViewPreGraspSettle:
@@ -151,6 +201,11 @@ class ExampleViewPreGraspSettle:
 
         self._ranges = load_ranges(args.fixture)
         self._robot_base = parse_fixture_args(self._ranges).robot_base_pos
+        self._robot_base_axes = bool(args.robot_base_axes)
+        self._robot_base_axes_length = float(args.robot_base_axes_length)
+        if self._robot_base_axes and self._robot_base is None:
+            print("Warning: --robot-base-axes set but robot_base_pos is None; skipping axes.")
+            self._robot_base_axes = False
         self._scene = generate_coupled_cable_scene(
             self._ranges,
             seed=0,
@@ -286,6 +341,10 @@ class ExampleViewPreGraspSettle:
     def render(self) -> None:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
+        if self._robot_base_axes:
+            log_robot_base_axes(
+                self.viewer, self._robot_base, self._robot_base_axes_length
+            )
         self.viewer.end_frame()
 
 

@@ -209,18 +209,29 @@ def post_grasp_plan_from_metadata(
     approach_align_min_dot: float = _DEFAULT_APPROACH_ALIGN_MIN_DOT,
     emit_warnings: bool = True,
 ) -> PostGraspPlan:
-    """Build plan from ``dataset_metadata`` including ``post_grasp_geometry``."""
+    """Build plan from ``dataset_metadata`` including ``post_grasp_geometry``.
+
+    New compiled episodes store the grasped apple under
+    ``post_grasp_geometry.snapshot.apple_pose_4x4`` (and ``apple_pos``);
+    TCP remains on ``post_grasp_geometry.tcp_pose_4x4``.
+    """
     post = meta.get("post_grasp_geometry")
     if not isinstance(post, dict):
         raise ValueError("missing post_grasp_geometry in dataset metadata")
-    if "tcp_pose_4x4" not in post or "apple_pose_4x4" not in post:
-        raise ValueError("post_grasp_geometry requires tcp_pose_4x4 and apple_pose_4x4")
+    if "tcp_pose_4x4" not in post:
+        raise ValueError("post_grasp_geometry requires tcp_pose_4x4")
+
+    snap = post.get("snapshot")
+    if not isinstance(snap, dict) or "apple_pose_4x4" not in snap:
+        raise ValueError("post_grasp_geometry.snapshot requires apple_pose_4x4")
 
     tcp_override = None
     apple_override = None
     if "tcp_pos" in post:
         tcp_override = tuple(float(x) for x in coerce_xyz(post["tcp_pos"], field="tcp_pos"))
-    if "apple_pos" in post:
+    if "apple_pos" in snap:
+        apple_override = tuple(float(x) for x in coerce_xyz(snap["apple_pos"], field="apple_pos"))
+    elif "apple_pos" in post:
         apple_override = tuple(float(x) for x in coerce_xyz(post["apple_pos"], field="apple_pos"))
 
     # Prefer parts radius if present and differs — warn
@@ -237,7 +248,7 @@ def post_grasp_plan_from_metadata(
 
     return build_post_grasp_plan(
         tcp_pose_4x4=post["tcp_pose_4x4"],
-        apple_pose_4x4=post["apple_pose_4x4"],
+        apple_pose_4x4=snap["apple_pose_4x4"],
         apple_radius_m=apple_radius_m,
         tcp_pos_override=tcp_override,
         apple_pos_override=apple_override,

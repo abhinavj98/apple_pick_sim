@@ -48,3 +48,4 @@ scripts/**
 !scripts/gate_youngs_modulus_cmaes.sh
 sweep_runs
 tmp*/
+*.parquet

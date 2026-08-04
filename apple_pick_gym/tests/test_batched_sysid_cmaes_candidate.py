@@ -1,4 +1,4 @@
-"""Unit tests for YoungsModulusCandidate and log10 helpers."""
+"""Unit tests for SupportKpYoungsCandidate, YoungsModulusCandidate, and log10 helpers."""
 
 from __future__ import annotations
 
@@ -21,6 +21,115 @@ def _base_primary_spur_stem_with_secondary(seed: int = 0) -> fs.FruitingSystemPa
     assert params.primary is not None and params.spur is not None and params.stem is not None
     assert params.secondary is not None
     return params
+
+
+def test_support_kp_candidate_apply_to_leaves_primary_e_unchanged():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _base_primary_spur_stem()
+    assert base.primary is not None and base.spur is not None
+    e0 = base.primary.youngs_modulus_pa
+    out = cmaes.SupportKpYoungsCandidate(
+        support_kp=5e3, spur=1e8, stem=1e7
+    ).apply_to(base)
+    assert out.primary is not None
+    assert out.primary.youngs_modulus_pa == pytest.approx(e0)
+    assert out.spur is not None
+    assert out.spur.youngs_modulus_pa == pytest.approx(1e8)
+    assert out.stem is not None
+    assert out.stem.youngs_modulus_pa == pytest.approx(1e7)
+
+
+def test_candidates_from_log10_vector_round_trip():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    x = (4.0, 9.0, 8.5)
+    c = cmaes.candidates_from_log10_vector(x)
+    assert c.support_kp == pytest.approx(1e4)
+    assert c.spur == pytest.approx(1e9)
+    assert c.stem == pytest.approx(10**8.5)
+    assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_candidates_from_log10_vector_rejects_wrong_length():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    with pytest.raises(ValueError, match="3"):
+        cmaes.candidates_from_log10_vector((4.0, 9.0))
+
+
+def test_gt_support_kp_from_dataset_reads_manifest_sim_config():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    dataset = type("DS", (), {})()
+    dataset.dataset_dir = "/tmp/sysid_dataset"
+    dataset.manifest = {
+        "collection": {
+            "sim_config": {
+                "joint_angular_kp_overrides": {"support": 1.0e4},
+                "joint_linear_kp_overrides": {"support": 1.0e4},
+            }
+        }
+    }
+    assert cmaes.gt_support_kp_from_dataset(dataset) == pytest.approx(1.0e4)
+
+
+def test_gt_support_kp_from_dataset_rejects_angular_linear_mismatch():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    dataset = type("DS", (), {})()
+    dataset.dataset_dir = "/tmp/mismatch_dataset"
+    dataset.manifest = {
+        "collection": {
+            "sim_config": {
+                "joint_angular_kp_overrides": {"support": 1.0e4},
+                "joint_linear_kp_overrides": {"support": 2.0e4},
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="mismatch_dataset|support"):
+        cmaes.gt_support_kp_from_dataset(dataset)
+
+
+def test_gt_support_kp_from_dataset_rejects_missing_support_key():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    dataset = type("DS", (), {})()
+    dataset.dataset_dir = "/tmp/missing_support"
+    dataset.manifest = {
+        "collection": {
+            "sim_config": {
+                "joint_angular_kp_overrides": {},
+                "joint_linear_kp_overrides": {"support": 1.0e4},
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="missing_support|support"):
+        cmaes.gt_support_kp_from_dataset(dataset)
+
+
+def test_gt_support_kp_youngs_candidate_from_structure(monkeypatch):
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    gt_params = _base_primary_spur_stem_with_secondary()
+    dataset = type("DS", (), {})()
+    dataset.dataset_dir = "/tmp/gt_candidate"
+    dataset.manifest = {
+        "collection": {
+            "sim_config": {
+                "joint_angular_kp_overrides": {"support": 5.0e3},
+                "joint_linear_kp_overrides": {"support": 5.0e3},
+            }
+        }
+    }
+    monkeypatch.setattr(cmaes, "true_params_for_structure", lambda _d, _i: gt_params)
+
+    candidate = cmaes.gt_support_kp_youngs_candidate_from_structure(dataset, 2)
+    assert candidate == cmaes.SupportKpYoungsCandidate(
+        support_kp=5.0e3,
+        spur=gt_params.spur.youngs_modulus_pa,
+        stem=gt_params.stem.youngs_modulus_pa,
+    )
 
 
 def test_iter_youngs_modulus_candidates_cartesian_product():
@@ -56,19 +165,25 @@ def test_candidates_from_log10_e_and_round_trip():
     assert got == pytest.approx(log10_e)
 
 
-def test_apply_to_sets_e_rederives_bend_freezes_geometry_and_zeta():
+def test_support_kp_apply_to_sets_spur_stem_e_leaves_primary_secondary_unchanged():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
     base = _base_primary_spur_stem_with_secondary()
     assert base.secondary is not None
     assert base.primary is not None and base.spur is not None and base.stem is not None
+    base_primary = base.primary
     base_secondary = base.secondary
 
-    e_p, e_sp, e_st = 5.0e8, 4.0e7, 2.0e7
-    out = cmaes.YoungsModulusCandidate(primary=e_p, spur=e_sp, stem=e_st).apply_to(base)
+    e_sp, e_st = 4.0e7, 2.0e7
+    out = cmaes.SupportKpYoungsCandidate(
+        support_kp=8.0e3, spur=e_sp, stem=e_st
+    ).apply_to(base)
 
     assert out.secondary is not None
     assert out.primary is not None and out.spur is not None and out.stem is not None
+    assert out.primary.youngs_modulus_pa == pytest.approx(base_primary.youngs_modulus_pa)
+    assert out.primary.damping_ratio == pytest.approx(base_primary.damping_ratio)
+    assert out.primary.bend_stiffness == pytest.approx(base_primary.bend_stiffness)
     assert out.secondary.youngs_modulus_pa == pytest.approx(base_secondary.youngs_modulus_pa)
     assert out.secondary.damping_ratio == pytest.approx(base_secondary.damping_ratio)
     assert out.secondary.length == pytest.approx(base_secondary.length)
@@ -80,7 +195,6 @@ def test_apply_to_sets_e_rederives_bend_freezes_geometry_and_zeta():
     assert out.secondary.bend_damping == pytest.approx(base_secondary.bend_damping)
 
     for rod, e_new, base_rod in (
-        (out.primary, e_p, base.primary),
         (out.spur, e_sp, base.spur),
         (out.stem, e_st, base.stem),
     ):
@@ -149,11 +263,13 @@ def test_apply_to_preserves_fixed_axial_stretch_overrides():
         apple_radius=0.04,
         apple_density=800.0,
     )
-    out = cmaes.YoungsModulusCandidate(
-        primary=9.0e7, spur=6.0e6, stem=3.0e6
+    out = cmaes.SupportKpYoungsCandidate(
+        support_kp=1.0e4, spur=6.0e6, stem=3.0e6
     ).apply_to(base)
     assert out.primary is not None and out.spur is not None and out.stem is not None
-    for rod in (out.primary, out.spur, out.stem):
+    assert out.primary.stretch_stiffness == pytest.approx(fixed_k)
+    assert out.primary.stretch_damping == pytest.approx(fixed_c)
+    for rod in (out.spur, out.stem):
         assert rod.stretch_stiffness == pytest.approx(fixed_k)
         assert rod.stretch_damping == pytest.approx(fixed_c)
 

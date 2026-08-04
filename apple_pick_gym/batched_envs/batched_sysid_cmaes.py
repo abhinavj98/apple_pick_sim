@@ -178,6 +178,114 @@ def maybe_include_gt_candidate(
     return [*items, gt]
 
 
+class SupportKpYoungsCandidate(NamedTuple):
+    """One sys-ID candidate: support joint k_p plus spur/stem Young's modulus (Pa)."""
+
+    support_kp: float
+    spur: float
+    stem: float
+
+    def apply_to(self, base: FruitingSystemParams) -> FruitingSystemParams:
+        """Return a copy with spur/stem ``E`` re-derived into VBD knobs.
+
+        Primary (and secondary) material is left unchanged. ``support_kp`` is
+        not applied here — fused replay patches support joints per env.
+        """
+        out = base
+        for segment, value in (
+            ("spur", self.spur),
+            ("stem", self.stem),
+        ):
+            if getattr(base, segment) is not None:
+                out = fs.set_rod_youngs_modulus(out, segment, float(value))
+        return out
+
+    def short_label(self) -> str:
+        """Compact legend label."""
+        return (
+            f"log10=({math.log10(self.support_kp):.2f},"
+            f"{math.log10(self.spur):.2f},"
+            f"{math.log10(self.stem):.2f})"
+        )
+
+
+def candidates_from_log10_vector(
+    log10_vector: Sequence[float],
+) -> SupportKpYoungsCandidate:
+    """Map ``log10([k_p_support, E_spur, E_stem])`` to a physical candidate."""
+    if len(log10_vector) != 3:
+        raise ValueError(
+            f"log10_vector must have length 3, got {len(log10_vector)}"
+        )
+    return SupportKpYoungsCandidate(
+        support_kp=10.0 ** float(log10_vector[0]),
+        spur=10.0 ** float(log10_vector[1]),
+        stem=10.0 ** float(log10_vector[2]),
+    )
+
+
+def log10_vector_from_candidate(
+    candidate: SupportKpYoungsCandidate,
+) -> tuple[float, float, float]:
+    """Extract ``log10([k_p_support, E_spur, E_stem])``."""
+    return (
+        math.log10(float(candidate.support_kp)),
+        math.log10(float(candidate.spur)),
+        math.log10(float(candidate.stem)),
+    )
+
+
+def gt_support_kp_from_dataset(dataset: BatchedSysIdDataset) -> float:
+    """Read dataset-level GT support k_p from ``manifest['collection']['sim_config']``.
+
+  ``joint_angular_kp_overrides``/``joint_linear_kp_overrides`` are a single
+  build-time config for the whole collection run, not per-structure.
+  """
+    dataset_path = str(dataset.dataset_dir)
+    sim_config = dataset.manifest.get("collection", {}).get("sim_config")
+    if sim_config is None:
+        raise ValueError(
+            f"manifest collection.sim_config missing in dataset {dataset_path}"
+        )
+
+    angular = sim_config.get("joint_angular_kp_overrides")
+    linear = sim_config.get("joint_linear_kp_overrides")
+    if not isinstance(angular, Mapping) or "support" not in angular:
+        raise ValueError(
+            f"joint_angular_kp_overrides['support'] missing in dataset {dataset_path}"
+        )
+    if not isinstance(linear, Mapping) or "support" not in linear:
+        raise ValueError(
+            f"joint_linear_kp_overrides['support'] missing in dataset {dataset_path}"
+        )
+
+    ang_kp = float(angular["support"])
+    lin_kp = float(linear["support"])
+    if not math.isclose(ang_kp, lin_kp, rel_tol=1e-9):
+        raise ValueError(
+            f"support joint_angular_kp_overrides ({ang_kp}) disagrees with "
+            f"joint_linear_kp_overrides ({lin_kp}) in dataset {dataset_path}"
+        )
+    return ang_kp
+
+
+def gt_support_kp_youngs_candidate_from_structure(
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+) -> SupportKpYoungsCandidate:
+    params = true_params_for_structure(dataset, int(structure_idx))
+    if params.spur is None or params.stem is None:
+        raise ValueError(
+            "params must include spur and stem rods for "
+            "gt_support_kp_youngs_candidate_from_structure"
+        )
+    return SupportKpYoungsCandidate(
+        support_kp=gt_support_kp_from_dataset(dataset),
+        spur=float(params.spur.youngs_modulus_pa),
+        stem=float(params.stem.youngs_modulus_pa),
+    )
+
+
 @dataclass(frozen=True)
 class SegmentYoungsModulusBounds:
     physical_min_pa: float

@@ -139,10 +139,36 @@ final-mean wave + overlays
 
 ## Verification (post-implement)
 
-Follow updated ROADMAP / README commands once the plan lands; at minimum:
+**Primary acceptance = sim-to-sim transfer in two complementary paths** (same
+spirit as V.5.2 Young’s collect → grid / CMA). Unit/CLI tests are required but
+not sufficient.
 
-- Focused pytest for new candidate/apply + CLI parsing.
-- Smoke CMA/grid `--help` and a minimal null-viewer replay if GPU available.
+### Path 1 — Collect new GT, then Cartesian grid
+
+1. Generate a fresh batched sys-ID dataset with known GT support \(k_p\) (via
+   fixture / `sim_build` overrides) and known spur/stem \(E\), primary \(E\)
+   held stiff and fixed.
+2. Run the updated grid command over `support_kp` × spur \(E\) × stem \(E\).
+3. Pass criterion: GT (or nearest grid node) ranks first / within the project’s
+   existing ranking-gate majority policy on healthy samples; inspect overlay /
+   report for support \(k_p\) recovery quality.
+
+### Path 2 — PyCMA fit on the same (or held-out) collect
+
+1. Run the updated CMA-ES entry on the collected dataset.
+2. Score / report final-mean vs recorded GT for
+   \((k_p^{\mathrm{support}}, E_{\mathrm{spur}}, E_{\mathrm{stem}})\); use
+   overlays and fit-integrity artifacts analogous to
+   `gate_youngs_modulus_cmaes.sh`.
+3. Pass criterion: CMA integrity gate green; support \(k_p\) and spur/stem \(E\)
+   recover within documented tolerances / qualitative “looks right” on overlays
+   (exact numeric thresholds set in the implementation plan / gate scripts).
+
+### Also required
+
+- Focused pytest for candidate/apply + CLI parsing (no primary-\(E\) fit dim).
+- README / ROADMAP commands updated to the collect → grid and collect → CMA
+  recipes above.
 
 ## Open for implementation plan (not design blockers)
 

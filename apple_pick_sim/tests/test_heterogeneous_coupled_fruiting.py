@@ -40,6 +40,9 @@ from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_POS_TOL_M
 
 _NUM_ENVS = 2
 _SETTLE_SUBSTEPS = 50
+T_JUNCTION_RANGES_FIXTURE = (
+    _TESTS_DIR.parent / "fixtures" / "fruiting_system_ranges_real_world_proxy_variance.json"
+)
 
 
 @pytest.fixture
@@ -66,6 +69,22 @@ def _gripper_welded() -> GripperProxyConfig:
 def _build_batched_cable_for_joint_kd(ranges):
     params_list = sample_heterogeneous_params_list(
         ranges, topology_seed=3, num_envs=_NUM_ENVS
+    )
+    cable, _offsets = build_heterogeneous_coupled_cable_scene(
+        params_list,
+        env_spacing=(2.5, 2.5, 0.0),
+        device="cpu",
+        enable_self_collisions=False,
+        base_pos=COUPLED_SCENE_KW["base_pos"],
+        robot_base_pos=COUPLED_SCENE_KW["robot_base_pos"],
+        gripper_proxy=_gripper_free(),
+    )
+    return cable
+
+
+def _build_batched_cable_t_junction_for_joint_kp(ranges):
+    params_list = sample_heterogeneous_params_list(
+        ranges, topology_seed=7, num_envs=_NUM_ENVS
     )
     cable, _offsets = build_heterogeneous_coupled_cable_scene(
         params_list,
@@ -579,6 +598,68 @@ def _linear_kp_triple_at_joint(solver, global_joint_index: int) -> tuple[float, 
     c0 = int(jc_start[global_joint_index])
     slot = c0 + newton.solvers.SolverVBD.JointSlot.LINEAR
     return float(k[slot]), float(k_min[slot]), float(k_max[slot])
+
+
+def test_set_fruiting_joint_angular_kp_batched_per_env_writes_distinct_values():
+    t_junction_ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
+    cable = _build_batched_cable_t_junction_for_joint_kp(t_junction_ranges)
+    num_envs = int(cable.model.world_count)
+    assert num_envs >= 2
+    joints_per_world = _joints_per_world(cable)
+    j_support = _template_joint_by_label(
+        cable.fruiting_fixed_joints, "primary_support_left"
+    )
+
+    per_env = [{"support": 1.0e3}, {"support": 2.0e4}]
+    set_fruiting_joint_angular_kp_batched(
+        cable.solver,
+        cable.fruiting_fixed_joints,
+        label_kp_per_env=per_env,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+
+    k_env0, _, _ = _angular_kp_triple_at_joint(
+        cable.solver, 0 * joints_per_world + j_support
+    )
+    k_env1, _, _ = _angular_kp_triple_at_joint(
+        cable.solver, 1 * joints_per_world + j_support
+    )
+    assert k_env0 == pytest.approx(1.0e3)
+    assert k_env1 == pytest.approx(2.0e4)
+    assert k_env0 != k_env1
+
+
+def test_set_fruiting_joint_linear_kp_batched_per_env_writes_distinct_values():
+    from apple_pick_sim.fruiting_system import set_fruiting_joint_linear_kp_batched
+
+    t_junction_ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
+    cable = _build_batched_cable_t_junction_for_joint_kp(t_junction_ranges)
+    num_envs = int(cable.model.world_count)
+    assert num_envs >= 2
+    joints_per_world = _joints_per_world(cable)
+    j_support = _template_joint_by_label(
+        cable.fruiting_fixed_joints, "primary_support_left"
+    )
+
+    per_env = [{"support": 1.0e3}, {"support": 2.0e4}]
+    set_fruiting_joint_linear_kp_batched(
+        cable.solver,
+        cable.fruiting_fixed_joints,
+        label_kp_per_env=per_env,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+    )
+
+    k_env0, _, _ = _linear_kp_triple_at_joint(
+        cable.solver, 0 * joints_per_world + j_support
+    )
+    k_env1, _, _ = _linear_kp_triple_at_joint(
+        cable.solver, 1 * joints_per_world + j_support
+    )
+    assert k_env0 == pytest.approx(1.0e3)
+    assert k_env1 == pytest.approx(2.0e4)
+    assert k_env0 != k_env1
 
 
 def test_set_fruiting_joint_linear_kp_batched_patches_all_envs(ranges):

@@ -490,7 +490,7 @@ def "fr3" (
         bool physics:rigidBodyEnabled = 1
         rel physics:simulationOwner
         quatd xformOp:orient = (1, 0, 0, 0)
-        double3 xformOp:scale = (0.1, 0.1, 0.1)
+        double3 xformOp:scale = (0.2, 0.2, 0.14)
         double3 xformOp:translate = (0.088, 0, 0.92)
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
@@ -514,17 +514,37 @@ def "fr3" (
             )
             uniform token subdivisionScheme = "none"
             quatd xformOp:orient = (1, 0, 0, 0)
-            float3 xformOp:scale = (1, 1, 1)
-            double3 xformOp:translate = (0.08458264105858948, 0, -0.36199571726726454)
+            float3 xformOp:scale = (0.5, 0.5, 1)
+            double3 xformOp:translate = (0, 0, 0.5)
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
         }
 
-        def Xform "tcp"
+        def Xform "tcp" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysxRigidBodyAPI", "PhysicsMassAPI"]
+        )
         {
-            quatd xformOp:orient = (0.9999999966055823, 0.0000019096629478484776, -0.00008237225480476918, 1.7551262018159937e-8)
+            bool physics:kinematicEnabled = 0
+            float physics:mass = 0.001
+            bool physics:rigidBodyEnabled = 1
+            rel physics:simulationOwner
+            quatd xformOp:orient = (1, 0, 0, 0)
             double3 xformOp:scale = (1, 1, 1)
-            double3 xformOp:translate = (0.0003113342379625905, -0.000004173840179144683, -0.8558171281419913)
+            double3 xformOp:translate = (0, 0, 1)
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def PhysicsFixedJoint "tcp_joint" (
+            prepend apiSchemas = ["IsaacJointAPI"]
+        )
+        {
+            rel physics:body0 = </fr3/ee>
+            rel physics:body1 = </fr3/ee/tcp>
+            float physics:breakForce = 3.4028235e38
+            float physics:breakTorque = 3.4028235e38
+            point3f physics:localPos0 = (0, 0, 1)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
         }
     }
 

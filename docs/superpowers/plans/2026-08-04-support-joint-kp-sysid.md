@@ -22,7 +22,7 @@
 - Default support \(k_p\) log10 box: **lower 2.0, upper 6.0** (100 … \(10^6\)), mean **4.0** (\(10^4\), matches fixture); spur/stem keep log10 **[8, 11]**
 - TDD: failing tests before production edits
 - Run tests: `uv run --env-file pytest.env python -m pytest …` from repo root
-- Commits only when the user asks, or when executing this plan under an explicit user-approved execution mode that includes commit steps
+- Commits are **approved** for this subagent-driven execution (plan commit steps run as written)
 
 ---
 
@@ -48,15 +48,30 @@
 ### Task 1: Per-env batched joint kp APIs
 
 **Files:**
-- Modify: `apple_pick_sim/fruiting_system/build.py` (`set_fruiting_joint_angular_kd_batched` is the pattern; add kp analogs)
+- Modify: `apple_pick_sim/fruiting_system/build.py` (extend existing kp batched setters — mirror `label_kd_per_env` on kd)
 - Modify: `apple_pick_sim/fruiting_system/__init__.py` if symbols are re-exported
-- Test: `apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py` (or new focused test module)
+- Test: `apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py` (extend; kd per-env tests already live here)
 
 **Interfaces:**
-- Produces:
-  - `set_fruiting_joint_angular_kp_batched_per_env(solver, template_fruiting_fixed_joints, label_kp_per_env: Sequence[Mapping[str, float]], *, num_envs, joints_per_world) -> dict[str, list[int]]`
-  - `set_fruiting_joint_linear_kp_batched_per_env(...)` (same signature)
-- Consumes: existing `_match_fruiting_joint_labels`, `_apply_batched_joint_angular_kp_kernel` (extend kernel path to accept per-env kp values like kd)
+- Extend existing signatures (do **not** invent `*_batched_per_env` names):
+
+```python
+def set_fruiting_joint_angular_kp_batched(
+    solver, template_fruiting_fixed_joints,
+    label_kp: dict[str, float] | None = None, *,
+    label_kp_per_env: Sequence[Mapping[str, float]] | None = None,
+    num_envs: int, joints_per_world: int,
+) -> dict[str, list[int]]:
+    """Exactly one of label_kp (broadcast) or label_kp_per_env (per-env maps)."""
+
+def set_fruiting_joint_linear_kp_batched(...):  # same optional label_kp_per_env
+```
+
+- Implementation must match kd (`build.py:1237-1338`):
+  - Reuse / generalize `_normalize_batched_label_kd` → shared normalize for kp/kd, or add `_normalize_batched_label_kp`
+  - Pack `(num_envs, n_templates)` values like `_batched_kd_values_from_per_env`
+  - Extend `_apply_batched_joint_angular_kp_kernel` so `kp_values` is indexed as `w * n_templates + k` (today it only uses `kp_values[k]` — broadcast-only). Also keep widening `joint_penalty_k_min/max`
+  - Existing broadcast callers that pass only `label_kp=` must keep working
 
 - [ ] **Step 1: Write failing tests**
 
@@ -78,27 +93,25 @@ uv run --env-file pytest.env python -m pytest \
   -q -k "kp_batched_per_env"
 ```
 
-Expected: FAIL (symbol missing or wrong behavior)
+Expected: FAIL (TypeError / wrong behavior — current kernel ignores per-env)
 
-- [ ] **Step 3: Implement per-env kp batched helpers**
+- [ ] **Step 3: Implement per-env kp on existing batched setters**
 
-Mirror `set_fruiting_joint_angular_kd_batched` / `label_kd_per_env`: one `wp.launch` (or host loop if kd already does host for kp — match kd’s real implementation). Widen `joint_penalty_k_min/max` like single-world kp.
-
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run tests to verify they pass** (include existing broadcast kp tests still green)
 
 ```bash
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py \
-  -q -k "kp_batched_per_env"
+  -q -k "joint_angular_kp_batched or joint_linear_kp_batched or kp_batched_per_env"
 ```
 
 Expected: PASS
 
-- [ ] **Step 5: Commit** (only if user approved commits for this execution)
+- [ ] **Step 5: Commit** (approved for this subagent-driven execution)
 
 ```bash
 git add apple_pick_sim/fruiting_system/build.py apple_pick_sim/tests/
-git commit -m "Add per-env batched FIXED-joint kp patch APIs."
+git commit -m "Add per-env label_kp_per_env to batched FIXED-joint kp setters."
 ```
 
 ---
@@ -115,7 +128,16 @@ git commit -m "Add per-env batched FIXED-joint kp patch APIs."
   - `def apply_per_env_support_joint_penalties(scene: CoupledFruitingScene, support_kp_per_env: Sequence[float], *, num_envs: int, joints_per_world: int, zeta: float = SUPPORT_JOINT_ZETA) -> None`
 - Behavior:
   1. Validate `len(support_kp_per_env) == num_envs` and every value `> 0.0` (raise `ValueError` naming `support_kp` otherwise)
-  2. Build per-env angular+linear kp maps `[{"support": support_kp_per_env[w]} for w in range(num_envs)]`; apply via Task 1's `set_fruiting_joint_angular_kp_batched_per_env` / `set_fruiting_joint_linear_kp_batched_per_env` on `scene.cable.solver`, `scene.cable.fruiting_fixed_joints`
+  2. Build per-env angular+linear kp maps `[{"support": support_kp_per_env[w]} for w in range(num_envs)]`; apply via Task 1's extended setters:
+
+```python
+set_fruiting_joint_angular_kp_batched(
+    scene.cable.solver, scene.cable.fruiting_fixed_joints,
+    label_kp_per_env=per_env_ang_kp,
+    num_envs=num_envs, joints_per_world=joints_per_world,
+)
+set_fruiting_joint_linear_kp_batched(..., label_kp_per_env=per_env_lin_kp, ...)
+```
   3. Read `body_mass = scene.cable.model.body_mass.numpy()`, `body_inertia = scene.cable.model.body_inertia.numpy()`, `joint_child = scene.cable.model.joint_child.numpy()`; `bodies_per_world = scene.layout.bodies_per_world`
   4. For each env `w`, call `joint_kd_from_damping_ratio(zeta=zeta, roles=("support",), fruiting_fixed_joints=scene.cable.fruiting_fixed_joints, body_mass=body_mass, body_inertia=body_inertia, joint_child=joint_child, angular_kp_by_role={"support": support_kp_per_env[w]}, linear_kp_by_role={"support": support_kp_per_env[w]}, body_offset=w*bodies_per_world)` → per-env `(angular_kd, linear_kd)` dicts
   5. Apply resulting per-env support kd via `set_fruiting_joint_angular_kd_batched(..., label_kd_per_env=per_env_ang)` / `set_fruiting_joint_linear_kd_batched(..., label_kd_per_env=per_env_lin)` (existing APIs, confirmed at `apple_pick_sim/fruiting_system/build.py:1237-1338`)
@@ -273,8 +295,18 @@ and `apple_pick_gym/batched_envs/apple_pick_batched_sysid_env.py:156-159`
 - `env._sim.scene.cable.fruiting_fixed_joints` — world-0 template `(joint_index, label)` pairs
 - `env._sim.layout.num_envs`, `env._sim.layout.joints_per_world`
 `apply_per_env_support_joint_penalties` (Task 2) internally calls the Task 1
-per-env batched kp setters plus `set_fruiting_joint_*_kd_batched(...,
-label_kd_per_env=...)` using these same handles.
+extended batched kp setters (`label_kp_per_env=...`) plus
+`set_fruiting_joint_*_kd_batched(..., label_kd_per_env=...)` using these same
+handles.
+
+**Settle timing (verified OK against code):** `build_env_fn` settles with
+fixture/dataset `sim_build` support \(k_p\) *before* this patch. That is fine
+for this scoring path: `env.reset` restores the build snapshot, then
+`initialize_batched_env_from_episode_sources` overwrites poses from recorded
+GT; subsequent action-replay steps use the patched candidate support \(k_p\)/\(k_d\).
+Do **not** move the patch before settle unless a later slice needs
+candidate-dependent settle equilibria (Young's \(E\) already differs per env at
+build via `per_env_params`; support \(k_p\) does not).
 
 - [ ] **Step 1: Failing test** — fused build with two candidates differing only in `support_kp` yields different support `joint_penalty_k` per env after build (can assert via solver arrays before/after reset)
 
@@ -347,8 +379,14 @@ _CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 11.0]
 # midpoint mean ≈ [4.0, 9.5, 9.5]
 ```
 
+- Replace / evolve `YoungsModulusCmaBounds` so slot 0 is support-\(k_p\) log10
+  bounds (absolute `[2,6]`), **not** `extract_youngs_modulus_cma_bounds(...).primary`
+  (fixture primary \(E\) ε-bands). Spur/stem may still come from fixture or keep
+  absolute `[8,11]` as today. `resolve_initial_mean_log10` / ask maps must use
+  `candidates_from_log10_vector`.
 - `candidates_from_log10_e` → `candidates_from_log10_vector` at ask/tell boundaries
-- Final-mean overlay / report: support \(k_p\) vs GT from manifest; spur/stem \(E\) vs true params
+- Final-mean overlay / report: support \(k_p\) vs GT from
+  `gt_support_kp_from_dataset`; spur/stem \(E\) vs `true_params_for_structure`
 - Integrity gate: still no hard GT-error threshold unless already present; update schema keys
 
 - [ ] **Step 1: Failing CLI/loop tests for new vector semantics**

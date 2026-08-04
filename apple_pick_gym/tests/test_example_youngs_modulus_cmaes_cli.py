@@ -475,7 +475,8 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
     assert "--initial-sigma-log10" not in option_strings
     assert "--cma-seed" in option_strings
     # Grid-only controls must stay off the CMA command.
-    assert "--log10-e-primary" not in option_strings
+    assert "--support-kp-values" not in option_strings
+    assert "--log10-support-kp" not in option_strings
     assert "--log10-e-spur" not in option_strings
     assert "--log10-e-stem" not in option_strings
     assert "--include-gt-candidate" not in option_strings
@@ -496,7 +497,8 @@ def test_grid_parser_still_exposes_grid_only_controls(monkeypatch):
         for action in parser._actions
         for option in action.option_strings
     }
-    assert "--log10-e-primary" in option_strings
+    assert "--support-kp-values" in option_strings
+    assert "--log10-support-kp" in option_strings
     assert "--include-gt-candidate" in option_strings
     assert "--max-candidates" in option_strings
     assert "--export-replays" in option_strings

@@ -21,8 +21,10 @@ Run from repo root::
     uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \\
         --dataset /tmp/batched_sysid_dataset \\
         --output /tmp/youngs_rank \\
-        --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0
+        --support-kp-values 1e3,1e4,1e5 --log10-e-spur 7.5 --log10-e-stem 7.0
 
+Candidates are ``support_kp x E_spur x E_stem``; primary \\(E\\) is fixed from
+the structure's true/fixture params and is never a free grid axis.
 """
 
 from __future__ import annotations
@@ -40,7 +42,9 @@ from typing import Any
 import newton.examples
 import newton.viewer
 
-from apple_pick_gym.batched_examples._youngs_e_grid_cli import candidates_from_log10_cli
+from apple_pick_gym.batched_examples._youngs_e_grid_cli import (
+    candidates_from_support_kp_grid_cli,
+)
 from apple_pick_gym.batched_examples.example_batched_sysid_mmd_grid import (
     parse_comma_separated_ints,
 )
@@ -49,7 +53,7 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     YoungsModulusScoringConfig,
     evaluate_youngs_modulus_candidates,
     evaluate_youngs_modulus_structures,
-    gt_youngs_modulus_candidate_from_structure,
+    gt_support_kp_youngs_candidate_from_structure,
     maybe_include_gt_candidate,
 )
 from apple_pick_gym.youngs_modulus_overlay_viz import (
@@ -93,6 +97,7 @@ JOINT_ANGULAR_KD_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KD_OVERRIDES
 JOINT_LINEAR_KD_OVERRIDES = EXAMPLE_JOINT_LINEAR_KD_OVERRIDES
 JOINT_ANGULAR_KP_OVERRIDES = EXAMPLE_JOINT_ANGULAR_KP_OVERRIDES
 JOINT_LINEAR_KP_OVERRIDES = EXAMPLE_JOINT_LINEAR_KP_OVERRIDES
+DEFAULT_SUPPORT_KP_VALUES = "1e3,1e4,1e5"
 
 
 def _json_float(value: float | None) -> float | None:
@@ -131,17 +136,19 @@ def _candidate_to_json_row(score: Any) -> dict[str, Any]:
     ``aggregate_sinkhorn`` is the pooled ranking fitness; non-finite values are
     ``null``. ``per_direction_sinkhorn`` keeps physical direction IDs only.
     Disqualified/empty candidates keep ``rank=null`` and the evaluator reason.
+    Candidates are ``(support_kp, spur, stem)``; primary \\(E\\) is fixed and
+    not part of the phenotype.
     """
     candidate = score.candidate
     return {
         "candidate_index": int(score.candidate_index),
+        "support_kp": _json_float(candidate.support_kp),
         "youngs_modulus_pa": {
-            "primary": _json_float(candidate.primary),
             "spur": _json_float(candidate.spur),
             "stem": _json_float(candidate.stem),
         },
-        "log10_e": [
-            _json_log10(candidate.primary),
+        "log10_vector": [
+            _json_log10(candidate.support_kp),
             _json_log10(candidate.spur),
             _json_log10(candidate.stem),
         ],
@@ -164,7 +171,7 @@ def _winner_summary(evaluation: YoungsModulusEvaluation) -> dict[str, Any] | Non
     gt = evaluation.gt_candidate
     log10_error: dict[str, float | None] = {}
     relative_error: dict[str, float | None] = {}
-    for segment in ("primary", "spur", "stem"):
+    for segment in ("support_kp", "spur", "stem"):
         winner_value = _json_float(getattr(winner.candidate, segment))
         gt_value = _json_float(getattr(gt, segment))
         winner_log10 = _json_log10(getattr(winner.candidate, segment))
@@ -194,13 +201,13 @@ def _structure_result_to_json(evaluation: YoungsModulusEvaluation) -> dict[str, 
     )
     return {
         "structure_idx": int(evaluation.structure_idx),
+        "gt_support_kp": _json_float(gt.support_kp),
         "gt_youngs_modulus_pa": {
-            "primary": _json_float(gt.primary),
             "spur": _json_float(gt.spur),
             "stem": _json_float(gt.stem),
         },
-        "gt_log10_e": [
-            _json_log10(gt.primary),
+        "gt_log10_vector": [
+            _json_log10(gt.support_kp),
             _json_log10(gt.spur),
             _json_log10(gt.stem),
         ],
@@ -233,11 +240,11 @@ def _aggregate_ranking_report(
         gt_rank_histogram[key] = gt_rank_histogram.get(key, 0) + 1
 
     winner_log10_error_mean: dict[str, float | None] = {
-        "primary": None,
+        "support_kp": None,
         "spur": None,
         "stem": None,
     }
-    for segment in ("primary", "spur", "stem"):
+    for segment in ("support_kp", "spur", "stem"):
         values = [
             float(row["winner"]["log10_error"][segment])
             for row in structure_rows
@@ -260,7 +267,7 @@ def _aggregate_ranking_report(
             "n_skipped": int(len(skipped_structures)),
             "gt_rank_histogram": gt_rank_histogram,
             "winner_log10_error_mean": winner_log10_error_mean,
-            "winner_primary_log10_error_mean": winner_log10_error_mean["primary"],
+            "winner_support_kp_log10_error_mean": winner_log10_error_mean["support_kp"],
         },
     }
 
@@ -325,7 +332,7 @@ def _finalize_structure_outputs(
                             candidate_index=cand_idx,
                             params=evaluation.applied_params[cand_idx],
                             stiffnesses={
-                                "primary_e_pa": float(score.candidate.primary),
+                                "support_kp": float(score.candidate.support_kp),
                                 "spur_e_pa": float(score.candidate.spur),
                                 "stem_e_pa": float(score.candidate.stem),
                             },
@@ -603,7 +610,23 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         help="Replay RNG seed (default: manifest collection.seed).",
     )
-    p.add_argument("--log10-e-primary", type=str, default="8.0,8.5")
+    p.add_argument(
+        "--support-kp-values",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated physical support joint k_p grid values (shared "
+            "angular+linear, N/m-/N*m/rad-like). Mutually exclusive with "
+            f"--log10-support-kp; defaults to {DEFAULT_SUPPORT_KP_VALUES!r} "
+            "when neither is given."
+        ),
+    )
+    p.add_argument(
+        "--log10-support-kp",
+        type=str,
+        default=None,
+        help="Comma-separated log10(support k_p) grid values.",
+    )
     p.add_argument("--log10-e-spur", type=str, default="7.5")
     p.add_argument("--log10-e-stem", type=str, default="7.0")
     p.add_argument(
@@ -714,9 +737,14 @@ def _candidates_for_structure(
     *,
     parser: argparse.ArgumentParser,
 ) -> list:
-    gt = gt_youngs_modulus_candidate_from_structure(dataset, int(structure_idx))
-    candidates = candidates_from_log10_cli(
-        log10_e_primary=str(args.log10_e_primary),
+    gt = gt_support_kp_youngs_candidate_from_structure(dataset, int(structure_idx))
+    support_kp_values = args.support_kp_values
+    log10_support_kp = args.log10_support_kp
+    if support_kp_values is None and log10_support_kp is None:
+        support_kp_values = DEFAULT_SUPPORT_KP_VALUES
+    candidates = candidates_from_support_kp_grid_cli(
+        support_kp_values=support_kp_values,
+        log10_support_kp=log10_support_kp,
         log10_e_spur=str(args.log10_e_spur),
         log10_e_stem=str(args.log10_e_stem),
     )

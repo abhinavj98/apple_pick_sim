@@ -126,7 +126,8 @@ def test_parser_defaults_and_required_args(monkeypatch):
     assert args.hold_id_onehot is True
     assert args.pool_directions is True
     assert args.export_replays is False
-    assert args.log10_e_primary == "8.0,8.5"
+    assert args.support_kp_values is None
+    assert args.log10_support_kp is None
     assert args.log10_e_spur == "7.5"
     assert args.log10_e_stem == "7.0"
     assert args.max_candidates == 0
@@ -154,6 +155,20 @@ def test_parser_defaults_and_required_args(monkeypatch):
     assert "--topology-seed" not in option_strings
     assert "--num-structures" not in option_strings
     assert "--num-directions" not in option_strings
+    assert "--log10-e-primary" not in option_strings
+
+
+def test_parser_help_mentions_support_kp_not_primary_e(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    help_text = parser.format_help()
+
+    assert "--support-kp-values" in help_text
+    assert "--log10-support-kp" in help_text
+    assert "log10-e-primary" not in help_text
 
 
 def test_parser_rejects_nonpositive_overlay_candidate_cap(monkeypatch):
@@ -212,8 +227,8 @@ def test_resolve_n_directions_falls_back_to_episode_indices():
 def test_run_iterates_structures_and_invokes_evaluator(monkeypatch):
     module = _load_module()
 
-    gt = cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7)
-    grid_candidate = cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)
+    gt = cmaes.SupportKpYoungsCandidate(1.0e8, 10**7.5, 1.0e7)
+    grid_candidate = cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7)
     evaluation = cmaes.YoungsModulusEvaluation(
         structure_idx=0,
         gt_candidate=gt,
@@ -239,13 +254,13 @@ def test_run_iterates_structures_and_invokes_evaluator(monkeypatch):
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
     monkeypatch.setattr(
         module,
-        "candidates_from_log10_cli",
+        "candidates_from_support_kp_grid_cli",
         lambda **_kwargs: [grid_candidate],
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda _dataset, structure_idx: cmaes.YoungsModulusCandidate(
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda _dataset, structure_idx: cmaes.SupportKpYoungsCandidate(
             1.0e8 + float(structure_idx),
             10**7.5,
             1.0e7,
@@ -280,7 +295,8 @@ def test_run_iterates_structures_and_invokes_evaluator(monkeypatch):
         dataset="/tmp/gt",
         output="/tmp/rank",
         structure_indices=None,
-        log10_e_primary="8.0",
+        support_kp_values="1e4",
+        log10_support_kp=None,
         log10_e_spur="7.5",
         log10_e_stem="7.0",
         include_gt_candidate=True,
@@ -333,17 +349,17 @@ def test_run_without_gt_candidate_skips_insertion(monkeypatch):
     }
     dataset.structure_summaries.return_value = [{}]
 
-    grid_candidate = cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)
+    grid_candidate = cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7)
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
     monkeypatch.setattr(
         module,
-        "candidates_from_log10_cli",
+        "candidates_from_support_kp_grid_cli",
         lambda **_kwargs: [grid_candidate],
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_args, **_kwargs: cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_args, **_kwargs: cmaes.SupportKpYoungsCandidate(1.0e8, 10**7.5, 1.0e7),
     )
     monkeypatch.setattr(
         module,
@@ -377,7 +393,8 @@ def test_run_without_gt_candidate_skips_insertion(monkeypatch):
         dataset="/tmp/gt",
         output="/tmp/rank",
         structure_indices=None,
-        log10_e_primary="8.0",
+        support_kp_values="1e4",
+        log10_support_kp=None,
         log10_e_spur="7.5",
         log10_e_stem="7.0",
         include_gt_candidate=False,
@@ -421,13 +438,13 @@ def test_run_records_structure_errors_unless_fail_fast(monkeypatch):
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
     monkeypatch.setattr(
         module,
-        "candidates_from_log10_cli",
-        lambda **_kwargs: [cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)],
+        "candidates_from_support_kp_grid_cli",
+        lambda **_kwargs: [cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7)],
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_args, **_kwargs: cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_args, **_kwargs: cmaes.SupportKpYoungsCandidate(1.0e8, 10**7.5, 1.0e7),
     )
     monkeypatch.setattr(
         module,
@@ -440,7 +457,7 @@ def test_run_records_structure_errors_unless_fail_fast(monkeypatch):
             raise ValueError("structure 0 failed")
         return cmaes.YoungsModulusEvaluation(
             structure_idx=1,
-            gt_candidate=cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7),
+            gt_candidate=cmaes.SupportKpYoungsCandidate(1.0e8, 10**7.5, 1.0e7),
             fixed_secondary_e_pa=None,
             direction_indices=(0,),
             scores=[],
@@ -460,7 +477,8 @@ def test_run_records_structure_errors_unless_fail_fast(monkeypatch):
         dataset="/tmp/gt",
         output="/tmp/rank",
         structure_indices=None,
-        log10_e_primary="8.0",
+        support_kp_values="1e4",
+        log10_support_kp=None,
         log10_e_spur="7.5",
         log10_e_stem="7.0",
         include_gt_candidate=False,
@@ -568,7 +586,7 @@ def test_run_propagates_manifest_collection_metadata(monkeypatch):
     }
     dataset.structure_summaries.return_value = [{}]
 
-    grid_candidate = cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)
+    grid_candidate = cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7)
     captured_build_env_fn = MagicMock()
     build_env_fn_kwargs: list[dict] = []
     evaluator_calls: list[dict] = []
@@ -576,13 +594,13 @@ def test_run_propagates_manifest_collection_metadata(monkeypatch):
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
     monkeypatch.setattr(
         module,
-        "candidates_from_log10_cli",
+        "candidates_from_support_kp_grid_cli",
         lambda **_kwargs: [grid_candidate],
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_args, **_kwargs: cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_args, **_kwargs: cmaes.SupportKpYoungsCandidate(1.0e8, 10**7.5, 1.0e7),
     )
     monkeypatch.setattr(
         module,
@@ -614,7 +632,8 @@ def test_run_propagates_manifest_collection_metadata(monkeypatch):
         dataset="/tmp/gt",
         output="/tmp/rank",
         structure_indices=None,
-        log10_e_primary="8.0",
+        support_kp_values="1e4",
+        log10_support_kp=None,
         log10_e_spur="7.5",
         log10_e_stem="7.0",
         include_gt_candidate=False,
@@ -651,24 +670,25 @@ def test_candidates_for_structure_enforces_max_candidates(monkeypatch):
     module = _load_module()
 
     grid_candidates = [
-        cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7),
-        cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7),
+        cmaes.SupportKpYoungsCandidate(1.0e8, 10**7.5, 1.0e7),
+        cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7),
     ]
-    gt = cmaes.YoungsModulusCandidate(3.0e8, 10**7.5, 1.0e7)
+    gt = cmaes.SupportKpYoungsCandidate(3.0e8, 10**7.5, 1.0e7)
 
     monkeypatch.setattr(
         module,
-        "candidates_from_log10_cli",
+        "candidates_from_support_kp_grid_cli",
         lambda **_kwargs: list(grid_candidates),
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
+        "gt_support_kp_youngs_candidate_from_structure",
         lambda *_args, **_kwargs: gt,
     )
 
     args = SimpleNamespace(
-        log10_e_primary="8.0,8.5",
+        support_kp_values="1e3,1e4",
+        log10_support_kp=None,
         log10_e_spur="7.5",
         log10_e_stem="7.0",
         include_gt_candidate=True,
@@ -690,8 +710,8 @@ def _evaluation_with_scores(*, structure_idx: int = 0):
     from apple_pick_sim.tests.conftest import RANGES_FIXTURE
 
     base = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=0)
-    gt = cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7)
-    winner = cmaes.YoungsModulusCandidate(1.2e8, 10**7.5, 1.0e7)
+    gt = cmaes.SupportKpYoungsCandidate(1.0e8, 10**7.5, 1.0e7)
+    winner = cmaes.SupportKpYoungsCandidate(1.2e8, 10**7.5, 1.0e7)
     scores = [
         cmaes.YoungsModulusCandidateScore(
             candidate_index=0,
@@ -732,7 +752,8 @@ def _task5_run_args(module, output, *, export_replays: bool) -> SimpleNamespace:
         dataset="/tmp/gt",
         output=str(output),
         structure_indices=None,
-        log10_e_primary="8.0",
+        support_kp_values="1e4",
+        log10_support_kp=None,
         log10_e_spur="7.5",
         log10_e_stem="7.0",
         include_gt_candidate=True,
@@ -771,12 +792,12 @@ def _configure_task5_run(monkeypatch, module, evaluation, *, num_structures: int
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
     monkeypatch.setattr(
         module,
-        "candidates_from_log10_cli",
-        lambda **_kwargs: [cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)],
+        "candidates_from_support_kp_grid_cli",
+        lambda **_kwargs: [cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7)],
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
+        "gt_support_kp_youngs_candidate_from_structure",
         lambda *_args, **_kwargs: evaluation.gt_candidate,
     )
     monkeypatch.setattr(
@@ -807,23 +828,24 @@ def test_structure_result_to_json_schema():
     assert row["structure_idx"] == 0
     assert row["fixed_secondary_e_pa"] == pytest.approx(5.0e7)
     assert row["direction_indices"] == [0, 2]
-    assert row["gt_log10_e"] == pytest.approx([8.0, 7.5, 7.0])
+    assert row["gt_support_kp"] == pytest.approx(1.0e8)
+    assert row["gt_log10_vector"] == pytest.approx([8.0, 7.5, 7.0])
     assert row["gt_rank"] == 2
     assert row["winner"]["candidate_index"] == 0
-    assert row["winner"]["log10_error"]["primary"] == pytest.approx(
+    assert row["winner"]["log10_error"]["support_kp"] == pytest.approx(
         math.log10(1.2e8) - math.log10(1.0e8)
     )
-    assert row["winner"]["relative_error"]["primary"] == pytest.approx(0.2)
+    assert row["winner"]["relative_error"]["support_kp"] == pytest.approx(0.2)
 
     gt_row = next(c for c in row["candidates"] if c["is_gt"])
     assert gt_row == {
         "candidate_index": 1,
+        "support_kp": 1e8,
         "youngs_modulus_pa": {
-            "primary": 1e8,
             "spur": 10**7.5,
             "stem": 1e7,
         },
-        "log10_e": [8.0, 7.5, 7.0],
+        "log10_vector": [8.0, 7.5, 7.0],
         "aggregate_sinkhorn": 0.2,
         "per_direction_sinkhorn": {"0": 0.2},
         "rank": 2,
@@ -856,7 +878,7 @@ def test_winner_summary_uses_authoritative_rank_one():
 def test_structure_result_serializes_non_finite_floats_as_null():
     module = _load_module()
     evaluation = _evaluation_with_scores()
-    non_finite = cmaes.YoungsModulusCandidate(float("nan"), float("inf"), 1.0e7)
+    non_finite = cmaes.SupportKpYoungsCandidate(float("nan"), float("inf"), 1.0e7)
     evaluation.gt_candidate = non_finite
     evaluation.scores[0] = dataclasses.replace(
         evaluation.scores[0],
@@ -870,13 +892,13 @@ def test_structure_result_serializes_non_finite_floats_as_null():
     encoded = json.dumps(row, allow_nan=False)
 
     assert encoded
-    assert row["gt_youngs_modulus_pa"]["primary"] is None
+    assert row["gt_support_kp"] is None
     assert row["gt_youngs_modulus_pa"]["spur"] is None
-    assert row["gt_log10_e"][:2] == [None, None]
-    assert row["candidates"][0]["youngs_modulus_pa"]["primary"] is None
-    assert row["candidates"][0]["log10_e"][:2] == [None, None]
-    assert row["winner"]["log10_error"]["primary"] is None
-    assert row["winner"]["relative_error"]["primary"] is None
+    assert row["gt_log10_vector"][:2] == [None, None]
+    assert row["candidates"][0]["support_kp"] is None
+    assert row["candidates"][0]["log10_vector"][:2] == [None, None]
+    assert row["winner"]["log10_error"]["support_kp"] is None
+    assert row["winner"]["relative_error"]["support_kp"] is None
 
 
 def test_aggregate_ranking_report_summaries_and_skips():
@@ -922,12 +944,12 @@ def test_run_writes_ranking_json_and_calls_export_with_direction_indices(
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
     monkeypatch.setattr(
         module,
-        "candidates_from_log10_cli",
-        lambda **_kwargs: [cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)],
+        "candidates_from_support_kp_grid_cli",
+        lambda **_kwargs: [cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7)],
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
+        "gt_support_kp_youngs_candidate_from_structure",
         lambda *_args, **_kwargs: evaluation.gt_candidate,
     )
     monkeypatch.setattr(
@@ -965,7 +987,8 @@ def test_run_writes_ranking_json_and_calls_export_with_direction_indices(
         dataset="/tmp/gt",
         output=str(output_dir),
         structure_indices=None,
-        log10_e_primary="8.0",
+        support_kp_values="1e4",
+        log10_support_kp=None,
         log10_e_spur="7.5",
         log10_e_stem="7.0",
         include_gt_candidate=True,
@@ -1005,7 +1028,7 @@ def test_run_writes_ranking_json_and_calls_export_with_direction_indices(
         assert spec.candidate_index == candidate_index
         assert spec.params is evaluation.applied_params[candidate_index]
         assert spec.stiffnesses == {
-            "primary_e_pa": score.candidate.primary,
+            "support_kp": score.candidate.support_kp,
             "spur_e_pa": score.candidate.spur,
             "stem_e_pa": score.candidate.stem,
         }
@@ -1134,12 +1157,12 @@ def test_run_records_overlay_error_without_discarding_ranking(monkeypatch, tmp_p
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
     monkeypatch.setattr(
         module,
-        "candidates_from_log10_cli",
-        lambda **_kwargs: [cmaes.YoungsModulusCandidate(2.0e8, 10**7.5, 1.0e7)],
+        "candidates_from_support_kp_grid_cli",
+        lambda **_kwargs: [cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7)],
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
+        "gt_support_kp_youngs_candidate_from_structure",
         lambda *_args, **_kwargs: evaluation.gt_candidate,
     )
     monkeypatch.setattr(
@@ -1169,7 +1192,8 @@ def test_run_records_overlay_error_without_discarding_ranking(monkeypatch, tmp_p
         dataset="/tmp/gt",
         output=str(output_dir),
         structure_indices=None,
-        log10_e_primary="8.0",
+        support_kp_values="1e4",
+        log10_support_kp=None,
         log10_e_spur="7.5",
         log10_e_stem="7.0",
         include_gt_candidate=True,

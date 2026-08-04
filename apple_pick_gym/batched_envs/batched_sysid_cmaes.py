@@ -145,6 +145,27 @@ def youngs_modulus_candidate_from_params(
     )
 
 
+def _candidate_stiffness_diagnostics(candidate: Any) -> dict[str, float]:
+    """Diagnostic-only stiffness map recorded on Wasserstein scoring results.
+
+    Not consumed by the Sinkhorn math itself; only ``SupportKpYoungsCandidate``
+    (support_kp, spur, stem) and ``YoungsModulusCandidate`` (primary, spur,
+    stem) are expected here.
+    """
+    support_kp = getattr(candidate, "support_kp", None)
+    if support_kp is not None:
+        return {
+            "support_kp": float(support_kp),
+            "spur_e_pa": float(candidate.spur),
+            "stem_e_pa": float(candidate.stem),
+        }
+    return {
+        "primary_e_pa": float(candidate.primary),
+        "spur_e_pa": float(candidate.spur),
+        "stem_e_pa": float(candidate.stem),
+    }
+
+
 def gt_youngs_modulus_candidate_from_structure(
     dataset: BatchedSysIdDataset,
     structure_idx: int,
@@ -206,6 +227,21 @@ class SupportKpYoungsCandidate(NamedTuple):
             f"log10=({math.log10(self.support_kp):.2f},"
             f"{math.log10(self.spur):.2f},"
             f"{math.log10(self.stem):.2f})"
+        )
+
+
+def iter_support_kp_youngs_candidates(
+    *,
+    support_kp_values: Sequence[float],
+    spur_values: Sequence[float],
+    stem_values: Sequence[float],
+) -> Iterable[SupportKpYoungsCandidate]:
+    """Yield support-k_p x spur-E x stem-E grid candidates (Cartesian order)."""
+    for support_kp, spur, stem in product(support_kp_values, spur_values, stem_values):
+        yield SupportKpYoungsCandidate(
+            support_kp=float(support_kp),
+            spur=float(spur),
+            stem=float(stem),
         )
 
 
@@ -671,7 +707,12 @@ def prepare_youngs_modulus_structure(
         n_directions=scoring_n_directions,
     )
     base_params = true_params_for_structure(dataset, int(structure_idx))
-    gt_candidate = youngs_modulus_candidate_from_params(base_params)
+    if isinstance(candidate_list[0], SupportKpYoungsCandidate):
+        gt_candidate = gt_support_kp_youngs_candidate_from_structure(
+            dataset, int(structure_idx)
+        )
+    else:
+        gt_candidate = youngs_modulus_candidate_from_params(base_params)
     fixed_secondary_e_pa = (
         None
         if base_params.secondary is None
@@ -753,11 +794,7 @@ def score_prepared_youngs_modulus_structure(
 
         w_result = score_candidate_wasserstein_complete(
             candidate_index=local_candidate_idx,
-            stiffnesses={
-                "primary_e_pa": float(candidate.primary),
-                "spur_e_pa": float(candidate.spur),
-                "stem_e_pa": float(candidate.stem),
-            },
+            stiffnesses=_candidate_stiffness_diagnostics(candidate),
             gt_context=prepared.gt_context,
             replay_observations=replay_eps,
             device=scoring.device,

@@ -431,8 +431,14 @@ def overlay_episodes_from_replay_evaluation(
         cand_idx = int(candidate_index)
         score = scores_by_index[cand_idx]
         candidate = score.candidate
+        # ``SupportKpYoungsCandidate`` has no ``primary``; its first axis is
+        # support k_p rather than primary E, but the overlay tuple layout
+        # (first axis, spur, stem) is unchanged.
+        first_axis = getattr(candidate, "support_kp", None)
+        if first_axis is None:
+            first_axis = candidate.primary
         log10_e = (
-            math.log10(float(candidate.primary)),
+            math.log10(float(first_axis)),
             math.log10(float(candidate.spur)),
             math.log10(float(candidate.stem)),
         )

@@ -112,13 +112,14 @@ git commit -m "Add per-env batched FIXED-joint kp patch APIs."
 **Interfaces:**
 - Produces:
   - `SUPPORT_JOINT_ZETA: float = 1.0`
-  - `def apply_per_env_support_joint_penalties(scene, support_kp_per_env: Sequence[float], *, zeta: float = SUPPORT_JOINT_ZETA) -> None`
+  - `def apply_per_env_support_joint_penalties(scene: CoupledFruitingScene, support_kp_per_env: Sequence[float], *, num_envs: int, joints_per_world: int, zeta: float = SUPPORT_JOINT_ZETA) -> None`
 - Behavior:
-  1. For each env `w`, set angular+linear kp overrides `{"support": support_kp_per_env[w]}` via Task 1 APIs
-  2. For each env, `joint_kd_from_damping_ratio(zeta=zeta, roles=("support",), angular_kp_by_role={"support": kp}, linear_kp_by_role={"support": kp}, body_offset=w*bodies_per_world, ...)`
-  3. Apply resulting per-env support kd via existing `set_fruiting_joint_*_kd_batched(..., label_kd_per_env=...)`
-  4. Do **not** touch non-support roles
-- Reject non-positive `support_kp`
+  1. Validate `len(support_kp_per_env) == num_envs` and every value `> 0.0` (raise `ValueError` naming `support_kp` otherwise)
+  2. Build per-env angular+linear kp maps `[{"support": support_kp_per_env[w]} for w in range(num_envs)]`; apply via Task 1's `set_fruiting_joint_angular_kp_batched_per_env` / `set_fruiting_joint_linear_kp_batched_per_env` on `scene.cable.solver`, `scene.cable.fruiting_fixed_joints`
+  3. Read `body_mass = scene.cable.model.body_mass.numpy()`, `body_inertia = scene.cable.model.body_inertia.numpy()`, `joint_child = scene.cable.model.joint_child.numpy()`; `bodies_per_world = scene.layout.bodies_per_world`
+  4. For each env `w`, call `joint_kd_from_damping_ratio(zeta=zeta, roles=("support",), fruiting_fixed_joints=scene.cable.fruiting_fixed_joints, body_mass=body_mass, body_inertia=body_inertia, joint_child=joint_child, angular_kp_by_role={"support": support_kp_per_env[w]}, linear_kp_by_role={"support": support_kp_per_env[w]}, body_offset=w*bodies_per_world)` → per-env `(angular_kd, linear_kd)` dicts
+  5. Apply resulting per-env support kd via `set_fruiting_joint_angular_kd_batched(..., label_kd_per_env=per_env_ang)` / `set_fruiting_joint_linear_kd_batched(..., label_kd_per_env=per_env_lin)` (existing APIs, confirmed at `apple_pick_sim/fruiting_system/build.py:1237-1338`)
+  6. Do **not** touch non-support roles (`primary_spur`, `spur_stem`, `stem_apple` keep their build-time values)
 
 - [ ] **Step 1: Write failing unit tests** (can use a small mock of `joint_kd_from_damping_ratio` math without full FR3 if possible; otherwise `@requires_fr3` scene)
 
@@ -173,13 +174,37 @@ def candidates_from_log10_vector(x: Sequence[float]) -> SupportKpYoungsCandidate
 
 def log10_vector_from_candidate(c: SupportKpYoungsCandidate) -> tuple[float, float, float]: ...
 
-def gt_support_kp_from_structure(dataset, structure_idx: int) -> float:
-    # Read recorded sim_config joint_angular_kp_overrides["support"]
-    # (assert linear matches within atol if both present)
+def gt_support_kp_from_dataset(dataset: BatchedSysIdDataset) -> float:
+    """Read dataset-level GT support kp from ``manifest['collection']['sim_config']``.
 
-def gt_support_kp_youngs_candidate_from_structure(dataset, structure_idx: int) -> SupportKpYoungsCandidate:
-    # support_kp from manifest; spur/stem E from true_params_for_structure
+    ``joint_angular_kp_overrides``/``joint_linear_kp_overrides`` are a single
+    build-time config for the **whole collection run** (like
+    ``sim_config_to_manifest_dict``), not per-structure like
+    ``fruiting_system_params``. Every structure in one dataset shares this
+    value. Assert angular=="support" and linear=="support" agree within
+    ``rel_tol=1e-9`` (design mandates a single shared scalar); raise
+    ``ValueError`` naming the dataset path if the key is missing or the two
+    disagree.
+    """
+
+def gt_support_kp_youngs_candidate_from_structure(
+    dataset: BatchedSysIdDataset, structure_idx: int,
+) -> SupportKpYoungsCandidate:
+    # support_kp from gt_support_kp_from_dataset(dataset) (dataset-wide);
+    # spur/stem E from true_params_for_structure(dataset, structure_idx)
 ```
+
+**Architecture note (confirmed against code):** unlike primary/spur/stem \(E\)
+(sampled per-structure via `FruitingSystemParams` DR and stored in
+per-episode `fruiting_system_params` metadata), support \(k_p\) today is a
+single `sim_build` scalar applied uniformly to every env at build time
+(`BatchedHeterogeneousCoupledSimConfig.fruiting_system.joint_angular_kp_overrides`).
+It is **not** currently a per-structure DR quantity. This plan does not add
+per-structure support-\(k_p\) collection (out of scope); GT is one value per
+dataset, and grid/CMA candidates still need **per-env** override capability
+(Task 1/2) purely to evaluate *different candidate* \(k_p\) values within one
+fused batched replay — GT itself stays uniform across structures in a given
+collect run.
 
 - Deprecate/remove `YoungsModulusCandidate` fields usage for primary; migrate helpers that assumed 3×E.
 
@@ -228,8 +253,28 @@ git commit -m "Add SupportKpYoungsCandidate and drop primary E from phenotype."
 **Interfaces:**
 - Extend `ReplaySlot` with `support_kp: float | None = None`
 - In `build_replay_candidate_blocks`, if candidate has `.support_kp`, copy onto each slot in the block
-- After successful `build_env_fn(...)` in `replay_multi_structure_candidate_blocks`, if any slot has `support_kp is not None`, call `apply_per_env_support_joint_penalties(env.scene_or_cable_scene, [slot.support_kp for slot in slots])` **before** `env.reset`
-- Resolve the exact scene/solver handle the same way other gym code reaches `fruiting_fixed_joints` (inspect `ApplePickBatched*Env` / sim wrapper; do not invent a new path)
+- After successful `build_env_fn(...)` in `replay_multi_structure_candidate_blocks`, if any slot has `support_kp is not None`, call:
+
+```python
+apply_per_env_support_joint_penalties(
+    env._sim.scene,                              # CoupledFruitingScene (env._sim: BatchedHeterogeneousCoupledSim)
+    [slot.support_kp for slot in slots],
+    num_envs=env._sim.layout.num_envs,
+    joints_per_world=env._sim.layout.joints_per_world,
+)
+```
+
+**before** `env.reset(seed=replay_seed)`. Verified attribute paths (matches
+`apple_pick_gym/batched_envs/batched_sysid_collect.py:123` `env._sim.scene`
+and `apple_pick_gym/batched_envs/apple_pick_batched_sysid_env.py:156-159`
+`self._sim.layout`, `self._sim.scene.cable`):
+- `env._sim.scene.cable.solver` — `SolverVBD`
+- `env._sim.scene.cable.model` — for `body_mass` / `body_inertia` (Task 2's ζ=1 kd expansion)
+- `env._sim.scene.cable.fruiting_fixed_joints` — world-0 template `(joint_index, label)` pairs
+- `env._sim.layout.num_envs`, `env._sim.layout.joints_per_world`
+`apply_per_env_support_joint_penalties` (Task 2) internally calls the Task 1
+per-env batched kp setters plus `set_fruiting_joint_*_kd_batched(...,
+label_kd_per_env=...)` using these same handles.
 
 - [ ] **Step 1: Failing test** — fused build with two candidates differing only in `support_kp` yields different support `joint_penalty_k` per env after build (can assert via solver arrays before/after reset)
 

@@ -911,6 +911,7 @@ def test_fit_uses_xfavorite_not_mean_or_xbest():
 
 
 def test_real_pycma_multi_bowl_moves_toward_distinct_optima():
+    """Generic ask/tell mechanics: ``_ask_structure`` now yields SupportKpYoungsCandidate."""
     bounds = cmaes.extract_youngs_modulus_cma_bounds(
         {
             "primary": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e10}},
@@ -945,8 +946,9 @@ def test_real_pycma_multi_bowl_moves_toward_distinct_optima():
             target = targets[int(idx)]
             scores = []
             for local_i, cand in enumerate(cands):
+                assert isinstance(cand, cmaes.SupportKpYoungsCandidate)
                 log10 = (
-                    math.log10(cand.primary),
+                    math.log10(cand.support_kp),
                     math.log10(cand.spur),
                     math.log10(cand.stem),
                 )
@@ -954,7 +956,7 @@ def test_real_pycma_multi_bowl_moves_toward_distinct_optima():
                 scores.append(_score(local_i, cand, sinkhorn))
             evals[int(idx)] = cmaes.YoungsModulusEvaluation(
                 structure_idx=int(idx),
-                gt_candidate=cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+                gt_candidate=cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
                 fixed_secondary_e_pa=None,
                 direction_indices=(0,),
                 scores=scores,
@@ -1847,3 +1849,153 @@ def test_structure_report_snapshot_includes_generation_score_summary_and_wave_se
     assert gen0["wave_seconds"] == pytest.approx(1.25)
     assert gen0["score_summary"]["eligible_mean"] == pytest.approx(3.0)
     assert gen0["score_summary"]["eligible_variance"] == pytest.approx(2.0)
+
+
+# --- Task 6: support-k_p CMA vector semantics ---
+
+
+def test_extract_support_kp_youngs_modulus_cma_bounds_uses_absolute_box_not_fixture():
+    """Slot 0 is an absolute support_kp box, never fixture primary-E epsilon-bands."""
+    ranges = {
+        # Deliberately different from the [2, 6] support_kp default so a bug
+        # that reads fixture "primary" bounds would be caught.
+        "primary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
+        "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+        "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+    }
+    bounds = cmaes.extract_support_kp_youngs_modulus_cma_bounds(ranges)
+    assert bounds.log10_lower == pytest.approx((2.0, 6.0, 5.0))
+    assert bounds.log10_upper == pytest.approx((6.0, 8.0, 7.0))
+    assert bounds.log10_midpoint == pytest.approx((4.0, 7.0, 6.0))
+    assert bounds.support_kp.physical_min_pa == pytest.approx(1.0e2)
+    assert bounds.support_kp.physical_max_pa == pytest.approx(1.0e6)
+    # Alias: support_kp is literally the primary slot.
+    assert bounds.support_kp is bounds.primary
+
+
+def test_extract_support_kp_youngs_modulus_cma_bounds_custom_box():
+    ranges = {
+        "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+        "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+    }
+    bounds = cmaes.extract_support_kp_youngs_modulus_cma_bounds(
+        ranges, support_kp_log10_lower=1.0, support_kp_log10_upper=3.0
+    )
+    assert bounds.log10_lower[0] == pytest.approx(1.0)
+    assert bounds.log10_upper[0] == pytest.approx(3.0)
+
+
+def test_extract_support_kp_youngs_modulus_cma_bounds_rejects_inverted_box():
+    with pytest.raises(ValueError, match="log10_min < log10_max"):
+        cmaes.extract_support_kp_youngs_modulus_cma_bounds(
+            {
+                "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+                "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+            },
+            support_kp_log10_lower=6.0,
+            support_kp_log10_upper=2.0,
+        )
+
+
+def test_ask_structure_conversion_yields_support_kp_candidates_via_wave():
+    """Production ask/tell boundary uses candidates_from_log10_vector, not _e."""
+    bounds = cmaes.extract_support_kp_youngs_modulus_cma_bounds(
+        {
+            "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+            "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+        }
+    )
+    samples = [[4.0, 9.0, 8.5]]
+    state = cmaes.StructureCmaState(
+        structure_idx=0,
+        optimizer=FakeOptimizer(samples=samples),
+        bounds=bounds,
+        effective_seed=1,
+        population_size=1,
+    )
+    seen: dict[str, Any] = {}
+
+    def evaluate_fn(*, structures, **_kwargs):
+        idx, cands = structures[0]
+        seen["candidate"] = cands[0]
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={int(idx): _evaluation(int(idx), list(cands), [1.0])},
+            errors={},
+            replay_diagnostics=None,
+            retried_structures=(),
+        )
+
+    cmaes.run_cma_generation_wave(
+        {0: state}, evaluate_fn=evaluate_fn, generation_index=0
+    )
+    candidate = seen["candidate"]
+    assert isinstance(candidate, cmaes.SupportKpYoungsCandidate)
+    assert candidate.support_kp == pytest.approx(10.0**4.0)
+    assert candidate.spur == pytest.approx(10.0**9.0)
+    assert candidate.stem == pytest.approx(10.0**8.5)
+
+
+def test_evaluate_final_means_uses_candidates_from_log10_vector():
+    """Final-mean scoring also maps through the support_kp vector, not log10_e."""
+    bounds = _bounds()
+    opt = CapStopOptimizer(
+        samples=[[4.0, 9.0, 8.5]],
+        mean=[4.0, 9.0, 8.5],
+        stop_after=1,
+    )
+    state = cmaes.StructureCmaState(
+        structure_idx=0,
+        optimizer=opt,
+        bounds=bounds,
+        effective_seed=1,
+        population_size=1,
+    )
+    seen: dict[str, Any] = {}
+
+    def evaluate_fn(*, structures, wave_kind="generation", **_kwargs):
+        idx, cands = structures[0]
+        if wave_kind == "final_mean":
+            seen["candidate"] = cands[0]
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={int(idx): _evaluation(int(idx), list(cands), [0.1] * len(cands))},
+            errors={},
+            replay_diagnostics=None,
+            retried_structures=(),
+        )
+
+    cmaes.fit_youngs_modulus_structures(
+        {0: state}, max_generations=3, evaluate_fn=evaluate_fn
+    )
+    candidate = seen["candidate"]
+    assert isinstance(candidate, cmaes.SupportKpYoungsCandidate)
+    assert candidate.support_kp == pytest.approx(10.0**4.0)
+
+
+def test_to_strict_jsonable_supports_support_kp_candidate():
+    candidate = cmaes.SupportKpYoungsCandidate(support_kp=1.0e4, spur=1.0e9, stem=1.0e8)
+    converted = cmaes.to_strict_jsonable(candidate)
+    assert converted == {"support_kp": 1.0e4, "spur": 1.0e9, "stem": 1.0e8}
+    json.dumps(converted, allow_nan=False)
+
+
+def test_structure_report_snapshot_final_mean_and_gt_use_support_kp_fields():
+    bounds = _bounds()
+    state = cmaes.StructureCmaState(
+        structure_idx=0,
+        optimizer=FakeOptimizer(samples=[[4.0, 9.0, 8.5]]),
+        bounds=bounds,
+        effective_seed=1,
+        population_size=1,
+        status="fitted",
+        final_mean_log10=(4.0, 9.0, 8.5),
+        gt_candidate=cmaes.SupportKpYoungsCandidate(1.0e4, 1.0e9, 1.0e8),
+    )
+    snapshot = cmaes.structure_cma_report_snapshot(
+        state, base_seed=0, initial_sigma_log10=1.0
+    )
+    assert snapshot["final_mean"]["log10_e"] == pytest.approx([4.0, 9.0, 8.5])
+    assert snapshot["final_mean"]["e_pa"] == pytest.approx(
+        [10.0**4.0, 10.0**9.0, 10.0**8.5]
+    )
+    assert snapshot["gt"]["e_pa"] == pytest.approx([1.0e4, 1.0e9, 1.0e8])
+    json.dumps(cmaes.to_strict_jsonable(snapshot), allow_nan=False)

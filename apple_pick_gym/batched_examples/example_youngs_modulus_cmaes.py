@@ -1,10 +1,13 @@
-"""Dataset-driven Young's-modulus CMA-ES fit entry point.
+"""Dataset-driven support-k_p + Young's-modulus CMA-ES fit entry point.
 
-Runs one independent bounded pycma optimizer per selected structure, advances
-active optimizers in synchronized generation waves through fused structure x
-population x direction replay, then explicitly scores each stopped distribution
-mean. Writes ``<output>/cmaes_report.json`` atomically and final-mean overlays
-at ``structure_XXX/youngs_modulus_overlay.html``.
+Fits a 3-vector ``(support_kp, E_spur, E_stem)`` — support joint k_p (shared
+angular+linear, zeta=1) is free while spur/stem Young's modulus stay free;
+primary E is fixed from ground truth. Runs one independent bounded pycma
+optimizer per selected structure, advances active optimizers in synchronized
+generation waves through fused structure x population x direction replay,
+then explicitly scores each stopped distribution mean. Writes
+``<output>/cmaes_report.json`` atomically and final-mean overlays at
+``structure_XXX/youngs_modulus_overlay.html``.
 
 Run from repo root::
 
@@ -39,18 +42,19 @@ from apple_pick_gym.batched_examples import example_youngs_modulus_sys_id as _gr
 from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     CmaGenerationFailure,
     StructureCmaState,
+    SupportKpYoungsCandidate,
     YoungsModulusBatchEvaluation,
     YoungsModulusCandidate,
     YoungsModulusScoringConfig,
     aggregate_fitted_youngs_modulus_stats,
-    candidates_from_log10_e,
+    candidates_from_log10_vector,
     create_structure_cma_optimizer,
     derive_structure_cma_seeds,
     evaluate_youngs_modulus_candidates,
     evaluate_youngs_modulus_structures,
-    extract_youngs_modulus_cma_bounds,
+    extract_support_kp_youngs_modulus_cma_bounds,
     fit_youngs_modulus_structures,
-    gt_youngs_modulus_candidate_from_structure,
+    gt_support_kp_youngs_candidate_from_structure,
     normalize_search_bounds_log10,
     resolve_initial_mean_log10,
     structure_cma_report_snapshot,
@@ -86,13 +90,17 @@ _positive_int = _grid._positive_int
 ViewerCancelled = SysIdReplayCancelled
 
 # Sole source of truth for CMA search knobs (edit here; not exposed on CLI).
-# initial_mean_log10: start mean in log10-E [primary, spur, stem], or
-# "bounds_midpoint" to derive midpoints from the loaded fixture.
+# initial_mean_log10: start mean in log10 [support_kp, E_spur, E_stem], or
+# "bounds_midpoint" to derive midpoints from the loaded fixture (spur/stem)
+# plus the absolute support_kp safety box.
 # search_bounds_log10: None = unbounded search; or
-#   {"lower": [p, s, t], "upper": [p, s, t]} in log10-E.
-# Absolute safety box (not fixture ε-bands): all roles 0.1–100 GPa (log10 8–11).
-_CMA_SEARCH_LOG10_LOWER = [8.0, 8.0, 8.0]  # 0.1 GPa
-_CMA_SEARCH_LOG10_UPPER = [11.0, 11.0, 11.0]  # 100 GPa
+#   {"lower": [kp, s, t], "upper": [kp, s, t]} in log10.
+# Support k_p: absolute safety box (not a per-structure DR quantity / fixture
+# ε-band) — 100 .. 1e6 N/m or N*m/rad (log10 2-6). Spur/stem E: absolute
+# 0.1-100 GPa (log10 8-11), same box as before. Init from the search box
+# midpoint, never from ground truth.
+_CMA_SEARCH_LOG10_LOWER = [2.0, 8.0, 8.0]  # support_kp 1e2, spur/stem 0.1 GPa
+_CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 11.0]  # support_kp 1e6, spur/stem 100 GPa
 _CMA_MEAN_LOG10 = [_CMA_SEARCH_LOG10_LOWER[i] + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i]) for i in range(3)]
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),
@@ -247,14 +255,15 @@ def _write_cmaes_report_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 def _gt_error_diagnostics(
     final_mean_log10: tuple[float, float, float] | None,
-    gt: YoungsModulusCandidate | None,
+    gt: SupportKpYoungsCandidate | None,
 ) -> dict[str, Any] | None:
+    """Support k_p error vs ``gt_support_kp_from_dataset``; spur/stem vs GT E."""
     if final_mean_log10 is None or gt is None:
         return None
-    mean = candidates_from_log10_e(final_mean_log10)
+    mean = candidates_from_log10_vector(final_mean_log10)
     log10_error: dict[str, float] = {}
     relative_error: dict[str, float] = {}
-    for segment in ("primary", "spur", "stem"):
+    for segment in ("support_kp", "spur", "stem"):
         mean_value = float(getattr(mean, segment))
         gt_value = float(getattr(gt, segment))
         mean_log10 = math.log10(mean_value)
@@ -309,7 +318,9 @@ def _build_cmaes_report_payload(
             snapshot["gt_diagnostics"] = gt_diag
         structures[str(int(structure_idx))] = snapshot
         if state.status == "fitted" and state.final_mean_log10 is not None:
-            fitted_candidates.append(candidates_from_log10_e(state.final_mean_log10))
+            fitted_candidates.append(
+                candidates_from_log10_vector(state.final_mean_log10)
+            )
             if state.gt_candidate is not None:
                 gt_candidates.append(state.gt_candidate)
         elif state.status == "failed":
@@ -519,7 +530,7 @@ def _run(
     collection = dataset.manifest.get("collection", {})
     ranges_path = _resolve_ranges_path(args, collection)
     ranges = load_ranges(str(ranges_path))
-    bounds = extract_youngs_modulus_cma_bounds(ranges)
+    bounds = extract_support_kp_youngs_modulus_cma_bounds(ranges)
     search = CMA_SEARCH_PARAMS
     initial_mean = resolve_initial_mean_log10(search["initial_mean_log10"], bounds)
     initial_sigma = validate_initial_sigma_log10(float(search["initial_sigma_log10"]))
@@ -601,7 +612,7 @@ def _run(
             search_bounds_log10=search_bounds_log10,
         )
         try:
-            state.gt_candidate = gt_youngs_modulus_candidate_from_structure(
+            state.gt_candidate = gt_support_kp_youngs_candidate_from_structure(
                 dataset, int(structure_idx)
             )
         except Exception as exc:

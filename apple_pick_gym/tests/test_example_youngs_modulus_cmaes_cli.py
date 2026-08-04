@@ -76,7 +76,7 @@ def _evaluation(
     dirs = tuple(int(d) for d in direction_indices)
     return cmaes.YoungsModulusEvaluation(
         structure_idx=int(structure_idx),
-        gt_candidate=cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        gt_candidate=cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
         fixed_secondary_e_pa=5e7,
         direction_indices=dirs,
         scores=[
@@ -97,19 +97,20 @@ def test_cma_search_params_dict_is_sole_search_truth_source():
         "max_generations",
         "cma_seed",
     }
-    # Absolute box: all roles 0.1–100 GPa [8,11]; mean at mid.
-    # Expanded from the former asymmetric box (primary [9,11], spur/stem [8,10]).
-    assert params["initial_mean_log10"] == [9.5, 9.5, 9.5]
+    # Vector is (log10 support_kp, log10 E_spur, log10 E_stem). Support k_p
+    # uses an absolute safety box [2, 6] (never fixture primary-E bands);
+    # spur/stem keep the [8, 11] box; mean sits at each axis midpoint.
+    assert params["initial_mean_log10"] == [4.0, 9.5, 9.5]
     assert params["initial_sigma_log10"] == 1.0
     assert params["population_size"] == 15
     assert params["max_generations"] == 10
     assert params["cma_seed"] == 56
     assert params["search_bounds_log10"] == {
-        "lower": [8.0, 8.0, 8.0],
-        "upper": [11.0, 11.0, 11.0],
+        "lower": [2.0, 8.0, 8.0],
+        "upper": [6.0, 11.0, 11.0],
     }
     normalized = cmaes.normalize_search_bounds_log10(params["search_bounds_log10"])
-    assert normalized == ((8.0, 8.0, 8.0), (11.0, 11.0, 11.0))
+    assert normalized == ((2.0, 8.0, 8.0), (6.0, 11.0, 11.0))
 
 
 def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
@@ -141,10 +142,10 @@ def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
         del max_generations, evaluate_fn
         for state in states.values():
             state.status = "fitted"
-            state.final_mean_log10 = (9.5, 9.5, 9.5)
+            state.final_mean_log10 = (4.0, 9.5, 9.5)
             state.final_evaluation = _evaluation(
                 state.structure_idx,
-                [cmaes.candidates_from_log10_e(state.final_mean_log10)],
+                [cmaes.candidates_from_log10_vector(state.final_mean_log10)],
                 [0.1],
             )
             state.gt_candidate = state.final_evaluation.gt_candidate
@@ -166,8 +167,8 @@ def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
     )
     monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
     monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
@@ -197,14 +198,14 @@ def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
     module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
     assert create_calls
     assert create_calls[0]["search_bounds_log10"] == (
-        (8.0, 8.0, 8.0),
-        (11.0, 11.0, 11.0),
+        (2.0, 8.0, 8.0),
+        (6.0, 11.0, 11.0),
     )
-    assert create_calls[0]["initial_mean_log10"] == pytest.approx([9.5, 9.5, 9.5])
+    assert create_calls[0]["initial_mean_log10"] == pytest.approx([4.0, 9.5, 9.5])
     report = json.loads((output_dir / "cmaes_report.json").read_text(encoding="utf-8"))
     assert report["cma"]["search_bounds_log10"] == {
-        "lower": [8.0, 8.0, 8.0],
-        "upper": [11.0, 11.0, 11.0],
+        "lower": [2.0, 8.0, 8.0],
+        "upper": [6.0, 11.0, 11.0],
     }
 
 
@@ -241,7 +242,7 @@ def test_run_reads_search_knobs_from_cma_search_params_only(monkeypatch, tmp_pat
             state.final_mean_log10 = tuple(state.bounds.log10_midpoint)
             state.final_evaluation = _evaluation(
                 state.structure_idx,
-                [cmaes.candidates_from_log10_e(state.final_mean_log10)],
+                [cmaes.candidates_from_log10_vector(state.final_mean_log10)],
                 [0.1],
             )
             state.gt_candidate = state.final_evaluation.gt_candidate
@@ -275,8 +276,8 @@ def test_run_reads_search_knobs_from_cma_search_params_only(monkeypatch, tmp_pat
     monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
     )
     monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
     monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
@@ -348,7 +349,7 @@ def test_run_cli_cma_seed_overrides_cma_search_params(monkeypatch, tmp_path):
             state.final_mean_log10 = tuple(state.bounds.log10_midpoint)
             state.final_evaluation = _evaluation(
                 state.structure_idx,
-                [cmaes.candidates_from_log10_e(state.final_mean_log10)],
+                [cmaes.candidates_from_log10_vector(state.final_mean_log10)],
                 [0.1],
             )
             state.gt_candidate = state.final_evaluation.gt_candidate
@@ -382,8 +383,8 @@ def test_run_cli_cma_seed_overrides_cma_search_params(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
     )
     monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
     monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
@@ -811,8 +812,8 @@ def test_run_viewer_cancel_checkpoints_cancelled_and_exits_nonzero(
     monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
     )
 
     args = SimpleNamespace(
@@ -931,7 +932,7 @@ def test_run_writes_initial_report_before_fit_and_progress_updates(monkeypatch, 
                 state.final_mean_log10 = tuple(state.bounds.log10_midpoint)
                 state.final_evaluation = _evaluation(
                     state.structure_idx,
-                    [cmaes.candidates_from_log10_e(state.final_mean_log10)],
+                    [cmaes.candidates_from_log10_vector(state.final_mean_log10)],
                     [0.5],
                 )
                 state.gt_candidate = state.final_evaluation.gt_candidate
@@ -978,8 +979,8 @@ def test_run_writes_initial_report_before_fit_and_progress_updates(monkeypatch, 
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
     )
 
     args = SimpleNamespace(
@@ -1041,7 +1042,7 @@ def test_run_continues_after_structure_failure_unless_fail_fast(monkeypatch, tmp
         states[1].final_mean_log10 = tuple(states[1].bounds.log10_midpoint)
         states[1].final_evaluation = _evaluation(
             1,
-            [cmaes.candidates_from_log10_e(states[1].final_mean_log10)],
+            [cmaes.candidates_from_log10_vector(states[1].final_mean_log10)],
             [0.2],
         )
         states[1].gt_candidate = states[1].final_evaluation.gt_candidate
@@ -1072,8 +1073,8 @@ def test_run_continues_after_structure_failure_unless_fail_fast(monkeypatch, tmp
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
     )
 
     args = SimpleNamespace(
@@ -1143,8 +1144,8 @@ def test_run_all_failed_sets_exit_nonzero(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
     )
 
     args = SimpleNamespace(
@@ -1195,7 +1196,7 @@ def test_run_records_overlay_error_without_invalidating_fitted(monkeypatch, tmp_
         state.final_mean_log10 = tuple(state.bounds.log10_midpoint)
         state.final_evaluation = _evaluation(
             0,
-            [cmaes.candidates_from_log10_e(state.final_mean_log10)],
+            [cmaes.candidates_from_log10_vector(state.final_mean_log10)],
             [0.3],
         )
         state.gt_candidate = state.final_evaluation.gt_candidate
@@ -1226,8 +1227,8 @@ def test_run_records_overlay_error_without_invalidating_fitted(monkeypatch, tmp_
     )
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
     )
 
     args = SimpleNamespace(
@@ -1299,8 +1300,8 @@ def test_run_fail_fast_aborts_on_global_evaluator_error(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
     monkeypatch.setattr(
         module,
-        "gt_youngs_modulus_candidate_from_structure",
-        lambda *_a, **_k: cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
     )
 
     args = SimpleNamespace(

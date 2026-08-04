@@ -338,6 +338,11 @@ class YoungsModulusCmaBounds:
     stem: SegmentYoungsModulusBounds
 
     @property
+    def support_kp(self) -> SegmentYoungsModulusBounds:
+        """Alias for ``primary`` when this bounds triple is (support_kp, spur, stem)."""
+        return self.primary
+
+    @property
     def log10_lower(self) -> tuple[float, float, float]:
         return (
             self.primary.log10_min,
@@ -411,6 +416,53 @@ def extract_youngs_modulus_cma_bounds(
     """Extract immutable primary/spur/stem Young's bounds from a ranges fixture."""
     return YoungsModulusCmaBounds(
         primary=_segment_youngs_bounds(ranges, "primary"),
+        spur=_segment_youngs_bounds(ranges, "spur"),
+        stem=_segment_youngs_bounds(ranges, "stem"),
+    )
+
+
+# Absolute support-k_p CMA search box (not a fixture epsilon-band): support
+# joint k_p (shared angular+linear, zeta=1) is a build-time sim_build scalar,
+# not a per-structure DR quantity, so its CMA bounds are fixed constants.
+DEFAULT_SUPPORT_KP_CMA_LOG10_LOWER = 2.0
+DEFAULT_SUPPORT_KP_CMA_LOG10_UPPER = 6.0
+
+
+def _absolute_segment_bounds(
+    log10_min: float, log10_max: float
+) -> SegmentYoungsModulusBounds:
+    if not (math.isfinite(log10_min) and math.isfinite(log10_max)):
+        raise ValueError("support_kp log10 bounds must be finite")
+    if log10_min >= log10_max:
+        raise ValueError("support_kp log10 bounds require log10_min < log10_max")
+    return SegmentYoungsModulusBounds(
+        physical_min_pa=10.0**log10_min,
+        physical_max_pa=10.0**log10_max,
+        log10_min=log10_min,
+        log10_max=log10_max,
+        log10_midpoint=0.5 * (log10_min + log10_max),
+    )
+
+
+def extract_support_kp_youngs_modulus_cma_bounds(
+    ranges: Mapping[str, Any],
+    *,
+    support_kp_log10_lower: float = DEFAULT_SUPPORT_KP_CMA_LOG10_LOWER,
+    support_kp_log10_upper: float = DEFAULT_SUPPORT_KP_CMA_LOG10_UPPER,
+) -> YoungsModulusCmaBounds:
+    """CMA bounds for ``(log10 support_kp, log10 E_spur, log10 E_stem)``.
+
+    Support k_p uses an absolute safety box (default log10 ``[2, 6]``), never
+    ``extract_youngs_modulus_cma_bounds(...).primary`` (fixture primary-E
+    epsilon-bands) — support k_p is not a per-structure DR quantity. Spur/stem
+    still come from the ranges fixture. Reuses :class:`YoungsModulusCmaBounds`
+    with ``primary`` holding the support-k_p segment (see its ``support_kp``
+    alias property).
+    """
+    return YoungsModulusCmaBounds(
+        primary=_absolute_segment_bounds(
+            support_kp_log10_lower, support_kp_log10_upper
+        ),
         spur=_segment_youngs_bounds(ranges, "spur"),
         stem=_segment_youngs_bounds(ranges, "stem"),
     )
@@ -1420,7 +1472,7 @@ def run_cma_generation_wave(
             search_bounds_log10=state.search_bounds_log10,
         )
         ask_log10[structure_idx] = parsed
-        candidates = tuple(candidates_from_log10_e(row) for row in parsed)
+        candidates = tuple(candidates_from_log10_vector(row) for row in parsed)
         return (int(structure_idx), candidates)
 
     def _commit_tell(
@@ -1677,7 +1729,7 @@ def _evaluate_final_means(
                 "missing final mean snapshot",
             )
             continue
-        candidate = candidates_from_log10_e(state.final_mean_log10)
+        candidate = candidates_from_log10_vector(state.final_mean_log10)
         structures.append((int(structure_idx), (candidate,)))
     if not structures:
         return None
@@ -1822,24 +1874,42 @@ def to_strict_jsonable(value: Any) -> Any:
         return to_strict_jsonable(value.tolist())
     if isinstance(value, Mapping):
         return {str(key): to_strict_jsonable(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [to_strict_jsonable(item) for item in value]
+    # NamedTuple candidate types are also Sequence; check before the
+    # generic Sequence branch so they serialize as labeled objects.
+    if isinstance(value, SupportKpYoungsCandidate):
+        return {
+            "support_kp": to_strict_jsonable(value.support_kp),
+            "spur": to_strict_jsonable(value.spur),
+            "stem": to_strict_jsonable(value.stem),
+        }
     if isinstance(value, YoungsModulusCandidate):
         return {
             "primary": to_strict_jsonable(value.primary),
             "spur": to_strict_jsonable(value.spur),
             "stem": to_strict_jsonable(value.stem),
         }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [to_strict_jsonable(item) for item in value]
     raise TypeError(f"value is not strict-JSON serializable: {type(value)!r}")
 
 
-def _candidate_to_e_list(candidate: YoungsModulusCandidate) -> list[float]:
-    return [float(candidate.primary), float(candidate.spur), float(candidate.stem)]
+def _candidate_first_component(candidate: Any) -> float:
+    """First phenotype slot: ``support_kp`` when present, else ``primary``."""
+    support_kp = getattr(candidate, "support_kp", None)
+    return float(support_kp) if support_kp is not None else float(candidate.primary)
 
 
-def _candidate_to_log10_list(candidate: YoungsModulusCandidate) -> list[float]:
+def _candidate_to_e_list(candidate: Any) -> list[float]:
     return [
-        math.log10(float(candidate.primary)),
+        _candidate_first_component(candidate),
+        float(candidate.spur),
+        float(candidate.stem),
+    ]
+
+
+def _candidate_to_log10_list(candidate: Any) -> list[float]:
+    return [
+        math.log10(_candidate_first_component(candidate)),
         math.log10(float(candidate.spur)),
         math.log10(float(candidate.stem)),
     ]
@@ -1934,7 +2004,7 @@ def structure_cma_report_snapshot(
 
     final_mean = None
     if state.final_mean_log10 is not None:
-        mean_candidate = candidates_from_log10_e(state.final_mean_log10)
+        mean_candidate = candidates_from_log10_vector(state.final_mean_log10)
         final_mean = {
             "log10_e": list(state.final_mean_log10),
             "e_pa": _candidate_to_e_list(mean_candidate),
@@ -1948,7 +2018,7 @@ def structure_cma_report_snapshot(
 
     best_sample = None
     if state.best_sample_log10 is not None:
-        best_candidate = candidates_from_log10_e(state.best_sample_log10)
+        best_candidate = candidates_from_log10_vector(state.best_sample_log10)
         best_sample = {
             "log10_e": list(state.best_sample_log10),
             "e_pa": _candidate_to_e_list(best_candidate),

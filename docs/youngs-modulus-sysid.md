@@ -4,9 +4,9 @@
 
 | Field | Value |
 | --- | --- |
-| **Last reviewed** | 2026-07-17 |
-| **Roadmap slice** | V.5.2 |
-| **Status** | Grid, complete scoring, fused replay, ranking gate, and separate CMA-ES CLI/gate verified (V.5.2 Done) |
+| **Last reviewed** | 2026-08-04 |
+| **Roadmap slice** | V.5.2 (support \(k_p\) retarget) |
+| **Status** | Grid + CMA migrated to support \(k_p\) × spur/stem \(E\); acceptance pending Task 8 |
 
 This is the canonical implementation reference for dataset-driven
 Young's-modulus system identification. `docs/system_identification.md` owns the
@@ -16,12 +16,14 @@ the shared feature-vector definition.
 ## Behavior summary
 
 `example_youngs_modulus_sys_id.py` replays recorded `batched_sysid_v1` actions
-over a Cartesian grid of material candidates. A candidate contains
-primary/spur/stem Young's modulus in Pa. `YoungsModulusCandidate.apply_to()`
-changes those three values through `set_rod_youngs_modulus()`, which re-derives
-geometry-consistent VBD stiffness and damping while preserving fixed axial
-overrides. Secondary E, geometry, topology, density, damping ratio, apple
-parameters, and other structure state remain fixed.
+over a Cartesian grid of material candidates. A candidate contains support-joint
+\(k_p\) (shared angular+linear, support \(\zeta=1\)) plus spur/stem Young's
+modulus in Pa. `SupportKpYoungsCandidate.apply_to()` patches support FIXED-joint
+\(k_p\)/\(k_d\) and sets spur/stem \(E\) through `set_rod_youngs_modulus()`,
+which re-derives geometry-consistent VBD stiffness and damping while preserving
+fixed axial overrides. Primary \(E\), secondary \(E\), geometry, topology,
+density, non-support joint penalties, apple parameters, and other structure
+state remain fixed.
 
 Ground truth may be inserted into each structure-local grid. Eligible
 candidates rank by ascending pooled Sinkhorn fitness, with local candidate
@@ -132,16 +134,26 @@ not replace this ranking gate and does not impose a GT-error threshold. See
 
 ## Run and verify
 
-Dataset-driven grid (fusion is on by default):
+Collect → grid verification (fusion is on by default; include GT support \(k_p\)
+`1e4` in the grid when using the variance fixture):
 
 ```bash
-uv run --env-file pytest.env python \
-  apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
-  --viewer null --dataset tmp/youngs_gt_smoke \
-  --output tmp/youngs_grid_rank_smoke \
-  --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
-  --include-gt-candidate --max-candidates 8 --overwrite
+uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
+  --viewer null --num-structures 2 --num-directions 3 --max-steps 200 \
+  --output tmp/support_kp_sysid_dataset --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
+  --viewer null --dataset tmp/support_kp_sysid_dataset \
+  --output tmp/support_kp_grid \
+  --support-kp-values 1e3,1e4,1e5 \
+  --log10-e-spur 8.0,9.5,11.0 \
+  --log10-e-stem 8.0,9.5,11.0 \
+  --include-gt-candidate --overwrite
 ```
+
+Grid axis flags: `--support-kp-values` (physical) **or** `--log10-support-kp`
+(exclusive); plus `--log10-e-spur` and `--log10-e-stem`. Primary-\(E\) axes
+(`--log10-e-primary`) are removed.
 
 Add `--no-multi-structure-batch` to run the scalar parity path.
 

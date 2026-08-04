@@ -4,26 +4,29 @@
 
 | Field | Value |
 | --- | --- |
-| **Last reviewed** | 2026-07-22 |
-| **Roadmap slice** | V.5.2 |
-| **Status** | Implementation verified complete (Task 8 focused/full suites + CUDA 5×5 acceptance, 2026-07-17); docs aligned to shipped `CMA_SEARCH_PARAMS` (0.1–100 GPa box); all-invalid re-ask + joint-kd ζ-hold amended 2026-07-22 |
-| **Design** | `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md` |
+| **Last reviewed** | 2026-08-04 |
+| **Roadmap slice** | V.5.2 (support \(k_p\) retarget) |
+| **Status** | CMA migrated to support \(k_p\) + spur/stem \(E\); code complete, acceptance pending Task 8 |
+| **Design** | `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md` (primary-E design: `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`) |
 | **Grid contract** | Unchanged — `docs/youngs-modulus-sysid.md` |
 | **README how-to** | `README.md` → **CMA-ES sim-to-sim transfer (Young's modulus)** |
 
-Human-readable notes for the separate pycma loop (default search box: absolute
-0.1–100 GPa / \(\log_{10} E \in [8, 11]\) per role). The Cartesian-grid CLI,
+Human-readable notes for the separate pycma loop (default search box:
+\(\log_{10} k_p^{\mathrm{support}} \in [2, 6]\) (100–1e6), spur/stem
+\(\log_{10} E \in [8, 11]\) (0.1–100 GPa)). The Cartesian-grid CLI,
 ranking report, and ranking gate remain the diagnostic/acceptance path
 documented in `docs/youngs-modulus-sysid.md`.
 
 ## Behavior summary
 
-`example_youngs_modulus_cmaes.py` fits primary/spur/stem Young's modulus in
-\(\log_{10} E\) for each selected `batched_sysid_v1` structure. One independent
-pycma optimizer owns each structure's mean, covariance, fitness penalties, seed
-stream, and stop criteria. Active optimizers advance in **synchronized
-generation waves**: every active structure calls `ask()` once, all populations
-go through one logical fused evaluation
+`example_youngs_modulus_cmaes.py` fits support-joint \(k_p\) and spur/stem
+Young's modulus in \(\log_{10}\) for each selected `batched_sysid_v1`
+structure. Primary \(E\) is fixed from ground truth. Support \(k_d\) uses
+\(\zeta=1\) on support joints only (see `docs/damping-tuning.md`). One
+independent pycma optimizer owns each structure's mean, covariance, fitness
+penalties, seed stream, and stop criteria. Active optimizers advance in
+**synchronized generation waves**: every active structure calls `ask()` once,
+all populations go through one logical fused evaluation
 (`structure × local candidate × physical direction`), then each successful
 structure calls `tell()` with the original `ask()` samples in original order.
 
@@ -34,32 +37,33 @@ logical fused wave (one candidate per structure). That measured final mean is
 the fitted estimate. Best sampled candidates and covariance diagnostics remain
 reporting-only.
 
-Stored GT E is never used for initialization or fitness. The ranges fixture
-(`--ranges`, else manifest `collection.ranges_path`) remains required for
-replay `sim_build` knobs and for optional `"bounds_midpoint"` init. Relative
-paths resolve from the process CWD; the report stores the absolute path.
-Missing ranges fail before optimizer construction — there is no unrelated
-default-fixture fallback. The fixture `youngs_modulus_pa` ε-bands are **not**
-the default CMA search box (the variance proxy primary band is too narrow).
+Stored GT support \(k_p\) and spur/stem \(E\) are never used for initialization
+or fitness. The ranges fixture (`--ranges`, else manifest `collection.ranges_path`)
+remains required for replay `sim_build` knobs and for optional
+`"bounds_midpoint"` init. Relative paths resolve from the process CWD; the
+report stores the absolute path. Missing ranges fail before optimizer
+construction — there is no unrelated default-fixture fallback. Support \(k_p\)
+search bounds are an absolute safety box (log10 2–6), not the fixture override
+value (typically `1e4`).
 
 Default controls live in ``CMA_SEARCH_PARAMS`` inside
 ``example_youngs_modulus_cmaes.py``:
 
 | Knob | Default |
 | --- | --- |
-| `initial_mean_log10` | midpoint of the search box: `[9.5, 9.5, 9.5]` (not GT; `"bounds_midpoint"` still available) |
-| `initial_sigma_log10` | `1.0` (aligned with library `DEFAULT_INITIAL_SIGMA_LOG10`; was `0.5` before 2026-07-27) |
+| `initial_mean_log10` | midpoint of the search box: `[4, 9.5, 9.5]` = `[support_kp, spur, stem]` (not GT; `"bounds_midpoint"` still available) |
+| `initial_sigma_log10` | `1.0` (aligned with library `DEFAULT_INITIAL_SIGMA_LOG10`) |
 | `population_size` | `15` |
 | `max_generations` | `10` |
 | `cma_seed` | `56` (gate overrides via `--cma-seed`) |
-| `search_bounds_log10` | absolute 0.1–100 GPa: `lower=[8,8,8]`, `upper=[11,11,11]` (`None` = unbounded) |
+| `search_bounds_log10` | support \(k_p\): `lower=[2,8,8]`, `upper=[6,11,11]` (`None` = unbounded) |
 
 ``--multi-structure-batch`` remains on by default. Structure `bounds` in
 `cmaes_report.json` are the active **search** box (JSON `null` when unbounded).
 
 ## Log-space math and covariance terminology
 
-- Optimizer coordinates are \(\log_{10}([E_\mathrm{primary}, E_\mathrm{spur}, E_\mathrm{stem}])\).
+- Optimizer coordinates are \(\log_{10}([k_p^{\mathrm{support}}, E_\mathrm{spur}, E_\mathrm{stem}])\).
 - Invalid/disqualified samples in a generation with at least one finite eligible
   score receive penalty `worst_finite + max(1, abs(worst_finite))`. Overflow
   still fails that structure without `tell()`. An **all-invalid** generation
@@ -81,13 +85,15 @@ Default controls live in ``CMA_SEARCH_PARAMS`` inside
 - `evaluated_history_extrema` is the component-wise min/max of samples actually
   submitted in CMA populations (`ask_samples_log10`), in both log10-E and Pa.
 
-## Joint-kd from fixture ζ (no E scale)
+## Joint-kd from fixture ζ (support sys-ID path)
 
 Batched heterogeneous builds derive FIXED-joint angular/linear `kd` from
 `sim_build.joint_damping_ratio` (or absolute kd maps) via
 `kd = ζ · 2 · √(k · I)` / `√(k · m)` using each env's child mass/inertia.
-Weld `kd` is **not** scaled with Young's modulus: fixture ζ is constant across
-CMA/grid E candidates. Rankings and integrity/ranking gates need **re-baselining**
+During support-\(k_p\) sys-ID, candidate apply sets support \(k_d\) with
+**fixed \(\zeta=1\)** on support joints only; spur/stem cable bend damping and
+non-support FIXED joint penalties stay at build/fixture values. Primary \(E\) is
+not a free dimension. Rankings and integrity/ranking gates need **re-baselining**
 after damping-policy changes (`scripts/gate_youngs_modulus_cmaes.sh`, ranking gate).
 
 ## Logical versus physical counters
@@ -172,22 +178,24 @@ Canonical copy-paste how-to (collect → fit → gates): **README.md** section
 # 1) Collect GT trajectories
 uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
   --viewer null --num-structures 2 --num-directions 3 --max-steps 200 \
-  --output tmp/youngs_cmaes_dataset --overwrite
+  --output tmp/support_kp_sysid_dataset --overwrite
 
-# 2) Fit CMA-ES (primary/spur/stem log10-E)
+# 2) Fit CMA-ES (support_kp + spur/stem log10-E; no new CMA CLI flags)
 uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --viewer null \
-  --dataset tmp/youngs_cmaes_dataset \
-  --output tmp/youngs_cmaes_fit \
+  --dataset tmp/support_kp_sysid_dataset \
+  --output tmp/support_kp_cmaes_fit \
   --overwrite
 ```
 
 Edit ``CMA_SEARCH_PARAMS`` in ``example_youngs_modulus_cmaes.py`` for mean,
-sigma, population size, max generations, bounds, and default CMA seed.
-``--cma-seed`` overrides ``CMA_SEARCH_PARAMS["cma_seed"]``. CLI still accepts
-``--ranges`` plus shared dataset/replay/viewer knobs.
-Grid-only controls (`--log10-e-*`, `--include-gt-candidate`, `--max-candidates`,
-`--export-replays`, `--max-overlay-candidates`) are absent.
+sigma, population size, max generations, bounds (`[log10_support_kp,
+log10_spur_E, log10_stem_E]`, defaults lower `[2,8,8]` upper `[6,11,11]`), and
+default CMA seed. ``--cma-seed`` overrides ``CMA_SEARCH_PARAMS["cma_seed"]``.
+CLI still accepts ``--ranges`` plus shared dataset/replay/viewer knobs.
+Grid-only controls (`--support-kp-values`, `--log10-support-kp`, `--log10-e-spur`,
+`--log10-e-stem`, `--include-gt-candidate`, `--max-candidates`,
+`--export-replays`, `--max-overlay-candidates`) are absent from the CMA CLI.
 
 Integrity gate (no GT-error threshold; defaults seeds `0,1,2`, five structures,
 five directions):

@@ -347,25 +347,27 @@ uv run --env-file pytest.env python -m pytest -p no:launch_testing \
 uv run python apple_pick_gym/batched_examples/example_batched_youngs_modulus_keyboard.py \
   --viewer null --max-steps 60 \
   --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0
-# Two-step collect → rank (GT E from episode fruiting_system_params;
-# secondary E fixed at stored GT when present)
+# Two-step collect → rank (GT support k_p + spur/stem E from episode metadata;
+# primary E fixed; grid includes GT support k_p 1e4 when using variance fixture)
 uv run --env-file pytest.env python \
   apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
-  --viewer null --num-structures 1 --num-directions 2 --max-steps 80 \
-  --output tmp/youngs_gt_smoke --overwrite
+  --viewer null --num-structures 2 --num-directions 3 --max-steps 200 \
+  --output tmp/support_kp_sysid_dataset --overwrite
 uv run --env-file pytest.env python \
   apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
-  --viewer null --dataset tmp/youngs_gt_smoke \
-  --output tmp/youngs_grid_rank_smoke \
-  --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
-  --include-gt-candidate --max-candidates 8 --overwrite
+  --viewer null --dataset tmp/support_kp_sysid_dataset \
+  --output tmp/support_kp_grid \
+  --support-kp-values 1e3,1e4,1e5 \
+  --log10-e-spur 8.0,9.5,11.0 \
+  --log10-e-stem 8.0,9.5,11.0 \
+  --include-gt-candidate --overwrite
 
 # Separate CMA-ES fit (collect → fit → gates): see README.md
-# "CMA-ES sim-to-sim transfer (Young's modulus)" and
+# "CMA-ES sim-to-sim transfer (support k_p + spur/stem E)" and
 # docs/youngs-modulus-cmaes-implementation.md
 # uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
-#   --viewer null --dataset tmp/youngs_gt_smoke --output tmp/youngs_cmaes_smoke \
-#   --overwrite
+#   --viewer null --dataset tmp/support_kp_sysid_dataset \
+#   --output tmp/support_kp_cmaes_fit --overwrite
 # Full Young's multi-seed ranking gate (expensive; defaults to 3 seeds x 5 structures x 5 directions):
 # bash scripts/gate_youngs_modulus_sysid.sh
 # Full Young's multi-seed CMA integrity gate (expensive; same default collect size; no GT-error threshold):

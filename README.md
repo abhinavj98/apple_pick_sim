@@ -363,23 +363,25 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_batched_sysid_grid_viz_integration.py \
   apple_pick_gym/tests/test_example_batched_sysid_mmd_grid_cli.py -q
 
-# Young's-modulus E-grid replay + ranking (dataset-driven, two-step diagnostic)
-# Step 1: collect GT trajectories; step 2: replay recorded actions over a log10-E grid.
-# GT primary/spur/stem E come from each structure's episode fruiting_system_params;
-# secondary E stays fixed at its stored GT value when present. On healthy samples,
-# GT should rank #1. Compatible structures use fused replay by default; add
-# --no-multi-structure-batch for scalar parity/debugging.
+# Support-k_p + spur/stem E grid replay + ranking (dataset-driven, two-step diagnostic)
+# Step 1: collect GT trajectories; step 2: replay recorded actions over a
+# support_kp x log10-E grid. Primary E is fixed from each structure's true params;
+# GT support k_p (default fixture: 1e4) and spur/stem E come from episode metadata.
+# On healthy samples, GT should rank #1. Compatible structures use fused replay by
+# default; add --no-multi-structure-batch for scalar parity/debugging.
 # CMA-ES fit on the same dataset: see "CMA-ES sim-to-sim transfer" below.
 uv run --env-file pytest.env python \
   apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
-  --viewer null --num-structures 1 --num-directions 2 --max-steps 80 \
-  --output tmp/youngs_gt_smoke --overwrite
+  --viewer null --num-structures 2 --num-directions 3 --max-steps 200 \
+  --output tmp/support_kp_sysid_dataset --overwrite
 uv run --env-file pytest.env python \
   apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
-  --viewer null --dataset tmp/youngs_gt_smoke \
-  --output tmp/youngs_grid_rank_smoke \
-  --log10-e-primary 8.0,8.5 --log10-e-spur 7.5 --log10-e-stem 7.0 \
-  --include-gt-candidate --max-candidates 8 --overwrite
+  --viewer null --dataset tmp/support_kp_sysid_dataset \
+  --output tmp/support_kp_grid \
+  --support-kp-values 1e3,1e4,1e5 \
+  --log10-e-spur 8.0,9.5,11.0 \
+  --log10-e-stem 8.0,9.5,11.0 \
+  --include-gt-candidate --overwrite
 
 # Legacy single-env bend-stiffness / MMD grid (legacy Parquet layout only)
 uv run python apple_pick_gym/examples/run_system_identification.py \
@@ -408,31 +410,49 @@ uv run --env-file pytest.env python -m pytest \
 
 The batched grid writes Plotly/HTML ranking artifacts under `--plot-output` (see `docs/sysid-mmd-grid-replay-alignment.md`). The legacy `--mmd-output` path writes `mmd_results.csv` plus `mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and `mmd_stiffness_sensitivity.png`.
 
-### CMA-ES sim-to-sim transfer (Young's modulus)
+### CMA-ES sim-to-sim transfer (support \(k_p\) + spur/stem \(E\))
 
-Fit primary/spur/stem Young's modulus (\(E\)) in \(\log_{10} E\) so a replay
-simulator matches trajectories collected from a differently parameterized
-"ground-truth" sim (`batched_sysid_v1`). Stored GT \(E\) is **not** used for
-initialization or fitness — only for post-hoc comparison in reports. Notes:
+Fit support-joint \(k_p\) (shared angular+linear, \(\zeta=1\) on support only) and
+spur/stem Young's modulus in \(\log_{10}\) so a replay simulator matches
+trajectories collected from a differently parameterized "ground-truth" sim
+(`batched_sysid_v1`). Primary \(E\) is fixed from each structure's true params.
+Stored GT support \(k_p\) and spur/stem \(E\) are **not** used for initialization
+or fitness — only for post-hoc comparison in reports. Notes:
 [`docs/youngs-modulus-cmaes-implementation.md`](docs/youngs-modulus-cmaes-implementation.md).
-Cartesian E-grid diagnostic (not the optimizer): `example_youngs_modulus_sys_id.py`.
+Cartesian grid diagnostic (not the optimizer): `example_youngs_modulus_sys_id.py`
+(`--support-kp-values` or `--log10-support-kp`, plus `--log10-e-spur` /
+`--log10-e-stem`).
 
-**Step 1 — collect** GT pull trajectories (oracle params stay in episode metadata):
+**Path 1 — collect + grid** (include GT support \(k_p\) in the grid, e.g. `1e4`):
 
 ```bash
 uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
   --viewer null --num-structures 2 --num-directions 3 --max-steps 200 \
-  --output tmp/youngs_cmaes_dataset --overwrite
+  --output tmp/support_kp_sysid_dataset --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
+  --viewer null \
+  --dataset tmp/support_kp_sysid_dataset \
+  --output tmp/support_kp_grid \
+  --support-kp-values 1e3,1e4,1e5 \
+  --log10-e-spur 8.0,9.5,11.0 \
+  --log10-e-stem 8.0,9.5,11.0 \
+  --overwrite
 ```
 
-**Step 2 — fit** one independent CMA-ES per structure (fused multi-structure
-batch by default; writes `cmaes_report.json` + Plotly overlays under `--output`):
+**Path 2 — collect + PyCMA** (one independent CMA-ES per structure; fused
+multi-structure batch by default; writes `cmaes_report.json` + Plotly overlays
+under `--output`):
 
 ```bash
+uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
+  --viewer null --num-structures 2 --num-directions 3 --max-steps 200 \
+  --output tmp/support_kp_sysid_dataset --overwrite
+
 uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --viewer null \
-  --dataset tmp/youngs_cmaes_dataset \
-  --output tmp/youngs_cmaes_fit \
+  --dataset tmp/support_kp_sysid_dataset \
+  --output tmp/support_kp_cmaes_fit \
   --overwrite
 ```
 
@@ -441,21 +461,24 @@ Useful options:
 ```bash
 # Subset of structures; override CMA RNG (other knobs stay in CMA_SEARCH_PARAMS)
 uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
-  --viewer null --dataset tmp/youngs_cmaes_dataset --output tmp/youngs_cmaes_fit \
+  --viewer null --dataset tmp/support_kp_sysid_dataset --output tmp/support_kp_cmaes_fit \
   --structure-indices 0,1 --cma-seed 0 --overwrite
 
 # Scalar per-structure replay (parity / debug; slower)
 uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
-  --viewer null --dataset tmp/youngs_cmaes_dataset --output tmp/youngs_cmaes_scalar \
+  --viewer null --dataset tmp/support_kp_sysid_dataset --output tmp/support_kp_cmaes_scalar \
   --no-multi-structure-batch --overwrite
 ```
 
 Edit search knobs (`initial_mean_log10`, `initial_sigma_log10`, `population_size`,
 `max_generations`, `search_bounds_log10`, default `cma_seed`) in
 `CMA_SEARCH_PARAMS` inside `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py`.
-Default search box is absolute **0.1–100 GPa** (\(\log_{10} E \in [8, 11]\)) per role,
-not the narrow fixture `youngs_modulus_pa` ε-bands. `--cma-seed` overrides the
-dict's `cma_seed` only.
+Default 3-vector is
+\(\log_{10}([k_p^{\mathrm{support}}, E_{\mathrm{spur}}, E_{\mathrm{stem}}])\)
+with bounds lower `[2, 8, 8]` / upper `[6, 11, 11]` (support \(k_p\): 100–1e6;
+spur/stem \(E\): 0.1–100 GPa). No new CMA CLI flags — only `--cma-seed` and
+shared dataset/replay knobs on the CLI. `--cma-seed` overrides the dict's
+`cma_seed` only.
 
 Regenerate Plotly figures from an existing report:
 

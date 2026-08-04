@@ -8,6 +8,15 @@
 | **Amends** | `docs/superpowers/specs/2026-07-24-real-post-grasp-viewer-design.md` (orientation contract) |
 | **Out of scope** | Generic `weld_direction` look-at for other sims; FR3; trajectory replay; woody teleport |
 
+## Warnings
+
+> **Warning — look-at vs logged TCP:** Gym, digital-twin, and generic
+> `weld_direction` look-at welds do **not** yet consume a logged TCP SE(3).
+> They use tip-out look-at (surface pole + constructed orientation). Only
+> post-grasp replay (`real_post_grasp_plan` / `--grasp-after-settle`) uses
+> full logged TCP pose. Do not assume look-at orientation matches recorded
+> TCP quat.
+
 Related: `robot_replay/example_view_pre_grasp_settle.py`,
 `apple_pick_sim/system_id/real_post_grasp_plan.py`,
 `apple_pick_sim/fruiting_system/params.py` (`GripperProxyConfig`),

@@ -315,16 +315,33 @@ Nominal fixture may use fixed angles for reproducible IK smoke tests.
 | Parameter | Value | Status |
 |-----------|-------|--------|
 | Tool length | 0.14 m (140 mm) | **Specified** |
-| Tool radius | 0.10 m (100 mm) | **Specified** |
-| TCP location | Distal tip along **+Z** from link7 / `ee` flange | **Specified** |
+| Tool radius | 0.05 m (50 mm; Ø100) | **Specified** |
+| TCP location | Distal tip face center along **+Z** from link7 / `ee` flange | **Specified** |
 | Tool mass | See placeholders | **TBD — measure on hardware** |
+
+**Tip / flange / +Z contract:**
+
+- TCP (`/ee/tcp`), VBD proxy body origin, and distal cylinder face share the same
+  point (tip-face center).
+- Local **+Z** is tip-out (flange → tip; toward apple when grasping).
+- Proximal cylinder face is flush with the flange (link7 / `ee` attach); bulk lies
+  entirely on the flange side (local **−Z** from TCP).
+- FR3 USD (`assets/testfr3_resolved.usda`) and VBD `GripperProxyConfig` must share
+  this contract (length **0.14 m**, radius **0.05 m**, half-height **0.07 m**).
+
+> **Warning — look-at vs logged TCP:** Gym, digital-twin, and generic
+> `weld_direction` look-at welds do **not** yet consume a logged TCP SE(3).
+> They use tip-out look-at (surface pole + constructed orientation). Only
+> post-grasp replay (`real_post_grasp_plan` / `--grasp-after-settle`) uses
+> full logged TCP pose. Do not assume look-at orientation matches recorded
+> TCP quat.
 
 **Assets:** Update `assets/testfr3_resolved.usda` (cylinder geometry, TCP offset,
 mass on `ee` / `tcp`).
 
-**Coupling:** Match `GripperProxyConfig.mass` and `box_half_extents` to the USD
-TCP so VBD proxy harvest uses consistent inertia
-(`apple_pick_sim/fruiting_system/params.py`).
+**Coupling:** Match `GripperProxyConfig.mass`, cylinder radius, and half-height
+(and legacy `box_half_extents` if present) to the USD TCP so VBD proxy harvest
+uses consistent inertia (`apple_pick_sim/fruiting_system/params.py`).
 
 ---
 
@@ -419,7 +436,7 @@ Before marking the fixture slice done:
 - [x] Add `real_world_proxy` to `digital_twin_fixture_catalog.json`
 - [x] Wire gym/sys-ID default or explicit `--ranges` path to proxy fixture where intended
 - [ ] Disable `robot_base_from_proxy` for builds using this fixture — not re-verified since this doc was written
-- [ ] Update `assets/testfr3_resolved.usda` (140 mm × Ø200 mm, TCP at +Z tip)
+- [ ] Update `assets/testfr3_resolved.usda` (140 mm × Ø100 mm, TCP at +Z tip)
 - [ ] Sync `GripperProxyConfig` with EE mass placeholder
 - [ ] Align `COUPLED_*` defaults or document override when proxy fixture is active
 - [x] **T-junction builder:** centered primary, world FIXED at both endpoints,
@@ -475,6 +492,6 @@ uv run --env-file pytest.env python -m pytest \
 | 2026-06-26 | Primary length 0.10–0.20 m (full span); stem length 0.01–0.06 m; apple radius 0.04–0.08 m |
 | 2026-06-26 | Branch stiffness: continuous bands from proxy 210–736 N/m |
 | 2026-06-26 | Magnet detach → stem **torsion** (follow-up slice); interim bend only |
-| 2026-06-26 | EE 140 mm × 100 mm radius, TCP +Z; mass placeholder 0.5 kg until measured |
+| 2026-06-26 | EE 140 mm × Ø100 (r=50 mm), TCP +Z tip-out; mass placeholder 0.5 kg until measured |
 | 2026-06-26 | Apple density placeholder 700 kg/m³ until measured |
 | 2026-06-26 | T builder shipped; default topology `t_junction`; opt-in `linear_chain` |

@@ -40,7 +40,7 @@ pre_grasp → FruitingSystemParams + free proxy scene
               apple_welded_pos ← tcp − r · ŵ
               warn if |apple_welded_pos − apple_meas| > 0.02 m
               proxy at surface: pos = apple_welded + r·ŵ (= tcp pos)
-                         +Z ∥ ŵ  (look-at; tool-0 / approach axis)
+                         +Z ∥ ŵ  (look-at; tool-0 / approach axis)  [obsolete orientation]
               woody bodies unchanged (post–long-settle)
               fix/weld proxy to apple
          → short settle (visible; quiet every N)
@@ -62,6 +62,10 @@ Let:
 p_apple_welded = p_tcp − r · ŵ          # force |TCP − apple| = r
 ```
 
+> **Obsolete:** orientation superseded by
+> `2026-08-04-true-tcp-pose-weld-design.md` (true TCP SE(3)). Do not implement
+> look-at +Z∥ŵ for post-grasp replay.
+
 | Quantity | Role |
 | -------- | ---- |
 | Proxy **position** | Measured TCP position (via surface: \(\mathbf{p}_{\mathrm{apple}}^{\mathrm{welded}}+r\hat{w}\)) |
@@ -71,6 +75,10 @@ p_apple_welded = p_tcp − r · ŵ          # force |TCP − apple| = r
 | Woody | Unchanged after long settle |
 
 ### Orientation contract
+
+> **Obsolete:** orientation superseded by
+> `2026-08-04-true-tcp-pose-weld-design.md` (true TCP SE(3)). Do not implement
+> look-at +Z∥ŵ for post-grasp replay.
 
 **Intended real grasp:** tool approach (+Z) faces along the weld chord
 \(\hat{w}\). Sim enforces that with look-at.
@@ -158,6 +166,10 @@ post-grasp row (not inside `post_grasp_geometry`). No trajectory replay here.
   FR3 in first coding slice; custom FIXED offset from logged TCP quat.
 
 ## Success criteria
+
+> **Obsolete:** orientation superseded by
+> `2026-08-04-true-tcp-pose-weld-design.md` (true TCP SE(3)). Do not implement
+> look-at +Z∥ŵ for post-grasp replay.
 
 - Grasp places proxy at TCP **position** with **+Z ∥ \(\hat{w}\)**; apple on
   r-sphere; woody not teleported from post-long-settle.

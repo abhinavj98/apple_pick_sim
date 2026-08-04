@@ -22,7 +22,7 @@ sequence:
 
 ```text
 pre_grasp  →  build fruiting_system (non-bending)  →  sim settle
-post_grasp →  weld robot TCP to settled apple (pose + approach direction)
+post_grasp →  weld proxy at logged TCP SE(3) and apple at measured post-grasp pose
 ```
 
 Full fix list, quirks (including string-encoded `apple_pos`), and compile
@@ -48,7 +48,8 @@ rebuild.
 Rebuild `FruitingSystemParams` from `dataset_metadata.pre_grasp_geometry`
 (Branch = T-junction / `fruiting_base_pos`), build a plant-only coupled cable
 scene (free gripper proxy, no FR3), settle under gravity in the viewer,
-optionally apply a post-grasp look-at weld, then keep simulating.
+optionally apply a post-grasp true TCP SE(3) weld (logged TCP + apple poses;
+no catalog surface snap), then keep simulating.
 
 From repo root:
 
@@ -60,7 +61,7 @@ uv run python robot_replay/example_view_pre_grasp_settle.py \
   --viewer gl
 ```
 
-Post-grasp snap (TCP-anchored surface apple; proxy +Z ∥ weld direction):
+Post-grasp weld (true logged TCP + apple SE(3); follow measured poses):
 
 ```bash
 uv run python robot_replay/example_view_pre_grasp_settle.py \
@@ -75,8 +76,9 @@ uv run python robot_replay/example_view_pre_grasp_settle.py \
 `fruiting_system_params` blob, and catalog-vs-chord diagnostics.
 `--strict` fails only if pre-grasp woody bend is not ~0.
 `--settle-quiet-every N` zeros cable twists every N settle substeps (default 300).
-Data-contract mismatches (`|TCP−apple|≠r`, logged TCP +Z ̸∥ ŵ, etc.) **warn and
-continue** — quieter once corrected parquets land.
+Residual diagnostics (`|TCP−apple|−r`, apple shift vs measured, TCP +Z vs chord)
+**warn and continue**; poses are not moved to force `|TCP−apple|=r` or look-at
+orientation.
 
 Libraries: `real_pre_grasp_params.py`, `real_post_grasp_plan.py`.
 

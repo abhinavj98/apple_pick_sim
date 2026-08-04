@@ -316,18 +316,25 @@ Nominal fixture may use fixed angles for reproducible IK smoke tests.
 |-----------|-------|--------|
 | Tool length | 0.14 m (140 mm) | **Specified** |
 | Tool radius | 0.05 m (50 mm; Ø100) | **Specified** |
-| TCP location | Distal tip face center along **+Z** from link7 / `ee` flange | **Specified** |
+| TCP location | Distal tip face center, out from link7 / `ee` flange | **Specified** |
 | Tool mass | See placeholders | **TBD — measure on hardware** |
 
-**Tip / flange / +Z contract:**
+**Tip / flange / tip-out contract:**
 
 - TCP (`/ee/tcp`), VBD proxy body origin, and distal cylinder face share the same
   point (tip-face center).
-- Local **+Z** is tip-out (flange → tip; toward apple when grasping).
-- Proximal cylinder face is flush with the flange (link7 / `ee` attach); bulk lies
-  entirely on the flange side (local **−Z** from TCP).
+- **World tip-out** (flange → tip → apple): away from link7. On the FR3 USD,
+  `fr3_joint8` applies ~180° about X, so that direction is **ee −Z** (cylinder and
+  `/ee/tcp` authored on negative ee `z`). Do not place the mesh on ee `+Z` or it
+  grows into link7.
+- In the **recorded / VBD proxy** TCP frame, local **+Z** is tip-out; proxy bulk
+  lies on local **−Z** from the tip.
+- Proximal cylinder face meets the **link7 visual mesh** end. `fr3_joint8` sits
+  ~6 mm beyond that mesh (`localPos0.z ≈ 0.113` vs mesh max-z ≈ 0.107), so the
+  cylinder overhangs slightly past `ee` origin into ee `+Z` to close the gap;
+  tip/`/ee/tcp` stay coincident on ee `−Z`.
 - FR3 USD (`assets/testfr3_resolved.usda`) and VBD `GripperProxyConfig` must share
-  this contract (length **0.14 m**, radius **0.05 m**, half-height **0.07 m**).
+  length **0.14 m**, radius **0.05 m**, half-height **0.07 m**.
 
 > **Warning — look-at vs logged TCP:** Gym, digital-twin, and generic
 > `weld_direction` look-at welds do **not** yet consume a logged TCP SE(3).

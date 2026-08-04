@@ -25,10 +25,11 @@ cylinder bulk on the flange side (−Z). FR3 USD and several docs still disagree
 | Quantity | Rule |
 | -------- | ---- |
 | TCP / `/ee/tcp` / VBD proxy body origin | Center of **distal tip face** |
-| Local **+Z** | Tip-out (flange → tip; toward apple when grasping) |
+| World tip-out | Away from link7 (flange → tip). USD: `fr3_joint8` ~RotX(180) ⇒ tip-out = **ee −Z** |
+| Recorded / VBD local **+Z** | Tip-out in the TCP frame (proxy bulk on −Z from tip) |
 | Distal cylinder face | Flush with TCP (same point as tip-face center) |
-| Proximal cylinder face | **Flush with flange** (link7 / `ee` attach) |
-| Cylinder bulk | Entirely between flange and tip (local −Z from TCP) |
+| Proximal cylinder face | Meets **link7 visual mesh** end (~6 mm past `ee` origin / `fr3_joint8`, which is beyond the mesh) |
+| Cylinder bulk | Between proximal (link7 mesh) and tip; length 0.14 m |
 | Length / radius | **0.14 m** / **0.05 m** (Ø100); `hh = 0.07` |
 | Post-grasp poses | Follow logged TCP + apple SE(3); **no** catalog-\(r\) surface snap |
 
@@ -88,11 +89,13 @@ Text intent:
 
 ## Success criteria
 
-- [x] In resolved (and authoring) USD: distal mesh tip world/local coincides with
+- [x] In resolved (and authoring) USD: distal mesh tip coincides with
       `/ee/tcp` within a tight tolerance after scales.
-- [x] Proximal mesh face flush with flange/attach within the same tolerance.
+- [x] Proximal mesh face meets link7 visual mesh end (~6.2 mm past `ee` /
+      `fr3_joint8`; joint is beyond the mesh).
 - [x] Automated check (test or script) fails if tip↔TCP drifts.
-- [x] `real-world-proxy.md` radius = 0.05; tip/flange/+Z contract stated.
+- [x] `real-world-proxy.md` radius = 0.05; tip/flange/tip-out contract stated
+      (including ee −Z / joint flip).
 - [x] Warning present in both designated docs.
 - [x] `robot_replay/README.md` no longer describes look-at post-grasp as current.
 - [x] Existing tip-out proxy tests remain green.

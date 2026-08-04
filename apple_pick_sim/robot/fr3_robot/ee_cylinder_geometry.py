@@ -43,18 +43,25 @@ def ee_cylinder_layout_from_authored(
     ``r_m = ee_scale_x * mesh_scale_x * (mesh radial half-extent)``
 
     Mesh points extent uses ``z in [mesh_z_min, mesh_z_max]`` (unit cylinder ``[-0.5, 0.5]``).
-    After mesh xform, tip = max z, flange = min z (tip-out +Z). TCP ``z_m = ee_scale_z * tcp_translate_z``.
+    After mesh xform, the two face ``z`` values are known; **tip** is the face nearer
+    to TCP and **flange** is the other (so either ee ``+Z`` or ``−Z`` tip-out works).
+
+    Note: ``fr3_joint8`` applies ~180° about X, so world tip-out (away from link7)
+    is **ee −Z**. Author the cylinder/TCP on negative ee ``z`` for correct viz.
+    TCP ``z_m = ee_scale_z * tcp_translate_z``.
     """
     sx, _sy, sz = ee_scale_xyz
     mx, _my, mz = mesh_scale_xyz
     _tx, _ty, tz = mesh_translate_xyz
     z0 = mz * (mesh_z_min + tz)
     z1 = mz * (mesh_z_max + tz)
-    tip_local = max(z0, z1)
-    flange_local = min(z0, z1)
-    tip_z_m = sz * tip_local
-    flange_z_m = sz * flange_local
+    face0_m = sz * z0
+    face1_m = sz * z1
     tcp_z_m = sz * tcp_translate_xyz[2]
+    if abs(face0_m - tcp_z_m) <= abs(face1_m - tcp_z_m):
+        tip_z_m, flange_z_m = face0_m, face1_m
+    else:
+        tip_z_m, flange_z_m = face1_m, face0_m
     radius_m = abs(sx * mx * _UNIT_CYLINDER_XY_RADIUS)
     length_m = abs(tip_z_m - flange_z_m)
     return EeCylinderLayout(
@@ -71,10 +78,23 @@ def assert_tip_flange_tcp_contract(
     *,
     tip_tol_m: float = 1e-3,
     flange_tol_m: float = 1e-3,
+    expected_flange_z_m: float | None = None,
 ) -> None:
-    if abs(layout.flange_z_m) > flange_tol_m:
+    """Assert tip↔TCP coincidence and proximal (flange) face placement.
+
+    If ``expected_flange_z_m`` is set, proximal face must match it (e.g. link7
+    mesh end relative to ``fr3_joint8``). Otherwise proximal face must be near
+    ee origin (legacy flush-at-joint check).
+    """
+    if expected_flange_z_m is None:
+        if abs(layout.flange_z_m) > flange_tol_m:
+            raise AssertionError(
+                f"flange face z={layout.flange_z_m} m must be ~0 (flush with ee origin)"
+            )
+    elif abs(layout.flange_z_m - expected_flange_z_m) > flange_tol_m:
         raise AssertionError(
-            f"flange face z={layout.flange_z_m} m must be ~0 (flush with ee origin)"
+            f"flange face z={layout.flange_z_m} m != expected {expected_flange_z_m} m "
+            f"(tol={flange_tol_m})"
         )
     if abs(layout.tip_z_m - layout.tcp_z_m) > tip_tol_m:
         raise AssertionError(

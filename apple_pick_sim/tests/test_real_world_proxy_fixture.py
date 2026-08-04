@@ -288,11 +288,28 @@ def test_coupled_scene_gripper_proxy_uses_cylinder():
     radius, half_height, _ = shape_scale[si]
     assert radius == pytest.approx(0.05)
     assert half_height == pytest.approx(0.07)
-    assert float(shape_xform[si, 2]) == pytest.approx(0.07)
+    # Distal tip at body origin; bulk toward flange along local -Z (USD tip-out).
+    assert float(shape_xform[si, 2]) == pytest.approx(-0.07)
+
+
+def test_gripper_proxy_cylinder_tcp_at_distal_tip_bulk_neg_z():
+    """Body origin is the distal tip face; cylinder center sits at local -half_height."""
+    import warp as wp
+
+    wp.init()
+    from apple_pick_sim.fruiting_system.gripper_proxy_shape import gripper_proxy_cylinder_tcp_xform
+    from apple_pick_sim.fruiting_system.params import GripperProxyConfig
+
+    cfg = GripperProxyConfig(cylinder_half_height=0.07)
+    tf = gripper_proxy_cylinder_tcp_xform(cfg)
+    p = wp.transform_get_translation(tf)
+    assert float(p[0]) == pytest.approx(0.0)
+    assert float(p[1]) == pytest.approx(0.0)
+    assert float(p[2]) == pytest.approx(-0.07)
 
 
 def test_cylinder_proxy_tip_on_apple_surface_not_inside():
-    """Welded cylinder tip sits on the apple; tool bulk is on the robot side (+Z)."""
+    """Welded cylinder tip sits on the apple; tool bulk is on the robot side (−Z)."""
     import numpy as np
     import warp as wp
 
@@ -318,14 +335,20 @@ def test_cylinder_proxy_tip_on_apple_surface_not_inside():
     assert dist == pytest.approx(apple_r, abs=1e-3)
     assert gripper_proxy_clearance(scene.gripper_proxy_config) == pytest.approx(0.0)
 
-    # Back cap (toward apple, local -Z) and flange (local +2*hh) in world frame.
+    # Tip-out: local +Z toward apple; flange at local -2*hh (away from fruit).
     pq = bq[scene.gripper_proxy_body]
     p = np.asarray(pq[:3], dtype=np.float64)
     q = wp.quat(float(pq[3]), float(pq[4]), float(pq[5]), float(pq[6]))
     hh = scene.gripper_proxy_config.cylinder_half_height
     tip = p
-    back = np.asarray(wp.quat_rotate(q, wp.vec3(0.0, 0.0, -2.0 * hh)), dtype=np.float64) + p
-    flange = np.asarray(wp.quat_rotate(q, wp.vec3(0.0, 0.0, 2.0 * hh)), dtype=np.float64) + p
-    assert float(np.linalg.norm(tip - apple_pos)) >= apple_r - 1e-3
-    assert float(np.linalg.norm(back - apple_pos)) >= apple_r - 1e-3
-    assert float(np.linalg.norm(flange - apple_pos)) >= apple_r - 1e-3
+    flange = np.asarray(wp.quat_rotate(q, wp.vec3(0.0, 0.0, -2.0 * hh)), dtype=np.float64) + p
+    tip_d = float(np.linalg.norm(tip - apple_pos))
+    flange_d = float(np.linalg.norm(flange - apple_pos))
+    assert tip_d >= apple_r - 1e-3
+    assert flange_d >= apple_r - 1e-3
+    assert flange_d > tip_d + hh  # bulk away from apple
+    # Proxy +Z points tip-out toward apple center.
+    plus_z = np.asarray(wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0)), dtype=np.float64)
+    toward_apple = apple_pos - tip
+    toward_apple /= np.linalg.norm(toward_apple)
+    assert float(np.dot(plus_z, toward_apple)) > 0.9

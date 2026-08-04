@@ -495,3 +495,86 @@ def test_measure_fruiting_forces_works_on_coupled_scene():
     q_prev = scene.state_1.body_q
     out = fs.measure_fruiting_forces(scene, scene.state_0.body_q, q_prev, dt=1.0e-3)
     assert len(out["fixed_joints"]) == len(scene.fruiting_fixed_joints)
+
+
+def test_weld_proxy_offset_in_apple_frame_bypasses_look_at():
+    """Explicit apple-frame offset is stored as FIXED parent_xform (not look-at)."""
+    import warp as wp
+
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+
+    apple_pos = (0.5, 0.4, 0.6)
+    apple_quat = (0.0, 0.0, 0.0, 1.0)
+    # TCP with non-identity orientation and not +Z along apple→TCP.
+    tcp_pos = (0.5, 0.44, 0.6)
+    tcp_quat = (0.0, 0.70710678, 0.0, 0.70710678)  # 90° about Y
+
+    apple_tf = wp.transform(wp.vec3(*apple_pos), wp.quat(*apple_quat))
+    tcp_tf = wp.transform(wp.vec3(*tcp_pos), wp.quat(*tcp_quat))
+    offset_tf = wp.transform_multiply(wp.transform_inverse(apple_tf), tcp_tf)
+    off_t = wp.transform_get_translation(offset_tf)
+    off_q = wp.transform_get_rotation(offset_tf)
+    offset_7 = (
+        float(off_t[0]),
+        float(off_t[1]),
+        float(off_t[2]),
+        float(off_q[0]),
+        float(off_q[1]),
+        float(off_q[2]),
+        float(off_q[3]),
+    )
+
+    # Conflicting weld_direction would look-at along +Y if honored for orientation.
+    scene = fs.generate_coupled_cable_scene(
+        ranges,
+        seed=0,
+        gripper_proxy=fs.GripperProxyConfig(
+            fix_to_apple=True,
+            weld_direction=(0.0, 1.0, 0.0),
+            weld_reference_pos=apple_pos,
+            weld_reference_quat=apple_quat,
+            weld_proxy_offset_in_apple_frame=offset_7,
+        ),
+        robot_base_pos=COUPLED_ROBOT_BASE_POS,
+        **COUPLED_VBD_SCENE_KW,
+    )
+    assert scene.gripper_proxy_offset_in_apple_frame is not None
+    np.testing.assert_allclose(
+        scene.gripper_proxy_offset_in_apple_frame, offset_7, atol=1e-5
+    )
+
+    # Round-trip: apple * offset → TCP (pos + quat; allow quat sign flip).
+    stored = scene.gripper_proxy_offset_in_apple_frame
+    stored_tf = wp.transform(
+        wp.vec3(stored[0], stored[1], stored[2]),
+        wp.quat(stored[3], stored[4], stored[5], stored[6]),
+    )
+    recon = wp.transform_multiply(apple_tf, stored_tf)
+    recon_t = wp.transform_get_translation(recon)
+    recon_q = wp.transform_get_rotation(recon)
+    np.testing.assert_allclose(
+        [recon_t[0], recon_t[1], recon_t[2]], tcp_pos, atol=1e-5
+    )
+    q_dot = abs(
+        recon_q[0] * tcp_quat[0]
+        + recon_q[1] * tcp_quat[1]
+        + recon_q[2] * tcp_quat[2]
+        + recon_q[3] * tcp_quat[3]
+    )
+    assert q_dot > 1.0 - 1e-5
+
+
+def test_weld_proxy_offset_requires_fix_to_apple():
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    with pytest.raises(ValueError, match="weld_proxy_offset_in_apple_frame requires fix_to_apple"):
+        fs.generate_coupled_cable_scene(
+            ranges,
+            seed=0,
+            gripper_proxy=fs.GripperProxyConfig(
+                fix_to_apple=False,
+                weld_proxy_offset_in_apple_frame=(0.0, 0.04, 0.0, 0.0, 0.0, 0.0, 1.0),
+            ),
+            **COUPLED_VBD_SCENE_KW,
+        )

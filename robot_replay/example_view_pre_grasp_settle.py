@@ -9,7 +9,7 @@ Run from the repository root::
       --settle-quiet-every 300 \\
       --viewer gl
 
-With post-grasp snap (look-at weld, +Z ∥ ŵ)::
+With post-grasp snap (true logged TCP + apple SE(3) weld)::
 
     uv run python robot_replay/example_view_pre_grasp_settle.py \\
       --parquet robot_replay/s00-d00.parquet \\
@@ -88,8 +88,8 @@ def _make_parser() -> argparse.ArgumentParser:
         "--grasp-after-settle",
         action="store_true",
         help=(
-            "After long settle, snap apple to post-grasp surface plan and weld proxy "
-            "(+Z ∥ weld direction); then run --post-grasp-settle-substeps."
+            "After long settle, weld proxy at logged TCP SE(3) and apple at measured "
+            "post-grasp pose (no catalog surface snap); then run --post-grasp-settle-substeps."
         ),
     )
     parser.add_argument(
@@ -171,7 +171,7 @@ def log_robot_base_axes(
 
 
 class ExampleViewPreGraspSettle:
-    """Newton viewer: pre-grasp settle, optional post-grasp weld, keep simulating."""
+    """Newton viewer: pre-grasp settle, optional post-grasp true-TCP weld, keep simulating."""
 
     def __init__(self, viewer, args: argparse.Namespace):
         self.viewer = viewer
@@ -270,7 +270,7 @@ class ExampleViewPreGraspSettle:
             emit_warnings=True,
         )
         print(format_post_grasp_plan(plan))
-        print("Applying post-grasp look-at weld (+Z ∥ ŵ)…")
+        print("Applying post-grasp true TCP pose weld…")
         self._scene = apply_post_grasp_after_settle(
             self._scene,
             plan,

@@ -795,6 +795,8 @@ def _add_gripper_proxy(
         raise ValueError("robot_facing_weld requires fix_to_apple=True")
     if config.weld_direction is not None and not config.fix_to_apple:
         raise ValueError("weld_direction requires fix_to_apple=True")
+    if config.weld_proxy_offset_in_apple_frame is not None and not config.fix_to_apple:
+        raise ValueError("weld_proxy_offset_in_apple_frame requires fix_to_apple=True")
     if config.weld_reference_quat is not None and config.weld_reference_pos is None:
         raise ValueError("weld_reference_quat requires weld_reference_pos")
 
@@ -806,9 +808,36 @@ def _add_gripper_proxy(
     )
     clearance = gripper_proxy_clearance(config)
     robot_facing_approach_dir: wp.vec3 | None = None
+    explicit_offset_7 = config.weld_proxy_offset_in_apple_frame
+    if explicit_offset_7 is not None and len(explicit_offset_7) != 7:
+        raise ValueError(
+            "weld_proxy_offset_in_apple_frame must be a 7-tuple (px,py,pz,qx,qy,qz,qw)"
+        )
 
     vis_offset: wp.vec3 = wp.vec3(0.0, 0.0, 0.0)
-    if apple_radius is not None:
+    if explicit_offset_7 is not None:
+        # True relative TCP pose: place proxy at apple_ref * offset (no look-at).
+        offset_tf = wp.transform(
+            wp.vec3(
+                float(explicit_offset_7[0]),
+                float(explicit_offset_7[1]),
+                float(explicit_offset_7[2]),
+            ),
+            wp.quat(
+                float(explicit_offset_7[3]),
+                float(explicit_offset_7[4]),
+                float(explicit_offset_7[5]),
+                float(explicit_offset_7[6]),
+            ),
+        )
+        apple_q = weld_apple_quat if weld_apple_quat is not None else wp.quat_identity()
+        apple_tf = wp.transform(weld_apple_center, apple_q)
+        proxy_tf = wp.transform_multiply(apple_tf, offset_tf)
+        proxy_pos = wp.transform_get_translation(proxy_tf)
+        proxy_link_quat = wp.transform_get_rotation(proxy_tf)
+        vis_offset = wp.vec3(0.0, 0.0, 0.0)
+    elif apple_radius is not None:
+        proxy_link_quat = wp.quat_identity()
         if config.fix_to_apple and config.robot_facing_weld:
             if robot_base_pos is None:
                 raise ValueError("robot_facing_weld requires robot_base_pos")
@@ -833,13 +862,15 @@ def _add_gripper_proxy(
         if artifacts.apple_body is None:
             raise ValueError("fix_to_apple requires an apple body in the scene")
         proxy_pos = artifacts.proxy_placement_origin
+        proxy_link_quat = wp.quat_identity()
         vis_offset = wp.vec3(0.0, 0.0, 0.0)
     else:
         proxy_pos = artifacts.proxy_placement_origin
+        proxy_link_quat = wp.quat_identity()
         vis_offset = artifacts.proxy_placement_dir * clearance
 
     proxy_body = builder.add_link(
-        xform=wp.transform(proxy_pos, wp.quat_identity()),
+        xform=wp.transform(proxy_pos, proxy_link_quat),
         mass=config.mass,
         label=config.label,
     )
@@ -857,7 +888,31 @@ def _add_gripper_proxy(
     proxy_offset_in_apple_frame: tuple[float, float, float, float, float, float, float] | None = None
     if config.fix_to_apple:
         assert artifacts.apple_body is not None
-        if apple_radius is not None:
+        if explicit_offset_7 is not None:
+            parent_xform = wp.transform(
+                wp.vec3(
+                    float(explicit_offset_7[0]),
+                    float(explicit_offset_7[1]),
+                    float(explicit_offset_7[2]),
+                ),
+                wp.quat(
+                    float(explicit_offset_7[3]),
+                    float(explicit_offset_7[4]),
+                    float(explicit_offset_7[5]),
+                    float(explicit_offset_7[6]),
+                ),
+            )
+            child_xform = wp.transform_identity()
+            proxy_offset_in_apple_frame = (
+                float(explicit_offset_7[0]),
+                float(explicit_offset_7[1]),
+                float(explicit_offset_7[2]),
+                float(explicit_offset_7[3]),
+                float(explicit_offset_7[4]),
+                float(explicit_offset_7[5]),
+                float(explicit_offset_7[6]),
+            )
+        elif apple_radius is not None:
             if config.robot_facing_weld:
                 assert robot_facing_approach_dir is not None
                 approach_dir = robot_facing_approach_dir
@@ -881,8 +936,14 @@ def _add_gripper_proxy(
             else:
                 off = approach_local * -(apple_radius + clearance)
 
-            # Construct look-at rotation (proxy local Z → approach_local in apple frame)
-            z_axis = approach_local
+            # Look-at: tip-out +Z toward the apple (matches USD / recorded TCP).
+            # Exterior-pole welds place the tip along +approach from the apple center,
+            # so local +Z = −approach. Legacy random weld places the tip on −approach,
+            # so local +Z = +approach (still tip-out toward the fruit).
+            if config.robot_facing_weld or config.weld_direction is not None:
+                z_axis = -approach_local
+            else:
+                z_axis = approach_local
             up = wp.vec3(0.0, 0.0, 1.0)
             if abs(wp.dot(z_axis, up)) > 0.99:
                 up = wp.vec3(1.0, 0.0, 0.0)

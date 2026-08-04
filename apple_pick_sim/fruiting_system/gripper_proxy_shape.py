@@ -19,7 +19,8 @@ def gripper_proxy_clearance(config: GripperProxyConfig) -> float:
     """Distance from apple-surface contact to the proxy body origin along approach.
 
     For the default TCP-at-tip cylinder, the body origin sits on the apple surface
-    and the tool bulk extends toward the robot (+Z); clearance is zero.
+    (distal tip) and the tool bulk extends toward the flange along local −Z
+    (tip-out +Z toward the fruit); clearance is zero.
 
     For a centered box proxy, the body origin sits one half-extent outside the surface.
     """
@@ -30,9 +31,13 @@ def gripper_proxy_clearance(config: GripperProxyConfig) -> float:
 
 
 def gripper_proxy_cylinder_tcp_xform(config: GripperProxyConfig) -> wp.transform:
-    """Cylinder with the distal tip at the TCP / body origin; bulk extends toward +Z (robot)."""
+    """Cylinder with distal tip at the TCP / body origin; bulk extends toward −Z (flange).
+
+    Matches the USD / recorded-TCP contract: TCP is the face farthest from the
+    flange, local +Z is tip-out (toward the apple when grasping).
+    """
     hh = float(config.cylinder_half_height)
-    return wp.transform(wp.vec3(0.0, 0.0, hh), wp.quat_identity())
+    return wp.transform(wp.vec3(0.0, 0.0, -hh), wp.quat_identity())
 
 
 def add_gripper_proxy_collision_shape(

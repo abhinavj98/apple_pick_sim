@@ -1,4 +1,4 @@
-"""Post-grasp plan: TCP-anchored surface snap + look-at weld (+Z ∥ ŵ)."""
+"""Post-grasp plan: follow logged TCP + apple SE(3); diagnostic residuals only."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import warp as wp
 
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
@@ -25,6 +26,7 @@ _DEFAULT_WARN_TOL_M = 0.02
 _DEFAULT_APPROACH_ALIGN_MIN_DOT = 0.9
 _DEFAULT_POSE_POS_MATCH_TOL_M = 1e-4
 _PROXY_TCP_POS_WARN_M = 0.02
+_PROXY_TCP_QUAT_MIN_ABS_DOT = 0.99
 
 
 def pose_4x4_to_pos_quat(
@@ -88,19 +90,46 @@ def _unit(vec: np.ndarray, *, field: str) -> np.ndarray:
 
 @dataclass(frozen=True)
 class PostGraspPlan:
-    """TCP-anchored grasp plan for look-at weld (+Z ∥ ŵ)."""
+    """Logged TCP + apple SE(3) for weld; no catalog surface snap."""
 
     tcp_pos: tuple[float, float, float]
     tcp_quat_xyzw: tuple[float, float, float, float]
     apple_pos_measured: tuple[float, float, float]
     apple_quat_xyzw: tuple[float, float, float, float]
     apple_pos_welded: tuple[float, float, float]
+    """Apple center used for the FIXED weld; equals ``apple_pos_measured`` (follow data)."""
     weld_direction: tuple[float, float, float]
     apple_radius_m: float
     tcp_apple_distance_m: float
     tcp_radius_residual_m: float
     apple_shift_m: float
+    """Always 0 when following measured apple (kept for API compatibility)."""
     tcp_approach_dot_weld: float
+    """``+Z_tcp · unit(apple − tcp)`` — tip-out toward apple; expect near +1."""
+
+
+def proxy_offset_from_apple_and_tcp(
+    *,
+    apple_pos: tuple[float, float, float],
+    apple_quat_xyzw: tuple[float, float, float, float],
+    tcp_pos: tuple[float, float, float],
+    tcp_quat_xyzw: tuple[float, float, float, float],
+) -> tuple[float, float, float, float, float, float, float]:
+    """Apple-frame FIXED offset ``X_offset = X_apple^{-1} X_tcp`` as 7-tuple."""
+    apple_tf = wp.transform(wp.vec3(*apple_pos), wp.quat(*apple_quat_xyzw))
+    tcp_tf = wp.transform(wp.vec3(*tcp_pos), wp.quat(*tcp_quat_xyzw))
+    offset_tf = wp.transform_multiply(wp.transform_inverse(apple_tf), tcp_tf)
+    t = wp.transform_get_translation(offset_tf)
+    q = wp.transform_get_rotation(offset_tf)
+    return (
+        float(t[0]),
+        float(t[1]),
+        float(t[2]),
+        float(q[0]),
+        float(q[1]),
+        float(q[2]),
+        float(q[3]),
+    )
 
 
 def build_post_grasp_plan(
@@ -115,7 +144,7 @@ def build_post_grasp_plan(
     pose_pos_match_tol_m: float = _DEFAULT_POSE_POS_MATCH_TOL_M,
     emit_warnings: bool = True,
 ) -> PostGraspPlan:
-    """Build plan from poses; emit warnings on contract mismatches."""
+    """Build plan from logged poses; warn on mismatches without correcting them."""
     r = float(apple_radius_m)
     if not np.isfinite(r) or r <= 0:
         raise ValueError(f"apple_radius_m must be positive finite, got {r}")
@@ -151,37 +180,33 @@ def build_post_grasp_plan(
     delta = tcp - apple_m
     d = float(np.linalg.norm(delta))
     w_hat = _unit(delta, field="weld_direction")
-    apple_w = tcp - r * w_hat
+    # Follow data: do not snap apple onto the catalog r-sphere.
+    apple_w = apple_m
     residual = abs(d - r)
-    shift = float(np.linalg.norm(apple_w - apple_m))
+    shift = 0.0
 
-    # Logged TCP +Z (column 2 of R)
+    # Logged TCP +Z (column 2 of R): tip-out should face apple (TCP → apple).
     M = np.asarray(tcp_pose_4x4, dtype=np.float64).reshape(4, 4)
     tcp_z = M[:3, 2].astype(np.float64)
     tcp_z = tcp_z / max(float(np.linalg.norm(tcp_z)), _ZERO_EPS)
-    approach_dot = float(np.dot(w_hat, tcp_z))
+    tcp_to_apple = -w_hat  # unit(apple − tcp)
+    approach_dot = float(np.dot(tcp_to_apple, tcp_z))
 
     if emit_warnings:
         tol = float(warn_tol_m)
         if residual > tol:
             warnings.warn(
                 f"post-grasp data mismatch: |tcp−apple|={d:.4f} m vs apple radius "
-                f"r={r:.4f} m (residual={residual:.4f} m > tol={tol} m)",
+                f"r={r:.4f} m (residual={residual:.4f} m > tol={tol} m); "
+                f"diagnostic only — sim still uses measured apple and TCP poses",
                 UserWarning,
                 stacklevel=2,
             )
-        if shift > tol:
+        if approach_dot < float(approach_align_min_dot):
             warnings.warn(
-                f"post-grasp data mismatch: |apple_welded−apple_meas|={shift:.4f} m "
-                f"(tol={tol} m); catalog-surface correction is large",
-                UserWarning,
-                stacklevel=2,
-            )
-        if abs(approach_dot) < float(approach_align_min_dot):
-            warnings.warn(
-                f"post-grasp data mismatch: logged TCP +Z poorly aligned with weld "
-                f"direction ŵ (dot={approach_dot:.3f}, min=±{approach_align_min_dot}); "
-                f"sim will look-at (+Z∥ŵ) and ignore logged TCP quat",
+                f"post-grasp data mismatch: logged TCP +Z poorly aligned with "
+                f"TCP→apple (dot={approach_dot:.3f}, min={approach_align_min_dot}); "
+                f"diagnostic only — sim still uses logged TCP quat",
                 UserWarning,
                 stacklevel=2,
             )
@@ -270,7 +295,7 @@ def format_post_grasp_plan(plan: PostGraspPlan) -> str:
             f"  |tcp−apple|={plan.tcp_apple_distance_m:.4f} m  r={plan.apple_radius_m:.4f} m  "
             f"residual={plan.tcp_radius_residual_m:.4f} m",
             f"  apple_shift={plan.apple_shift_m:.4f} m  "
-            f"tcp_+Z·ŵ={plan.tcp_approach_dot_weld:.3f}",
+            f"tcp_+Z·(tcp→apple)={plan.tcp_approach_dot_weld:.3f}",
         ]
     )
 
@@ -287,7 +312,11 @@ def apply_post_grasp_after_settle(
     proxy_tcp_pos_warn_m: float = _PROXY_TCP_POS_WARN_M,
     emit_warnings: bool = True,
 ) -> CoupledCableScene:
-    """Rebuild welded cable scene; seed woody from free settle; apple+proxy from plan."""
+    """Rebuild welded cable scene; seed woody from free settle; apple+proxy from plan.
+
+    Proxy and apple world poses match logged SE(3). FIXED joint encodes
+    ``X_offset = X_apple^{-1} X_tcp``. No catalog-radius surface snap.
+    """
     if free_scene.apple_body is None:
         raise ValueError("free_scene has no apple_body")
 
@@ -302,6 +331,12 @@ def apply_post_grasp_after_settle(
     )
     woody_before = {i: bq[i].copy() for i in woody_ids if i != apple_id}
 
+    offset_7 = proxy_offset_from_apple_and_tcp(
+        apple_pos=plan.apple_pos_welded,
+        apple_quat_xyzw=plan.apple_quat_xyzw,
+        tcp_pos=plan.tcp_pos,
+        tcp_quat_xyzw=plan.tcp_quat_xyzw,
+    )
     welded = generate_coupled_cable_scene(
         ranges,
         seed=0,
@@ -311,9 +346,9 @@ def apply_post_grasp_after_settle(
         robot_base_pos=robot_base_pos,
         gripper_proxy=GripperProxyConfig(
             fix_to_apple=True,
-            weld_direction=plan.weld_direction,
             weld_reference_pos=plan.apple_pos_welded,
             weld_reference_quat=plan.apple_quat_xyzw,
+            weld_proxy_offset_in_apple_frame=offset_7,
         ),
     )
     if welded.apple_body is None or welded.gripper_proxy_offset_in_apple_frame is None:
@@ -359,17 +394,13 @@ def apply_post_grasp_after_settle(
                 UserWarning,
                 stacklevel=2,
             )
-        # +Z of proxy should align with ŵ
-        # Reconstruct R from quat roughly via warp already placed look-at; check chord
-        chord = np.asarray(plan.tcp_pos, dtype=np.float64) - np.asarray(
-            plan.apple_pos_welded, dtype=np.float64
-        )
-        chord_u = chord / max(float(np.linalg.norm(chord)), _ZERO_EPS)
-        w = np.asarray(plan.weld_direction, dtype=np.float64)
-        if float(np.dot(chord_u, w)) < 0.99:
+        tq = np.asarray(plan.tcp_quat_xyzw, dtype=np.float64)
+        pq = np.asarray(proxy_quat, dtype=np.float64)
+        q_dot = abs(float(np.dot(pq, tq)))
+        if q_dot < float(_PROXY_TCP_QUAT_MIN_ABS_DOT):
             warnings.warn(
-                f"post-grasp sim mismatch: apple→proxy chord not along ŵ "
-                f"(dot={float(np.dot(chord_u, w)):.3f})",
+                f"post-grasp data/sim mismatch: welded proxy quat vs tcp_quat "
+                f"abs-dot={q_dot:.4f} (min={_PROXY_TCP_QUAT_MIN_ABS_DOT})",
                 UserWarning,
                 stacklevel=2,
             )

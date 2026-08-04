@@ -376,7 +376,8 @@ class GripperProxyConfig:
     Mass and collision shape should match the robot TCP link built in
     ``coupled_fruiting.build_placeholder_tcp_robot_model`` so velocity-delta harvest
     uses consistent inertia. Default shape is a cylinder (50 mm radius, 140 mm length)
-    with the distal tip at the body origin (+Z).
+    with the distal tip at the body origin (TCP); bulk extends along local −Z toward
+    the flange (+Z is tip-out, matching the USD / recorded TCP).
     """
 
     mass: float = PLACEHOLDER_EE_MASS_KG
@@ -417,6 +418,15 @@ class GripperProxyConfig:
 
     When set, robot-facing weld validation uses this unit vector instead of the
   nominal build-time ``proxy_placement_dir`` (settle-then-weld workflows).
+    """
+    weld_proxy_offset_in_apple_frame: (
+        tuple[float, float, float, float, float, float, float] | None
+    ) = None
+    """Explicit FIXED ``parent_xform`` ``(px,py,pz,qx,qy,qz,qw)`` in the apple frame.
+
+    When set with ``fix_to_apple=True``, bypasses look-at / ``weld_direction``
+    orientation. Used by post-grasp replay to encode true TCP SE(3) relative to
+    the apple (``X_offset = X_apple^{-1} X_tcp``). Requires ``fix_to_apple``.
     """
 
 @dataclasses.dataclass(frozen=True)

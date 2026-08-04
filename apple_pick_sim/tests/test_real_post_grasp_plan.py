@@ -29,7 +29,7 @@ def test_pose_4x4_to_pos_quat_identity():
     np.testing.assert_allclose(quat, (0.0, 0.0, 0.0, 1.0), atol=1e-6)
 
 
-def test_build_plan_forces_surface_and_invariant():
+def test_build_plan_follows_measured_poses_no_surface_snap():
     tcp = np.array([0.0, 0.1, 0.0])
     apple_m = np.array([0.0, 0.0, 0.0])
     r = 0.04
@@ -43,21 +43,22 @@ def test_build_plan_forces_surface_and_invariant():
         )
     assert plan.tcp_apple_distance_m == pytest.approx(0.1)
     assert plan.tcp_radius_residual_m == pytest.approx(0.06)
-    assert plan.apple_shift_m == pytest.approx(0.06)
+    assert plan.apple_shift_m == pytest.approx(0.0)
     np.testing.assert_allclose(plan.weld_direction, (0.0, 1.0, 0.0), atol=1e-6)
-    np.testing.assert_allclose(plan.apple_pos_welded, (0.0, 0.06, 0.0), atol=1e-6)
-    aw = np.asarray(plan.apple_pos_welded)
-    wdir = np.asarray(plan.weld_direction)
-    np.testing.assert_allclose(aw + r * wdir, tcp, atol=1e-6)
+    # Follow data: welded apple = measured apple (no catalog r snap).
+    np.testing.assert_allclose(plan.apple_pos_welded, apple_m, atol=1e-9)
+    np.testing.assert_allclose(plan.apple_pos_measured, apple_m, atol=1e-9)
+    np.testing.assert_allclose(plan.tcp_pos, tcp, atol=1e-9)
     msgs = " ".join(str(x.message).lower() for x in caught)
     assert "radius" in msgs or "tcp" in msgs
+    assert "catalog-surface" not in msgs and "apple_welded−apple_meas" not in msgs
 
 
 def test_no_warn_when_within_tol_and_aligned():
-    # TCP +Z = +Y, apple→TCP = +Y, d=r=0.04
-    R = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]], dtype=float)
-    # columns are axes: +Z = (0,1,0)
-    assert np.allclose(R[:, 2], (0.0, 1.0, 0.0))
+    # EE +Z points out tip toward apple: TCP→apple = −Y when tcp at +Y, apple at origin.
+    # Columns: +Z = (0, -1, 0)
+    R = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]], dtype=float)
+    assert np.allclose(R[:, 2], (0.0, -1.0, 0.0))
     tcp = [0.0, 0.04, 0.0]
     apple = [0.0, 0.0, 0.0]
     with warnings.catch_warnings(record=True) as caught:
@@ -70,12 +71,15 @@ def test_no_warn_when_within_tol_and_aligned():
             approach_align_min_dot=0.9,
         )
     assert plan.tcp_radius_residual_m == pytest.approx(0.0, abs=1e-9)
+    assert plan.apple_shift_m == pytest.approx(0.0, abs=1e-9)
+    # tcp_approach_dot_weld = +Z · unit(apple − tcp)
     assert plan.tcp_approach_dot_weld == pytest.approx(1.0, abs=1e-6)
+    np.testing.assert_allclose(plan.apple_pos_welded, apple, atol=1e-9)
     assert caught == []
 
 
 def test_warn_tcp_plus_z_misaligned_with_weld():
-    # Identity R: +Z = (0,0,1); apple→TCP = +Y
+    # Identity R: +Z = (0,0,1); TCP→apple = −Y — diagnostic only; quat still used.
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         plan = build_post_grasp_plan(
@@ -85,8 +89,28 @@ def test_warn_tcp_plus_z_misaligned_with_weld():
             warn_tol_m=0.02,
             approach_align_min_dot=0.9,
         )
-    assert abs(plan.tcp_approach_dot_weld) < 0.1
-    assert any("approach" in str(x.message).lower() or "+z" in str(x.message).lower() for x in caught)
+    assert plan.tcp_approach_dot_weld == pytest.approx(0.0, abs=1e-6)
+    msgs = [str(x.message).lower() for x in caught]
+    assert any("tcp→apple" in m or "approach" in m or "+z" in m or "aligned" in m for m in msgs)
+    assert not any("ignore" in m or "look-at" in m for m in msgs)
+    np.testing.assert_allclose(plan.tcp_quat_xyzw, (0.0, 0.0, 0.0, 1.0), atol=1e-6)
+
+
+def test_warn_when_plus_z_anti_aligned_with_tcp_to_apple():
+    # Old wrong convention: +Z along apple→TCP (+Y) while tip should face apple (−Y).
+    R = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]], dtype=float)
+    assert np.allclose(R[:, 2], (0.0, 1.0, 0.0))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        plan = build_post_grasp_plan(
+            tcp_pose_4x4=_pose4([0.0, 0.04, 0.0], R=R),
+            apple_pose_4x4=_pose4([0.0, 0.0, 0.0]),
+            apple_radius_m=0.04,
+            warn_tol_m=0.02,
+            approach_align_min_dot=0.9,
+        )
+    assert plan.tcp_approach_dot_weld == pytest.approx(-1.0, abs=1e-6)
+    assert any("poorly aligned" in str(x.message).lower() for x in caught)
 
 
 def test_warn_pose_translation_mismatch():
@@ -115,14 +139,23 @@ def test_s00_d00_plan_smoke(parquet: Path):
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         plan = post_grasp_plan_from_metadata(meta, apple_radius_m=r, warn_tol_m=0.02)
-    assert plan.tcp_radius_residual_m == pytest.approx(0.00206, abs=5e-4)
-    assert any("poorly aligned" in str(x.message).lower() for x in caught)
-    aw = np.asarray(plan.apple_pos_welded)
-    w = np.asarray(plan.weld_direction)
-    np.testing.assert_allclose(aw + r * w, plan.tcp_pos, atol=1e-6)
+    assert plan.tcp_radius_residual_m == pytest.approx(
+        abs(plan.tcp_apple_distance_m - r), abs=1e-9
+    )
+    assert plan.apple_shift_m == pytest.approx(0.0, abs=1e-9)
+    msgs = " ".join(str(x.message).lower() for x in caught)
+    assert "ignore" not in msgs and "look-at" not in msgs
+    assert "catalog-surface" not in msgs
+    # Follow data: apple welded pose equals measured pose.
+    np.testing.assert_allclose(plan.apple_pos_welded, plan.apple_pos_measured, atol=1e-9)
+    # EE +Z out tip toward apple: +Z · unit(apple−tcp) should be strongly positive on this dump.
+    assert plan.tcp_approach_dot_weld > 0.85
+    # Logged TCP quat is present on the plan (true SE(3) contract).
+    assert len(plan.tcp_quat_xyzw) == 4
+    assert abs(float(np.linalg.norm(plan.tcp_quat_xyzw)) - 1.0) < 1e-5
 
 
-def test_apply_post_grasp_after_settle_look_at():
+def test_apply_post_grasp_after_settle_true_tcp_pose():
     from apple_pick_sim.fruiting_system import GripperProxyConfig, generate_coupled_cable_scene, load_ranges
     from apple_pick_sim.system_id.real_post_grasp_plan import apply_post_grasp_after_settle
     from apple_pick_sim.tests.conftest import NO_SELF_COLLISION_KW
@@ -139,13 +172,10 @@ def test_apply_post_grasp_after_settle_look_at():
     assert free.apple_body is not None
     bq0 = free.state_0.body_q.numpy().reshape(-1, 7)
     apple0 = bq0[free.apple_body, :3].copy()
-    # Place TCP along +Y from apple at exactly r
     r = float(free.params.apple_radius)
-    tcp = apple0 + np.array([0.0, r, 0.0], dtype=np.float64)
-    # TCP +Z = +Y for alignment
-    R = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]], dtype=float)
+    # Intentionally place TCP off the catalog surface (d != r).
+    tcp = apple0 + np.array([0.0, r + 0.03, 0.0], dtype=np.float64)
     M_tcp = np.eye(4)
-    M_tcp[:3, :3] = R
     M_tcp[:3, 3] = tcp
     M_ap = np.eye(4)
     M_ap[:3, 3] = apple0
@@ -157,6 +187,7 @@ def test_apply_post_grasp_after_settle_look_at():
             apple_radius_m=r,
             warn_tol_m=0.02,
         )
+    assert plan.apple_shift_m == pytest.approx(0.0, abs=1e-9)
     spur0 = bq0[free.spur_bodies[0], :3].copy() if free.spur_bodies else None
 
     welded = apply_post_grasp_after_settle(
@@ -168,11 +199,39 @@ def test_apply_post_grasp_after_settle_look_at():
         robot_base_pos=(0.0, 0.0, 0.0),
     )
     wbq = welded.state_0.body_q.numpy().reshape(-1, 7)
-    np.testing.assert_allclose(wbq[welded.apple_body, :3], plan.apple_pos_welded, atol=1e-4)
+    np.testing.assert_allclose(wbq[welded.apple_body, :3], plan.apple_pos_measured, atol=1e-4)
     np.testing.assert_allclose(wbq[welded.gripper_proxy_body, :3], plan.tcp_pos, atol=5e-3)
+    pq = wbq[welded.gripper_proxy_body, 3:7]
+    tq = np.asarray(plan.tcp_quat_xyzw, dtype=np.float64)
+    q_dot = abs(float(np.dot(pq, tq)))
+    assert q_dot > 1.0 - 1e-4, f"proxy quat {pq} vs tcp {tq} (abs-dot={q_dot})"
     if spur0 is not None and free.spur_bodies[0] < wbq.shape[0]:
         np.testing.assert_allclose(wbq[free.spur_bodies[0], :3], spur0, atol=1e-4)
-    # apple→proxy along ŵ
+    # Chord follows measured apple→TCP (no surface snap).
     chord = wbq[welded.gripper_proxy_body, :3] - wbq[welded.apple_body, :3]
     chord /= np.linalg.norm(chord)
     np.testing.assert_allclose(chord, plan.weld_direction, atol=5e-2)
+
+    # USD tip-out: distal tip at body origin; cylinder bulk along local −Z (flange side).
+    import newton
+    import warp as wp
+
+    model = welded.model
+    proxy_body = welded.gripper_proxy_body
+    shape_body = model.shape_body.numpy()
+    shape_type = model.shape_type.numpy()
+    shape_xform = model.shape_transform.numpy().reshape(-1, 7)
+    cyl = [
+        i
+        for i in range(model.shape_count)
+        if int(shape_body[i]) == proxy_body and int(shape_type[i]) == newton.GeoType.CYLINDER
+    ]
+    assert len(cyl) == 1
+    hh = float(welded.gripper_proxy_config.cylinder_half_height)
+    assert float(shape_xform[cyl[0], 2]) == pytest.approx(-hh)
+    pq = wbq[welded.gripper_proxy_body]
+    tip = pq[:3]
+    q = wp.quat(float(pq[3]), float(pq[4]), float(pq[5]), float(pq[6]))
+    flange = tip + np.asarray(wp.quat_rotate(q, wp.vec3(0.0, 0.0, -2.0 * hh)), dtype=np.float64)
+    apple = wbq[welded.apple_body, :3]
+    assert float(np.linalg.norm(flange - apple)) > float(np.linalg.norm(tip - apple))

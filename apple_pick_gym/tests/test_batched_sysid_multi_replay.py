@@ -19,6 +19,7 @@ from apple_pick_sim.tests.conftest import RANGES_FIXTURE
 @dataclasses.dataclass(frozen=True)
 class _Candidate:
     marker: float
+    support_kp: float | None = None
 
     def apply_to(self, base: fs.FruitingSystemParams) -> fs.FruitingSystemParams:
         return dataclasses.replace(base, apple_density=float(self.marker))
@@ -651,4 +652,244 @@ def test_replay_multi_structure_synchronizes_before_stopping_gpu_timers(
     )
 
     assert synchronizations == ["sync", "sync"]
+
+
+def test_build_replay_candidate_blocks_copies_support_kp_from_candidate():
+    requests = (
+        _request(
+            4,
+            candidates=(
+                _Candidate(40.0, support_kp=1.0e3),
+                _Candidate(41.0, support_kp=2.0e4),
+            ),
+            directions=(0,),
+        ),
+    )
+
+    blocks = multi.build_replay_candidate_blocks(requests)
+
+    assert [block.slots[0].support_kp for block in blocks] == [1.0e3, 2.0e4]
+    assert all(slot.support_kp is None for block in blocks for slot in block.slots[1:])
+
+
+def test_build_replay_candidate_blocks_leaves_support_kp_none_without_candidate_attr():
+    blocks = multi.build_replay_candidate_blocks((_request(4, candidates=(_Candidate(40.0),)),))
+
+    assert all(slot.support_kp is None for block in blocks for slot in block.slots)
+
+
+def test_replay_multi_structure_applies_support_kp_before_reset(
+    monkeypatch,
+    _fake_replay_runtime,
+):
+    apply_calls: list[dict[str, Any]] = []
+    event_order: list[str] = []
+
+    def fake_apply(scene, support_kp_per_env, *, num_envs, joints_per_world):
+        apply_calls.append(
+            {
+                "scene": scene,
+                "support_kp_per_env": tuple(support_kp_per_env),
+                "num_envs": num_envs,
+                "joints_per_world": joints_per_world,
+            }
+        )
+        event_order.append("apply")
+
+    monkeypatch.setattr(
+        multi,
+        "apply_per_env_support_joint_penalties",
+        fake_apply,
+        raising=False,
+    )
+
+    class _SupportKpFakeEnv(_FakeEnv):
+        def __init__(self, params, grippers):
+            super().__init__(params, grippers)
+            self._sim = SimpleNamespace(
+                scene=SimpleNamespace(label="scene"),
+                layout=SimpleNamespace(num_envs=self.num_envs, joints_per_world=7),
+            )
+
+        def reset(self, *, seed: int):
+            event_order.append("reset")
+            super().reset(seed=seed)
+
+    params = _params(4)
+    blocks = multi.build_replay_candidate_blocks(
+        (
+            _request(
+                4,
+                params=params,
+                candidates=(
+                    _Candidate(40.0, support_kp=1.0e3),
+                    _Candidate(41.0, support_kp=2.0e4),
+                ),
+                directions=(0,),
+            ),
+        )
+    )
+
+    def build_env_fn(**kwargs):
+        env = _SupportKpFakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    assert len(apply_calls) == 1
+    assert apply_calls[0]["support_kp_per_env"] == (1.0e3, 2.0e4)
+    assert apply_calls[0]["num_envs"] == 2
+    assert apply_calls[0]["joints_per_world"] == 7
+    assert apply_calls[0]["scene"].label == "scene"
+    assert event_order == ["apply", "reset"]
+
+
+def test_replay_multi_structure_skips_support_kp_apply_when_unset(
+    monkeypatch,
+    _fake_replay_runtime,
+):
+    apply_calls: list[tuple[float, ...]] = []
+
+    monkeypatch.setattr(
+        multi,
+        "apply_per_env_support_joint_penalties",
+        lambda _scene, kp, **_kwargs: apply_calls.append(tuple(kp)),
+        raising=False,
+    )
+
+    blocks = multi.build_replay_candidate_blocks((_request(4, directions=(0,)),))
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+    )
+
+    assert apply_calls == []
+
+
+def test_replay_multi_structure_support_kp_sets_solver_arrays_per_env(
+    _fake_replay_runtime,
+):
+    import sys
+    from pathlib import Path
+
+    import newton
+
+    _SIM_TESTS_DIR = (
+        Path(__file__).resolve().parent.parent.parent / "apple_pick_sim" / "tests"
+    )
+    if str(_SIM_TESTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SIM_TESTS_DIR))
+
+    from conftest import COUPLED_SCENE_KW  # noqa: E402
+    from apple_pick_sim.coupled_fruiting import CoupledFruitingScene  # noqa: E402
+    from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout  # noqa: E402
+    from apple_pick_sim.coupled_fruiting.batched_build import (  # noqa: E402
+        build_heterogeneous_coupled_cable_scene,
+    )
+    from apple_pick_sim.fruiting_system import (  # noqa: E402
+        GripperProxyConfig,
+        load_ranges,
+        sample_heterogeneous_params_list,
+    )
+    from apple_pick_sim.robot import fr3_robot  # noqa: E402
+
+    fixture = (
+        Path(__file__).resolve().parent.parent.parent
+        / "apple_pick_sim"
+        / "fixtures"
+        / "fruiting_system_ranges_real_world_proxy_variance.json"
+    )
+    ranges = load_ranges(fixture)
+    params_list = sample_heterogeneous_params_list(ranges, topology_seed=7, num_envs=2)
+    cable, _offsets = build_heterogeneous_coupled_cable_scene(
+        params_list,
+        env_spacing=(2.5, 2.5, 0.0),
+        device="cpu",
+        enable_self_collisions=False,
+        base_pos=COUPLED_SCENE_KW["base_pos"],
+        robot_base_pos=COUPLED_SCENE_KW["robot_base_pos"],
+        gripper_proxy=GripperProxyConfig(
+            mass=fr3_robot.EE_MASS_KG,
+            fix_to_apple=False,
+            robot_facing_weld=False,
+        ),
+    )
+    layout = BatchedEnvLayout.from_cable_only(cable, cable.model)
+    scene = CoupledFruitingScene(
+        cable=cable,
+        cable_collision_pipeline=None,
+        vbd_only=True,
+        layout=layout,
+    )
+    joints_per_world = int(layout.joints_per_world)
+    support_labels = [
+        j for j, lab in cable.fruiting_fixed_joints if "primary_support_left" in lab
+    ]
+    assert len(support_labels) == 1
+    j_support = support_labels[0]
+
+    def _angular_kp_at_joint(solver, global_joint_index: int) -> float:
+        jc_start = solver.joint_constraint_start.numpy()
+        k = solver.joint_penalty_k.numpy()
+        c0 = int(jc_start[global_joint_index])
+        return float(k[c0 + newton.solvers.SolverVBD.JointSlot.ANGULAR])
+
+    class _SceneReplayEnv(_FakeEnv):
+        def __init__(self, params, grippers):
+            super().__init__(params, grippers)
+            self._sim = SimpleNamespace(scene=scene, layout=layout)
+            self.kp_before_reset: list[float] | None = None
+
+        def reset(self, *, seed: int):
+            solver = scene.cable.solver
+            self.kp_before_reset = [
+                _angular_kp_at_joint(solver, w * joints_per_world + j_support)
+                for w in range(self.num_envs)
+            ]
+            super().reset(seed=seed)
+
+    params = _params(4)
+    blocks = multi.build_replay_candidate_blocks(
+        (
+            _request(
+                4,
+                params=params,
+                candidates=(
+                    _Candidate(40.0, support_kp=1.0e3),
+                    _Candidate(41.0, support_kp=2.0e4),
+                ),
+                directions=(0,),
+            ),
+        )
+    )
+
+    def build_env_fn(**kwargs):
+        env = _SceneReplayEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    env = _fake_replay_runtime.built[0]
+    assert env.kp_before_reset is not None
+    assert env.kp_before_reset[0] == pytest.approx(1.0e3)
+    assert env.kp_before_reset[1] == pytest.approx(2.0e4)
 

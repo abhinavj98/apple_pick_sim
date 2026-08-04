@@ -18,6 +18,9 @@ from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     BatchedSysIdReplayCollectors,
     actions_tensor_from_recorded_frame,
 )
+from apple_pick_gym.batched_envs.support_joint_penalties import (
+    apply_per_env_support_joint_penalties,
+)
 from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
@@ -69,6 +72,7 @@ class ReplaySlot:
     recorded: dict[str, Any]
     source: ReplayEpisodeSource
     gripper: GripperProxyConfig
+    support_kp: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -236,6 +240,7 @@ def build_replay_candidate_blocks(
         directions = tuple(int(direction_idx) for direction_idx in request.direction_indices)
         for local_candidate_idx, candidate in enumerate(request.candidates):
             params = candidate.apply_to(request.base_params)
+            support_kp = getattr(candidate, "support_kp", None)
             slots = tuple(
                 ReplaySlot(
                     key=ReplaySlotKey(
@@ -250,6 +255,9 @@ def build_replay_candidate_blocks(
                         direction_idx=direction_idx,
                     ),
                     gripper=request.gripper,
+                    support_kp=float(support_kp)
+                    if support_kp is not None
+                    else None,
                 )
                 for direction_idx in directions
             )
@@ -404,6 +412,14 @@ def replay_multi_structure_candidate_blocks(
             )
             _synchronize_device()
             build_seconds += time.perf_counter() - build_started
+
+            if any(slot.support_kp is not None for slot in slots):
+                apply_per_env_support_joint_penalties(
+                    env._sim.scene,
+                    [slot.support_kp for slot in slots],
+                    num_envs=env._sim.layout.num_envs,
+                    joints_per_world=env._sim.layout.joints_per_world,
+                )
 
             replay_started = time.perf_counter()
             env.reset(seed=replay_seed)

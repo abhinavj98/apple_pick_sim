@@ -422,8 +422,9 @@ def extract_youngs_modulus_cma_bounds(
 
 
 # Absolute support-k_p CMA search box (not a fixture epsilon-band): support
-# joint k_p (shared angular+linear, zeta=1) is a build-time sim_build scalar,
-# not a per-structure DR quantity, so its CMA bounds are fixed constants.
+# joint k_p (shared angular+linear; kd uses dataset joint_damping_ratio) is a
+# build-time sim_build scalar, not a per-structure DR quantity, so its CMA
+# bounds are fixed constants.
 DEFAULT_SUPPORT_KP_CMA_LOG10_LOWER = 2.0
 DEFAULT_SUPPORT_KP_CMA_LOG10_UPPER = 6.0
 

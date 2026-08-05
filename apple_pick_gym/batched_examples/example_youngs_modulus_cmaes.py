@@ -1,7 +1,8 @@
 """Dataset-driven support-k_p + Young's-modulus CMA-ES fit entry point.
 
 Fits a 3-vector ``(support_kp, E_spur, E_stem)`` — support joint k_p (shared
-angular+linear, zeta=1) is free while spur/stem Young's modulus stay free;
+angular+linear; support zeta from dataset ``joint_damping_ratio``) is free while
+spur/stem Young's modulus stay free;
 primary E is fixed from ground truth. Runs one independent bounded pycma
 optimizer per selected structure, advances active optimizers in synchronized
 generation waves through fused structure x population x direction replay,

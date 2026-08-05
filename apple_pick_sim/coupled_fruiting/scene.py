@@ -475,7 +475,7 @@ class CoupledFruitingScene:
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM
     stem_harvest_explicit_apple_weight: bool = False
-    """Add child-side ``-m_apple * gravity`` support into stem harvest before F/T negation."""
+    """Add child-side ``-m_apple * gravity`` support into stem harvest (prescribed apple)."""
     apple_mass_kg: float = 0.0
     """Cached ``body_mass[apple]`` at build; avoids host sync during CUDA graph capture."""
     mj_apple_payload_body_index: int | None = None

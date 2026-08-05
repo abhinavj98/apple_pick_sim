@@ -4,9 +4,9 @@
 
 | Field | Value |
 | --- | --- |
-| **Last reviewed** | 2026-08-04 |
+| **Status** | Implemented (Task 8: CMA fits without instability DQ; final means biased high on support \(k_p\)/spur \(E\) vs grid GT — see `.superpowers/sdd/task-8-report.md`) |
+| **Last reviewed** | 2026-08-05 |
 | **Roadmap slice** | V.5.2 (support \(k_p\) retarget) |
-| **Status** | CMA migrated to support \(k_p\) + spur/stem \(E\); code complete, acceptance pending Task 8 |
 | **Design** | `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md` (primary-E design: `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`) |
 | **Grid contract** | Unchanged — `docs/youngs-modulus-sysid.md` |
 | **README how-to** | `README.md` → **CMA-ES sim-to-sim transfer (Young's modulus)** |

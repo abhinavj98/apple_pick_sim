@@ -1087,8 +1087,8 @@ def _lever_arm_tcp_to_apple_com(scene) -> np.ndarray | None:
 def _expected_tcp_stem_harvest_from_gather(scene, stem: np.ndarray) -> np.ndarray:
     """Reference TCP wrench mirroring ``_limit_and_write_tcp_stem_wrench_kernel``.
 
-    Child-side stem (+ optional support) is gain/cap limited then **negated** for
-    wrist F/T convention (dead-weight pull on TCP).
+    Child-side stem (+ optional support) is gain/cap limited and written to TCP
+    ``body_f`` with the same sign (no negation).
     """
     f_stem = np.asarray(stem[:3], dtype=np.float64)
     tau_stem = np.asarray(stem[3:], dtype=np.float64)
@@ -1100,14 +1100,13 @@ def _expected_tcp_stem_harvest_from_gather(scene, stem: np.ndarray) -> np.ndarra
             f_add, _ = _explicit_apple_wrench_for_scene(scene)
             f_total = f_total + f_add
         tau_total = tau_total + np.cross(r, f_total)
-    limited = _stem_wrench_after_coupling_limits(
+    return _stem_wrench_after_coupling_limits(
         f_total,
         tau_total,
         coupling_gain=scene.stem_coupling_gain,
         force_cap_N=scene.stem_force_cap_N,
         torque_cap_Nm=scene.stem_torque_cap_Nm,
     )
-    return -limited
 
 
 def _assert_tcp_matches_stem(

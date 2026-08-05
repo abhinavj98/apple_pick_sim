@@ -30,7 +30,7 @@ TOPOLOGY_SEED="${TOPOLOGY_SEED:-42}"
 MAX_RETRIES="${MAX_RETRIES:-3}"
 RETRY_SLEEP_S="${RETRY_SLEEP_S:-5}"
 DATASET_PREFIX="${DATASET_PREFIX:-tmp/youngs_modulus_sysid_gate}"
-LOG10_E_PRIMARY="${LOG10_E_PRIMARY:-8.0,8.5}"
+LOG10_SUPPORT_KP="${LOG10_SUPPORT_KP:-3.0,4.0,5.0}"
 LOG10_E_SPUR="${LOG10_E_SPUR:-7.5}"
 LOG10_E_STEM="${LOG10_E_STEM:-7.0}"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -138,7 +138,7 @@ run_seed() {
       --use-median \
       --hold-id-onehot \
       --pool-directions \
-      --log10-e-primary "${LOG10_E_PRIMARY}" \
+      --log10-support-kp "${LOG10_SUPPORT_KP}" \
       --log10-e-spur "${LOG10_E_SPUR}" \
       --log10-e-stem "${LOG10_E_STEM}" \
       --overwrite \

@@ -120,12 +120,14 @@ def test_script_removes_stale_final_summary_before_seed_launch() -> None:
 def test_script_forwards_candidate_grid_and_optional_threshold() -> None:
     script = _script()
 
-    assert 'LOG10_E_PRIMARY="${LOG10_E_PRIMARY:-8.0,8.5}"' in script
+    assert 'LOG10_SUPPORT_KP="${LOG10_SUPPORT_KP:-3.0,4.0,5.0}"' in script
     assert 'LOG10_E_SPUR="${LOG10_E_SPUR:-7.5}"' in script
     assert 'LOG10_E_STEM="${LOG10_E_STEM:-7.0}"' in script
-    assert '--log10-e-primary "${LOG10_E_PRIMARY}"' in script
+    assert '--log10-support-kp "${LOG10_SUPPORT_KP}"' in script
     assert '--log10-e-spur "${LOG10_E_SPUR}"' in script
     assert '--log10-e-stem "${LOG10_E_STEM}"' in script
+    assert "--log10-e-primary" not in script
+    assert "LOG10_E_PRIMARY" not in script
     assert 'if [[ -n "${PASS_THRESHOLD:-}" ]]; then' in script
     assert 'REPORT_ARGS+=(--pass-threshold "${PASS_THRESHOLD}")' in script
 

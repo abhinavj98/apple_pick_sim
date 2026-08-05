@@ -407,9 +407,8 @@ def _limit_and_write_tcp_stem_wrench_kernel(
 ):
     """Under-relax and clamp stem harvest; write spatial wrench at ``tcp_index``.
 
-    Stem gather returns force/torque **on the apple (child)**. Before writing to
-    TCP ``body_f``, the wrench is **negated** so the arm feels a wrist-F/T-like
-    dead-weight pull (hanging fruit → downward force under default gravity).
+    Stem gather returns force/torque **on the apple (child)**; write that child-side
+    wrench into TCP ``body_f`` (same sign as main; negating here destabilizes couple).
     """
     f_stem_at_com = force_raw[0]
     tau_stem_at_com = torque_raw[0]
@@ -454,8 +453,8 @@ def _limit_and_write_tcp_stem_wrench_kernel(
             tau_total_tcp = tau_total_tcp * (torque_cap_Nm / tn)
             
     wrenches[tcp_index] = wp.spatial_vector(
-        -f_total_tcp[0], -f_total_tcp[1], -f_total_tcp[2],
-        -tau_total_tcp[0], -tau_total_tcp[1], -tau_total_tcp[2],
+        f_total_tcp[0], f_total_tcp[1], f_total_tcp[2],
+        tau_total_tcp[0], tau_total_tcp[1], tau_total_tcp[2],
     )
 
 
@@ -481,8 +480,7 @@ def _batched_limit_and_write_tcp_stem_wrench_kernel(
 ):
     """Under-relax and clamp batched stem harvest; write spatial wrench per TCP row.
 
-    Same F/T sign convention as :func:`_limit_and_write_tcp_stem_wrench_kernel`
-    (negate child-side stem + explicit support before writing to TCP).
+    Same child-side sign convention as :func:`_limit_and_write_tcp_stem_wrench_kernel`.
     """
     i = wp.tid()
     tcp_index = tcp_indices[i]
@@ -525,12 +523,12 @@ def _batched_limit_and_write_tcp_stem_wrench_kernel(
             tau_total_tcp = tau_total_tcp * (torque_cap_Nm / tn)
 
     wrenches[tcp_index] = wp.spatial_vector(
-        -f_total_tcp[0],
-        -f_total_tcp[1],
-        -f_total_tcp[2],
-        -tau_total_tcp[0],
-        -tau_total_tcp[1],
-        -tau_total_tcp[2],
+        f_total_tcp[0],
+        f_total_tcp[1],
+        f_total_tcp[2],
+        tau_total_tcp[0],
+        tau_total_tcp[1],
+        tau_total_tcp[2],
     )
 
 
@@ -791,10 +789,8 @@ def _harvest_stem_tension_for_tcp_cpu(
                     )
                     f_total_tcp = f_total_tcp + f_apple_weight
                     tau_total_tcp = tau_total_tcp + tau_apple_weight_at_tcp
-        # F/T convention at TCP: negate plant support/reaction so hanging fruit
-        # reads as a downward pull on the wrist (action-reaction vs child-side gather).
-        wrenches[tcp_body_index, :3] = (-f_total_tcp).astype(np.float32)
-        wrenches[tcp_body_index, 3:6] = (-tau_total_tcp).astype(np.float32)
+        wrenches[tcp_body_index, :3] = f_total_tcp.astype(np.float32)
+        wrenches[tcp_body_index, 3:6] = tau_total_tcp.astype(np.float32)
     limit_stem_coupling_wrench(
         wrenches,
         tcp_body_index,

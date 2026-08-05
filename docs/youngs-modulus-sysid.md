@@ -4,9 +4,9 @@
 
 | Field | Value |
 | --- | --- |
-| **Last reviewed** | 2026-08-04 |
+| **Status** | Implemented (Task 8 sim-to-sim: grid recovers GT; CMA fits but mean bias on support \(k_p\)/spur \(E\) — see `.superpowers/sdd/task-8-report.md`) |
+| **Last reviewed** | 2026-08-05 |
 | **Roadmap slice** | V.5.2 (support \(k_p\) retarget) |
-| **Status** | Grid + CMA migrated to support \(k_p\) × spur/stem \(E\); acceptance pending Task 8 |
 
 This is the canonical implementation reference for dataset-driven
 Young's-modulus system identification. `docs/system_identification.md` owns the
@@ -19,10 +19,11 @@ the shared feature-vector definition.
 over a Cartesian grid of material candidates. A candidate contains support-joint
 \(k_p\) (shared angular+linear; support \(\zeta\) from dataset
 `joint_damping_ratio`) plus spur/stem Young's
-modulus in Pa. `SupportKpYoungsCandidate.apply_to()` patches support FIXED-joint
-\(k_p\)/\(k_d\) and sets spur/stem \(E\) through `set_rod_youngs_modulus()`,
-which re-derives geometry-consistent VBD stiffness and damping while preserving
-fixed axial overrides. Primary \(E\), secondary \(E\), geometry, topology,
+modulus in Pa. `SupportKpYoungsCandidate.apply_to()` sets spur/stem \(E\)
+through `set_rod_youngs_modulus()` (geometry-consistent VBD stiffness/damping,
+preserving fixed axial overrides). Support FIXED-joint \(k_p\)/\(k_d\) are applied
+separately during fused replay via `apply_per_env_support_joint_penalties`
+(support \(\zeta\) from dataset `joint_damping_ratio`). Primary \(E\), secondary \(E\), geometry, topology,
 density, non-support joint penalties, apple parameters, and other structure
 state remain fixed.
 

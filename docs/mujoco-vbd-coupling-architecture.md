@@ -88,7 +88,7 @@ After each MuJoCo substep, the TCP state on `robot_state_0` is the **kinematic a
 |------|----------------------|---------------------|----------------------|
 | FR3 link masses under gravity | **Off** — `robot_model.set_gravity((0,0,0))` in `build_fr3_robot_model_from_usd` | — | Not simulated (matches ideal gravity comp on hardware) |
 | Rod / stem / branch gravity | — | **On** — `cable.model` + `gravity_vec` | Indirectly via stem deformation and harvest |
-| Apple weight when welded (`fix_to_apple`) | — | Prescribed apple (`inv_mass = 0`); VBD does not integrate apple gravity | **`body_f[tcp]`** via stem harvest + explicit term, written under **wrist F/T convention** (negate child-side support/reaction → hanging fruit pulls **down**); see `docs/explicit-apple-load-tcp-harvest.md` |
+| Apple weight when welded (`fix_to_apple`) | — | Prescribed apple (`inv_mass = 0`); VBD does not integrate apple gravity | **`body_f[tcp]`** via stem harvest + explicit term, written **child-side** (no negation); see `docs/explicit-apple-load-tcp-harvest.md` |
 | Apple **inertia** when welded (`fix_to_apple`) | Mass-only FIXED TCP child (`apple_payload`); Model A `g` still **0** | Prescribed apple | Reflected in MuJoCo articulated dynamics; see `docs/mujoco-apple-payload.md` |
 | Apple weight when free proxy | — | VBD integrates apple gravity | **`body_f[tcp]`** via velocity-delta or stem harvest (no explicit load — avoids double-count) |
 

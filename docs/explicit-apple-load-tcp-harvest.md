@@ -27,10 +27,10 @@ fruit weight at quasi-static hold.
 \]
 
 With \(\mathbf{g}=(0,0,-9.81)\), \(\mathbf{F}_{\mathrm{support}}=(0,0,+m g)\) (upward
-support the stem would supply on the apple). The harvest kernels then **negate**
-the total plant wrench (stem reaction + optional support) when writing
-`proxy_forces[tcp]`, so TCP `body_f` uses a **wrist F/T dead-weight convention**:
-hanging fruit → downward pull on the tool.
+support the stem would supply on the apple). Harvest kernels write that
+**child-side** plant wrench (stem reaction + optional support) into
+`proxy_forces[tcp]` **without negation** (same sign as `main`; negating here
+destabilizes the couple).
 
 When `gripper_proxy_offset_in_apple_frame` is set (`fix_to_apple`), apple COM is
 derived from the TCP pose:
@@ -60,7 +60,7 @@ heterogeneous config is currently **inert** (not passed through builders).
 
 Free-proxy scenes should keep explicit load **off**; welded (settle-then-weld)
 scenes turn it **on** at build so quasi-static TCP readouts include fruit weight
-under the F/T convention above.
+under the child-side harvest convention above.
 
 ## Code
 
@@ -68,7 +68,7 @@ under the F/T convention above.
 |--------|------|
 | `explicit_load.apple_support_force_world` | Child-side support \(-\,m\mathbf{g}\) |
 | `explicit_load.explicit_apple_wrench_for_stem_harvest` | Support force + torque about TCP |
-| `proxy_coupling.harvest_stem_tension_for_tcp` / `harvest_batched_stem_tension` | Gather + support + **negate** → TCP |
+| `proxy_coupling.harvest_stem_tension_for_tcp` / `harvest_batched_stem_tension` | Gather + support → TCP (child-side sign) |
 
 **CUDA graphs:** explicit apple load is computed on device inside the stem harvest
 kernel (no `body_q.numpy()` / `body_mass.numpy()` per substep).
@@ -78,9 +78,9 @@ at scene build.
 ## Tests
 
 - `apple_pick_sim/tests/test_explicit_apple_load.py` — support formula, on/off TCP
-  delta (expects **downward** ΔFz under F/T convention), settle→weld hold
+  delta (expects child-side \(+\mathrm{F}_z\) from \(+m g\)), settle→weld hold
 - `apple_pick_sim/tests/test_coupled_fruiting_system.py` — TCP harvest vs stem
-  gather reference (includes negation)
+  gather reference (same-sign child-side write)
 
 ```bash
 uv run --env-file pytest.env python -m pytest \

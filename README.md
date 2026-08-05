@@ -412,7 +412,8 @@ The batched grid writes Plotly/HTML ranking artifacts under `--plot-output` (see
 
 ### CMA-ES sim-to-sim transfer (support \(k_p\) + spur/stem \(E\))
 
-Fit support-joint \(k_p\) (shared angular+linear, \(\zeta=1\) on support only) and
+Fit support-joint \(k_p\) (shared angular+linear; support \(\zeta\) from dataset
+`joint_damping_ratio`) and
 spur/stem Young's modulus in \(\log_{10}\) so a replay simulator matches
 trajectories collected from a differently parameterized "ground-truth" sim
 (`batched_sysid_v1`). Primary \(E\) is fixed from each structure's true params.

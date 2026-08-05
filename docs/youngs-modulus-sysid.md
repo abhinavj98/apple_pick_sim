@@ -17,7 +17,8 @@ the shared feature-vector definition.
 
 `example_youngs_modulus_sys_id.py` replays recorded `batched_sysid_v1` actions
 over a Cartesian grid of material candidates. A candidate contains support-joint
-\(k_p\) (shared angular+linear, support \(\zeta=1\)) plus spur/stem Young's
+\(k_p\) (shared angular+linear; support \(\zeta\) from dataset
+`joint_damping_ratio`) plus spur/stem Young's
 modulus in Pa. `SupportKpYoungsCandidate.apply_to()` patches support FIXED-joint
 \(k_p\)/\(k_d\) and sets spur/stem \(E\) through `set_rod_youngs_modulus()`,
 which re-derives geometry-consistent VBD stiffness and damping while preserving

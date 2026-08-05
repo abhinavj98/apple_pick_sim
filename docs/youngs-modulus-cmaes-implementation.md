@@ -22,7 +22,8 @@ documented in `docs/youngs-modulus-sysid.md`.
 `example_youngs_modulus_cmaes.py` fits support-joint \(k_p\) and spur/stem
 Young's modulus in \(\log_{10}\) for each selected `batched_sysid_v1`
 structure. Primary \(E\) is fixed from ground truth. Support \(k_d\) uses
-\(\zeta=1\) on support joints only (see `docs/damping-tuning.md`). One
+support \(k_d\) from the dataset's recorded `joint_damping_ratio` on support
+joints only (collect/replay parity; see `docs/damping-tuning.md`). One
 independent pycma optimizer owns each structure's mean, covariance, fitness
 penalties, seed stream, and stop criteria. Active optimizers advance in
 **synchronized generation waves**: every active structure calls `ask()` once,

@@ -39,7 +39,7 @@ to the wood. This slice identifies **support \(k_p\)** jointly with spur and ste
 | Free support \(k_p\) | **Yes** — one scalar for left+right supports |
 | Support DOFs | Shared numeric \(k_p\) → **angular and linear** penalty slots |
 | Support \(\zeta\) | **Fixed** — not searched; taken from dataset `sim_config.joint_damping_ratio` at replay (collect/replay kd parity). Fallback 0.5 matches the proxy variance fixture. |
-| Support \(k_d\) | \(k_{d,\mathrm{ang}} = 2\sqrt{k_p I}\), \(k_{d,\mathrm{lin}} = 2\sqrt{k_p m}\) using each joint’s child inertia/mass (shared \(\zeta=1\); L/R \(k_d\) may differ) |
+| Support \(k_d\) | \(k_{d,\mathrm{ang}} = \zeta\cdot 2\sqrt{k_p I}\), \(k_{d,\mathrm{lin}} = \zeta\cdot 2\sqrt{k_p m}\) with \(\zeta\) from dataset `joint_damping_ratio` (support role only; L/R may differ via child \(I\)/\(m\)) |
 | Other FIXED joints | Unchanged fixture defaults / global `joint_damping_ratio` |
 | Spur / stem \(E\) | Still free (same as V.5.2) |
 | First delivery | Extend existing batched Young's **grid + CMA** (not real-robot-only first) |
@@ -65,7 +65,7 @@ primary-\(E\) axes).
 2. `set_rod_youngs_modulus` for **spur** and **stem** only.
 3. Patch support joints (label match `"support"` / `primary_support`):
    - angular + linear \(k_p\) ← candidate scalar
-   - angular + linear \(k_d\) ← \(\zeta=1\) critical-damping formula above
+   - angular + linear \(k_d\) ← critical-damping formula with dataset \(\zeta\)
 4. Leave all non-support FIXED joint penalties at build/fixture values.
 
 ### Initialization and bounds
@@ -103,7 +103,7 @@ final-mean wave + overlays
 
 ## Non-goals
 
-- Free support \(\zeta\) (fixed at 1 for this slice; revisit later).
+- Free support \(\zeta\) (held fixed from `sim_build.joint_damping_ratio` for collect/replay parity; not searched).
 - Separate free angular vs linear \(k_p\).
 - Fitting primary \(E\), bend/stretch rod stiffness, density, geometry, or
   secondary \(E\).
@@ -118,7 +118,7 @@ final-mean wave + overlays
 - Support label must match both left and right joints; fail closed if `"support"`
   matches nothing or ambiguously matches non-support joints under the existing
   substring rules.
-- \(\zeta=1\) and \(k_p > 0\); reject non-positive \(k_p\).
+- \(\zeta \ge 0\) from dataset (or fallback 0.5) and \(k_p > 0\); reject non-positive \(k_p\).
 - \(I\) / \(m\) for \(k_d\) come from the child body at each support joint (same
   pattern as existing fixture \(\zeta \cdot 2\sqrt{k\cdot I}\) expansion in
   damping-tuning / CMA joint-kd hold).
@@ -130,7 +130,7 @@ final-mean wave + overlays
 ## Tests (acceptance intent)
 
 - Unit: candidate log10 maps; apply sets support angular+linear \(k_p\), sets
-  support \(k_d\) for \(\zeta=1\), leaves primary \(E\) and non-support joints
+  support \(k_d\) for dataset \(\zeta\), leaves primary \(E\) and non-support joints
   unchanged; sets spur/stem \(E\).
 - CLI: grid/CMA help and arg parsing expose support \(k_p\), not primary \(E\).
 - Report: support \(k_p\) present; primary \(E\) not a fitted dimension.

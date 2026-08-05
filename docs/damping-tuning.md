@@ -17,7 +17,7 @@ layer to fix problems that belong to another.
 | Layer | Where | What you set | What it means |
 | ----- | ----- | ------------ | ------------- |
 | **Bend (real values)** | `CABLE` bend | `youngs_modulus_pa` \(E\), bend `damping_ratio` \(\zeta\) | Literature / sys-ID wood–peduncle bending. \(k_{\mathrm{bend}}=EI/L_{\mathrm{seg}}\), \(c_{\mathrm{bend}}=2\zeta\sqrt{k_{\mathrm{bend}} J_{\mathrm{seg}}}\). This is the CEM / hardware-transfer knob. |
-| **Joints (stability)** | `FIXED` welds | `sim_build.joint_damping_ratio` (or per-role `kd` / `kp`) | Damps discrete support / rod↔rod / stem→apple / proxy welds so VBD settles. **Not** wood viscosity. Support \(k_p\) is also a **sys-ID target** (batched Young's grid/CMA); during that path support \(k_d\) is derived with **\(\zeta=1\)** on support joints only — see `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md`. |
+| **Joints (stability)** | `FIXED` welds | `sim_build.joint_damping_ratio` (or per-role `kd` / `kp`) | Damps discrete support / rod↔rod / stem→apple / proxy welds so VBD settles. **Not** wood viscosity. Support \(k_p\) is also a **sys-ID target** (batched Young's grid/CMA); during that path support \(k_d\) uses the **same** `joint_damping_ratio` recorded in the dataset (collect/replay parity) — see `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md`. |
 | **Stretch (max load)** | `CABLE` stretch | `vbd_stretch_force.max_force_n` \(F_{\max}\), `damping_ratio` \(\zeta_{\mathrm{stretch}}\) | Soft axial spring sized so extension at \(F_{\max}\) stays within \(\delta=0.05\,L_{\mathrm{seg}}\): \(k=F_{\max}/\delta\). Decoupled from bend \(E\). |
 
 Canonical fixture: `apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json`

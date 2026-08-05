@@ -91,8 +91,8 @@ Default controls live in ``CMA_SEARCH_PARAMS`` inside
 Batched heterogeneous builds derive FIXED-joint angular/linear `kd` from
 `sim_build.joint_damping_ratio` (or absolute kd maps) via
 `kd = ζ · 2 · √(k · I)` / `√(k · m)` using each env's child mass/inertia.
-During support-\(k_p\) sys-ID, candidate apply sets support \(k_d\) with
-**fixed \(\zeta=1\)** on support joints only; spur/stem cable bend damping and
+During support-\(k_p\) sys-ID, candidate apply sets support \(k_d\) with the
+**dataset** `joint_damping_ratio` on support joints only; spur/stem cable bend damping and
 non-support FIXED joint penalties stay at build/fixture values. Primary \(E\) is
 not a free dimension. Rankings and integrity/ranking gates need **re-baselining**
 after damping-policy changes (`scripts/gate_youngs_modulus_cmaes.sh`, ranking gate).

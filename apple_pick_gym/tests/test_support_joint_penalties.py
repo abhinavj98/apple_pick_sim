@@ -16,7 +16,9 @@ if str(_SIM_TESTS_DIR) not in sys.path:
 
 from conftest import COUPLED_SCENE_KW, requires_fr3  # noqa: E402
 from apple_pick_gym.batched_envs.support_joint_penalties import (  # noqa: E402
+    SUPPORT_JOINT_ZETA_FALLBACK,
     apply_per_env_support_joint_penalties,
+    support_joint_zeta_from_dataset,
 )
 from apple_pick_sim.coupled_fruiting import CoupledFruitingScene  # noqa: E402
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout  # noqa: E402
@@ -220,3 +222,48 @@ def test_apply_rejects_wrong_support_kp_length():
             num_envs=int(layout.num_envs),
             joints_per_world=int(layout.joints_per_world),
         )
+
+
+def test_support_joint_zeta_from_dataset_reads_sim_config():
+    dataset = type(
+        "D",
+        (),
+        {
+            "manifest": {
+                "collection": {
+                    "sim_config": {"joint_damping_ratio": 0.5},
+                }
+            },
+            "dataset_dir": Path("/tmp/fake_support_kp_dataset"),
+        },
+    )()
+    assert support_joint_zeta_from_dataset(dataset) == pytest.approx(0.5)
+
+
+def test_support_joint_zeta_from_dataset_falls_back_when_missing():
+    dataset = type(
+        "D",
+        (),
+        {
+            "manifest": {"collection": {}},
+            "dataset_dir": Path("/tmp/fake_support_kp_dataset"),
+        },
+    )()
+    assert support_joint_zeta_from_dataset(dataset) == pytest.approx(
+        SUPPORT_JOINT_ZETA_FALLBACK
+    )
+
+
+def test_support_joint_zeta_from_dataset_rejects_negative():
+    dataset = type(
+        "D",
+        (),
+        {
+            "manifest": {
+                "collection": {"sim_config": {"joint_damping_ratio": -0.1}}
+            },
+            "dataset_dir": Path("/tmp/fake"),
+        },
+    )()
+    with pytest.raises(ValueError, match="joint_damping_ratio"):
+        support_joint_zeta_from_dataset(dataset)

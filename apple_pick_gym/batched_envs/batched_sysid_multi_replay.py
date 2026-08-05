@@ -20,6 +20,7 @@ from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
 )
 from apple_pick_gym.batched_envs.support_joint_penalties import (
     apply_per_env_support_joint_penalties,
+    support_joint_zeta_from_dataset,
 )
 from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
 from apple_pick_sim.fruiting_system.params import (
@@ -419,6 +420,7 @@ def replay_multi_structure_candidate_blocks(
                     [slot.support_kp for slot in slots],
                     num_envs=env._sim.layout.num_envs,
                     joints_per_world=env._sim.layout.joints_per_world,
+                    zeta=support_joint_zeta_from_dataset(dataset),
                 )
 
             replay_started = time.perf_counter()

@@ -685,13 +685,14 @@ def test_replay_multi_structure_applies_support_kp_before_reset(
     apply_calls: list[dict[str, Any]] = []
     event_order: list[str] = []
 
-    def fake_apply(scene, support_kp_per_env, *, num_envs, joints_per_world):
+    def fake_apply(scene, support_kp_per_env, *, num_envs, joints_per_world, zeta):
         apply_calls.append(
             {
                 "scene": scene,
                 "support_kp_per_env": tuple(support_kp_per_env),
                 "num_envs": num_envs,
                 "joints_per_world": joints_per_world,
+                "zeta": zeta,
             }
         )
         event_order.append("apply")
@@ -736,7 +737,14 @@ def test_replay_multi_structure_applies_support_kp_before_reset(
         return env
 
     multi.replay_multi_structure_candidate_blocks(
-        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        dataset=SimpleNamespace(
+            manifest={
+                "collection": {
+                    "seed": 7,
+                    "sim_config": {"joint_damping_ratio": 0.5},
+                }
+            }
+        ),
         blocks=blocks,
         build_env_fn=build_env_fn,
         max_envs_per_batch=0,
@@ -747,6 +755,7 @@ def test_replay_multi_structure_applies_support_kp_before_reset(
     assert apply_calls[0]["num_envs"] == 2
     assert apply_calls[0]["joints_per_world"] == 7
     assert apply_calls[0]["scene"].label == "scene"
+    assert apply_calls[0]["zeta"] == pytest.approx(0.5)
     assert event_order == ["apply", "reset"]
 
 

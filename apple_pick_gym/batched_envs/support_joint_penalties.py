@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
+from typing import Any
 
 from apple_pick_sim.coupled_fruiting.scene import CoupledFruitingScene
 from apple_pick_sim.fruiting_system import (
@@ -13,7 +15,40 @@ from apple_pick_sim.fruiting_system import (
 )
 from apple_pick_sim.fruiting_system.joint_kd_scaling import joint_kd_from_damping_ratio
 
-SUPPORT_JOINT_ZETA: float = 1.0
+# Used only when dataset ``collection.sim_config.joint_damping_ratio`` is absent.
+# Prefer dataset ζ so replay support kd matches collect-time weld damping.
+SUPPORT_JOINT_ZETA_FALLBACK: float = 0.5
+# Back-compat alias (was hardcoded 1.0; that broke GT-vs-GT when collect used 0.5).
+SUPPORT_JOINT_ZETA: float = SUPPORT_JOINT_ZETA_FALLBACK
+
+
+def support_joint_zeta_from_dataset(dataset: Any) -> float:
+    """Return support-joint ζ for candidate apply (not a free sys-ID parameter).
+
+    Reads ``manifest['collection']['sim_config']['joint_damping_ratio']`` so
+    replay support ``kd`` matches the damping used when the dataset was
+    collected. Falls back to :data:`SUPPORT_JOINT_ZETA_FALLBACK` when missing.
+    """
+    manifest = getattr(dataset, "manifest", None)
+    if not isinstance(manifest, dict):
+        return float(SUPPORT_JOINT_ZETA_FALLBACK)
+    collection = manifest.get("collection", {})
+    if not isinstance(collection, dict):
+        return float(SUPPORT_JOINT_ZETA_FALLBACK)
+    sim_config = collection.get("sim_config", {})
+    if not isinstance(sim_config, dict):
+        return float(SUPPORT_JOINT_ZETA_FALLBACK)
+    raw = sim_config.get("joint_damping_ratio", None)
+    if raw is None:
+        return float(SUPPORT_JOINT_ZETA_FALLBACK)
+    zeta = float(raw)
+    if not math.isfinite(zeta) or zeta < 0.0:
+        path = getattr(dataset, "dataset_dir", "<unknown>")
+        raise ValueError(
+            f"joint_damping_ratio must be finite and >= 0 "
+            f"(dataset={path!s}, got {raw!r})"
+        )
+    return zeta
 
 
 def _validate_support_kp_per_env(
@@ -43,11 +78,12 @@ def apply_per_env_support_joint_penalties(
     *,
     num_envs: int,
     joints_per_world: int,
-    zeta: float = SUPPORT_JOINT_ZETA,
+    zeta: float = SUPPORT_JOINT_ZETA_FALLBACK,
 ) -> None:
     """Set per-env support angular/linear kp and critical-damping kd (ζ via ``zeta``).
 
-    Non-support roles retain their build-time penalty values.
+    Non-support roles retain their build-time penalty values. Callers should pass
+    ``zeta=support_joint_zeta_from_dataset(dataset)`` for collect/replay parity.
     """
     kp_per_env = _validate_support_kp_per_env(support_kp_per_env, num_envs=num_envs)
     layout = scene.layout

@@ -38,7 +38,7 @@ to the wood. This slice identifies **support \(k_p\)** jointly with spur and ste
 | Free primary material | **No** — primary \(E\) fixed from structure true/fixture params |
 | Free support \(k_p\) | **Yes** — one scalar for left+right supports |
 | Support DOFs | Shared numeric \(k_p\) → **angular and linear** penalty slots |
-| Support \(\zeta\) | **Fixed at 1** (not searched this slice) |
+| Support \(\zeta\) | **Fixed** — not searched; taken from dataset `sim_config.joint_damping_ratio` at replay (collect/replay kd parity). Fallback 0.5 matches the proxy variance fixture. |
 | Support \(k_d\) | \(k_{d,\mathrm{ang}} = 2\sqrt{k_p I}\), \(k_{d,\mathrm{lin}} = 2\sqrt{k_p m}\) using each joint’s child inertia/mass (shared \(\zeta=1\); L/R \(k_d\) may differ) |
 | Other FIXED joints | Unchanged fixture defaults / global `joint_damping_ratio` |
 | Spur / stem \(E\) | Still free (same as V.5.2) |

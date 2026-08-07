@@ -17,6 +17,14 @@ With post-grasp snap (true logged TCP + apple SE(3) weld)::
       --post-grasp-settle-substeps 500 \\
       --viewer gl
 
+Apple translation only (keep settle orientation; ignore logged apple quat)::
+
+    uv run python robot_replay/example_view_pre_grasp_settle.py \\
+      --parquet robot_replay/s00-d00.parquet \\
+      --grasp-after-settle \\
+      --apple-position-only \\
+      --viewer gl
+
 With robot-base RGB axes at fixture ``robot_base_pos``::
 
     uv run python robot_replay/example_view_pre_grasp_settle.py \\
@@ -90,6 +98,15 @@ def _make_parser() -> argparse.ArgumentParser:
         help=(
             "After long settle, weld proxy at logged TCP SE(3) and apple at measured "
             "post-grasp pose (no catalog surface snap); then run --post-grasp-settle-substeps."
+        ),
+    )
+    parser.add_argument(
+        "--apple-position-only",
+        action="store_true",
+        help=(
+            "With --grasp-after-settle: set apple translation from logged post-grasp "
+            "data but keep apple orientation from the free settle (ignore logged "
+            "apple quat). TCP SE(3) is unchanged."
         ),
     )
     parser.add_argument(
@@ -221,6 +238,11 @@ class ExampleViewPreGraspSettle:
         quiet_raw = int(args.settle_quiet_every)
         self._quiet_every: int | None = quiet_raw if quiet_raw > 0 else None
         self._grasp_after_settle = bool(args.grasp_after_settle)
+        self._apple_position_only = bool(args.apple_position_only)
+        if self._apple_position_only and not self._grasp_after_settle:
+            print(
+                "Warning: --apple-position-only has no effect without --grasp-after-settle."
+            )
         self._tcp_radius_warn_m = float(args.tcp_radius_warn_m)
         self._post_grasp_settle_total = max(0, int(args.post_grasp_settle_substeps))
 
@@ -270,7 +292,12 @@ class ExampleViewPreGraspSettle:
             emit_warnings=True,
         )
         print(format_post_grasp_plan(plan))
-        print("Applying post-grasp true TCP pose weld…")
+        mode = (
+            "apple position-only (keep settle orientation)"
+            if self._apple_position_only
+            else "true TCP + apple SE(3)"
+        )
+        print(f"Applying post-grasp weld ({mode})…")
         self._scene = apply_post_grasp_after_settle(
             self._scene,
             plan,
@@ -281,6 +308,7 @@ class ExampleViewPreGraspSettle:
             robot_base_pos=self._robot_base,
             proxy_tcp_pos_warn_m=self._tcp_radius_warn_m,
             emit_warnings=True,
+            keep_apple_settle_orientation=self._apple_position_only,
         )
         print(f"Post-grasp fingerprint: {geometry_fingerprint_coupled(self._scene)}")
         self._bind_scene_to_viewer()

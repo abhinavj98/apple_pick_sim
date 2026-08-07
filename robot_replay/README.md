@@ -72,6 +72,16 @@ uv run python robot_replay/example_view_pre_grasp_settle.py \
   --viewer gl
 ```
 
+`--apple-position-only` (with `--grasp-after-settle`): snap apple **translation**
+from logged post-grasp data but keep apple **orientation from the free settle**
+(ignore logged apple quat). TCP SE(3) is unchanged; the FIXED offset is rebuilt
+from settle apple quat + logged TCP.
+
+**Known issue:** the default full apple SE(3) weld (logged `apple_pose_4x4`
+rotation) **does not match GT**; position-only placement does. Debug item is
+tracked in `docs/ROADMAP.md` → **Current focus → Known issues — debug next**.
+Prefer `--apple-position-only` for real-episode replay until it is fixed.
+
 `--dump-params` writes `fruiting_base_pos`, the sim-native
 `fruiting_system_params` blob, and catalog-vs-chord diagnostics.
 `--strict` fails only if pre-grasp woody bend is not ~0.

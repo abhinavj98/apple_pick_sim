@@ -49,3 +49,6 @@ scripts/**
 sweep_runs
 tmp*/
 *.parquet
+robot_replay/*.mp4
+robot_replay/*.json
+robot_replay/*.png

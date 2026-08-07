@@ -14,14 +14,14 @@
     },
     "joint_damping_ratio": 0.5,
     "joint_angular_kp_overrides": {
-      "support": 10000.0
+      "support": 100.0
     },
     "joint_linear_kp_overrides": {
-      "support": 10000.0
+      "support": 100.0
     }
   },
   "primary": {
-    "num_segments": {"min": 4, "max": 4},
+    "num_segments": {"min": 2, "max": 2},
     "length": {"min": 0.3, "max": 0.4},
     "radius": {"min": 0.02, "max": 0.025},
     "density": {"min": 600.0, "max": 900.0},
@@ -30,7 +30,7 @@
     "youngs_modulus_pa": {"min": 5000000000.3, "max": 5000000000.8},
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_force": {
-      "max_force_n": 35.0,
+      "max_force_n": 500.0,
       "damping_ratio": 1.0
     }
   },

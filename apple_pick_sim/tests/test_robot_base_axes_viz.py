@@ -77,3 +77,18 @@ def test_parser_has_robot_base_axes_flag(example_mod):
     )
     assert args.robot_base_axes is True
     assert args.robot_base_axes_length == pytest.approx(0.3)
+
+
+def test_parser_has_apple_position_only_flag(example_mod):
+    parser = example_mod._make_parser()
+    args = parser.parse_args(
+        [
+            "--parquet",
+            "robot_replay/s00-d00.parquet",
+            "--grasp-after-settle",
+            "--apple-position-only",
+        ]
+    )
+    assert args.apple_position_only is True
+    args_off = parser.parse_args(["--parquet", "robot_replay/s00-d00.parquet"])
+    assert args_off.apple_position_only is False

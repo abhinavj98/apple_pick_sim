@@ -86,6 +86,10 @@
 
 **Deferred / later cleanup (not Current focus):** optional CLI `--score-mmd` (library MMD exists; **replaced by Wasserstein** for ranking — wire flag later if needed); V.4.2.1 infer-only fidelity floor (helpers/`--infer-params` exist; oracle default is fine for the current CMA-ES path).
 
+**Known issues — debug next:**
+
+- [ ] **Post-grasp apple orientation does not match GT** (`robot_replay/example_view_pre_grasp_settle.py --grasp-after-settle`). Welding the apple at the **logged `apple_pose_4x4` rotation** produces a scene that disagrees with ground truth; **position-only** placement (`--apple-position-only`, keep settle quat) looks correct. Suspects to check in order: (1) rotation convention / column-vs-row major in `pose_4x4_to_pos_quat`, (2) quaternion order (xyzw vs wxyz) crossing `wp.quat` / `body_q[3:7]` boundaries, (3) frame of the logged apple pose (tracker/marker frame vs sim apple body frame), (4) `X_offset = X_apple^{-1} X_tcp` composition in `proxy_offset_from_apple_and_tcp`. Contract: `docs/superpowers/specs/2026-08-05-apple-position-only-post-grasp-weld-design.md`, code: `apple_pick_sim/system_id/real_post_grasp_plan.py`.
+
 **Goal:** **V.5.2** CMA-ES on GT-preferring batched scores → **V.5.3** held-out sim-sim validation → **[M4]**.
 
 **Build on (do not reimplement):**

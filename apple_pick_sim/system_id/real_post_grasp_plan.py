@@ -311,10 +311,14 @@ def apply_post_grasp_after_settle(
     robot_base_pos: tuple[float, float, float] | None = None,
     proxy_tcp_pos_warn_m: float = _PROXY_TCP_POS_WARN_M,
     emit_warnings: bool = True,
+    keep_apple_settle_orientation: bool = False,
 ) -> CoupledCableScene:
     """Rebuild welded cable scene; seed woody from free settle; apple+proxy from plan.
 
-    Proxy and apple world poses match logged SE(3). FIXED joint encodes
+    Proxy and apple world poses match logged SE(3) by default. When
+    ``keep_apple_settle_orientation`` is True, apple **translation** still follows
+    ``plan.apple_pos_welded`` but apple **quaternion** is kept from the free
+    settle; FIXED offset uses that settle quat with logged TCP SE(3).
     ``X_offset = X_apple^{-1} X_tcp``. No catalog-radius surface snap.
     """
     if free_scene.apple_body is None:
@@ -322,8 +326,12 @@ def apply_post_grasp_after_settle(
 
     bq = free_scene.state_0.body_q.numpy().reshape(-1, 7).astype(np.float32).copy()
     apple_id = int(free_scene.apple_body)
+    settle_quat = tuple(float(x) for x in bq[apple_id, 3:7])
+    apple_quat_xyzw = (
+        settle_quat if keep_apple_settle_orientation else plan.apple_quat_xyzw
+    )
     bq[apple_id, 0:3] = np.asarray(plan.apple_pos_welded, dtype=np.float32)
-    bq[apple_id, 3:7] = np.asarray(plan.apple_quat_xyzw, dtype=np.float32)
+    bq[apple_id, 3:7] = np.asarray(apple_quat_xyzw, dtype=np.float32)
 
     # Snapshot one woody body (first primary) for mismatch checks after copy
     woody_ids = list(free_scene.primary_bodies) + list(free_scene.spur_bodies) + list(
@@ -333,7 +341,7 @@ def apply_post_grasp_after_settle(
 
     offset_7 = proxy_offset_from_apple_and_tcp(
         apple_pos=plan.apple_pos_welded,
-        apple_quat_xyzw=plan.apple_quat_xyzw,
+        apple_quat_xyzw=apple_quat_xyzw,
         tcp_pos=plan.tcp_pos,
         tcp_quat_xyzw=plan.tcp_quat_xyzw,
     )
@@ -347,7 +355,7 @@ def apply_post_grasp_after_settle(
         gripper_proxy=GripperProxyConfig(
             fix_to_apple=True,
             weld_reference_pos=plan.apple_pos_welded,
-            weld_reference_quat=plan.apple_quat_xyzw,
+            weld_reference_quat=apple_quat_xyzw,
             weld_proxy_offset_in_apple_frame=offset_7,
         ),
     )

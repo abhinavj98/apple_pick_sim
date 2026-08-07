@@ -235,3 +235,71 @@ def test_apply_post_grasp_after_settle_true_tcp_pose():
     flange = tip + np.asarray(wp.quat_rotate(q, wp.vec3(0.0, 0.0, -2.0 * hh)), dtype=np.float64)
     apple = wbq[welded.apple_body, :3]
     assert float(np.linalg.norm(flange - apple)) > float(np.linalg.norm(tip - apple))
+
+
+def test_apply_post_grasp_keeps_settle_apple_orientation():
+    """keep_apple_settle_orientation: snap apple pos only; ignore logged apple quat."""
+    from apple_pick_sim.fruiting_system import GripperProxyConfig, generate_coupled_cable_scene, load_ranges
+    from apple_pick_sim.system_id.real_post_grasp_plan import apply_post_grasp_after_settle
+    from apple_pick_sim.tests.conftest import NO_SELF_COLLISION_KW
+
+    ranges = load_ranges(
+        Path("apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json")
+    )
+    free = generate_coupled_cable_scene(
+        ranges,
+        seed=0,
+        gripper_proxy=GripperProxyConfig(fix_to_apple=False),
+        **NO_SELF_COLLISION_KW,
+    )
+    assert free.apple_body is not None
+    apple_id = int(free.apple_body)
+    bq = free.state_0.body_q.numpy().reshape(-1, 7).astype(np.float32).copy()
+    apple0 = bq[apple_id, :3].copy()
+    # 90° about Z — distinct from logged identity quat below.
+    settle_quat = np.array([0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)], dtype=np.float32)
+    bq[apple_id, 0:3] = apple0 + np.array([0.01, -0.02, 0.005], dtype=np.float32)
+    bq[apple_id, 3:7] = settle_quat
+    zeros = np.zeros((bq.shape[0], 6), dtype=np.float32)
+    free.state_0.body_q.assign(bq)
+    free.state_0.body_qd.assign(zeros)
+    free.state_1.body_q.assign(bq)
+    free.state_1.body_qd.assign(zeros)
+
+    r = float(free.params.apple_radius)
+    tcp = apple0 + np.array([0.0, r + 0.03, 0.0], dtype=np.float64)
+    M_tcp = np.eye(4)
+    M_tcp[:3, 3] = tcp
+    # Logged apple pose: measured center + identity rotation (≠ settle quat).
+    M_ap = np.eye(4)
+    M_ap[:3, 3] = apple0
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        plan = build_post_grasp_plan(
+            tcp_pose_4x4=M_tcp.reshape(16).tolist(),
+            apple_pose_4x4=M_ap.reshape(16).tolist(),
+            apple_radius_m=r,
+            warn_tol_m=0.02,
+        )
+    np.testing.assert_allclose(plan.apple_quat_xyzw, (0.0, 0.0, 0.0, 1.0), atol=1e-6)
+
+    welded = apply_post_grasp_after_settle(
+        free,
+        plan,
+        ranges=ranges,
+        params=free.params,
+        base_pos=(0.5, 0.5, 0.5),
+        robot_base_pos=(0.0, 0.0, 0.0),
+        keep_apple_settle_orientation=True,
+    )
+    wbq = welded.state_0.body_q.numpy().reshape(-1, 7)
+    np.testing.assert_allclose(wbq[welded.apple_body, :3], plan.apple_pos_welded, atol=1e-4)
+    aq = wbq[welded.apple_body, 3:7]
+    # Same rotation up to sign flip of the quaternion.
+    assert abs(float(np.dot(aq, settle_quat))) > 1.0 - 1e-4, (
+        f"apple quat {aq} should keep settle {settle_quat}, not logged {plan.apple_quat_xyzw}"
+    )
+    np.testing.assert_allclose(wbq[welded.gripper_proxy_body, :3], plan.tcp_pos, atol=5e-3)
+    pq = wbq[welded.gripper_proxy_body, 3:7]
+    tq = np.asarray(plan.tcp_quat_xyzw, dtype=np.float64)
+    assert abs(float(np.dot(pq, tq))) > 1.0 - 1e-4

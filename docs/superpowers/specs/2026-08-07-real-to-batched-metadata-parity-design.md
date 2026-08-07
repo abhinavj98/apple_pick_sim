@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Draft — step 1 approved for planning |
+| **Status** | Bit 1 implemented (metadata convert + parity + JSON viewer) |
 | **Date** | 2026-08-07 |
 | **Source of truth** | `robot_replay/example_view_pre_grasp_settle.py` (native pre/post stack) |
 | **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C1), `robot_replay/README.md`, `docs/batched-sysid-dataset.md` |

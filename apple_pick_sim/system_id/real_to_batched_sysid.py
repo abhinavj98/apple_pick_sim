@@ -1,12 +1,12 @@
 """Convert real-world sys-ID episodes toward batched_sysid_v1 metadata.
 
-Metadata-only slice: assemble fruiting/weld/init episode metadata from:
+Metadata-only slice: assemble fruiting/weld/init episode metadata by calling the
+same pre/post builders as ``robot_replay/example_view_pre_grasp_settle.py``
+(``fruiting_params_from_pre_grasp_parquet``, ``post_grasp_plan_from_metadata``),
+then packaging into batched episode keys.
 
-- **Pre-grasp** woody chords (non-bending, gravity largely opposed) + measured
-  rod L/r + variance-fixture midpoints → rebuild ``fruiting_system`` geometry.
-- **Post-grasp** settled apple / TCP → weld attachment on the settled plant.
-
-Frame remapping is deferred. Contract and collection fixes:
+Frame remapping and trajectory export are deferred. Contract:
+``docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md``,
 ``docs/real-sysid-pre-post-grasp-fixes.md``, ``robot_replay/README.md``.
 """
 
@@ -37,6 +37,7 @@ _JUNCTION_TO_ROD: dict[str, str] = {
     "stem_apple": "stem",
 }
 _ZERO_CHORD_EPS = 1e-12
+_DEFAULT_CONTROL_HZ = 15.0
 
 
 def flat_woody_to_dicts(
@@ -195,96 +196,122 @@ def _unit_direction(vec: np.ndarray, *, field: str) -> list[float]:
     return [float(u[0]), float(u[1]), float(u[2])]
 
 
+def _resolve_control_hz(dm: dict[str, Any]) -> float:
+    """Prefer nested robot/dump control_hz; else default with no raise."""
+    source_robot = (dm.get("source_metadata") or {}).get("robot") or {}
+    if "control_hz" in source_robot:
+        return float(source_robot["control_hz"])
+    dump = dm.get("dump") or {}
+    if isinstance(dump, dict) and "control_hz" in dump:
+        return float(dump["control_hz"])
+    summary_robot = ((dm.get("source_metadata_summary") or {}).get("robot_dump") or {})
+    if isinstance(summary_robot, dict) and "control_hz" in summary_robot:
+        return float(summary_robot["control_hz"])
+    import warnings
+
+    warnings.warn(
+        f"control_hz missing in dataset_metadata; using default {_DEFAULT_CONTROL_HZ}",
+        UserWarning,
+        stacklevel=3,
+    )
+    return float(_DEFAULT_CONTROL_HZ)
+
+
+def _resolve_episode_id(dm: dict[str, Any], path: Path) -> str:
+    eid = dm.get("episode_id")
+    if isinstance(eid, str) and eid.strip():
+        return eid.strip()
+    dump = dm.get("dump") or {}
+    if isinstance(dump, dict):
+        dump_eid = dump.get("episode_id")
+        if isinstance(dump_eid, str) and dump_eid.strip():
+            return dump_eid.strip()
+    return path.stem
+
+
+def _grasp_row_index(table: Any) -> int:
+    """Index of the grasp/trajectory start row (post-grasp freeze-frame)."""
+    names = set(table.column_names)
+    if "step_idx" in names:
+        step_idx = table.column("step_idx").to_numpy(zero_copy_only=False)
+        steps = np.asarray(step_idx, dtype=np.int32).reshape(-1)
+        pre = np.where(steps == -1)[0]
+        if pre.size == 1:
+            after = np.where(np.arange(steps.size) > int(pre[0]))[0]
+            if after.size == 0:
+                raise ValueError("missing grasp/trajectory rows after pre-grasp")
+            return int(after[0])
+        if pre.size > 1:
+            raise ValueError(
+                "expected at most one pre-grasp row with step_idx=-1 "
+                f"(found {int(pre.size)})"
+            )
+    if table.num_rows < 1:
+        raise ValueError("episode table has no rows")
+    return 0
+
+
+def _joint_q_from_table(table: Any, grasp_i: int) -> list[float]:
+    if "robot_joint_q" in table.column_names:
+        return _as_float_list(
+            table.column("robot_joint_q")[grasp_i].as_py(), 7, field="robot_joint_q"
+        )
+    if "joint_pos" in table.column_names:
+        return _as_float_list(
+            table.column("joint_pos")[grasp_i].as_py(), 7, field="joint_pos"
+        )
+    raise ValueError("episode table requires robot_joint_q or joint_pos")
+
+
 def build_episode_metadata_from_real(
     input_path: str | Path,
     *,
     fixture_path: str | Path,
     weld_direction_sign: float = 1.0,
 ) -> dict[str, Any]:
-    """Build batched-style episode metadata from one real-world parquet episode."""
+    """Build batched-style episode metadata from one real-world parquet episode.
+
+    Uses the same pre/post builders as ``example_view_pre_grasp_settle.py`` so
+    converted metadata matches the settle-viewer twin (rebuild + grasp init).
+    """
     path = Path(input_path)
     fixture = Path(fixture_path)
     if not fixture.is_file():
         raise FileNotFoundError(f"fixture not found: {fixture}")
 
+    # Lazy imports avoid a cycle with real_pre_grasp_params → this module.
+    from apple_pick_sim.system_id.real_post_grasp_plan import post_grasp_plan_from_metadata
+    from apple_pick_sim.system_id.real_pre_grasp_params import (
+        fruiting_params_from_pre_grasp_parquet,
+        load_dataset_metadata,
+    )
+
+    params, base_pos, _diagnostics = fruiting_params_from_pre_grasp_parquet(
+        path, fixture_path=fixture
+    )
+    if params.apple_radius is None:
+        raise ValueError("native pre-grasp params missing apple_radius")
+    dm = load_dataset_metadata(path)
+    plan = post_grasp_plan_from_metadata(
+        dm,
+        apple_radius_m=float(params.apple_radius),
+        emit_warnings=True,
+    )
+
     table = pq.read_table(path)
-    required_cols = (
-        "step_idx",
-        "woody_part_start_pos",
-        "woody_part_end_pos",
-        "tcp_pos",
-        "tcp_quat",
-        "apple_pos",
-        "apple_quat",
-        "robot_joint_q",
-    )
-    missing = [c for c in required_cols if c not in table.column_names]
-    if missing:
-        raise ValueError(f"{path}: missing required columns: {missing}")
-
-    dm = _load_dataset_metadata(path)
-    rod_geometry = dm.get("rod_geometry")
-    if not isinstance(rod_geometry, dict):
-        raise ValueError("dataset_metadata.rod_geometry is required")
-
-    step_idx = table.column("step_idx").to_numpy(zero_copy_only=False)
-    pre_i, grasp_i = split_pregrasp_and_trajectory(step_idx)
-
-    start9 = table.column("woody_part_start_pos")[pre_i].as_py()
-    end9 = table.column("woody_part_end_pos")[pre_i].as_py()
-    starts, ends = flat_woody_to_dicts(start9, end9)
-    directions = rod_directions_from_woody(starts, ends)
-
-    apple_radius_m = dm.get("apple_radius_m")
-    if apple_radius_m is not None:
-        apple_radius_m = float(apple_radius_m)
-
-    params = build_fruiting_params_from_real(
-        ranges_path=fixture,
-        rod_geometry=rod_geometry,
-        directions=directions,
-        apple_radius_m=apple_radius_m,
-    )
-    params_dict = fruiting_params_to_dict(params)
-
-    tcp_pos = _as_float_list(table.column("tcp_pos")[grasp_i].as_py(), 3, field="tcp_pos")
-    tcp_quat = _as_float_list(table.column("tcp_quat")[grasp_i].as_py(), 4, field="tcp_quat")
-    apple_pos = _as_float_list(table.column("apple_pos")[grasp_i].as_py(), 3, field="apple_pos")
-    apple_quat = _as_float_list(
-        table.column("apple_quat")[grasp_i].as_py(), 4, field="apple_quat"
-    )
-    joint_q = _as_float_list(
-        table.column("robot_joint_q")[grasp_i].as_py(), 7, field="robot_joint_q"
-    )
+    grasp_i = _grasp_row_index(table)
+    joint_q = _joint_q_from_table(table, grasp_i)
 
     sign = float(weld_direction_sign)
     weld_direction = _unit_direction(
-        sign * (np.asarray(tcp_pos, dtype=np.float64) - np.asarray(apple_pos, dtype=np.float64)),
+        sign * np.asarray(plan.weld_direction, dtype=np.float64),
         field="weld_direction",
     )
 
-    source_robot = (dm.get("source_metadata") or {}).get("robot") or {}
-    if "control_hz" not in source_robot:
-        raise ValueError("dataset_metadata.source_metadata.robot.control_hz is required")
-    control_hz = float(source_robot["control_hz"])
-
-    fruiting_base_pos: list[float]
-    if isinstance(dm.get("pre_grasp_geometry"), dict):
-        from apple_pick_sim.system_id.real_pre_grasp_params import (
-            map_pre_grasp_geometry,
-            primary_direction_from_fixture,
-        )
-
-        primary_dir = primary_direction_from_fixture(fixture)
-        mapped = map_pre_grasp_geometry(dm, primary_dir=primary_dir)
-        fruiting_base_pos = [float(x) for x in mapped.fruiting_base_pos]
-    else:
-        legacy_base = dm.get("fruiting_base_pos")
-        if legacy_base is None:
-            raise ValueError(
-                "dataset_metadata requires pre_grasp_geometry or legacy fruiting_base_pos"
-            )
-        fruiting_base_pos = _as_float_list(legacy_base, 3, field="fruiting_base_pos")
+    tcp_pos = [float(x) for x in plan.tcp_pos]
+    tcp_quat = [float(x) for x in plan.tcp_quat_xyzw]
+    apple_pos = [float(x) for x in plan.apple_pos_welded]
+    apple_quat = [float(x) for x in plan.apple_quat_xyzw]
 
     pull_direction = None
     if "excitation_direction" in table.column_names:
@@ -294,27 +321,23 @@ def build_episode_metadata_from_real(
             field="excitation_direction",
         )
 
-    episode_id = dm.get("episode_id")
-    if episode_id is None:
-        episode_id = path.stem
-
     rod_radii = {
-        name: float(rod_geometry[name]["radius_m"])
-        for name in ROD_NAMES
-        if name in rod_geometry
+        "primary": float(params.primary.radius),
+        "spur": float(params.spur.radius),
+        "stem": float(params.stem.radius),
     }
 
     meta: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
-        "episode_id": str(episode_id),
+        "episode_id": _resolve_episode_id(dm, path),
         "structure_idx": 0,
         "direction_idx": 0,
         "env_idx": 0,
         "pull_direction": pull_direction,
         "params_fingerprint": params_fingerprint(params),
-        "fruiting_system_params": params_dict,
+        "fruiting_system_params": fruiting_params_to_dict(params),
         "excitation_type": "quasi_static",
-        "control_hz": control_hz,
+        "control_hz": _resolve_control_hz(dm),
         "seed": None,
         "n_woody_parts": 3,
         "junction_names": list(SIM_JUNCTION_NAMES),
@@ -324,8 +347,8 @@ def build_episode_metadata_from_real(
         "initial_apple_quat": apple_quat,
         "initial_robot_joint_q": joint_q,
         "fixture_path": str(fixture.resolve()),
-        "fruiting_base_pos": fruiting_base_pos,
-        "apple_radius": float(params.apple_radius) if params.apple_radius is not None else None,
+        "fruiting_base_pos": [float(x) for x in base_pos],
+        "apple_radius": float(params.apple_radius),
         "rod_radii": rod_radii,
         "weld_direction": weld_direction,
         "weld_reference_pos": list(apple_pos),

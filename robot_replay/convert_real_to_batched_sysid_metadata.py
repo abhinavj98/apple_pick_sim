@@ -18,9 +18,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Build batched_sysid_v1-compatible episode metadata from a real-world "
-            "sys-ID parquet. Pre-grasp (non-bending woody + apple pose) rebuilds "
-            "fruiting_system geometry; post-grasp settled grasp pose supplies weld "
-            "attachment (rod_geometry + fixture midpoints for materials)."
+            "sys-ID parquet using the same pre/post builders as "
+            "example_view_pre_grasp_settle.py (rebuild + grasp init only; no "
+            "trajectory export)."
         )
     )
     parser.add_argument(

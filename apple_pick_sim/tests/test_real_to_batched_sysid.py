@@ -96,7 +96,9 @@ def test_build_fruiting_params_uses_measured_geometry_and_fixture_materials():
     assert params.primary is not None and params.spur is not None and params.stem is not None
     assert params.primary.length == 0.31
     assert params.primary.radius == 0.021
-    assert params.primary.num_segments == 4
+    assert params.primary.num_segments == int(
+        round(range_midpoint(ranges["primary"]["num_segments"]))
+    )
     assert params.apple_radius == 0.055
     assert params.primary.density == range_midpoint(ranges["primary"]["density"])
     assert params.primary.youngs_modulus_pa == range_midpoint(
@@ -130,55 +132,90 @@ def test_build_fruiting_params_honors_spur_surface_offset_fixture_flag(tmp_path:
     assert params.spur_surface_offset is False
 
 
+def _identity_pose_4x4(pos: list[float]) -> list[float]:
+    x, y, z = pos
+    return [1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, z, 0.0, 0.0, 0.0, 1.0]
+
+
 def _write_synthetic_real(path: Path) -> None:
-    n = 3
-    step_idx = [-1, 0, 1]
-    rows = []
-    for i in range(n):
-        rows.append(
-            {
-                "step_idx": step_idx[i],
-                "tcp_pos": [0.0, 0.9, 0.4],
-                "tcp_quat": [0.0, 0.0, 0.0, 1.0],
-                "apple_pos": [0.0, 0.95, 0.38],
-                "apple_quat": [0.0, 0.0, 0.0, 1.0],
-                "robot_joint_q": [0.1 * j for j in range(7)],
-                "woody_part_start_pos": [
-                    0.0,
-                    1.0,
-                    0.6,
-                    0.0,
-                    1.0,
-                    0.5,
-                    0.0,
-                    1.0,
-                    0.4,
-                ],
-                "woody_part_end_pos": [
-                    0.0,
-                    1.0,
-                    0.5,
-                    0.0,
-                    1.0,
-                    0.4,
-                    0.0,
-                    0.95,
-                    0.38,
-                ],
-                "excitation_direction": [0.0, -1.0, 0.0],
-            }
-        )
+    """Minimal real-episode-shaped parquet for native pre/post → batched meta."""
+    # Woody: part0 Branch→Spur, part1 Branch unused chord, part2 Spur→Apple CoM.
+    spur_start = [0.0, 1.0, 0.6]
+    spur_end = [0.0, 1.0, 0.5]
+    apple_pos = [0.0, 0.95, 0.38]
+    tcp_pos = [0.0, 0.9, 0.4]
+    woody_start = spur_start + [0.0, 1.0, 0.55] + spur_end
+    woody_end = spur_end + [0.0, 1.0, 0.45] + apple_pos
+    joint = [0.1 * j for j in range(7)]
+    rows = [
+        {
+            "step_idx": 0,
+            "joint_pos": joint,
+            "tcp_pos": tcp_pos,
+            "apple_pos": apple_pos,
+            "woody_part_start_pos": woody_start,
+            "woody_part_end_pos": woody_end,
+            "excitation_direction": [0.0, -1.0, 0.0],
+        },
+        {
+            "step_idx": 1,
+            "joint_pos": joint,
+            "tcp_pos": tcp_pos,
+            "apple_pos": apple_pos,
+            "woody_part_start_pos": woody_start,
+            "woody_part_end_pos": woody_end,
+            "excitation_direction": [0.0, -1.0, 0.0],
+        },
+    ]
     table = pa.Table.from_pylist(rows)
+    snap = {
+        "woody_part_start_pos": woody_start,
+        "woody_part_end_pos": woody_end,
+        "woody_bending_angles": [0.0, 0.0, 0.0],
+        "apple_pos": apple_pos,
+        "apple_pose_4x4": _identity_pose_4x4(apple_pos),
+    }
     dataset_metadata = {
         "episode_id": "synthetic-real-ep",
-        "fruiting_base_pos": [0.0, 1.0, 0.6],
-        "rod_geometry": {
-            "primary": {"length_m": 0.31, "radius_m": 0.021},
-            "spur": {"length_m": 0.08, "radius_m": 0.009},
-            "stem": {"length_m": 0.04, "radius_m": 0.0025},
+        "topology": {
+            "junction_names": ["Branch", "Spur", "Apple"],
+            "shared_endpoints": True,
+            "n_woody_parts": 3,
         },
-        "apple_radius_m": 0.055,
-        "source_metadata": {"robot": {"control_hz": 15.0}},
+        "pre_grasp_geometry": {
+            "parts": {
+                "primary": {
+                    "length_m": 0.31,
+                    "radius_m": 0.021,
+                    "density_kg_m3": 750.0,
+                },
+                "spur": {
+                    "length_m": 0.10,
+                    "radius_m": 0.009,
+                    "density_kg_m3": 750.0,
+                },
+                "stem": {
+                    "length_m": 0.065,
+                    "radius_m": 0.0025,
+                    "density_kg_m3": 750.0,
+                },
+                "apple": {
+                    "length_m": 0.11,
+                    "radius_m": 0.055,
+                    "density_kg_m3": 500.0,
+                },
+            },
+            "rest_snapshot_during_run": snap,
+        },
+        "post_grasp_geometry": {
+            "tcp_pos": tcp_pos,
+            "tcp_pose_4x4": _identity_pose_4x4(tcp_pos),
+            "snapshot": {
+                "apple_pos": apple_pos,
+                "apple_pose_4x4": _identity_pose_4x4(apple_pos),
+            },
+        },
+        "dump": {"control_hz": 15.0, "episode_id": "synthetic-real-ep"},
     }
     meta = {b"dataset_metadata": json.dumps(dataset_metadata).encode("utf-8")}
     pq.write_table(table.replace_schema_metadata(meta), path)
@@ -187,6 +224,22 @@ def _write_synthetic_real(path: Path) -> None:
 def test_build_episode_metadata_from_real(tmp_path: Path):
     path = tmp_path / "real.parquet"
     _write_synthetic_real(path)
+
+    from apple_pick_sim.fruiting_system.params import fruiting_params_to_dict, params_fingerprint
+    from apple_pick_sim.system_id.real_post_grasp_plan import post_grasp_plan_from_metadata
+    from apple_pick_sim.system_id.real_pre_grasp_params import (
+        fruiting_params_from_pre_grasp_parquet,
+        load_dataset_metadata,
+    )
+
+    params, base_pos, _ = fruiting_params_from_pre_grasp_parquet(
+        path, fixture_path=VARIANCE
+    )
+    plan = post_grasp_plan_from_metadata(
+        load_dataset_metadata(path),
+        apple_radius_m=float(params.apple_radius),
+        emit_warnings=False,
+    )
     meta = build_episode_metadata_from_real(path, fixture_path=VARIANCE)
 
     assert meta["structure_idx"] == 0
@@ -197,31 +250,90 @@ def test_build_episode_metadata_from_real(tmp_path: Path):
     assert meta["n_woody_parts"] == 3
     assert meta["junction_names"] == list(SIM_JUNCTION_NAMES)
     assert meta["episode_id"] == "synthetic-real-ep"
-    assert meta["fruiting_base_pos"] == [0.0, 1.0, 0.6]
-    assert meta["apple_radius"] == 0.055
-    assert meta["rod_radii"] == {"primary": 0.021, "spur": 0.009, "stem": 0.0025}
     assert meta["fixture_path"] == str(VARIANCE.resolve())
-
-    assert meta["initial_tcp_pos"] == [0.0, 0.9, 0.4]
-    assert meta["initial_tcp_quat"] == [0.0, 0.0, 0.0, 1.0]
-    assert meta["initial_apple_pos"] == [0.0, 0.95, 0.38]
-    assert meta["initial_apple_quat"] == [0.0, 0.0, 0.0, 1.0]
-    assert meta["initial_robot_joint_q"] == [0.1 * j for j in range(7)]
+    assert meta["pull_direction"] == [0.0, -1.0, 0.0]
+    assert meta["fruiting_system_params"] == fruiting_params_to_dict(params)
+    assert meta["params_fingerprint"] == params_fingerprint(params)
+    np.testing.assert_allclose(meta["fruiting_base_pos"], list(base_pos), atol=1e-9)
+    np.testing.assert_allclose(meta["initial_tcp_pos"], list(plan.tcp_pos), atol=1e-9)
+    _assert_quat_close(meta["initial_tcp_quat"], plan.tcp_quat_xyzw)
+    np.testing.assert_allclose(
+        meta["initial_apple_pos"], list(plan.apple_pos_welded), atol=1e-9
+    )
+    _assert_quat_close(meta["initial_apple_quat"], plan.apple_quat_xyzw)
     assert meta["weld_reference_pos"] == meta["initial_apple_pos"]
     assert meta["weld_reference_quat"] == meta["initial_apple_quat"]
-    n = float(np.hypot(0.05, 0.02))
     np.testing.assert_allclose(
-        meta["weld_direction"],
-        [0.0, -0.05 / n, 0.02 / n],
-        atol=1e-6,
+        meta["weld_direction"], list(plan.weld_direction), atol=1e-9
     )
-    assert meta["pull_direction"] == [0.0, -1.0, 0.0]
+    assert meta["apple_radius"] == pytest.approx(float(params.apple_radius))
+    assert meta["rod_radii"] == {
+        "primary": float(params.primary.radius),
+        "spur": float(params.spur.radius),
+        "stem": float(params.stem.radius),
+    }
+    assert meta["initial_robot_joint_q"] == [0.1 * j for j in range(7)]
+    assert meta["fruiting_system_params"]["schema"] == "fruiting_system_params_v2"
+    assert meta["fruiting_system_params"]["topology"] == "t_junction"
 
-    params = meta["fruiting_system_params"]
-    assert params["schema"] == "fruiting_system_params_v2"
-    assert params["topology"] == "t_junction"
-    assert params["primary"]["length"] == 0.31
-    # primary chord: (0,0,-0.1) -> (0,0,-1)
-    np.testing.assert_allclose(params["primary"]["direction"], [0.0, 0.0, -1.0], atol=1e-6)
-    assert "params_fingerprint" in meta
-    assert isinstance(meta["params_fingerprint"], dict)
+
+def _assert_quat_close(got, expected, *, atol: float = 1e-9) -> None:
+    g = np.asarray(got, dtype=np.float64).reshape(4)
+    e = np.asarray(expected, dtype=np.float64).reshape(4)
+    assert abs(float(np.dot(g, e))) >= 1.0 - atol
+
+
+@pytest.mark.parametrize("parquet", [Path("robot_replay/s00-d00.parquet")])
+def test_s00_d00_convert_matches_native_pre_post(parquet: Path):
+    """Converted metadata must match settle-viewer native pre/post builders."""
+    if not parquet.is_file():
+        pytest.skip(f"missing {parquet}")
+
+    from apple_pick_sim.fruiting_system.params import fruiting_params_to_dict, params_fingerprint
+    from apple_pick_sim.system_id.real_post_grasp_plan import post_grasp_plan_from_metadata
+    from apple_pick_sim.system_id.real_pre_grasp_params import (
+        fruiting_params_from_pre_grasp_parquet,
+        load_dataset_metadata,
+    )
+
+    params, base_pos, _ = fruiting_params_from_pre_grasp_parquet(
+        parquet, fixture_path=VARIANCE
+    )
+    dm = load_dataset_metadata(parquet)
+    plan = post_grasp_plan_from_metadata(
+        dm,
+        apple_radius_m=float(params.apple_radius),
+        emit_warnings=False,
+    )
+
+    meta = build_episode_metadata_from_real(parquet, fixture_path=VARIANCE)
+
+    assert meta["fruiting_system_params"] == fruiting_params_to_dict(params)
+    assert meta["params_fingerprint"] == params_fingerprint(params)
+    np.testing.assert_allclose(meta["fruiting_base_pos"], list(base_pos), atol=1e-9)
+    np.testing.assert_allclose(meta["initial_tcp_pos"], list(plan.tcp_pos), atol=1e-9)
+    _assert_quat_close(meta["initial_tcp_quat"], plan.tcp_quat_xyzw)
+    np.testing.assert_allclose(
+        meta["initial_apple_pos"], list(plan.apple_pos_welded), atol=1e-9
+    )
+    _assert_quat_close(meta["initial_apple_quat"], plan.apple_quat_xyzw)
+    np.testing.assert_allclose(
+        meta["weld_reference_pos"], list(plan.apple_pos_welded), atol=1e-9
+    )
+    _assert_quat_close(meta["weld_reference_quat"], plan.apple_quat_xyzw)
+    np.testing.assert_allclose(
+        meta["weld_direction"], list(plan.weld_direction), atol=1e-9
+    )
+    assert meta["apple_radius"] == pytest.approx(float(params.apple_radius))
+    assert meta["rod_radii"] == {
+        "primary": float(params.primary.radius),
+        "spur": float(params.spur.radius),
+        "stem": float(params.stem.radius),
+    }
+
+    table = pq.read_table(parquet)
+    joint = table.column("joint_pos")[0].as_py()
+    np.testing.assert_allclose(meta["initial_robot_joint_q"], joint, atol=1e-9)
+    assert isinstance(meta["control_hz"], float)
+    assert meta["control_hz"] > 0.0
+    assert str(meta["episode_id"]).strip() != ""

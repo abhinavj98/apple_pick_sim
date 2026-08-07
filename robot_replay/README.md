@@ -41,6 +41,7 @@ rebuild.
 | `funified.parquet` | Additional real / fused episode artifact |
 | `manifest.json` | Collection/run manifest (sim-side batch metadata companion) |
 | `example_view_pre_grasp_settle.py` | Plant-only VBD: pre-grasp settle → optional post-grasp weld → viewer |
+| `example_view_batched_episode_meta.py` | Same settle/weld view from **converted** episode metadata JSON |
 | `convert_real_to_batched_sysid_metadata.py` | CLI → batched-style episode metadata JSON (`--weld-direction-sign`) |
 
 ## Pre-grasp settle viewer
@@ -107,6 +108,18 @@ uv run python robot_replay/example_view_pre_grasp_settle.py \
 
 ## Convert CLI
 
+The converter is a **thin adapter** over the settle-viewer native builders
+(`fruiting_params_from_pre_grasp_parquet`, `post_grasp_plan_from_metadata`). It
+emits batched-style **metadata JSON** (rebuild + grasp init). It does **not**
+export trajectory rows yet (bit 2).
+
+Parity gate (native vs convert):
+
+```bash
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_real_to_batched_sysid.py::test_s00_d00_convert_matches_native_pre_post -q
+```
+
 From repo root:
 
 ```bash
@@ -118,14 +131,24 @@ uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
 
 Optional: `--weld-direction-sign {+1,-1}` (see CLI `--help`).
 
-Implementation: `apple_pick_sim/system_id/real_to_batched_sysid.py`.
+Eyeball the converted JSON (same settle / optional weld as the native viewer):
 
-**Note:** Current converter expectations (`step_idx == -1` pre-grasp row,
-`robot_joint_q`, quats, `rod_geometry`, …) do **not** yet fully match
-`s00-d00.parquet` as compiled. See the fix doc (**C1**) before treating convert
-success as the ingest gate. The settle viewer path (`real_pre_grasp_params`) is
-the supported consumer for current episodes; convert remains a separate,
-still-mismatched contract.
+```bash
+uv run python robot_replay/example_view_batched_episode_meta.py \
+  --episode-meta /tmp/s00_d00_episode_meta.json \
+  --grasp-after-settle \
+  --settle-substeps 80 \
+  --post-grasp-settle-substeps 40 \
+  --viewer null --num-frames 8
+```
+
+Implementation: `apple_pick_sim/system_id/real_to_batched_sysid.py`.
+Design: `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`.
+
+**Note:** Current episodes may still have empty `action` columns
+(`real-replay-action-zero`); that blocks full FR3 trajectory replay until bit 2
+and/or recompiled logs with a non-zero command channel. Metadata convert for
+pre/post rebuild+grasp is supported on `s00-d00`-class files.
 
 ## Related docs
 

@@ -150,6 +150,20 @@ Design: `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-desig
 and/or recompiled logs with a non-zero command channel. Metadata convert for
 pre/post rebuild+grasp is supported on `s00-d00`-class files.
 
+### Local drive fixture (bit 2 prep)
+
+While real collection is fixed, build a **temporary** parquet with `action`
+filled from `tcp_velocity` (gitignored `*.parquet` — regenerate locally):
+
+```bash
+uv run python robot_replay/fill_actions_from_tcp_velocity.py \
+  --input robot_replay/s00-d03.parquet \
+  --out robot_replay/s00-d03_with_actions.parquet
+```
+
+Stamps `dataset_metadata.drive_fill`. Not the long-term contract. Bit-2 plan:
+`docs/superpowers/plans/2026-08-07-real-batched-trajectory-replay-bit2.md`.
+
 ## Related docs
 
 - `docs/real-sysid-pre-post-grasp-fixes.md` — collection/compile fix list

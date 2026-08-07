@@ -87,6 +87,7 @@ def _synthetic_pre_grasp_meta() -> dict:
 def test_map_pre_grasp_branch_is_fruiting_base_pos():
     mapped = map_pre_grasp_geometry(_synthetic_pre_grasp_meta(), primary_dir=PRIMARY_DIR)
     assert isinstance(mapped, PreGraspMappedGeometry)
+    assert mapped.apple_quat_xyzw is None  # no pose/quat on synthetic snapshot
     expected_base = surface_to_centerline(
         (0.0, 0.0, 0.0), mapped.spur_direction, PRIMARY_DIR, 0.0125
     )
@@ -131,11 +132,31 @@ def test_map_pre_grasp_prefers_rest_snapshot_during_run():
     branch = [1.0, 2.0, 3.0]
     spur = [1.02, 2.0, 2.90]
     apple = [1.05, 2.0, 2.87]
+    # 90° about +Z; translation ignored for quat extract.
+    apple_pose_4x4 = [
+        0.0,
+        -1.0,
+        0.0,
+        1.05,
+        1.0,
+        0.0,
+        0.0,
+        2.0,
+        0.0,
+        0.0,
+        1.0,
+        2.87,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
     pre["rest_snapshot_during_run"] = {
         "woody_part_start_pos": branch + branch + spur,
         "woody_part_end_pos": spur + apple + apple,
         "woody_bending_angles": [0.0, 0.0, 0.0],
         "apple_pos": "[1.05  2.0  2.87]",  # numpy-string quirk
+        "apple_pose_4x4": apple_pose_4x4,
     }
     # Settled differs — must not win over rest.
     pre["settled_snapshot"] = {
@@ -143,11 +164,42 @@ def test_map_pre_grasp_prefers_rest_snapshot_during_run():
         "woody_part_start_pos": [9.0] * 9,
         "woody_part_end_pos": [8.0] * 9,
         "apple_pos": [9.0, 8.0, 7.0],
+        "apple_quat_xyzw": [0.0, 0.0, 0.0, 1.0],
     }
     mapped = map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
     expected_base = surface_to_centerline((1.0, 2.0, 3.0), mapped.spur_direction, PRIMARY_DIR, 0.0125)
     np.testing.assert_allclose(mapped.fruiting_base_pos, expected_base, atol=1e-9)
     assert mapped.diagnostics.get("pre_grasp_snapshot_source") == "rest_snapshot_during_run"
+    assert mapped.apple_quat_xyzw is not None
+    s = math.sqrt(0.5)
+    np.testing.assert_allclose(mapped.apple_quat_xyzw, (0.0, 0.0, s, s), atol=1e-6)
+
+
+def test_map_pre_grasp_prefers_explicit_apple_quat_xyzw():
+    meta = _synthetic_pre_grasp_meta()
+    snap = meta["pre_grasp_geometry"]["snapshot"]
+    snap["apple_quat_xyzw"] = [0.0, 0.0, 0.0, 1.0]
+    # Conflicting 4x4 (90° Z) must lose to explicit quat.
+    snap["apple_pose_4x4"] = [
+        0.0,
+        -1.0,
+        0.0,
+        0.05,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        -0.13,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    mapped = map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
+    np.testing.assert_allclose(mapped.apple_quat_xyzw, (0.0, 0.0, 0.0, 1.0), atol=1e-9)
 
 
 def test_fruiting_params_from_pre_grasp_meta():
@@ -172,10 +224,23 @@ def test_fruiting_params_from_pre_grasp_meta():
     assert params.spur.density == pytest.approx(1200.0)
     assert params.apple_radius == pytest.approx(0.04)
     assert params.apple_density == pytest.approx(650.0)
+    assert params.apple_quat_xyzw is None
     blob = fruiting_params_to_dict(params)
     assert blob["schema"] == "fruiting_system_params_v2"
+    assert blob.get("apple_quat_xyzw") is None
     assert "youngs_modulus_pa" in blob["primary"]
     assert "spur_length_rel_error" in diagnostics
+
+
+def test_fruiting_params_from_pre_grasp_meta_sets_apple_quat():
+    meta = _synthetic_pre_grasp_meta()
+    s = math.sqrt(0.5)
+    meta["pre_grasp_geometry"]["snapshot"]["apple_quat_xyzw"] = [0.0, 0.0, s, s]
+    params, _base, _diag = fruiting_params_from_pre_grasp_meta(meta, fixture_path=VARIANCE)
+    assert params.apple_quat_xyzw is not None
+    np.testing.assert_allclose(params.apple_quat_xyzw, (0.0, 0.0, s, s), atol=1e-6)
+    blob = fruiting_params_to_dict(params)
+    np.testing.assert_allclose(blob["apple_quat_xyzw"], [0.0, 0.0, s, s], atol=1e-6)
 
 
 def test_map_pre_grasp_ignores_parquet_fruiting_base_pos():
@@ -212,3 +277,10 @@ def test_s00_d00_pre_grasp_params_smoke(parquet: Path):
         "woody_part_start_pos" in pre["rest_snapshot_during_run"]
     ):
         assert diagnostics["pre_grasp_snapshot_source"] == "rest_snapshot_during_run"
+    rest = pre.get("rest_snapshot_during_run")
+    if isinstance(rest, dict) and "apple_pose_4x4" in rest:
+        assert params.apple_quat_xyzw is not None
+        from apple_pick_sim.system_id.real_post_grasp_plan import pose_4x4_to_pos_quat
+
+        _pos, q = pose_4x4_to_pos_quat(rest["apple_pose_4x4"])
+        assert abs(float(np.dot(params.apple_quat_xyzw, q))) > 1.0 - 1e-5

@@ -73,6 +73,12 @@ class FruitingSystemParams:
     stem: RodParams | None
     apple_radius: float | None
     apple_density: float | None
+    apple_quat_xyzw: tuple[float, float, float, float] | None = None
+    """Initial apple body orientation ``(x, y, z, w)``; ``None`` → identity.
+
+    Real pre-grasp rebuild sets this from the logged tracker pose so the
+    stem–apple FIXED child anchor is baked in the marker frame.
+    """
     topology: str = DEFAULT_TOPOLOGY
     spur_attach_fraction: float = DEFAULT_SPUR_ATTACH_FRACTION
     spur_surface_offset: bool = DEFAULT_SPUR_SURFACE_OFFSET
@@ -261,6 +267,11 @@ def fruiting_params_to_dict(params: FruitingSystemParams) -> dict[str, Any]:
         "stem": _rod_params_to_row(params.stem),
         "apple_radius": None if params.apple_radius is None else float(params.apple_radius),
         "apple_density": None if params.apple_density is None else float(params.apple_density),
+        "apple_quat_xyzw": (
+            None
+            if params.apple_quat_xyzw is None
+            else [float(x) for x in params.apple_quat_xyzw]
+        ),
         "topology": params.topology,
         "spur_attach_fraction": float(params.spur_attach_fraction),
         "spur_surface_offset": bool(params.spur_surface_offset),
@@ -345,6 +356,17 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
         row.get("spur_attach_fraction", DEFAULT_SPUR_ATTACH_FRACTION)
     )
     spur_surface_offset = bool(row.get("spur_surface_offset", False))
+    apple_quat_raw = row.get("apple_quat_xyzw")
+    apple_quat_xyzw: tuple[float, float, float, float] | None = None
+    if apple_quat_raw is not None:
+        if not isinstance(apple_quat_raw, (list, tuple)) or len(apple_quat_raw) != 4:
+            raise ValueError("apple_quat_xyzw must be a length-4 list [x, y, z, w]")
+        apple_quat_xyzw = (
+            float(apple_quat_raw[0]),
+            float(apple_quat_raw[1]),
+            float(apple_quat_raw[2]),
+            float(apple_quat_raw[3]),
+        )
     params = FruitingSystemParams(
         primary=_rod_params_from_row(row.get("primary"), field="primary"),
         secondary=_rod_params_from_row(row.get("secondary"), field="secondary"),
@@ -352,6 +374,7 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
         stem=_rod_params_from_row(row.get("stem"), field="stem"),
         apple_radius=None if row.get("apple_radius") is None else float(row["apple_radius"]),
         apple_density=None if row.get("apple_density") is None else float(row["apple_density"]),
+        apple_quat_xyzw=apple_quat_xyzw,
         topology=topology,
         spur_attach_fraction=spur_attach_fraction,
         spur_surface_offset=spur_surface_offset,
@@ -1049,6 +1072,7 @@ def copy_fruiting_params(params: FruitingSystemParams) -> FruitingSystemParams:
         stem=_rod(params.stem),
         apple_radius=params.apple_radius,
         apple_density=params.apple_density,
+        apple_quat_xyzw=params.apple_quat_xyzw,
         topology=params.topology,
         spur_attach_fraction=params.spur_attach_fraction,
         spur_surface_offset=params.spur_surface_offset,
@@ -1243,6 +1267,11 @@ def params_fingerprint(params: FruitingSystemParams) -> dict:
         "stem_damping_ratio": None if st is None else round(st.damping_ratio, 8),
         "apple_radius": None if params.apple_radius is None else round(params.apple_radius, 9),
         "apple_density": None if params.apple_density is None else round(params.apple_density, 6),
+        "apple_quat_xyzw": (
+            None
+            if params.apple_quat_xyzw is None
+            else [round(float(x), 9) for x in params.apple_quat_xyzw]
+        ),
         "primary_dir_x": None if p is None else round(p.direction[0], 6),
         "secondary_dir_x": None if s is None else round(s.direction[0], 6),
         "spur_dir_z": None if sp is None else round(sp.direction[2], 6),

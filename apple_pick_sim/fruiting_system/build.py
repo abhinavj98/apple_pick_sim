@@ -307,7 +307,11 @@ def _build_linear_chain_into_builder(
         apple_pos = stem_tip_pt + last_seg_dir * params.apple_radius
         proxy_placement_origin = apple_pos
         apple_mass = (4.0 / 3.0) * math.pi * params.apple_radius**3 * params.apple_density
-        apple_quat = wp.quat_identity()
+        apple_quat = (
+            wp.quat(*params.apple_quat_xyzw)
+            if params.apple_quat_xyzw is not None
+            else wp.quat_identity()
+        )
         apple_body = builder.add_link(
             xform=wp.transform(apple_pos, apple_quat),
             mass=apple_mass,
@@ -498,7 +502,11 @@ def _build_t_junction_into_builder(
         apple_pos = stem_tip_pt + last_seg_dir * params.apple_radius
         proxy_placement_origin = apple_pos
         apple_mass = (4.0 / 3.0) * math.pi * params.apple_radius**3 * params.apple_density
-        apple_quat = wp.quat_identity()
+        apple_quat = (
+            wp.quat(*params.apple_quat_xyzw)
+            if params.apple_quat_xyzw is not None
+            else wp.quat_identity()
+        )
         apple_body = builder.add_link(
             xform=wp.transform(apple_pos, apple_quat),
             mass=apple_mass,

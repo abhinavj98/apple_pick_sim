@@ -303,3 +303,79 @@ def test_apply_post_grasp_keeps_settle_apple_orientation():
     pq = wbq[welded.gripper_proxy_body, 3:7]
     tq = np.asarray(plan.tcp_quat_xyzw, dtype=np.float64)
     assert abs(float(np.dot(pq, tq))) > 1.0 - 1e-4
+
+
+def test_apply_post_grasp_stem_apple_joint_keeps_pre_grasp_apple_frame():
+    """Welded rebuild bakes stem–apple child local from params.apple_quat (pre-grasp frame)."""
+    import dataclasses
+    import math
+
+    import warp as wp
+
+    from apple_pick_sim.fruiting_system import GripperProxyConfig, generate_coupled_cable_scene, load_ranges
+    from apple_pick_sim.system_id.real_post_grasp_plan import apply_post_grasp_after_settle
+    from apple_pick_sim.tests.conftest import NO_SELF_COLLISION_KW
+
+    ranges = load_ranges(
+        Path("apple_pick_sim/fixtures/fruiting_system_ranges_straight_rod_test.json")
+    )
+    s = math.sqrt(0.5)
+    pre_quat = (0.0, 0.0, s, s)
+    free = generate_coupled_cable_scene(
+        ranges,
+        seed=0,
+        gripper_proxy=GripperProxyConfig(fix_to_apple=False),
+        **NO_SELF_COLLISION_KW,
+    )
+    # Re-build with pre-grasp apple frame on params (identity-sample fixture has no quat).
+    params = dataclasses.replace(free.params, apple_quat_xyzw=pre_quat)
+    free = generate_coupled_cable_scene(
+        ranges,
+        seed=0,
+        params=params,
+        gripper_proxy=GripperProxyConfig(fix_to_apple=False),
+        **NO_SELF_COLLISION_KW,
+    )
+    assert free.apple_body is not None
+    assert free.params.apple_quat_xyzw is not None
+    bq0 = free.state_0.body_q.numpy().reshape(-1, 7)
+    apple0 = bq0[free.apple_body, :3].copy()
+    r = float(free.params.apple_radius)
+    tcp = apple0 + np.array([0.0, r + 0.02, 0.0], dtype=np.float64)
+    M_tcp = np.eye(4)
+    M_tcp[:3, 3] = tcp
+    # Post-grasp apple: same center, identity rotation (≠ pre-grasp 90° Z).
+    M_ap = np.eye(4)
+    M_ap[:3, 3] = apple0
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        plan = build_post_grasp_plan(
+            tcp_pose_4x4=M_tcp.reshape(16).tolist(),
+            apple_pose_4x4=M_ap.reshape(16).tolist(),
+            apple_radius_m=r,
+            warn_tol_m=0.05,
+        )
+    welded = apply_post_grasp_after_settle(
+        free,
+        plan,
+        ranges=ranges,
+        params=params,
+        base_pos=(0.5, 0.5, 0.5),
+        robot_base_pos=(0.0, 0.0, 0.0),
+    )
+    # Runtime apple pose is post-grasp (identity).
+    aq = welded.state_0.body_q.numpy()[int(welded.apple_body), 3:7]
+    assert abs(float(np.dot(aq, (0.0, 0.0, 0.0, 1.0)))) > 1.0 - 1e-4
+    # Joint child local still from pre-grasp frame on params.
+    labels = welded.model.joint_label
+    ji = next(i for i, lab in enumerate(labels) if str(lab).endswith("_apple"))
+    child_local = np.asarray(welded.model.joint_X_c.numpy()[ji, :3], dtype=np.float64)
+    stem_dir = np.asarray(params.stem.direction, dtype=np.float64)
+    stem_dir /= np.linalg.norm(stem_dir)
+    world_attach = -r * stem_dir
+    q = wp.quat(*pre_quat)
+    expected = np.asarray(
+        wp.quat_rotate(wp.quat_inverse(q), wp.vec3(*world_attach.tolist())),
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(child_local, expected, atol=1e-4)

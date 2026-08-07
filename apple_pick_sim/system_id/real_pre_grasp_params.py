@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 from dataclasses import dataclass, field
@@ -113,7 +114,29 @@ class PreGraspMappedGeometry:
     apple_radius_m: float | None
     apple_density_kg_m3: float | None
     woody_bending_angles: np.ndarray
+    apple_quat_xyzw: tuple[float, float, float, float] | None = None
     diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
+def _apple_quat_from_snapshot(
+    snap: dict[str, Any],
+) -> tuple[float, float, float, float] | None:
+    """Prefer explicit ``apple_quat_xyzw``; else derive from ``apple_pose_4x4``."""
+    raw = snap.get("apple_quat_xyzw")
+    if raw is not None:
+        arr = np.asarray(raw, dtype=np.float64).reshape(4)
+        q = (float(arr[0]), float(arr[1]), float(arr[2]), float(arr[3]))
+        n = float(np.linalg.norm(arr))
+        if n < _ZERO_EPS:
+            raise ValueError("apple_quat_xyzw: zero-length quaternion")
+        return q
+    pose = snap.get("apple_pose_4x4")
+    if pose is None:
+        return None
+    from apple_pick_sim.system_id.real_post_grasp_plan import pose_4x4_to_pos_quat
+
+    _pos, quat = pose_4x4_to_pos_quat(pose)
+    return quat
 
 
 def _snapshot_has_woody(snap: Any) -> bool:
@@ -176,6 +199,7 @@ def map_pre_grasp_geometry(
         raise ValueError("Spur endpoint mismatch between part0 end and part2 start")
 
     apple_pos = coerce_xyz(snap["apple_pos"], field="apple_pos")
+    apple_quat_xyzw = _apple_quat_from_snapshot(snap)
 
     bend = np.asarray(
         snap.get("woody_bending_angles", [0.0, 0.0, 0.0]), dtype=np.float64
@@ -270,6 +294,7 @@ def map_pre_grasp_geometry(
         apple_radius_m=apple_r,
         apple_density_kg_m3=apple_d,
         woody_bending_angles=bend,
+        apple_quat_xyzw=apple_quat_xyzw,
         diagnostics=diagnostics,
     )
 
@@ -321,6 +346,8 @@ def fruiting_params_from_pre_grasp_meta(
         apple_density_kg_m3=mapped.apple_density_kg_m3,
         use_parts_density=True,
     )
+    if mapped.apple_quat_xyzw is not None:
+        params = dataclasses.replace(params, apple_quat_xyzw=mapped.apple_quat_xyzw)
     diagnostics = {
         **mapped.diagnostics,
         "primary_direction": list(primary_dir),

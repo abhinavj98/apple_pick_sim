@@ -5,6 +5,7 @@
 | **Status** | Implemented |
 | **Date** | 2026-08-05 |
 | **Extends** | `docs/superpowers/specs/2026-08-04-true-tcp-pose-weld-design.md`, `robot_replay/example_view_pre_grasp_settle.py` |
+| **Superseded open issue** | Resolved by `docs/superpowers/specs/2026-08-07-pre-grasp-apple-orientation-design.md` |
 
 ## Purpose
 
@@ -31,16 +32,17 @@ Flag is only meaningful with `--grasp-after-settle`.
 When `True`, do not overwrite apple quat from the plan; use settle quat for
 offset and weld reference.
 
-## Open issue (debug next)
+## Resolution (2026-08-07)
 
-Default full-SE(3) apple weld **does not match GT**: using the logged
-`apple_pose_4x4` rotation yields a scene that disagrees with ground truth, while
-position-only placement looks correct. Tracked in `docs/ROADMAP.md` →
-**Current focus → Known issues — debug next**. Until that is resolved,
-`--apple-position-only` is the trustworthy path for real-episode replay.
+Default full-SE(3) apple weld disagreed with GT while position-only looked
+correct because free-scene apple init used identity (stem–apple joint not in
+tracker frame). **Fixed:** pre-grasp tracker quat seeds apple init — see
+`docs/superpowers/specs/2026-08-07-pre-grasp-apple-orientation-design.md`.
+Default path is full logged apple SE(3); `--apple-position-only` remains an
+optional escape hatch.
 
 ## Non-goals
 
 - Ignoring TCP rotation
-- Identity apple quaternion
-- Changing pre-grasp build / stem direction
+- Identity apple quaternion as the real-replay default
+- Changing stem direction reconstruction

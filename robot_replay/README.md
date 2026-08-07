@@ -46,7 +46,9 @@ rebuild.
 ## Pre-grasp settle viewer
 
 Rebuild `FruitingSystemParams` from `dataset_metadata.pre_grasp_geometry`
-(Branch = T-junction / `fruiting_base_pos`), build a plant-only coupled cable
+(Branch = T-junction / `fruiting_base_pos`), including apple **orientation** from
+the preferred woody snapshot (`apple_pose_4x4` / `apple_quat_xyzw`) so the
+stem–apple joint is baked in the tracker frame. Build a plant-only coupled cable
 scene (free gripper proxy, no FR3), settle under gravity in the viewer,
 optionally apply a post-grasp true TCP SE(3) weld (logged TCP + apple poses;
 no catalog surface snap), then keep simulating.
@@ -72,15 +74,15 @@ uv run python robot_replay/example_view_pre_grasp_settle.py \
   --viewer gl
 ```
 
-`--apple-position-only` (with `--grasp-after-settle`): snap apple **translation**
-from logged post-grasp data but keep apple **orientation from the free settle**
-(ignore logged apple quat). TCP SE(3) is unchanged; the FIXED offset is rebuilt
-from settle apple quat + logged TCP.
+`--apple-position-only` (with `--grasp-after-settle`): optional escape hatch —
+snap apple **translation** from logged post-grasp data but keep apple
+**orientation from the free settle** (ignore logged apple quat). TCP SE(3) is
+unchanged; the FIXED offset is rebuilt from settle apple quat + logged TCP.
 
-**Known issue:** the default full apple SE(3) weld (logged `apple_pose_4x4`
-rotation) **does not match GT**; position-only placement does. Debug item is
-tracked in `docs/ROADMAP.md` → **Current focus → Known issues — debug next**.
-Prefer `--apple-position-only` for real-episode replay until it is fixed.
+**Apple orientation:** free rebuild seeds apple orientation from pre-grasp
+`apple_pose_4x4` / `apple_quat_xyzw` so the stem–apple joint is in the tracker
+frame; default post-grasp weld uses full logged apple SE(3) and matches GT.
+See `docs/superpowers/specs/2026-08-07-pre-grasp-apple-orientation-design.md`.
 
 `--dump-params` writes `fruiting_base_pos`, the sim-native
 `fruiting_system_params` blob, and catalog-vs-chord diagnostics.

@@ -957,6 +957,39 @@ def test_apple_joint_anchor_offset_from_com_by_radius():
         assert abs(dist - R) < 5e-5, f"seed={seed}: |anchor−COM|={dist} expected {R}"
 
 
+def test_apple_quat_xyzw_sets_body_and_stem_apple_child_local():
+    """Non-identity params.apple_quat_xyzw orients apple link and stem–apple child anchor."""
+    fs = _import_module()
+    s = math.sqrt(0.5)
+    apple_quat = (0.0, 0.0, s, s)  # 90° about +Z
+    params = _t_junction_params(
+        fs,
+        primary_dir=(1.0, 0.0, 0.0),
+        spur_dir=(0.0, 0.0, -1.0),
+        stem_dir=(0.0, 0.0, -1.0),
+    )
+    params = dataclasses.replace(params, apple_quat_xyzw=apple_quat)
+    scene = fs._build_scene(params, base_pos=(0.0, 0.0, 3.0), device="cpu")
+    assert scene.apple_body is not None
+    aq = scene.state_0.body_q.numpy()[int(scene.apple_body), 3:7]
+    assert abs(float(np.dot(aq, np.asarray(apple_quat, dtype=np.float64)))) > 1.0 - 1e-5
+
+    labels = scene.model.joint_label
+    ji = next(i for i, lab in enumerate(labels) if lab.endswith("_apple"))
+    Xc = scene.model.joint_X_c.numpy()[ji]
+    child_local = np.asarray(Xc[:3], dtype=np.float64)
+    r = float(params.apple_radius)
+    stem_dir = np.asarray(params.stem.direction, dtype=np.float64)
+    stem_dir /= np.linalg.norm(stem_dir)
+    world_attach = -r * stem_dir
+    q = wp.quat(*apple_quat)
+    expected = np.asarray(
+        wp.quat_rotate(wp.quat_inverse(q), wp.vec3(*world_attach.tolist())),
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(child_local, expected, atol=1e-5)
+
+
 def test_fixed_joint_anchors_world_rod_rod():
     """Inter-rod fixed joints report tip/base anchors, not body COM."""
     fs = _import_module()

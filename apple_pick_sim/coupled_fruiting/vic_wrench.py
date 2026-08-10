@@ -97,6 +97,36 @@ def compute_vic_spatial_wrench(
     return wp.spatial_vector(force[0], force[1], force[2], torque[0], torque[1], torque[2])
 
 
+@wp.func
+def compute_vic_spatial_wrench_aniso(
+    tcp_tf: wp.transform,
+    tcp_qd: wp.spatial_vector,
+    target_tf: wp.transform,
+    kp_lin: wp.vec3,
+    kp_ang: wp.vec3,
+    kd_lin: wp.vec3,
+    kd_ang: wp.vec3,
+) -> wp.spatial_vector:
+    """Per-axis pose-PD wrench in world frame at TCP COM, ``v_des = w_des = 0``.
+
+    Matches real-robot ``compute_pose_task_wrench``: ``w = Kp * e - Kd * v_actual``.
+    """
+    p_des = wp.transform_get_translation(target_tf)
+    q_des = wp.transform_get_rotation(target_tf)
+    p_act = wp.transform_get_translation(tcp_tf)
+    q_act = wp.transform_get_rotation(tcp_tf)
+
+    e_p = p_des - p_act
+    e_r = _orientation_error_axis_angle(q_des, q_act)
+
+    v_act = wp.spatial_top(tcp_qd)
+    w_act = wp.spatial_bottom(tcp_qd)
+
+    force = wp.cw_mul(kp_lin, e_p) - wp.cw_mul(kd_lin, v_act)
+    torque = wp.cw_mul(kp_ang, e_r) - wp.cw_mul(kd_ang, w_act)
+    return wp.spatial_vector(force[0], force[1], force[2], torque[0], torque[1], torque[2])
+
+
 @wp.kernel
 def _add_vic_wrench_at_tcp_kernel(
     wrenches: wp.array(dtype=wp.spatial_vector),

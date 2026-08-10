@@ -15,6 +15,7 @@ runtime. This module provides a robust two-build workflow:
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -229,18 +230,102 @@ def _nominal_cable_view(scene: Any) -> Any:
     return cable
 
 
+def apply_open_loop_fr3_joint_q(scene: Any, joint_q: Sequence[float]) -> None:
+    """Set FR3 arm generalized coords from recorded joints (no IK) and eval FK.
+
+    Writes the leading ``len(joint_q)`` coordinates into the single-world template
+    (when present) or ``robot_model``, zeros ``joint_qd``, broadcasts to all worlds
+    when batched, then refreshes MuJoCo actuator targets.
+    """
+    import newton
+
+    from apple_pick_sim.robot import fr3_robot
+
+    if scene.robot_model is None or scene.robot_state_0 is None:
+        return
+    q = np.asarray(joint_q, dtype=np.float32).reshape(-1)
+    if q.size < 1:
+        raise ValueError("bootstrap_joint_q must be a non-empty sequence of joint angles")
+
+    layout = getattr(scene, "layout", None)
+    tpl_robot = getattr(scene, "ik_template_robot_model", None)
+    use_template = (
+        tpl_robot is not None
+        and layout is not None
+        and int(scene.robot_model.world_count) > 1
+    )
+
+    def _write(model: Any, state: Any) -> int:
+        jc = int(model.joint_coord_count)
+        jd = int(model.joint_dof_count)
+        n = min(int(q.size), jc)
+        jq = model.joint_q.numpy().astype(np.float32).copy()
+        jqd = np.zeros(jd, dtype=np.float32)
+        jq[:n] = q[:n]
+        if n < jc:
+            jq[n:jc] = 0.0
+        model.joint_q.assign(jq)
+        model.joint_qd.assign(jqd)
+        state.joint_q.assign(jq)
+        state.joint_qd.assign(jqd)
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        return n
+
+    if use_template:
+        tpl_state = tpl_robot.state()
+        n = _write(tpl_robot, tpl_state)
+        tpl_jq = tpl_robot.joint_q.numpy().copy()
+        coord_per = int(tpl_jq.shape[0])
+        batched_jq = scene.robot_model.joint_q.numpy().copy()
+        batched_jq[:coord_per] = tpl_jq
+        scene.robot_model.joint_q.assign(batched_jq)
+        scene.robot_state_0.joint_q.assign(batched_jq)
+        jqd = np.zeros(int(scene.robot_model.joint_dof_count), dtype=np.float32)
+        scene.robot_model.joint_qd.assign(jqd)
+        scene.robot_state_0.joint_qd.assign(jqd)
+        newton.eval_fk(
+            scene.robot_model,
+            scene.robot_model.joint_q,
+            scene.robot_model.joint_qd,
+            scene.robot_state_0,
+        )
+        broadcast_joint_q_from_world0(scene, layout)
+    else:
+        n = _write(scene.robot_model, scene.robot_state_0)
+
+    print(
+        "FR3 open-loop joint bootstrap (skip IK): "
+        f"wrote {n} joint coords from recorded bootstrap_joint_q"
+    )
+    init_robot_mujoco_step_buffers(scene)
+    fr3_robot.init_mujoco_actuator_targets_from_model(
+        scene.robot_model, scene.robot_control
+    )
+    if scene.proxy_forces is not None:
+        scene.proxy_forces.zero_()
+    if scene.coupling_forces_cache is not None:
+        scene.coupling_forces_cache.zero_()
+
+
 def _bootstrap_tcp_at_fixed_origin(
     scene: Any,
     *,
     ik_iterations: int = 96,
+    bootstrap_joint_q: Sequence[float] | None = None,
 ) -> None:
     """Align TCP to the seeded cable proxy using the scene's fixed FR3 base placement.
+
+    When ``bootstrap_joint_q`` is set, writes those joints open-loop (no IK).
 
     For batched scenes (world_count > 1), IK is solved on the single-world template
     model stored in ``scene.ik_template_robot_model`` to avoid Newton's IK FK building
     an incorrect kinematic chain from multi-world joint coordinates.  The solved
     world-0 joint_q is then written into the batched model and broadcast to all worlds.
     """
+    if bootstrap_joint_q is not None:
+        apply_open_loop_fr3_joint_q(scene, bootstrap_joint_q)
+        return
+
     if scene.robot_model is None or scene.robot_state_0 is None or scene.mj_solver is None:
         return
 
@@ -417,6 +502,7 @@ def seed_fix_to_apple_from_settled_body_q(
     per_env_ik: bool = False,
     per_world_proxy_offsets: tuple[tuple | None, ...] | None = None,
     ik_bootstrap_iterations: int | None = None,
+    bootstrap_joint_q: Sequence[float] | None = None,
 ) -> None:
     """Seed welded scene cable poses from settled ``body_q`` (checkpoint path)."""
     bq = np.asarray(settled_body_q, dtype=np.float32).reshape(-1, 7)
@@ -454,6 +540,7 @@ def seed_fix_to_apple_from_settled_body_q(
         per_env_ik=per_env_ik,
         per_world_proxy_offsets=per_world_proxy_offsets,
         ik_bootstrap_iterations=ik_bootstrap_iterations,
+        bootstrap_joint_q=bootstrap_joint_q,
     )
 
 
@@ -465,6 +552,7 @@ def seed_fix_to_apple_from_settled(
     per_env_ik: bool = False,
     per_world_proxy_offsets: tuple[tuple | None, ...] | None = None,
     ik_bootstrap_iterations: int | None = None,
+    bootstrap_joint_q: Sequence[float] | None = None,
 ) -> None:
     """Seed a welded (``fix_to_apple=True``) scene from a settled free-apple scene.
 
@@ -542,6 +630,12 @@ def seed_fix_to_apple_from_settled(
     sync_model_body_q_rest_from_state(cable_w)
 
     wp.synchronize()
+    if bootstrap_joint_q is not None:
+        # Open-loop arm pose: skip IK (and per-env IK) entirely.
+        _bootstrap_tcp_at_fixed_origin(
+            welded_scene, bootstrap_joint_q=bootstrap_joint_q
+        )
+        return
     if per_env_ik and layout is not None and layout.num_envs > 1:
         _bootstrap_tcp_per_env(
             welded_scene,

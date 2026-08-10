@@ -2,10 +2,10 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Design approved; implementation pending |
+| **Status** | Phase B + post-grasp settle; rebranded to real replay test; phase A follow-on; rebuild from episode metadata (no C6 pose clamps) |
 | **Date** | 2026-08-10 |
-| **Depends on** | Bit-2 export + physics smoke (`batched_sysid_v1` from real parquet) |
-| **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C6), `robot_replay/example_replay_real_batched_smoke.py`, `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` |
+| **Depends on** | Bit-2 export (`batched_sysid_v1` from real parquet) |
+| **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C6), `robot_replay/example_replay_real_batched.py`, `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` |
 
 ## Purpose
 
@@ -17,80 +17,79 @@ remains off-screen; the window shows trajectory frames only.
 
 | Phase | Scope | Status |
 | ----- | ----- | ------ |
-| **B** | Extend `example_replay_real_batched_smoke.py` with `--viewer gl\|null` and MMD-grid-style `on_step` render; keep C6 clamps + TCP motion gate | **Next** |
+| **B** | GL `on_step` on real replay CLI; TCP motion gate; rebuild from episode metadata | **Done** |
+| **Post-grasp** | `SceneSettleCollisionConfig.post_grasp_settle_substeps` (CLI default 500); free settle 5000 + quiet 300; rebrand smoke → `example_replay_real_batched.py` | **Done** |
 | **A** | Later: teach `example_batched_sysid_mmd_grid.py` the same real clamps / flags so grids, scoring, and GL work on exported real datasets | Follow-on |
 
-## Architecture (phase B)
+## Architecture
 
 ```text
 real parquet → convert --dataset-out → batched_sysid_v1
         │
         ▼
-example_replay_real_batched_smoke.py
-  • C6: clamp primary length to fixture span
-  • C6: fixture fruiting_base_pos
-  • FR3 + VIC env (settle during setup, not rendered)
-  • replay_batched_sysid_structure(on_step=…)
+example_replay_real_batched.py
+  • Rebuild from episode metadata (native fruiting_base_pos + oracle params)
+  • Open-loop FR3 from initial_robot_joint_q (skip IK)
+  • gym_defaults + fixture sim_build support joints (not test_minimal CPU)
+  • Free VBD settle (5000) + quiet every 300
+  • Weld + seed_fix_to_apple + open-loop joints
+  • Post-grasp VBD settle (500) + quiet + re-apply open-loop joints
+  • FR3 + VIC open-loop replay_batched_sysid_structure(on_step=…)
         │
-        ├─ viewer null: existing headless smoke / pytest
+        ├─ viewer null: headless / pytest (short settles in CI)
         └─ viewer gl: set_model once; begin_frame / log_state / end_frame per control step
 ```
 
 **Shared physics:** same library call as MMD-grid / CMA paths
-(`replay_batched_sysid_structure`). Phase B only adds viewer wiring to the thin
-real-world smoke CLI.
+(`replay_batched_sysid_structure`). Post-grasp settle is implemented in
+`build_batched_heterogeneous_scene` when `post_grasp_settle_substeps > 0`
+(default **0** for existing sim-to-sim callers).
 
-## C6 clamps (reminder)
+## Geometry + settle + open-loop arm
 
-Real catalog primary length can be full rod stock; T-junction sim expects the
-fixture support span. Episode `fruiting_base_pos` may sit outside FR3 reach when
-`robot_base_pos=(0,0,0)`. Smoke overrides both from the variance fixture so IK
-bootstrap succeeds. These are replay alignment overrides, not logged truth
-(see fix-doc C6).
+Convert stores the settle-viewer twin (`fruiting_base_pos`,
+`fruiting_system_params`, `initial_robot_joint_q`). Replay must use those
+fields. Arm placement writes recorded joints (**no IK**). Batched free settle
+also needs fixture ``sim_build`` support-joint kp/ζ on a CUDA-capable device.
 
-## CLI (phase B)
+## CLI
 
 ```bash
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
   --input robot_replay/s02-d00_action.parquet \
   --dataset-out /tmp/real_batched_s02_d00 --overwrite
 
-uv run python robot_replay/example_replay_real_batched_smoke.py \
+uv run python robot_replay/example_replay_real_batched.py \
   --dataset /tmp/real_batched_s02_d00 \
   --viewer gl \
-  --max-frames 0
+  --max-frames 0 \
+  --settle-substeps 5000 \
+  --settle-quiet-every 300 \
+  --post-grasp-settle-substeps 500
 ```
 
-- `--viewer {gl,null}` via `newton.examples.init` (same pattern as MMD-grid).
-- No `DISPLAY` / `WAYLAND_DISPLAY` → auto-fallback to `null` (project convention).
-- Keep: `--dataset`, `--fixture`, `--structure-idx`, `--seed`, `--max-frames`
-  (`<=0` = full episode; default stays short for smoke).
-- Exit: print `tcp_motion_m`; non-zero if TCP stationary (same as today).
+- `--viewer {gl,null}` via `newton.examples.init`.
+- No `DISPLAY` / `WAYLAND_DISPLAY` → auto-fallback to `null`.
+- Exit: print `tcp_motion_m`; non-zero if TCP stationary.
 
-## Out of scope (phase B)
+## Out of scope
 
-- Rendering settle or post-grasp weld phases
-- Changing `replay_batched_sysid_structure` internals
+- Rendering settle or post-grasp weld phases in GL
+- Changing `replay_batched_sysid_structure` internals beyond build config
 - MMD-grid real clamps (phase A)
 - CMA-ES / scoring / candidate grids
 - Single-env `example_gym_replay.py` (different dataset contract)
 
 ## Testing
 
-- Keep `test_real_exported_s02_replay_moves_tcp` as the headless physics gate (no GL in CI).
-- Add a lightweight test that the smoke CLI accepts `--viewer gl|null` and attaches
-  an `on_step` when the viewer is non-null (mock / no window), without requiring a
-  GPU display.
-- No settle-render tests.
+- Keep `test_real_exported_s02_replay_moves_tcp` as the headless TCP gate with
+  short free settle and `post_grasp_settle_substeps=0` (no full 5000+500 in CI).
+- CLI unit tests: parser defaults 5000 / 300 / 500; mock-viewer `on_step`.
+- Build unit tests: `post_grasp_settle_substeps` second VBD settle + rebootstrap.
 
-## Docs
+## Phase A (follow-on)
 
-- This spec.
-- `robot_replay/README.md`: GL command for the smoke script.
-- Phase A backlog note: MMD-grid + real clamps.
-
-## Phase A (follow-on, not this slice)
-
-Optional flag or auto-detect on `example_batched_sysid_mmd_grid.py` to apply the
-same C6 clamps so `--dataset <real export> --replay-only --viewer gl` works with
-grids and scoring without going through the smoke CLI.
+Optional flag or auto-detect on `example_batched_sysid_mmd_grid.py` so grids,
+scoring, and GL work on exported real datasets using the same episode-metadata
+rebuild (no fixture pose/length override) without going through the real-replay
+CLI.

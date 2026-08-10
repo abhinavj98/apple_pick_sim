@@ -1,13 +1,12 @@
-"""Convert real-world sys-ID episodes toward batched_sysid_v1 metadata.
+"""Convert real-world sys-ID episodes toward batched_sysid_v1.
 
-Metadata-only slice: assemble fruiting/weld/init episode metadata by calling the
-same pre/post builders as ``robot_replay/example_view_pre_grasp_settle.py``
-(``fruiting_params_from_pre_grasp_parquet``, ``post_grasp_plan_from_metadata``),
-then packaging into batched episode keys.
+Bit 1 — metadata: shared pre/post builders → episode metadata JSON.
+Bit 2 — trajectory: export a 1×1 ``batched_sysid_v1`` dataset directory
+(manifest + ``episodes/s00_d00.parquet``) for trajectory viz / FR3 replay.
 
-Frame remapping and trajectory export are deferred. Contract:
-``docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md``,
-``docs/real-sysid-pre-post-grasp-fixes.md``, ``robot_replay/README.md``.
+Contract: ``docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md``,
+``docs/superpowers/plans/2026-08-07-real-batched-trajectory-replay-bit2.md``,
+``robot_replay/README.md``.
 """
 
 from __future__ import annotations
@@ -355,3 +354,259 @@ def build_episode_metadata_from_real(
         "weld_reference_quat": list(apple_quat),
     }
     return meta
+
+
+_REAL_PHASE_NAME_TO_BATCHED: dict[str, str] = {
+    "pull": "move_out",
+    "move_out": "move_out",
+    "hold": "hold",
+    "return": "return",
+    "pre_weld": "pre_weld",
+}
+
+
+def _scalar_hold_number(value: Any, *, hold_index: Any = None) -> int:
+    if hold_index is not None:
+        try:
+            return int(hold_index)
+        except (TypeError, ValueError):
+            pass
+    if value is None:
+        return -1
+    arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    if arr.size == 1:
+        return int(arr[0])
+    if arr.size > 1:
+        return int(np.argmax(arr))
+    return -1
+
+
+def _phase_name_for_row(table: Any, row_i: int) -> str:
+    if "phase_name" in table.column_names:
+        name = table.column("phase_name")[row_i].as_py()
+        if isinstance(name, str) and name.strip():
+            return name.strip().lower()
+    if "phase" in table.column_names:
+        raw = table.column("phase")[row_i].as_py()
+        # Real logs: 0=pull, 1=hold. Batched ints use move_out/hold naming via map.
+        try:
+            p = int(raw)
+        except (TypeError, ValueError):
+            p = -999
+        if p == 0:
+            return "pull"
+        if p == 1:
+            return "hold"
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().lower()
+    return "move_out"
+
+
+def _actions_all_near_zero(table: Any, *, atol: float = 1e-12) -> bool:
+    n = table.num_rows
+    if n < 1 or "action" not in table.column_names:
+        return True
+    acts = np.stack([table.column("action")[i].as_py() for i in range(n)], axis=0)
+    return bool(np.linalg.norm(np.asarray(acts, dtype=np.float64).reshape(n, 6), axis=1).max() <= atol)
+
+
+def export_real_episode_to_batched_dataset(
+    input_path: str | Path,
+    *,
+    fixture_path: str | Path,
+    output_dir: str | Path,
+    weld_direction_sign: float = 1.0,
+    overwrite: bool = False,
+    allow_zero_action: bool = False,
+    command_argv: list[str] | None = None,
+) -> Path:
+    """Write a 1×1 ``batched_sysid_v1`` dataset from one real-world parquet.
+
+    Uses bit-1 metadata builders for episode schema metadata and maps trajectory
+    rows into batched frame columns (including per-junction woody columns).
+    """
+    from apple_pick_sim.system_id.batched_trajectory_store import (
+        BatchedEpisodeWriter,
+        episode_filename,
+        write_manifest,
+    )
+    from apple_pick_sim.system_id.real_post_grasp_plan import pose_4x4_to_pos_quat
+
+    path = Path(input_path)
+    out = Path(output_dir)
+    fixture = Path(fixture_path)
+
+    episode_meta = build_episode_metadata_from_real(
+        path, fixture_path=fixture, weld_direction_sign=weld_direction_sign
+    )
+    # Match sim-collected batched_sysid_v1: fruiting_system_params is a JSON string.
+    params_blob = episode_meta.get("fruiting_system_params")
+    if isinstance(params_blob, dict):
+        episode_meta = {
+            **episode_meta,
+            "fruiting_system_params": json.dumps(params_blob, sort_keys=True),
+        }
+    table = pq.read_table(path)
+
+    dm_raw = pq.read_metadata(path).schema.to_arrow_schema().metadata or {}
+    dm_blob = dm_raw.get(b"dataset_metadata")
+    dm: dict[str, Any] = {}
+    if dm_blob is not None:
+        dm = json.loads(
+            dm_blob.decode("utf-8") if isinstance(dm_blob, (bytes, bytearray)) else str(dm_blob)
+        )
+    has_drive_fill = isinstance(dm.get("drive_fill"), dict)
+    if _actions_all_near_zero(table) and not allow_zero_action and not has_drive_fill:
+        raise ValueError(
+            f"{path}: action column is all zeros (real-replay-action-zero). "
+            "Use a fixed real parquet (e.g. s02-d00_action.parquet), fill via "
+            "robot_replay/fill_actions_from_tcp_velocity.py, or set allow_zero_action=True."
+        )
+
+    control_hz = float(episode_meta["control_hz"])
+    if control_hz <= 0:
+        raise ValueError(f"invalid control_hz={control_hz}")
+
+    traj = BatchedEpisodeWriter(episode_id=str(episode_meta["episode_id"]))
+    junction_names = list(episode_meta["junction_names"])
+
+    for i in range(table.num_rows):
+        phase_raw = _phase_name_for_row(table, i)
+        phase = _REAL_PHASE_NAME_TO_BATCHED.get(phase_raw, "move_out")
+
+        action = np.asarray(table.column("action")[i].as_py(), dtype=np.float32).reshape(6)
+        tcp_vel = np.asarray(table.column("tcp_velocity")[i].as_py(), dtype=np.float32).reshape(6)
+        ft = np.asarray(table.column("ft_wrist")[i].as_py(), dtype=np.float32).reshape(6)
+        raw_ft = ft
+        if "ft_wrist_raw" in table.column_names:
+            raw_ft = np.asarray(
+                table.column("ft_wrist_raw")[i].as_py(), dtype=np.float32
+            ).reshape(6)
+
+        tcp_pos = np.asarray(table.column("tcp_pos")[i].as_py(), dtype=np.float32).reshape(3)
+        apple_pos = np.asarray(table.column("apple_pos")[i].as_py(), dtype=np.float32).reshape(3)
+        if "tcp_pose_4x4" in table.column_names:
+            _, tcp_quat = pose_4x4_to_pos_quat(table.column("tcp_pose_4x4")[i].as_py())
+        else:
+            tcp_quat = (0.0, 0.0, 0.0, 1.0)
+        if "apple_pose_4x4" in table.column_names:
+            _, apple_quat = pose_4x4_to_pos_quat(table.column("apple_pose_4x4")[i].as_py())
+        else:
+            apple_quat = (0.0, 0.0, 0.0, 1.0)
+
+        if "joint_pos" in table.column_names:
+            joint_q = np.asarray(table.column("joint_pos")[i].as_py(), dtype=np.float32).reshape(7)
+        elif "robot_joint_q" in table.column_names:
+            joint_q = np.asarray(
+                table.column("robot_joint_q")[i].as_py(), dtype=np.float32
+            ).reshape(7)
+        else:
+            joint_q = np.zeros(7, dtype=np.float32)
+
+        start9 = table.column("woody_part_start_pos")[i].as_py()
+        end9 = table.column("woody_part_end_pos")[i].as_py()
+        starts, ends = flat_woody_to_dicts(start9, end9)
+
+        if "excitation_direction" in table.column_names:
+            exc = np.asarray(
+                table.column("excitation_direction")[i].as_py(), dtype=np.float32
+            ).reshape(3)
+        else:
+            pull = episode_meta.get("pull_direction") or [0.0, -1.0, 0.0]
+            exc = np.asarray(pull, dtype=np.float32).reshape(3)
+
+        amp = 0.0
+        if "amplitude_m" in table.column_names:
+            amp_raw = table.column("amplitude_m")[i].as_py()
+            amp = float(np.asarray(amp_raw, dtype=np.float64).reshape(-1)[0])
+
+        hold_idx = None
+        if "hold_index" in table.column_names:
+            hold_idx = table.column("hold_index")[i].as_py()
+        hold_raw = None
+        if "hold_number" in table.column_names:
+            hold_raw = table.column("hold_number")[i].as_py()
+        hold_number = _scalar_hold_number(hold_raw, hold_index=hold_idx)
+
+        step_idx = i
+        if "step_idx" in table.column_names:
+            try:
+                step_idx = int(table.column("step_idx")[i].as_py())
+            except (TypeError, ValueError):
+                step_idx = i
+
+        obs = {
+            "excitation_type": 0,
+            "excitation_direction": exc,
+            "tcp_velocity": tcp_vel,
+            "ft_wrist": ft,
+            "raw_ft_wrist": raw_ft,
+            "tcp_pos": tcp_pos,
+            "apple_pos": apple_pos,
+            "tcp_quat": np.asarray(tcp_quat, dtype=np.float32),
+            "apple_quat": np.asarray(apple_quat, dtype=np.float32),
+            "robot_joint_q": joint_q,
+            "woody_part_start_pos": {name: starts[name] for name in junction_names},
+            "woody_part_end_pos": {name: ends[name] for name in junction_names},
+            "woody_part_force": np.zeros(0, dtype=np.float32),
+        }
+        traj.record_step(
+            step_idx=step_idx,
+            sim_time=float(i) / control_hz,
+            phase=phase,
+            amplitude_m=amp,
+            action=action,
+            obs=obs,
+            stable=True,
+            hold_number=hold_number,
+        )
+
+    if out.exists() and any(out.iterdir()) and not overwrite:
+        raise FileExistsError(f"output_dir not empty (pass overwrite=True): {out}")
+    out.mkdir(parents=True, exist_ok=True)
+    ep_rel = episode_filename(0, 0)
+    ep_path = out / ep_rel
+    traj.save(ep_path, episode_meta)
+
+    structures = [
+        {
+            "structure_idx": 0,
+            "params_fingerprint": episode_meta.get("params_fingerprint"),
+            "junction_names": list(junction_names),
+            "n_woody_parts": int(episode_meta.get("n_woody_parts") or 3),
+        }
+    ]
+    episodes = [
+        {
+            "structure_idx": 0,
+            "direction_idx": 0,
+            "env_idx": 0,
+            "filename": ep_rel,
+            "episode_id": episode_meta["episode_id"],
+            "pull_direction": episode_meta.get("pull_direction"),
+            "n_frames": traj.n_frames,
+            "excluded": False,
+            "excluded_reason": None,
+        }
+    ]
+    seed_raw = episode_meta.get("seed")
+    collection = {
+        # Replay helpers require an int seed; real logs often omit one.
+        "seed": int(seed_raw) if seed_raw is not None else 0,
+        "ranges_path": str(fixture.resolve()),
+        "control_hz": control_hz,
+        "num_structures": 1,
+        "num_directions": 1,
+        "max_steps": traj.n_frames,
+        "source_real_parquet": str(path.resolve()),
+        "drive_fill": dm.get("drive_fill"),
+    }
+    write_manifest(
+        out,
+        command_argv=list(command_argv or ["export_real_episode_to_batched_dataset"]),
+        collection=collection,
+        structures=structures,
+        episodes=episodes,
+        overwrite=True,
+    )
+    return out

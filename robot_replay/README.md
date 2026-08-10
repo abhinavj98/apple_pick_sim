@@ -38,11 +38,13 @@ rebuild.
 | Path | Role |
 | ---- | ---- |
 | `s00-d00.parquet` | Example compiled real episode (`real_static_sysid_episode` v1.0.0) |
+| `s02-d00_action.parquet` | Preferred bit-2 source: real episode with non-zero `action` |
 | `funified.parquet` | Additional real / fused episode artifact |
 | `manifest.json` | Collection/run manifest (sim-side batch metadata companion) |
 | `example_view_pre_grasp_settle.py` | Plant-only VBD: pre-grasp settle → optional post-grasp weld → viewer |
 | `example_view_batched_episode_meta.py` | Same settle/weld view from **converted** episode metadata JSON |
-| `convert_real_to_batched_sysid_metadata.py` | CLI → batched-style episode metadata JSON (`--weld-direction-sign`) |
+| `example_replay_real_batched.py` | FR3+VIC real replay test (settle→weld→post-grasp settle→GL/actions) via `replay_batched_sysid_structure` |
+| `convert_real_to_batched_sysid_metadata.py` | CLI → metadata JSON and/or 1×1 `batched_sysid_v1` (`--dataset-out`) |
 
 ## Pre-grasp settle viewer
 
@@ -109,9 +111,11 @@ uv run python robot_replay/example_view_pre_grasp_settle.py \
 ## Convert CLI
 
 The converter is a **thin adapter** over the settle-viewer native builders
-(`fruiting_params_from_pre_grasp_parquet`, `post_grasp_plan_from_metadata`). It
-emits batched-style **metadata JSON** (rebuild + grasp init). It does **not**
-export trajectory rows yet (bit 2).
+(`fruiting_params_from_pre_grasp_parquet`, `post_grasp_plan_from_metadata`).
+
+- **Bit 1:** `--out` → batched-style episode metadata JSON (rebuild + grasp init).
+- **Bit 2:** `--dataset-out` → 1×1 `batched_sysid_v1` dataset (`manifest.json` +
+  `episodes/s00_d00.parquet`) for trajectory viz / FR3 replay.
 
 Parity gate (native vs convert):
 
@@ -144,16 +148,47 @@ uv run python robot_replay/example_view_batched_episode_meta.py \
 
 Implementation: `apple_pick_sim/system_id/real_to_batched_sysid.py`.
 Design: `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`.
+Bit-2 plan: `docs/superpowers/plans/2026-08-07-real-batched-trajectory-replay-bit2.md`.
 
-**Note:** Current episodes may still have empty `action` columns
-(`real-replay-action-zero`); that blocks full FR3 trajectory replay until bit 2
-and/or recompiled logs with a non-zero command channel. Metadata convert for
-pre/post rebuild+grasp is supported on `s00-d00`-class files.
+### Bit 2 — full dataset + trajectory viz + physics smoke
 
-### Local drive fixture (bit 2 prep)
+Preferred source with non-zero `action`: `s02-d00_action.parquet`.
 
-While real collection is fixed, build a **temporary** parquet with `action`
-filled from `tcp_velocity` (gitignored `*.parquet` — regenerate locally):
+```bash
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input robot_replay/s02-d00_action.parquet \
+  --dataset-out /tmp/real_batched_s02_d00 \
+  --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_batched_sysid_trajectory_viz.py \
+  --dataset /tmp/real_batched_s02_d00 \
+  --output /tmp/real_batched_s02_d00_viz \
+  --no-hold-check
+
+uv run python robot_replay/example_replay_real_batched.py \
+  --dataset /tmp/real_batched_s02_d00 \
+  --max-frames 24 --viewer null
+
+# GL: FR3+VIC trajectory after off-screen settle (--max-frames 0 = full episode).
+# Settle defaults match example_view_pre_grasp_settle.
+uv run python robot_replay/example_replay_real_batched.py \
+  --dataset /tmp/real_batched_s02_d00 \
+  --viewer gl --max-frames 0 \
+  --settle-substeps 5000 --settle-quiet-every 300 \
+  --post-grasp-settle-substeps 500
+```
+
+Physics TCP-motion pytest (short settle for CI):
+
+```bash
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_gym/tests/test_real_batched_replay.py::test_real_exported_s02_replay_moves_tcp \
+  -q -p no:launch_testing
+```
+
+**Note:** Older `s00-d0*` episodes may still have empty `action`
+(`real-replay-action-zero`). Prefer `s02-d00_action.parquet` (or newer fixed
+logs). Optional temporary fill for old files:
 
 ```bash
 uv run python robot_replay/fill_actions_from_tcp_velocity.py \
@@ -161,9 +196,14 @@ uv run python robot_replay/fill_actions_from_tcp_velocity.py \
   --out robot_replay/s00-d03_with_actions.parquet
 ```
 
-Stamps `dataset_metadata.drive_fill`. Not the long-term contract. Bit-2 plan:
-`docs/superpowers/plans/2026-08-07-real-batched-trajectory-replay-bit2.md`.
-
+Replay rebuilds from converted episode metadata (same native geometry as
+`example_view_pre_grasp_settle` / `example_view_batched_episode_meta`): episode
+`fruiting_base_pos` and oracle `fruiting_system_params`. FR3 placement is
+**open-loop** from `initial_robot_joint_q` (no IK). Physics uses `gym_defaults`
++ fixture `sim_build` on the default sim device. CLI settle defaults match
+`example_view_pre_grasp_settle.py` (`--settle-substeps 5000`,
+`--settle-quiet-every 300`, `--post-grasp-settle-substeps 500`); pytest keeps
+a short free settle and skips post-grasp settle for speed.
 ## Related docs
 
 - `docs/real-sysid-pre-post-grasp-fixes.md` — collection/compile fix list

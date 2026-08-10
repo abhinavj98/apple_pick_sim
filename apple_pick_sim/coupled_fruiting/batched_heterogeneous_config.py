@@ -120,6 +120,8 @@ class RobotConfig:
     skip_ik_bootstrap: bool = True
     defer_template_robot_bootstrap: bool = True
     force_batched_layout: bool = False
+    # When set, weld/post-grasp arm placement writes these joints open-loop (no IK).
+    bootstrap_joint_q: tuple[float, ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -131,6 +133,9 @@ class SceneSettleCollisionConfig:
     settle_gravity_ramp: bool = False
     settle_quiet_every: int | None = 300
     settle_max_speed_m_s: float = 0.05
+    # Extra VBD settle on the welded scene after seed_fix_to_apple (0 = skip).
+    # Matches plant-only ``--post-grasp-settle-substeps`` in example_view_pre_grasp_settle.
+    post_grasp_settle_substeps: int = 0
     enable_self_collisions: bool = False
     enable_apple_woody_collisions: bool = True
     enable_proxy_woody_collisions: bool = True
@@ -298,6 +303,11 @@ class BatchedHeterogeneousCoupledSimConfig:
         if self.scene.settle_substeps < 0:
             raise ValueError(
                 f"scene.settle_substeps must be >= 0, got {self.scene.settle_substeps}"
+            )
+        if self.scene.post_grasp_settle_substeps < 0:
+            raise ValueError(
+                "scene.post_grasp_settle_substeps must be >= 0, "
+                f"got {self.scene.post_grasp_settle_substeps}"
             )
         if self.scene.settle_quiet_every is not None and int(self.scene.settle_quiet_every) <= 0:
             raise ValueError(

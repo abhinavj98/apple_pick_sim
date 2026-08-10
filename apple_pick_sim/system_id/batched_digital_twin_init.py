@@ -13,7 +13,13 @@ import numpy as np
 from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
 from apple_pick_sim.digital_twin import DigitalTwinObs, infer_params_from_obs
 from apple_pick_sim.fruiting_system import fruiting_params_from_json
-from apple_pick_sim.fruiting_system.params import FruitingSystemParams, GripperProxyConfig, load_ranges, parse_fixture_args
+from apple_pick_sim.fruiting_system.params import (
+    FruitingSystemParams,
+    GripperProxyConfig,
+    fruiting_params_from_dict,
+    load_ranges,
+    parse_fixture_args,
+)
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.system_id.batched_trajectory_store import (
     BatchedSysIdDataset,
@@ -214,6 +220,9 @@ def true_params_for_structure(
             f"structure {structure_idx} metadata has no fruiting_system_params "
             "(true params are only available for sim-to-sim datasets)"
         )
+    # Sim collect stores a JSON string; real export may nest a dict in schema JSON.
+    if isinstance(serialized, dict):
+        return fruiting_params_from_dict(serialized)
     return fruiting_params_from_json(str(serialized))
 
 

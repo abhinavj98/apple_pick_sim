@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Bit 1 implemented (metadata convert + parity + JSON viewer) |
+| **Status** | Bit 1 implemented; bit 2 trajectory export + format/physics gates landed |
 | **Date** | 2026-08-07 |
 | **Source of truth** | `robot_replay/example_view_pre_grasp_settle.py` (native pre/post stack) |
 | **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C1), `robot_replay/README.md`, `docs/batched-sysid-dataset.md` |
@@ -17,8 +17,8 @@ proves **pre-grasp and post-grasp geometry/weld init** match the settle viewer.
 
 | Bit | Scope | Status |
 | --- | ----- | ------ |
-| **1** | Fix converter via shared native builders; numeric parity; batched-meta viewer | **This design** |
-| **2** | Full `batched_sysid_v1` trajectory export + FR3 open-loop EE-twist replay | Later |
+| **1** | Fix converter via shared native builders; numeric parity; batched-meta viewer | **Done** |
+| **2** | Full `batched_sysid_v1` trajectory export + FR3 open-loop EE-twist replay | **Done** (see plan) |
 | **3** | Feed converted episodes into existing sys-ID CMA-ES | Later |
 
 ## Architecture (bit 1)

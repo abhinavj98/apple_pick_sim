@@ -277,6 +277,57 @@ def test_build_episode_metadata_from_real(tmp_path: Path):
     assert meta["fruiting_system_params"]["topology"] == "t_junction"
 
 
+def test_export_real_to_batched_dataset_loads(tmp_path: Path):
+    """Exported dataset must load as batched_sysid_v1 with non-zero actions."""
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = Path("robot_replay/s02-d00_action.parquet")
+    if not src.is_file():
+        pytest.skip("missing robot_replay/s02-d00_action.parquet")
+
+    out = tmp_path / "batched_real"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    assert ds.manifest["schema_version"] == "batched_sysid_v1"
+    assert len(ds.episode_entries()) == 1
+    meta = ds.load_episode_metadata(0, 0)
+    assert "fruiting_system_params" in meta
+    assert isinstance(meta["fruiting_system_params"], str)
+    assert meta["junction_names"] == list(SIM_JUNCTION_NAMES)
+    from apple_pick_sim.system_id.batched_digital_twin_init import true_params_for_structure
+
+    true_params = true_params_for_structure(ds, 0)
+    assert true_params.apple_radius is not None
+    arrays = ds.load_episode_obs_arrays(0, 0)
+    assert arrays["action"].shape[1] == 6
+    assert float(np.linalg.norm(arrays["action"], axis=1).max()) > 0.0
+    assert arrays["tcp_pos"].shape[1] == 3
+    assert arrays["tcp_pos"].shape[0] == arrays["action"].shape[0]
+    assert ds.manifest["collection"]["seed"] == 0
+
+
+def test_export_refuses_all_zero_action(tmp_path: Path):
+    """Zero-action real episodes fail loud unless allow_zero_action / drive_fill."""
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = Path("robot_replay/s00-d00.parquet")
+    if not src.is_file():
+        pytest.skip("missing robot_replay/s00-d00.parquet")
+
+    out = tmp_path / "batched_zero"
+    with pytest.raises(ValueError, match="real-replay-action-zero"):
+        export_real_episode_to_batched_dataset(
+            src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+        )
+
+
 def _assert_quat_close(got, expected, *, atol: float = 1e-9) -> None:
     g = np.asarray(got, dtype=np.float64).reshape(4)
     e = np.asarray(expected, dtype=np.float64).reshape(4)

@@ -25,6 +25,8 @@ from apple_pick_sim.coupled_fruiting.settle_quasi_static import (
 )
 from apple_pick_sim.coupled_fruiting.settle_seed_device import capture_body_q_numpy
 from apple_pick_sim.coupled_fruiting.settle_then_weld import (
+    _bootstrap_tcp_at_fixed_origin,
+    _bootstrap_tcp_per_env,
     apply_settle_gravity_for_substep,
     quiet_all_cable_bodies,
     seed_fix_to_apple_from_settled,
@@ -32,6 +34,12 @@ from apple_pick_sim.coupled_fruiting.settle_then_weld import (
     should_quiet_cable_bodies_at_settle_substep,
     warn_settle_quiet_every_alignment,
 )
+from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+    align_proxy_body_q_prev_for_vbd,
+    prepare_batched_stem_harvest_arrays,
+    sync_model_body_q_rest_from_state,
+)
+from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
 from apple_pick_sim.digital_twin.record import fruiting_tree_fixed_joints
 from apple_pick_sim.fruiting_system import (
     FruitingSystemParams,
@@ -124,6 +132,7 @@ def build_batched_heterogeneous_scene(
         fix_to_apple=False,
     )
     settle_substeps = int(config.scene.settle_substeps)
+    post_grasp_settle_substeps = int(config.scene.post_grasp_settle_substeps)
     sim_dt = float(config.runtime.sub_dt)
     collect_diag = config.settle_diagnostics is not None
 
@@ -147,6 +156,21 @@ def build_batched_heterogeneous_scene(
             layout,
             junction_names=junction_names,
         )
+
+    def _apply_post_grasp_settle(welded: Any) -> tuple[list[SettleStabilityReport], list[SettleKeDecayReport]]:
+        if post_grasp_settle_substeps <= 0:
+            return [], []
+        post_stab, post_ke = _run_vbd_settle(
+            welded,
+            config=config,
+            per_env_params=params,
+            substeps=post_grasp_settle_substeps,
+            sim_dt=sim_dt,
+            viewer=viewer,
+            collect_diagnostics=collect_diag,
+        )
+        _rebootstrap_fr3_after_post_grasp_settle(welded, config=config)
+        return post_stab, post_ke
 
     angular_kd_overrides = dict(config.fruiting_system.joint_angular_kd_overrides)
     linear_kd_overrides = dict(config.fruiting_system.joint_linear_kd_overrides)
@@ -184,12 +208,17 @@ def build_batched_heterogeneous_scene(
                 welded_scene=scene,
                 settled_body_q=settled_checkpoint.body_q,
                 quiet_apple_proxy=True,
-                per_env_ik=config.robot.per_env_ik, #REMOVE THIS
+                per_env_ik=config.robot.per_env_ik,
                 per_world_proxy_offsets=scene.per_world_proxy_offsets,
                 ik_bootstrap_iterations=config.robot.ik_bootstrap_iterations,
+                bootstrap_joint_q=config.robot.bootstrap_joint_q,
             )
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None
+            post_stab, post_ke = _apply_post_grasp_settle(scene)
+            if collect_diag:
+                stability_reports = list(post_stab)
+                ke_decay_reports = list(post_ke)
         else:
             gripper_free = free_grippers[0]
             settled = build_fn(
@@ -238,9 +267,15 @@ def build_batched_heterogeneous_scene(
                 per_env_ik=config.robot.per_env_ik,
                 per_world_proxy_offsets=scene.per_world_proxy_offsets,
                 ik_bootstrap_iterations=config.robot.ik_bootstrap_iterations,
+                bootstrap_joint_q=config.robot.bootstrap_joint_q,
             )
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None
+            post_stab, post_ke = _apply_post_grasp_settle(scene)
+            if collect_diag and post_stab:
+                # Prefer post-grasp residual motion when that phase ran.
+                stability_reports = list(post_stab)
+                ke_decay_reports = list(post_ke)
     else:
         active_grippers = weld_grippers if fix_to_apple else free_grippers
         scene = build_fn(
@@ -604,6 +639,41 @@ def _apply_joint_penalty_overrides(
     applied_angular_kd = _apply_joint_angular_kd_overrides(scene, ang_kd)
     applied_linear_kd = _apply_joint_linear_kd_overrides(scene, lin_kd)
     return applied_angular_kd, applied_linear_kd, applied_angular_kp, applied_linear_kp
+
+
+def _rebootstrap_fr3_after_post_grasp_settle(
+    scene: CoupledFruitingScene,
+    *,
+    config: BatchedHeterogeneousCoupledSimConfig,
+) -> None:
+    """Re-align FR3 TCP to the cable proxy after post-grasp VBD settle."""
+    cable = scene.cable
+    body_count = int(cable.model.body_count)
+    align_proxy_body_q_prev_for_vbd(cable, tuple(range(body_count)))
+    sync_model_body_q_rest_from_state(cable)
+
+    if config.robot.bootstrap_joint_q is not None:
+        # Keep open-loop recorded joints after plant settle (no IK).
+        _bootstrap_tcp_at_fixed_origin(
+            scene, bootstrap_joint_q=config.robot.bootstrap_joint_q
+        )
+        return
+
+    layout = getattr(scene, "layout", None)
+    ik_iters = config.robot.ik_bootstrap_iterations
+    if config.robot.per_env_ik and layout is not None and layout.num_envs > 1:
+        _bootstrap_tcp_per_env(scene, layout, ik_iterations=ik_iters)
+        prepare_batched_stem_harvest_arrays(scene, layout)
+        return
+
+    from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
+
+    bootstrap_iters = (
+        int(ik_iters) if ik_iters is not None else IK_BOOTSTRAP_DEFAULT_ITERATIONS
+    )
+    _bootstrap_tcp_at_fixed_origin(scene, ik_iterations=bootstrap_iters)
+    if layout is not None:
+        broadcast_joint_q_from_world0(scene, layout)
 
 
 def _run_vbd_settle(

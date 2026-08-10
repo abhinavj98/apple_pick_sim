@@ -195,3 +195,14 @@ def test_download_batched_replay_obs_numpy_matches_per_env_sysid_export():
                 dtype=np.float32,
             ),
         )
+
+
+def test_download_batched_replay_obs_numpy_copies_away_from_torch_buffer():
+    """CPU numpy must not alias live torch obs (else replay collectors freeze)."""
+    junction_names = ["joint_a"]
+    obs = _batched_sysid_torch_obs(num_envs=1, junction_names=junction_names)
+    snap = download_batched_replay_obs_numpy(obs, junction_names)
+    tcp_before = snap["tcp_pos"].copy()
+    obs["tcp_pos"].fill_(9.0)
+    np.testing.assert_allclose(snap["tcp_pos"], tcp_before)
+    assert not np.allclose(snap["tcp_pos"], 9.0)

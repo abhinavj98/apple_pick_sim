@@ -103,19 +103,19 @@ class ReplayObservationCollector:
                 raise KeyError(f"missing replay observation field: {key}")
 
         self._rows["action"].append(
-            np.asarray(self._recorded_row("action", frame_idx), dtype=np.float32).reshape(6)
+            np.array(self._recorded_row("action", frame_idx), dtype=np.float32, copy=True).reshape(6)
         )
         self._rows["ft_wrist"].append(
-            np.asarray(obs["ft_wrist"], dtype=np.float32).reshape(6)
+            np.array(obs["ft_wrist"], dtype=np.float32, copy=True).reshape(6)
         )
         self._rows["tcp_velocity"].append(
-            np.asarray(obs["tcp_velocity"], dtype=np.float32).reshape(6)
+            np.array(obs["tcp_velocity"], dtype=np.float32, copy=True).reshape(6)
         )
         self._rows["tcp_pos"].append(
-            np.asarray(obs["tcp_pos"], dtype=np.float32).reshape(3)
+            np.array(obs["tcp_pos"], dtype=np.float32, copy=True).reshape(3)
         )
         self._rows["apple_pos"].append(
-            np.asarray(obs["apple_pos"], dtype=np.float32).reshape(3)
+            np.array(obs["apple_pos"], dtype=np.float32, copy=True).reshape(3)
         )
         self._rows["phase"].append(int(self._recorded_row("phase", frame_idx)))
         self._rows["dir_idx"].append(int(self._recorded_row("dir_idx", frame_idx)))
@@ -129,18 +129,19 @@ class ReplayObservationCollector:
             int(self._recorded_row("excitation_type", frame_idx))
         )
         self._rows["excitation_direction"].append(
-            np.asarray(
+            np.array(
                 self._recorded_row("excitation_direction", frame_idx),
                 dtype=np.float32,
+                copy=True,
             ).reshape(3)
         )
 
         for name, pos in self._split_flat_woody(
             obs["woody_start"], key="woody_start"
         ).items():
-            self._woody_start[name].append(pos)
+            self._woody_start[name].append(np.array(pos, dtype=np.float32, copy=True))
         for name, pos in self._split_flat_woody(obs["woody_end"], key="woody_end").items():
-            self._woody_end[name].append(pos)
+            self._woody_end[name].append(np.array(pos, dtype=np.float32, copy=True))
         self._rows["stable"].append(bool(stable))
 
     def to_arrays(self) -> dict[str, Any]:

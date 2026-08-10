@@ -14,10 +14,10 @@
     },
     "joint_damping_ratio": 0.5,
     "joint_angular_kp_overrides": {
-      "support": 100.0
+      "support": 10000.0
     },
     "joint_linear_kp_overrides": {
-      "support": 100.0
+      "support": 10000.0
     }
   },
   "primary": {

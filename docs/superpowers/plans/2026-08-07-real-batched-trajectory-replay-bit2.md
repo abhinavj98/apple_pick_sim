@@ -1,160 +1,161 @@
-# Real → batched trajectory export + FR3 replay (bit 2) Implementation Plan
+# Real → batched trajectory export + format gate (bit 2) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **This session: inline execution.**
 
-**Goal:** Export a real-world episode (metadata from bit 1 + trajectory rows with EE twists) into `batched_sysid_v1` layout and replay it with existing FR3 open-loop batched replay.
+**Goal:** Turn a real-world parquet (with non-zero `action`) into a 1×1 `batched_sysid_v1` dataset, prove format compatibility with `example_batched_sysid_trajectory_viz.py`, then smoke FR3 open-loop replay with existing gym replay helpers.
 
-**Architecture:** Extend `real_to_batched_sysid` to write a one-structure / one-direction `batched_sysid_v1` dataset directory (manifest + `episodes/s00_d00.parquet`) using bit-1 metadata plus table rows. Drive signal is parquet `action`; for local testing until collection is fixed, use `s00-d03_with_actions.parquet` produced by filling zeros from `tcp_velocity`. Replay via `replay_batched_sysid_structure` / a thin real-episode smoke example — no CMA yet (bit 3).
+**Architecture:** Bit-1 metadata (`build_episode_metadata_from_real`) plus mapped trajectory rows → `manifest.json` + `episodes/s00_d00.parquet`. **Primary real source:** `robot_replay/s02-d00_action.parquet` (non-zero `action` on all frames — no tcp_velocity fill required). Legacy zero-action episodes may still use `fill_actions_from_tcp_velocity.py` as a temporary mitigation. **Format gate first:** `BatchedSysIdDataset` + `example_batched_sysid_trajectory_viz.py`. **Then:** `replay_batched_sysid_structure` / demo-style path for physics. No CMA (bit 3).
 
-**Tech Stack:** Python, pyarrow, `BatchedSysIdDataset` / `batched_trajectory_store`, `replay_batched_sysid_structure`, pytest, uv.
+**Tech Stack:** Python, pyarrow, `BatchedSysIdDataset` / `BatchedEpisodeWriter` / `write_manifest`, `write_dataset_trajectory_viz`, `replay_batched_sysid_structure`, pytest, uv.
 
 ## Global Constraints
 
 - Bit 1 metadata builders remain the source of truth for rebuild + grasp init.
-- Long-term contract: real parquets ship non-zero `action` for the **full trajectory** (not hold-only / empty command).
-- `real-replay-action-zero` is a **collection bug**; `tcp_velocity` fill is a **temporary local mitigation** only (`drive_fill` metadata stamp).
-- Primary local fixture: `robot_replay/s00-d03_with_actions.parquet` (gitignored `*.parquet`; regenerate with fill script).
+- Long-term contract: real parquets ship non-zero `action` for the **full trajectory**.
+- **Canonical bit-2 fixture:** `robot_replay/s02-d00_action.parquet` (verified: 132/132 non-zero actions; convert parity green).
+- `real-replay-action-zero` remains a bug on older files (`s00-d0*`); `tcp_velocity` fill is temporary only when those are used.
+- Format consumer pinned: `apple_pick_gym/batched_examples/example_batched_sysid_trajectory_viz.py`.
 - Do not wire CMA-ES in this bit.
+
+## End-to-end flow
+
+```text
+robot_replay/s02-d00_action.parquet     # preferred (real non-zero action)
+    │ export_real_episode_to_batched_dataset / --dataset-out
+    ▼
+/tmp/real_batched_s02_d00/
+  manifest.json
+  episodes/s00_d00.parquet
+    │
+    ├─ FORMAT GATE
+    │    example_batched_sysid_trajectory_viz.py --dataset … --output …
+    │
+    └─ PHYSICS SMOKE (after viz green)
+         replay_batched_sysid_structure / example_replay_real_batched_smoke.py
+```
 
 ## File map
 
 | Path | Role |
 |------|------|
-| `robot_replay/fill_actions_from_tcp_velocity.py` | Local fixture: copy parquet, fill `action` ← `tcp_velocity` |
-| `apple_pick_sim/system_id/real_to_batched_sysid.py` | Add trajectory dataset export on top of bit-1 metadata |
-| `robot_replay/convert_real_to_batched_sysid_metadata.py` or new CLI | Export full dataset dir (or extend flags) |
-| `apple_pick_sim/tests/test_real_to_batched_sysid.py` | Trajectory export + action presence tests |
-| `robot_replay/example_*` or gym batched example | FR3 / batched replay smoke on exported dataset |
-| `robot_replay/README.md` | Commands for fill → convert dataset → replay |
+| `robot_replay/s02-d00_action.parquet` | Primary real episode (gitignored locally) |
+| `robot_replay/fill_actions_from_tcp_velocity.py` | Optional mitigation for older zero-action files |
+| `apple_pick_sim/system_id/real_to_batched_sysid.py` | `export_real_episode_to_batched_dataset` |
+| `robot_replay/convert_real_to_batched_sysid_metadata.py` | `--dataset-out` |
+| `robot_replay/example_replay_real_batched_smoke.py` | Thin FR3 physics smoke CLI |
+| `apple_pick_sim/tests/test_real_to_batched_sysid.py` | Export load + zero-action refuse |
+| `apple_pick_gym/tests/test_real_batched_replay_smoke.py` | Slow FR3 TCP-motion smoke |
+| `robot_replay/README.md` | export → **trajectory_viz** → physics commands |
+| Existing | `example_batched_sysid_trajectory_viz.py` (format gate) |
 
 ---
 
-### Task 1: Local drive-filled fixture (`s00-d03`)
+### Task 1: Fill-helper unit test (fixture script already shipped)
 
 **Files:**
-- Create: `robot_replay/fill_actions_from_tcp_velocity.py` (if not already present)
-- Test: small unit test on synthetic table OR script smoke in README
-- Docs: `robot_replay/README.md` note (parquet gitignored)
+- Create: `apple_pick_sim/tests/test_fill_actions_from_tcp_velocity.py`
+- Existing: `robot_replay/fill_actions_from_tcp_velocity.py`
 
-**Produces:** `fill_actions_from_tcp_velocity(...)` → `s00-d03_with_actions.parquet` with non-zero `action` and `dataset_metadata.drive_fill`.
-
-- [ ] **Step 1: Write failing test** for fill helper (synthetic 2-row table: zero action, non-zero tcp_velocity → filled action equals velocity; metadata stamp present).
-
-```python
-def test_fill_actions_from_tcp_velocity_only_zeros(tmp_path: Path):
-    # write mini parquet with action=0, tcp_velocity=[1,0,0,0,0,0]
-    # call fill → assert action matches velocity and drive_fill.rows_filled == 1
-```
-
-- [ ] **Step 2: Run test — expect FAIL** (helper missing or incomplete).
+- [x] Fill CLI + `s00-d03_with_actions.parquet` generated locally
+- [x] **Step 1: Failing/green test** — synthetic zero `action` + non-zero `tcp_velocity` → filled equals velocity; `drive_fill` in metadata
+- [x] **Step 2: pytest green**
 
 ```bash
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_fill_actions_from_tcp_velocity.py -q
 ```
 
-- [ ] **Step 3: Implement fill helper + CLI** (copy schema/metadata; fill zeros only by default).
-
-- [ ] **Step 4: Generate local fixture**
-
-```bash
-uv run python robot_replay/fill_actions_from_tcp_velocity.py \
-  --input robot_replay/s00-d03.parquet \
-  --out robot_replay/s00-d03_with_actions.parquet
-```
-
-Expected: `action_nonzero_after` ≈ rows with non-zero `tcp_velocity`.
-
-- [ ] **Step 5: Commit** script + test + README note (not the `.parquet`).
-
 ---
 
-### Task 2: Export full `batched_sysid_v1` episode from real parquet
+### Task 2: Export `batched_sysid_v1` dataset from real parquet
 
 **Files:**
 - Modify: `apple_pick_sim/system_id/real_to_batched_sysid.py`
-- Modify: convert CLI (add `--dataset-out` or sibling script)
+- Modify: `robot_replay/convert_real_to_batched_sysid_metadata.py` (`--dataset-out`)
 - Test: `apple_pick_sim/tests/test_real_to_batched_sysid.py`
 
-**Consumes:** bit-1 `build_episode_metadata_from_real`  
-**Produces:** `export_real_episode_to_batched_dataset(input, fixture, out_dir) -> Path` writing:
+**Produces:**
 
 ```text
 <out_dir>/
-  manifest.json          # schema_version batched_sysid_v1, 1 structure × 1 direction
+  manifest.json
   episodes/s00_d00.parquet
 ```
 
-Episode parquet must include bit-1 metadata keys **and** trajectory columns expected by `BatchedSysIdDataset` / `build_recorded_actions_tensor` (at least `action`, plus whatever loaders require: `step_idx`, observations used by replay collectors — match an existing sim-collected episode schema as closely as practical).
+Episode frames must satisfy `BATCHED_REQUIRED_FRAME_COLUMNS` and enough bonus columns for viz (`tcp_pos`, `apple_pos`, `sim_time`, woody if available, `phase`, `action`, …). Schema metadata = bit-1 episode meta (+ movement fields optional).
 
-- [ ] **Step 1: Failing test** — export from synthetic or `s00-d03_with_actions` (skip if missing); `BatchedSysIdDataset(out_dir)` loads; `action` norms > 0; metadata `fruiting_system_params` matches bit-1 convert.
+Refuse all-zero `action` unless `drive_fill` present or `--allow-zero-action`.
 
-- [ ] **Step 2: Run — expect FAIL**
+- [x] **Step 1: Failing test** `test_export_real_to_batched_dataset_loads`
+- [x] **Step 2: Implement exporter** using `BatchedEpisodeWriter` / `write_manifest` / bit-1 meta
+- [x] **Step 3: CLI `--dataset-out`**
+- [x] **Step 4: pytest green** (+ `test_export_refuses_all_zero_action`)
 
 ```bash
 uv run --env-file pytest.env python -m pytest \
-  apple_pick_sim/tests/test_real_to_batched_sysid.py::test_export_real_to_batched_dataset_actions -q
+  apple_pick_sim/tests/test_real_to_batched_sysid.py -q
 ```
-
-- [ ] **Step 3: Implement exporter** — reuse bit-1 meta; map real columns → batched trajectory columns; set `action` from real `action` (assert non-all-zero or warn + refuse unless `--allow-zero-action` / explicit drive_fill).
-
-- [ ] **Step 4: CLI** — e.g. `--dataset-out /tmp/real_batched_s00_d03`
-
-- [ ] **Step 5: Commit**
 
 ---
 
-### Task 3: FR3 / batched open-loop replay smoke
+### Task 3: Format gate — trajectory viz (pinned)
 
-**Files:**
-- Create or extend: `robot_replay/example_replay_real_batched_episode.py` (or thin wrapper around gym batched replay)
-- Test: optional short CPU/null smoke if feasible; else documented command + headless check
+**Files:** docs/README only; reuse existing example.
 
 **Consumes:** dataset from Task 2  
-**Produces:** recorded-action replay of structure 0 / direction 0 via `replay_batched_sysid_structure` (single candidate = exported params).
-
-- [ ] **Step 1: Failing smoke test or script `--help` + import wiring test**
-
-- [ ] **Step 2: Implement minimal replay example** (viewer null, few frames or full episode)
+**Gate command:**
 
 ```bash
-uv run python robot_replay/example_replay_real_batched_episode.py \
-  --dataset /tmp/real_batched_s00_d03 \
-  --viewer null
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input robot_replay/s02-d00_action.parquet \
+  --dataset-out /tmp/real_batched_s02_d00 \
+  --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_batched_sysid_trajectory_viz.py \
+  --dataset /tmp/real_batched_s02_d00 \
+  --output /tmp/real_batched_s02_d00_viz \
+  --no-hold-check
 ```
 
-- [ ] **Step 3: Manual visual** with `--viewer gl` when display available
+Expected: HTML written; no schema/load errors; TCP path shows motion.
 
-- [ ] **Step 4: README** — fill → export → replay command chain using `s00-d03_with_actions.parquet`
-
-- [ ] **Step 5: Commit**
+- [x] **Step 1: Run gate on exported `s02-d00_action` dataset**
+- [x] **Step 2: Document commands in `robot_replay/README.md`**
 
 ---
 
-### Task 4: Docs + bug tracking
+### Task 4: Physics smoke — existing batched replay
 
-**Files:**
-- `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 2 status)
-- `docs/real-sysid-pre-post-grasp-fixes.md` (`real-replay-action-zero`)
-- `robot_replay/README.md`
+**Files:** `robot_replay/example_replay_real_batched_smoke.py` + `apple_pick_gym/tests/test_real_batched_replay_smoke.py`.
 
-- [ ] Document that `s00-d03_with_actions.parquet` is local-only mitigation
-- [ ] Document expected future collector contract: full trajectory + non-zero `action`
-- [ ] Mark bit 2 success criteria: export loads in `BatchedSysIdDataset`; replay runs without stationary EE; bit 1 parity still green
+- [x] **Step 1: Smoke** — export → `replay_batched_sysid_structure` (oracle GT stiffness); fixture span clamp + fixture `fruiting_base_pos` (C6); assert TCP motion
+- [x] **Step 2: README** — physics smoke command after viz gate
+- [x] Prefer reusing gym helpers over a large new example
+
+Also fixed: `download_batched_replay_obs_numpy` / collector row copies so replay collectors do not alias live torch buffers.
+
+---
+
+### Task 5: Docs close-out
+
+- [x] Update bit-1 design “sequencing” bit-2 status
+- [x] Note `real-replay-action-zero` + `drive_fill` + catalog primary span (C5/C6) in fix doc
+- [ ] Commit when user asks
 
 ---
 
 ## Success criteria
 
-1. Regenerable local fixture `s00-d03_with_actions.parquet` has non-zero `action`.
-2. Exporter writes a 1×1 `batched_sysid_v1` dataset from that file (or future real fixed parquet).
-3. Existing batched replay path drives FR3/proxy with those actions (smoke).
-4. Zero-action inputs fail loud or require an explicit override; `drive_fill` is labeled temporary.
-5. CMA-ES untouched (bit 3).
+1. Prefer `s02-d00_action.parquet` (real non-zero `action`); optional fill only for older zero-action files.
+2. Exporter writes loadable 1×1 `batched_sysid_v1` dataset.
+3. **`example_batched_sysid_trajectory_viz.py` runs successfully on that dataset** (format gate) — verified on s02.
+4. Physics replay smoke via existing batched replay APIs — verified.
+5. Zero-action inputs fail loud unless override / `drive_fill`.
+6. CMA untouched.
 
 ## Out of scope
 
-- CMA-ES / Young's search (bit 3)
-- Fixing upstream collector (human parallel work)
+- CMA-ES (bit 3)
+- Fixing upstream collector
 - Multi-structure real batches
-- Treating `tcp_velocity` fill as permanent product behavior
+- Permanent productization of `tcp_velocity` fill

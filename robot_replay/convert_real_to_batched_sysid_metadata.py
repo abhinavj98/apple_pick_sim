@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""CLI: real-world parquet → batched-style episode metadata JSON (no frame remap).
+"""CLI: real-world parquet → batched_sysid_v1 metadata and/or full dataset.
 
-Pre-grasp woody (non-bending) rebuilds fruiting_system geometry; post-grasp
-settled apple + TCP supplies the weld attachment. See robot_replay/README.md
-and docs/real-sysid-pre-post-grasp-fixes.md.
+Bit 1: ``--out`` writes episode metadata JSON (rebuild + grasp init).
+Bit 2: ``--dataset-out`` writes a 1×1 batched_sysid_v1 dataset directory
+(manifest + episodes/s00_d00.parquet) for trajectory viz / FR3 replay.
+
+Preferred real source with non-zero action: ``robot_replay/s02-d00_action.parquet``.
 """
 
 from __future__ import annotations
@@ -17,17 +19,15 @@ from pathlib import Path
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Build batched_sysid_v1-compatible episode metadata from a real-world "
-            "sys-ID parquet using the same pre/post builders as "
-            "example_view_pre_grasp_settle.py (rebuild + grasp init only; no "
-            "trajectory export)."
+            "Convert a real-world sys-ID parquet using settle-viewer pre/post "
+            "builders. Emit metadata JSON and/or a full batched_sysid_v1 dataset."
         )
     )
     parser.add_argument(
         "--input",
         type=Path,
         required=True,
-        help="Real-world episode parquet path",
+        help="Real-world episode parquet path (prefer s02-d00_action.parquet)",
     )
     parser.add_argument(
         "--fixture",
@@ -41,7 +41,23 @@ def main(argv: list[str] | None = None) -> int:
         "--out",
         type=Path,
         default=None,
-        help="Output JSON path (default: stdout)",
+        help="Episode metadata JSON path (default: stdout if no --dataset-out)",
+    )
+    parser.add_argument(
+        "--dataset-out",
+        type=Path,
+        default=None,
+        help="Write 1×1 batched_sysid_v1 dataset directory (manifest + episodes/).",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Allow overwriting a non-empty --dataset-out directory.",
+    )
+    parser.add_argument(
+        "--allow-zero-action",
+        action="store_true",
+        help="Permit exporting when action is all zeros (not recommended).",
     )
     parser.add_argument(
         "--weld-direction-sign",
@@ -53,20 +69,34 @@ def main(argv: list[str] | None = None) -> int:
 
     from apple_pick_sim.system_id.real_to_batched_sysid import (
         build_episode_metadata_from_real,
+        export_real_episode_to_batched_dataset,
     )
 
-    meta = build_episode_metadata_from_real(
-        args.input,
-        fixture_path=args.fixture,
-        weld_direction_sign=args.weld_direction_sign,
-    )
-    text = json.dumps(meta, indent=2, sort_keys=True) + "\n"
-    if args.out is None:
-        sys.stdout.write(text)
-    else:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(text, encoding="utf-8")
-        print(f"Wrote {args.out}", file=sys.stderr)
+    if args.dataset_out is not None:
+        out_dir = export_real_episode_to_batched_dataset(
+            args.input,
+            fixture_path=args.fixture,
+            output_dir=args.dataset_out,
+            weld_direction_sign=args.weld_direction_sign,
+            overwrite=bool(args.overwrite),
+            allow_zero_action=bool(args.allow_zero_action),
+            command_argv=list(sys.argv if argv is None else ["convert", *argv]),
+        )
+        print(f"Wrote batched dataset {out_dir}", file=sys.stderr)
+
+    if args.out is not None or args.dataset_out is None:
+        meta = build_episode_metadata_from_real(
+            args.input,
+            fixture_path=args.fixture,
+            weld_direction_sign=args.weld_direction_sign,
+        )
+        text = json.dumps(meta, indent=2, sort_keys=True) + "\n"
+        if args.out is None:
+            sys.stdout.write(text)
+        else:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(text, encoding="utf-8")
+            print(f"Wrote {args.out}", file=sys.stderr)
     return 0
 
 

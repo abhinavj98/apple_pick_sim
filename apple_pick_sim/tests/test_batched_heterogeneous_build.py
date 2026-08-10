@@ -613,6 +613,99 @@ def test_settle_quiet_every_invoked_during_vbd_settle(ranges, per_env_params, mo
 
 
 @requires_fr3
+def test_post_grasp_settle_runs_second_vbd_settle_then_rebootstrap(
+    ranges, monkeypatch
+):
+    """post_grasp_settle_substeps>0: free settle, then welded settle, then re-IK."""
+    settle_calls: list[int] = []
+    rebootstrap_calls: list[str] = []
+
+    real_run = build_module._run_vbd_settle
+
+    def _capture_settle(scene, *, config, per_env_params, substeps, sim_dt, viewer, collect_diagnostics):
+        settle_calls.append(int(substeps))
+        return real_run(
+            scene,
+            config=config,
+            per_env_params=per_env_params,
+            substeps=substeps,
+            sim_dt=sim_dt,
+            viewer=viewer,
+            collect_diagnostics=collect_diagnostics,
+        )
+
+    def _capture_rebootstrap(scene, *, config):
+        rebootstrap_calls.append("rebootstrap")
+
+    monkeypatch.setattr(build_module, "_run_vbd_settle", _capture_settle)
+    monkeypatch.setattr(
+        build_module, "_rebootstrap_fr3_after_post_grasp_settle", _capture_rebootstrap
+    )
+
+    params = sample_heterogeneous_params_list(
+        ranges, topology_seed=_PARITY_SEED, num_envs=_NUM_ENVS
+    )
+    cfg = dataclasses.replace(
+        _fr3_settle_weld_config(settle_substeps=4),
+        scene=SceneSettleCollisionConfig(
+            settle_substeps=4,
+            post_grasp_settle_substeps=3,
+            fruiting_base_pos=COUPLED_BASE_POS,
+            enable_self_collisions=COUPLED_SCENE_KW["enable_self_collisions"],
+        ),
+    )
+    build_batched_heterogeneous_scene(cfg, params, ranges)
+    assert settle_calls == [4, 3]
+    assert rebootstrap_calls == ["rebootstrap"]
+
+
+@requires_fr3
+def test_post_grasp_settle_zero_skips_second_settle(ranges, monkeypatch):
+    settle_calls: list[int] = []
+    rebootstrap_calls: list[str] = []
+
+    real_run = build_module._run_vbd_settle
+
+    def _capture_settle(scene, *, config, per_env_params, substeps, sim_dt, viewer, collect_diagnostics):
+        settle_calls.append(int(substeps))
+        return real_run(
+            scene,
+            config=config,
+            per_env_params=per_env_params,
+            substeps=substeps,
+            sim_dt=sim_dt,
+            viewer=viewer,
+            collect_diagnostics=collect_diagnostics,
+        )
+
+    def _capture_rebootstrap(scene, *, config):
+        rebootstrap_calls.append("rebootstrap")
+
+    monkeypatch.setattr(build_module, "_run_vbd_settle", _capture_settle)
+    monkeypatch.setattr(
+        build_module, "_rebootstrap_fr3_after_post_grasp_settle", _capture_rebootstrap
+    )
+
+    params = sample_heterogeneous_params_list(
+        ranges, topology_seed=_PARITY_SEED, num_envs=_NUM_ENVS
+    )
+    cfg = _fr3_settle_weld_config(settle_substeps=4)
+    assert cfg.scene.post_grasp_settle_substeps == 0
+    build_batched_heterogeneous_scene(cfg, params, ranges)
+    assert settle_calls == [4]
+    assert rebootstrap_calls == []
+
+
+def test_validate_rejects_negative_post_grasp_settle_substeps():
+    cfg = dataclasses.replace(
+        BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=1),
+        scene=SceneSettleCollisionConfig(post_grasp_settle_substeps=-1),
+    )
+    with pytest.raises(ValueError, match="post_grasp_settle_substeps"):
+        cfg.validate()
+
+
+@requires_fr3
 def test_stability_report_collected_before_final_quiet(ranges, per_env_params, monkeypatch):
     events: list[str] = []
     real_quiet = build_module.quiet_all_cable_bodies

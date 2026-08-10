@@ -75,3 +75,36 @@ def test_validate_requires_action_buffer_for_fr3_coupled():
     )
     with pytest.raises(ValueError, match="allocate_action_buffer"):
         cfg.validate()
+
+
+def test_vic_pose_requires_action_dim_19():
+    cfg = dataclasses.replace(
+        BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=2),
+        controller=ControllerConfig(mode="vic_pose", action_dim=6),
+    )
+    with pytest.raises(ValueError, match="vic_pose"):
+        cfg.validate()
+
+
+def test_vic_pose_requires_coupled_step_mode():
+    cfg = dataclasses.replace(
+        BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=2),
+        controller=ControllerConfig(mode="vic_pose", action_dim=19),
+        robot=dataclasses.replace(
+            BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=2).robot,
+            step_mode="vbd_only",
+        ),
+    )
+    with pytest.raises(ValueError, match="vic_pose"):
+        cfg.validate()
+
+
+def test_vic_pose_action_dim_19_accepted():
+    base = BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=2)
+    cfg = dataclasses.replace(
+        base,
+        controller=ControllerConfig(mode="vic_pose", action_dim=19),
+        robot=dataclasses.replace(base.robot, step_mode="coupled"),
+    )
+    cfg.validate()  # must not raise
+    assert cfg.controller.expected_action_shape(2) == (2, 19)

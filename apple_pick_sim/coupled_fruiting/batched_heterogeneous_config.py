@@ -71,7 +71,7 @@ _VIC_DEFAULT_ANGULAR_D = 1.0
 
 RobotKind = Literal["fr3"]
 StepMode = Literal["coupled", "vbd_only"]
-ControllerMode = Literal["direct", "ee", "vic"]
+ControllerMode = Literal["direct", "ee", "vic", "vic_pose"]
 
 _TESTS_RANGES_FIXTURE = (
     Path(__file__).resolve().parent.parent / "fixtures" / "fruiting_system_ranges_straight_rod_test.json"
@@ -328,6 +328,17 @@ class BatchedHeterogeneousCoupledSimConfig:
         if self.controller.mode == "vic":
             if self.robot.step_mode != "coupled":
                 raise ValueError("controller.mode='vic' requires robot.step_mode='coupled'")
+
+        if self.controller.mode == "vic_pose":
+            if self.robot.step_mode != "coupled":
+                raise ValueError(
+                    "controller.mode='vic_pose' requires robot.step_mode='coupled'"
+                )
+            if self.controller.action_dim != 19:
+                raise ValueError(
+                    "controller.mode='vic_pose' requires action_dim=19 "
+                    f"([pos(3), quat_wxyz(4), Kp(6), Kd(6)]), got {self.controller.action_dim}"
+                )
 
         if self.robot.step_mode == "vbd_only" and self.controller.mode != "direct":
             raise ValueError(

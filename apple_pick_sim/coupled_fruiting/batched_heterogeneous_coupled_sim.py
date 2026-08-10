@@ -210,7 +210,7 @@ class BatchedHeterogeneousCoupledSim:
                 velocity_for_world=velocity_for_world,
                 **ik_kw,
             )
-        elif mode == "vic":
+        elif mode in ("vic", "vic_pose"):
             ctrl = self._configure_fr3_vic(ik_kw, velocity_for_world)
         else:
             self._scene.robot_kinematic_mode = True
@@ -274,6 +274,8 @@ class BatchedHeterogeneousCoupledSim:
         return fr3_robot.EEVelocity(linear=linear, angular=angular)
 
     def _clip_actions(self, actions):
+        if self._config.controller.mode == "vic_pose":
+            return actions
         return clip_action_tensor(
             actions,
             linear_speed=float(self._config.controller.linear_speed),
@@ -283,6 +285,19 @@ class BatchedHeterogeneousCoupledSim:
     def _run_fr3_teleop_from_actions(self) -> None:
         cfg = self._config
         assert self._ee_ctrl is not None
+        if cfg.controller.mode == "vic_pose":
+            assert isinstance(self._ee_ctrl, fr3_robot.Fr3BatchedEEImpedanceController)
+            velocity = self._ee_ctrl.run_coupled_teleop_frame_from_pose_actions(
+                self._scene.robot_state_0,
+                self._scene.robot_control,
+                self._scene.mj_solver,
+                self.frame_dt,
+                self._action_buffer,
+            )
+            self._ee_ctrl.stage_targets_to_scene(self._scene)
+            self._ee_ctrl.stage_pose_gains_to_scene(self._scene)
+            self._scene.vic_target_twist = velocity
+            return
         velocity = self._ee_ctrl.run_coupled_teleop_frame_from_actions(
             self._scene.robot_state_0,
             self._scene.robot_control,

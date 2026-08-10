@@ -107,6 +107,15 @@ def _vic_cacheable_config(*, settle_substeps: int = 8) -> BatchedHeterogeneousCo
     )
 
 
+def _vic_pose_coupled_config(*, settle_substeps: int = 8) -> BatchedHeterogeneousCoupledSimConfig:
+    base = _cacheable_config(settle_substeps=settle_substeps)
+    return dataclasses.replace(
+        base,
+        robot=dataclasses.replace(base.robot, fix_to_apple=False),
+        controller=ControllerConfig(mode="vic_pose", action_dim=19),
+    )
+
+
 def test_per_env_grippers_reject_settle_cache_reuse(ranges, per_env_params):
     per_env_grippers = tuple(GripperProxyConfig() for _ in range(_NUM_ENVS))
 
@@ -325,3 +334,44 @@ def test_vic_per_env_actions_differ_wrench_damping(ranges, per_env_params):
     assert abs(float(wrenches[1, 0])) < float(wrenches[0, 0]) * 0.5, (
         "world 1 should see weaker x force than world 0 with distinct actions"
     )
+
+
+@requires_fr3
+@pytest.mark.slow
+def test_vic_pose_step_moves_tcp_toward_target(ranges, per_env_params):
+    torch = _require_torch()
+    cfg = _vic_pose_coupled_config(settle_substeps=8)
+    sim = BatchedHeterogeneousCoupledSim(cfg, per_env_params, ranges, use_settle_cache=False)
+    tcp_pose = sim.scene.robot_state_0.body_q.numpy().reshape(-1, 7)[
+        sim.scene.layout.tcp_body_indices[0]
+    ]
+    tcp0 = tcp_pose[:3].copy()
+    qx, qy, qz, qw = tcp_pose[3], tcp_pose[4], tcp_pose[5], tcp_pose[6]
+    row = [
+        float(tcp0[0]) + 0.05,
+        float(tcp0[1]),
+        float(tcp0[2]),
+        float(qw),
+        float(qx),
+        float(qy),
+        float(qz),
+        800.0,
+        800.0,
+        800.0,
+        40.0,
+        40.0,
+        40.0,
+        40.0,
+        40.0,
+        40.0,
+        2.0,
+        2.0,
+        2.0,
+    ]
+    actions = torch.tensor([row, row], dtype=torch.float32)
+    for _ in range(50):
+        sim.step(actions)
+    tcp1 = sim.scene.robot_state_0.body_q.numpy().reshape(-1, 7)[
+        sim.scene.layout.tcp_body_indices[0]
+    ][:3]
+    assert float(tcp1[0] - tcp0[0]) > 0.01

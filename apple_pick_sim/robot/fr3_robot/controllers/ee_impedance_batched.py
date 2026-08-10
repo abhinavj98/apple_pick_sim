@@ -52,6 +52,10 @@ class Fr3BatchedEEImpedanceController:
         self._target_rot_wp = wp.zeros(n, dtype=wp.vec4, device=dev)
         self._lin_vels_wp = wp.zeros(n, dtype=wp.vec3, device=dev)
         self._ang_vels_wp = wp.zeros(n, dtype=wp.vec3, device=dev)
+        self._kp_lin_wp: wp.array | None = None
+        self._kp_ang_wp: wp.array | None = None
+        self._kd_lin_wp: wp.array | None = None
+        self._kd_ang_wp: wp.array | None = None
         self._ik = BatchedTemplateIK(
             ik_model=ik_robot_model,
             sim_model=robot_model,
@@ -82,6 +86,73 @@ class Fr3BatchedEEImpedanceController:
             state, self._target_pos_wp, self._target_rot_wp
         )
         self._sync_target_tf_from_device()
+
+    def unpack_pose_action(self, actions) -> None:
+        """Unpack ``(num_envs, 19)`` pose-action rows: set targets directly, zero twists.
+
+        Layout: ``[pos(3), quat_wxyz(4), Kp(6), Kd(6)]``. ``Kp``/``Kd`` split as
+        ``[Fx,Fy,Fz,Tx,Ty,Tz]`` into linear (0:3) and angular (3:6) halves.
+        """
+        import torch
+
+        n = self.layout.num_envs
+        dev = self.robot_model.device
+        torch_device = wp.device_to_torch(dev)
+        a = actions.to(device=torch_device, dtype=torch.float32)
+        if a.shape != (n, 19):
+            raise ValueError(f"pose action must have shape ({n}, 19), got {tuple(a.shape)}")
+
+        pos = a[:, 0:3].contiguous()
+        quat_wxyz = a[:, 3:7].contiguous()
+        quat_norm = torch.linalg.norm(quat_wxyz, dim=1, keepdim=True)
+        identity_wxyz = torch.zeros_like(quat_wxyz)
+        identity_wxyz[:, 0] = 1.0
+        quat_wxyz = torch.where(
+            quat_norm > 1.0e-9, quat_wxyz / quat_norm.clamp_min(1.0e-9), identity_wxyz
+        )
+        # Action contract is wxyz; Newton body_q / _target_rot_wp store Warp-native
+        # xyzw (verified via batched_template_ik.py's wp.quat(x, y, z, w) usage).
+        quat_xyzw = quat_wxyz[:, [1, 2, 3, 0]].contiguous()
+
+        kp = a[:, 7:13].contiguous()
+        kd = a[:, 13:19].contiguous()
+
+        wp.copy(self._target_pos_wp, wp.from_torch(pos, dtype=wp.vec3))
+        wp.copy(self._target_rot_wp, wp.from_torch(quat_xyzw, dtype=wp.vec4))
+        zeros = torch.zeros((n, 3), device=torch_device, dtype=torch.float32)
+        wp.copy(self._lin_vels_wp, wp.from_torch(zeros.clone(), dtype=wp.vec3))
+        wp.copy(self._ang_vels_wp, wp.from_torch(zeros, dtype=wp.vec3))
+
+        if self._kp_lin_wp is None:
+            self._kp_lin_wp = wp.zeros(n, dtype=wp.vec3, device=dev)
+            self._kp_ang_wp = wp.zeros(n, dtype=wp.vec3, device=dev)
+            self._kd_lin_wp = wp.zeros(n, dtype=wp.vec3, device=dev)
+            self._kd_ang_wp = wp.zeros(n, dtype=wp.vec3, device=dev)
+        wp.copy(self._kp_lin_wp, wp.from_torch(kp[:, 0:3].contiguous(), dtype=wp.vec3))
+        wp.copy(self._kp_ang_wp, wp.from_torch(kp[:, 3:6].contiguous(), dtype=wp.vec3))
+        wp.copy(self._kd_lin_wp, wp.from_torch(kd[:, 0:3].contiguous(), dtype=wp.vec3))
+        wp.copy(self._kd_ang_wp, wp.from_torch(kd[:, 3:6].contiguous(), dtype=wp.vec3))
+        self._sync_target_tf_from_device()
+
+    def run_coupled_teleop_frame_from_pose_actions(
+        self,
+        state: Any,
+        control: Any,
+        mj_solver: Any,
+        dt: float,
+        actions,
+    ) -> EEVelocity:
+        """Per-frame ``vic_pose`` teleop: set target pose + gains directly (no integration)."""
+        del state, control, mj_solver, dt  # target comes entirely from ``actions``
+        self.unpack_pose_action(actions)
+        return EEVelocity()
+
+    def stage_pose_gains_to_scene(self, scene: Any) -> None:
+        """Wire per-env anisotropic gain buffers onto ``scene`` (no-op before first pose action)."""
+        scene.vic_kp_lin_wp = self._kp_lin_wp
+        scene.vic_kp_ang_wp = self._kp_ang_wp
+        scene.vic_kd_lin_wp = self._kd_lin_wp
+        scene.vic_kd_ang_wp = self._kd_ang_wp
 
     def advance_target(
         self,

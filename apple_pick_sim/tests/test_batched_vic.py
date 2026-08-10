@@ -207,3 +207,47 @@ def test_per_env_twist_affects_wrench_damping():
     assert float(wrenches[0, 0]) > 1.0, "world 0 expected D-term force from v_des"
     assert abs(float(wrenches[1, 0])) < 1e-3, "world 1 expected zero D-term at v_des=0"
     assert not np.allclose(wrenches[0, :3], wrenches[1, :3], atol=1e-3)
+
+
+@requires_fr3
+@pytest.mark.slow
+def test_aniso_wrench_used_when_gain_buffers_staged():
+    """Per-env anisotropic Kp/Kd buffers override isotropic ImpedanceGains."""
+    scene = _build_batched_scene()
+    ctrl = _configure_batched_vic(scene)
+    dev = scene.robot_model.device
+
+    pos = ctrl._target_pos_wp.numpy().copy()
+    pos[:, 0] += 0.1
+    ctrl._target_pos_wp.assign(pos.astype(np.float32))
+    ctrl.stage_targets_to_scene(scene)
+
+    scene.vic_kp_lin_wp = wp.full(_NUM_ENVS, wp.vec3(1000.0, 0.0, 0.0), dtype=wp.vec3, device=dev)
+    scene.vic_kp_ang_wp = wp.zeros(_NUM_ENVS, dtype=wp.vec3, device=dev)
+    scene.vic_kd_lin_wp = wp.zeros(_NUM_ENVS, dtype=wp.vec3, device=dev)
+    scene.vic_kd_ang_wp = wp.zeros(_NUM_ENVS, dtype=wp.vec3, device=dev)
+
+    launch_compute_vic_wrenches_batched(scene)
+    wp.synchronize()
+    wrenches = scene.vic_jt_wrench_buf.numpy()
+    for w in range(_NUM_ENVS):
+        assert abs(float(wrenches[w, 0]) - 100.0) < 1.0, f"world {w} expected Kp_x*0.1=100"
+        assert abs(float(wrenches[w, 1])) < 1e-3, f"world {w} expected zero on y (kp_lin_y=0)"
+
+
+@requires_fr3
+@pytest.mark.slow
+def test_isotropic_path_unchanged_without_gain_buffers():
+    """No aniso buffers staged -> existing isotropic kernel path still used (regression guard)."""
+    scene = _build_batched_scene()
+    ctrl = _configure_batched_vic(scene)
+    assert getattr(scene, "vic_kp_lin_wp", None) is None
+    pos = ctrl._target_pos_wp.numpy().copy()
+    pos[:, 0] += 0.05
+    ctrl._target_pos_wp.assign(pos.astype(np.float32))
+    ctrl.stage_targets_to_scene(scene)
+    launch_compute_vic_wrenches_batched(scene)
+    wp.synchronize()
+    wrenches = scene.vic_jt_wrench_buf.numpy()
+    for w in range(_NUM_ENVS):
+        assert float(np.linalg.norm(wrenches[w, :3])) > 1.0

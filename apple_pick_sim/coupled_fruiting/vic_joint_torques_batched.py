@@ -16,7 +16,10 @@ from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
     _require_torch,
     find_tcp_link_idx,
 )
-from apple_pick_sim.coupled_fruiting.vic_wrench import compute_vic_spatial_wrench
+from apple_pick_sim.coupled_fruiting.vic_wrench import (
+    compute_vic_spatial_wrench,
+    compute_vic_spatial_wrench_aniso,
+)
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
 
@@ -57,6 +60,40 @@ def _compute_vic_wrenches_batched_kernel(
         linear_d,
         angular_k,
         angular_d,
+    )
+    wrenches_out[w, 0] = wrench[0]
+    wrenches_out[w, 1] = wrench[1]
+    wrenches_out[w, 2] = wrench[2]
+    wrenches_out[w, 3] = wrench[3]
+    wrenches_out[w, 4] = wrench[4]
+    wrenches_out[w, 5] = wrench[5]
+
+
+@wp.kernel(enable_backward=False)
+def _compute_vic_wrenches_batched_aniso_kernel(
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    tcp_indices: wp.array(dtype=int),
+    target_positions: wp.array(dtype=wp.vec3),
+    target_rotations: wp.array(dtype=wp.vec4),
+    kp_lin: wp.array(dtype=wp.vec3),
+    kp_ang: wp.array(dtype=wp.vec3),
+    kd_lin: wp.array(dtype=wp.vec3),
+    kd_ang: wp.array(dtype=wp.vec3),
+    wrenches_out: wp.array2d(dtype=float),
+):
+    """Per-env anisotropic pose-PD wrench at TCP COM (world frame), ``v_des = 0``."""
+    w = wp.tid()
+    tcp_idx = tcp_indices[w]
+    target_tf = wp.transform(target_positions[w], _vec4_to_quat(target_rotations[w]))
+    wrench = compute_vic_spatial_wrench_aniso(
+        body_q[tcp_idx],
+        body_qd[tcp_idx],
+        target_tf,
+        kp_lin[w],
+        kp_ang[w],
+        kd_lin[w],
+        kd_ang[w],
     )
     wrenches_out[w, 0] = wrench[0]
     wrenches_out[w, 1] = wrench[1]
@@ -181,9 +218,34 @@ def launch_compute_vic_wrenches_batched(
     target_rotations = getattr(scene, "vic_target_rotations_wp", None)
     if target_positions is None or target_rotations is None:
         return
-    g = gains if gains is not None else ImpedanceGains()
     num_envs = int(scene.vic_jt_num_envs)
     dev = scene.robot_state_0.body_q.device
+
+    kp_lin = getattr(scene, "vic_kp_lin_wp", None)
+    kp_ang = getattr(scene, "vic_kp_ang_wp", None)
+    kd_lin = getattr(scene, "vic_kd_lin_wp", None)
+    kd_ang = getattr(scene, "vic_kd_ang_wp", None)
+    if kp_lin is not None and kp_ang is not None and kd_lin is not None and kd_ang is not None:
+        wp.launch(
+            _compute_vic_wrenches_batched_aniso_kernel,
+            dim=num_envs,
+            inputs=[
+                scene.robot_state_0.body_q,
+                scene.robot_state_0.body_qd,
+                scene.vic_jt_tcp_indices_wp,
+                target_positions,
+                target_rotations,
+                kp_lin,
+                kp_ang,
+                kd_lin,
+                kd_ang,
+                scene.vic_jt_wrench_buf,
+            ],
+            device=dev,
+        )
+        return
+
+    g = gains if gains is not None else ImpedanceGains()
     v_des_wp, w_des_wp = _resolve_batched_vic_desired_twists(scene, num_envs, dev)
     wp.launch(
         _compute_vic_wrenches_batched_kernel,

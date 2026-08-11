@@ -3,7 +3,8 @@
 6D EE twist to a 19D ``vic_pose`` action: ``[pos(3), quat_wxyz(4), Kp(6), Kd(6)]``.
 
 Position/orientation come from each frame's ``target_pose_4x4`` (falling back
-to ``tcp_pose_4x4`` when absent); ``Kp``/``Kd`` are constant across the episode,
+to ``tcp_pose_4x4``, then ``tcp_pos`` + ``tcp_quat`` xyzw when absent);
+``Kp``/``Kd`` are constant across the episode,
 supplied by the caller (temporary until real parquets ship per-frame gains).
 
 Example::
@@ -78,6 +79,19 @@ def _pose_action_from_flat16(flat16, kp: tuple[float, ...], kd: tuple[float, ...
     return [*pos, *quat_wxyz, *kp, *kd]
 
 
+def _pose_action_from_pos_quat(
+    pos,
+    quat_xyzw,
+    kp: tuple[float, ...],
+    kd: tuple[float, ...],
+) -> list[float]:
+    """Pack pose from ``tcp_pos`` + ``tcp_quat`` (xyzw) into 19D vic_pose action."""
+    p = np.asarray(pos, dtype=np.float64).reshape(3).tolist()
+    q = np.asarray(quat_xyzw, dtype=np.float64).reshape(4)
+    quat_wxyz = [float(q[3]), float(q[0]), float(q[1]), float(q[2])]
+    return [*p, *quat_wxyz, *kp, *kd]
+
+
 def pack_vic_pose_actions(
     src_dir: Path,
     dst_dir: Path,
@@ -104,16 +118,29 @@ def pack_vic_pose_actions(
     for path in episode_paths:
         table = pq.read_table(path)
         if "target_pose_4x4" in table.column_names:
-            pose_col = "target_pose_4x4"
+            rows = [
+                _pose_action_from_flat16(table.column("target_pose_4x4")[i].as_py(), kp, kd)
+                for i in range(table.num_rows)
+            ]
         elif "tcp_pose_4x4" in table.column_names:
-            pose_col = "tcp_pose_4x4"
+            rows = [
+                _pose_action_from_flat16(table.column("tcp_pose_4x4")[i].as_py(), kp, kd)
+                for i in range(table.num_rows)
+            ]
+        elif "tcp_pos" in table.column_names and "tcp_quat" in table.column_names:
+            rows = [
+                _pose_action_from_pos_quat(
+                    table.column("tcp_pos")[i].as_py(),
+                    table.column("tcp_quat")[i].as_py(),
+                    kp,
+                    kd,
+                )
+                for i in range(table.num_rows)
+            ]
         else:
-            raise ValueError(f"{path}: missing target_pose_4x4 and tcp_pose_4x4")
-
-        rows = [
-            _pose_action_from_flat16(table.column(pose_col)[i].as_py(), kp, kd)
-            for i in range(table.num_rows)
-        ]
+            raise ValueError(
+                f"{path}: missing target_pose_4x4, tcp_pose_4x4, and tcp_pos+tcp_quat"
+            )
         action_col = pa.array(rows, type=pa.list_(pa.float32(), _ACTION_DIM))
         idx = table.column_names.index("action")
         new_table = table.set_column(idx, "action", action_col)
@@ -124,8 +151,9 @@ def pack_vic_pose_actions(
     manifest_path = dst_dir / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
-        manifest["action_dim"] = _ACTION_DIM
-        manifest["action_layout"] = "vic_pose_v1"
+        collection = manifest.setdefault("collection", {})
+        collection["action_dim"] = _ACTION_DIM
+        collection["action_layout"] = "vic_pose_v1"
         manifest_path.write_text(json.dumps(manifest, indent=2))
 
     return {"episodes": n_episodes, "frames": n_frames}

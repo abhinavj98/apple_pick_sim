@@ -51,6 +51,7 @@
 - Multi-episode convert of `robot_replay/s02-d*.parquet` (and peers) → one or more `batched_sysid_v1` datasets with `action_layout=vic_pose_v1` / `action_dim=19` (export already packs from `target_pose_4x4` + `dump.controller_gains`)
 - Teach CMA / fused replay / grid CLIs to **opt into** `ControllerConfig(mode="vic_pose", action_dim=19)` when the dataset declares `vic_pose_v1` (or via an explicit flag); do **not** change default gym collect, MMD grid, or sim-sim CMA callers (they stay twist `vic`, `action_dim=6`)
 - Score candidates against **real** observed bags (woody / F/T features already in the converted episode), not a sim-oracle GT phenotype inserted for ranking
+- **Post-grasp SE(3) parity with settle viewer:** free settle uses pre-grasp apple quat; at weld apply logged apple + true TCP \(X_{\mathrm{apple}}^{-1} X_{\mathrm{tcp}}\) (example path Done; **CMA / shared `seed_fix_to_apple_*` still TODO**)
 - Smoke: convert → short `vic_pose` replay → CMA (or grid) fit on ≥1 real structure → write `cmaes_report.json` / ranking artifacts
 - Document the real-data command path in `robot_replay/README.md` + this roadmap’s validation block
 
@@ -63,6 +64,8 @@
 
 **Checklist:**
 
+- [x] `example_replay_real_batched.py`: pre-grasp init apple → logged post-grasp apple+TCP SE(3) at weld (helpers in `batched_digital_twin_init`; spec `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md`)
+- [ ] **CMA / shared path:** call the same post-grasp SE(3) apply from `seed_fix_to_apple_*` / `replay_batched_sysid_structure` so CMA and MMD real replay match the example (slice B of that spec)
 - [ ] Dataset discovery / multi-episode manifest for real converted dirs (or documented one-dataset-per-episode CMA loop)
 - [ ] CMA / multi-replay / grid build path selects `vic_pose` + `action_dim=19` from dataset metadata (twist default preserved)
 - [ ] Real GT feature bags load without requiring sim `fruiting_system_params` as the ranking oracle
@@ -73,9 +76,10 @@
 **Build on (do not reimplement):**
 
 - `robot_replay/convert_real_to_batched_sysid_metadata.py`, `real_to_batched_sysid.export_real_episode_to_batched_dataset` (19D pack)
-- `robot_replay/example_replay_real_batched.py` (`--controller-mode vic_pose`)
+- `robot_replay/example_replay_real_batched.py` (`--controller-mode vic_pose`; post-grasp SE(3) weld)
+- `gripper_proxy_for_real_batched_replay` / `apply_logged_post_grasp_se3_to_cable` (`batched_digital_twin_init.py`) — reuse in CMA seed
 - `example_youngs_modulus_cmaes.py` / `batched_sysid_cmaes.py` / `replay_batched_sysid_structure` (additive `action_dim`)
-- Specs: `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md`, `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 3), `docs/variable-impedance-teleop.md` §`vic_pose`, `robot_replay/README.md`
+- Specs: `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md`, `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 3), `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `docs/variable-impedance-teleop.md` §`vic_pose`, `robot_replay/README.md`
 
 **Shipped wins relevant to this slice (do not reimplement):**
 

@@ -10,7 +10,12 @@ from typing import Any
 
 import numpy as np
 
+from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+    align_proxy_body_q_prev_for_vbd,
+    sync_model_body_q_rest_from_state,
+)
 from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
+from apple_pick_sim.coupled_fruiting.settle_then_weld import _proxy_world_pose_from_apple
 from apple_pick_sim.digital_twin import DigitalTwinObs, infer_params_from_obs
 from apple_pick_sim.fruiting_system import fruiting_params_from_json
 from apple_pick_sim.fruiting_system.params import (
@@ -28,6 +33,7 @@ from apple_pick_sim.system_id.batched_trajectory_store import (
     frame_index_for_step,
 )
 from apple_pick_sim.system_id.excitation_state import ExcitationContext
+from apple_pick_sim.system_id.real_post_grasp_plan import proxy_offset_from_apple_and_tcp
 from apple_pick_sim.system_id.trajectory_store import stack_woody_pos_frame
 
 
@@ -133,6 +139,112 @@ def gripper_proxy_from_episode_metadata(
         weld_reference_pos=weld_reference_pos,
         weld_reference_quat=weld_reference_quat,
     )
+
+
+def gripper_proxy_for_real_batched_replay(
+    meta: dict[str, Any],
+    *,
+    base: GripperProxyConfig | None = None,
+) -> GripperProxyConfig:
+    """Gripper for real batched replay: logged apple reference + true TCP offset.
+
+    Extends :func:`gripper_proxy_from_episode_metadata` with
+    ``weld_proxy_offset_in_apple_frame = X_apple^{-1} X_tcp`` from episode
+    ``initial_apple_*`` / ``initial_tcp_*`` (same math as settle-viewer post-grasp).
+    """
+    import dataclasses
+
+    proxy = gripper_proxy_from_episode_metadata(meta, base=base)
+    apple_pos = _tuple_or_none(meta.get("initial_apple_pos"), 3)
+    if apple_pos is None:
+        apple_pos = _tuple_or_none(meta.get("weld_reference_pos"), 3)
+    apple_quat = _tuple_or_none(meta.get("initial_apple_quat"), 4)
+    if apple_quat is None:
+        apple_quat = _tuple_or_none(meta.get("weld_reference_quat"), 4)
+    tcp_pos = _tuple_or_none(meta.get("initial_tcp_pos"), 3)
+    tcp_quat = _tuple_or_none(meta.get("initial_tcp_quat"), 4)
+    if tcp_pos is None or tcp_quat is None:
+        raise ValueError(
+            "real batched replay gripper requires initial_tcp_pos and initial_tcp_quat "
+            "in episode metadata"
+        )
+    if apple_pos is None or apple_quat is None:
+        raise ValueError(
+            "real batched replay gripper requires initial_apple_pos/quat "
+            "(or weld_reference_*) in episode metadata"
+        )
+    offset = proxy_offset_from_apple_and_tcp(
+        apple_pos=apple_pos,  # type: ignore[arg-type]
+        apple_quat_xyzw=apple_quat,  # type: ignore[arg-type]
+        tcp_pos=tcp_pos,  # type: ignore[arg-type]
+        tcp_quat_xyzw=tcp_quat,  # type: ignore[arg-type]
+    )
+    return dataclasses.replace(
+        proxy,
+        weld_reference_pos=apple_pos,
+        weld_reference_quat=apple_quat,
+        weld_proxy_offset_in_apple_frame=offset,
+    )
+
+
+def apply_logged_post_grasp_se3_to_cable(
+    cable: Any,
+    meta: dict[str, Any],
+) -> None:
+    """Write logged post-grasp apple SE(3) and realign proxy; sync VBD rest.
+
+    Call after settle→weld seed so free settle still used pre-grasp
+    ``params.apple_quat_xyzw``, matching ``example_view_pre_grasp_settle``.
+    """
+    apple_pos = _tuple_or_none(meta.get("initial_apple_pos"), 3)
+    apple_quat = _tuple_or_none(meta.get("initial_apple_quat"), 4)
+    if apple_pos is None:
+        apple_pos = _tuple_or_none(meta.get("weld_reference_pos"), 3)
+    if apple_quat is None:
+        apple_quat = _tuple_or_none(meta.get("weld_reference_quat"), 4)
+    if apple_pos is None or apple_quat is None:
+        raise ValueError(
+            "apply_logged_post_grasp_se3_to_cable requires initial_apple_pos/quat "
+            "(or weld_reference_*) in episode metadata"
+        )
+    apple_id = getattr(cable, "apple_body", None)
+    proxy_id = getattr(cable, "gripper_proxy_body", None)
+    if apple_id is None or proxy_id is None:
+        raise ValueError("cable missing apple_body or gripper_proxy_body")
+    offset = getattr(cable, "gripper_proxy_offset_in_apple_frame", None)
+    if offset is None:
+        tcp_pos = _tuple_or_none(meta.get("initial_tcp_pos"), 3)
+        tcp_quat = _tuple_or_none(meta.get("initial_tcp_quat"), 4)
+        if tcp_pos is None or tcp_quat is None:
+            raise ValueError(
+                "cable has no gripper_proxy_offset_in_apple_frame and meta lacks "
+                "initial_tcp_pos/quat"
+            )
+        offset = proxy_offset_from_apple_and_tcp(
+            apple_pos=apple_pos,  # type: ignore[arg-type]
+            apple_quat_xyzw=apple_quat,  # type: ignore[arg-type]
+            tcp_pos=tcp_pos,  # type: ignore[arg-type]
+            tcp_quat_xyzw=tcp_quat,  # type: ignore[arg-type]
+        )
+
+    bq = cable.state_0.body_q.numpy().reshape(-1, 7).astype(np.float32).copy()
+    bqd = cable.state_0.body_qd.numpy().reshape(-1, 6).astype(np.float32).copy()
+    aid = int(apple_id)
+    pid = int(proxy_id)
+    bq[aid, 0:3] = np.asarray(apple_pos, dtype=np.float32)
+    bq[aid, 3:7] = np.asarray(apple_quat, dtype=np.float32)
+    proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq[aid], offset)
+    bq[pid, 0:3] = proxy_pos
+    bq[pid, 3:7] = proxy_quat
+    bqd[aid] = 0.0
+    bqd[pid] = 0.0
+    cable.state_0.body_q.assign(bq)
+    cable.state_0.body_qd.assign(bqd)
+    cable.state_1.body_q.assign(bq)
+    cable.state_1.body_qd.assign(bqd)
+    body_count = int(getattr(getattr(cable, "model", None), "body_count", bq.shape[0]))
+    align_proxy_body_q_prev_for_vbd(cable, tuple(range(body_count)))
+    sync_model_body_q_rest_from_state(cable)
 
 
 def digital_twin_obs_from_batched_episode(

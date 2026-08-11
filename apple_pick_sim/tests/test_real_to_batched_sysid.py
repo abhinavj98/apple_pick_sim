@@ -331,8 +331,9 @@ def test_export_real_to_batched_dataset_loads(tmp_path: Path):
     assert ds.manifest["collection"].get("action_dim") == 19
 
 
-def test_export_refuses_all_zero_action(tmp_path: Path):
-    """Zero-action real episodes fail loud unless allow_zero_action / drive_fill."""
+def test_export_s00_packs_vic_pose_from_target_pose(tmp_path: Path):
+    """Pose-wrench logs without a usable ``action`` column still export via target_pose_4x4."""
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
     from apple_pick_sim.system_id.real_to_batched_sysid import (
         export_real_episode_to_batched_dataset,
     )
@@ -341,11 +342,17 @@ def test_export_refuses_all_zero_action(tmp_path: Path):
     if not src.is_file():
         pytest.skip("missing robot_replay/s00-d00.parquet")
 
-    out = tmp_path / "batched_zero"
-    with pytest.raises(ValueError, match="real-replay-action-zero"):
-        export_real_episode_to_batched_dataset(
-            src, fixture_path=VARIANCE, output_dir=out, overwrite=True
-        )
+    out = tmp_path / "batched_s00_vic_pose"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    meta = ds.load_episode_metadata(0, 0)
+    assert meta.get("action_layout") == "vic_pose_v1"
+    assert meta.get("action_dim") == 19
+    arrays = ds.load_episode_obs_arrays(0, 0)
+    assert arrays["action"].shape[1] == 19
+    assert float(np.linalg.norm(arrays["action"][:, :3], axis=1).max()) > 0.0
 
 
 def test_detects_pose_control_wrench_action_semantics():

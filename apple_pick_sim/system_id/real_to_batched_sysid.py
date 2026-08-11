@@ -558,11 +558,18 @@ def export_real_episode_to_batched_dataset(
             "action_dim": 19,
             "action_layout": "vic_pose_v1",
         }
+    # Pose-wrench logs pack from target_pose_4x4; logged action/wrench is unused.
     has_drive_fill = isinstance(dm.get("drive_fill"), dict)
-    if _actions_all_near_zero(table) and not allow_zero_action and not has_drive_fill:
+    if (
+        not pack_vic_pose
+        and _actions_all_near_zero(table)
+        and not allow_zero_action
+        and not has_drive_fill
+    ):
         raise ValueError(
             f"{path}: action column is all zeros (real-replay-action-zero). "
-            "Use a fixed real parquet (e.g. s02-d00.parquet), fill via "
+            "Use a pose-control log with target_pose_4x4 (vic_pose pack), a fixed "
+            "real parquet (e.g. s02-d00.parquet), fill via "
             "robot_replay/fill_actions_from_tcp_velocity.py, or set allow_zero_action=True."
         )
 

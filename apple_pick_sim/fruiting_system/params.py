@@ -15,8 +15,8 @@ from apple_pick_sim.fruiting_system.gripper_proxy_shape import (
 )
 import numpy as np
 
-# Placeholder until hardware weigh-in; see docs/real-world-proxy.md.
-PLACEHOLDER_EE_MASS_KG: float = 0.5
+# Measured tool mass; keep in sync with fr3_robot.EE_MASS_KG and assets/testfr3_resolved.usda.
+PLACEHOLDER_EE_MASS_KG: float = 1.1
 
 TOPOLOGY_T_JUNCTION = "t_junction"
 TOPOLOGY_LINEAR_CHAIN = "linear_chain"

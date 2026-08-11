@@ -91,6 +91,32 @@ def _per_env_recorded_weld_grippers() -> tuple[GripperProxyConfig, ...]:
     )
 
 
+def test_gripper_with_fix_mode_false_clears_weld_proxy_offset():
+    """Free settle must drop true-TCP offset (requires fix_to_apple=True at build)."""
+    welded = GripperProxyConfig(
+        fix_to_apple=True,
+        weld_direction=(0.0, -1.0, 0.0),
+        weld_reference_pos=(0.1, 0.2, 0.3),
+        weld_reference_quat=(0.0, 0.0, 0.0, 1.0),
+        weld_proxy_offset_in_apple_frame=(0.0, 0.04, 0.0, 0.0, 0.0, 0.0, 1.0),
+    )
+    free = build_module._gripper_with_fix_mode(welded, fix_to_apple=False)
+    assert free.fix_to_apple is False
+    assert free.weld_proxy_offset_in_apple_frame is None
+    assert free.weld_direction is None
+    assert free.weld_reference_pos is None
+    kept = build_module._gripper_with_fix_mode(welded, fix_to_apple=True)
+    assert kept.weld_proxy_offset_in_apple_frame == (
+        0.0,
+        0.04,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+
+
 def test_per_env_gripper_validation_rejects_length_and_structural_mismatch():
     per_env_grippers = _per_env_recorded_weld_grippers()
     base = per_env_grippers[0]

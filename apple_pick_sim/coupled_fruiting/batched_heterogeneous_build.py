@@ -382,6 +382,7 @@ def _gripper_with_fix_mode(
             weld_reference_pos=None,
             weld_reference_quat=None,
             weld_reference_stem_dir=None,
+            weld_proxy_offset_in_apple_frame=None,
         )
     robot_facing_weld = gripper.weld_direction is None
     return dataclasses.replace(

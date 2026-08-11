@@ -248,8 +248,16 @@ def test_variance_stem_angular_ranges(variance_ranges):
 
 def test_placeholder_ee_mass():
     fs = _import_fs()
-    assert fs.PLACEHOLDER_EE_MASS_KG == 0.5
-    assert fs.GripperProxyConfig().mass == 0.5
+    assert fs.PLACEHOLDER_EE_MASS_KG == 1.1
+    assert fs.GripperProxyConfig().mass == 1.1
+
+
+def test_fr3_ee_mass_matches_proxy_default():
+    from apple_pick_sim.robot import fr3_robot
+
+    fs = _import_fs()
+    assert fr3_robot.EE_MASS_KG == pytest.approx(1.1)
+    assert fr3_robot.EE_MASS_KG == pytest.approx(fs.PLACEHOLDER_EE_MASS_KG)
 
 
 def test_default_gripper_proxy_cylinder_dims():

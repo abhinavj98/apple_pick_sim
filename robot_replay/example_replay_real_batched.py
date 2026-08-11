@@ -7,6 +7,10 @@ settle → weld → post-grasp settle. Default ``--controller-mode vic_pose`` dr
 ``dump.controller_gains`` (real parquet ``action`` is a pose-control wrench, not
 an EE twist). Use ``--controller-mode vic`` only for legacy 6D-twist datasets.
 
+Apple lifecycle matches ``example_view_pre_grasp_settle.py --grasp-after-settle``:
+pre-grasp ``apple_quat_xyzw`` for free settle; logged post-grasp apple + TCP SE(3)
+at weld (true ``weld_proxy_offset_in_apple_frame``).
+
 Settle defaults match ``example_view_pre_grasp_settle.py``:
 ``--settle-substeps 5000``, ``--settle-quiet-every 300``,
 ``--post-grasp-settle-substeps 500``.
@@ -61,6 +65,10 @@ from apple_pick_sim.fruiting_system.params import (
 )
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.system_id import BatchedSysIdDataset
+from apple_pick_sim.system_id.batched_digital_twin_init import (
+    apply_logged_post_grasp_se3_to_cable,
+    gripper_proxy_for_real_batched_replay,
+)
 
 _DEFAULT_FIXTURE = Path(
     "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json"
@@ -202,6 +210,7 @@ def _build_env_fn(
     ranges: dict,
     topology_seed: int,
     fruiting_base_pos: tuple[float, float, float],
+    episode_meta: Mapping[str, Any],
     settle_substeps: int = _SETTLE_SUBSTEPS,
     settle_quiet_every: int | None = _SETTLE_QUIET_EVERY,
     settle_gravity_ramp: bool = _SETTLE_GRAVITY_RAMP,
@@ -217,10 +226,8 @@ def _build_env_fn(
         gripper: GripperProxyConfig | None = None,
         per_env_grippers: list[GripperProxyConfig] | None = None,
     ) -> ApplePickBatchedSysIdEnv:
-        if gripper is not None and per_env_grippers is not None:
-            raise ValueError(
-                "scalar gripper and per_env_grippers cannot both be provided"
-            )
+        del gripper, per_env_grippers  # real replay uses logged TCP offset gripper
+        real_gripper = gripper_proxy_for_real_batched_replay(dict(episode_meta))
         sim_config = _test_sim_config(
             num_envs=num_envs,
             topology_seed=topology_seed,
@@ -233,12 +240,11 @@ def _build_env_fn(
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode=controller_mode,
         )
-        if gripper is not None:
-            sim_config = dataclasses.replace(
-                sim_config,
-                robot=dataclasses.replace(sim_config.robot, gripper=gripper),
-            )
-        return ApplePickBatchedSysIdEnv(
+        sim_config = dataclasses.replace(
+            sim_config,
+            robot=dataclasses.replace(sim_config.robot, gripper=real_gripper),
+        )
+        env = ApplePickBatchedSysIdEnv(
             num_envs=num_envs,
             max_episode_steps=max_episode_steps,
             ranges_path=ranges_path,
@@ -246,8 +252,15 @@ def _build_env_fn(
             use_settle_cache=False,
             sim_config=sim_config,
             per_env_params=per_env_params,
-            per_env_grippers=per_env_grippers,
+            per_env_grippers=[real_gripper] * int(num_envs),
         )
+        # Free settle used pre-grasp apple quat; at weld match settle-viewer
+        # post-grasp logged apple + TCP SE(3).
+        scene = getattr(getattr(env, "_sim", None), "scene", None)
+        cable = getattr(scene, "cable", None) if scene is not None else None
+        if cable is not None:
+            apply_logged_post_grasp_se3_to_cable(cable, dict(episode_meta))
+        return env
 
     return build_env_fn
 
@@ -453,6 +466,7 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
             ranges=ranges,
             topology_seed=seed,
             fruiting_base_pos=fruiting_base_pos,
+            episode_meta=episode_meta,
             settle_substeps=settle_substeps,
             settle_quiet_every=settle_quiet_every,
             settle_gravity_ramp=settle_gravity_ramp,

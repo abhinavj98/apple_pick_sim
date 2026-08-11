@@ -317,7 +317,7 @@ Nominal fixture may use fixed angles for reproducible IK smoke tests.
 | Tool length | 0.18 m (180 mm) | **Specified** (was 0.14 m; +~40 mm to match real TCP tip gap) |
 | Tool radius | 0.05 m (50 mm; Ø100) | **Specified** |
 | TCP location | Distal tip face center, out from link7 / `ee` flange | **Specified** |
-| Tool mass | See placeholders | **TBD — measure on hardware** |
+| Tool mass | 1.1 kg | **Measured** (synced to `EE_MASS_KG` / USD `ee`) |
 
 **Tip / flange / tip-out contract:**
 
@@ -363,7 +363,7 @@ fixture `_comment` and this table.
 
 | Item | Placeholder | Replace with | Blocked by |
 |------|-------------|--------------|------------|
-| EE mass | `PLACEHOLDER_EE_MASS_KG` → use **0.5 kg** in JSON/code until measured | Scale measurement on physical tool | Hardware weigh-in |
+| EE mass | `PLACEHOLDER_EE_MASS_KG` / `EE_MASS_KG` → **1.1 kg** | Re-weigh if tool changes | Done (hardware weigh-in) |
 | Apple `density` | **700 kg/m³** (mid of legacy variance fixtures) | Measured proxy fruit or water-displacement | Fruit specimen |
 | Stem torsional stiffness | Interim `stem.bend_stiffness` band only | Magnet-tier → torsion [N·m/rad] mapping | Follow-up slice: expose torsion in VBD |
 | Rod `radius` (primary/spur/stem) | Midpoints from `example_variance` until measured | Caliper / CAD on proxy | Measurement |
@@ -503,5 +503,6 @@ uv run --env-file pytest.env python -m pytest \
 | 2026-06-26 | Branch stiffness: continuous bands from proxy 210–736 N/m |
 | 2026-06-26 | Magnet detach → stem **torsion** (follow-up slice); interim bend only |
 | 2026-06-26 | EE 140 mm × Ø100 (r=50 mm), TCP +Z tip-out; mass placeholder 0.5 kg until measured |
+| 2026-08-11 | EE mass set to **1.1 kg** (`EE_MASS_KG`, `PLACEHOLDER_EE_MASS_KG`, USD `ee`) |
 | 2026-06-26 | Apple density placeholder 700 kg/m³ until measured |
 | 2026-06-26 | T builder shipped; default topology `t_junction`; opt-in `linear_chain` |

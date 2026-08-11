@@ -2,7 +2,13 @@
 """Real FR3+VIC replay test for an exported real→batched dataset.
 
 Uses ``replay_batched_sysid_structure`` (same path as CMA / MMD grid) so FR3
-tracks recorded EE twists after free settle → weld → post-grasp settle.
+tracks recorded **EE twist** actions after free settle → weld → post-grasp settle.
+
+**Action semantics caveat:** many real parquets store pose-control **wrench**
+``[Fx…Tz]`` in ``action`` (see ``dump.action_semantics``), not twists. Export
+refuses those by default; ``--allow-wrench-as-twist`` only unlocks format/GL
+smoke with **incorrect** physics. Correct drive needs pose/wrench mode
+(``docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md``).
 
 Settle defaults match ``example_view_pre_grasp_settle.py``:
 ``--settle-substeps 5000``, ``--settle-quiet-every 300``,
@@ -68,6 +74,7 @@ _SETTLE_QUIET_EVERY: int | None = 300
 _SETTLE_GRAVITY_RAMP = False
 _POST_GRASP_SETTLE_SUBSTEPS = 500
 _CONTROL_HZ_FALLBACK = 15.0
+_DEFAULT_CONTROLLER_MODE = "vic"
 
 
 def fruiting_base_pos_from_episode_metadata(
@@ -132,6 +139,7 @@ def _test_sim_config(
     settle_gravity_ramp: bool = _SETTLE_GRAVITY_RAMP,
     post_grasp_settle_substeps: int = _POST_GRASP_SETTLE_SUBSTEPS,
     bootstrap_joint_q: tuple[float, ...] | None = None,
+    controller_mode: str = _DEFAULT_CONTROLLER_MODE,
 ) -> BatchedHeterogeneousCoupledSimConfig:
     """Gym FR3+VIC config with fixture sim_build; episode fruiting_base_pos."""
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=num_envs)
@@ -145,7 +153,8 @@ def _test_sim_config(
     ) = _sim_build_knobs(ranges)
     controller = dataclasses.replace(
         gym_cfg.controller,
-        mode="vic",
+        mode=controller_mode,
+        action_dim=19 if controller_mode == "vic_pose" else gym_cfg.controller.action_dim,
         linear_speed=1.0,
         angular_speed=1.0,
     )
@@ -201,6 +210,7 @@ def _build_env_fn(
     settle_gravity_ramp: bool = _SETTLE_GRAVITY_RAMP,
     post_grasp_settle_substeps: int = _POST_GRASP_SETTLE_SUBSTEPS,
     bootstrap_joint_q: tuple[float, ...] | None = None,
+    controller_mode: str = _DEFAULT_CONTROLLER_MODE,
 ) -> Callable[..., Any]:
     def build_env_fn(
         *,
@@ -224,6 +234,7 @@ def _build_env_fn(
             settle_gravity_ramp=settle_gravity_ramp,
             post_grasp_settle_substeps=post_grasp_settle_substeps,
             bootstrap_joint_q=bootstrap_joint_q,
+            controller_mode=controller_mode,
         )
         if gripper is not None:
             sim_config = dataclasses.replace(
@@ -342,6 +353,23 @@ def _make_parser() -> argparse.ArgumentParser:
             f"(default: {_POST_GRASP_SETTLE_SUBSTEPS}; matches example_view_pre_grasp_settle)."
         ),
     )
+    p.add_argument(
+        "--controller-mode",
+        choices=["vic", "vic_pose"],
+        default=_DEFAULT_CONTROLLER_MODE,
+        help=(
+            "'vic' (recorded EE twist, 6D action) or 'vic_pose' (pose+gains, 19D action; "
+            "dataset must already carry 19D actions, e.g. via pack_vic_pose_actions.py)."
+        ),
+    )
+    p.add_argument(
+        "--allow-wrench-as-twist",
+        action="store_true",
+        help=(
+            "Permit replay when episode action is a real pose-control wrench "
+            "(incorrect physics under mode=vic; format/GL smoke only)."
+        ),
+    )
     return p
 
 
@@ -364,6 +392,23 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
         bootstrap_joint_q = bootstrap_joint_q_from_episode_metadata(episode_meta)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+
+    controller_mode = str(args.controller_mode)
+    wrench_marked = (
+        episode_meta.get("action_compatible_with_vic_twist") is False
+        or collection.get("action_compatible_with_vic_twist") is False
+    )
+    if (
+        controller_mode == "vic"
+        and wrench_marked
+        and not bool(args.allow_wrench_as_twist)
+    ):
+        raise SystemExit(
+            "dataset action is a real pose-control wrench, not an EE twist for "
+            "mode=vic. Refuse incorrect physics. Use --controller-mode vic_pose "
+            "for 19D pose actions, or pass --allow-wrench-as-twist for format/GL "
+            "smoke only."
+        )
 
     candidates = [gt_bend_stiffness_candidate_from_structure(dataset, structure_idx)]
     max_frames = int(args.max_frames)
@@ -390,6 +435,7 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
             settle_gravity_ramp=settle_gravity_ramp,
             post_grasp_settle_substeps=post_grasp_settle_substeps,
             bootstrap_joint_q=bootstrap_joint_q,
+            controller_mode=controller_mode,
         ),
         replay_sim_config=_test_sim_config(
             num_envs=1,
@@ -401,9 +447,11 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
             settle_gravity_ramp=settle_gravity_ramp,
             post_grasp_settle_substeps=post_grasp_settle_substeps,
             bootstrap_joint_q=bootstrap_joint_q,
+            controller_mode=controller_mode,
         ),
         on_step=make_replay_on_step(viewer, max_frames=max_frames),
         use_oracle_params=True,
+        action_dim=19 if controller_mode == "vic_pose" else 6,
     )
     tcp = np.asarray(collectors.to_arrays(0)["tcp_pos"], dtype=np.float64)
     motion_m = float(np.linalg.norm(tcp[-1] - tcp[0])) if tcp.shape[0] >= 2 else 0.0

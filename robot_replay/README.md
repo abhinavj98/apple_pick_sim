@@ -150,13 +150,40 @@ Implementation: `apple_pick_sim/system_id/real_to_batched_sysid.py`.
 Design: `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`.
 Bit-2 plan: `docs/superpowers/plans/2026-08-07-real-batched-trajectory-replay-bit2.md`.
 
-### Bit 2 — full dataset + trajectory viz + physics smoke
+### Bit 2 — full dataset + trajectory viz + placement smoke
 
-Preferred source with non-zero `action`: `s02-d00_action.parquet`.
+Preferred source: `s02-d00.parquet` (has non-zero logged wrench + `target_pose_4x4`
++ `dump.controller_gains`).
+
+**Action packing:** compiled real logs store a pose-control **wrench** `[Fx…Tz]` in
+`action` (`dump.action_semantics`), not an EE twist. Convert **packs** a 19D
+`vic_pose` action instead:
+
+```text
+[pos(3), quat_wxyz(4), Kp(6), Kd(6)]
+```
+
+from per-frame `target_pose_4x4` and episode `dump.controller_gains`
+(`task_prop_gains` / `task_deriv_gains`). Episode metadata stamps
+`action_dim=19`, `action_layout=vic_pose_v1`, and
+`action_compatible_with_vic_twist=false`.
+
+**Replay modes:** `example_replay_real_batched.py` defaults to `--controller-mode vic`
+(6D EE twist). For converted datasets with 19D `vic_pose` actions, pass
+`--controller-mode vic_pose`. Default `vic` refuses wrench-marked datasets
+unless `--allow-wrench-as-twist` (incorrect physics; format/GL smoke only).
+
+`pack_vic_pose_actions.py` can also re-pack an already-converted dataset (e.g.
+when gains differ from export defaults, or to build from `tcp_pos`/`tcp_quat`
+fallback columns).
+
+`fill_actions_from_tcp_velocity.py` is only for older **zero-action** files; it
+does **not** convert wrench logs into correct drive and is **not** equivalent to
+real pose-PD wrench / `vic_pose` packing.
 
 ```bash
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
-  --input robot_replay/s02-d00_action.parquet \
+  --input robot_replay/s02-d00.parquet \
   --dataset-out /tmp/real_batched_s02_d00 \
   --overwrite
 
@@ -165,20 +192,37 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_trajectory_v
   --output /tmp/real_batched_s02_d00_viz \
   --no-hold-check
 
+# Optional: re-pack with explicit Kp/Kd (or tcp_pos/tcp_quat fallback):
+uv run python robot_replay/pack_vic_pose_actions.py \
+  --dataset-in /tmp/real_batched_s02_d00 \
+  --dataset-out /tmp/real_batched_s02_d00_vic_pose \
+  --kp 800 800 800 40 40 40 \
+  --kd 80 80 80 4 4 4 \
+  --overwrite
+
+# vic_pose replay (19D pose+gains actions):
+uv run python robot_replay/example_replay_real_batched.py \
+  --dataset /tmp/real_batched_s02_d00_vic_pose \
+  --controller-mode vic_pose \
+  --max-frames 24 --viewer null
+
+# Default vic (6D twist) — only for twist-compatible datasets:
 uv run python robot_replay/example_replay_real_batched.py \
   --dataset /tmp/real_batched_s02_d00 \
   --max-frames 24 --viewer null
 
-# GL: FR3+VIC trajectory after off-screen settle (--max-frames 0 = full episode).
+# GL: FR3 trajectory after off-screen settle (--max-frames 0 = full episode).
 # Settle defaults match example_view_pre_grasp_settle.
+# Open-loop joints from initial_robot_joint_q (skip IK; base at origin).
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset /tmp/real_batched_s02_d00 \
+  --dataset /tmp/real_batched_s02_d00_vic_pose \
+  --controller-mode vic_pose \
   --viewer gl --max-frames 0 \
   --settle-substeps 5000 --settle-quiet-every 300 \
   --post-grasp-settle-substeps 500
 ```
 
-Physics TCP-motion pytest (short settle for CI):
+TCP-motion pytest (short settle for CI; skips if preferred parquet missing):
 
 ```bash
 uv run --env-file pytest.env python -m pytest \
@@ -187,7 +231,7 @@ uv run --env-file pytest.env python -m pytest \
 ```
 
 **Note:** Older `s00-d0*` episodes may still have empty `action`
-(`real-replay-action-zero`). Prefer `s02-d00_action.parquet` (or newer fixed
+(`real-replay-action-zero`). Prefer `s02-d00.parquet` (or newer fixed
 logs). Optional temporary fill for old files:
 
 ```bash
@@ -199,14 +243,17 @@ uv run python robot_replay/fill_actions_from_tcp_velocity.py \
 Replay rebuilds from converted episode metadata (same native geometry as
 `example_view_pre_grasp_settle` / `example_view_batched_episode_meta`): episode
 `fruiting_base_pos` and oracle `fruiting_system_params`. FR3 placement is
-**open-loop** from `initial_robot_joint_q` (no IK). Physics uses `gym_defaults`
-+ fixture `sim_build` on the default sim device. CLI settle defaults match
-`example_view_pre_grasp_settle.py` (`--settle-substeps 5000`,
+**open-loop** from `initial_robot_joint_q` (no IK — real grasps near the
+workspace edge often fail IK from `robot_base_pos=(0,0,0)`). Physics uses
+`gym_defaults` + fixture `sim_build` on the default sim device. CLI settle
+defaults match `example_view_pre_grasp_settle.py` (`--settle-substeps 5000`,
 `--settle-quiet-every 300`, `--post-grasp-settle-substeps 500`); pytest keeps
 a short free settle and skips post-grasp settle for speed.
+
 ## Related docs
 
 - `docs/real-sysid-pre-post-grasp-fixes.md` — collection/compile fix list
 - `docs/digital-twin.md` — observation-only replay and geometry reconstruction
 - `docs/real-world-proxy.md` — bench proxy placement and frames
 - `docs/batched-sysid-dataset.md` — target batched episode layout
+- `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` — `vic_pose` controller + 19D action layout

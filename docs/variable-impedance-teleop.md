@@ -124,6 +124,43 @@ Teleop sets `vic_target_tf` / `vic_target_twist` each frame; substeps call `appl
 
 **PyTorch dependency:** Install from the Newton submodule (`cd newton && uv sync --extra torch-cu12`). Integration tests call `pytest.importorskip("torch")` and skip when PyTorch is absent.
 
+### Pose-action mode (`vic_pose`)
+
+`ControllerConfig(mode="vic_pose", action_dim=19)` replaces the twist action with an **absolute TCP target plus per-axis gains**, matching the real robot's pose-PD controller (`compute_pose_task_wrench`). Each action row is
+
+```text
+[pos(3), quat_wxyz(4), Kp(6), Kd(6)]     # Kp/Kd ordered [Fx, Fy, Fz, Tx, Ty, Tz]
+```
+
+`Fr3BatchedEEImpedanceController.unpack_pose_action` writes the row straight into the per-env target buffers — **no** velocity integration and **no** `linear_speed` / `angular_speed` clipping (those apply to `mode="vic"` only). Two conventions matter:
+
+- The action quat is **wxyz**; Newton `body_q` and `_target_rot_wp` are Warp-native **xyzw**, so unpack reorders `wxyz → xyzw` after normalizing (near-zero quat → identity).
+- Gains are **anisotropic per spatial axis**, unlike the isotropic scalar `ImpedanceGains` used by `mode="vic"`.
+
+The wrench law is pose-only, with \(v_{\mathrm{des}} = \omega_{\mathrm{des}} = 0\):
+
+\[
+\mathbf{f} = K_p^{\mathrm{lin}} \odot \mathbf{e}_p - K_d^{\mathrm{lin}} \odot \mathbf{v}, \qquad
+\boldsymbol{\tau} = K_p^{\mathrm{ang}} \odot \mathbf{e}_r - K_d^{\mathrm{ang}} \odot \boldsymbol{\omega}
+\]
+
+implemented as `compute_vic_spatial_wrench_aniso` (`coupled_fruiting/vic_wrench.py`); `e_r` is the axis-angle orientation error, same as the twist path.
+
+**Anisotropic gate.** `stage_pose_gains_to_scene` wires four per-env device buffers onto the scene:
+
+| Scene buffer | Contents (per env) |
+|--------------|--------------------|
+| `vic_kp_lin_wp` | `Kp[0:3]` — linear stiffness `vec3` |
+| `vic_kp_ang_wp` | `Kp[3:6]` — angular stiffness `vec3` |
+| `vic_kd_lin_wp` | `Kd[0:3]` — linear damping `vec3` |
+| `vic_kd_ang_wp` | `Kd[3:6]` — angular damping `vec3` |
+
+`launch_compute_vic_wrenches_batched` launches the **anisotropic** kernel only when **all four** buffers are present; otherwise it falls back to the scalar-gain twist kernel with `ImpedanceGains`. So fixture/config `vic_gains` are ignored once pose actions have been staged, and `mode="vic"` behavior is unchanged when they are absent.
+
+**Soft-disabled envs.** `EnvDisableController.apply_actions` cannot zero a 19-wide row (that would command the world origin with `Kp = Kd = 0`, i.e. a limp arm), so it **freezes the last commanded row** for disabled envs and keeps re-issuing it. 6D twist rows are still zeroed.
+
+**First consumer:** `robot_replay/example_replay_real_batched.py --controller-mode vic_pose` on datasets with `action_layout=vic_pose_v1`. Gym collect / MMD grid stay on twist `vic`.
+
 ---
 
 ## Teleop vs joint PD (hybrid)
@@ -152,6 +189,8 @@ Typical post-grasp VIC (this repo's `--controller vic` default): teleop advances
 | Dynamic substep gate | `coupled_fruiting/scene.py` → `_mujoco_robot_substep_prefix`; `--controller vic` uses `vic_joint_torques.apply_vic_joint_torques_to_scene` |
 | Batched VIC joint torques | `coupled_fruiting/vic_joint_torques_batched.py` — per-env wrench kernel + `launch_apply_vic_joint_torques_batched` |
 | Batched VIC teleop | `robot/fr3_robot/controllers/ee_impedance_batched.py` — `Fr3BatchedEEImpedanceController.stage_targets_to_scene` |
+| `vic_pose` action unpack | `ee_impedance_batched.py` — `unpack_pose_action`, `run_coupled_teleop_frame_from_pose_actions`, `stage_pose_gains_to_scene` |
+| Anisotropic pose wrench | `coupled_fruiting/vic_wrench.py` — `compute_vic_spatial_wrench_aniso`; gate in `vic_joint_torques_batched.launch_compute_vic_wrenches_batched` |
 | Scene fields | `CoupledFruitingScene.vic_controller`, `vic_gains`, `vic_target_tf`, `vic_target_twist`, `vic_target_positions_wp`, `vic_target_linear_vels_wp`, `vic_use_joint_torques` |
 | Joint-torque arm setup | `robot/fr3_robot/setup.py` — `configure_vic_joint_torques_arm` (zeros PD, allocates J/H buffers, `joint_f`) |
 | Lagged plant wrench | `coupled_fruiting/proxy_coupling.py` — `harvest_stem_tension_for_tcp`, `explicit_load.explicit_apple_wrench_for_stem_harvest` |
@@ -203,7 +242,11 @@ See **`docs/ROADMAP.md`** — *Dual envs, FD modes, SKRL*.
 | `test_launch_joint_torques_match_numpy_reference` | End-to-end launcher vs NumPy |
 | `test_vic_joint_torques_moves_arm` | Integration: teleop peak TCP +X displacement `max_dx > 0.05` |
 | `test_batched_vic.py` | Batched VIC buffers, per-env wrenches/torques, **`test_per_env_twist_affects_wrench_damping`** |
-| `test_batched_heterogeneous_coupled_sim.py::test_vic_per_env_actions_differ_wrench_damping` | End-to-end per-env actions through `BatchedHeterogeneousCoupledSim` VIC path |
+| `test_batched_heterogeneous_coupled_sim.py::test_vic_per_env_actions_differ_wrench_damping` | End-to-end per-env actions through `BatchedHeterogeneousCoupledSim` VIC path; asserts world-0 `Fx` matches `K·(v_des·dt) + D·v_des` and clearly exceeds world 1 |
+| `test_vic_wrench_aniso.py` | Per-axis pose-PD law: zero at target, per-axis `Kp` isolation, angular torque scaling with `kp_ang`, damping with `v_des = 0` |
+| `test_ee_impedance_batched_pose_actions.py` | `vic_pose` unpack: direct targets, zeroed twists, near-zero quat → identity, **wxyz → xyzw** conversion, gain-buffer staging |
+| `test_batched_heterogeneous_coupled_sim.py::test_vic_pose_step_moves_tcp_toward_target` | `mode="vic_pose"` end to end: 19D actions drive the TCP toward the commanded pose |
+| `test_env_disable_controller.py` | Soft-disable freezes the previous 19D pose+gains row and still zeros 6D twist rows |
 
 ## How to verify
 
@@ -213,6 +256,21 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_vic_dynamic.py \
   apple_pick_sim/tests/test_vic_wrench_device.py \
   apple_pick_sim/tests/test_vic_joint_torques.py -q -m "not slow"
+```
+
+`vic_pose` (anisotropic law, action unpack, soft-disable hold):
+
+```bash
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_vic_wrench_aniso.py \
+  apple_pick_sim/tests/test_controller_config_actions.py \
+  apple_pick_gym/tests/test_env_disable_controller.py -q
+
+# Slow, needs the FR3 asset + torch; run from apple_pick_sim/tests for conftest:
+cd apple_pick_sim/tests && uv run --env-file ../../pytest.env python -m pytest \
+  test_ee_impedance_batched_pose_actions.py \
+  test_batched_heterogeneous_coupled_sim.py::test_vic_per_env_actions_differ_wrench_damping \
+  -q -m slow
 ```
 
 Example smoke (headless):

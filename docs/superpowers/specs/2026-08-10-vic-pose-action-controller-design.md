@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Approved design (brainstorm 2026-08-10); implementation pending |
+| **Status** | **Implemented 2026-08-10** — export-side 19D packing plus `mode=vic_pose` controller, aniso wrench kernel, sim step wiring, and `example_replay_real_batched.py --controller-mode vic_pose` |
 | **Date** | 2026-08-10 |
 | **Depends on** | Batched VIC joint-torque path (`Fr3BatchedEEImpedanceController`, `vic_joint_torques_batched`) |
 | **Related** | `docs/variable-impedance-teleop.md`, `robot_replay/example_replay_real_batched.py`, real-robot `compute_pose_task_wrench` |
@@ -11,6 +11,17 @@
 
 Match real-robot **pose PD** control in sim: actions are TCP **target pose + per-axis `Kp`/`Kd`**, not EE twists. First consumer is **`robot_replay/example_replay_real_batched.py` only**; gym collect / MMD / other examples stay on twist `vic` until a later integration.
 
+**Why this blocks real replay:** compiled real parquets (`dump.action_semantics`) store a pose-control **wrench** `[Fx…Tz]` in `action`, and also log `target_pose_4x4` + `dump.controller_gains`. Bit-2 export previously copied `action` into batched datasets and twist `mode=vic` would misinterpret wrench as twist.
+
+**Export packing:**
+`export_real_episode_to_batched_dataset` packs 19D `vic_pose` actions
+`[pos(3), quat_wxyz(4), Kp(6), Kd(6)]` from `target_pose_4x4` +
+`dump.controller_gains` and stamps `action_layout=vic_pose_v1`. Replay those
+datasets with `--controller-mode vic_pose`; the twist path (`mode="vic"`) rejects
+them on action semantics. Legacy 6D-twist datasets can be converted with
+`robot_replay/pack_vic_pose_actions.py` (which refuses already-19D sources
+without `--force`).
+
 ## Decisions (locked)
 
 | Topic | Choice |
@@ -18,7 +29,7 @@ Match real-robot **pose PD** control in sim: actions are TCP **target pose + per
 | Approach | **B** — extend `Fr3BatchedEEImpedanceController` (no new controller class) |
 | Mode coexistence | Keep twist `vic` (`action_dim=6`); add `vic_pose` (`action_dim=19`) |
 | Action packing | All in `action`: `[pos(3), quat_wxyz(4), Kp(6), Kd(6)]` |
-| Quat convention | **wxyz** (Newton / `body_q` style) |
+| Quat convention (action-level) | **wxyz** (external contract; converted to Warp-native xyzw internally — see note below) |
 | Wrench law | Pose-only: `w = Kp ⊙ e + Kd ⊙ (0 − v)` (`v_des = 0`) |
 | Force hybrid | **Out of scope** this slice |
 | First caller | `example_replay_real_batched.py` only |
@@ -33,6 +44,7 @@ action[13:19] = Kd  for [Fx, Fy, Fz, Tx, Ty, Tz]
 ```
 
 - Near-zero quat → identity `(1, 0, 0, 0)` in **wxyz**.
+- **Internal storage note (verified against code):** the action-level quat is **wxyz** (external contract only). Newton's `body_q` and `Fr3BatchedEEImpedanceController._target_rot_wp` store quats **xyzw** (Warp's native `wp.quat(x, y, z, w)` — confirmed via `batched_template_ik.py`'s `_vec4_to_quat`/`wp.transform_get_rotation` usage). `unpack_pose_action` must convert **wxyz → xyzw** before writing `_target_rot_wp`; nothing else in the action contract changes.
 - Gains are **anisotropic** per spatial axis; fixture isotropic `ImpedanceGains` are **not** used when per-env gain buffers are staged.
 - Twist speed clipping (`linear_speed` / `angular_speed`) applies only to `mode="vic"`. For `vic_pose`: normalize quat; do not clip pose or gains.
 

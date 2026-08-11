@@ -136,11 +136,11 @@ Organized by question, not by filename — each doc listed once, under its prima
 | Gap | Detail | Where documented |
 | --- | ------ | ----------------- |
 | Loss / GT scoring hardening (V.5.1) | **Done.** Soft-disable + exclude-fraction collect, transition features, median/hold-id/pooled Sinkhorn. GT should rank first on healthy samples; bad-sampling misses remain diagnostic and the operational gate uses a strict majority. | `docs/ROADMAP.md`, `docs/sysid-transition-features.md`, `docs/system_identification.md` |
-| CMA-ES calibration (V.5.2) | Done — separate pycma loop over primary/spur/stem log10-E using fused pooled-Sinkhorn evaluation | `docs/ROADMAP.md`, `docs/system_identification.md` §4, `docs/youngs-modulus-cmaes-implementation.md`, design spec |
+| CMA-ES calibration (V.5.2) | Done — support-\(k_p\) × spur/stem log10-\(E\) fused pooled-Sinkhorn loop (primary \(E\) fixed) | `docs/ROADMAP.md`, `docs/system_identification.md` §4, `docs/youngs-modulus-cmaes-implementation.md`, design spec |
 | Fused Young's grid acceptance | Implementation present; clean independent/fused timing, low-cap parity, build count, and peak-memory evidence pending | `docs/youngs-modulus-sysid.md`, `docs/ROADMAP.md` |
 | Batched digital-twin fidelity (V.4.2.1) | Done as shipped helpers + `--infer-params`; infer-only fidelity floor optional cleanup (not Current focus) | `docs/ROADMAP.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/digital-twin.md` |
 | `real_world_proxy.json` topology | Nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`. The two fixtures for the same physical proxy build different topologies | `docs/real-world-proxy.md` |
-| Real `pre_grasp` / `post_grasp` metadata | Pre = non-bending rebuild (`rest_snapshot_during_run` preferred); post = settled grasp weld. Quirks: string `apple_pos`, empty `episode_id`, no `step_idx=-1` row, timestamp collision, catalog vs measured lengths (P4); ingest vs `real_to_batched_sysid` still mismatched | `docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md` |
+| Real `pre_grasp` / `post_grasp` metadata | Bit-1 Done: convert uses settle-viewer native builders (`fruiting_params_from_pre_grasp_parquet` / `post_grasp_plan_from_metadata`). Quirks remain (string `apple_pos`, empty `episode_id`, etc.). Real `action` is a pose-control wrench: **Done** — export packs 19D `vic_pose` actions and replay drives them via `--controller-mode vic_pose` | `docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md`, `docs/variable-impedance-teleop.md`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
 
 ## Conventions worth knowing before editing docs or code
 

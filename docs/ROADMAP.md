@@ -42,28 +42,28 @@
 
 ## Current focus
 
-**Next slice:** **V.5.3 — held-out sim-sim validation**. **V.5.2 Done** — separate CMA-ES calibration loop verified (focused/full suites, CLI checks, CUDA collect 5×5 → fused CMA + scalar smoke; artifacts under `tmp/task8_cuda_acceptance/`).
+**Next slice:** **V.5.3 — held-out sim-sim validation**. **V.5.2 Done** — CMA-ES calibration verified (focused/full suites, CLI checks, CUDA collect → fused CMA + scalar smoke). **Phenotype (current code):** support-joint \(k_p\) × spur/stem Young's \(E\) (not free primary \(E\)); see `docs/youngs-modulus-sysid.md`.
 
 **Scope for this slice:**
 
-- Fit only primary, spur, and stem Young's modulus; keep geometry, damping, density, mass, secondary E, and other fields fixed
+- Fit support-joint \(k_p\) (shared angular+linear; support \(\zeta\) from dataset `joint_damping_ratio`) plus spur and stem Young's modulus; keep primary \(E\), geometry, density, mass, secondary \(E\), and other fields fixed
 - Separate `example_youngs_modulus_cmaes.py`; retain the Cartesian grid as a diagnostic/gate command
-- Search-box midpoint initialization (`[9.5, 9.5, 9.5]` by default — not fixture/GT midpoint), fused generation evaluation, explicit final-mean replay, per-structure fit reports, and cross-structure statistics
+- Search-box midpoint initialization for the three free dims, fused generation evaluation, explicit final-mean replay, per-structure fit reports, and cross-structure statistics
 - Keep stored GT for evaluation/reporting only, not initialization or fitness
 
 **V.5.2 progress:**
 
-- `YoungsModulusCandidate` / `log10` maps + `set_rod_youngs_modulus` (`batched_sysid_cmaes.py`, `params.py`)
+- `SupportKpYoungsCandidate` / `log10` maps + `set_rod_youngs_modulus` + `apply_per_env_support_joint_penalties` (`batched_sysid_cmaes.py`, `support_joint_penalties.py`, `params.py`)
 - Keyboard E-grid teleop with soft-disable: `example_batched_youngs_modulus_keyboard.py`
-- Dataset-driven E-grid replay + ranking + faceted Plotly overlay: `example_youngs_modulus_sys_id.py` / `youngs_modulus_overlay_viz.py` (collect via `example_batched_collect_sysid_data.py`)
+- Dataset-driven support-\(k_p\)×E grid replay + ranking + faceted Plotly overlay: `example_youngs_modulus_sys_id.py` / `youngs_modulus_overlay_viz.py` (collect via `example_batched_collect_sysid_data.py`)
 - Complete scoring: pooled Sinkhorn fitness, physical per-direction diagnostics, direction completeness, candidate-local invalid handling, strict JSON
-- Multi-seed Young's **ranking** gate: `gate_youngs_modulus_sysid.sh` + `youngs_modulus_gate_report.py`; strict majority per seed (3/5 by default), all seeds required to pass
+- Multi-seed ranking gate: `gate_youngs_modulus_sysid.sh` + `youngs_modulus_gate_report.py`; strict majority per seed (3/5 by default), all seeds required to pass
 - Fused multi-structure grid/CMA replay: stable structure/candidate/direction keys, whole-candidate chunking, per-env episode initialization, scalar fallback; enabled by default
-- Separate CMA-ES CLI + coordinator: `example_youngs_modulus_cmaes.py`, `fit_youngs_modulus_structures` / generation waves in `batched_sysid_cmaes.py`, atomic `cmaes_report.json`, final-mean overlays
+- Separate CMA-ES CLI + coordinator: `example_youngs_modulus_cmaes.py`, fused generation waves in `batched_sysid_cmaes.py`, atomic `cmaes_report.json`, final-mean overlays
 - Separate CMA **integrity** gate (no GT-error threshold): `gate_youngs_modulus_cmaes.sh` + `youngs_modulus_cmaes_gate_report.py`
 - Fused implementation is present, but clean independent/fused timing, low-cap parity, build count, and peak-memory acceptance remain pending
 - Canonical grid contract: `docs/youngs-modulus-sysid.md`; CMA design: `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`; CMA notes: `docs/youngs-modulus-cmaes-implementation.md`
-- Task 8 verification **passed** (2026-07-17): focused CMA/multi-replay/CLI/gate/overlay suites, grid CLI/gate regressions, full Gym suite, repo non-slow gate, both `--help` checks, strict JSON/cancel evidence, CUDA 5×5 fused CMA + scalar smoke with validation reports (`tmp/task8_cuda_acceptance/`)
+- **Breaking CLI (support-\(k_p\) retarget):** `--log10-e-primary` → `--support-kp-values` / `--log10-support-kp`; report keys use `log10_vector` (not free primary \(E\))
 
 **Specs:** `docs/system_identification.md`, `docs/youngs-modulus-sysid.md`, `docs/youngs-modulus-cmaes-implementation.md`, `docs/sysid-transition-features.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/batched-sysid-dataset.md`, `docs/batched-stability-monitor-design.md`, `docs/digital-twin.md`, `docs/material-parameter-sampling.md`
 
@@ -89,6 +89,7 @@
 **Known issues — debug next:**
 
 - [x] **Post-grasp apple orientation vs GT** (`robot_replay/example_view_pre_grasp_settle.py --grasp-after-settle`) — **Fixed 2026-08-07.** Free-scene apple init + stem–apple FIXED child anchor use **pre-grasp tracker quat** (`FruitingSystemParams.apple_quat_xyzw` from `apple_pose_4x4` / `apple_quat_xyzw` on the preferred woody snapshot) so the apple body frame matches the marker frame; post-grasp full logged SE(3) weld is consistent. Spec: `docs/superpowers/specs/2026-08-07-pre-grasp-apple-orientation-design.md`. `--apple-position-only` remains an optional escape hatch (keep settle quat). Code: `real_pre_grasp_params.py`, `real_post_grasp_plan.py`, `fruiting_system/build.py`.
+- [x] **Real parquet `action` is pose-control wrench, not EE twist** — **Fixed 2026-08-10.** Confirmed in `dump.action_semantics` / `field_layout.action` (`[Fx…Tz]`). Export packs 19D `vic_pose` actions (`[pos(3), quat_wxyz(4), Kp(6), Kd(6)]`) from `target_pose_4x4` + `dump.controller_gains`, and the **sim consumer is wired**: `ControllerConfig(mode="vic_pose", action_dim=19)`, `Fr3BatchedEEImpedanceController.unpack_pose_action`, per-env anisotropic gain buffers in the batched VIC wrench kernel, and `example_replay_real_batched.py --controller-mode vic_pose`. Legacy 6D datasets convert via `robot_replay/pack_vic_pose_actions.py`. Spec: `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md`; behavior: `docs/variable-impedance-teleop.md` §`vic_pose`.
 
 *(No open debug items under Current focus.)*
 

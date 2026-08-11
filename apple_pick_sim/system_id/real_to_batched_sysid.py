@@ -407,7 +407,88 @@ def _actions_all_near_zero(table: Any, *, atol: float = 1e-12) -> bool:
     if n < 1 or "action" not in table.column_names:
         return True
     acts = np.stack([table.column("action")[i].as_py() for i in range(n)], axis=0)
-    return bool(np.linalg.norm(np.asarray(acts, dtype=np.float64).reshape(n, 6), axis=1).max() <= atol)
+    arr = np.asarray(acts, dtype=np.float64).reshape(n, -1)
+    return bool(np.linalg.norm(arr, axis=1).max() <= atol)
+
+
+def real_action_semantics_label(dataset_metadata: dict[str, Any] | None) -> str | None:
+    """Return the human-readable action semantics string from real parquet metadata."""
+    if not isinstance(dataset_metadata, dict):
+        return None
+    dump = dataset_metadata.get("dump")
+    if isinstance(dump, dict):
+        raw = dump.get("action_semantics")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    layout = dataset_metadata.get("field_layout")
+    if isinstance(layout, dict):
+        action_layout = layout.get("action")
+        if isinstance(action_layout, dict):
+            desc = action_layout.get("description")
+            if isinstance(desc, str) and desc.strip():
+                return desc.strip()
+    return None
+
+
+def is_pose_control_wrench_semantics(dataset_metadata: dict[str, Any] | None) -> bool:
+    """True when real ``action`` is a pose-PD wrench, not an EE twist for VIC.
+
+    Real logs (``dump.action_semantics`` / ``field_layout.action``) store the
+    commanded pose-control wrench ``[Fx…Tz]``. Batched twist VIC expects EE
+    twists; treating wrench as twist is a silent physics bug.
+    """
+    if not isinstance(dataset_metadata, dict):
+        return False
+    label = real_action_semantics_label(dataset_metadata)
+    if isinstance(label, str) and "wrench" in label.lower():
+        return True
+    layout = dataset_metadata.get("field_layout")
+    if isinstance(layout, dict):
+        action_layout = layout.get("action")
+        if isinstance(action_layout, dict):
+            order = action_layout.get("order")
+            if isinstance(order, (list, tuple)):
+                tokens = [str(x).strip().lower() for x in order]
+                if tokens[:3] == ["fx", "fy", "fz"]:
+                    return True
+    return False
+
+
+def real_pose_control_gains(
+    dataset_metadata: dict[str, Any] | None,
+) -> tuple[list[float], list[float]]:
+    """Return ``(Kp, Kd)`` from ``dump.controller_gains`` task prop/deriv gains.
+
+    Each gain is length-6 ``[Fx, Fy, Fz, Tx, Ty, Tz]``.
+    """
+    if not isinstance(dataset_metadata, dict):
+        raise ValueError("dataset_metadata missing dump.controller_gains")
+    dump = dataset_metadata.get("dump")
+    if not isinstance(dump, dict):
+        raise ValueError("dataset_metadata missing dump.controller_gains")
+    gains = dump.get("controller_gains")
+    if not isinstance(gains, dict):
+        raise ValueError("dataset_metadata missing dump.controller_gains")
+    if "task_prop_gains" not in gains:
+        raise ValueError("dump.controller_gains missing task_prop_gains")
+    if "task_deriv_gains" not in gains:
+        raise ValueError("dump.controller_gains missing task_deriv_gains")
+    kp = _as_float_list(gains["task_prop_gains"], 6, field="task_prop_gains")
+    kd = _as_float_list(gains["task_deriv_gains"], 6, field="task_deriv_gains")
+    return kp, kd
+
+
+def _vic_pose_action_row(
+    target_pose_4x4_flat16: Any,
+    kp: list[float],
+    kd: list[float],
+) -> np.ndarray:
+    """Pack ``[pos(3), quat_wxyz(4), Kp(6), Kd(6)]`` from a flat 4×4 target pose."""
+    from apple_pick_sim.system_id.real_post_grasp_plan import pose_4x4_to_pos_quat
+
+    pos, quat_xyzw = pose_4x4_to_pos_quat(target_pose_4x4_flat16)
+    quat_wxyz = (quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2])
+    return np.asarray([*pos, *quat_wxyz, *kp, *kd], dtype=np.float32)
 
 
 def export_real_episode_to_batched_dataset(
@@ -424,6 +505,10 @@ def export_real_episode_to_batched_dataset(
 
     Uses bit-1 metadata builders for episode schema metadata and maps trajectory
     rows into batched frame columns (including per-junction woody columns).
+
+    When real ``action`` is a pose-control wrench, packs a 19D ``vic_pose``
+    action from ``target_pose_4x4`` + ``dump.controller_gains`` instead of
+    copying the wrench (which is not an EE twist for ``mode=vic``).
     """
     from apple_pick_sim.system_id.batched_trajectory_store import (
         BatchedEpisodeWriter,
@@ -455,11 +540,29 @@ def export_real_episode_to_batched_dataset(
         dm = json.loads(
             dm_blob.decode("utf-8") if isinstance(dm_blob, (bytes, bytearray)) else str(dm_blob)
         )
+    pack_vic_pose = is_pose_control_wrench_semantics(dm)
+    kp: list[float] | None = None
+    kd: list[float] | None = None
+    if pack_vic_pose:
+        if "target_pose_4x4" not in table.column_names:
+            raise ValueError(
+                f"{path}: pose-control wrench semantics require target_pose_4x4 "
+                "to pack 19D vic_pose actions"
+            )
+        kp, kd = real_pose_control_gains(dm)
+        label = real_action_semantics_label(dm) or "pose-control wrench"
+        episode_meta = {
+            **episode_meta,
+            "action_semantics": label,
+            "action_compatible_with_vic_twist": False,
+            "action_dim": 19,
+            "action_layout": "vic_pose_v1",
+        }
     has_drive_fill = isinstance(dm.get("drive_fill"), dict)
     if _actions_all_near_zero(table) and not allow_zero_action and not has_drive_fill:
         raise ValueError(
             f"{path}: action column is all zeros (real-replay-action-zero). "
-            "Use a fixed real parquet (e.g. s02-d00_action.parquet), fill via "
+            "Use a fixed real parquet (e.g. s02-d00.parquet), fill via "
             "robot_replay/fill_actions_from_tcp_velocity.py, or set allow_zero_action=True."
         )
 
@@ -474,7 +577,15 @@ def export_real_episode_to_batched_dataset(
         phase_raw = _phase_name_for_row(table, i)
         phase = _REAL_PHASE_NAME_TO_BATCHED.get(phase_raw, "move_out")
 
-        action = np.asarray(table.column("action")[i].as_py(), dtype=np.float32).reshape(6)
+        if pack_vic_pose:
+            assert kp is not None and kd is not None
+            action = _vic_pose_action_row(
+                table.column("target_pose_4x4")[i].as_py(), kp, kd
+            )
+        else:
+            action = np.asarray(
+                table.column("action")[i].as_py(), dtype=np.float32
+            ).reshape(6)
         tcp_vel = np.asarray(table.column("tcp_velocity")[i].as_py(), dtype=np.float32).reshape(6)
         ft = np.asarray(table.column("ft_wrist")[i].as_py(), dtype=np.float32).reshape(6)
         raw_ft = ft
@@ -601,6 +712,11 @@ def export_real_episode_to_batched_dataset(
         "source_real_parquet": str(path.resolve()),
         "drive_fill": dm.get("drive_fill"),
     }
+    if episode_meta.get("action_layout") == "vic_pose_v1":
+        collection["action_semantics"] = episode_meta.get("action_semantics")
+        collection["action_compatible_with_vic_twist"] = False
+        collection["action_dim"] = int(episode_meta.get("action_dim") or 19)
+        collection["action_layout"] = "vic_pose_v1"
     write_manifest(
         out,
         command_argv=list(command_argv or ["export_real_episode_to_batched_dataset"]),

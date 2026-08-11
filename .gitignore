@@ -48,7 +48,12 @@ scripts/**
 !scripts/gate_youngs_modulus_cmaes.sh
 sweep_runs
 tmp*/
-*.parquet
-robot_replay/*.mp4
-robot_replay/*.json
+# Large local real/sys-ID parquet artifacts (keep tiny test fixtures trackable)
+tmp/**/*.parquet
+robot_replay/s*-d*.parquet
+robot_replay/*_with_actions.parquet
+robot_replay/*_action.parquet
+robot_replay/*_tracking.mp4
 robot_replay/*.png
+robot_replay/s*-d*.json
+!apple_pick_sim/tests/fixtures/**/*.parquet

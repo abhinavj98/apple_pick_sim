@@ -84,6 +84,11 @@ EPISODE_METADATA_KEYS: tuple[str, ...] = (
     "hold_duration_s",
     "move_speed_mps",
     "skip_return",
+    # Real→batched: when action is pose-PD wrench, not EE twist for mode=vic.
+    "action_semantics",
+    "action_compatible_with_vic_twist",
+    "action_dim",
+    "action_layout",
 )
 
 
@@ -345,6 +350,11 @@ class BatchedSysIdDataset:
             if "raw_ft_wrist" in table.column_names
             else ft_wrist.copy()
         )
+        action = _stack_column("action")
+        if action.ndim != 2 or action.shape[1] not in (6, 19):
+            raise ValueError(
+                f"expected action shape (n_frames, 6) or (n_frames, 19), got {action.shape!r}"
+            )
         arrays: dict[str, Any] = {
             "step_idx": np.asarray(table.column("step_idx").to_pylist(), dtype=np.int32),
             "phase": np.asarray(table.column("phase").to_pylist(), dtype=np.int8),
@@ -352,7 +362,7 @@ class BatchedSysIdDataset:
                 table.column("excitation_type").to_pylist(), dtype=np.int8
             ),
             "excitation_direction": _stack_column("excitation_direction").reshape(-1, 3),
-            "action": _stack_column("action").reshape(-1, 6),
+            "action": action,
             "ft_wrist": ft_wrist,
             "raw_ft_wrist": raw_ft_wrist,
             "tcp_velocity": _stack_column("tcp_velocity").reshape(-1, 6),

@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """Real FR3+VIC replay test for an exported real→batched dataset.
 
-Uses ``replay_batched_sysid_structure`` (same path as CMA / MMD grid) so FR3
-tracks recorded **EE twist** actions after free settle → weld → post-grasp settle.
-
-**Action semantics caveat:** many real parquets store pose-control **wrench**
-``[Fx…Tz]`` in ``action`` (see ``dump.action_semantics``), not twists. Export
-refuses those by default; ``--allow-wrench-as-twist`` only unlocks format/GL
-smoke with **incorrect** physics. Correct drive needs pose/wrench mode
-(``docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md``).
+Uses ``replay_batched_sysid_structure`` (same path as CMA / MMD grid) after free
+settle → weld → post-grasp settle. Default ``--controller-mode vic_pose`` drives
+19D pose+gains actions packed at convert time from real ``target_pose_4x4`` +
+``dump.controller_gains`` (real parquet ``action`` is a pose-control wrench, not
+an EE twist). Use ``--controller-mode vic`` only for legacy 6D-twist datasets.
 
 Settle defaults match ``example_view_pre_grasp_settle.py``:
 ``--settle-substeps 5000``, ``--settle-quiet-every 300``,
@@ -26,7 +23,7 @@ uses ``gym_defaults`` + fixture ``sim_build`` on the default sim device.
 Example (after export)::
 
     uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \\
-      --input robot_replay/s02-d00_action.parquet \\
+      --input robot_replay/s02-d00.parquet \\
       --dataset-out /tmp/real_batched_s02_d00 --overwrite
 
     uv run python robot_replay/example_replay_real_batched.py \\
@@ -74,7 +71,7 @@ _SETTLE_QUIET_EVERY: int | None = 300
 _SETTLE_GRAVITY_RAMP = False
 _POST_GRASP_SETTLE_SUBSTEPS = 500
 _CONTROL_HZ_FALLBACK = 15.0
-_DEFAULT_CONTROLLER_MODE = "vic"
+_DEFAULT_CONTROLLER_MODE = "vic_pose"
 
 
 def fruiting_base_pos_from_episode_metadata(

@@ -398,7 +398,7 @@ class GripperProxyConfig:
     fed back into ``robot_state.body_f`` on the next substep (see module docstring).
     Mass and collision shape should match the robot TCP link built in
     ``coupled_fruiting.build_placeholder_tcp_robot_model`` so velocity-delta harvest
-    uses consistent inertia. Default shape is a cylinder (50 mm radius, 140 mm length)
+    uses consistent inertia. Default shape is a cylinder (50 mm radius, 180 mm length)
     with the distal tip at the body origin (TCP); bulk extends along local −Z toward
     the flange (+Z is tip-out, matching the USD / recorded TCP).
     """

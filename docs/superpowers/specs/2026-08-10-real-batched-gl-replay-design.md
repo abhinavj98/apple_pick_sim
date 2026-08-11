@@ -2,23 +2,28 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Phase B + post-grasp settle; rebranded to real replay test; phase A follow-on; rebuild from episode metadata (no C6 pose clamps) |
+| **Status** | Phase B GL + post-grasp settle **plumbing Done**; **correct action drive pending** (wrench ≠ twist VIC) |
 | **Date** | 2026-08-10 |
-| **Depends on** | Bit-2 export (`batched_sysid_v1` from real parquet) |
-| **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C6), `robot_replay/example_replay_real_batched.py`, `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` |
+| **Depends on** | Bit-2 format export (`batched_sysid_v1` from real parquet) |
+| **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C6), `robot_replay/example_replay_real_batched.py`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
 
 ## Purpose
 
-Watch a **complete open-loop FR3 + VIC trajectory** in Newton GL after rebuild and
+Watch a **complete open-loop FR3 trajectory** in Newton GL after rebuild and
 settle, using a real episode already converted to `batched_sysid_v1`. Settle
 remains off-screen; the window shows trajectory frames only.
+
+**Drive-signal caveat:** real `action` is often a pose-control **wrench**. Twist
+`mode=vic` replay is **not** physically correct until pose/wrench mode ships.
+Export/replay refuse wrench-as-twist unless `--allow-wrench-as-twist`.
 
 ## Sequencing
 
 | Phase | Scope | Status |
 | ----- | ----- | ------ |
-| **B** | GL `on_step` on real replay CLI; TCP motion gate; rebuild from episode metadata | **Done** |
+| **B** | GL `on_step` on real replay CLI; TCP motion gate; rebuild from episode metadata | **Plumbing Done**; TCP gate ≠ correct wrench drive |
 | **Post-grasp** | `SceneSettleCollisionConfig.post_grasp_settle_substeps` (CLI default 500); free settle 5000 + quiet 300; rebrand smoke → `example_replay_real_batched.py` | **Done** |
+| **Drive** | Pose PD (`vic_pose`) or logged-wrench apply matching real `action_semantics` | **Pending** |
 | **A** | Later: teach `example_batched_sysid_mmd_grid.py` the same real clamps / flags so grids, scoring, and GL work on exported real datasets | Follow-on |
 
 ## Architecture

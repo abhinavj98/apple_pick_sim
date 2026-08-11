@@ -257,7 +257,7 @@ def test_default_gripper_proxy_cylinder_dims():
     cfg = fs.GripperProxyConfig()
     assert cfg.shape == "cylinder"
     assert cfg.cylinder_radius == pytest.approx(0.05)
-    assert cfg.cylinder_half_height == pytest.approx(0.07)
+    assert cfg.cylinder_half_height == pytest.approx(0.09)
 
 
 def test_coupled_scene_gripper_proxy_uses_cylinder():
@@ -287,9 +287,9 @@ def test_coupled_scene_gripper_proxy_uses_cylinder():
     si = proxy_shapes[0]
     radius, half_height, _ = shape_scale[si]
     assert radius == pytest.approx(0.05)
-    assert half_height == pytest.approx(0.07)
+    assert half_height == pytest.approx(0.09)
     # Distal tip at body origin; bulk toward flange along local -Z (USD tip-out).
-    assert float(shape_xform[si, 2]) == pytest.approx(-0.07)
+    assert float(shape_xform[si, 2]) == pytest.approx(-0.09)
 
 
 def test_gripper_proxy_cylinder_tcp_at_distal_tip_bulk_neg_z():

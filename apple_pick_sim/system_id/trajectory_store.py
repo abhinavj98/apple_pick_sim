@@ -296,12 +296,16 @@ def build_sysid_frame_row(
     if set(start_by_name) != set(end_by_name):
         raise ValueError("woody_part_start_pos and woody_part_end_pos keys must match")
 
+    action_vec = np.asarray(action, dtype=np.float32).reshape(-1)
+    if action_vec.size not in (6, 19):
+        raise ValueError(f"action must have length 6 or 19, got {action_vec.size}")
+
     row: dict[str, Any] = {
         "step_idx": int(step_idx),
         "phase": phase_to_int(phase),
         "excitation_type": int(obs["excitation_type"]),
         "excitation_direction": _as_f32_list(obs["excitation_direction"], size=3),
-        "action": _as_f32_list(action, size=6),
+        "action": _as_f32_list(action_vec, size=int(action_vec.size)),
         "tcp_velocity": _as_f32_list(obs["tcp_velocity"], size=6),
         "ft_wrist": _as_f32_list(obs["ft_wrist"], size=6),
         "raw_ft_wrist": _as_f32_list(obs.get("raw_ft_wrist", obs["ft_wrist"]), size=6),

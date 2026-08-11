@@ -75,7 +75,7 @@ from apple_pick_sim.fruiting_system import (
     parse_fixture_args,
 )
 
-# Real-world bench proxy EE: 50 mm radius, 140 mm length (docs/real-world-proxy.md).
+# Real-world bench proxy EE: 50 mm radius, 180 mm length (docs/real-world-proxy.md).
 
 
 def _default_ranges_path() -> Path:

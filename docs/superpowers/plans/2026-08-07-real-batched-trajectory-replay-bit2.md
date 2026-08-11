@@ -2,25 +2,25 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **This session: inline execution.**
 
-**Goal:** Turn a real-world parquet (with non-zero `action`) into a 1×1 `batched_sysid_v1` dataset, prove format compatibility with `example_batched_sysid_trajectory_viz.py`, then smoke FR3 open-loop replay with existing gym replay helpers.
+**Goal:** Turn a real-world parquet into a 1×1 `batched_sysid_v1` dataset, prove format compatibility with `example_batched_sysid_trajectory_viz.py`, then smoke FR3 open-loop **placement** (not yet correct wrench/pose drive).
 
-**Architecture:** Bit-1 metadata (`build_episode_metadata_from_real`) plus mapped trajectory rows → `manifest.json` + `episodes/s00_d00.parquet`. **Primary real source:** `robot_replay/s02-d00_action.parquet` (non-zero `action` on all frames — no tcp_velocity fill required). Legacy zero-action episodes may still use `fill_actions_from_tcp_velocity.py` as a temporary mitigation. **Format gate first:** `BatchedSysIdDataset` + `example_batched_sysid_trajectory_viz.py`. **Then:** `replay_batched_sysid_structure` / demo-style path for physics. No CMA (bit 3).
+**Architecture:** Bit-1 metadata (`build_episode_metadata_from_real`) plus mapped trajectory rows → `manifest.json` + `episodes/s00_d00.parquet`. **Primary real source:** `robot_replay/s02-d00_action.parquet` when available. Legacy zero-action episodes may still use `fill_actions_from_tcp_velocity.py` as a temporary mitigation (**tcp_velocity ≠ real wrench**). **Format gate first.** Physics smoke under twist VIC is **not** correct for wrench-logged episodes — see `2026-08-10-vic-pose-action-controller-design.md`. No CMA (bit 3).
 
 **Tech Stack:** Python, pyarrow, `BatchedSysIdDataset` / `BatchedEpisodeWriter` / `write_manifest`, `write_dataset_trajectory_viz`, `replay_batched_sysid_structure`, pytest, uv.
 
 ## Global Constraints
 
 - Bit 1 metadata builders remain the source of truth for rebuild + grasp init.
-- Long-term contract: real parquets ship non-zero `action` for the **full trajectory**.
-- **Canonical bit-2 fixture:** `robot_replay/s02-d00_action.parquet` (verified: 132/132 non-zero actions; convert parity green).
-- `real-replay-action-zero` remains a bug on older files (`s00-d0*`); `tcp_velocity` fill is temporary only when those are used.
+- Real `action` is often a **pose-control wrench** (`dump.action_semantics`); do not treat it as EE twist.
+- Export refuses wrench-as-twist unless `--allow-wrench-as-twist`.
+- `fill_actions_from_tcp_velocity` is temporary only for older zero-action files.
 - Format consumer pinned: `apple_pick_gym/batched_examples/example_batched_sysid_trajectory_viz.py`.
 - Do not wire CMA-ES in this bit.
 
 ## End-to-end flow
 
 ```text
-robot_replay/s02-d00_action.parquet     # preferred (real non-zero action)
+robot_replay/s02-d00_action.parquet     # preferred when present
     │ export_real_episode_to_batched_dataset / --dataset-out
     ▼
 /tmp/real_batched_s02_d00/
@@ -30,8 +30,8 @@ robot_replay/s02-d00_action.parquet     # preferred (real non-zero action)
     ├─ FORMAT GATE
     │    example_batched_sysid_trajectory_viz.py --dataset … --output …
     │
-    └─ PHYSICS SMOKE (after viz green)
-         replay_batched_sysid_structure / example_replay_real_batched_smoke.py
+    └─ PLACEMENT / GL SMOKE (drive signal may still be wrong)
+         example_replay_real_batched.py
 ```
 
 ## File map
@@ -42,9 +42,9 @@ robot_replay/s02-d00_action.parquet     # preferred (real non-zero action)
 | `robot_replay/fill_actions_from_tcp_velocity.py` | Optional mitigation for older zero-action files |
 | `apple_pick_sim/system_id/real_to_batched_sysid.py` | `export_real_episode_to_batched_dataset` |
 | `robot_replay/convert_real_to_batched_sysid_metadata.py` | `--dataset-out` |
-| `robot_replay/example_replay_real_batched_smoke.py` | Thin FR3 physics smoke CLI |
-| `apple_pick_sim/tests/test_real_to_batched_sysid.py` | Export load + zero-action refuse |
-| `apple_pick_gym/tests/test_real_batched_replay_smoke.py` | Slow FR3 TCP-motion smoke |
+| `robot_replay/example_replay_real_batched.py` | FR3 replay CLI (was `*_smoke` in early drafts) |
+| `apple_pick_sim/tests/test_real_to_batched_sysid.py` | Export load + zero-action / wrench refuse |
+| `apple_pick_gym/tests/test_real_batched_replay.py` | Slow FR3 TCP-motion smoke |
 | `robot_replay/README.md` | export → **trajectory_viz** → physics commands |
 | Existing | `example_batched_sysid_trajectory_viz.py` (format gate) |
 

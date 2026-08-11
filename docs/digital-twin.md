@@ -44,7 +44,7 @@ These fields are the minimum practical bundle to reconstruct the post-grasp init
 |-------------|-------------------|--------------------|----------|
 | Episode identity and schema version | Logger metadata | `episode_id`, `obs_schema` | Parser/version selection |
 | Control rate and timestamps | Robot/log clock | `control_hz`, `sim_time`, `step_idx` | Time alignment |
-| Recorded TCP action sequence | Robot command log or measured EE twist | `action` | Open-loop replay input |
+| Recorded TCP action sequence | Robot command log (sim: EE twist; real logs often pose-control wrench — see `robot_replay/README.md`) | `action` | Open-loop replay input |
 | TCP pose and twist | Robot FK, calibrated base frame | `tcp_pos`, `tcp_velocity` | Initial robot/TCP state and features |
 | F/T wrench with bias info | Wrist F/T sensor, bias captured before contact | `ft_wrist` | Replay error and MMD features |
 | Apple pose | Camera/marker estimate | `apple_pos`, future apple orientation | Fruit body placement and grasp frame |

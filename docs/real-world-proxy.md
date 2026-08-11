@@ -314,7 +314,7 @@ Nominal fixture may use fixed angles for reproducible IK smoke tests.
 
 | Parameter | Value | Status |
 |-----------|-------|--------|
-| Tool length | 0.14 m (140 mm) | **Specified** |
+| Tool length | 0.18 m (180 mm) | **Specified** (was 0.14 m; +~40 mm to match real TCP tip gap) |
 | Tool radius | 0.05 m (50 mm; Ø100) | **Specified** |
 | TCP location | Distal tip face center, out from link7 / `ee` flange | **Specified** |
 | Tool mass | See placeholders | **TBD — measure on hardware** |
@@ -334,7 +334,10 @@ Nominal fixture may use fixed angles for reproducible IK smoke tests.
   cylinder overhangs slightly past `ee` origin into ee `+Z` to close the gap;
   tip/`/ee/tcp` stay coincident on ee `−Z`.
 - FR3 USD (`assets/testfr3_resolved.usda`) and VBD `GripperProxyConfig` must share
-  length **0.14 m**, radius **0.05 m**, half-height **0.07 m**.
+  length **0.18 m**, radius **0.05 m**, half-height **0.09 m**.
+- TCP body (`/ee/tcp`) uses **RotX(180°)** so local **+Z is tip-out** (logged Franka /
+  VBD proxy). Cylinder geometry remains on ee **−Z** because `fr3_joint8` already
+  applies ~180° about X.
 
 > **Warning — look-at vs logged TCP:** Gym, digital-twin, and generic
 > `weld_direction` look-at welds do **not** yet consume a logged TCP SE(3).

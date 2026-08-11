@@ -5,7 +5,10 @@ Bit 1: ``--out`` writes episode metadata JSON (rebuild + grasp init).
 Bit 2: ``--dataset-out`` writes a 1×1 batched_sysid_v1 dataset directory
 (manifest + episodes/s00_d00.parquet) for trajectory viz / FR3 replay.
 
-Preferred real source with non-zero action: ``robot_replay/s02-d00_action.parquet``.
+For pose-control wrench logs, Bit 2 packs 19D ``vic_pose`` actions from
+``target_pose_4x4`` + ``dump.controller_gains`` (not the raw wrench).
+
+Preferred real source: ``robot_replay/s02-d00.parquet``.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         "--input",
         type=Path,
         required=True,
-        help="Real-world episode parquet path (prefer s02-d00_action.parquet)",
+        help="Real-world episode parquet path (prefer s02-d00.parquet)",
     )
     parser.add_argument(
         "--fixture",

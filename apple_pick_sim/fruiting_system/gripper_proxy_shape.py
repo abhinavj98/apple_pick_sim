@@ -10,9 +10,9 @@ import warp as wp
 if TYPE_CHECKING:
     from apple_pick_sim.fruiting_system.params import GripperProxyConfig
 
-# Real-world bench tool (docs/real-world-proxy.md): 50 mm radius, 140 mm length.
+# Real-world bench tool (docs/real-world-proxy.md): 50 mm radius, 180 mm length.
 GRIPPER_PROXY_CYLINDER_RADIUS = 0.05
-GRIPPER_PROXY_CYLINDER_HALF_HEIGHT = 0.07
+GRIPPER_PROXY_CYLINDER_HALF_HEIGHT = 0.09
 
 
 def gripper_proxy_clearance(config: GripperProxyConfig) -> float:

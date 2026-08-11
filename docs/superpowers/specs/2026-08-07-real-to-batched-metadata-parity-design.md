@@ -2,15 +2,15 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Bit 1 implemented; bit 2 trajectory export + format/physics gates landed |
-| **Date** | 2026-08-07 |
+| **Status** | Bit 1 Done; bit 2 **format export Done**, **correct drive signal pending** (real `action` is pose-control wrench) |
+| **Date** | 2026-08-07 (status revised 2026-08-10) |
 | **Source of truth** | `robot_replay/example_view_pre_grasp_settle.py` (native pre/post stack) |
-| **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C1), `robot_replay/README.md`, `docs/batched-sysid-dataset.md` |
+| **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C1), `robot_replay/README.md`, `docs/batched-sysid-dataset.md`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
 
 ## Purpose
 
 Bridge real-robot parquet episodes into batched-style **episode metadata JSON**
-so later slices can reuse batched FR3 twist replay and CMA-ES. Step 1 only
+so later slices can reuse batched FR3 replay and CMA-ES. Step 1 only
 proves **pre-grasp and post-grasp geometry/weld init** match the settle viewer.
 
 ## Sequencing (bits)
@@ -18,8 +18,8 @@ proves **pre-grasp and post-grasp geometry/weld init** match the settle viewer.
 | Bit | Scope | Status |
 | --- | ----- | ------ |
 | **1** | Fix converter via shared native builders; numeric parity; batched-meta viewer | **Done** |
-| **2** | Full `batched_sysid_v1` trajectory export + FR3 open-loop EE-twist replay | **Done** (see plan) |
-| **3** | Feed converted episodes into existing sys-ID CMA-ES | Later |
+| **2** | Full `batched_sysid_v1` trajectory export + open-loop FR3 placement + format gate | **Format Done**; physics drive **blocked** on wrench≠twist |
+| **3** | Feed converted episodes into existing sys-ID CMA-ES | Later (needs correct drive) |
 
 ## Architecture (bit 1)
 

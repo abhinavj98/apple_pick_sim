@@ -145,7 +145,8 @@ def test_sim_config_uses_gym_defaults_with_fixture_sim_build_not_cpu_test_minima
     assert cfg.fruiting_system.joint_linear_kp_overrides == sb.joint_linear_kp_overrides
     assert cfg.fruiting_system.joint_damping_ratio == pytest.approx(sb.joint_damping_ratio)
     assert cfg.robot.fix_to_apple is True
-    assert cfg.controller.mode == "vic"
+    assert cfg.controller.mode == "vic_pose"
+    assert cfg.controller.action_dim == 19
 
 
 def test_sim_config_wires_open_loop_bootstrap_joint_q_from_episode():

@@ -47,8 +47,9 @@ def ee_cylinder_layout_from_authored(
     to TCP and **flange** is the other (so either ee ``+Z`` or ``−Z`` tip-out works).
 
     Note: ``fr3_joint8`` applies ~180° about X, so world tip-out (away from link7)
-    is **ee −Z**. Author the cylinder/TCP on negative ee ``z`` for correct viz.
-    TCP ``z_m = ee_scale_z * tcp_translate_z``.
+    is **ee −Z**. Author the cylinder on negative ee ``z`` for correct viz.
+    The TCP body uses **RotX(180°)** so TCP local **+Z** is tip-out (logged Franka /
+    VBD proxy). TCP ``z_m = ee_scale_z * tcp_translate_z``.
     """
     sx, _sy, sz = ee_scale_xyz
     mx, _my, mz = mesh_scale_xyz
@@ -116,6 +117,7 @@ def scrape_ee_cylinder_authored(usd_path: Path) -> dict:
 
     tcp_block = _extract_child_block(ee_block, r'def\s+Xform\s+"tcp"')
     tcp_translate = _parse_xform_triple(tcp_block, "xformOp:translate")
+    tcp_orient = _parse_xform_quat_wxyz(tcp_block, "xformOp:orient")
 
     return {
         "ee_scale_xyz": ee_scale,
@@ -124,6 +126,7 @@ def scrape_ee_cylinder_authored(usd_path: Path) -> dict:
         "mesh_z_min": mesh_z_min,
         "mesh_z_max": mesh_z_max,
         "tcp_translate_xyz": tcp_translate,
+        "tcp_orient_wxyz": tcp_orient,
     }
 
 
@@ -166,6 +169,17 @@ def _parse_xform_triple(block: str, op_name: str) -> tuple[float, float, float]:
         raise ValueError(f"{op_name} must have 3 components, got {parts!r}")
     return (parts[0], parts[1], parts[2])
 
+
+def _parse_xform_quat_wxyz(block: str, op_name: str) -> tuple[float, float, float, float]:
+    """Parse USD ``quatd`` / ``quatf`` as ``(w, x, y, z)``."""
+    pattern = rf"(?:quatd|quatf)\s+{re.escape(op_name)}\s*=\s*\(([^)]+)\)"
+    match = re.search(pattern, block)
+    if match is None:
+        raise ValueError(f"missing {op_name} in block")
+    parts = [float(part.strip()) for part in match.group(1).split(",")]
+    if len(parts) != 4:
+        raise ValueError(f"{op_name} must have 4 components, got {parts!r}")
+    return (parts[0], parts[1], parts[2], parts[3])
 
 def _parse_mesh_z_extent(cylinder_block: str) -> tuple[float, float]:
     extent_match = re.search(

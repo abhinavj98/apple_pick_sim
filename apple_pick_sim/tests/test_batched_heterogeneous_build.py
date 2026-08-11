@@ -72,7 +72,7 @@ def _per_env_recorded_weld_grippers() -> tuple[GripperProxyConfig, ...]:
         mass=0.5,
         shape="cylinder",
         cylinder_radius=0.05,
-        cylinder_half_height=0.07,
+        cylinder_half_height=0.09,
         fix_to_apple=True,
     )
     return (

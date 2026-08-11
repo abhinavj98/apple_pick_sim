@@ -38,12 +38,14 @@ rebuild.
 | Path | Role |
 | ---- | ---- |
 | `s00-d00.parquet` | Example compiled real episode (`real_static_sysid_episode` v1.0.0) |
-| `s02-d00_action.parquet` | Preferred bit-2 source: real episode with non-zero `action` |
+| `s02-d00.parquet` | Preferred bit-2 source: real episode with wrench + `target_pose_4x4` + gains |
+| `s02-d00_action.parquet` | Legacy/local alias (optional) |
 | `funified.parquet` | Additional real / fused episode artifact |
 | `manifest.json` | Collection/run manifest (sim-side batch metadata companion) |
 | `example_view_pre_grasp_settle.py` | Plant-only VBD: pre-grasp settle → optional post-grasp weld → viewer |
 | `example_view_batched_episode_meta.py` | Same settle/weld view from **converted** episode metadata JSON |
-| `example_replay_real_batched.py` | FR3+VIC real replay test (settle→weld→post-grasp settle→GL/actions) via `replay_batched_sysid_structure` |
+| `example_replay_real_batched.py` | FR3+`vic_pose` real replay (settle→weld→post-grasp settle→GL/actions) |
+| `pack_vic_pose_actions.py` | Legacy 6D→19D packer (skip for freshly converted datasets) |
 | `convert_real_to_batched_sysid_metadata.py` | CLI → metadata JSON and/or 1×1 `batched_sysid_v1` (`--dataset-out`) |
 
 ## Pre-grasp settle viewer
@@ -168,12 +170,11 @@ from per-frame `target_pose_4x4` and episode `dump.controller_gains`
 `action_dim=19`, `action_layout=vic_pose_v1`, and
 `action_compatible_with_vic_twist=false`.
 
-**Replay modes:** `example_replay_real_batched.py` defaults to `--controller-mode vic`
-(6D EE twist). For converted datasets with 19D `vic_pose` actions, pass
-`--controller-mode vic_pose`. Default `vic` refuses wrench-marked datasets
-unless `--allow-wrench-as-twist` (incorrect physics; format/GL smoke only) —
-that hatch covers **legacy 6D** exports only and is rejected outright for
-`action_layout=vic_pose_v1` datasets.
+**Replay modes:** `example_replay_real_batched.py` defaults to
+`--controller-mode vic_pose` (19D pose+gains). Converted wrench-origin datasets
+match that default. Use `--controller-mode vic` only for legacy 6D-twist
+datasets. `--allow-wrench-as-twist` is a legacy hatch for old 6D wrench copies
+(incorrect physics) and is rejected for `action_layout=vic_pose_v1` datasets.
 
 `pack_vic_pose_actions.py` is a **legacy** helper for datasets converted **before**
 the exporter packed 19D actions (it rebuilds `action` from `target_pose_4x4`,
@@ -197,24 +198,23 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_trajectory_v
   --output /tmp/real_batched_s02_d00_viz \
   --no-hold-check
 
-# Legacy only (skip for freshly converted 19D datasets): re-pack a 6D-twist dataset,
-# or --force a re-pack with explicit constant Kp/Kd.
-uv run python robot_replay/pack_vic_pose_actions.py \
-  --dataset-in /tmp/real_batched_s02_d00 \
-  --dataset-out /tmp/real_batched_s02_d00_vic_pose \
-  --kp 800 800 800 40 40 40 \
-  --kd 80 80 80 4 4 4 \
-  --overwrite --force
-
-# vic_pose replay (19D pose+gains actions straight from convert):
+# Default path: vic_pose replay (19D pose+gains from convert):
 uv run python robot_replay/example_replay_real_batched.py \
   --dataset /tmp/real_batched_s02_d00 \
-  --controller-mode vic_pose \
   --max-frames 24 --viewer null
 
-# Default vic (6D twist) — only for legacy twist-compatible datasets:
+# Legacy only: re-pack a pre-vic_pose 6D dataset, or --force new constant Kp/Kd.
+uv run python robot_replay/pack_vic_pose_actions.py \
+  --dataset-in /tmp/old_6d_batched \
+  --dataset-out /tmp/old_6d_batched_vic_pose \
+  --kp 800 800 800 40 40 40 \
+  --kd 80 80 80 4 4 4 \
+  --overwrite
+
+# Legacy twist mode (6D) — only for twist-compatible datasets:
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset /tmp/real_batched_s02_d00 \
+  --dataset /tmp/twist_compatible_batched \
+  --controller-mode vic \
   --max-frames 24 --viewer null
 
 # GL: FR3 trajectory after off-screen settle (--max-frames 0 = full episode).
@@ -222,7 +222,6 @@ uv run python robot_replay/example_replay_real_batched.py \
 # Open-loop joints from initial_robot_joint_q (skip IK; base at origin).
 uv run python robot_replay/example_replay_real_batched.py \
   --dataset /tmp/real_batched_s02_d00 \
-  --controller-mode vic_pose \
   --viewer gl --max-frames 0 \
   --settle-substeps 5000 --settle-quiet-every 300 \
   --post-grasp-settle-substeps 500

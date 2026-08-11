@@ -318,6 +318,29 @@ def test_median_features_mid_hold_unstable_keeps_one_hold_pair():
     np.testing.assert_allclose(by_direction[0][0], expected, rtol=1e-5)
 
 
+def test_replay_observation_collector_supports_19d_vic_pose_actions():
+    """Recorded vic_pose actions (T, 19) must reshape to action_dim, not hardcoded 6."""
+    recorded = _arrays_for_steps(steps=2, junction_names=["joint_a"])
+    recorded["action"] = np.arange(2 * 19, dtype=np.float32).reshape(2, 19)
+    recorded["phase"] = np.array([0, 1], dtype=np.int8)
+    recorded["dir_idx"] = np.array([0, 1], dtype=np.int32)
+
+    collector = ReplayObservationCollector(recorded)
+    obs = {
+        "ft_wrist": np.arange(6, dtype=np.float32),
+        "tcp_velocity": np.arange(6, dtype=np.float32),
+        "tcp_pos": np.zeros(3, dtype=np.float32),
+        "apple_pos": np.zeros(3, dtype=np.float32),
+        "woody_start": np.zeros(3, dtype=np.float32),
+        "woody_end": np.zeros(3, dtype=np.float32),
+    }
+    collector.record(obs, frame_idx=1)
+
+    arrays = collector.to_arrays()
+    assert arrays["action"].shape == (1, 19)
+    np.testing.assert_allclose(arrays["action"][0], recorded["action"][1])
+
+
 def test_replay_observation_collector_builds_dataset_shaped_arrays():
     recorded = _arrays_for_steps(steps=2, junction_names=["joint_a", "joint_b"])
     recorded["phase"] = np.array([0, 1], dtype=np.int8)

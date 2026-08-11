@@ -51,6 +51,11 @@ class ReplayObservationCollector:
         )
         self._recorded = recorded
         self._junction_names = [str(name) for name in recorded["junction_names"]]
+        recorded_action = np.asarray(recorded["action"], dtype=np.float32)
+        if recorded_action.ndim == 2:
+            self._action_dim = int(recorded_action.shape[1])
+        else:
+            self._action_dim = 6
         self._rows: dict[str, list[np.ndarray | int]] = {
             "action": [],
             "ft_wrist": [],
@@ -103,7 +108,9 @@ class ReplayObservationCollector:
                 raise KeyError(f"missing replay observation field: {key}")
 
         self._rows["action"].append(
-            np.array(self._recorded_row("action", frame_idx), dtype=np.float32, copy=True).reshape(6)
+            np.array(self._recorded_row("action", frame_idx), dtype=np.float32, copy=True).reshape(
+                self._action_dim
+            )
         )
         self._rows["ft_wrist"].append(
             np.array(obs["ft_wrist"], dtype=np.float32, copy=True).reshape(6)

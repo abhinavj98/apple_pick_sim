@@ -4,10 +4,10 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-07-17 |
+| **Last updated** | 2026-08-11 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[V].5.3** — held-out sim-sim validation (V.5.2 CMA-ES Done) |
+| **Active work**  | **[M4].0** — real `robot_replay` → CMA-ES (`vic_pose`); V.5.3 held-out deferred |
 
 ---
 
@@ -34,72 +34,69 @@
 | **[V].1–2** | Done | Batched `replicate(N)`, heterogeneous per-env DR, fixtures, runtime actions (`docs/vectorized-coupled-fruiting.md`) |
 | **[V].3** | Done | Sim API + batched gym (V.3.1–V.3.5) |
 | **[V].4** | Done | Parallel collect, batched replay, in-process MSE/Wasserstein grid, tooling |
-| **[V].5** | **Now** | V.5.1–V.5.2 Done → held-out validation (V.5.3); absorbs former **[S]** / M3.2 |
-| **[M4]** | Later | Real-data collection — after **V.5** |
+| **[V].5** | Infra Done | V.5.1–V.5.2 Done; **V.5.3 held-out deferred** while **M4.0** starts |
+| **[M4]** | **Now** | **M4.0** real `robot_replay` → CMA-ES (`vic_pose`); further real collection later |
 | **[M5]** | Later | Final pick policy |
 
 ---
 
 ## Current focus
 
-**Next slice:** **V.5.3 — held-out sim-sim validation**. **V.5.2 Done** — CMA-ES calibration verified (focused/full suites, CLI checks, CUDA collect → fused CMA + scalar smoke). **Phenotype (current code):** support-joint \(k_p\) × spur/stem Young's \(E\) (not free primary \(E\)); see `docs/youngs-modulus-sysid.md`.
+**Next slice:** **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)**. Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 / this slice:** feed converted real episodes into the existing support-\(k_p\) × spur/stem \(E\) CMA-ES pipeline without migrating gym collect / MMD / default sim-sim CMA off twist `vic`.
+
+**Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see `docs/youngs-modulus-sysid.md`.
 
 **Scope for this slice:**
 
-- Fit support-joint \(k_p\) (shared angular+linear; support \(\zeta\) from dataset `joint_damping_ratio`) plus spur and stem Young's modulus; keep primary \(E\), geometry, density, mass, secondary \(E\), and other fields fixed
-- Separate `example_youngs_modulus_cmaes.py`; retain the Cartesian grid as a diagnostic/gate command
-- Search-box midpoint initialization for the three free dims, fused generation evaluation, explicit final-mean replay, per-structure fit reports, and cross-structure statistics
-- Keep stored GT for evaluation/reporting only, not initialization or fitness
+- Multi-episode convert of `robot_replay/s02-d*.parquet` (and peers) → one or more `batched_sysid_v1` datasets with `action_layout=vic_pose_v1` / `action_dim=19` (export already packs from `target_pose_4x4` + `dump.controller_gains`)
+- Teach CMA / fused replay / grid CLIs to **opt into** `ControllerConfig(mode="vic_pose", action_dim=19)` when the dataset declares `vic_pose_v1` (or via an explicit flag); do **not** change default gym collect, MMD grid, or sim-sim CMA callers (they stay twist `vic`, `action_dim=6`)
+- Score candidates against **real** observed bags (woody / F/T features already in the converted episode), not a sim-oracle GT phenotype inserted for ranking
+- Smoke: convert → short `vic_pose` replay → CMA (or grid) fit on ≥1 real structure → write `cmaes_report.json` / ranking artifacts
+- Document the real-data command path in `robot_replay/README.md` + this roadmap’s validation block
 
-**V.5.2 progress:**
+**Out of scope (this slice):**
 
-- `SupportKpYoungsCandidate` / `log10` maps + `set_rod_youngs_modulus` + `apply_per_env_support_joint_penalties` (`batched_sysid_cmaes.py`, `support_joint_penalties.py`, `params.py`)
-- Keyboard E-grid teleop with soft-disable: `example_batched_youngs_modulus_keyboard.py`
-- Dataset-driven support-\(k_p\)×E grid replay + ranking + faceted Plotly overlay: `example_youngs_modulus_sys_id.py` / `youngs_modulus_overlay_viz.py` (collect via `example_batched_collect_sysid_data.py`)
-- Complete scoring: pooled Sinkhorn fitness, physical per-direction diagnostics, direction completeness, candidate-local invalid handling, strict JSON
-- Multi-seed ranking gate: `gate_youngs_modulus_sysid.sh` + `youngs_modulus_gate_report.py`; strict majority per seed (3/5 by default), all seeds required to pass
-- Fused multi-structure grid/CMA replay: stable structure/candidate/direction keys, whole-candidate chunking, per-env episode initialization, scalar fallback; enabled by default
-- Separate CMA-ES CLI + coordinator: `example_youngs_modulus_cmaes.py`, fused generation waves in `batched_sysid_cmaes.py`, atomic `cmaes_report.json`, final-mean overlays
-- Separate CMA **integrity** gate (no GT-error threshold): `gate_youngs_modulus_cmaes.sh` + `youngs_modulus_cmaes_gate_report.py`
-- Fused implementation is present, but clean independent/fused timing, low-cap parity, build count, and peak-memory acceptance remain pending
-- Canonical grid contract: `docs/youngs-modulus-sysid.md`; CMA design: `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`; CMA notes: `docs/youngs-modulus-cmaes-implementation.md`
-- **Breaking CLI (support-\(k_p\) retarget):** `--log10-e-primary` → `--support-kp-values` / `--log10-support-kp`; report keys use `log10_vector` (not free primary \(E\))
+- Migrating gym collect / MMD / default CMA sim-sim off twist `vic`
+- Force-hybrid / wrench-apply mode (pose PD via `vic_pose` is the drive)
+- Full [M4] new bench collection protocol (use existing `robot_replay/` logs)
+- **V.5.3** held-out sim-sim validation (deferred; resume after M4.0 smoke or when directed)
 
-**Specs:** `docs/system_identification.md`, `docs/youngs-modulus-sysid.md`, `docs/youngs-modulus-cmaes-implementation.md`, `docs/sysid-transition-features.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/batched-sysid-dataset.md`, `docs/batched-stability-monitor-design.md`, `docs/digital-twin.md`, `docs/material-parameter-sampling.md`
+**Checklist:**
 
-**Shipped wins (do not reimplement):**
-
-- **V.3** full: batched heterogeneous sim API + gym (V.3.1–V.3.5)
-- **V.4** full: parallel collect, replay, in-process grid, tooling (V.4.1–V.4.4); V.4.2.1 infer-only fidelity floor accepted deferred/out of path
-- **V.5.1 Done** — loss hardening below
-
-- Settle stack: quiet / zero-qd, opt-in gravity ramp, **opt-in** settle cache (off by default), KE/QS diagnostics (`docs/vectorized-coupled-fruiting.md`)
-- **V.4.2** parallel GT collection (`batched_sysid_v1`, `example_batched_collect_sysid_data.py`)
-- Batched recorded-action replay (`replay_batched_sysid_structure`)
-- **V.4.3** in-process GPU-batched stiffness grid: MSE + Sinkhorn Wasserstein + Plotly viz (`example_batched_sysid_mmd_grid.py`; alignment notes in `docs/sysid-mmd-grid-replay-alignment.md`)
-- **V.5.1 — stable collect / replay:** soft-disable during collect (`EnvDisableController`, sticky on NaN/IK); manifest `excluded` / `excluded_reason`; offline `exclude_unstable_episodes` (exclude when unstable-frame **fraction > 0.25**, preserve already-excluded); online stability force/torque caps **100 N** / **40 N·m** (`docs/batched-stability-monitor-design.md`); scripts `scripts/collect_and_rank_sysid_gt.sh`, `scripts/gate_sysid_gt_sinkhorn.sh`
-- **V.5.1 — scoring / features:** transition-feature contract (`docs/sysid-transition-features.md`); CLI defaults `--use-median` / `--hold-id-onehot` / `--pool-directions` **on** (pool forces dir one-hot; disable with `--no-*`; deprecated `--mse-hold-aggregation` / `--mse-hold-latter-half`); named Sinkhorn gates via `scripts/gate_sysid_gt_sinkhorn.sh` (script default `GATE=gate_pooled_dirs`; also `gate_median_hold` / `gate_hold_id`); `sysid_gate_report.py` + grid-viz paired-hold woody MSE helper
-
-**Shipped ranking policy:** GT should rank first on healthy samples. Bad ranks from bad sampling remain diagnostic, and the Young's operational gate requires a strict majority per seed rather than universal rank one.
-
-**Existing tooling (still useful):** `mmd_features.py` `stable` mask, median hold aggregation / hold→hold median bags, grid-viz candidate `disqualified` flags, hold impulse flags in `batched_hold_quasi_static.py`, online `batched_stability_monitor` (`docs/batched-stability-monitor-design.md`), soft-disable + exclude-fraction policy above.
-
-**Deferred / later cleanup (not Current focus):** optional CLI `--score-mmd` (library MMD exists; **replaced by Wasserstein** for ranking — wire flag later if needed); V.4.2.1 infer-only fidelity floor (helpers/`--infer-params` exist; oracle default is fine for the current CMA-ES path).
-
-**Known issues — debug next:**
-
-- [x] **Post-grasp apple orientation vs GT** (`robot_replay/example_view_pre_grasp_settle.py --grasp-after-settle`) — **Fixed 2026-08-07.** Free-scene apple init + stem–apple FIXED child anchor use **pre-grasp tracker quat** (`FruitingSystemParams.apple_quat_xyzw` from `apple_pose_4x4` / `apple_quat_xyzw` on the preferred woody snapshot) so the apple body frame matches the marker frame; post-grasp full logged SE(3) weld is consistent. Spec: `docs/superpowers/specs/2026-08-07-pre-grasp-apple-orientation-design.md`. `--apple-position-only` remains an optional escape hatch (keep settle quat). Code: `real_pre_grasp_params.py`, `real_post_grasp_plan.py`, `fruiting_system/build.py`.
-- [x] **Real parquet `action` is pose-control wrench, not EE twist** — **Fixed 2026-08-10.** Confirmed in `dump.action_semantics` / `field_layout.action` (`[Fx…Tz]`). Export packs 19D `vic_pose` actions (`[pos(3), quat_wxyz(4), Kp(6), Kd(6)]`) from `target_pose_4x4` + `dump.controller_gains`, and the **sim consumer is wired**: `ControllerConfig(mode="vic_pose", action_dim=19)`, `Fr3BatchedEEImpedanceController.unpack_pose_action`, per-env anisotropic gain buffers in the batched VIC wrench kernel, and `example_replay_real_batched.py --controller-mode vic_pose`. Legacy 6D datasets convert via `robot_replay/pack_vic_pose_actions.py`. Spec: `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md`; behavior: `docs/variable-impedance-teleop.md` §`vic_pose`.
-
-*(No open debug items under Current focus.)*
-
-**Goal:** **V.5.2** CMA-ES on GT-preferring batched scores → **V.5.3** held-out sim-sim validation → **[M4]**.
+- [ ] Dataset discovery / multi-episode manifest for real converted dirs (or documented one-dataset-per-episode CMA loop)
+- [ ] CMA / multi-replay / grid build path selects `vic_pose` + `action_dim=19` from dataset metadata (twist default preserved)
+- [ ] Real GT feature bags load without requiring sim `fruiting_system_params` as the ranking oracle
+- [ ] Unit/CLI tests for metadata→controller mode selection; refuse wrench-as-twist regressions
+- [ ] End-to-end smoke on `s02-d00` (convert → CMA or grid) with `--viewer null`
+- [ ] README + validation commands updated
 
 **Build on (do not reimplement):**
 
-- [M1] `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_fr3`, `measure_fruiting_forces`, `sample_params` / `params_fingerprint`, VIC joint torques (`docs/variable-impedance-teleop.md`)
-- [M2.1] `apple_pick_gym/` observation contract v3 (`docs/gym-observation-contract.md`); θ packing reused in V.4 / V.5
-- [V.4.3] `example_batched_sysid_mmd_grid.py`, `batched_sysid_mmd_grid.py`, `evaluate_batched_mmd_grid` / `score_candidate_mmd` (library), MSE/Wasserstein CLI paths
+- `robot_replay/convert_real_to_batched_sysid_metadata.py`, `real_to_batched_sysid.export_real_episode_to_batched_dataset` (19D pack)
+- `robot_replay/example_replay_real_batched.py` (`--controller-mode vic_pose`)
+- `example_youngs_modulus_cmaes.py` / `batched_sysid_cmaes.py` / `replay_batched_sysid_structure` (additive `action_dim`)
+- Specs: `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md`, `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 3), `docs/variable-impedance-teleop.md` §`vic_pose`, `robot_replay/README.md`
+
+**Shipped wins relevant to this slice (do not reimplement):**
+
+- Bit-1 native pre/post parity convert; bit-2 format export + open-loop FR3 placement
+- `vic_pose` controller + aniso wrench kernel + soft-disable pose hold
+- V.5.1–V.5.2 sim-sim CMA on twist `vic` datasets (support-\(k_p\) phenotype)
+
+**Deferred / later (not Current focus):** **V.5.3** held-out sim-sim validation; optional CLI `--score-mmd`; V.4.2.1 infer-only fidelity floor; gym/MMD migration to `vic_pose`.
+
+**Known issues — debug next:**
+
+- [x] **Post-grasp apple orientation vs GT** — Fixed 2026-08-07 (pre-grasp quat seed).
+- [x] **Real parquet `action` is pose-control wrench** — Fixed 2026-08-10 (`vic_pose` pack + controller).
+
+**Goal:** **M4.0** real CMA on `robot_replay` → (optional return to) **V.5.3** held-out sim-sim → broader **[M4]** collection → **[M5]**.
+
+**Also build on (milestones):**
+
+- [M1] `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_fr3`, VIC joint torques (`docs/variable-impedance-teleop.md`)
+- [M2.1] `apple_pick_gym/` observation contract v3
+- [V.4.3] / [V.5.2] grid + support-\(k_p\) CMA / fused multi-structure replay
 
 ### Next up (ordered)
 
@@ -132,7 +129,12 @@
   - [x] Fused multi-structure replay implementation (clean performance/low-cap acceptance pending)
   - [x] Separate pycma ask/tell CLI + explicit final-mean evaluation + aggregate fit report + integrity gate
   - [x] Focused/full test suites, CLI checks, and CUDA acceptance (5 structures × 5 directions; report optimized vs GT, evaluated-history min/max, final covariance)
-- [ ] **V.5.3 — Held-out sim-sim validation** + [M4] handoff criteria — **Next**
+- [ ] **V.5.3 — Held-out sim-sim validation** + [M4] handoff criteria — **Deferred** (not Current focus; resume after M4.0 or when directed)
+
+**[M4] real-data calibration**
+
+- [ ] **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)** — **Next** (this Current focus)
+- [ ] **M4.1+** — Broader real collection / held-out real segments (after M4.0)
 
 **[M3] parallel infra** (optional alongside [V])
 
@@ -185,13 +187,20 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.4.4** | Done | Gate/collect scripts + batch tooling; further dashboard polish optional |
 | **V.5.1** | Done | GT #1 on good samples; Wasserstein primary; `--score-mmd` cleanup later |
 | **V.5.2** | Done | CMA-ES loop verified (tests + CUDA 5×5 acceptance) |
-| **V.5.3** | **Next** | Held-out validation; [M4] handoff |
+| **V.5.3** | Deferred | Held-out sim-sim validation (after M4.0 or when directed) |
+
+### [M4] Real-data calibration
+
+| Slice | Status | Deliverable |
+| ----- | ------ | ----------- |
+| **M4.0** | **Next** | Converted `robot_replay` episodes → support-\(k_p\) CMA/grid under `vic_pose` |
+| **M4.1+** | Later | Broader real collection / held-out real metrics |
 
 Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Public API reference: `docs/coupled-sim-api.md`.
 
-**Consumers after V.5:** [M4] real-data validation; M2.3 / M2.2c parallel RL envs.
+**Consumers after M4.0:** resume **V.5.3** if needed; broader **[M4]** collection; **[M5]** pick policy.
 
-> Former **[S] sim-sim transfer** is fully absorbed into **V.4** (grid diagnostic) and **V.5** (harden loss → CMA-ES → validation).
+> Former **[S] sim-sim transfer** is fully absorbed into **V.4** (grid diagnostic) and **V.5** (harden loss → CMA-ES). **M4.0** starts real-data calibration on existing `robot_replay/` logs.
 
 ---
 
@@ -201,7 +210,8 @@ Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_co
 - **[V] deferred** — per-env geometry DR on reset without rebuild; `(N, act_dim)` policy tensor path; batched VIC as default gym controller; public `gather_transitions()` API if needed beyond feature bags
 - Optional cleanup: CLI `--score-mmd`; V.4.2.1 infer-only fidelity floor on `batched_sysid_v1`
 - **Scope changes** — additional manipulators/crops; triangle mesh import (P0 stays capsules)
-- **[M4]** real-data pipeline, **[M5]** final pick policy — after V.5
+- **V.5.3** held-out sim-sim validation — deferred behind **M4.0**
+- **[M4.1+]** broader real-data pipeline, **[M5]** final pick policy — after M4.0
 
 ---
 
@@ -382,6 +392,23 @@ uv run --env-file pytest.env python \
 # CUDA acceptance (Task 8 passed): collect 5x5, fused CMA-ES, scalar smoke, and
 # validation reports under tmp/task8_cuda_acceptance/ (see implementation notes).
 
+# [M4].0 — real robot_replay → vic_pose replay → CMA/grid (Current focus)
+# Convert packs 19D vic_pose_v1; gym collect / MMD / default sim-sim CMA stay on twist vic.
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input robot_replay/s02-d00.parquet \
+  --dataset-out tmp/real_batched_s02_d00 --overwrite
+uv run python robot_replay/example_replay_real_batched.py \
+  --dataset tmp/real_batched_s02_d00 --viewer null --max-frames 24 \
+  --settle-substeps 80 --post-grasp-settle-substeps 0
+# After M4.0 wiring: CMA/grid must opt into vic_pose from dataset metadata, e.g.
+# uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+#   --viewer null --dataset tmp/real_batched_s02_d00 \
+#   --output tmp/real_s02_cmaes_fit --overwrite
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_real_to_batched_sysid.py \
+  apple_pick_gym/tests/test_real_batched_replay_cli.py \
+  robot_replay/tests/test_pack_vic_pose_actions.py -q
+
 # Optional Sinkhorn gate wrapper (not a full slow e2e; needs GPU + long runtime)
 # Default GATE=gate_pooled_dirs (matches CLI pool/hold-id defaults):
 # bash scripts/gate_sysid_gt_sinkhorn.sh
@@ -392,7 +419,7 @@ uv run --env-file pytest.env python \
 **Stop and ask the maintainer when:**
 
 - Vision vs roadmap vs code conflict
-- Policy or product decisions (scope, user-visible behavior)
+- Policy or product decisions (scope, user-visible behavior) — especially real-vs-sim GT scoring for M4.0
 - Network credentials, paid APIs, or destructive operations
 
 **When unsupervised is expected:**
@@ -400,3 +427,4 @@ uv run --env-file pytest.env python \
 - Complete the **next unchecked slice** in Current focus using TDD and project rules
 - Fix small blockers uncovered by that slice (tests, imports, typos)
 - Do **not** start a new milestone or backlog item without maintainer direction
+- Do **not** migrate gym collect / MMD / default sim-sim CMA off twist `vic` unless this slice’s checklist explicitly requires an opt-in path

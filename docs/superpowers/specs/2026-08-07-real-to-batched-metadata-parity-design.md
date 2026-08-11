@@ -2,10 +2,10 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Bit 1 Done; bit 2 **format export Done**, **correct drive signal pending** (real `action` is pose-control wrench) |
-| **Date** | 2026-08-07 (status revised 2026-08-10) |
+| **Status** | Bits 1–2 Done (incl. `vic_pose` pack + controller); **bit 3 = ROADMAP M4.0 (Current focus)** |
+| **Date** | 2026-08-07 (status revised 2026-08-11) |
 | **Source of truth** | `robot_replay/example_view_pre_grasp_settle.py` (native pre/post stack) |
-| **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C1), `robot_replay/README.md`, `docs/batched-sysid-dataset.md`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
+| **Related** | `docs/ROADMAP.md` M4.0, `docs/real-sysid-pre-post-grasp-fixes.md` (C1), `robot_replay/README.md`, `docs/batched-sysid-dataset.md`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
 
 ## Purpose
 
@@ -18,8 +18,8 @@ proves **pre-grasp and post-grasp geometry/weld init** match the settle viewer.
 | Bit | Scope | Status |
 | --- | ----- | ------ |
 | **1** | Fix converter via shared native builders; numeric parity; batched-meta viewer | **Done** |
-| **2** | Full `batched_sysid_v1` trajectory export + open-loop FR3 placement + format gate | **Format Done**; physics drive **blocked** on wrench≠twist |
-| **3** | Feed converted episodes into existing sys-ID CMA-ES | Later (needs correct drive) |
+| **2** | Full `batched_sysid_v1` trajectory export + open-loop FR3 + 19D `vic_pose` packing + replay | **Done** |
+| **3** | Feed converted episodes into existing sys-ID CMA-ES under `vic_pose` | **Next** (= ROADMAP **M4.0**) |
 
 ## Architecture (bit 1)
 

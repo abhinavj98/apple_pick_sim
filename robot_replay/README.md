@@ -171,11 +171,16 @@ from per-frame `target_pose_4x4` and episode `dump.controller_gains`
 **Replay modes:** `example_replay_real_batched.py` defaults to `--controller-mode vic`
 (6D EE twist). For converted datasets with 19D `vic_pose` actions, pass
 `--controller-mode vic_pose`. Default `vic` refuses wrench-marked datasets
-unless `--allow-wrench-as-twist` (incorrect physics; format/GL smoke only).
+unless `--allow-wrench-as-twist` (incorrect physics; format/GL smoke only) —
+that hatch covers **legacy 6D** exports only and is rejected outright for
+`action_layout=vic_pose_v1` datasets.
 
-`pack_vic_pose_actions.py` can also re-pack an already-converted dataset (e.g.
-when gains differ from export defaults, or to build from `tcp_pos`/`tcp_quat`
-fallback columns).
+`pack_vic_pose_actions.py` is a **legacy** helper for datasets converted **before**
+the exporter packed 19D actions (it rebuilds `action` from `target_pose_4x4`,
+`tcp_pose_4x4`, or `tcp_pos`/`tcp_quat`). Because convert now writes
+`action_layout=vic_pose_v1` itself, **skip packing** for freshly converted
+datasets: the packer refuses an already-19D source unless you pass `--force`
+(only useful to substitute different constant `Kp`/`Kd`).
 
 `fill_actions_from_tcp_velocity.py` is only for older **zero-action** files; it
 does **not** convert wrench logs into correct drive and is **not** equivalent to
@@ -192,21 +197,22 @@ uv run python apple_pick_gym/batched_examples/example_batched_sysid_trajectory_v
   --output /tmp/real_batched_s02_d00_viz \
   --no-hold-check
 
-# Optional: re-pack with explicit Kp/Kd (or tcp_pos/tcp_quat fallback):
+# Legacy only (skip for freshly converted 19D datasets): re-pack a 6D-twist dataset,
+# or --force a re-pack with explicit constant Kp/Kd.
 uv run python robot_replay/pack_vic_pose_actions.py \
   --dataset-in /tmp/real_batched_s02_d00 \
   --dataset-out /tmp/real_batched_s02_d00_vic_pose \
   --kp 800 800 800 40 40 40 \
   --kd 80 80 80 4 4 4 \
-  --overwrite
+  --overwrite --force
 
-# vic_pose replay (19D pose+gains actions):
+# vic_pose replay (19D pose+gains actions straight from convert):
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset /tmp/real_batched_s02_d00_vic_pose \
+  --dataset /tmp/real_batched_s02_d00 \
   --controller-mode vic_pose \
   --max-frames 24 --viewer null
 
-# Default vic (6D twist) — only for twist-compatible datasets:
+# Default vic (6D twist) — only for legacy twist-compatible datasets:
 uv run python robot_replay/example_replay_real_batched.py \
   --dataset /tmp/real_batched_s02_d00 \
   --max-frames 24 --viewer null
@@ -215,7 +221,7 @@ uv run python robot_replay/example_replay_real_batched.py \
 # Settle defaults match example_view_pre_grasp_settle.
 # Open-loop joints from initial_robot_joint_q (skip IK; base at origin).
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset /tmp/real_batched_s02_d00_vic_pose \
+  --dataset /tmp/real_batched_s02_d00 \
   --controller-mode vic_pose \
   --viewer gl --max-frames 0 \
   --settle-substeps 5000 --settle-quiet-every 300 \

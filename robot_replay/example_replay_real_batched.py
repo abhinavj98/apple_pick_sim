@@ -366,11 +366,46 @@ def _make_parser() -> argparse.ArgumentParser:
         "--allow-wrench-as-twist",
         action="store_true",
         help=(
-            "Permit replay when episode action is a real pose-control wrench "
-            "(incorrect physics under mode=vic; format/GL smoke only)."
+            "Permit replay when a legacy 6D episode action is a real pose-control "
+            "wrench (incorrect physics under mode=vic; format/GL smoke only). "
+            "Rejected for 19D vic_pose datasets."
         ),
     )
     return p
+
+
+def check_action_semantics(
+    *,
+    controller_mode: str,
+    collection: dict,
+    episode_meta: dict,
+    allow_wrench_as_twist: bool,
+) -> None:
+    """Raise ``SystemExit`` when ``action`` semantics do not match ``controller_mode``."""
+    pose_packed = (
+        collection.get("action_layout") == "vic_pose_v1"
+        or episode_meta.get("action_layout") == "vic_pose_v1"
+        or int(collection.get("action_dim") or 0) == 19
+        or int(episode_meta.get("action_dim") or 0) == 19
+    )
+    if controller_mode == "vic" and allow_wrench_as_twist and pose_packed:
+        raise SystemExit(
+            "--allow-wrench-as-twist only applies to legacy 6D wrench-as-twist exports; "
+            "this dataset already carries 19D vic_pose actions "
+            "(action_layout=vic_pose_v1). Use --controller-mode vic_pose instead."
+        )
+
+    wrench_marked = (
+        episode_meta.get("action_compatible_with_vic_twist") is False
+        or collection.get("action_compatible_with_vic_twist") is False
+    )
+    if controller_mode == "vic" and wrench_marked and not allow_wrench_as_twist:
+        raise SystemExit(
+            "dataset action is a real pose-control wrench, not an EE twist for "
+            "mode=vic. Refuse incorrect physics. Use --controller-mode vic_pose "
+            "for 19D pose actions, or pass --allow-wrench-as-twist for format/GL "
+            "smoke only."
+        )
 
 
 def _run(args: argparse.Namespace, viewer: object) -> int:
@@ -394,21 +429,12 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
         raise SystemExit(str(exc)) from exc
 
     controller_mode = str(args.controller_mode)
-    wrench_marked = (
-        episode_meta.get("action_compatible_with_vic_twist") is False
-        or collection.get("action_compatible_with_vic_twist") is False
+    check_action_semantics(
+        controller_mode=controller_mode,
+        collection=collection,
+        episode_meta=episode_meta,
+        allow_wrench_as_twist=bool(args.allow_wrench_as_twist),
     )
-    if (
-        controller_mode == "vic"
-        and wrench_marked
-        and not bool(args.allow_wrench_as_twist)
-    ):
-        raise SystemExit(
-            "dataset action is a real pose-control wrench, not an EE twist for "
-            "mode=vic. Refuse incorrect physics. Use --controller-mode vic_pose "
-            "for 19D pose actions, or pass --allow-wrench-as-twist for format/GL "
-            "smoke only."
-        )
 
     candidates = [gt_bend_stiffness_candidate_from_structure(dataset, structure_idx)]
     max_frames = int(args.max_frames)

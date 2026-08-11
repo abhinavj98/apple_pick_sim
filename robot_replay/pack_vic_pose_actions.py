@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""Rewrite a converted ``batched_sysid_v1`` dataset's ``action`` column from a
-6D EE twist to a 19D ``vic_pose`` action: ``[pos(3), quat_wxyz(4), Kp(6), Kd(6)]``.
+"""Rewrite a **legacy 6D-twist** ``batched_sysid_v1`` dataset's ``action`` column into a
+19D ``vic_pose`` action: ``[pos(3), quat_wxyz(4), Kp(6), Kd(6)]``.
+
+Datasets exported by ``real_to_batched_sysid`` already carry 19D ``vic_pose_v1``
+actions; this packer refuses those (pass ``--force`` to re-pack with different gains).
 
 Position/orientation come from each frame's ``target_pose_4x4`` (falling back
 to ``tcp_pose_4x4``, then ``tcp_pos`` + ``tcp_quat`` xyzw when absent);
@@ -92,6 +95,26 @@ def _pose_action_from_pos_quat(
     return [*p, *quat_wxyz, *kp, *kd]
 
 
+def _pose_packed_reason(src_dir: Path) -> str | None:
+    """Return why ``src_dir`` already carries 19D ``vic_pose`` actions, else ``None``."""
+    manifest_path = src_dir / "manifest.json"
+    if manifest_path.exists():
+        collection = json.loads(manifest_path.read_text()).get("collection", {})
+        if collection.get("action_layout") == "vic_pose_v1":
+            return 'manifest collection.action_layout == "vic_pose_v1"'
+        if int(collection.get("action_dim") or 0) == _ACTION_DIM:
+            return f"manifest collection.action_dim == {_ACTION_DIM}"
+
+    for path in sorted((src_dir / "episodes").glob("*.parquet")):
+        table = pq.read_table(path, columns=["action"])
+        if table.num_rows == 0:
+            continue
+        if len(table.column("action")[0].as_py()) == _ACTION_DIM:
+            return f"{path.name} action column is already {_ACTION_DIM} wide"
+        break
+    return None
+
+
 def pack_vic_pose_actions(
     src_dir: Path,
     dst_dir: Path,
@@ -99,13 +122,27 @@ def pack_vic_pose_actions(
     kp: tuple[float, ...],
     kd: tuple[float, ...],
     overwrite: bool = False,
+    force: bool = False,
 ) -> dict:
-    """Copy ``src_dir`` to ``dst_dir`` with 19D ``vic_pose`` actions; return ``{episodes, frames}``."""
+    """Copy ``src_dir`` to ``dst_dir`` with 19D ``vic_pose`` actions; return ``{episodes, frames}``.
+
+    Refuses datasets whose ``action`` is already pose-packed (the exporter writes 19D
+    ``vic_pose_v1`` actions directly) unless ``force`` is set: such datasets should be
+    replayed as-is rather than rewritten from pose columns.
+    """
     if len(kp) != _GAIN_DIM or len(kd) != _GAIN_DIM:
         raise ValueError(f"kp/kd must each have {_GAIN_DIM} entries")
 
     src_dir = Path(src_dir)
     dst_dir = Path(dst_dir)
+    if not force:
+        reason = _pose_packed_reason(src_dir)
+        if reason is not None:
+            raise ValueError(
+                f"{src_dir} is already pose-packed ({reason}). This packer is for legacy "
+                "6D-twist converted datasets only; replay the dataset directly with "
+                "--controller-mode vic_pose, or pass --force to re-pack it with new Kp/Kd."
+            )
     if dst_dir.exists():
         if not overwrite:
             raise FileExistsError(f"{dst_dir} already exists (pass --overwrite to replace)")
@@ -166,15 +203,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--kp", type=float, nargs=6, required=True, metavar="Kp")
     parser.add_argument("--kd", type=float, nargs=6, required=True, metavar="Kd")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-pack even when --dataset-in already carries 19D vic_pose actions.",
+    )
     args = parser.parse_args(argv)
 
-    stats = pack_vic_pose_actions(
-        args.dataset_in,
-        args.dataset_out,
-        kp=tuple(args.kp),
-        kd=tuple(args.kd),
-        overwrite=bool(args.overwrite),
-    )
+    try:
+        stats = pack_vic_pose_actions(
+            args.dataset_in,
+            args.dataset_out,
+            kp=tuple(args.kp),
+            kd=tuple(args.kd),
+            overwrite=bool(args.overwrite),
+            force=bool(args.force),
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     print(json.dumps(stats, indent=2))
     return 0
 

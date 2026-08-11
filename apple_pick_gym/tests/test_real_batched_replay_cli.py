@@ -37,6 +37,55 @@ def test_parser_accepts_viewer_gl_and_null():
     assert null.viewer == "null"
 
 
+def test_parser_accepts_allow_wrench_as_twist():
+    mod = _load_replay()
+    p = mod._make_parser()
+    args = p.parse_args(["--dataset", "/tmp/ds", "--allow-wrench-as-twist"])
+    assert args.allow_wrench_as_twist is True
+    default = p.parse_args(["--dataset", "/tmp/ds"])
+    assert default.allow_wrench_as_twist is False
+
+
+def test_allow_wrench_as_twist_rejects_pose_packed_dataset():
+    """The escape hatch is legacy-6D only; 19D vic_pose datasets must fail fast."""
+    mod = _load_replay()
+    collection = {"action_dim": 19, "action_layout": "vic_pose_v1"}
+    with pytest.raises(SystemExit, match="legacy 6D"):
+        mod.check_action_semantics(
+            controller_mode="vic",
+            collection=collection,
+            episode_meta={"action_compatible_with_vic_twist": False},
+            allow_wrench_as_twist=True,
+        )
+
+
+def test_action_semantics_refuses_wrench_marked_dataset_under_vic():
+    mod = _load_replay()
+    with pytest.raises(SystemExit, match="vic_pose"):
+        mod.check_action_semantics(
+            controller_mode="vic",
+            collection={"action_dim": 6},
+            episode_meta={"action_compatible_with_vic_twist": False},
+            allow_wrench_as_twist=False,
+        )
+
+
+def test_action_semantics_allows_legacy_6d_hatch_and_vic_pose_mode():
+    mod = _load_replay()
+    mod.check_action_semantics(
+        controller_mode="vic",
+        collection={"action_dim": 6},
+        episode_meta={"action_compatible_with_vic_twist": False},
+        allow_wrench_as_twist=True,
+    )
+    mod.check_action_semantics(
+        controller_mode="vic_pose",
+        collection={"action_dim": 19, "action_layout": "vic_pose_v1"},
+        episode_meta={"action_compatible_with_vic_twist": False},
+        allow_wrench_as_twist=False,
+    )
+
+
 def test_parser_settle_defaults_match_pre_grasp_settle_viewer():
     """Defaults align with example_view_pre_grasp_settle (5000 / quiet 300 / post 500)."""
     mod = _load_replay()

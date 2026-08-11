@@ -1315,7 +1315,7 @@ def ensure_gt_candidate_in_grid(
     return [*candidates, gt]
 
 
-def build_recorded_actions_tensor(
+def stacked_recorded_actions_for_structure(
     dataset: BatchedSysIdDataset,
     *,
     structure_idx: int,
@@ -1323,6 +1323,7 @@ def build_recorded_actions_tensor(
     num_candidates: int,
     direction_indices: Sequence[int] | None = None,
     include_excluded: bool = False,
+    action_dim: int = 6,
 ) -> np.ndarray:
     """Stack recorded EE actions for all candidate/direction env slots."""
     dirs = resolve_direction_indices(
@@ -1339,9 +1340,9 @@ def build_recorded_actions_tensor(
             dataset.load_episode_obs_arrays(structure_idx, int(direction_idx))
         )
         action = np.asarray(arrays["action"], dtype=np.float32)
-        if action.ndim != 2 or action.shape[1] != 6:
+        if action.ndim != 2 or action.shape[1] != action_dim:
             raise ValueError(
-                f"expected action shape (n_frames, 6), got {action.shape!r}"
+                f"expected action shape (n_frames, {action_dim}), got {action.shape!r}"
             )
         if n_frames is None:
             n_frames = int(action.shape[0])
@@ -1354,12 +1355,34 @@ def build_recorded_actions_tensor(
 
     d = len(dirs)
     num_envs = int(num_candidates) * d
-    out = np.empty((num_envs, n_frames, 6), dtype=np.float32)
+    out = np.empty((num_envs, n_frames, action_dim), dtype=np.float32)
     for candidate_idx in range(num_candidates):
         for local_dir, _direction_idx in enumerate(dirs):
             env_idx = candidate_idx * d + local_dir
             out[env_idx] = direction_actions[local_dir]
     return out
+
+
+def build_recorded_actions_tensor(
+    dataset: BatchedSysIdDataset,
+    *,
+    structure_idx: int,
+    num_directions: int,
+    num_candidates: int,
+    direction_indices: Sequence[int] | None = None,
+    include_excluded: bool = False,
+    action_dim: int = 6,
+) -> np.ndarray:
+    """Stack recorded EE actions for all candidate/direction env slots."""
+    return stacked_recorded_actions_for_structure(
+        dataset,
+        structure_idx=structure_idx,
+        num_directions=num_directions,
+        num_candidates=num_candidates,
+        direction_indices=direction_indices,
+        include_excluded=include_excluded,
+        action_dim=action_dim,
+    )
 
 
 def actions_tensor_from_recorded_frame(
@@ -1387,6 +1410,7 @@ def replay_batched_sysid_structure(
     use_oracle_params: bool = True,
     direction_indices: Sequence[int] | None = None,
     include_excluded: bool = False,
+    action_dim: int = 6,
 ) -> BatchedSysIdReplayCollectors:
     """Replay recorded actions for one structure across bend-stiffness candidates."""
     num_candidates = len(candidates)
@@ -1420,6 +1444,7 @@ def replay_batched_sysid_structure(
         num_candidates=num_candidates,
         direction_indices=dirs,
         include_excluded=bool(include_excluded),
+        action_dim=action_dim,
     )
     n_frames = int(recorded_actions.shape[1])
     replay_seed = _resolve_replay_seed(dataset, seed)

@@ -20,6 +20,7 @@ from apple_pick_gym.batched_envs.batched_sysid_collect import (
 from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     gt_bend_stiffness_candidate_from_structure,
     replay_batched_sysid_structure,
+    stacked_recorded_actions_for_structure,
     strip_pre_weld_rows,
 )
 from apple_pick_gym.batched_envs.batched_sysid_world_info import weld_direction_for_world
@@ -33,7 +34,13 @@ from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
 )
 from apple_pick_sim.fruiting_system.params import GripperProxyConfig
 from apple_pick_sim.fruiting_system import fruiting_params_from_json
-from apple_pick_sim.system_id import BatchedSysIdDataset, QuasiStaticStepConfig
+from apple_pick_sim.system_id import (
+    BatchedEpisodeWriter,
+    BatchedSysIdDataset,
+    QuasiStaticStepConfig,
+    write_manifest,
+)
+from apple_pick_sim.system_id.batched_trajectory_store import SCHEMA_VERSION, episode_filename
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_from_episode_metadata,
     infer_base_params_for_structure,
@@ -599,3 +606,119 @@ def test_replay_silent_when_manifest_sim_config_matches(tiny_batched_dataset: Ba
         w for w in caught if "manifest sim_config mismatch" in str(w.message)
     ]
     assert mismatch_warnings == []
+
+
+def _synthetic_obs_for_wide_action() -> dict:
+    return {
+        "excitation_type": 0,
+        "excitation_direction": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        "tcp_velocity": np.zeros(6, dtype=np.float32),
+        "ft_wrist": np.zeros(6, dtype=np.float32),
+        "raw_ft_wrist": np.zeros(6, dtype=np.float32),
+        "tcp_pos": np.array([0.1, 0.2, 0.3], dtype=np.float32),
+        "apple_pos": np.array([0.4, 0.5, 0.6], dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "apple_quat": np.array([0.0, 0.1, 0.0, 0.995], dtype=np.float32),
+        "robot_joint_q": np.zeros(7, dtype=np.float32),
+        "woody_part_start_pos": {
+            "joint_0": np.zeros(3, dtype=np.float32),
+            "joint_1": np.zeros(3, dtype=np.float32),
+        },
+        "woody_part_end_pos": {
+            "joint_0": np.ones(3, dtype=np.float32) * 0.5,
+            "joint_1": np.ones(3, dtype=np.float32) * 0.5,
+        },
+        "woody_part_force": np.zeros(12, dtype=np.float32),
+    }
+
+
+def _write_wide_action_dataset(tmp_path, *, action_dim: int = 19) -> tuple[BatchedSysIdDataset, int]:
+    structure_idx = 0
+    direction_idx = 0
+    n_frames = 3
+    meta = {
+        "schema_version": SCHEMA_VERSION,
+        "episode_id": "wide-action-ep",
+        "structure_idx": structure_idx,
+        "direction_idx": direction_idx,
+        "env_idx": direction_idx,
+        "pull_direction": [1.0, 0.0, 0.0],
+        "params_fingerprint": "{}",
+        "fruiting_system_params": "{}",
+        "excitation_type": "quasi_static",
+        "control_hz": 30.0,
+        "seed": 0,
+        "n_woody_parts": 2,
+        "junction_names": ["joint_0", "joint_1"],
+    }
+    writer = BatchedEpisodeWriter(episode_id=meta["episode_id"])
+    for step_idx in range(n_frames):
+        writer.record_step(
+            step_idx=step_idx,
+            sim_time=float(step_idx) / 30.0,
+            phase="hold",
+            amplitude_m=0.0,
+            action=np.arange(action_dim, dtype=np.float32) + float(step_idx),
+            obs=_synthetic_obs_for_wide_action(),
+        )
+    rel = episode_filename(structure_idx, direction_idx)
+    writer.save(tmp_path / rel, meta)
+    write_manifest(
+        tmp_path,
+        command_argv=["test"],
+        collection={
+            "seed": 0,
+            "num_structures": 1,
+            "num_directions": 1,
+            "control_hz": 30.0,
+            "ranges_path": str(RANGES_FIXTURE),
+        },
+        structures=[
+            {
+                "structure_idx": structure_idx,
+                "junction_names": ["joint_0", "joint_1"],
+                "n_woody_parts": 2,
+            }
+        ],
+        episodes=[
+            {
+                "structure_idx": structure_idx,
+                "direction_idx": direction_idx,
+                "env_idx": direction_idx,
+                "filename": rel,
+                "episode_id": meta["episode_id"],
+                "pull_direction": meta["pull_direction"],
+                "n_frames": n_frames,
+            }
+        ],
+        overwrite=True,
+    )
+    return BatchedSysIdDataset(tmp_path), structure_idx
+
+
+@pytest.fixture
+def tmp_dataset_with_wide_action(tmp_path):
+    return _write_wide_action_dataset(tmp_path)
+
+
+def test_stacked_recorded_actions_accepts_action_dim_19(tmp_dataset_with_wide_action):
+    dataset, structure_idx = tmp_dataset_with_wide_action
+    stacked = stacked_recorded_actions_for_structure(
+        dataset,
+        structure_idx=structure_idx,
+        num_directions=1,
+        num_candidates=1,
+        action_dim=19,
+    )
+    assert stacked.shape[-1] == 19
+
+
+def test_stacked_recorded_actions_default_still_requires_6(tmp_dataset_with_wide_action):
+    dataset, structure_idx = tmp_dataset_with_wide_action
+    with pytest.raises(ValueError, match="shape"):
+        stacked_recorded_actions_for_structure(
+            dataset,
+            structure_idx=structure_idx,
+            num_directions=1,
+            num_candidates=1,
+        )

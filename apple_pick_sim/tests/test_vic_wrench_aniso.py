@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.vic_wrench import compute_vic_spatial_wrench_aniso
@@ -31,6 +32,29 @@ def test_per_axis_gain_scales_only_that_axis():
     assert abs(float(w[0]) - 10.0) < 1e-3  # 100 * 0.1
     assert abs(float(w[1])) < 1e-6  # error is on x only
     assert abs(float(w[2])) < 1e-6
+
+
+def test_angular_error_torque_scales_with_kp_ang():
+    """Torque about z from a yaw error scales linearly with ``kp_ang[2]``."""
+    angle = 0.2
+    half = 0.5 * angle
+    q_des = wp.quat(0.0, 0.0, float(np.sin(half)), float(np.cos(half)))  # xyzw about +z
+    tcp_tf = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+    target_tf = wp.transform(wp.vec3(0.0, 0.0, 0.0), q_des)
+    qd = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    zero3 = wp.vec3(0.0, 0.0, 0.0)
+
+    w_low = compute_vic_spatial_wrench_aniso(
+        tcp_tf, qd, target_tf, zero3, wp.vec3(0.0, 0.0, 10.0), zero3, zero3
+    )
+    w_high = compute_vic_spatial_wrench_aniso(
+        tcp_tf, qd, target_tf, zero3, wp.vec3(0.0, 0.0, 40.0), zero3, zero3
+    )
+    assert abs(float(w_low[5]) - 10.0 * angle) < 1e-4
+    assert abs(float(w_high[5]) - 40.0 * angle) < 1e-4
+    assert abs(float(w_low[3])) < 1e-6  # yaw-only error leaves x/y torque at zero
+    assert abs(float(w_low[4])) < 1e-6
+    assert abs(float(w_low[0])) < 1e-6  # no position error -> no force
 
 
 def test_damping_opposes_velocity_with_v_des_zero():

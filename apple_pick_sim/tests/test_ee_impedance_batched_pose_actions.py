@@ -67,6 +67,25 @@ def test_unpack_pose_action_near_zero_quat_defaults_to_identity():
 
 @requires_fr3
 @pytest.mark.slow
+def test_unpack_pose_action_converts_wxyz_to_warp_xyzw():
+    """A 90 deg yaw action quat (wxyz) must land as the matching xyzw in Warp storage."""
+    scene, ctrl = _build_ctrl()
+    c = float(np.cos(np.pi / 4.0))  # cos(45 deg) = sin(45 deg)
+    row = _pose_action_row((0.1, 0.2, 0.3), (c, 0.0, 0.0, c), [1.0] * 6, [1.0] * 6)
+    actions = torch.tensor([row, row], dtype=torch.float32)
+    ctrl.unpack_pose_action(actions)
+    rot = ctrl._target_rot_wp.numpy()
+    for w in range(_NUM_ENVS):
+        np.testing.assert_allclose(rot[w], [0.0, 0.0, c, c], atol=1e-6)
+
+    import warp as wp
+
+    q0 = wp.transform_get_rotation(ctrl.target_tf[0])
+    np.testing.assert_allclose([q0[0], q0[1], q0[2], q0[3]], [0.0, 0.0, c, c], atol=1e-6)
+
+
+@requires_fr3
+@pytest.mark.slow
 def test_stage_pose_gains_to_scene_wires_buffers():
     scene, ctrl = _build_ctrl()
     row = _pose_action_row((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), [5.0, 6.0, 7.0, 8.0, 9.0, 10.0], [1.0] * 6)

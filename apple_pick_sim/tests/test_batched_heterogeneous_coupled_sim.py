@@ -324,15 +324,31 @@ def test_vic_per_env_actions_differ_wrench_damping(ranges, per_env_params):
     ctrl.sync_target_from_state(sim.scene.robot_state_0)
 
     torch = _require_torch()
+    v_des = 0.05
     actions = torch.zeros(sim.num_envs, 6, dtype=torch.float32, device=sim.device)
-    actions[0, 0] = 0.05
+    actions[0, 0] = v_des
 
     sim.step(actions)
     wp.synchronize()
     wrenches = sim.scene.vic_jt_wrench_buf.numpy()
-    assert float(wrenches[0, 0]) > 1.0, "world 0 expected D-term force from per-env action"
-    assert abs(float(wrenches[1, 0])) < float(wrenches[0, 0]) * 0.5, (
-        "world 1 should see weaker x force than world 0 with distinct actions"
+    fx0 = float(wrenches[0, 0])
+    fx1 = float(wrenches[1, 0])
+
+    # Twist actions integrate the target by ``v_des * frame_dt`` once per frame, so the
+    # first frame's wrench law is ``Fx = K * (v_des * dt) + D * (v_des - v_act)`` with
+    # ``v_act`` still near zero: the D-term dominates at default K=200, D=10, dt=1/60.
+    g = cfg.controller.vic_gains
+    dt = float(cfg.runtime.frame_dt)
+    expected_fx = float(g.linear_k) * v_des * dt + float(g.linear_d) * v_des
+    assert expected_fx > 0.0
+    assert fx0 == pytest.approx(expected_fx, rel=0.2), (
+        f"world 0 Fx {fx0} should track K*dx + D*v_des ≈ {expected_fx}"
+    )
+    assert fx0 > fx1 + 0.3, (
+        "world 0 must see a clearly larger x force than world 1 from per-env twists"
+    )
+    assert abs(fx1) < 0.2 * expected_fx, (
+        f"world 1 has zero commanded twist; expected near-zero Fx, got {fx1}"
     )
 
 

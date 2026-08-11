@@ -179,7 +179,7 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 
 ### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, stiffness/E grids, and CMA-ES: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3, [V].5.2 Done; Current focus [V].5.3).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, stiffness/E grids, and CMA-ES: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3, [V].5.2 Done; Current focus **[M4].0** real `robot_replay` → CMA).
 
 ```bash
 # Headless smoke (settle→weld)
@@ -409,6 +409,39 @@ uv run --env-file pytest.env python -m pytest \
 ```
 
 The batched grid writes Plotly/HTML ranking artifacts under `--plot-output` (see `docs/sysid-mmd-grid-replay-alignment.md`). The legacy `--mmd-output` path writes `mmd_results.csv` plus `mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and `mmd_stiffness_sensitivity.png`.
+
+### Real robot parquet → batched sim + FR3 replay (`robot_replay/`)
+
+Convert a compiled real sys-ID parquet into a 1×1 `batched_sysid_v1` dataset, then
+replay with open-loop FR3 under **`vic_pose`** (19D pose+gains packed from
+`target_pose_4x4` + `dump.controller_gains`; real `action` is a pose-control
+wrench, not an EE twist). Full contract: **`robot_replay/README.md`**.
+Roadmap Current focus: **[M4].0** (wire these datasets into CMA; gym collect /
+MMD / sim-sim CMA stay on twist `vic`).
+
+```bash
+# 1) Real parquet → batched_sysid_v1 (packs 19D vic_pose_v1 actions)
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input robot_replay/s02-d00.parquet \
+  --dataset-out tmp/real_batched_s02_d00 \
+  --overwrite
+
+# 2) Headless FR3 replay (defaults: --controller-mode vic_pose)
+uv run python robot_replay/example_replay_real_batched.py \
+  --dataset tmp/real_batched_s02_d00 \
+  --viewer null --max-frames 24 \
+  --settle-substeps 80 --post-grasp-settle-substeps 0
+
+# 3) GL: full episode after off-screen settle (defaults match pre-grasp settle viewer)
+uv run python robot_replay/example_replay_real_batched.py \
+  --dataset tmp/real_batched_s02_d00 \
+  --viewer gl --max-frames 0 \
+  --settle-substeps 5000 --settle-quiet-every 300 \
+  --post-grasp-settle-substeps 500
+```
+
+Optional: metadata-only convert (`--out` JSON) and plant-only settle viewers are
+documented in `robot_replay/README.md`.
 
 ### CMA-ES sim-to-sim transfer (support \(k_p\) + spur/stem \(E\))
 

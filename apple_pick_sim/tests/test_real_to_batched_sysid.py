@@ -107,6 +107,82 @@ def test_build_fruiting_params_uses_measured_geometry_and_fixture_materials():
     assert params.spur_surface_offset is True
 
 
+def test_build_fruiting_params_applies_vbd_stretch_force_not_beam_ea_over_l():
+    """Real converter must honor fixture vbd_stretch_force (same as sample_params)."""
+    from apple_pick_sim.fruiting_system.params import stretch_knobs_from_max_force
+
+    ranges = load_ranges(VARIANCE)
+    directions = {
+        "primary": (1.0, 0.0, 0.0),
+        "spur": (0.0, 0.0, -1.0),
+        "stem": (0.0, 0.0, -1.0),
+    }
+    # Short measured stem (real proxy scale) makes beam EA/L diverge sharply from F_max budget.
+    rod_geometry = {
+        "primary": {"length_m": 0.827, "radius_m": 0.0125, "density_kg_m3": 660.0},
+        "spur": {"length_m": 0.12, "radius_m": 0.0025, "density_kg_m3": 1200.0},
+        "stem": {"length_m": 0.005, "radius_m": 0.0005, "density_kg_m3": 1000.0},
+    }
+    params = build_fruiting_params_from_real(
+        ranges_path=VARIANCE,
+        rod_geometry=rod_geometry,
+        directions=directions,
+        apple_radius_m=0.04,
+        apple_density_kg_m3=650.0,
+        use_parts_density=True,
+    )
+    assert params.primary is not None and params.spur is not None and params.stem is not None
+    for name, rod in (
+        ("primary", params.primary),
+        ("spur", params.spur),
+        ("stem", params.stem),
+    ):
+        force = ranges[name]["vbd_stretch_force"]
+        k_exp, c_exp = stretch_knobs_from_max_force(
+            float(force["max_force_n"]),
+            float(force["damping_ratio"]),
+            float(rod.length),
+            float(rod.radius),
+            float(rod.density),
+            int(rod.num_segments),
+        )
+        assert rod.stretch_stiffness == pytest.approx(k_exp, rel=1e-9)
+        assert rod.stretch_damping == pytest.approx(c_exp, rel=1e-9)
+        # Sanity: must not silently fall back to beam EA/L on this geometry.
+        import math
+
+        a = math.pi * float(rod.radius) ** 2
+        l_seg = float(rod.length) / int(rod.num_segments)
+        k_beam = float(rod.youngs_modulus_pa) * a / l_seg
+        assert abs(rod.stretch_stiffness - k_beam) / k_beam > 0.1
+
+
+def test_build_fruiting_params_honors_spur_attach_fraction_from_fixture(tmp_path: Path):
+    import copy
+    import json
+
+    custom = copy.deepcopy(json.loads(VARIANCE.read_text()))
+    # Canonical key matches sample_params / _spur_attach_fraction_from_ranges (top-level).
+    custom["spur_attach_fraction"] = 0.4
+    path = tmp_path / "ranges.json"
+    path.write_text(json.dumps(custom))
+    params = build_fruiting_params_from_real(
+        ranges_path=path,
+        rod_geometry={
+            "primary": {"length_m": 0.31, "radius_m": 0.021},
+            "spur": {"length_m": 0.08, "radius_m": 0.009},
+            "stem": {"length_m": 0.04, "radius_m": 0.0025},
+        },
+        directions={
+            "primary": (1.0, 0.0, 0.0),
+            "spur": (0.0, 0.0, -1.0),
+            "stem": (0.0, 0.0, -1.0),
+        },
+        apple_radius_m=0.055,
+    )
+    assert params.spur_attach_fraction == pytest.approx(0.4)
+
+
 def test_build_fruiting_params_honors_spur_surface_offset_fixture_flag(tmp_path: Path):
     import copy
     import json
@@ -145,6 +221,7 @@ def _write_synthetic_real(
     action_order: list[str] | None = None,
     target_pose_4x4: list[float] | None = None,
     controller_gains: dict | None = None,
+    camera_to_base_4x4: list[list[float]] | None = None,
 ) -> None:
     """Minimal real-episode-shaped parquet for native pre/post → batched meta."""
     # Woody: part0 Branch→Spur, part1 Branch unused chord, part2 Spur→Apple CoM.
@@ -234,8 +311,97 @@ def _write_synthetic_real(
                 "description": action_semantics or "action",
             }
         }
+    if camera_to_base_4x4 is not None:
+        dataset_metadata["camera_to_base_4x4_used"] = camera_to_base_4x4
     meta = {b"dataset_metadata": json.dumps(dataset_metadata).encode("utf-8")}
     pq.write_table(table.replace_schema_metadata(meta), path)
+
+
+def test_camera_to_base_4x4_from_dataset_metadata_prefers_used():
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        camera_to_base_4x4_from_dataset_metadata,
+    )
+
+    used = [
+        [1.0, 0.0, 0.0, 0.1],
+        [0.0, 1.0, 0.0, 0.2],
+        [0.0, 0.0, 1.0, 0.3],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    snap = [
+        [1.0, 0.0, 0.0, 9.0],
+        [0.0, 1.0, 0.0, 9.0],
+        [0.0, 0.0, 1.0, 9.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    got = camera_to_base_4x4_from_dataset_metadata(
+        {
+            "camera_to_base_4x4_used": used,
+            "pre_grasp_geometry": {
+                "settled_snapshot": {"camera_to_base_4x4": snap},
+            },
+        }
+    )
+    assert got == used
+
+
+def test_camera_to_base_4x4_from_dataset_metadata_falls_back_to_snapshot():
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        camera_to_base_4x4_from_dataset_metadata,
+    )
+
+    snap = [
+        [1.0, 0.0, 0.0, 9.0],
+        [0.0, 1.0, 0.0, 9.0],
+        [0.0, 0.0, 1.0, 9.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    got = camera_to_base_4x4_from_dataset_metadata(
+        {"pre_grasp_geometry": {"settled_snapshot": {"camera_to_base_4x4": snap}}}
+    )
+    assert got == snap
+
+
+def test_build_episode_metadata_copies_camera_to_base_4x4(tmp_path: Path):
+    path = tmp_path / "real.parquet"
+    T = [
+        [1.0, 0.0, 0.0, -0.3],
+        [0.0, 1.0, 0.0, 0.5],
+        [0.0, 0.0, 1.0, 0.4],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    _write_synthetic_real(path, camera_to_base_4x4=T)
+    meta = build_episode_metadata_from_real(path, fixture_path=VARIANCE)
+    assert meta["camera_to_base_4x4"] == T
+
+
+def test_export_persists_camera_to_base_4x4_in_episode_parquet(tmp_path: Path):
+    """EPISODE_METADATA_KEYS must allowlist camera_to_base_4x4 or save drops it."""
+    from apple_pick_sim.system_id import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    path = tmp_path / "real.parquet"
+    T = [
+        [1.0, 0.0, 0.0, -0.3],
+        [0.0, 1.0, 0.0, 0.5],
+        [0.0, 0.0, 1.0, 0.4],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    _write_synthetic_real(
+        path,
+        camera_to_base_4x4=T,
+        action=[0.01, 0.0, 0.0, 0.0, 0.0, 0.0],
+        action_semantics="EE twist",
+        action_order=["vx", "vy", "vz", "wx", "wy", "wz"],
+    )
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        path, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    loaded = BatchedSysIdDataset(out).load_episode_metadata(0, 0)
+    assert loaded.get("camera_to_base_4x4") == T
 
 
 def test_build_episode_metadata_from_real(tmp_path: Path):

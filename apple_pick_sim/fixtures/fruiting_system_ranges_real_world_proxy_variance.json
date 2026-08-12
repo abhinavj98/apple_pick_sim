@@ -21,7 +21,7 @@
     }
   },
   "primary": {
-    "num_segments": {"min": 2, "max": 2},
+    "num_segments": {"min": 4, "max": 4},
     "length": {"min": 0.3, "max": 0.4},
     "radius": {"min": 0.02, "max": 0.025},
     "density": {"min": 600.0, "max": 900.0},
@@ -36,17 +36,17 @@
   },
   "secondary": null,
   "spur": {
-    "num_segments": {"min": 4, "max": 4},
+    "num_segments": {"min": 6, "max": 6},
     "length": {"min": 0.04, "max": 0.1},
     "radius": {"min": 0.008, "max": 0.014},
     "density": {"min": 550.0, "max": 850.0},
     "elevation_delta_deg": {"min": -90.0, "max": 0.0},
     "lateral_delta_deg": {"min": -180.0, "max": 180.0},
-    "youngs_modulus_pa": {"min": 250000000.4, "max": 5000000000.9},
+    "youngs_modulus_pa": {"min": 25000000.4, "max": 100000000.9},
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_force": {
       "max_force_n": 35.0,
-      "damping_ratio": 1.5
+      "damping_ratio": 1.0
     }
   },
   "stem": {
@@ -56,11 +56,11 @@
     "density": {"min": 800.0, "max": 1000.0},
     "elevation_delta_deg": {"min": -90.0, "max": 90.0},
     "lateral_delta_deg": {"min": -180.0, "max": 180.0},
-    "youngs_modulus_pa": {"min": 800000000.4, "max": 5000000000.9},
+    "youngs_modulus_pa": {"min": 25000000.4, "max": 100000000.9},
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_force": {
-      "max_force_n": 35.0,
-      "damping_ratio": 3.0
+      "max_force_n": 15.0,
+      "damping_ratio": 1.0
     }
   },
   "apple": {

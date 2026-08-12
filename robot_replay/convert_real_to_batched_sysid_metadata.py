@@ -5,6 +5,9 @@ Bit 1: ``--out`` writes episode metadata JSON (rebuild + grasp init).
 Bit 2: ``--dataset-out`` writes a 1×1 batched_sysid_v1 dataset directory
 (manifest + episodes/s00_d00.parquet) for trajectory viz / FR3 replay.
 
+Episode metadata includes ``camera_to_base_4x4`` when present on the real
+parquet (``camera_to_base_4x4_used`` / pre-grasp snapshot), for GL viewer pose.
+
 For pose-control wrench logs, Bit 2 packs 19D ``vic_pose`` actions from
 ``target_pose_4x4`` + ``dump.controller_gains`` (not the raw wrench).
 

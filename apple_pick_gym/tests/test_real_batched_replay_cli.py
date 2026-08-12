@@ -177,6 +177,45 @@ def test_bootstrap_joint_q_from_episode_metadata():
         mod.bootstrap_joint_q_from_episode_metadata({})
 
 
+def test_parser_print_woody_forces_default_off():
+    mod = _load_replay()
+    p = mod._make_parser()
+    args = p.parse_args(["--dataset", "/tmp/ds"])
+    assert args.print_woody_forces == 0
+
+
+def test_format_woody_force_lines_lists_force_and_norm_per_junction():
+    mod = _load_replay()
+    lines = mod.format_woody_force_lines(
+        {
+            "primary_spur": [1.0, 0.0, 0.0],
+            "stem_apple": [0.0, 3.0, 4.0],
+        },
+        frame_idx=7,
+    )
+    assert lines[0] == "woody_forces frame=7"
+    assert "primary_spur F=[1.000, 0.000, 0.000] |F|=1.000" in lines[1]
+    assert "stem_apple F=[0.000, 3.000, 4.000] |F|=5.000" in lines[2]
+
+
+def test_woody_forces_from_last_obs_env0():
+    mod = _load_replay()
+    import torch
+
+    last_obs = {
+        "woody_part_info": {
+            "spur_stem": {
+                "anchor_force": torch.tensor(
+                    [[1.0, 2.0, 3.0, 9.0, 9.0, 9.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+                    dtype=torch.float32,
+                )
+            }
+        }
+    }
+    forces = mod.woody_forces_from_last_obs(last_obs, ["spur_stem"], env_idx=0)
+    assert forces == {"spur_stem": (1.0, 2.0, 3.0)}
+
+
 def test_make_replay_on_step_renders_and_stops_at_max_frames():
     mod = _load_replay()
     calls: list = []
@@ -214,6 +253,106 @@ def test_make_replay_on_step_renders_and_stops_at_max_frames():
     assert ("begin", 0.0) in calls
     assert ("log", "STATE") in calls
     assert "end" in calls
+
+
+def test_gl_camera_from_camera_to_base_looks_along_plus_z():
+    mod = _load_replay()
+    # Optical +Z = (1, 0, 0) → look +X in Z-up → pitch=0, yaw=0.
+    T = [
+        [0.0, 0.0, 1.0, 0.1],
+        [0.0, 1.0, 0.0, 0.2],
+        [-1.0, 0.0, 0.0, 0.3],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    pos, pitch, yaw = mod.gl_camera_from_camera_to_base(T)
+    assert pos == pytest.approx((0.1, 0.2, 0.3))
+    assert pitch == pytest.approx(0.0, abs=1e-6)
+    assert yaw == pytest.approx(0.0, abs=1e-6)
+
+
+def test_make_replay_on_step_sets_camera_from_extrinsic_once():
+    mod = _load_replay()
+    calls: list = []
+
+    class Viewer:
+        def set_model(self, model):
+            calls.append(("set_model", model))
+
+        def hide_loading_splash(self):
+            pass
+
+        def set_camera(self, pos, pitch, yaw):
+            calls.append(("set_camera", (float(pos[0]), float(pos[1]), float(pos[2])), float(pitch), float(yaw)))
+
+        def begin_frame(self, t):
+            pass
+
+        def log_state(self, state):
+            pass
+
+        def end_frame(self):
+            pass
+
+        def is_running(self):
+            return True
+
+    cable = SimpleNamespace(model="MODEL", state_0="STATE")
+    scene = SimpleNamespace(cable=cable)
+    sim = SimpleNamespace(
+        scene=scene, config=SimpleNamespace(runtime=SimpleNamespace(control_hz=10.0))
+    )
+    env = SimpleNamespace(_sim=sim, num_envs=1)
+    # Identity rotation: optical +Z = world +Z → pitch=90.
+    T = [
+        [1.0, 0.0, 0.0, -0.3],
+        [0.0, 1.0, 0.0, 0.5],
+        [0.0, 0.0, 1.0, 0.4],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    on_step = mod.make_replay_on_step(
+        Viewer(), max_frames=0, camera_to_base_4x4=T
+    )
+    assert on_step(frame_idx=0, env=env) is True
+    assert on_step(frame_idx=1, env=env) is True
+    cam_calls = [c for c in calls if c[0] == "set_camera"]
+    assert len(cam_calls) == 1
+    assert cam_calls[0][1] == pytest.approx((-0.3, 0.5, 0.4))
+    assert cam_calls[0][2] == pytest.approx(90.0, abs=1e-6)
+
+
+def test_make_replay_on_step_prints_woody_forces_every_n_frames(capsys):
+    mod = _load_replay()
+    import torch
+
+    class Viewer:
+        def is_running(self):
+            return True
+
+    last_obs = {
+        "woody_part_info": {
+            "primary_spur": {
+                "anchor_force": torch.tensor(
+                    [[3.0, 0.0, 4.0, 0.0, 0.0, 0.0]], dtype=torch.float32
+                )
+            }
+        }
+    }
+    env = SimpleNamespace(
+        _sim=None,
+        num_envs=1,
+        junction_names=["primary_spur"],
+        _last_obs=last_obs,
+    )
+    on_step = mod.make_replay_on_step(
+        Viewer(), max_frames=0, print_woody_forces_every=2
+    )
+    assert on_step(frame_idx=0, env=env) is True
+    assert on_step(frame_idx=1, env=env) is True
+    assert on_step(frame_idx=2, env=env) is True
+    out = capsys.readouterr().out
+    assert out.count("woody_forces frame=") == 2
+    assert "primary_spur F=[3.000, 0.000, 4.000] |F|=5.000" in out
+    assert "frame=1" not in out
 
 
 def test_replay_rebuilds_from_episode_metadata_not_fixture_clamps(tmp_path, monkeypatch):

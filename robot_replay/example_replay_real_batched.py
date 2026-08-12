@@ -17,6 +17,8 @@ Settle defaults match ``example_view_pre_grasp_settle.py``:
 
 With ``--viewer gl``, renders trajectory frames after off-screen rebuild/settle
 (same minimal ``on_step`` pattern as ``example_batched_sysid_mmd_grid.py``).
+When episode metadata includes ``camera_to_base_4x4`` (from convert), places the
+GL camera at the real recording-camera pose (position + OpenCV +Z look).
 
 Geometry comes from converted episode metadata (same native rebuild as
 ``example_view_pre_grasp_settle`` / ``example_view_batched_episode_meta``):
@@ -33,7 +35,8 @@ Example (after export)::
     uv run python robot_replay/example_replay_real_batched.py \\
       --dataset /tmp/real_batched_s02_d00 --viewer gl --max-frames 0 \\
       --settle-substeps 5000 --settle-quiet-every 300 \\
-      --post-grasp-settle-substeps 500
+      --post-grasp-settle-substeps 500 \\
+      --print-woody-forces 5
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ from typing import Any
 
 import numpy as np
 import newton.examples
+import warp as wp
 
 from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
 from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
@@ -265,14 +269,98 @@ def _build_env_fn(
     return build_env_fn
 
 
+def woody_forces_from_last_obs(
+    last_obs: Mapping[str, Any] | None,
+    junction_names: list[str] | tuple[str, ...],
+    *,
+    env_idx: int = 0,
+) -> dict[str, tuple[float, float, float]]:
+    """Linear force [N] on each woody FIXED junction child (env ``env_idx``)."""
+    if last_obs is None:
+        return {}
+    info = last_obs.get("woody_part_info")
+    if not isinstance(info, Mapping):
+        return {}
+    out: dict[str, tuple[float, float, float]] = {}
+    for name in junction_names:
+        part = info.get(name)
+        if not isinstance(part, Mapping):
+            continue
+        wrench = part.get("anchor_force")
+        if wrench is None:
+            continue
+        if hasattr(wrench, "detach"):
+            row = wrench.detach().cpu().numpy()
+        else:
+            row = np.asarray(wrench)
+        row = np.asarray(row, dtype=np.float64).reshape(-1, 6)
+        if env_idx < 0 or env_idx >= row.shape[0]:
+            continue
+        fx, fy, fz = (float(row[env_idx, 0]), float(row[env_idx, 1]), float(row[env_idx, 2]))
+        out[str(name)] = (fx, fy, fz)
+    return out
+
+
+def format_woody_force_lines(
+    forces: Mapping[str, tuple[float, float, float] | list[float] | np.ndarray],
+    *,
+    frame_idx: int,
+) -> list[str]:
+    """Human-readable woody force dump for one control frame."""
+    lines = [f"woody_forces frame={int(frame_idx)}"]
+    for name, f_xyz in forces.items():
+        arr = np.asarray(f_xyz, dtype=np.float64).reshape(3)
+        norm = float(np.linalg.norm(arr))
+        lines.append(
+            f"  {name} F=[{arr[0]:.3f}, {arr[1]:.3f}, {arr[2]:.3f}] |F|={norm:.3f}"
+        )
+    return lines
+
+
+def gl_camera_from_camera_to_base(
+    camera_to_base_4x4: object,
+) -> tuple[tuple[float, float, float], float, float] | None:
+    """Map camera→base SE(3) to Newton GL ``set_camera`` (pos, pitch_deg, yaw_deg).
+
+    Look direction is the camera **+Z** axis in base (OpenCV optical axis).
+    Newton GL has no roll; up remains world-Z.
+    """
+    try:
+        arr = np.asarray(camera_to_base_4x4, dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+    if arr.size != 16:
+        return None
+    arr = arr.reshape(4, 4)
+    pos = (float(arr[0, 3]), float(arr[1, 3]), float(arr[2, 3]))
+    front = arr[:3, 2]
+    n = float(np.linalg.norm(front))
+    if n < 1e-12:
+        return None
+    d = front / n
+    pitch = float(np.rad2deg(np.arcsin(np.clip(d[2], -1.0, 1.0))))
+    yaw = float(np.rad2deg(np.arctan2(d[1], d[0])))
+    return pos, pitch, yaw
+
+
 def make_replay_on_step(
     viewer: object,
     *,
     max_frames: int,
     control_hz_fallback: float = _CONTROL_HZ_FALLBACK,
+    print_woody_forces_every: int = 0,
+    camera_to_base_4x4: object | None = None,
 ) -> Callable[..., bool]:
-    """MMD-grid-style render + optional frame cap for real replay."""
+    """MMD-grid-style render + optional frame cap for real replay.
+
+    When ``print_woody_forces_every > 0``, print env-0 woody FIXED-joint linear
+    forces every N control frames (world frame, force on child).
+
+    When ``camera_to_base_4x4`` is set and the viewer supports ``set_camera``,
+    place the GL eye at the real recording camera pose on first init.
+    """
     viewer_state: dict[str, object] = {"initialized": False}
+    every = int(print_woody_forces_every)
 
     def on_step(*, frame_idx: int, env: object) -> bool:
         if hasattr(viewer, "is_running") and not viewer.is_running():
@@ -289,6 +377,11 @@ def make_replay_on_step(
                     and getattr(env, "num_envs", 1) > 1
                 ):
                     viewer.set_world_offsets(tuple(sim.config.runtime.env_spacing))
+                if hasattr(viewer, "set_camera") and camera_to_base_4x4 is not None:
+                    pose = gl_camera_from_camera_to_base(camera_to_base_4x4)
+                    if pose is not None:
+                        pos, pitch, yaw = pose
+                        viewer.set_camera(wp.vec3(*pos), pitch, yaw)
                 if hasattr(viewer, "hide_loading_splash"):
                     viewer.hide_loading_splash()
                 viewer_state["initialized"] = True
@@ -299,6 +392,14 @@ def make_replay_on_step(
             if hasattr(viewer, "log_state") and hasattr(scene, "cable"):
                 viewer.log_state(scene.cable.state_0)
             viewer.end_frame()
+
+        if every > 0 and int(frame_idx) % every == 0:
+            names = list(getattr(env, "junction_names", []) or [])
+            forces = woody_forces_from_last_obs(
+                getattr(env, "_last_obs", None), names, env_idx=0
+            )
+            if forces:
+                print("\n".join(format_woody_force_lines(forces, frame_idx=frame_idx)))
 
         if max_frames <= 0:
             return True
@@ -379,6 +480,16 @@ def _make_parser() -> argparse.ArgumentParser:
             "Permit replay when a legacy 6D episode action is a real pose-control "
             "wrench (incorrect physics under mode=vic; format/GL smoke only). "
             "Rejected for 19D vic_pose datasets."
+        ),
+    )
+    p.add_argument(
+        "--print-woody-forces",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Print env-0 woody FIXED-joint linear forces every N control frames "
+            "(world frame, force on child). <=0 disables (default)."
         ),
     )
     return p
@@ -486,7 +597,12 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode=controller_mode,
         ),
-        on_step=make_replay_on_step(viewer, max_frames=max_frames),
+        on_step=make_replay_on_step(
+            viewer,
+            max_frames=max_frames,
+            print_woody_forces_every=int(args.print_woody_forces),
+            camera_to_base_4x4=episode_meta.get("camera_to_base_4x4"),
+        ),
         use_oracle_params=True,
         action_dim=19 if controller_mode == "vic_pose" else 6,
     )

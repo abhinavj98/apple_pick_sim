@@ -40,7 +40,7 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     welded_co_teleport_arrays_for_layout,
 )
 
-DEFAULT_STEM_COUPLING_GAIN: float = 1.0
+DEFAULT_STEM_COUPLING_GAIN: float = 0.9
 DEFAULT_STEM_FORCE_CAP_N: float = 40.0
 DEFAULT_STEM_TORQUE_CAP_NM: float = 10.0
 

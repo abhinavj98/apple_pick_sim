@@ -79,6 +79,8 @@ EPISODE_METADATA_KEYS: tuple[str, ...] = (
     "weld_direction",
     "weld_reference_pos",
     "weld_reference_quat",
+    # Real→batched: recording camera pose in franka_base_o for GL viewer.
+    "camera_to_base_4x4",
     "movement_per_step_m",
     "total_movement_m",
     "hold_duration_s",

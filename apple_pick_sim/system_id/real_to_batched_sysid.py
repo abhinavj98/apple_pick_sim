@@ -20,7 +20,9 @@ import pyarrow.parquet as pq
 
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
+    _spur_attach_fraction_from_ranges,
     _spur_surface_offset_from_ranges,
+    _stretch_kw_from_seg_ranges,
     fruiting_params_to_dict,
     load_ranges,
     params_fingerprint,
@@ -109,8 +111,9 @@ def build_fruiting_params_from_real(
 
     When ``use_parts_density`` is True, each rod's ``density_kg_m3`` (and optional
     ``apple_density_kg_m3``) come from ``rod_geometry`` / the apple override;
-    Young's modulus, damping, stretch, and ``num_segments`` still use fixture
-    midpoints.
+    Young's modulus, bend damping ratio, and ``num_segments`` still use fixture
+    midpoints. Axial stretch uses fixture ``vbd_stretch_force`` on the measured
+    geometry (same helper as :func:`~apple_pick_sim.fruiting_system.params.sample_params`).
     """
     ranges = load_ranges(ranges_path)
     rods: dict[str, Any] = {}
@@ -123,26 +126,30 @@ def build_fruiting_params_from_real(
         if seg is None:
             raise ValueError(f"fixture segment {name!r} is null")
         geo = rod_geometry[name]
-        kwargs: dict[str, Any] = {}
-        fixed = seg.get("vbd_stretch_fixed")
-        if isinstance(fixed, dict):
-            kwargs["stretch_stiffness"] = float(fixed["stretch_stiffness"])
-            kwargs["stretch_damping"] = float(fixed["stretch_damping"])
         if use_parts_density:
             if "density_kg_m3" not in geo:
                 raise ValueError(f"rod_geometry[{name!r}] missing density_kg_m3")
             density = float(geo["density_kg_m3"])
         else:
             density = range_midpoint(seg["density"])
+        length = float(geo["length_m"])
+        radius = float(geo["radius_m"])
+        num_segments = int(round(range_midpoint(seg["num_segments"])))
         rods[name] = rod_params_from_material(
             range_midpoint(seg["youngs_modulus_pa"]),
             range_midpoint(seg["damping_ratio"]),
-            float(geo["length_m"]),
-            float(geo["radius_m"]),
+            length,
+            radius,
             density,
-            int(round(range_midpoint(seg["num_segments"]))),
+            num_segments,
             directions[name],
-            **kwargs,
+            **_stretch_kw_from_seg_ranges(
+                seg,
+                length=length,
+                radius=radius,
+                density=density,
+                num_segments=num_segments,
+            ),
         )
     apple_r = (
         float(apple_radius_m)
@@ -161,7 +168,7 @@ def build_fruiting_params_from_real(
         apple_radius=apple_r,
         apple_density=apple_d,
         topology="t_junction",
-        spur_attach_fraction=0.5,
+        spur_attach_fraction=_spur_attach_fraction_from_ranges(ranges),
         spur_surface_offset=_spur_surface_offset_from_ranges(ranges),
     )
 
@@ -184,6 +191,41 @@ def _as_float_list(value: Any, size: int, *, field: str) -> list[float]:
     if arr.size != size:
         raise ValueError(f"{field} must have length {size}, got {arr.size}")
     return [float(x) for x in arr.tolist()]
+
+
+def _as_4x4(value: Any) -> list[list[float]] | None:
+    """Parse a nested or flat 4×4 into row-major ``list[list[float]]``, else None."""
+    if value is None:
+        return None
+    try:
+        arr = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+    if arr.size != 16:
+        return None
+    arr = arr.reshape(4, 4)
+    return [[float(arr[i, j]) for j in range(4)] for i in range(4)]
+
+
+def camera_to_base_4x4_from_dataset_metadata(
+    dm: dict[str, Any],
+) -> list[list[float]] | None:
+    """Extract camera→base SE(3) from real parquet ``dataset_metadata``.
+
+    Prefers top-level ``camera_to_base_4x4_used``, else the first
+    ``pre_grasp_geometry.*.camera_to_base_4x4`` snapshot entry.
+    """
+    parsed = _as_4x4(dm.get("camera_to_base_4x4_used"))
+    if parsed is not None:
+        return parsed
+    pre = dm.get("pre_grasp_geometry")
+    if isinstance(pre, dict):
+        for snap in pre.values():
+            if isinstance(snap, dict):
+                parsed = _as_4x4(snap.get("camera_to_base_4x4"))
+                if parsed is not None:
+                    return parsed
+    return None
 
 
 def _unit_direction(vec: np.ndarray, *, field: str) -> list[float]:
@@ -353,6 +395,9 @@ def build_episode_metadata_from_real(
         "weld_reference_pos": list(apple_pos),
         "weld_reference_quat": list(apple_quat),
     }
+    cam = camera_to_base_4x4_from_dataset_metadata(dm)
+    if cam is not None:
+        meta["camera_to_base_4x4"] = cam
     return meta
 
 

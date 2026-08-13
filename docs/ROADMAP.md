@@ -7,7 +7,7 @@
 | **Last updated** | 2026-08-12 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[M4].0** — real `robot_replay` → CMA-ES (`vic_pose`); V.5.3 held-out deferred |
+| **Active work**  | **[M4].0 slice 2** — F/T frame + LPF on sim `ft_wrist`; slice 1 plumbing Done; V.5.3 held-out deferred |
 
 ---
 
@@ -46,16 +46,22 @@
 
 **Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see `docs/youngs-modulus-sysid.md`.
 
-**Scope for this slice:**
+**Slice 1 Done (plumbing — do not reimplement):**
 
-- Multi-episode convert of `robot_replay/s02-d*.parquet` (and peers) → one or more `batched_sysid_v1` datasets with `action_layout=vic_pose_v1` / `action_dim=19` (export already packs from `target_pose_4x4` + `dump.controller_gains`)
-- Teach CMA / fused replay / grid CLIs to **opt into** `ControllerConfig(mode="vic_pose", action_dim=19)` when the dataset declares `vic_pose_v1` (or via an explicit flag); do **not** change default gym collect, MMD grid, or sim-sim CMA callers (they stay twist `vic`, `action_dim=6`)
-- Score candidates against **real** observed bags (woody / F/T features already in the converted episode), not a sim-oracle GT phenotype inserted for ranking
-- **Post-grasp SE(3) parity with settle viewer:** free settle uses pre-grasp apple quat; at weld apply logged apple + true TCP \(X_{\mathrm{apple}}^{-1} X_{\mathrm{tcp}}\) (example path Done; **CMA / shared `seed_fix_to_apple_*` still TODO**)
-- Smoke: convert → short `vic_pose` replay → CMA (or grid) fit on ≥1 real structure → write `cmaes_report.json` / ranking artifacts
-- Document the real-data command path in `robot_replay/README.md` + this roadmap’s validation block
+- Convert packs `vic_pose_v1` / `action_dim=19` from real parquet (`target_pose_4x4` + `dump.controller_gains`)
+- Grid / multi-replay / CMA builders **opt into** `ControllerConfig(mode="vic_pose", action_dim=19)` from dataset metadata (`--controller-mode`); twist `vic` default preserved for gym collect, MMD, sim-sim CMA
+- Real GT feature bags load without sim-oracle phenotype (`gt_candidate is None`; `--include-gt-candidate` forced off on real datasets)
+- Post-grasp SE(3) on shared `make_real_replay_build_env_fn` + batched `apply_logged_post_grasp_se3_to_cable` (grid/CMA real replay match example)
+- README + validation commands documented; unit/CLI tests for metadata→controller mode
 
-**Out of scope (this slice):**
+**Scope for slice 2 (current):**
+
+- Align sim `ft_wrist` to the real F/T frame before Sinkhorn scoring (spec: `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`)
+- Apply LPF on sim wrist F/T to match real bag preprocessing
+- Restrict Sinkhorn ranking to `action[0:7]` (Cartesian) until transformed bags are trusted
+- Unit tests for frame transform + LPF; document that slice 1 convert→grid smoke is maintainer-run when parquet is present
+
+**Out of scope (M4.0 remaining / slice 2+):**
 
 - Migrating gym collect / MMD / default CMA sim-sim off twist `vic`
 - Force-hybrid / wrench-apply mode (pose PD via `vic_pose` is the drive)
@@ -70,7 +76,7 @@
 - [x] CMA / multi-replay / grid build path selects `vic_pose` + `action_dim=19` from dataset metadata (twist default preserved; `--controller-mode` opt-in)
 - [x] Real GT feature bags load without requiring sim `fruiting_system_params` as the ranking oracle (`gt_candidate is None`; `--include-gt-candidate` forced off on real datasets)
 - [x] Unit/CLI tests for metadata→controller mode selection; refuse wrench-as-twist regressions
-- [x] End-to-end smoke on `s02-d00` (convert → grid) with `--viewer null` — **acceptance: envs build, 19D steps, no wrench-as-twist, no `sim_config` crash**; F/T Sinkhorn ranking **not** trusted until slice 2
+- [ ] End-to-end smoke on `s02-d00` (convert → grid) with `--viewer null` — commands documented in validation block + `robot_replay/README.md`; **not executed in worktree** (parquet gitignored); acceptance: envs build, 19D steps, no wrench-as-twist, no `sim_config` crash; F/T Sinkhorn ranking **not** trusted until slice 2
 - [x] README + validation commands updated
 - [ ] **Slice 2:** F/T frame alignment + LPF on sim `ft_wrist` + Sinkhorn `action[0:7]` only (see plumbing spec)
 - [ ] **Slice 3:** Trusted Cartesian ranking on transformed bags
@@ -140,7 +146,7 @@
 
 **[M4] real-data calibration**
 
-- [ ] **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)** — **Next** (this Current focus)
+- [ ] **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)** — **In progress** (slice 1 Done; slice 2 F/T transform next)
 - [ ] **M4.1+** — Broader real collection / held-out real segments (after M4.0)
 
 **[M3] parallel infra** (optional alongside [V])
@@ -200,7 +206,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
-| **M4.0** | **Next** | Converted `robot_replay` episodes → support-\(k_p\) CMA/grid under `vic_pose` |
+| **M4.0** | **In progress** | Slice 1 Done (plumbing); slice 2 F/T frame + LPF → trusted ranking → CMA |
 | **M4.1+** | Later | Broader real collection / held-out real metrics |
 
 Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Public API reference: `docs/coupled-sim-api.md`.

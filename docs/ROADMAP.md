@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-08-11 |
+| **Last updated** | 2026-08-12 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 | **Active work**  | **[M4].0** — real `robot_replay` → CMA-ES (`vic_pose`); V.5.3 held-out deferred |
@@ -42,7 +42,7 @@
 
 ## Current focus
 
-**Next slice:** **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)**. Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 / this slice:** feed converted real episodes into the existing support-\(k_p\) × spur/stem \(E\) CMA-ES pipeline without migrating gym collect / MMD / default sim-sim CMA off twist `vic`.
+**Next slice:** **M4.0 slice 2 — F/T frame alignment + LPF** (then trusted Cartesian ranking). Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved. **Ranking F/T is not trusted until slice 2** (frame + LPF on sim `ft_wrist`; Sinkhorn on `action[0:7]` only).
 
 **Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see `docs/youngs-modulus-sysid.md`.
 
@@ -65,13 +65,16 @@
 **Checklist:**
 
 - [x] `example_replay_real_batched.py`: pre-grasp init apple → logged post-grasp apple+TCP SE(3) at weld (helpers in `batched_digital_twin_init`; spec `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md`)
-- [ ] **CMA / shared path:** call the same post-grasp SE(3) apply from `seed_fix_to_apple_*` / `replay_batched_sysid_structure` so CMA and MMD real replay match the example (slice B of that spec)
+- [x] **CMA / shared path (slice B):** post-grasp SE(3) on shared `make_real_replay_build_env_fn` + batched `apply_logged_post_grasp_se3_to_cable(..., layout=...)` so grid/CMA real replay match the example (spec `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`)
 - [ ] Dataset discovery / multi-episode manifest for real converted dirs (or documented one-dataset-per-episode CMA loop)
-- [ ] CMA / multi-replay / grid build path selects `vic_pose` + `action_dim=19` from dataset metadata (twist default preserved)
-- [ ] Real GT feature bags load without requiring sim `fruiting_system_params` as the ranking oracle
-- [ ] Unit/CLI tests for metadata→controller mode selection; refuse wrench-as-twist regressions
-- [ ] End-to-end smoke on `s02-d00` (convert → CMA or grid) with `--viewer null`
-- [ ] README + validation commands updated
+- [x] CMA / multi-replay / grid build path selects `vic_pose` + `action_dim=19` from dataset metadata (twist default preserved; `--controller-mode` opt-in)
+- [x] Real GT feature bags load without requiring sim `fruiting_system_params` as the ranking oracle (`gt_candidate is None`; `--include-gt-candidate` forced off on real datasets)
+- [x] Unit/CLI tests for metadata→controller mode selection; refuse wrench-as-twist regressions
+- [x] End-to-end smoke on `s02-d00` (convert → grid) with `--viewer null` — **acceptance: envs build, 19D steps, no wrench-as-twist, no `sim_config` crash**; F/T Sinkhorn ranking **not** trusted until slice 2
+- [x] README + validation commands updated
+- [ ] **Slice 2:** F/T frame alignment + LPF on sim `ft_wrist` + Sinkhorn `action[0:7]` only (see plumbing spec)
+- [ ] **Slice 3:** Trusted Cartesian ranking on transformed bags
+- [ ] **Slice 4:** CMA `example_youngs_modulus_cmaes.py` on the same real builder
 
 **Build on (do not reimplement):**
 
@@ -396,18 +399,27 @@ uv run --env-file pytest.env python \
 # CUDA acceptance (Task 8 passed): collect 5x5, fused CMA-ES, scalar smoke, and
 # validation reports under tmp/task8_cuda_acceptance/ (see implementation notes).
 
-# [M4].0 — real robot_replay → vic_pose replay → CMA/grid (Current focus)
+# [M4].0 — real robot_replay → vic_pose replay → grid (slice 1 Done; F/T ranking slice 2)
 # Convert packs 19D vic_pose_v1; gym collect / MMD / default sim-sim CMA stay on twist vic.
+# Requires robot_replay/s02-d00.parquet (not always in clone; use local bench log if missing).
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
   --input robot_replay/s02-d00.parquet \
-  --dataset-out tmp/real_batched_s02_d00 --overwrite
+  --dataset-out /tmp/real_batched_s02_d00 --overwrite
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset tmp/real_batched_s02_d00 --viewer null --max-frames 24 \
+  --dataset /tmp/real_batched_s02_d00 --viewer null --max-frames 24 \
   --settle-substeps 80 --post-grasp-settle-substeps 0
-# After M4.0 wiring: CMA/grid must opt into vic_pose from dataset metadata, e.g.
-# uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
-#   --viewer null --dataset tmp/real_batched_s02_d00 \
-#   --output tmp/real_s02_cmaes_fit --overwrite
+# Grid opt-in (auto-detects vic_pose_v1; --include-gt-candidate forced off on real data):
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
+  --dataset /tmp/real_batched_s02_d00 \
+  --output /tmp/real_kp_e_grid \
+  --viewer null \
+  --support-kp-values 1e3,1e4 \
+  --log10-e-spur 9.0 \
+  --log10-e-stem 9.0 \
+  --no-include-gt-candidate \
+  --overwrite
+# Slice 1 success = build/replay without crash; ranking F/T NOT trusted until slice 2.
+# CMA (slice 4): example_youngs_modulus_cmaes.py on same builder — not yet wired.
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_real_to_batched_sysid.py \
   apple_pick_gym/tests/test_real_batched_replay_cli.py \

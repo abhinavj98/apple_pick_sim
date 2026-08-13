@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | **Slice A Implemented** (example); **Slice B deferred** (CMA / shared `seed_fix`) |
+| **Status** | **Slice A + B Implemented** (example + shared `make_real_replay_build_env_fn` / batched `apply_logged_post_grasp_se3_to_cable`) |
 | **Date** | 2026-08-11 |
 | **Extends** | `docs/superpowers/specs/2026-08-07-pre-grasp-apple-orientation-design.md`, `docs/superpowers/specs/2026-08-04-true-tcp-pose-weld-design.md`, `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` |
 | **Code** | `gripper_proxy_for_real_batched_replay`, `apply_logged_post_grasp_se3_to_cable` in `batched_digital_twin_init.py`; wired in `robot_replay/example_replay_real_batched.py` |
@@ -42,9 +42,9 @@ viewer.
 
 | In | Out |
 | -- | --- |
-| `example_replay_real_batched.py` only (slice A) | Shared `replay_batched_sysid_structure` / CMA / MMD (slice B, later) |
-| Full logged apple + true TCP SE(3) at weld | `--apple-position-only` (not on this example) |
-| Helper designed for reuse in B | Changing settle-viewer defaults |
+| `example_replay_real_batched.py` (slice A) | `--apple-position-only` (not on this example) |
+| Shared `make_real_replay_build_env_fn` + batched post-grasp SE(3) helper (slice B) | Moving apply into `seed_fix_to_apple_from_settled*` itself (helper runs after seed instead) |
+| Full logged apple + true TCP SE(3) at weld | Changing settle-viewer defaults |
 
 ## Mechanism (slice A)
 
@@ -94,8 +94,17 @@ Exact names may match existing modules; behavior above is normative.
 - Changing converter metadata fields (`initial_*` / `weld_reference_*` already
   carry post-grasp poses)
 
-## Later (slice B)
+## Slice B (implemented)
 
-Move the post-seed apply into `seed_fix_to_apple_from_settled*` (or a flag on
-the shared replay build) so CMA / MMD / `replay_batched_sysid_structure` share
-the same post-grasp SE(3) contract. Example then becomes a thin caller.
+Post-grasp SE(3) runs on the shared real-replay `build_env_fn` after
+`ApplePickBatchedSysIdEnv` construct (free settle → `seed_fix_to_apple_from_settled`):
+
+- `make_real_replay_build_env_fn` in `real_batched_replay_build.py` synthesizes
+  `gripper_proxy_for_real_batched_replay` (or honors fused `gripper` /
+  `per_env_grippers`) and calls `apply_logged_post_grasp_se3_to_cable(..., layout=...)`
+  for all envs when `num_envs > 1`.
+- Grid/CMA consumers opt in via `dataset_declares_vic_pose` or
+  `--controller-mode vic_pose` (`example_youngs_modulus_sys_id.py`).
+
+The example remains a thin CLI over the same builder. Apply is **not** inside
+`seed_fix_to_apple_from_settled*`; behavior is normative via the shared env factory.

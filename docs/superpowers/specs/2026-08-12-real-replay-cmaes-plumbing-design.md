@@ -2,11 +2,11 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Design approved; slice 1 plan at `docs/superpowers/plans/2026-08-12-real-replay-parallel-sysid-plumbing.md` |
+| **Status** | **Slice 1 implemented** (2026-08-12); slice 2 plan: F/T frame + LPF |
 | **Date** | 2026-08-12 |
 | **Roadmap** | M4.0 bit 3 (real `robot_replay` → grid / CMA) |
 | **Extends** | `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md` (slice B), `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 3), `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
-| **Code (today)** | `robot_replay/example_replay_real_batched.py`, `example_youngs_modulus_sys_id.py`, `example_youngs_modulus_cmaes.py` |
+| **Code (today)** | `real_batched_replay_build.py`, `robot_replay/example_replay_real_batched.py`, `example_youngs_modulus_sys_id.py`, `example_youngs_modulus_cmaes.py` (CMA wiring = slice 4) |
 
 ## Purpose
 
@@ -30,8 +30,8 @@ This is plumbing, not a new optimizer. Cartesian grid is the first consumer; CMA
 ## Slice order
 
 ```text
-1. Shared real-replay build + fused plumbing   ← this plan
-2. Feature transform before loss (F/T frame + LPF; pose-only action features)
+1. Shared real-replay build + fused plumbing   ← slice 1 Done
+2. Feature transform before loss (F/T frame + LPF; pose-only action features)   ← next
 3. Cartesian grid ranking (Sinkhorn on transformed bags)
 4. CMA (same builder + evaluator)
 ```

@@ -203,6 +203,40 @@ uv run python robot_replay/example_replay_real_batched.py \
   --dataset /tmp/real_batched_s02_d00 \
   --max-frames 24 --viewer null
 
+### Bit 3 — grid smoke (slice 1 plumbing; F/T ranking deferred to slice 2)
+
+After convert, run a tiny support-\(k_p\) × spur/stem \(E\) grid on the same
+real-replay builder (`real_batched_replay_build.make_real_replay_build_env_fn`).
+Grid auto-detects `vic_pose_v1` / `action_dim=19`; `--include-gt-candidate` is
+forced off on real datasets (no `collection.sim_config` oracle).
+
+**Slice 1 success criteria:** envs build, 19D actions replay, no wrench-as-twist,
+no `sim_config` crash. **Ranking F/T (Sinkhorn on `ft_wrist`) is not trusted
+until slice 2** (F/T frame alignment + LPF on sim bags; pose-only action features).
+
+```bash
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input robot_replay/s02-d00.parquet \
+  --dataset-out /tmp/real_batched_s02_d00 \
+  --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
+  --dataset /tmp/real_batched_s02_d00 \
+  --output /tmp/real_kp_e_grid \
+  --viewer null \
+  --support-kp-values 1e3,1e4 \
+  --log10-e-spur 9.0 \
+  --log10-e-stem 9.0 \
+  --no-include-gt-candidate \
+  --overwrite
+```
+
+CLI help smoke (no GPU): `example_youngs_modulus_sys_id.py --help` must list
+`--controller-mode {vic,vic_pose}`. Full GPU grid smoke needs
+`robot_replay/s02-d00.parquet` locally (parquet episodes are often not in clone).
+
+Design: `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`.
+
 # Legacy only: re-pack a pre-vic_pose 6D dataset, or --force new constant Kp/Kd.
 uv run python robot_replay/pack_vic_pose_actions.py \
   --dataset-in /tmp/old_6d_batched \

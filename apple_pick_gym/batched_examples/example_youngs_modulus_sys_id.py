@@ -56,6 +56,15 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     gt_support_kp_youngs_candidate_from_structure,
     maybe_include_gt_candidate,
 )
+from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    bootstrap_joint_q_from_episode_metadata,
+    check_action_semantics,
+    control_hz_from_episode_metadata,
+    dataset_declares_vic_pose,
+    fruiting_base_pos_from_episode_metadata,
+    make_real_replay_build_env_fn,
+    real_replay_sim_config,
+)
 from apple_pick_gym.youngs_modulus_overlay_viz import (
     overlay_episodes_from_replay_evaluation,
     select_overlay_candidate_indices,
@@ -611,6 +620,12 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Replay RNG seed (default: manifest collection.seed).",
     )
     p.add_argument(
+        "--controller-mode",
+        choices=("vic", "vic_pose"),
+        default=None,
+        help="Replay controller mode (default: infer vic_pose from dataset, else vic).",
+    )
+    p.add_argument(
         "--support-kp-values",
         type=str,
         default=None,
@@ -736,8 +751,10 @@ def _candidates_for_structure(
     structure_idx: int,
     *,
     parser: argparse.ArgumentParser,
+    include_gt: bool | None = None,
 ) -> list:
-    gt = gt_support_kp_youngs_candidate_from_structure(dataset, int(structure_idx))
+    if include_gt is None:
+        include_gt = bool(args.include_gt_candidate)
     support_kp_values = args.support_kp_values
     log10_support_kp = args.log10_support_kp
     if support_kp_values is None and log10_support_kp is None:
@@ -750,11 +767,9 @@ def _candidates_for_structure(
     )
     if not candidates:
         parser.error("candidate grid is empty; provide at least one log10-E value per segment")
-    candidates = maybe_include_gt_candidate(
-        candidates,
-        gt,
-        include_gt=bool(args.include_gt_candidate),
-    )
+    if include_gt:
+        gt = gt_support_kp_youngs_candidate_from_structure(dataset, int(structure_idx))
+        candidates = maybe_include_gt_candidate(candidates, gt, include_gt=True)
     if int(args.max_candidates) > 0 and len(candidates) > int(args.max_candidates):
         parser.error(
             f"candidate grid has {len(candidates)} entries, exceeding "
@@ -797,19 +812,84 @@ def _run(
     if not structure_indices:
         raise SystemExit("No structure indices to evaluate.")
 
+    episode_meta = dataset.load_episode_metadata(structure_indices[0], 0)
+    mode = getattr(args, "controller_mode", None)
+    if mode is None:
+        mode = (
+            "vic_pose"
+            if dataset_declares_vic_pose(collection, episode_meta)
+            else "vic"
+        )
+    check_action_semantics(
+        controller_mode=mode,
+        collection=collection,
+        episode_meta=episode_meta,
+        allow_wrench_as_twist=False,
+    )
+
     replay_seed = args.seed
     if replay_seed is None and "seed" in collection:
         replay_seed = int(collection["seed"])
 
     settle_config = _settle_config_kwargs(args=args)
-    build_env_fn = _make_build_env_fn(
-        ranges_path=str(ranges_path),
-        topology_seed=topology_seed,
-        control_hz=control_hz,
-        device=device,
-        settle_config=settle_config,
-    )
-    replay_sim_config = build_sim_config(num_envs=1, ranges=ranges, **settle_config)
+    if mode == "vic_pose":
+        if bool(args.include_gt_candidate):
+            print(
+                "warning: --include-gt-candidate ignored for vic_pose_v1 "
+                "(no sim-oracle GT)",
+                file=sys.stderr,
+            )
+        control_hz = control_hz_from_episode_metadata(
+            episode_meta,
+            collection=collection,
+        )
+        fruiting_base_pos = fruiting_base_pos_from_episode_metadata(episode_meta)
+        bootstrap_joint_q = bootstrap_joint_q_from_episode_metadata(episode_meta)
+        real_topology_seed = int(
+            collection.get("topology_seed", collection.get("seed", 0))
+        )
+        build_env_fn = make_real_replay_build_env_fn(
+            ranges_path=Path(ranges_path),
+            ranges=ranges,
+            topology_seed=real_topology_seed,
+            fruiting_base_pos=fruiting_base_pos,
+            episode_meta=episode_meta,
+            settle_substeps=settle_config.get("settle_substeps") or SETTLE_SUBSTEPS,
+            settle_quiet_every=settle_config.get("settle_quiet_every"),
+            settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
+            post_grasp_settle_substeps=500,
+            bootstrap_joint_q=bootstrap_joint_q,
+            controller_mode="vic_pose",
+            control_hz=control_hz,
+        )
+        replay_sim_config = real_replay_sim_config(
+            num_envs=1,
+            topology_seed=real_topology_seed,
+            fruiting_base_pos=fruiting_base_pos,
+            ranges=ranges,
+            settle_substeps=settle_config.get("settle_substeps") or SETTLE_SUBSTEPS,
+            settle_quiet_every=settle_config.get("settle_quiet_every"),
+            settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
+            post_grasp_settle_substeps=500,
+            bootstrap_joint_q=bootstrap_joint_q,
+            controller_mode="vic_pose",
+            control_hz=control_hz,
+        )
+        include_gt = False
+    else:
+        build_env_fn = _make_build_env_fn(
+            ranges_path=str(ranges_path),
+            topology_seed=topology_seed,
+            control_hz=control_hz,
+            device=device,
+            settle_config=settle_config,
+        )
+        replay_sim_config = build_sim_config(
+            num_envs=1,
+            ranges=ranges,
+            **settle_config,
+        )
+        include_gt = bool(args.include_gt_candidate)
     scoring = YoungsModulusScoringConfig(
         use_median=bool(args.use_median),
         hold_id_onehot=bool(args.hold_id_onehot),
@@ -872,6 +952,7 @@ def _run(
                 args,
                 int(structure_idx),
                 parser=parser,
+                include_gt=include_gt,
             )
         except Exception as exc:
             if bool(args.fail_fast):

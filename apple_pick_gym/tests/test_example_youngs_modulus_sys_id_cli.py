@@ -134,6 +134,7 @@ def test_parser_defaults_and_required_args(monkeypatch):
     assert args.max_overlay_candidates == 8
     assert args.fail_fast is False
     assert args.multi_structure_batch is True
+    assert args.controller_mode is None
     assert parser.parse_args(
         [
             "--dataset",
@@ -156,6 +157,27 @@ def test_parser_defaults_and_required_args(monkeypatch):
     assert "--num-structures" not in option_strings
     assert "--num-directions" not in option_strings
     assert "--log10-e-primary" not in option_strings
+
+
+def test_parser_accepts_controller_mode_vic_pose(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+
+    args = parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/ds",
+            "--output",
+            "/tmp/out",
+            "--controller-mode",
+            "vic_pose",
+        ]
+    )
+
+    assert args.controller_mode == "vic_pose"
 
 
 def test_parser_help_mentions_support_kp_not_primary_e(monkeypatch):
@@ -359,7 +381,7 @@ def test_run_without_gt_candidate_skips_insertion(monkeypatch):
     monkeypatch.setattr(
         module,
         "gt_support_kp_youngs_candidate_from_structure",
-        lambda *_args, **_kwargs: cmaes.SupportKpYoungsCandidate(1.0e8, 10**7.5, 1.0e7),
+        lambda *_args, **_kwargs: pytest.fail("GT lookup must be skipped"),
     )
     monkeypatch.setattr(
         module,
@@ -419,6 +441,94 @@ def test_run_without_gt_candidate_skips_insertion(monkeypatch):
     module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
 
     assert len(evaluator_calls[0]["candidates"]) == 1
+
+
+def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(
+    monkeypatch, tmp_path, capsys
+):
+    module = _load_module()
+    grid_candidate = cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7)
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 1,
+            "ranges_path": "/tmp/ranges.json",
+            "topology_seed": 9,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+        "control_hz": 15.0,
+        "fruiting_base_pos": [1.0, 2.0, 3.0],
+        "initial_robot_joint_q": [0.1, 0.2],
+    }
+    evaluation = cmaes.YoungsModulusEvaluation(
+        structure_idx=0,
+        gt_candidate=grid_candidate,
+        fixed_secondary_e_pa=None,
+        direction_indices=(0,),
+        scores=[],
+        replay_episodes=[],
+        applied_params=[],
+    )
+    real_builder = MagicMock()
+    real_builder_calls: list[dict] = []
+    real_config_calls: list[dict] = []
+    evaluator_calls: list[dict] = []
+
+    def fake_make_real_builder(**kwargs):
+        real_builder_calls.append(dict(kwargs))
+        return real_builder
+
+    def fake_real_config(**kwargs):
+        real_config_calls.append(dict(kwargs))
+        return SimpleNamespace(
+            controller=SimpleNamespace(mode=kwargs["controller_mode"], action_dim=19)
+        )
+
+    def fake_evaluate(**kwargs):
+        evaluator_calls.append(dict(kwargs))
+        return evaluation
+
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: {})
+    monkeypatch.setattr(
+        module,
+        "candidates_from_support_kp_grid_cli",
+        lambda **_kwargs: [grid_candidate],
+    )
+    monkeypatch.setattr(
+        module,
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_args, **_kwargs: pytest.fail("real replay must not load sim GT"),
+    )
+    monkeypatch.setattr(module, "make_real_replay_build_env_fn", fake_make_real_builder)
+    monkeypatch.setattr(module, "real_replay_sim_config", fake_real_config)
+    monkeypatch.setattr(module, "evaluate_youngs_modulus_candidates", fake_evaluate)
+
+    args = _task5_run_args(module, tmp_path / "rank", export_replays=False)
+    args.dataset = "/tmp/real"
+    args.controller_mode = None
+    args.include_gt_candidate = True
+
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+
+    assert len(real_builder_calls) == 1
+    assert real_builder_calls[0]["controller_mode"] == "vic_pose"
+    assert real_builder_calls[0]["control_hz"] == pytest.approx(15.0)
+    assert real_builder_calls[0]["fruiting_base_pos"] == pytest.approx((1.0, 2.0, 3.0))
+    assert real_builder_calls[0]["bootstrap_joint_q"] == pytest.approx((0.1, 0.2))
+    assert len(real_config_calls) == 1
+    assert evaluator_calls[0]["build_env_fn"] is real_builder
+    replay_config = evaluator_calls[0]["replay_sim_config"]
+    assert replay_config.controller.mode == "vic_pose"
+    assert replay_config.controller.action_dim == 19
+    assert "--include-gt-candidate ignored" in capsys.readouterr().err
 
 
 def test_run_records_structure_errors_unless_fail_fast(monkeypatch):

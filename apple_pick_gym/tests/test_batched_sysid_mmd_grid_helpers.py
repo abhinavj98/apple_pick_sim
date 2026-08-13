@@ -461,6 +461,7 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
         return env
 
     dataset = MagicMock()
+    dataset.manifest = {"collection": {"action_layout": "vic_pose_v1", "action_dim": 19}}
 
     def load_episode_obs_arrays(structure_idx: int, direction_idx: int) -> dict:
         del structure_idx
@@ -482,10 +483,17 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
         "ik_bootstrap_unstable_mask",
         lambda _env, num_envs: torch.zeros(int(num_envs), dtype=torch.bool),
     )
+    sim_gripper = MagicMock(name="sim_gripper")
+    real_gripper = MagicMock(name="real_gripper")
     monkeypatch.setattr(
         grid,
         "gripper_proxy_from_episode_metadata",
-        lambda _meta: MagicMock(),
+        lambda _meta: sim_gripper,
+    )
+    monkeypatch.setattr(
+        grid,
+        "gripper_proxy_for_real_batched_replay",
+        lambda _meta: real_gripper,
     )
 
     collectors = grid.replay_batched_sysid_structure(
@@ -498,6 +506,7 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
         direction_indices=[0, 2],
     )
 
+    assert build_calls[0]["gripper"] is real_gripper
     assert build_calls[0]["per_env_params"] == [
         candidate_0.apply_to(base),
         candidate_0.apply_to(base),
@@ -510,12 +519,16 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
 
 def test_replay_candidates_for_structure_threads_on_step(monkeypatch):
     calls: list[tuple[int, int]] = []
+    forwarded_action_dims: list[int] = []
 
-    def fake_replay_batched_sysid_structure(*, candidates, on_step=None, **_kwargs):
+    def fake_replay_batched_sysid_structure(
+        *, candidates, on_step=None, action_dim=6, **_kwargs
+    ):
         assert on_step is not None
         for i in range(3):
             assert on_step(frame_idx=i, env=MagicMock())
         calls.append((len(candidates), 1))
+        forwarded_action_dims.append(int(action_dim))
         recorded_by_env = [
             _recorded_arrays_for_replay(n_frames=4, direction_idx=0),
         ]
@@ -539,10 +552,12 @@ def test_replay_candidates_for_structure_threads_on_step(monkeypatch):
         build_env_fn=MagicMock(),
         max_envs_per_batch=0,
         on_step=on_step,
+        action_dim=19,
     )
 
     assert isinstance(out, grid.BatchedSysIdReplayCollectors)
     assert calls, "expected replay_batched_sysid_structure to be called"
+    assert forwarded_action_dims == [19]
 
 
 def _recorded_arrays_for_replay(*, n_frames: int, direction_idx: int = 0) -> dict:

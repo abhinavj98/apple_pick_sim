@@ -17,6 +17,9 @@ from apple_pick_gym.batched_envs.batched_stability_monitor import (
     ik_bootstrap_unstable_mask,
 )
 from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
+from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    dataset_declares_vic_pose,
+)
 from apple_pick_gym.grid_viz_metrics import (
     bend_stiffness_values_match,
     woody_segment_pos_mse_hold_aggregated,
@@ -25,6 +28,7 @@ from apple_pick_gym.grid_viz_metrics import (
 )
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_from_episode_metadata,
+    gripper_proxy_for_real_batched_replay,
     infer_base_params_for_structure,
     initialize_batched_env_from_dataset,
     true_params_for_structure,
@@ -885,6 +889,7 @@ def replay_candidates_for_structure(
     use_oracle_params: bool = True,
     direction_indices: Sequence[int] | None = None,
     include_excluded: bool = False,
+    action_dim: int = 6,
 ) -> BatchedSysIdReplayCollectors:
     dirs = resolve_direction_indices(
         dataset,
@@ -917,6 +922,7 @@ def replay_candidates_for_structure(
             use_oracle_params=bool(use_oracle_params),
             direction_indices=dirs,
             include_excluded=bool(include_excluded),
+            action_dim=int(action_dim),
         )
         merged = collectors if merged is None else merged.concat_envs(collectors)
     assert merged is not None
@@ -1449,7 +1455,12 @@ def replay_batched_sysid_structure(
     n_frames = int(recorded_actions.shape[1])
     replay_seed = _resolve_replay_seed(dataset, seed)
     structure_meta = dataset.load_episode_metadata(int(structure_idx), int(dirs[0]))
-    replay_gripper = gripper_proxy_from_episode_metadata(structure_meta)
+    collection = dataset.manifest.get("collection", {})
+    replay_gripper = (
+        gripper_proxy_for_real_batched_replay(structure_meta)
+        if dataset_declares_vic_pose(collection, structure_meta)
+        else gripper_proxy_from_episode_metadata(structure_meta)
+    )
 
     env = build_env_fn(
         num_envs=num_envs,

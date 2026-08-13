@@ -23,6 +23,7 @@ from apple_pick_sim.fruiting_system import params as fs
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_from_episode_metadata,
+    gripper_proxy_for_real_batched_replay,
     true_params_for_structure,
 )
 from apple_pick_sim.system_id.wasserstein import (
@@ -46,6 +47,9 @@ from apple_pick_gym.batched_envs.batched_sysid_multi_replay import (
     SysIdReplayCancelled,
     build_replay_candidate_blocks,
     replay_multi_structure_candidate_blocks,
+)
+from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    dataset_declares_vic_pose,
 )
 
 if TYPE_CHECKING:
@@ -677,7 +681,7 @@ class YoungsModulusCandidateScore:
 @dataclass
 class YoungsModulusEvaluation:
     structure_idx: int
-    gt_candidate: YoungsModulusCandidate
+    gt_candidate: YoungsModulusCandidate | None
     fixed_secondary_e_pa: float | None
     direction_indices: tuple[int, ...]
     scores: list[YoungsModulusCandidateScore]
@@ -691,7 +695,7 @@ class PreparedYoungsModulusStructure:
 
     replay_request: ReplayStructureRequest
     candidates: tuple[YoungsModulusCandidate, ...]
-    gt_candidate: YoungsModulusCandidate
+    gt_candidate: YoungsModulusCandidate | None
     fixed_secondary_e_pa: float | None
     direction_indices: tuple[int, ...]
     recorded_episodes: tuple[dict[str, Any], ...]
@@ -760,20 +764,25 @@ def prepare_youngs_modulus_structure(
         n_directions=scoring_n_directions,
     )
     base_params = true_params_for_structure(dataset, int(structure_idx))
-    if isinstance(candidate_list[0], SupportKpYoungsCandidate):
-        gt_candidate = gt_support_kp_youngs_candidate_from_structure(
-            dataset, int(structure_idx)
-        )
+    first_direction_idx = direction_indices[0]
+    meta = dataset.load_episode_metadata(int(structure_idx), first_direction_idx)
+    collection = dataset.manifest.get("collection", {})
+    real = dataset_declares_vic_pose(collection, meta)
+    if real:
+        gripper = gripper_proxy_for_real_batched_replay(meta)
+        gt_candidate = None
     else:
-        gt_candidate = youngs_modulus_candidate_from_params(base_params)
+        gripper = gripper_proxy_from_episode_metadata(meta)
+        if isinstance(candidate_list[0], SupportKpYoungsCandidate):
+            gt_candidate = gt_support_kp_youngs_candidate_from_structure(
+                dataset, int(structure_idx)
+            )
+        else:
+            gt_candidate = youngs_modulus_candidate_from_params(base_params)
     fixed_secondary_e_pa = (
         None
         if base_params.secondary is None
         else float(base_params.secondary.youngs_modulus_pa)
-    )
-    first_direction_idx = direction_indices[0]
-    gripper = gripper_proxy_from_episode_metadata(
-        dataset.load_episode_metadata(int(structure_idx), first_direction_idx)
     )
     recorded_by_direction = dict(zip(direction_indices, recorded, strict=True))
     return PreparedYoungsModulusStructure(
@@ -887,7 +896,10 @@ def score_prepared_youngs_modulus_structure(
                 disqualified=bool(disqualified),
                 disqualification_reason=disqualification_reason,
                 rank=None,
-                is_gt=youngs_modulus_values_match(candidate, prepared.gt_candidate),
+                is_gt=(
+                    prepared.gt_candidate is not None
+                    and youngs_modulus_values_match(candidate, prepared.gt_candidate)
+                ),
             )
         )
 
@@ -954,6 +966,11 @@ def evaluate_youngs_modulus_candidates(
         scoring=scoring,
         include_excluded=bool(include_excluded),
     )
+    action_dim = (
+        19
+        if dataset_declares_vic_pose(dataset.manifest.get("collection", {}))
+        else 6
+    )
     collectors = replay_candidates_for_structure(
         dataset=dataset,
         structure_idx=int(structure_idx),
@@ -967,6 +984,7 @@ def evaluate_youngs_modulus_candidates(
         replay_sim_config=replay_sim_config,
         use_oracle_params=True,
         include_excluded=bool(include_excluded),
+        action_dim=action_dim,
     )
     replay_by_key: dict[ReplaySlotKey, dict[str, Any]] = {}
     for candidate_index in range(len(prepared.candidates)):

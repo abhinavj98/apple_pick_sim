@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from unittest.mock import MagicMock
 
@@ -781,6 +782,151 @@ def _prepared_structure(
         gt_context=_mock_gt_scoring_context(expected_directions=directions),
         scoring_n_directions=max(directions) + 1,
     )
+
+
+def test_prepare_vic_pose_dataset_uses_real_gripper_and_skips_gt(
+    monkeypatch: pytest.MonkeyPatch,
+    gt_params: fs.FruitingSystemParams,
+):
+    candidate = cmaes.SupportKpYoungsCandidate(1.0e4, 1.0e9, 1.0e9)
+    recorded = _dummy_recorded_episode(direction_idx=0)
+    meta = {
+        "initial_apple_pos": [0.0, 0.0, 0.0],
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": [0.01, 0.02, 0.03],
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+    }
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "num_directions": 1,
+            "seed": 0,
+        }
+    }
+    dataset.load_episode_metadata.return_value = meta
+    monkeypatch.setattr(cmaes, "resolve_direction_indices", lambda *_a, **_k: [0])
+    monkeypatch.setattr(
+        cmaes,
+        "load_recorded_episodes_for_structure",
+        lambda *_a, **_k: [recorded],
+    )
+    monkeypatch.setattr(
+        cmaes,
+        "prepare_gt_wasserstein_scoring_context",
+        lambda *_a, **_k: MagicMock(),
+    )
+    monkeypatch.setattr(cmaes, "true_params_for_structure", lambda *_a, **_k: gt_params)
+
+    prepared = cmaes.prepare_youngs_modulus_structure(
+        dataset=dataset,
+        structure_idx=0,
+        candidates=(candidate,),
+        num_directions=1,
+        scoring=cmaes.YoungsModulusScoringConfig(
+            use_median=True,
+            hold_id_onehot=False,
+            pool_directions=True,
+            n_holds=1,
+            n_directions=1,
+            device="cpu",
+        ),
+    )
+
+    assert prepared.gt_candidate is None
+    assert (
+        prepared.replay_request.gripper.weld_proxy_offset_in_apple_frame
+        is not None
+    )
+
+
+def test_score_is_gt_false_when_gt_candidate_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+    gt_params: fs.FruitingSystemParams,
+):
+    candidate = cmaes.YoungsModulusCandidate(1.0e8, 1.0e7, 1.0e7)
+    prepared = dataclasses.replace(
+        _prepared_structure(
+            structure_idx=0,
+            candidates=(candidate,),
+            directions=(0,),
+            gt_params=gt_params,
+        ),
+        gt_candidate=None,
+    )
+    replay_by_key = {
+        multi.ReplaySlotKey(0, 0, 0): _dummy_recorded_episode(direction_idx=0)
+    }
+    monkeypatch.setattr(
+        cmaes,
+        "replay_instability_fraction_all_frames",
+        lambda **_kwargs: 0.0,
+    )
+    monkeypatch.setattr(
+        cmaes,
+        "score_candidate_wasserstein_complete",
+        lambda **_kwargs: _wasserstein_result(candidate_index=0, aggregate=0.1),
+    )
+
+    evaluation = cmaes.score_prepared_youngs_modulus_structure(
+        prepared,
+        replay_by_key=replay_by_key,
+        scoring=cmaes.YoungsModulusScoringConfig(n_directions=1),
+    )
+
+    assert evaluation.gt_candidate is None
+    assert evaluation.scores[0].is_gt is False
+
+
+def test_scalar_evaluation_uses_vic_pose_action_dim(
+    monkeypatch: pytest.MonkeyPatch,
+    gt_params: fs.FruitingSystemParams,
+):
+    candidate = cmaes.YoungsModulusCandidate(1.0e8, 1.0e7, 1.0e7)
+    prepared = _prepared_structure(
+        structure_idx=0,
+        candidates=(candidate,),
+        directions=(0,),
+        gt_params=gt_params,
+    )
+    dataset = MagicMock()
+    dataset.manifest = {"collection": {"action_layout": "vic_pose_v1", "action_dim": 19}}
+    replay_call: dict[str, object] = {}
+    sentinel = MagicMock()
+    monkeypatch.setattr(
+        cmaes,
+        "prepare_youngs_modulus_structure",
+        lambda **_kwargs: prepared,
+    )
+
+    def fake_replay(**kwargs):
+        replay_call.update(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(cmaes, "replay_candidates_for_structure", fake_replay)
+    monkeypatch.setattr(
+        cmaes,
+        "direction_episodes_from_collectors",
+        lambda *_a, **_k: [_dummy_recorded_episode(direction_idx=0)],
+    )
+    monkeypatch.setattr(
+        cmaes,
+        "score_prepared_youngs_modulus_structure",
+        lambda *_a, **_k: sentinel,
+    )
+
+    result = cmaes.evaluate_youngs_modulus_candidates(
+        dataset=dataset,
+        structure_idx=0,
+        candidates=(candidate,),
+        num_directions=1,
+        build_env_fn=MagicMock(),
+        scoring=cmaes.YoungsModulusScoringConfig(n_directions=1),
+    )
+
+    assert result is sentinel
+    assert replay_call["action_dim"] == 19
 
 
 def test_score_prepared_routes_original_structure_local_candidate_and_physical_direction(

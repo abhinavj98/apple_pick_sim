@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
     sync_model_body_q_rest_from_state,
@@ -190,6 +191,8 @@ def gripper_proxy_for_real_batched_replay(
 def apply_logged_post_grasp_se3_to_cable(
     cable: Any,
     meta: dict[str, Any],
+    *,
+    layout: BatchedEnvLayout | None = None,
 ) -> None:
     """Write logged post-grasp apple SE(3) and realign proxy; sync VBD rest.
 
@@ -229,15 +232,20 @@ def apply_logged_post_grasp_se3_to_cable(
 
     bq = cable.state_0.body_q.numpy().reshape(-1, 7).astype(np.float32).copy()
     bqd = cable.state_0.body_qd.numpy().reshape(-1, 6).astype(np.float32).copy()
-    aid = int(apple_id)
-    pid = int(proxy_id)
-    bq[aid, 0:3] = np.asarray(apple_pos, dtype=np.float32)
-    bq[aid, 3:7] = np.asarray(apple_quat, dtype=np.float32)
-    proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq[aid], offset)
-    bq[pid, 0:3] = proxy_pos
-    bq[pid, 3:7] = proxy_quat
-    bqd[aid] = 0.0
-    bqd[pid] = 0.0
+    if layout is not None and int(layout.num_envs) > 1:
+        pairs = list(zip(layout.apple_body_indices, layout.proxy_body_indices, strict=True))
+    else:
+        pairs = [(int(apple_id), int(proxy_id))]
+    for aid, pid in pairs:
+        if int(aid) < 0 or int(pid) < 0:
+            continue
+        bq[int(aid), 0:3] = np.asarray(apple_pos, dtype=np.float32)
+        bq[int(aid), 3:7] = np.asarray(apple_quat, dtype=np.float32)
+        proxy_pos, proxy_quat = _proxy_world_pose_from_apple(bq[int(aid)], offset)
+        bq[int(pid), 0:3] = proxy_pos
+        bq[int(pid), 3:7] = proxy_quat
+        bqd[int(aid)] = 0.0
+        bqd[int(pid)] = 0.0
     cable.state_0.body_q.assign(bq)
     cable.state_0.body_qd.assign(bqd)
     cable.state_1.body_q.assign(bq)

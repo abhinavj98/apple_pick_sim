@@ -453,6 +453,90 @@ def test_apply_logged_post_grasp_se3_to_cable_sets_apple_and_proxy():
     assert sync_calls
 
 
+def test_apply_logged_post_grasp_se3_writes_every_layout_world():
+    from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
+    from apple_pick_sim.system_id.real_post_grasp_plan import proxy_offset_from_apple_and_tcp
+
+    apple_pos = (0.5, 0.6, 0.7)
+    apple_quat = (0.0, 0.0, 0.0, 1.0)
+    tcp_pos = (0.5, 0.55, 0.7)
+    tcp_quat = (0.0, 0.0, 0.0, 1.0)
+    offset = proxy_offset_from_apple_and_tcp(
+        apple_pos=apple_pos,
+        apple_quat_xyzw=apple_quat,
+        tcp_pos=tcp_pos,
+        tcp_quat_xyzw=tcp_quat,
+    )
+    bq = np.zeros((4, 7), dtype=np.float32)
+    bq[0] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    bq[1] = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    bq[2] = [2.0, 2.0, 2.0, 0.0, 0.0, 0.0, 1.0]
+    bq[3] = [3.0, 3.0, 3.0, 0.0, 0.0, 0.0, 1.0]
+    bqd = np.ones((4, 6), dtype=np.float32)
+
+    class _Arr:
+        def __init__(self, value):
+            self._v = np.asarray(value, dtype=np.float32)
+
+        def numpy(self):
+            return self._v.copy()
+
+        def assign(self, value):
+            self._v = np.asarray(value, dtype=np.float32).reshape(self._v.shape).copy()
+
+    class _State:
+        def __init__(self):
+            self.body_q = _Arr(bq.copy())
+            self.body_qd = _Arr(bqd.copy())
+
+    class _Cable:
+        def __init__(self):
+            self.apple_body = 0
+            self.gripper_proxy_body = 1
+            self.gripper_proxy_offset_in_apple_frame = offset
+            self.state_0 = _State()
+            self.state_1 = _State()
+            self.model = type("_M", (), {"body_count": 4})()
+
+    cable = _Cable()
+    meta = {
+        "initial_apple_pos": list(apple_pos),
+        "initial_apple_quat": list(apple_quat),
+        "initial_tcp_pos": list(tcp_pos),
+        "initial_tcp_quat": list(tcp_quat),
+    }
+    layout = BatchedEnvLayout(
+        num_envs=2,
+        bodies_per_world=2,
+        robot_bodies_per_world=1,
+        joints_per_world=1,
+        joint_coord_count_per_world=1,
+        joint_dof_count_per_world=1,
+        template_tcp_body=0,
+        template_proxy_body=1,
+        template_apple_body=0,
+        tcp_body_indices=(0, 0),
+        proxy_body_indices=(1, 3),
+        apple_body_indices=(0, 2),
+    )
+
+    import apple_pick_sim.system_id.batched_digital_twin_init as mod
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(mod, "sync_model_body_q_rest_from_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(mod, "align_proxy_body_q_prev_for_vbd", lambda *_a, **_k: None)
+    try:
+        apply_logged_post_grasp_se3_to_cable(cable, meta, layout=layout)
+    finally:
+        monkeypatch.undo()
+
+    out = cable.state_0.body_q.numpy().reshape(-1, 7)
+    for apple_id in (0, 2):
+        np.testing.assert_allclose(out[apple_id, :3], apple_pos, atol=1e-6)
+    for proxy_id in (1, 3):
+        np.testing.assert_allclose(out[proxy_id, :3], tcp_pos, atol=1e-5)
+
+
 @gymnasium_available
 @requires_fr3
 def test_digital_twin_obs_from_batched_episode_has_junction_names(

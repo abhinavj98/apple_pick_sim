@@ -522,6 +522,7 @@ def test_replay_rebuilds_from_episode_metadata_not_fixture_clamps(tmp_path, monk
         ranges=ranges,
         topology_seed=0,
         fruiting_base_pos=resolved,
+        episode_meta=meta,
     )
     build(
         num_envs=1,

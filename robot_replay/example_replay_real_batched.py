@@ -49,7 +49,6 @@ Headless MP4 (requires ``imageio-ffmpeg`` via ``uv sync --extra gym``)::
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import os
 import sys
 from collections.abc import Callable, Mapping
@@ -65,21 +64,16 @@ from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     gt_bend_stiffness_candidate_from_structure,
     replay_batched_sysid_structure,
 )
-from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
-    BatchedHeterogeneousCoupledSimConfig,
-    ObsConfig,
+from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    bootstrap_joint_q_from_episode_metadata,
+    check_action_semantics,
+    control_hz_from_episode_metadata,
+    fruiting_base_pos_from_episode_metadata,
+    make_real_replay_build_env_fn,
+    real_replay_sim_config,
 )
-from apple_pick_sim.fruiting_system.params import (
-    GripperProxyConfig,
-    load_ranges,
-    parse_sim_build,
-)
-from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
+from apple_pick_sim.fruiting_system.params import load_ranges
 from apple_pick_sim.system_id import BatchedSysIdDataset
-from apple_pick_sim.system_id.batched_digital_twin_init import (
-    apply_logged_post_grasp_se3_to_cable,
-    gripper_proxy_for_real_batched_replay,
-)
 
 # Allow ``uv run python robot_replay/example_replay_real_batched.py`` imports.
 _ROOT = Path(__file__).resolve().parents[1]
@@ -99,213 +93,9 @@ _POST_GRASP_SETTLE_SUBSTEPS = 500
 _CONTROL_HZ_FALLBACK = 15.0
 _DEFAULT_CONTROLLER_MODE = "vic_pose"
 
-
-def fruiting_base_pos_from_episode_metadata(
-    meta: Mapping[str, Any],
-) -> tuple[float, float, float]:
-    """T-junction base from converted episode metadata (native rebuild)."""
-    raw = meta.get("fruiting_base_pos")
-    if raw is None:
-        raise ValueError("episode metadata missing fruiting_base_pos")
-    arr = np.asarray(raw, dtype=np.float64).reshape(3)
-    return (float(arr[0]), float(arr[1]), float(arr[2]))
-
-
-def bootstrap_joint_q_from_episode_metadata(
-    meta: Mapping[str, Any],
-) -> tuple[float, ...]:
-    """Recorded grasp arm joints for open-loop FR3 placement (skip IK)."""
-    raw = meta.get("initial_robot_joint_q")
-    if raw is None:
-        raise ValueError("episode metadata missing initial_robot_joint_q")
-    arr = np.asarray(raw, dtype=np.float64).reshape(-1)
-    if arr.size < 1:
-        raise ValueError("initial_robot_joint_q must be non-empty")
-    return tuple(float(x) for x in arr.tolist())
-
-
-def control_hz_from_episode_metadata(
-    meta: Mapping[str, Any],
-    *,
-    collection: Mapping[str, Any] | None = None,
-) -> float:
-    """Recorded control rate [Hz] from episode meta, else collection."""
-    raw = meta.get("control_hz")
-    if raw is None and collection is not None:
-        raw = collection.get("control_hz")
-    if raw is None:
-        raise ValueError("episode metadata missing control_hz")
-    hz = float(raw)
-    if hz <= 0.0:
-        raise ValueError(f"control_hz must be positive, got {hz}")
-    return hz
-
-
-def _sim_build_knobs(ranges: dict) -> tuple[
-    ImpedanceGains | None,
-    dict[str, float],
-    dict[str, float],
-    dict[str, float],
-    dict[str, float],
-    float | None,
-]:
-    """Fixture ``sim_build`` joint/VIC knobs (same contract as MMD-grid collect)."""
-    sb = parse_sim_build(ranges)
-    if sb is None:
-        return None, {}, {}, {}, {}, None
-    return (
-        ImpedanceGains(
-            linear_k=sb.vic_gains.linear_k,
-            linear_d=sb.vic_gains.linear_d,
-            angular_k=sb.vic_gains.angular_k,
-            angular_d=sb.vic_gains.angular_d,
-        ),
-        dict(sb.joint_angular_kd_overrides),
-        dict(sb.joint_linear_kd_overrides),
-        dict(sb.joint_angular_kp_overrides),
-        dict(sb.joint_linear_kp_overrides),
-        sb.joint_damping_ratio,
-    )
-
-
-def _test_sim_config(
-    *,
-    num_envs: int,
-    topology_seed: int,
-    fruiting_base_pos: tuple[float, float, float],
-    ranges: dict,
-    settle_substeps: int = _SETTLE_SUBSTEPS,
-    settle_quiet_every: int | None = _SETTLE_QUIET_EVERY,
-    settle_gravity_ramp: bool = _SETTLE_GRAVITY_RAMP,
-    post_grasp_settle_substeps: int = _POST_GRASP_SETTLE_SUBSTEPS,
-    bootstrap_joint_q: tuple[float, ...] | None = None,
-    controller_mode: str = _DEFAULT_CONTROLLER_MODE,
-    control_hz: float | None = None,
-) -> BatchedHeterogeneousCoupledSimConfig:
-    """Gym FR3+VIC config with fixture sim_build; episode fruiting_base_pos."""
-    gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=num_envs)
-    (
-        vic_gains,
-        joint_angular_kd,
-        joint_linear_kd,
-        joint_angular_kp,
-        joint_linear_kp,
-        joint_damping_ratio,
-    ) = _sim_build_knobs(ranges)
-    controller = dataclasses.replace(
-        gym_cfg.controller,
-        mode=controller_mode,
-        action_dim=19 if controller_mode == "vic_pose" else gym_cfg.controller.action_dim,
-        linear_speed=1.0,
-        angular_speed=1.0,
-    )
-    if vic_gains is not None:
-        controller = dataclasses.replace(controller, vic_gains=vic_gains)
-    runtime = gym_cfg.runtime
-    if control_hz is not None:
-        runtime = dataclasses.replace(runtime, control_hz=float(control_hz))
-    return dataclasses.replace(
-        gym_cfg,
-        runtime=runtime,
-        robot=dataclasses.replace(
-            gym_cfg.robot,
-            kind="fr3",
-            step_mode="coupled",
-            fix_to_apple=True,
-            skip_ik_bootstrap=True,
-            defer_template_robot_bootstrap=True,
-            force_batched_layout=True,
-            robot_base_pos=(0.0, 0.0, 0.0),
-            per_env_ik=False,
-            bootstrap_joint_q=bootstrap_joint_q,
-        ),
-        scene=dataclasses.replace(
-            gym_cfg.scene,
-            settle_substeps=int(settle_substeps),
-            settle_quiet_every=settle_quiet_every,
-            settle_gravity_ramp=bool(settle_gravity_ramp),
-            post_grasp_settle_substeps=int(post_grasp_settle_substeps),
-            fruiting_base_pos=fruiting_base_pos,
-        ),
-        controller=controller,
-        fruiting_system=dataclasses.replace(
-            gym_cfg.fruiting_system,
-            joint_angular_kd_overrides=joint_angular_kd,
-            joint_linear_kd_overrides=joint_linear_kd,
-            joint_angular_kp_overrides=joint_angular_kp,
-            joint_linear_kp_overrides=joint_linear_kp,
-            joint_damping_ratio=joint_damping_ratio,
-        ),
-        domain_randomization=dataclasses.replace(
-            gym_cfg.domain_randomization,
-            topology_seed=int(topology_seed),
-        ),
-        obs=ObsConfig(allocate_buffers=True),
-    )
-
-
-def _build_env_fn(
-    *,
-    ranges_path: Path,
-    ranges: dict,
-    topology_seed: int,
-    fruiting_base_pos: tuple[float, float, float],
-    episode_meta: Mapping[str, Any],
-    settle_substeps: int = _SETTLE_SUBSTEPS,
-    settle_quiet_every: int | None = _SETTLE_QUIET_EVERY,
-    settle_gravity_ramp: bool = _SETTLE_GRAVITY_RAMP,
-    post_grasp_settle_substeps: int = _POST_GRASP_SETTLE_SUBSTEPS,
-    bootstrap_joint_q: tuple[float, ...] | None = None,
-    controller_mode: str = _DEFAULT_CONTROLLER_MODE,
-    control_hz: float | None = None,
-) -> Callable[..., Any]:
-    def build_env_fn(
-        *,
-        num_envs: int,
-        per_env_params: list[Any],
-        max_episode_steps: int,
-        gripper: GripperProxyConfig | None = None,
-        per_env_grippers: list[GripperProxyConfig] | None = None,
-    ) -> ApplePickBatchedSysIdEnv:
-        del gripper, per_env_grippers  # real replay uses logged TCP offset gripper
-        real_gripper = gripper_proxy_for_real_batched_replay(dict(episode_meta))
-        sim_config = _test_sim_config(
-            num_envs=num_envs,
-            topology_seed=topology_seed,
-            fruiting_base_pos=fruiting_base_pos,
-            ranges=ranges,
-            settle_substeps=settle_substeps,
-            settle_quiet_every=settle_quiet_every,
-            settle_gravity_ramp=settle_gravity_ramp,
-            post_grasp_settle_substeps=post_grasp_settle_substeps,
-            bootstrap_joint_q=bootstrap_joint_q,
-            controller_mode=controller_mode,
-            control_hz=control_hz,
-        )
-        sim_config = dataclasses.replace(
-            sim_config,
-            robot=dataclasses.replace(sim_config.robot, gripper=real_gripper),
-        )
-        env = ApplePickBatchedSysIdEnv(
-            num_envs=num_envs,
-            max_episode_steps=max_episode_steps,
-            ranges_path=ranges_path,
-            topology_seed=topology_seed,
-            use_settle_cache=False,
-            sim_config=sim_config,
-            per_env_params=per_env_params,
-            per_env_grippers=[real_gripper] * int(num_envs),
-            control_hz=None if control_hz is None else float(control_hz),
-        )
-        # Free settle used pre-grasp apple quat; at weld match settle-viewer
-        # post-grasp logged apple + TCP SE(3).
-        scene = getattr(getattr(env, "_sim", None), "scene", None)
-        cable = getattr(scene, "cable", None) if scene is not None else None
-        if cable is not None:
-            apply_logged_post_grasp_se3_to_cable(cable, dict(episode_meta))
-        return env
-
-    return build_env_fn
+# CLI tests import these names from the example module.
+_test_sim_config = real_replay_sim_config
+_build_env_fn = make_real_replay_build_env_fn
 
 
 def woody_forces_from_last_obs(
@@ -561,40 +351,6 @@ def _make_parser() -> argparse.ArgumentParser:
     return p
 
 
-def check_action_semantics(
-    *,
-    controller_mode: str,
-    collection: dict,
-    episode_meta: dict,
-    allow_wrench_as_twist: bool,
-) -> None:
-    """Raise ``SystemExit`` when ``action`` semantics do not match ``controller_mode``."""
-    pose_packed = (
-        collection.get("action_layout") == "vic_pose_v1"
-        or episode_meta.get("action_layout") == "vic_pose_v1"
-        or int(collection.get("action_dim") or 0) == 19
-        or int(episode_meta.get("action_dim") or 0) == 19
-    )
-    if controller_mode == "vic" and allow_wrench_as_twist and pose_packed:
-        raise SystemExit(
-            "--allow-wrench-as-twist only applies to legacy 6D wrench-as-twist exports; "
-            "this dataset already carries 19D vic_pose actions "
-            "(action_layout=vic_pose_v1). Use --controller-mode vic_pose instead."
-        )
-
-    wrench_marked = (
-        episode_meta.get("action_compatible_with_vic_twist") is False
-        or collection.get("action_compatible_with_vic_twist") is False
-    )
-    if controller_mode == "vic" and wrench_marked and not allow_wrench_as_twist:
-        raise SystemExit(
-            "dataset action is a real pose-control wrench, not an EE twist for "
-            "mode=vic. Refuse incorrect physics. Use --controller-mode vic_pose "
-            "for 19D pose actions, or pass --allow-wrench-as-twist for format/GL "
-            "smoke only."
-        )
-
-
 def _run(
     args: argparse.Namespace,
     viewer: object,
@@ -640,39 +396,42 @@ def _run(
     settle_gravity_ramp = bool(args.settle_gravity_ramp)
     post_grasp_settle_substeps = int(args.post_grasp_settle_substeps)
 
+    build_kwargs = dict(
+        ranges_path=ranges_path,
+        ranges=ranges,
+        topology_seed=seed,
+        fruiting_base_pos=fruiting_base_pos,
+        episode_meta=episode_meta,
+        settle_substeps=settle_substeps,
+        settle_quiet_every=settle_quiet_every,
+        settle_gravity_ramp=settle_gravity_ramp,
+        post_grasp_settle_substeps=post_grasp_settle_substeps,
+        bootstrap_joint_q=bootstrap_joint_q,
+        controller_mode=controller_mode,
+        control_hz=control_hz,
+    )
+    sim_kwargs = dict(
+        num_envs=1,
+        topology_seed=seed,
+        fruiting_base_pos=fruiting_base_pos,
+        ranges=ranges,
+        settle_substeps=settle_substeps,
+        settle_quiet_every=settle_quiet_every,
+        settle_gravity_ramp=settle_gravity_ramp,
+        post_grasp_settle_substeps=post_grasp_settle_substeps,
+        bootstrap_joint_q=bootstrap_joint_q,
+        controller_mode=controller_mode,
+        control_hz=control_hz,
+    )
+
     collectors = replay_batched_sysid_structure(
         dataset=dataset,
         structure_idx=structure_idx,
         candidates=candidates,
         num_directions=1,
         seed=seed,
-        build_env_fn=_build_env_fn(
-            ranges_path=ranges_path,
-            ranges=ranges,
-            topology_seed=seed,
-            fruiting_base_pos=fruiting_base_pos,
-            episode_meta=episode_meta,
-            settle_substeps=settle_substeps,
-            settle_quiet_every=settle_quiet_every,
-            settle_gravity_ramp=settle_gravity_ramp,
-            post_grasp_settle_substeps=post_grasp_settle_substeps,
-            bootstrap_joint_q=bootstrap_joint_q,
-            controller_mode=controller_mode,
-            control_hz=control_hz,
-        ),
-        replay_sim_config=_test_sim_config(
-            num_envs=1,
-            topology_seed=seed,
-            fruiting_base_pos=fruiting_base_pos,
-            ranges=ranges,
-            settle_substeps=settle_substeps,
-            settle_quiet_every=settle_quiet_every,
-            settle_gravity_ramp=settle_gravity_ramp,
-            post_grasp_settle_substeps=post_grasp_settle_substeps,
-            bootstrap_joint_q=bootstrap_joint_q,
-            controller_mode=controller_mode,
-            control_hz=control_hz,
-        ),
+        build_env_fn=make_real_replay_build_env_fn(**build_kwargs),
+        replay_sim_config=real_replay_sim_config(**sim_kwargs),
         on_step=make_replay_on_step(
             viewer,
             max_frames=max_frames,

@@ -131,6 +131,47 @@ def test_make_real_replay_build_env_fn_honors_per_env_grippers(monkeypatch):
     assert captured["per_env_grippers"] == [g0, g1]
 
 
+def test_make_real_replay_build_env_fn_applies_post_grasp_with_layout(monkeypatch):
+    from apple_pick_gym.batched_envs import real_batched_replay_build as build
+
+    cable = object()
+    layout = object()
+    apply_calls: list[dict] = []
+
+    class _FakeEnv:
+        def __init__(self, **_kwargs):
+            self._sim = SimpleNamespace(
+                scene=SimpleNamespace(cable=cable, layout=layout)
+            )
+
+    monkeypatch.setattr(build, "ApplePickBatchedSysIdEnv", _FakeEnv)
+    monkeypatch.setattr(
+        build,
+        "apply_logged_post_grasp_se3_to_cable",
+        lambda actual_cable, meta, **kwargs: apply_calls.append(
+            {"cable": actual_cable, "meta": meta, **kwargs}
+        ),
+    )
+    meta = {
+        "initial_apple_pos": [0.1, 0.2, 0.3],
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": [0.1, 0.15, 0.3],
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+    }
+    fn = build.make_real_replay_build_env_fn(
+        ranges_path=_VARIANCE,
+        ranges=load_ranges(_VARIANCE),
+        topology_seed=0,
+        fruiting_base_pos=(0.0, 0.5, 0.95),
+        episode_meta=meta,
+        controller_mode="vic_pose",
+    )
+
+    fn(num_envs=2, per_env_params=[None, None], max_episode_steps=4)
+
+    assert apply_calls == [{"cable": cable, "meta": meta, "layout": layout}]
+
+
 def test_bootstrap_joint_q_from_episode_metadata():
     from apple_pick_gym.batched_envs.real_batched_replay_build import (
         bootstrap_joint_q_from_episode_metadata,

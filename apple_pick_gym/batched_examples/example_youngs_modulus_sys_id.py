@@ -813,19 +813,22 @@ def _run(
         raise SystemExit("No structure indices to evaluate.")
 
     episode_meta = dataset.load_episode_metadata(structure_indices[0], 0)
+    dataset_is_vic_pose = dataset_declares_vic_pose(collection, episode_meta)
     mode = getattr(args, "controller_mode", None)
     if mode is None:
-        mode = (
-            "vic_pose"
-            if dataset_declares_vic_pose(collection, episode_meta)
-            else "vic"
-        )
+        mode = "vic_pose" if dataset_is_vic_pose else "vic"
     check_action_semantics(
         controller_mode=mode,
         collection=collection,
         episode_meta=episode_meta,
         allow_wrench_as_twist=False,
     )
+    if (mode == "vic_pose" or dataset_is_vic_pose) and len(structure_indices) > 1:
+        raise SystemExit(
+            "vic_pose real replay currently supports one converted episode / "
+            "one structure per run; select exactly one --structure-index."
+        )
+    action_dim = 19 if mode == "vic_pose" else 6
 
     replay_seed = args.seed
     if replay_seed is None and "seed" in collection:
@@ -978,6 +981,7 @@ def _run(
             fail_fast=bool(args.fail_fast),
             on_step=on_step,
             replay_sim_config=replay_sim_config,
+            action_dim=action_dim,
         )
         for structure_idx in structure_indices:
             evaluation = batch.evaluations.get(int(structure_idx))
@@ -1045,6 +1049,7 @@ def _run(
                     include_excluded=bool(args.include_excluded),
                     on_step=on_step,
                     replay_sim_config=replay_sim_config,
+                    action_dim=action_dim,
                 )
                 structure_results.append(
                     {

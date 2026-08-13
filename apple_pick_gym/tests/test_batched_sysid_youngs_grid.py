@@ -879,7 +879,7 @@ def test_score_is_gt_false_when_gt_candidate_is_none(
     assert evaluation.scores[0].is_gt is False
 
 
-def test_scalar_evaluation_uses_vic_pose_action_dim(
+def test_scalar_evaluation_uses_resolved_action_dim(
     monkeypatch: pytest.MonkeyPatch,
     gt_params: fs.FruitingSystemParams,
 ):
@@ -891,7 +891,7 @@ def test_scalar_evaluation_uses_vic_pose_action_dim(
         gt_params=gt_params,
     )
     dataset = MagicMock()
-    dataset.manifest = {"collection": {"action_layout": "vic_pose_v1", "action_dim": 19}}
+    dataset.manifest = {"collection": {}}
     replay_call: dict[str, object] = {}
     sentinel = MagicMock()
     monkeypatch.setattr(
@@ -923,6 +923,7 @@ def test_scalar_evaluation_uses_vic_pose_action_dim(
         num_directions=1,
         build_env_fn=MagicMock(),
         scoring=cmaes.YoungsModulusScoringConfig(n_directions=1),
+        action_dim=19,
     )
 
     assert result is sentinel
@@ -1149,6 +1150,7 @@ def test_evaluate_multi_structure_fusion_incompatibility_falls_back_without_erro
 
     def fake_scalar(**kwargs):
         structure_idx = int(kwargs["structure_idx"])
+        assert kwargs["action_dim"] == 19
         scalar_calls.append(structure_idx)
         item = prepared[structure_idx]
         return cmaes.YoungsModulusEvaluation(
@@ -1169,6 +1171,7 @@ def test_evaluate_multi_structure_fusion_incompatibility_falls_back_without_erro
         num_directions=5,
         build_env_fn=MagicMock(),
         scoring=cmaes.YoungsModulusScoringConfig(n_directions=5),
+        action_dim=19,
     )
 
     assert tuple(batch.evaluations) == (4, 1)

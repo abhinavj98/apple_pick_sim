@@ -108,6 +108,7 @@ class _ReplayCompatibilitySignature:
     apple_present: bool
     junction_names: tuple[str, ...]
     frame_count: int
+    action_width: int
     direction_indices: tuple[int, ...]
     gripper: tuple[Any, ...]
 
@@ -144,15 +145,24 @@ def _validate_request(request: ReplayStructureRequest) -> _ReplayCompatibilitySi
         )
 
     frame_count: int | None = None
+    action_width: int | None = None
     junction_names: tuple[str, ...] | None = None
     for direction_idx in directions:
         recorded = request.recorded_by_direction[direction_idx]
         action = np.asarray(recorded.get("action"))
-        if action.ndim != 2 or action.shape[1] != 6:
+        if action.ndim != 2 or action.shape[1] not in (6, 19):
             raise ValueError(
-                "expected action shape (T, 6) for "
+                "expected action shape (T, 6) or (T, 19) for "
                 f"structure {int(request.structure_idx)} direction {direction_idx}, "
                 f"got {action.shape!r}"
+            )
+        episode_action_width = int(action.shape[1])
+        if action_width is None:
+            action_width = episode_action_width
+        elif episode_action_width != action_width:
+            raise ValueError(
+                "all direction episodes must have the same action width for "
+                f"structure {int(request.structure_idx)}"
             )
         episode_frames = int(action.shape[0])
         if frame_count is None:
@@ -186,7 +196,7 @@ def _validate_request(request: ReplayStructureRequest) -> _ReplayCompatibilitySi
         str(gripper.label),
         bool(gripper.fix_to_apple),
     )
-    assert frame_count is not None and junction_names is not None
+    assert frame_count is not None and action_width is not None and junction_names is not None
     return _ReplayCompatibilitySignature(
         topology=str(params.topology),
         enabled_rods=enabled_rods,
@@ -194,6 +204,7 @@ def _validate_request(request: ReplayStructureRequest) -> _ReplayCompatibilitySi
         apple_present=params.apple_radius is not None and params.apple_density is not None,
         junction_names=junction_names,
         frame_count=frame_count,
+        action_width=action_width,
         direction_indices=directions,
         gripper=gripper_signature,
     )
@@ -210,6 +221,7 @@ def _raise_if_incompatible(
         ("apple presence", baseline.apple_present, candidate.apple_present),
         ("junction names", baseline.junction_names, candidate.junction_names),
         ("frame count", baseline.frame_count, candidate.frame_count),
+        ("action width", baseline.action_width, candidate.action_width),
         ("direction layout", baseline.direction_indices, candidate.direction_indices),
         ("gripper configuration", baseline.gripper, candidate.gripper),
     )

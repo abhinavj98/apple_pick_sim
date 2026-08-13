@@ -525,10 +525,43 @@ def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(
     assert real_builder_calls[0]["bootstrap_joint_q"] == pytest.approx((0.1, 0.2))
     assert len(real_config_calls) == 1
     assert evaluator_calls[0]["build_env_fn"] is real_builder
+    assert evaluator_calls[0]["action_dim"] == 19
     replay_config = evaluator_calls[0]["replay_sim_config"]
     assert replay_config.controller.mode == "vic_pose"
     assert replay_config.controller.action_dim == 19
     assert "--include-gt-candidate ignored" in capsys.readouterr().err
+
+
+def test_run_rejects_multiple_structures_for_vic_pose(monkeypatch, tmp_path):
+    module = _load_module()
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 1,
+            "ranges_path": "/tmp/ranges.json",
+        }
+    }
+    dataset.structure_summaries.return_value = [{}, {}]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+    }
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: {})
+
+    args = _task5_run_args(module, tmp_path / "rank", export_replays=False)
+    args.dataset = "/tmp/real"
+    args.structure_indices = (0, 1)
+    args.multi_structure_batch = True
+    args.controller_mode = "vic"
+
+    with pytest.raises(
+        SystemExit, match="one converted episode / one structure per run"
+    ):
+        module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
 
 
 def test_run_records_structure_errors_unless_fail_fast(monkeypatch):

@@ -516,7 +516,10 @@ def test_replay_rebuilds_from_episode_metadata_not_fixture_clamps(tmp_path, monk
         captured.update(kwargs)
         return MagicMock(name="ApplePickBatchedSysIdEnv")
 
-    monkeypatch.setattr(mod, "ApplePickBatchedSysIdEnv", _fake_env)
+    monkeypatch.setattr(
+        "apple_pick_gym.batched_envs.real_batched_replay_build.ApplePickBatchedSysIdEnv",
+        _fake_env,
+    )
     build = mod._build_env_fn(
         ranges_path=_VARIANCE,
         ranges=ranges,

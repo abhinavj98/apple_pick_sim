@@ -34,11 +34,12 @@ def _recorded(
     direction_idx: int,
     *,
     frames: int = 3,
+    action_dim: int = 6,
     junction_names: tuple[str, ...] = ("support", "primary_spur", "spur_stem"),
 ) -> dict[str, Any]:
     sentinel = 10000 * structure_idx + direction_idx
     return {
-        "action": np.full((frames, 6), sentinel, dtype=np.float32),
+        "action": np.full((frames, action_dim), sentinel, dtype=np.float32),
         "junction_names": list(junction_names),
         "recorded_sentinel": sentinel,
     }
@@ -52,6 +53,7 @@ def _request(
     params: fs.FruitingSystemParams | None = None,
     gripper: GripperProxyConfig | None = None,
     frames: int = 3,
+    action_dim: int = 6,
     junction_names: tuple[str, ...] = ("support", "primary_spur", "spur_stem"),
 ) -> multi.ReplayStructureRequest:
     return multi.ReplayStructureRequest(
@@ -64,6 +66,7 @@ def _request(
                 structure_idx,
                 direction_idx,
                 frames=frames,
+                action_dim=action_dim,
                 junction_names=junction_names,
             )
             for direction_idx in directions
@@ -261,6 +264,17 @@ def test_build_replay_candidate_blocks_accepts_different_recorded_weld_poses():
     )
 
     assert len(multi.build_replay_candidate_blocks((first, second))) == 2
+
+
+def test_build_replay_candidate_blocks_accepts_19d_actions_and_rejects_mixed_widths():
+    first = _request(4, action_dim=19)
+    compatible = _request(1, params=first.base_params, action_dim=19)
+
+    assert len(multi.build_replay_candidate_blocks((first, compatible))) == 2
+
+    mixed_width = _request(1, params=first.base_params, action_dim=6)
+    with pytest.raises(multi.ReplayFusionIncompatible, match="action width"):
+        multi.build_replay_candidate_blocks((first, mixed_width))
 
 
 @pytest.mark.parametrize(

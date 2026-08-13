@@ -59,7 +59,6 @@ import numpy as np
 import newton.examples
 import warp as wp
 
-from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
 from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     gt_bend_stiffness_candidate_from_structure,
     replay_batched_sysid_structure,

@@ -956,6 +956,7 @@ def evaluate_youngs_modulus_candidates(
     include_excluded: bool = False,
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
+    action_dim: int | None = None,
 ) -> YoungsModulusEvaluation:
     """Compatibility wrapper using scalar per-structure physical replay."""
     prepared = prepare_youngs_modulus_structure(
@@ -966,11 +967,17 @@ def evaluate_youngs_modulus_candidates(
         scoring=scoring,
         include_excluded=bool(include_excluded),
     )
-    action_dim = (
-        19
-        if dataset_declares_vic_pose(dataset.manifest.get("collection", {}))
-        else 6
-    )
+    if action_dim is None:
+        first_meta = dataset.load_episode_metadata(
+            int(structure_idx), int(prepared.direction_indices[0])
+        )
+        action_dim = (
+            19
+            if dataset_declares_vic_pose(
+                dataset.manifest.get("collection", {}), first_meta
+            )
+            else 6
+        )
     collectors = replay_candidates_for_structure(
         dataset=dataset,
         structure_idx=int(structure_idx),
@@ -1023,6 +1030,7 @@ def evaluate_youngs_modulus_structures(
     fail_fast: bool = False,
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
+    action_dim: int | None = None,
 ) -> YoungsModulusBatchEvaluation:
     """Prepare independently, replay compatibly in fused chunks, and score."""
     total_started = time.perf_counter()
@@ -1072,6 +1080,7 @@ def evaluate_youngs_modulus_structures(
                 include_excluded=bool(include_excluded),
                 on_step=on_step,
                 replay_sim_config=replay_sim_config,
+                action_dim=action_dim,
             )
         except SysIdReplayCancelled:
             raise

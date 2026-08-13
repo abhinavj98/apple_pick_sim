@@ -57,3 +57,4 @@ robot_replay/*_tracking.mp4
 robot_replay/*.png
 robot_replay/s*-d*.json
 !apple_pick_sim/tests/fixtures/**/*.parquet
+robot_replay/**/*.parquet

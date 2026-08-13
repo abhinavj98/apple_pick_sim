@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Draft |
+| **Status** | Implemented |
 | **Date** | 2026-08-12 |
 | **Code** | `robot_replay/gl_video_recorder.py`, `robot_replay/example_replay_real_batched.py` |
 

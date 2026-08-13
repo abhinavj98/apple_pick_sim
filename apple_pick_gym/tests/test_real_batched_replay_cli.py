@@ -177,6 +177,39 @@ def test_bootstrap_joint_q_from_episode_metadata():
         mod.bootstrap_joint_q_from_episode_metadata({})
 
 
+def test_control_hz_from_episode_metadata_prefers_episode_then_collection():
+    mod = _load_replay()
+    assert mod.control_hz_from_episode_metadata({"control_hz": 15.0}) == pytest.approx(15.0)
+    assert mod.control_hz_from_episode_metadata(
+        {}, collection={"control_hz": 12.5}
+    ) == pytest.approx(12.5)
+    assert mod.control_hz_from_episode_metadata(
+        {"control_hz": 15.0}, collection={"control_hz": 12.5}
+    ) == pytest.approx(15.0)
+    with pytest.raises(ValueError, match="control_hz"):
+        mod.control_hz_from_episode_metadata({})
+    with pytest.raises(ValueError, match="control_hz"):
+        mod.control_hz_from_episode_metadata({"control_hz": 0.0})
+
+
+def test_sim_config_applies_recorded_control_hz():
+    from apple_pick_sim.fruiting_system.params import load_ranges
+
+    if not _VARIANCE.is_file():
+        pytest.skip(f"missing {_VARIANCE}")
+
+    mod = _load_replay()
+    ranges = load_ranges(_VARIANCE)
+    cfg = mod._test_sim_config(
+        num_envs=1,
+        topology_seed=0,
+        fruiting_base_pos=(0.117, 0.787, 0.577),
+        ranges=ranges,
+        control_hz=15.0,
+    )
+    assert cfg.runtime.control_hz == pytest.approx(15.0)
+
+
 def test_parser_print_woody_forces_default_off():
     mod = _load_replay()
     p = mod._make_parser()
@@ -216,6 +249,23 @@ def test_woody_forces_from_last_obs_env0():
     assert forces == {"spur_stem": (1.0, 2.0, 3.0)}
 
 
+def test_parser_accepts_record_video():
+    mod = _load_replay()
+    p = mod._make_parser()
+    args = p.parse_args(
+        ["--dataset", "/tmp/ds", "--record-video", "/tmp/replay.mp4"]
+    )
+    assert args.record_video == Path("/tmp/replay.mp4")
+    default = p.parse_args(["--dataset", "/tmp/ds"])
+    assert default.record_video is None
+
+
+def test_require_gl_frame_capture_rejects_null_viewer():
+    mod = _load_replay()
+    with pytest.raises(SystemExit, match="--viewer gl"):
+        mod.require_gl_frame_capture(SimpleNamespace())
+
+
 def test_make_replay_on_step_renders_and_stops_at_max_frames():
     mod = _load_replay()
     calls: list = []
@@ -253,6 +303,62 @@ def test_make_replay_on_step_renders_and_stops_at_max_frames():
     assert ("begin", 0.0) in calls
     assert ("log", "STATE") in calls
     assert "end" in calls
+
+
+def test_make_replay_on_step_captures_video_after_end_frame():
+    mod = _load_replay()
+    order: list[str] = []
+
+    class Viewer:
+        def set_model(self, model):
+            pass
+
+        def hide_loading_splash(self):
+            pass
+
+        def begin_frame(self, t):
+            order.append("begin")
+
+        def log_state(self, state):
+            order.append("log")
+
+        def end_frame(self):
+            order.append("end")
+
+        def get_frame(self):
+            order.append("get_frame")
+            return object()
+
+        def is_running(self):
+            return True
+
+    class Recorder:
+        def __init__(self):
+            self.fps = None
+            self.captures = 0
+
+        def set_fps(self, fps: float) -> None:
+            self.fps = float(fps)
+
+        def capture(self, viewer) -> None:
+            order.append("capture")
+            viewer.get_frame()
+            self.captures += 1
+
+    cable = SimpleNamespace(model="MODEL", state_0="STATE")
+    scene = SimpleNamespace(cable=cable)
+    sim = SimpleNamespace(
+        scene=scene, config=SimpleNamespace(runtime=SimpleNamespace(control_hz=10.0))
+    )
+    env = SimpleNamespace(_sim=sim, num_envs=1)
+    recorder = Recorder()
+    on_step = mod.make_replay_on_step(
+        Viewer(), max_frames=0, recorder=recorder
+    )
+    assert on_step(frame_idx=0, env=env) is True
+    assert recorder.captures == 1
+    assert recorder.fps == pytest.approx(10.0)
+    assert order == ["begin", "log", "end", "capture", "get_frame"]
 
 
 def test_gl_camera_from_camera_to_base_looks_along_plus_z():

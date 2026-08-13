@@ -42,7 +42,7 @@ class ApplePickBatchedSysIdEnv(ApplePickBatchedBaseEnv):
         use_settle_cache: bool = False,
         per_env_params: Sequence[Any] | None = None,
         per_env_grippers: Sequence[GripperProxyConfig] | None = None,
-        control_hz: float = 60.0,
+        control_hz: float | None = None,
     ) -> None:
         import dataclasses
 
@@ -56,9 +56,12 @@ class ApplePickBatchedSysIdEnv(ApplePickBatchedBaseEnv):
 
         n = int(num_envs)
         cfg = sim_config or BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=n)
+        # Prefer explicit control_hz; otherwise keep sim_config.runtime.control_hz
+        # (do not silently overwrite with a hardcoded 60 default).
+        hz = float(cfg.runtime.control_hz if control_hz is None else control_hz)
         cfg = dataclasses.replace(
             cfg,
-            runtime=dataclasses.replace(cfg.runtime, control_hz=float(control_hz)),
+            runtime=dataclasses.replace(cfg.runtime, control_hz=hz),
             controller=dataclasses.replace(
                 cfg.controller,
                 linear_speed=1.0,
@@ -72,7 +75,7 @@ class ApplePickBatchedSysIdEnv(ApplePickBatchedBaseEnv):
                 robot=dataclasses.replace(cfg.robot, fix_to_apple=True, force_batched_layout=True),
             )
 
-        self._control_hz = float(control_hz)
+        self._control_hz = hz
         self._last_obs: dict[str, Any] | None = None
         self._per_env_reset_info: list[dict[str, Any]] = []
 

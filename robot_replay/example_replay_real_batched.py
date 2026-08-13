@@ -23,8 +23,9 @@ GL camera at the real recording-camera pose (position + OpenCV +Z look).
 Geometry comes from converted episode metadata (same native rebuild as
 ``example_view_pre_grasp_settle`` / ``example_view_batched_episode_meta``):
 oracle ``fruiting_system_params`` and episode ``fruiting_base_pos``. Arm
-placement is **open-loop** from ``initial_robot_joint_q`` (skip IK). Sim physics
-uses ``gym_defaults`` + fixture ``sim_build`` on the default sim device.
+placement is **open-loop** from ``initial_robot_joint_q`` (skip IK). Sim
+``control_hz`` comes from episode / collection metadata (real recording rate).
+Physics uses ``gym_defaults`` + fixture ``sim_build`` on the default sim device.
 
 Example (after export)::
 
@@ -37,6 +38,12 @@ Example (after export)::
       --settle-substeps 5000 --settle-quiet-every 300 \\
       --post-grasp-settle-substeps 500 \\
       --print-woody-forces 5
+
+Headless MP4 (requires ``imageio-ffmpeg`` via ``uv sync --extra gym``)::
+
+    uv run python robot_replay/example_replay_real_batched.py \\
+      --dataset /tmp/real_batched_s02_d00 --viewer gl --headless \\
+      --record-video /tmp/replay.mp4 --max-frames 0
 """
 
 from __future__ import annotations
@@ -74,6 +81,13 @@ from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_for_real_batched_replay,
 )
 
+# Allow ``uv run python robot_replay/example_replay_real_batched.py`` imports.
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from robot_replay.gl_video_recorder import GlVideoRecorder  # noqa: E402
+
 _DEFAULT_FIXTURE = Path(
     "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json"
 )
@@ -108,6 +122,23 @@ def bootstrap_joint_q_from_episode_metadata(
     if arr.size < 1:
         raise ValueError("initial_robot_joint_q must be non-empty")
     return tuple(float(x) for x in arr.tolist())
+
+
+def control_hz_from_episode_metadata(
+    meta: Mapping[str, Any],
+    *,
+    collection: Mapping[str, Any] | None = None,
+) -> float:
+    """Recorded control rate [Hz] from episode meta, else collection."""
+    raw = meta.get("control_hz")
+    if raw is None and collection is not None:
+        raw = collection.get("control_hz")
+    if raw is None:
+        raise ValueError("episode metadata missing control_hz")
+    hz = float(raw)
+    if hz <= 0.0:
+        raise ValueError(f"control_hz must be positive, got {hz}")
+    return hz
 
 
 def _sim_build_knobs(ranges: dict) -> tuple[
@@ -149,6 +180,7 @@ def _test_sim_config(
     post_grasp_settle_substeps: int = _POST_GRASP_SETTLE_SUBSTEPS,
     bootstrap_joint_q: tuple[float, ...] | None = None,
     controller_mode: str = _DEFAULT_CONTROLLER_MODE,
+    control_hz: float | None = None,
 ) -> BatchedHeterogeneousCoupledSimConfig:
     """Gym FR3+VIC config with fixture sim_build; episode fruiting_base_pos."""
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=num_envs)
@@ -169,8 +201,12 @@ def _test_sim_config(
     )
     if vic_gains is not None:
         controller = dataclasses.replace(controller, vic_gains=vic_gains)
+    runtime = gym_cfg.runtime
+    if control_hz is not None:
+        runtime = dataclasses.replace(runtime, control_hz=float(control_hz))
     return dataclasses.replace(
         gym_cfg,
+        runtime=runtime,
         robot=dataclasses.replace(
             gym_cfg.robot,
             kind="fr3",
@@ -221,6 +257,7 @@ def _build_env_fn(
     post_grasp_settle_substeps: int = _POST_GRASP_SETTLE_SUBSTEPS,
     bootstrap_joint_q: tuple[float, ...] | None = None,
     controller_mode: str = _DEFAULT_CONTROLLER_MODE,
+    control_hz: float | None = None,
 ) -> Callable[..., Any]:
     def build_env_fn(
         *,
@@ -243,6 +280,7 @@ def _build_env_fn(
             post_grasp_settle_substeps=post_grasp_settle_substeps,
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode=controller_mode,
+            control_hz=control_hz,
         )
         sim_config = dataclasses.replace(
             sim_config,
@@ -257,6 +295,7 @@ def _build_env_fn(
             sim_config=sim_config,
             per_env_params=per_env_params,
             per_env_grippers=[real_gripper] * int(num_envs),
+            control_hz=None if control_hz is None else float(control_hz),
         )
         # Free settle used pre-grasp apple quat; at weld match settle-viewer
         # post-grasp logged apple + TCP SE(3).
@@ -343,6 +382,15 @@ def gl_camera_from_camera_to_base(
     return pos, pitch, yaw
 
 
+def require_gl_frame_capture(viewer: object) -> None:
+    """Raise ``SystemExit`` unless ``viewer`` supports ``get_frame`` (ViewerGL)."""
+    if not hasattr(viewer, "get_frame"):
+        raise SystemExit(
+            "--record-video requires a GL viewer with get_frame(); "
+            "pass --viewer gl (optionally --headless)."
+        )
+
+
 def make_replay_on_step(
     viewer: object,
     *,
@@ -350,6 +398,7 @@ def make_replay_on_step(
     control_hz_fallback: float = _CONTROL_HZ_FALLBACK,
     print_woody_forces_every: int = 0,
     camera_to_base_4x4: object | None = None,
+    recorder: GlVideoRecorder | None = None,
 ) -> Callable[..., bool]:
     """MMD-grid-style render + optional frame cap for real replay.
 
@@ -358,6 +407,9 @@ def make_replay_on_step(
 
     When ``camera_to_base_4x4`` is set and the viewer supports ``set_camera``,
     place the GL eye at the real recording camera pose on first init.
+
+    When ``recorder`` is set, capture an RGB frame after each ``end_frame`` at
+    sim ``control_hz``.
     """
     viewer_state: dict[str, object] = {"initialized": False}
     every = int(print_woody_forces_every)
@@ -392,6 +444,10 @@ def make_replay_on_step(
             if hasattr(viewer, "log_state") and hasattr(scene, "cable"):
                 viewer.log_state(scene.cable.state_0)
             viewer.end_frame()
+            if recorder is not None:
+                if recorder.fps is None:
+                    recorder.set_fps(hz)
+                recorder.capture(viewer)
 
         if every > 0 and int(frame_idx) % every == 0:
             names = list(getattr(env, "junction_names", []) or [])
@@ -492,6 +548,16 @@ def _make_parser() -> argparse.ArgumentParser:
             "(world frame, force on child). <=0 disables (default)."
         ),
     )
+    p.add_argument(
+        "--record-video",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write GL viewer frames to PATH.mp4 (requires --viewer gl; "
+            "--headless OK). FPS matches sim control_hz."
+        ),
+    )
     return p
 
 
@@ -529,7 +595,12 @@ def check_action_semantics(
         )
 
 
-def _run(args: argparse.Namespace, viewer: object) -> int:
+def _run(
+    args: argparse.Namespace,
+    viewer: object,
+    *,
+    recorder: GlVideoRecorder | None = None,
+) -> int:
     dataset = BatchedSysIdDataset(args.dataset)
     collection = dataset.manifest.get("collection", {})
     ranges_path = Path(
@@ -546,6 +617,9 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
         episode_meta = dataset.load_episode_metadata(structure_idx, 0)
         fruiting_base_pos = fruiting_base_pos_from_episode_metadata(episode_meta)
         bootstrap_joint_q = bootstrap_joint_q_from_episode_metadata(episode_meta)
+        control_hz = control_hz_from_episode_metadata(
+            episode_meta, collection=collection
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -584,6 +658,7 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
             post_grasp_settle_substeps=post_grasp_settle_substeps,
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode=controller_mode,
+            control_hz=control_hz,
         ),
         replay_sim_config=_test_sim_config(
             num_envs=1,
@@ -596,12 +671,14 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
             post_grasp_settle_substeps=post_grasp_settle_substeps,
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode=controller_mode,
+            control_hz=control_hz,
         ),
         on_step=make_replay_on_step(
             viewer,
             max_frames=max_frames,
             print_woody_forces_every=int(args.print_woody_forces),
             camera_to_base_4x4=episode_meta.get("camera_to_base_4x4"),
+            recorder=recorder,
         ),
         use_oracle_params=True,
         action_dim=19 if controller_mode == "vic_pose" else 6,
@@ -612,6 +689,17 @@ def _run(args: argparse.Namespace, viewer: object) -> int:
         f"replay frames={tcp.shape[0]} tcp_motion_m={motion_m:.6g}",
         file=sys.stderr,
     )
+    if recorder is not None:
+        if recorder.frame_count <= 0:
+            print(
+                f"FAIL: --record-video requested but wrote 0 frames ({recorder.path})",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"recorded video frames={recorder.frame_count} path={recorder.path}",
+            file=sys.stderr,
+        )
     if motion_m <= 1e-4:
         print("FAIL: TCP stationary (expected open-loop motion)", file=sys.stderr)
         return 1
@@ -628,9 +716,15 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = _make_parser()
     viewer, args = newton.examples.init(parser=parser)
+    recorder: GlVideoRecorder | None = None
+    if args.record_video is not None:
+        require_gl_frame_capture(viewer)
+        recorder = GlVideoRecorder(args.record_video)
     try:
-        return _run(args, viewer)
+        return _run(args, viewer, recorder=recorder)
     finally:
+        if recorder is not None:
+            recorder.close()
         if hasattr(viewer, "close"):
             viewer.close()
 

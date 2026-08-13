@@ -115,6 +115,56 @@ def test_batched_sysid_env_forwards_per_env_grippers(monkeypatch):
     assert captured["per_env_grippers"] is per_env_grippers
 
 
+def test_batched_sysid_env_preserves_sim_config_control_hz(monkeypatch):
+    """Env must not overwrite sim_config.runtime.control_hz with default 60."""
+    captured: dict[str, object] = {}
+
+    def _fake_base_init(self, **kwargs):
+        captured.update(kwargs)
+        self.num_envs = int(kwargs["num_envs"])
+        self.device = torch.device("cpu")
+
+    monkeypatch.setattr(ApplePickBatchedBaseEnv, "__init__", _fake_base_init)
+
+    base = _test_sim_config(num_envs=1)
+    cfg = dataclasses.replace(
+        base,
+        runtime=dataclasses.replace(base.runtime, control_hz=15.0),
+    )
+    env = ApplePickBatchedSysIdEnv(
+        num_envs=1,
+        sim_config=cfg,
+        use_settle_cache=False,
+    )
+    assert env._control_hz == pytest.approx(15.0)
+    assert captured["sim_config"].runtime.control_hz == pytest.approx(15.0)
+
+
+def test_batched_sysid_env_explicit_control_hz_overrides_sim_config(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def _fake_base_init(self, **kwargs):
+        captured.update(kwargs)
+        self.num_envs = int(kwargs["num_envs"])
+        self.device = torch.device("cpu")
+
+    monkeypatch.setattr(ApplePickBatchedBaseEnv, "__init__", _fake_base_init)
+
+    base = _test_sim_config(num_envs=1)
+    cfg = dataclasses.replace(
+        base,
+        runtime=dataclasses.replace(base.runtime, control_hz=15.0),
+    )
+    env = ApplePickBatchedSysIdEnv(
+        num_envs=1,
+        sim_config=cfg,
+        control_hz=30.0,
+        use_settle_cache=False,
+    )
+    assert env._control_hz == pytest.approx(30.0)
+    assert captured["sim_config"].runtime.control_hz == pytest.approx(30.0)
+
+
 @gymnasium_available
 @requires_fr3
 def test_batched_sysid_obs_shapes_and_sysid_numpy_export():

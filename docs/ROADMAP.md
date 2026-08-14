@@ -4,10 +4,10 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-08-12 |
+| **Last updated** | 2026-08-13 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[M4].0 slice 2** — F/T frame + LPF on sim `ft_wrist`; slice 1 plumbing Done; V.5.3 held-out deferred |
+| **Active work**  | **[M4].0 feature alignment Done** (slices 0–3); next: trusted Cartesian ranking → CMA; V.5.3 held-out deferred |
 
 ---
 
@@ -42,7 +42,7 @@
 
 ## Current focus
 
-**Next slice:** **M4.0 slice 2 — F/T frame alignment + LPF** (then trusted Cartesian ranking). Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved. **Ranking F/T is not trusted until slice 2** (frame + LPF on sim `ft_wrist`; Sinkhorn on `action[0:7]` only).
+**Next slice:** **M4.0 trusted Cartesian ranking** (then CMA on the same builder). **Feature alignment Done** per `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md` slices 0–3: USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. **No sim EMA/LPF. Full 19D `action` in Sinkhorn.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
 
 **Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see `docs/youngs-modulus-sysid.md`.
 
@@ -54,12 +54,13 @@
 - Post-grasp SE(3) on shared `make_real_replay_build_env_fn` + batched `apply_logged_post_grasp_se3_to_cable` (grid/CMA real replay match example)
 - README + validation commands documented; unit/CLI tests for metadata→controller mode
 
-**Scope for slice 2 (current):**
+**Scope for feature alignment (Done — spec `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md`):**
 
-- Align sim `ft_wrist` to the real F/T frame before Sinkhorn scoring (spec: `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`)
-- Apply LPF on sim wrist F/T to match real bag preprocessing
-- Restrict Sinkhorn ranking to `action[0:7]` (Cartesian) until transformed bags are trusted
-- Unit tests for frame transform + LPF; document that slice 1 convert→grid smoke is maintainer-run when parquet is present
+- **Slice 0:** USD `/fr3/ee` mass 1.1 kg, COM `(0,0,−0.077)`, diagonal `I_ee`; massless `/ee/tcp`
+- **Slice 1:** Convert `R(tcp) @` logged F and τ; raise if `tcp_pose_4x4` missing; score converted `ft_wrist` (not raw); **no sim EMA/LPF**
+- **Slice 2:** Compiler Branch/Spur/Apple → two woody starts + `apple_pos`; drop `woody_end` from sys-ID bag / collector / `STATE_VECTOR`
+- **Slice 3:** Scalar `hold_number` from `hold_index`; one-hot only at score time
+- **Not in scope:** pose-only `action[0:7]` Sinkhorn; sim F/T low-pass; plumbing spec score-time F/T+LPF plan (superseded)
 
 **Out of scope (M4.0 remaining / slice 2+):**
 
@@ -76,10 +77,13 @@
 - [x] CMA / multi-replay / grid build path selects `vic_pose` + `action_dim=19` from dataset metadata (twist default preserved; `--controller-mode` opt-in)
 - [x] Real GT feature bags load without requiring sim `fruiting_system_params` as the ranking oracle (`gt_candidate is None`; `--include-gt-candidate` forced off on real datasets)
 - [x] Unit/CLI tests for metadata→controller mode selection; refuse wrench-as-twist regressions
-- [ ] End-to-end smoke on `s02-d00` (convert → grid) with `--viewer null` — commands documented in validation block + `robot_replay/README.md`; **not executed in worktree** (parquet gitignored); acceptance: envs build, 19D steps, no wrench-as-twist, no `sim_config` crash; F/T Sinkhorn ranking **not** trusted until slice 2
+- [ ] End-to-end smoke on `s02-d00` (convert → grid) with `--viewer null` — commands documented in validation block + `robot_replay/README.md`; **not executed in worktree** (parquet gitignored); acceptance: envs build, 19D steps, no wrench-as-twist, no `sim_config` crash; ranking **not** trusted until post-alignment smoke
 - [x] README + validation commands updated
-- [ ] **Slice 2:** F/T frame alignment + LPF on sim `ft_wrist` + Sinkhorn `action[0:7]` only (see plumbing spec)
-- [ ] **Slice 3:** Trusted Cartesian ranking on transformed bags
+- [x] **Alignment slice 0:** USD `/fr3/ee` mass/COM/`I_ee` from recorded `ee_config` (spec `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md`)
+- [x] **Alignment slice 1:** Convert-time `R(tcp) @` F/T; no sim EMA; full 19D action in bag
+- [x] **Alignment slice 2:** Two-start woody + `apple_pos`; `woody_end` dropped from sys-ID bag
+- [x] **Alignment slice 3:** Scalar `hold_number` from `hold_index`
+- [ ] **Post-alignment:** Trusted Cartesian ranking on aligned bags (Sinkhorn smoke / grid)
 - [ ] **Slice 4:** CMA `example_youngs_modulus_cmaes.py` on the same real builder
 
 **Build on (do not reimplement):**
@@ -88,7 +92,7 @@
 - `robot_replay/example_replay_real_batched.py` (`--controller-mode vic_pose`; post-grasp SE(3) weld)
 - `gripper_proxy_for_real_batched_replay` / `apply_logged_post_grasp_se3_to_cable` (`batched_digital_twin_init.py`) — reuse in CMA seed
 - `example_youngs_modulus_cmaes.py` / `batched_sysid_cmaes.py` / `replay_batched_sysid_structure` (additive `action_dim`)
-- Specs: `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md`, `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 3), `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `docs/variable-impedance-teleop.md` §`vic_pose`, `robot_replay/README.md`
+- Specs: `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md`, `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 3), `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `docs/variable-impedance-teleop.md` §`vic_pose`, `robot_replay/README.md`
 
 **Shipped wins relevant to this slice (do not reimplement):**
 
@@ -146,7 +150,7 @@
 
 **[M4] real-data calibration**
 
-- [ ] **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)** — **In progress** (slice 1 Done; slice 2 F/T transform next)
+- [ ] **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)** — **In progress** (plumbing + feature alignment Done; trusted ranking → CMA next)
 - [ ] **M4.1+** — Broader real collection / held-out real segments (after M4.0)
 
 **[M3] parallel infra** (optional alongside [V])
@@ -206,7 +210,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
-| **M4.0** | **In progress** | Slice 1 Done (plumbing); slice 2 F/T frame + LPF → trusted ranking → CMA |
+| **M4.0** | **In progress** | Plumbing + feature alignment Done (slices 0–3); trusted ranking → CMA next |
 | **M4.1+** | Later | Broader real collection / held-out real metrics |
 
 Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Public API reference: `docs/coupled-sim-api.md`.
@@ -405,7 +409,7 @@ uv run --env-file pytest.env python \
 # CUDA acceptance (Task 8 passed): collect 5x5, fused CMA-ES, scalar smoke, and
 # validation reports under tmp/task8_cuda_acceptance/ (see implementation notes).
 
-# [M4].0 — real robot_replay → vic_pose replay → grid (slice 1 Done; F/T ranking slice 2)
+# [M4].0 — real robot_replay → vic_pose replay → grid (plumbing + feature alignment Done; ranking smoke next)
 # Convert packs 19D vic_pose_v1; gym collect / MMD / default sim-sim CMA stay on twist vic.
 # Requires robot_replay/s02-d00.parquet (not always in clone; use local bench log if missing).
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
@@ -424,7 +428,7 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
   --log10-e-stem 9.0 \
   --no-include-gt-candidate \
   --overwrite
-# Slice 1 success = build/replay without crash; ranking F/T NOT trusted until slice 2.
+# Post-alignment success = build/replay without crash; ranking trusted after smoke on aligned bags.
 # CMA (slice 4): example_youngs_modulus_cmaes.py on same builder — not yet wired.
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_real_to_batched_sysid.py \

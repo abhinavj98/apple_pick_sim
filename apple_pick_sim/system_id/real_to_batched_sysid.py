@@ -29,6 +29,7 @@ from apple_pick_sim.fruiting_system.params import (
     rod_params_from_material,
 )
 from apple_pick_sim.system_id.batched_trajectory_store import SCHEMA_VERSION
+from apple_pick_sim.system_id.mmd_features import CMA_WOODY_JUNCTIONS
 
 SIM_JUNCTION_NAMES: tuple[str, str, str] = ("primary_spur", "spur_stem", "stem_apple")
 ROD_NAMES: tuple[str, str, str] = ("primary", "spur", "stem")
@@ -55,6 +56,16 @@ def flat_woody_to_dicts(
         starts[name] = start[sl].copy()
         ends[name] = end[sl].copy()
     return starts, ends
+
+
+def compiler_woody_to_cma_starts(start9: Any, end9: Any) -> dict[str, np.ndarray]:
+    """Map compiler Branch/Spur/Apple length-9 packing to two CMA woody starts."""
+    start = np.asarray(start9, dtype=np.float32).reshape(9)
+    end = np.asarray(end9, dtype=np.float32).reshape(9)
+    return {
+        "primary_spur": start[0:3].copy(),
+        "spur_stem": end[0:3].copy(),
+    }
 
 
 def rod_directions_from_woody(
@@ -390,8 +401,8 @@ def build_episode_metadata_from_real(
         "excitation_type": "quasi_static",
         "control_hz": _resolve_control_hz(dm),
         "seed": None,
-        "n_woody_parts": 3,
-        "junction_names": list(SIM_JUNCTION_NAMES),
+        "n_woody_parts": 2,
+        "junction_names": list(CMA_WOODY_JUNCTIONS),
         "initial_tcp_pos": tcp_pos,
         "initial_tcp_quat": tcp_quat,
         "initial_apple_pos": apple_pos,
@@ -688,7 +699,7 @@ def export_real_episode_to_batched_dataset(
 
         start9 = table.column("woody_part_start_pos")[i].as_py()
         end9 = table.column("woody_part_end_pos")[i].as_py()
-        starts, ends = flat_woody_to_dicts(start9, end9)
+        woody_starts = compiler_woody_to_cma_starts(start9, end9)
 
         if "excitation_direction" in table.column_names:
             exc = np.asarray(
@@ -729,8 +740,7 @@ def export_real_episode_to_batched_dataset(
             "tcp_quat": np.asarray(tcp_quat, dtype=np.float32),
             "apple_quat": np.asarray(apple_quat, dtype=np.float32),
             "robot_joint_q": joint_q,
-            "woody_part_start_pos": {name: starts[name] for name in junction_names},
-            "woody_part_end_pos": {name: ends[name] for name in junction_names},
+            "woody_part_start_pos": woody_starts,
             "woody_part_force": np.zeros(0, dtype=np.float32),
         }
         traj.record_step(
@@ -756,7 +766,7 @@ def export_real_episode_to_batched_dataset(
             "structure_idx": 0,
             "params_fingerprint": episode_meta.get("params_fingerprint"),
             "junction_names": list(junction_names),
-            "n_woody_parts": int(episode_meta.get("n_woody_parts") or 3),
+            "n_woody_parts": int(episode_meta.get("n_woody_parts") or 2),
         }
     ]
     episodes = [

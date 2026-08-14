@@ -339,6 +339,8 @@ class BatchedSysIdDataset:
             out: dict[str, np.ndarray] = {}
             for name in junction_names:
                 col = f"{prefix}{name}"
+                if col not in table.column_names:
+                    continue
                 rows = table.column(col).to_pylist()
                 out[name] = np.stack(
                     [np.asarray(row, dtype=np.float32).reshape(3) for row in rows],

@@ -238,6 +238,50 @@ def test_write_manifest_refuses_overwrite(tmp_path: Path):
         )
 
 
+def test_load_episode_obs_arrays_skips_missing_woody_end_columns(tmp_path: Path):
+    writer = BatchedEpisodeWriter(episode_id="starts-only")
+    obs = _synthetic_obs(n_woody=2)
+    del obs["woody_part_end_pos"]
+    writer.record_step(
+        step_idx=0,
+        sim_time=0.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=obs,
+    )
+    writer.save(
+        tmp_path / episode_filename(0, 0),
+        _synthetic_episode_metadata(episode_id="starts-only"),
+    )
+    write_manifest(
+        tmp_path,
+        command_argv=["test"],
+        collection={"seed": 0, "num_structures": 1, "num_directions": 1},
+        structures=[
+            {
+                "structure_idx": 0,
+                "params_fingerprint": "{}",
+                "junction_names": ["joint_0", "joint_1"],
+                "n_woody_parts": 2,
+            }
+        ],
+        episodes=[
+            {
+                "structure_idx": 0,
+                "direction_idx": 0,
+                "env_idx": 0,
+                "filename": episode_filename(0, 0),
+                "episode_id": "starts-only",
+                "n_frames": 1,
+            }
+        ],
+    )
+    arrays = BatchedSysIdDataset(tmp_path).load_episode_obs_arrays(0, 0)
+    assert set(arrays["woody_part_start_pos"]) == {"joint_0", "joint_1"}
+    assert arrays["woody_part_end_pos"] == {}
+
+
 def test_materialize_legacy_episode_dir(tmp_path: Path):
     writer = BatchedEpisodeWriter(episode_id="ep-legacy")
     writer.record_step(

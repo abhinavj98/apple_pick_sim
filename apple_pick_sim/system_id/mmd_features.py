@@ -7,6 +7,8 @@ from typing import Any
 
 import numpy as np
 
+CMA_WOODY_JUNCTIONS: tuple[str, str] = ("primary_spur", "spur_stem")
+
 STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "ft_wrist",
     "tcp_velocity",

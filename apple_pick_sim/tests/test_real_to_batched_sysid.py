@@ -9,10 +9,12 @@ import pyarrow.parquet as pq
 import pytest
 
 from apple_pick_sim.fruiting_system.params import load_ranges
+from apple_pick_sim.system_id.mmd_features import CMA_WOODY_JUNCTIONS
 from apple_pick_sim.system_id.real_to_batched_sysid import (
     SIM_JUNCTION_NAMES,
     build_episode_metadata_from_real,
     build_fruiting_params_from_real,
+    compiler_woody_to_cma_starts,
     flat_woody_to_dicts,
     range_midpoint,
     rod_directions_from_woody,
@@ -20,6 +22,18 @@ from apple_pick_sim.system_id.real_to_batched_sysid import (
 )
 
 VARIANCE = Path("apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json")
+
+
+def test_compiler_woody_to_cma_starts_maps_branch_and_spur():
+    branch = np.array([1.0, 2.0, 3.0])
+    spur = np.array([4.0, 5.0, 6.0])
+    apple = np.array([7.0, 8.0, 9.0])
+    start9 = np.concatenate([branch, branch, spur])
+    end9 = np.concatenate([spur, apple, apple])
+    got = compiler_woody_to_cma_starts(start9, end9)
+    assert set(got) == {"primary_spur", "spur_stem"}
+    np.testing.assert_allclose(got["primary_spur"], branch)
+    np.testing.assert_allclose(got["spur_stem"], spur)
 
 
 def test_flat_woody_to_dicts_order():
@@ -228,13 +242,13 @@ def _write_synthetic_real(
     skip_tcp_pose_4x4: bool = False,
 ) -> None:
     """Minimal real-episode-shaped parquet for native pre/post → batched meta."""
-    # Woody: part0 Branch→Spur, part1 Branch unused chord, part2 Spur→Apple CoM.
-    spur_start = [0.0, 1.0, 0.6]
-    spur_end = [0.0, 1.0, 0.5]
+    # Woody: compiler starts=[Branch,Branch,Spur], ends=[Spur,Apple,Apple].
+    branch = [0.0, 1.0, 0.6]
+    spur = [0.0, 1.0, 0.5]
     apple_pos = [0.0, 0.95, 0.38]
     tcp_pos = [0.0, 0.9, 0.4]
-    woody_start = spur_start + [0.0, 1.0, 0.55] + spur_end
-    woody_end = spur_end + [0.0, 1.0, 0.45] + apple_pos
+    woody_start = branch + branch + spur
+    woody_end = spur + apple_pos + apple_pos
     joint = [0.1 * j for j in range(7)]
     base_row = {
         "step_idx": 0,
@@ -442,8 +456,8 @@ def test_build_episode_metadata_from_real(tmp_path: Path):
     assert meta["env_idx"] == 0
     assert meta["excitation_type"] == "quasi_static"
     assert meta["control_hz"] == 15.0
-    assert meta["n_woody_parts"] == 3
-    assert meta["junction_names"] == list(SIM_JUNCTION_NAMES)
+    assert meta["n_woody_parts"] == 2
+    assert meta["junction_names"] == list(CMA_WOODY_JUNCTIONS)
     assert meta["episode_id"] == "synthetic-real-ep"
     assert meta["fixture_path"] == str(VARIANCE.resolve())
     assert meta["pull_direction"] == [0.0, -1.0, 0.0]
@@ -472,6 +486,54 @@ def test_build_episode_metadata_from_real(tmp_path: Path):
     assert meta["fruiting_system_params"]["topology"] == "t_junction"
 
 
+def test_export_writes_two_woody_starts_and_no_ends(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+    from apple_pick_sim.system_id.trajectory_store import woody_end_column, woody_start_column
+
+    target = _identity_pose_4x4([0.1, 0.2, 0.3])
+    kp = [100.0, 100.0, 100.0, 30.0, 30.0, 30.0]
+    kd = [17.5, 17.5, 17.5, 9.5, 9.5, 9.5]
+    src = tmp_path / "woody_export.parquet"
+    _write_synthetic_real(
+        src,
+        action=[1.0, -2.0, -3.0, -0.5, 0.1, -0.2],
+        action_semantics=(
+            "per-frame pose-control wrench [Fx, Fy, Fz, Tx, Ty, Tz] "
+            "computed from the current pose error and velocity"
+        ),
+        action_order=["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+        target_pose_4x4=target,
+        controller_gains={"task_prop_gains": kp, "task_deriv_gains": kd},
+    )
+    out = tmp_path / "batched_woody"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    meta = ds.load_episode_metadata(0, 0)
+    assert meta["junction_names"] == list(CMA_WOODY_JUNCTIONS)
+    assert meta["n_woody_parts"] == 2
+
+    table = ds.load_episode_frames(0, 0)
+    col_names = set(table.column_names)
+    assert woody_start_column("primary_spur") in col_names
+    assert woody_start_column("spur_stem") in col_names
+    assert woody_end_column("primary_spur") not in col_names
+    assert woody_end_column("spur_stem") not in col_names
+    assert woody_start_column("stem_apple") not in col_names
+    assert woody_start_column("support") not in col_names
+
+    arrays = ds.load_episode_obs_arrays(0, 0)
+    assert set(arrays["woody_part_start_pos"]) == set(CMA_WOODY_JUNCTIONS)
+    assert arrays["woody_part_end_pos"] == {}
+    np.testing.assert_allclose(
+        arrays["apple_pos"][0], [0.0, 0.95, 0.38], atol=1e-6
+    )
+
+
 def test_export_real_to_batched_dataset_loads(tmp_path: Path):
     """Exported wrench-semantics dataset packs 19D vic_pose actions."""
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
@@ -493,7 +555,7 @@ def test_export_real_to_batched_dataset_loads(tmp_path: Path):
     meta = ds.load_episode_metadata(0, 0)
     assert "fruiting_system_params" in meta
     assert isinstance(meta["fruiting_system_params"], str)
-    assert meta["junction_names"] == list(SIM_JUNCTION_NAMES)
+    assert meta["junction_names"] == list(CMA_WOODY_JUNCTIONS)
     assert meta.get("action_dim") == 19
     assert meta.get("action_layout") == "vic_pose_v1"
     from apple_pick_sim.system_id.batched_digital_twin_init import true_params_for_structure

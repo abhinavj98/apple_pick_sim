@@ -6,7 +6,7 @@
 | **Canonical living doc:** | `docs/handbook-youngs-cma.md` |
 | **Date** | 2026-08-04 |
 | **Roadmap** | Extends V.5.2 Young's CMA/grid; primary branch compliance retarget |
-| **Related** | `docs/youngs-modulus-sysid.md`, `docs/youngs-modulus-cmaes-implementation.md`, `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`, `docs/damping-tuning.md`, `docs/real-world-proxy.md` |
+| **Related** | `docs/handbook-youngs-cma.md`, `docs/handbook-youngs-cma.md`, `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`, `docs/damping-tuning.md`, `docs/real-world-proxy.md` |
 
 ## Purpose
 

@@ -8,7 +8,7 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-08-14 (H1–H5 handbook index and M4.0 gap refresh) |
+| **Last reviewed** | 2026-08-14 (H1–H5 index; removed handbook stubs and absorbed living duplicates) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
@@ -57,7 +57,7 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Two-solver split (core architectural fact, M1):** `SolverMuJoCo` cannot represent `JointType.CABLE`, so the fruiting tree (plant) and the FR3 arm live on **two separate `newton.Model` instances**, coupled through proxy bodies and a one-substep-lag wrench exchange. This is the single most important thing to understand before touching simulation code — see `docs/mujoco-vbd-coupling-architecture.md`.
+**Two-solver split (core architectural fact, M1):** `SolverMuJoCo` cannot represent `JointType.CABLE`, so the fruiting tree (plant) and the FR3 arm live on **two separate `newton.Model` instances**, coupled through proxy bodies and a one-substep-lag wrench exchange. This is the single most important thing to understand before touching simulation code — see H1 `docs/handbook-coupled-simulation.md`.
 
 ## Directory map
 
@@ -116,34 +116,27 @@ contracts; `docs/ROADMAP.md` alone owns status and sequencing.
   `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` and the Young's
   examples/reports.
 
-### Supporting references
+### Supporting references (unique math / protocol only)
 
-- **Coupling satellites (H1):** `docs/coupled-sim-api.md`,
-  `docs/mujoco-vbd-coupling-architecture.md`,
-  `docs/vectorized-coupled-fruiting.md`, `docs/WRENCH_READOUT.md`,
+Do not treat these as second copies of the handbooks. They keep derivations
+and experiment notes that H1–H5 summarize rather than duplicate.
+
+- **Coupling (H1):** `docs/WRENCH_READOUT.md`,
   `docs/explicit-apple-load-tcp-harvest.md`,
-  `docs/mujoco-apple-payload.md`, `docs/gpu-coupling-optimization.md`, and
+  `docs/gpu-coupling-optimization.md`, and
   `docs/heterogeneous-batched-vectorization-audit.md`.
-- **Plant/material satellites (H1):** `docs/material-parameter-sampling.md`,
+- **Plant/material (H1):** `docs/material-parameter-sampling.md`,
   `docs/real-world-proxy.md`, and `docs/damping-tuning.md`.
-- **Control and observations (H2):** `docs/variable-impedance-teleop.md` and
-  `docs/gym-observation-contract.md`.
-- **Sys-ID storage/scoring satellites (H3):**
-  `docs/sysid-transition-features.md`, `docs/batched-sysid-dataset.md`,
-  `docs/sysid-mmd-grid-replay-alignment.md`,
-  `docs/sysid-trajectory-storage.md`, and
+- **Observations (H2/H3):** `docs/gym-observation-contract.md`.
+- **Sys-ID protocol/stability (H3/H5):** `docs/system_identification.md` and
   `docs/batched-stability-monitor-design.md`.
-- **Replay/twin satellites (H4):** `docs/real-sysid-pre-post-grasp-fixes.md`,
-  `docs/digital-twin.md`, and `robot_replay/README.md`.
-- **Calibration/protocol satellites (H5):** `docs/system_identification.md`,
-  `docs/youngs-modulus-sysid.md`, and
-  `docs/youngs-modulus-cmaes-implementation.md`.
+- **Replay/twin (H4):** `docs/digital-twin.md` and `robot_replay/README.md`.
 
 ### Archived design records
 
 - `docs/superpowers/specs/` — dated design decisions and implementation
   snapshots. Their status/canonical fields point back to H1–H5; do not treat
-  an unstamped prose tense as current status.
+  an unstamped prose tense as current status. **Do not read these first.**
 - `docs/superpowers/plans/` — dated execution plans and completed task
   checklists. These explain how work was staged, not how the shipped system
   behaves now.

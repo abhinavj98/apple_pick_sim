@@ -386,7 +386,7 @@ uv run --env-file pytest.env python -m pytest \
 ### Task 12: Documentation
 
 - [ ] `docs/batched-sysid-mmd-grid.md` — document three phases; collect → replay → score commands.
-- [ ] Update `docs/ROADMAP.md`, `docs/batched-sysid-dataset.md`.
+- [ ] Update `docs/ROADMAP.md`, `docs/handbook-sysid-scoring.md`.
 - [ ] Commit docs.
 
 ---

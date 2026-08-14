@@ -67,18 +67,18 @@ Derived from measured GT statistics on `s09-d00` (real hold std, real pull ampli
 
 | Block | Dims | `s_phys` | Basis |
 |---|---:|---:|---|
-| `ft_wrist` force (Fx,Fy,Fz) | 3 | 3 N | ~O(1) vs hold Fy std (~1 N), pull swings (few N) |
+| `ft_wrist` force (Fx,Fy,Fz) | 3 | 1 N | tightened from 2 N (hold \|ΔF\| ~1.2 N on s09 large grid) |
 | `ft_wrist` torque (Tx,Ty,Tz) | 3 | 0.5 N·m | ~hold Tx std (0.37 N·m) |
 | `tcp_velocity` linear (vx,vy,vz) | 3 | 0.02 m/s | ≫ hold std (~1 mm/s); ~pull-relevant speed |
 | `tcp_velocity` angular (wx,wy,wz) | 3 | 0.02 rad/s | ≫ hold std (few mrad/s) |
-| `tcp_pos` | 3 | 0.01 m | half of measured Y travel (~25 mm) |
-| `apple_pos` | 3 | 0.02 m | ~measured Y travel (~28 mm) |
-| `woody_start[primary_spur]` | 3 | 0.02 m | user-specified (branch moves ~1–2 mm in practice; scale is deliberately looser than noise floor) |
-| `woody_start[spur_stem]` | 3 | 0.02 m | ~measured Y travel (~25 mm) |
+| `tcp_pos` | 3 | 0.005 m | tightened from 10 mm (hold \|Δtcp\| ~5 mm on s09) |
+| `apple_pos` | 3 | 0.005 m | tightened from 20 mm to match tcp scale |
+| `woody_start[primary_spur]` | 3 | 0.005 m | tightened from 20 mm (branch moves ~1–2 mm) |
+| `woody_start[spur_stem]` | 3 | 0.005 m | same as primary_spur woody start |
 | `woody_bending_angles` (primary_spur, spur_stem) | 2 | 0.05 rad | ~hold mean/spread (~0.05–0.1 rad) |
 | hold one-hot | n_holds | 1 (no centering) | categorical, not physical |
 
-Column order matches `STATE_VECTOR_FIELDS` after dropping `action`: `ft_wrist(6) → tcp_velocity(6) → tcp_pos(3) → apple_pos(3) → woody_part_start_pos(3J) → woody_bending_angles(J)`, mirrored for the `Δs` half, then hold one-hot appended. Woody XYZ (`0.02`) and bend (`0.05`) tile across junctions; `STATE_VECTOR_PHYS_SCALE` is the CMA `J=2` instance (length 26). `fit_gt_normalization(..., n_junctions=)` must match the bag so `J≠2` does not treat extra woody/bend columns as one-hots.
+Column order matches `STATE_VECTOR_FIELDS` after dropping `action`: `ft_wrist(6) → tcp_velocity(6) → tcp_pos(3) → apple_pos(3) → woody_part_start_pos(3J) → woody_bending_angles(J)`, mirrored for the `Δs` half, then hold one-hot appended. Woody XYZ (`0.005`) and bend (`0.05`) tile across junctions; `STATE_VECTOR_PHYS_SCALE` is the CMA `J=2` instance (length 26). `fit_gt_normalization(..., n_junctions=)` must match the bag so `J≠2` does not treat extra woody/bend columns as one-hots.
 
 ### 4. Blast radius / stale path note
 

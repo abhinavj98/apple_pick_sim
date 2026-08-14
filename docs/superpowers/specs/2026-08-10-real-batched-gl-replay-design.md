@@ -6,7 +6,7 @@
 | **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-08-10 |
 | **Depends on** | Bit-2 format export (`batched_sysid_v1` from real parquet) |
-| **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C6), `robot_replay/example_replay_real_batched.py`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
+| **Related** | `docs/handbook-real-replay.md` (C6), `robot_replay/example_replay_real_batched.py`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
 
 ## Purpose
 

@@ -5,7 +5,7 @@
 
 > **Amendment (2026-07-15):** Batched grid CLI defaults `--use-median`,
 > `--hold-id-onehot`, and `--pool-directions` **on**. Gate harness default is
-> `GATE=gate_pooled_dirs`. Canonical contract: `docs/sysid-transition-features.md`.
+> `GATE=gate_pooled_dirs`. Canonical contract: `docs/handbook-sysid-scoring.md`.
 > `scripts/compare_sysid_gates.sh` is a local helper (still under `scripts/**`
 > gitignore; not tracked).
 

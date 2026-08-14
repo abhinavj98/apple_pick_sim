@@ -177,9 +177,9 @@ uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_heteroge
 
 - `docs/real-world-proxy.md` — map proxy N/m tier **targets** to \(E\) bands via nominal geometry
 - `docs/damping-tuning.md` — joint kd/kp + variance fixture `sim_build` snapshot
-- `docs/vectorized-coupled-fruiting.md` — batched DR still varies per-env θ; material keys replace raw stiffness bands
+- `docs/handbook-coupled-simulation.md` — batched DR still varies per-env θ; material keys replace raw stiffness bands
 - `docs/system_identification.md` — CEM search space moves to \(E\), \(\zeta\) (plus geometry when fixed)
-- `docs/sysid-trajectory-storage.md` — episode `fruiting_system_params` schema v2
+- `docs/handbook-sysid-scoring.md` — episode `fruiting_system_params` schema v2
 - `docs/specs/2026-07-10-fixture-sim-build-knobs-design.md` — optional `sim_build` design (Implemented)
 
 ## Derivation: why sample E and ζ instead of raw stiffness/damping

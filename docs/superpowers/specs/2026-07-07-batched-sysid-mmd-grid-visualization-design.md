@@ -1,6 +1,6 @@
 # Batched sysID MMD grid — visualization design (RMSE/MSE landscape)
 
-> **Hold MSE note (2026-07-15):** console `--score-mse` with `--use-median` uses `trajectory_paired_hold_median_mse` (not the legacy flat `trajectory_hold_aggregated_mse` bag). See `docs/sysid-mmd-grid-replay-alignment.md`.
+> **Hold MSE note (2026-07-15):** console `--score-mse` with `--use-median` uses `trajectory_paired_hold_median_mse` (not the legacy flat `trajectory_hold_aggregated_mse` bag). See `docs/handbook-sysid-scoring.md`.
 
 
 **Status:** Historical
@@ -25,7 +25,7 @@ Primary intended use is interactive inspection during grid runs and generating f
 - Candidate evaluation computes replay-vs-recorded metrics in two paths:
   - Console `--score-mse`: `trajectory_mse()` / `trajectory_hold_aggregated_mse()` in `apple_pick_gym/batched_envs/batched_sysid_mmd_grid.py`
   - Viz JSON/plots: `build_grid_viz_rows()` in `apple_pick_gym/grid_viz_table.py` (hold metrics use the same latter-half hold aggregation as `--score-mse` when `mse_hold_aggregation` is `mean` or `median`)
-- See `docs/sysid-mmd-grid-replay-alignment.md` for pre-weld frame alignment and weld semantics.
+- See `docs/handbook-sysid-scoring.md` for pre-weld frame alignment and weld semantics.
 - This slice does **not** depend on MMD scoring (`aggregate_mmd2`). If/when MMD is used, it can be added as an alternate metric.
 
 ## Scalar error definition (rank + color)

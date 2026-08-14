@@ -6,7 +6,7 @@
 | **Canonical living doc:** | `docs/handbook-variable-impedance.md` |
 | **Date** | 2026-08-10 |
 | **Depends on** | Batched VIC joint-torque path (`Fr3BatchedEEImpedanceController`, `vic_joint_torques_batched`) |
-| **Related** | `docs/variable-impedance-teleop.md`, `robot_replay/example_replay_real_batched.py`, real-robot `compute_pose_task_wrench` |
+| **Related** | `docs/handbook-variable-impedance.md`, `robot_replay/example_replay_real_batched.py`, real-robot `compute_pose_task_wrench` |
 
 ## Purpose
 

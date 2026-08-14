@@ -8,7 +8,7 @@
 | **Scope** | Plant-only: pre-grasp → `FruitingSystemParams` → settle → Newton viewer |
 | **Non-goals** | Robot, weld, trajectory/`action`, CMA-ES / full `batched_sysid_v1` writer |
 
-Related: `docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md`,
+Related: `docs/handbook-real-replay.md`, `robot_replay/README.md`,
 `docs/digital-twin.md`, `docs/real-world-proxy.md`.
 
 ## Problem
@@ -171,5 +171,5 @@ existing sim-device conventions.
 
 - Post-grasp weld / robot attach
 - Trajectory frames, `action` derivation, CMA-ES dataset layout
-- Hardening all quirks in `docs/real-sysid-pre-post-grasp-fixes.md` beyond what
+- Hardening all quirks in `docs/handbook-real-replay.md` beyond what
   this loader needs

@@ -385,14 +385,14 @@ uv run python apple_pick_sim/examples/example_batched_heterogeneous_coupled_frui
   --viewer null --num-frames 200 --num-envs 4 --settle-substeps 100 --seed 42
 ```
 
-Compare apple heights, world counts, and absence of tracebacks. After parity: add deprecation banner to monolith docstring and point to new example in `docs/ROADMAP.md` + `docs/vectorized-coupled-fruiting.md`.
+Compare apple heights, world counts, and absence of tracebacks. After parity: add deprecation banner to monolith docstring and point to new example in `docs/ROADMAP.md` + `docs/handbook-coupled-simulation.md`.
 
 ---
 
 ## Documentation updates (post-implementation)
 
 - `docs/ROADMAP.md` — mark V.3.2 done; swap smoke command to new example path.
-- `docs/vectorized-coupled-fruiting.md` — reference thin example + library API.
+- `docs/handbook-coupled-simulation.md` — reference thin example + library API.
 - Monolith module docstring — `.. deprecated::` pointer to `example_batched_heterogeneous_coupled_sim.py`.
 
 ---
@@ -417,4 +417,4 @@ Compare apple heights, world counts, and absence of tracebacks. After parity: ad
 - [V.3.1 step A — build](2026-07-03-batched-heterogeneous-build-design.md)
 - [V.3.1 step B — CoupledSim runtime](2026-07-03-batched-heterogeneous-coupled-sim-design.md)
 - ROADMAP § **[V].3** — `docs/ROADMAP.md`
-- Behavior reference — `docs/vectorized-coupled-fruiting.md`
+- Behavior reference — `docs/handbook-coupled-simulation.md`

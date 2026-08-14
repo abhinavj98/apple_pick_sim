@@ -193,7 +193,7 @@ Existing woody-end tests (`test_mmd_features`, `test_trajectory_store`, `test_re
 ## Out of scope follow-ups (named, not this work)
 
 - Match sim F/T filtering to real 1 kHz EMA (rate-matched equivalent is a no-op at `control_hz`)
-- Mimic unloaded dynamic baseline subtraction in sim
+- ~~Mimic unloaded dynamic baseline subtraction in sim~~ **Closed 2026-08-14 as not applicable:** sim `ft_wrist` is plant harvest (`coupling_forces_cache`); a robot-only tare is identically zero on `vic`/`vic_pose`. Real compiled bags already tared. Do not implement. Canonical warning: `docs/handbook-sysid-scoring.md`. Reopen only if harvest becomes a sensor-like external wrench.
 - Reconcile logger metadata string (“force in EE, torque in base”) with the interface that rotates both
 - Drop Kp/Kd from Sinkhorn `action`
 - Multi-episode / multi-structure fused real CMA

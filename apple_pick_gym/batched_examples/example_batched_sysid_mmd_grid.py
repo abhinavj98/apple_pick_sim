@@ -291,7 +291,7 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Compute per-candidate Sinkhorn divergence on hold transition bags "
-            "(requires geomloss + torch; see docs/sysid-transition-features.md)."
+            "(requires geomloss + torch; see docs/handbook-sysid-scoring.md)."
         ),
     )
     p.add_argument(

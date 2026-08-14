@@ -35,11 +35,11 @@
 
 | # | New / primary path | Absorbs (living) | Primary code owners |
 | - | ------------------ | ---------------- | ------------------- |
-| H1 | `docs/handbook-coupled-simulation.md` | `mujoco-vbd-coupling-architecture.md`, `coupled-sim-api.md`, `vectorized-coupled-fruiting.md`, weld/payload/wrench satellites as sections or deep-links | `coupled_fruiting/`, `fruiting_system/`, examples |
-| H2 | `docs/handbook-variable-impedance.md` | `variable-impedance-teleop.md` (+ wrench-cap content) | `vic_joint_torques*`, `ee_impedance*`, `vic_wrench.py` |
-| H3 | `docs/handbook-sysid-scoring.md` | `sysid-transition-features.md`, `batched-sysid-dataset.md`, parts of `sysid-mmd-grid-replay-alignment.md`, `sysid-trajectory-storage.md` (legacy callout) | `system_id/mmd_features.py`, `mmd.py`, `wasserstein.py`, trajectory stores |
-| H4 | `docs/handbook-real-replay.md` | `robot_replay/README.md` (keep thin CLI), `real-sysid-pre-post-grasp-fixes.md`, digital-twin replay init pieces | `robot_replay/`, `real_to_batched_sysid.py`, `batched_digital_twin_init.py`, `real_batched_replay_build.py` |
-| H5 | `docs/handbook-youngs-cma.md` | `youngs-modulus-sysid.md`, `youngs-modulus-cmaes-implementation.md`, support-\(k_p\) phenotype notes | `batched_sysid_cmaes.py`, Young’s examples, gates |
+| H1 | `docs/handbook-coupled-simulation.md` | `handbook-coupled-simulation.md`, `handbook-coupled-simulation.md`, `handbook-coupled-simulation.md`, weld/payload/wrench satellites as sections or deep-links | `coupled_fruiting/`, `fruiting_system/`, examples |
+| H2 | `docs/handbook-variable-impedance.md` | `handbook-variable-impedance.md` (+ wrench-cap content) | `vic_joint_torques*`, `ee_impedance*`, `vic_wrench.py` |
+| H3 | `docs/handbook-sysid-scoring.md` | `handbook-sysid-scoring.md`, `handbook-sysid-scoring.md`, parts of `handbook-sysid-scoring.md`, `handbook-sysid-scoring.md` (legacy callout) | `system_id/mmd_features.py`, `mmd.py`, `wasserstein.py`, trajectory stores |
+| H4 | `docs/handbook-real-replay.md` | `robot_replay/README.md` (keep thin CLI), `handbook-real-replay.md`, digital-twin replay init pieces | `robot_replay/`, `real_to_batched_sysid.py`, `batched_digital_twin_init.py`, `real_batched_replay_build.py` |
+| H5 | `docs/handbook-youngs-cma.md` | `handbook-youngs-cma.md`, `handbook-youngs-cma.md`, support-\(k_p\) phenotype notes | `batched_sysid_cmaes.py`, Young’s examples, gates |
 
 **Index:** `docs/CODEBASE_GUIDE.md` + optional short `docs/FEATURES.md` TOC that only lists the five handbooks (no duplicate contracts).
 
@@ -90,13 +90,13 @@ Every handbook opens with:
 ## H1 — Coupled simulation handbook
 
 **Create:** `docs/handbook-coupled-simulation.md`  
-**Stub afterward:** `mujoco-vbd-coupling-architecture.md`, `coupled-sim-api.md`, `vectorized-coupled-fruiting.md` (keep filenames as redirects), optionally leave deep satellites (`WRENCH_READOUT.md`, `mujoco-apple-payload.md`, `explicit-apple-load-tcp-harvest.md`, `gpu-coupling-optimization.md`, `damping-tuning.md`, `material-parameter-sampling.md`, `heterogeneous-batched-vectorization-audit.md`) as linked appendices — **do not** duplicate their full math unless a claim is wrong.
+**Stub afterward:** `handbook-coupled-simulation.md`, `handbook-coupled-simulation.md`, `handbook-coupled-simulation.md` (keep filenames as redirects), optionally leave deep satellites (`WRENCH_READOUT.md`, `handbook-coupled-simulation.md`, `explicit-apple-load-tcp-harvest.md`, `gpu-coupling-optimization.md`, `damping-tuning.md`, `material-parameter-sampling.md`, `heterogeneous-batched-vectorization-audit.md`) as linked appendices — **do not** duplicate their full math unless a claim is wrong.
 
 ### TOC (required sections)
 
 1. **Purpose & non-goals** — two-`Model` split reason (`SolverMuJoCo` vs `JointType.CABLE`).
 2. **Ownership table** — Model A (arm) vs Model B (plant); proxy bodies; wrench exchange lag.
-3. **Public API** — builders, `CoupledFruitingScene.coupled_substep`, FR3 requirements (absorb `coupled-sim-api.md`).
+3. **Public API** — builders, `CoupledFruitingScene.coupled_substep`, FR3 requirements (absorb `handbook-coupled-simulation.md`).
 4. **Settle → weld → teleop** — single-env and batched; settle cache default **off**; co-located physics vs viewer spacing.
 5. **Homogeneous vs heterogeneous batches** — `replicate(N)`, per-env DR, layout.
 6. **Wrench / payload / TCP harvest** — short summary + links to satellite docs; F/T sign contract as implemented.
@@ -124,7 +124,7 @@ Every handbook opens with:
 
 ### Related living docs (link, don’t merge wholesale)
 
-- `docs/WRENCH_READOUT.md`, `docs/mujoco-apple-payload.md`, `docs/explicit-apple-load-tcp-harvest.md`
+- `docs/WRENCH_READOUT.md`, `docs/handbook-coupled-simulation.md`, `docs/explicit-apple-load-tcp-harvest.md`
 - `docs/damping-tuning.md`, `docs/material-parameter-sampling.md`, `docs/real-world-proxy.md`
 - `docs/gpu-coupling-optimization.md`, `docs/heterogeneous-batched-vectorization-audit.md`
 - → H2 for controller details
@@ -133,7 +133,7 @@ Every handbook opens with:
 
 ## H2 — Variable impedance handbook
 
-**Create:** `docs/handbook-variable-impedance.md` (rewrite of `variable-impedance-teleop.md` content into handbook form; leave old path as stub).
+**Create:** `docs/handbook-variable-impedance.md` (rewrite of `handbook-variable-impedance.md` content into handbook form; leave old path as stub).
 
 ### TOC
 
@@ -161,8 +161,8 @@ Every handbook opens with:
 ## H3 — Sys-ID scoring & bags handbook
 
 **Create:** `docs/handbook-sysid-scoring.md`  
-**Primary absorb:** `sysid-transition-features.md`, `batched-sysid-dataset.md`, alignment + Sinkhorn specs.  
-**Stub:** those two living docs + update `sysid-trajectory-storage.md` header to **Legacy single-env only**.
+**Primary absorb:** `handbook-sysid-scoring.md`, `handbook-sysid-scoring.md`, alignment + Sinkhorn specs.  
+**Stub:** those two living docs + update `handbook-sysid-scoring.md` header to **Legacy single-env only**.
 
 ### TOC
 
@@ -177,8 +177,8 @@ Every handbook opens with:
 5. **Normalization** — GT mean + `STATE_VECTOR_PHYS_SCALE` / `transition_feature_scale` (absorb `2026-08-14-…`); one-hots uncentered scale 1.
 6. **Transition bags** — \([s,\Delta s]\) + hold/dir one-hots; pooling; median-hold (absorb `2026-07-14-median-hold-features-design.md`).
 7. **Scorers** — Sinkhorn (`wasserstein.py`) is production; `biased_mmd2` / `batched_sysid_mmd_grid.py` marked **stale path**.
-8. **Replay alignment notes** — absorb still-valid parts of `sysid-mmd-grid-replay-alignment.md` (pre-weld strip, structure weld, `--infer-params`).
-9. **Legacy single-env Parquet** — short section + link to stubbed `sysid-trajectory-storage.md`.
+8. **Replay alignment notes** — absorb still-valid parts of `handbook-sysid-scoring.md` (pre-weld strip, structure weld, `--infer-params`).
+9. **Legacy single-env Parquet** — short section + link to stubbed `handbook-sysid-scoring.md`.
 10. **Code map + tests** — `test_mmd.py`, `test_mmd_features.py`, convert/collector tests.
 
 ### Archive specs
@@ -203,7 +203,7 @@ Every handbook opens with:
 
 **Create:** `docs/handbook-real-replay.md`  
 **Keep:** `robot_replay/README.md` as **CLI / folder layout cheat-sheet** (≤ ~150 lines) pointing here for contracts.  
-**Stub:** `real-sysid-pre-post-grasp-fixes.md` after absorption.
+**Stub:** `handbook-real-replay.md` after absorption.
 
 ### TOC
 
@@ -240,7 +240,7 @@ Every handbook opens with:
 ## H5 — Young's / CMA phenotype handbook
 
 **Create:** `docs/handbook-youngs-cma.md`  
-**Stub:** `youngs-modulus-sysid.md`, `youngs-modulus-cmaes-implementation.md`.
+**Stub:** `handbook-youngs-cma.md`, `handbook-youngs-cma.md`.
 
 ### TOC
 
@@ -310,7 +310,7 @@ Every handbook opens with:
 - **P0 living docs** (correct numbers/contracts *before* handbooks, or the first handbook draft will copy lies):
   - `docs/system_identification.md` §3.1 / §3.3 / §4 (state vector, fixed-scale norm, support-\(k_p\) phenotype) — highest blast radius
   - Cap numbers → **40 N / 10 N·m**: `batched-stability-monitor-design.md`, `ROADMAP.md` (and distinguish legacy SysId 100/100 vs batched in `gym-observation-contract.md` / trajectory-storage)
-  - `docs/batched-sysid-dataset.md` schema (no frame `woody_end`, 6-or-19D action, `hold_number`, `action_*` metadata)
+  - `docs/handbook-sysid-scoring.md` schema (no frame `woody_end`, 6-or-19D action, `hold_number`, `action_*` metadata)
   - `robot_replay/README.md`: close broken bash fence; point commands at `new_data/`; Bit-3 prose must not promise LPF / pose-only action; note `--record-video` / `camera_to_base_4x4`
 
 - [ ] **Step 1:** For each of the 30 specs, set Status to one of `Implemented` / `Partial` / `Superseded` / `Historical` using ROADMAP + code (not prose tense). Priority CONFLICT stamps:
@@ -339,8 +339,8 @@ EOF
 
 **Files:**
 - Create: `docs/handbook-sysid-scoring.md`
-- Modify: stub `docs/sysid-transition-features.md`, `docs/batched-sysid-dataset.md`
-- Modify: banner on `docs/sysid-trajectory-storage.md`, `docs/gym-observation-contract.md`
+- Modify: stub `docs/handbook-sysid-scoring.md`, `docs/handbook-sysid-scoring.md`
+- Modify: banner on `docs/handbook-sysid-scoring.md`, `docs/gym-observation-contract.md`
 
 - [ ] **Step 1:** Draft H3 TOC sections 1–5 from code:
   - `STATE_VECTOR_FIELDS`, `STATE_VECTOR_PHYS_SCALE` in `mmd_features.py`
@@ -356,7 +356,7 @@ EOF
 - [ ] **Step 4:** Commit.
 
 ```bash
-git add docs/handbook-sysid-scoring.md docs/sysid-transition-features.md docs/batched-sysid-dataset.md docs/sysid-trajectory-storage.md docs/gym-observation-contract.md
+git add docs/handbook-sysid-scoring.md docs/handbook-sysid-scoring.md docs/handbook-sysid-scoring.md docs/handbook-sysid-scoring.md docs/gym-observation-contract.md
 git commit -m "$(cat <<'EOF'
 docs: add sys-ID scoring handbook from code-truth contracts
 
@@ -370,9 +370,9 @@ EOF
 
 **Files:**
 - Create: `docs/handbook-variable-impedance.md`
-- Stub: `docs/variable-impedance-teleop.md`
+- Stub: `docs/handbook-variable-impedance.md`
 
-- [ ] **Step 1:** Port accurate sections from current `variable-impedance-teleop.md`; expand `vic_pose` from code + `2026-08-10` spec.
+- [ ] **Step 1:** Port accurate sections from current `handbook-variable-impedance.md`; expand `vic_pose` from code + `2026-08-10` spec.
 - [ ] **Step 2:** Verify soft-disable / aniso kernel claims against tests listed in TOC.
 - [ ] **Step 3:** Stub old path; commit.
 
@@ -383,7 +383,7 @@ EOF
 **Files:**
 - Create: `docs/handbook-real-replay.md`
 - Modify: `robot_replay/README.md` (slim + link)
-- Stub: `docs/real-sysid-pre-post-grasp-fixes.md`
+- Stub: `docs/handbook-real-replay.md`
 - Modify: GL replay spec status if not done in Task 0
 
 - [ ] **Step 1:** Document convert → replay → shared builder using `robot_replay/` + `real_batched_replay_build.py`.
@@ -396,7 +396,7 @@ EOF
 
 **Files:**
 - Create: `docs/handbook-youngs-cma.md`
-- Stub: `docs/youngs-modulus-sysid.md`, `docs/youngs-modulus-cmaes-implementation.md`
+- Stub: `docs/handbook-youngs-cma.md`, `docs/handbook-youngs-cma.md`
 - Trim: `docs/system_identification.md` to protocol + H3/H5 pointers (after Task 0 patched the wrong tables — highest blast-radius stale doc)
 
 - [ ] **Step 1:** Port grid/CMA commands and phenotype from existing Young’s docs + support-\(k_p\) spec.
@@ -409,7 +409,7 @@ EOF
 
 **Files:**
 - Create: `docs/handbook-coupled-simulation.md`
-- Stub: `mujoco-vbd-coupling-architecture.md`, `coupled-sim-api.md`, `vectorized-coupled-fruiting.md`
+- Stub: `handbook-coupled-simulation.md`, `handbook-coupled-simulation.md`, `handbook-coupled-simulation.md`
 
 - [ ] **Step 1:** Merge architecture + API + batched flow; link satellites instead of inlining all wrench math.
 - [ ] **Step 2:** Absorb weld/TCP *outcomes* (not full design history).

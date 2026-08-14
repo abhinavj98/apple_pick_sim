@@ -31,7 +31,7 @@
 | `apple_pick_gym/batched_envs/batched_sysid_mmd_grid.py` | Module docstring: mark `biased_mmd2` scoring path stale |
 | `apple_pick_sim/tests/test_mmd_features.py` | Update state-matrix order/width tests (no action block) |
 | `apple_pick_sim/tests/test_mmd.py` | Rewrite normalization tests for fixed scale + no z-score explosion |
-| `docs/sysid-transition-features.md` | Document fixed-scale norm + action dropped from score |
+| `docs/handbook-sysid-scoring.md` | Document fixed-scale norm + action dropped from score |
 | `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md` | Note amendment: action no longer in Sinkhorn `STATE_VECTOR` |
 
 ## Verification notes (pre-plan)
@@ -314,7 +314,7 @@ EOF
 
 **Files:**
 - Modify: `apple_pick_gym/batched_envs/batched_sysid_mmd_grid.py` (module docstring)
-- Modify: `docs/sysid-transition-features.md`
+- Modify: `docs/handbook-sysid-scoring.md`
 - Modify: `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md`
 
 **Interfaces:**
@@ -331,7 +331,7 @@ Young's / CMA ranking uses Sinkhorn in wasserstein.py. They still call
 fit_gt_normalization and therefore inherit fixed physical scales.
 ```
 
-- [ ] **Step 2: Update `docs/sysid-transition-features.md`**
+- [ ] **Step 2: Update `docs/handbook-sysid-scoring.md`**
 
 Replace the “GT z-score / clamp tiny std to eps” bullet with fixed physical scale + link to the 2026-08-14 design spec. State that `action` is required in bags but not present in score-time `STATE_VECTOR`.
 
@@ -343,7 +343,7 @@ In `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md`,
 
 ```bash
 git add apple_pick_gym/batched_envs/batched_sysid_mmd_grid.py \
-  docs/sysid-transition-features.md \
+  docs/handbook-sysid-scoring.md \
   docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md
 git commit -m "$(cat <<'EOF'
 Document fixed-scale Sinkhorn norm and stale MMD scoring path

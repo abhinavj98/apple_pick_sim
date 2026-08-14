@@ -108,7 +108,7 @@ Work in worktree: `../apple_pick_sim-pre-gym-cleanup`, branch `chore/pre-gym-cle
 | **PR2** | Narrow `__init__.py` exports; fix gym/diagnostic imports | Fast pytest + gym import |
 | **PR3** | FR3-only examples + `batched_heterogeneous_build` | Heterogeneous build tests |
 | **PR4** | Delete builders; migrate tests + diagnostics | Full `apple_pick_sim/tests/` |
-| **PR5** | Add `docs/coupled-sim-api.md`; ROADMAP validation update | ROADMAP commands |
+| **PR5** | Add `docs/handbook-coupled-simulation.md`; ROADMAP validation update | ROADMAP commands |
 
 ---
 

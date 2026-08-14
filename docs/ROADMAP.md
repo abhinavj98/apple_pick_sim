@@ -44,7 +44,7 @@
 
 **Next slice:** **M4.0 trusted Cartesian ranking** (then CMA on the same builder). **Feature alignment Done**; use H3 `docs/handbook-sysid-scoring.md` for the aligned bag/scale contract, H4 `docs/handbook-real-replay.md` for convert/replay, and H5 `docs/handbook-youngs-cma.md` for ranking/CMA. Slices 0–3 delivered USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
 
-**Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see `docs/youngs-modulus-sysid.md`.
+**Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see H5 `docs/handbook-youngs-cma.md`.
 
 **Slice 1 Done (plumbing — do not reimplement):**
 
@@ -129,7 +129,7 @@
 **[V].4 — batched sys-ID** (backend: V.3.1 API + V.3.3 batched gym)
 
 - [x] **V.4.1 — Recorded-action replay:** `replay_batched_sysid_structure` drives recorded EE actions on candidate stiffnesses. (No `gather_transitions()` API symbol; transition bags live in MMD/Wasserstein feature code — backlog if a public gather API is needed.)
-- [x] **V.4.2 — Parallel GT collection:** `ApplePickBatchedSysIdEnv`, `example_batched_collect_sysid_data.py`, `batched_sysid_v1` Parquet layout (`docs/batched-sysid-dataset.md`).
+- [x] **V.4.2 — Parallel GT collection:** `ApplePickBatchedSysIdEnv`, `example_batched_collect_sysid_data.py`, `batched_sysid_v1` Parquet layout (`docs/handbook-sysid-scoring.md`).
 - [x] **V.4.2.1 — Digital-twin replay verification:** helpers + CLI `--infer-params` exist (`batched_digital_twin_init.py`); infer-only fidelity floor left as optional cleanup (oracle default OK for the current CMA-ES path).
 - [x] **V.4.3 — In-process batched grid:** `example_batched_sysid_mmd_grid.py` + `batched_sysid_mmd_grid.py` (MSE / Sinkhorn Wasserstein + viz). Library MMD remains; CLI `--score-mmd` is later cleanup (Wasserstein is the ranking path). Legacy single-env: `run_system_identification.py`.
 - [x] **V.4.4 — Sys-ID tooling at batch scale** (gate/collect scripts + gate report; further dashboard polish optional)
@@ -138,7 +138,7 @@
 
 - [x] **V.5.1 — Harden loss calculation in `example_batched_sysid_mmd_grid.py`:**
   - [x] Soft-disable + manifest `excluded` / offline exclude (unstable-frame fraction > 0.25) + batched scene/monitor stability caps 40 N / 10 N·m
-  - [x] Documented transition-feature / Sinkhorn scoring contract (`docs/sysid-transition-features.md`) + named gate CLI (`scripts/gate_sysid_gt_sinkhorn.sh`; default `gate_pooled_dirs`, also `gate_median_hold` / `gate_hold_id`)
+  - [x] Documented transition-feature / Sinkhorn scoring contract (`docs/handbook-sysid-scoring.md`) + named gate CLI (`scripts/gate_sysid_gt_sinkhorn.sh`; default `gate_pooled_dirs`, also `gate_median_hold` / `gate_hold_id`)
   - [x] GT preference is established on healthy samples; the operational gate uses a strict majority per seed and preserves bad-sampling misses for diagnosis
   - [x] Primary scorer is **Wasserstein** (Sinkhorn); optional CLI `--score-mmd` deferred as cleanup (library MMD already exists)
 - [x] **V.5.2 — CMA-ES calibration loop** (M3.2) — **Done**
@@ -167,7 +167,7 @@
 
 See **Sequencing** table. M2 deferred slices: M2.0 (interface ADR), M2.2a (`ApplePickFID-v0`), M2.2c (SKRL smoke), M2.3 (π_exp training).
 
-Key M1 docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md`, `docs/variable-impedance-teleop.md`, `docs/gpu-coupling-optimization.md`.
+Key M1 docs: H1 `docs/handbook-coupled-simulation.md`, H2 `docs/handbook-variable-impedance.md`, `docs/WRENCH_READOUT.md`, `docs/gpu-coupling-optimization.md`.
 
 ### [M3] Infra
 
@@ -182,7 +182,7 @@ Key M1 docs: `docs/mujoco-vbd-coupling-architecture.md`, `docs/WRENCH_READOUT.md
 
 ### [V] Batched vectorization
 
-Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams` vary. Spec: `docs/vectorized-coupled-fruiting.md`.
+Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams` vary. See H1 `docs/handbook-coupled-simulation.md`.
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
@@ -214,7 +214,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **M4.0** | **In progress** | Plumbing + feature alignment Done (slices 0–3); trusted ranking → CMA next |
 | **M4.1+** | Later | Broader real collection / held-out real metrics |
 
-Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Public API reference: `docs/coupled-sim-api.md`.
+Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Public API: H1 `docs/handbook-coupled-simulation.md`.
 
 **Consumers after M4.0:** resume **V.5.3** if needed; broader **[M4]** collection; **[M5]** pick policy.
 
@@ -235,7 +235,7 @@ Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_co
 
 ## Agent execution notes
 
-> **Warning — woody self-collisions are filtered.** Default builds set `enable_self_collisions=False` (woody↔woody filtered; apple↔woody / proxy↔woody default on; ground unchanged). See `docs/vectorized-coupled-fruiting.md` and `apple_pick_sim/fruiting_system/build.py::_apply_default_fruiting_collision_filters`.
+> **Warning — woody self-collisions are filtered.** Default builds set `enable_self_collisions=False` (woody↔woody filtered; apple↔woody / proxy↔woody default on; ground unchanged). See H1 `docs/handbook-coupled-simulation.md` and `apple_pick_sim/fruiting_system/build.py::_apply_default_fruiting_collision_filters`.
 
 **Repository layout:**
 
@@ -399,7 +399,7 @@ uv run --env-file pytest.env python \
 
 # Separate CMA-ES fit (collect → fit → gates): see README.md
 # "CMA-ES sim-to-sim transfer (support k_p + spur/stem E)" and
-# docs/youngs-modulus-cmaes-implementation.md
+# docs/handbook-youngs-cma.md
 # uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
 #   --viewer null --dataset tmp/support_kp_sysid_dataset \
 #   --output tmp/support_kp_cmaes_fit --overwrite

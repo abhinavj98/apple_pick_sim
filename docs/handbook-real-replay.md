@@ -14,6 +14,12 @@ Sequencing, ranking acceptance, and CMA status belong in `docs/ROADMAP.md`.
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md`; H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H5 `docs/handbook-youngs-cma.md` |
 | Archive specs | **Partial:** `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`; **Implemented:** `docs/superpowers/specs/2026-08-10-real-batched-gl-replay-design.md`, `2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `2026-08-12-real-camera-gl-viewer-design.md`, `2026-08-12-gl-video-record-design.md`; **Partial:** `2026-08-12-real-replay-cmaes-plumbing-design.md` |
 
+> **Warning — tare real F/T, never simulated F/T.** Convert the compiled
+> episode parquet (already `raw − unloaded baseline`). Do not subtract a
+> robot-only sim replay from candidate `ft_wrist`: on `vic_pose` that signal
+> is plant harvest only, so the unload would be zero. Full contract: H3
+> `docs/handbook-sysid-scoring.md` (warning at top).
+
 Related boundaries:
 
 - H1 owns the coupled rebuild, settle, and weld mechanics. Its planned
@@ -117,7 +123,8 @@ Conversion aligns real bags with H3:
 - `world_wrench_from_ee_logged` rotates force and torque with
   \(R_{W,TCP}\): \(F_W=R_{W,TCP}F_{EE}\) and
   \(\tau_W=R_{W,TCP}\tau_{EE}\). There is no second sign flip, lever-arm
-  transport, or simulated EMA/LPF.
+  transport, simulated EMA/LPF, or simulated tare. The source `ft_wrist`
+  must already be the compiled (baseline-subtracted) column.
 - `tag_poses_to_cma_woody` reads Branch, Spur, and Apple pose translations.
   It emits the two woody starts `primary_spur` and `spur_stem`, plus
   `apple_pos`. Trajectory bags do not carry woody ends.

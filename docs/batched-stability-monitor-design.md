@@ -113,7 +113,7 @@ common stiff-VIC signal; it must not by itself wipe a `(structure, direction)` e
 | Manifest `excluded` at collect | `batched_sysid_collect.py` | Only sticky soft-disabled envs → `excluded=True` (`excluded_reason` e.g. `"stability_blowup"`) |
 | Offline fraction filter | `exclude_unstable_episodes.py` | Exclude if already `excluded` **or** unstable-frame fraction **`>` `DEFAULT_UNSTABLE_FRACTION_EXCLUDE` (0.25)** |
 
-Dataset layout / CLI: [`batched-sysid-dataset.md`](batched-sysid-dataset.md).
+Dataset layout / CLI: [`handbook-sysid-scoring.md`](handbook-sysid-scoring.md).
 
 ### `BatchedStabilityReport`
 

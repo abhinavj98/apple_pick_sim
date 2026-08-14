@@ -28,10 +28,10 @@ The shipped design therefore uses two `Model` objects in one Newton/Warp
 process. They exchange state and a spatial wrench through proxy bodies; there
 is no separate MuJoCo process and no cross-model joint.
 
-This handbook does not reproduce the fixed-joint wrench derivation, payload
-inertia derivation, material formulas, or controller mathematics. Those remain
-in the linked satellite documents and H2. It also does not own delivery status;
-consult [`ROADMAP.md`](ROADMAP.md).
+This handbook does not reproduce the fixed-joint wrench derivation, material
+formulas, or controller mathematics. Those remain in the linked satellite
+documents and H2. It also does not own delivery status; consult
+[`ROADMAP.md`](ROADMAP.md).
 
 ## 2. Model ownership and coupling lag
 
@@ -162,6 +162,10 @@ ranges are documented in
 [`material-parameter-sampling.md`](material-parameter-sampling.md) and
 [`damping-tuning.md`](damping-tuning.md).
 
+Default builds set `enable_self_collisions=False`: woody↔woody contacts are
+filtered; apple↔woody and proxy↔woody stay on; ground is unchanged. See
+`apple_pick_sim/fruiting_system/build.py::_apply_default_fruiting_collision_filters`.
+
 The batch cannot mix different body counts. Rebuild-free geometry
 randomization and other future work are ROADMAP-owned; this handbook does not
 claim them as shipped.
@@ -181,9 +185,23 @@ The code defaults are:
 - `DEFAULT_STEM_FORCE_CAP_N = 40.0`;
 - `DEFAULT_STEM_TORQUE_CAP_NM = 10.0`.
 
-Model A remains zero-gravity. Welded FR3 builds separately add a mass-only,
-fixed `apple_payload` child to reflect apple mass, COM, and spherical inertia;
-it has no collision shape and does not replace explicit apple weight harvest.
+Model A remains zero-gravity. Welded FR3 builds (`GripperProxyConfig.fix_to_apple=True`)
+add a mass-only FIXED child of the TCP labeled `apple_payload`. Quasi-static fruit
+weight still enters via stem harvest (`-m · g`). The dummy supplies **reflected
+inertia** only:
+
+\[
+m = m_{\mathrm{AVBD\,apple}},\quad
+I = \tfrac{2}{5} m r^{2}\,\mathbf{1},\quad
+\mathbf{c}_{\mathrm{TCP}} = \mathrm{trans}\big(X_{\mathrm{offset}}^{-1}\big)
+\]
+
+so \(X_{\mathrm{apple}} = X_{\mathrm{tcp}} \cdot X_{\mathrm{offset}}^{-1}\) matches
+co-teleport / explicit-load COM placement. There is no MuJoCo sphere geom (AVBD
+owns collision radius). Heterogeneous worlds share one replicated topology;
+per-world `body_mass` / `body_inertia` / `body_com` are patched then synced with
+`notify_model_changed(BODY_INERTIAL_PROPERTIES)`. Helpers live in
+`coupled_fruiting/mujoco_apple_payload.py`.
 
 Use these focused references for the detailed contracts:
 
@@ -191,8 +209,6 @@ Use these focused references for the detailed contracts:
   points, and sign.
 - [`explicit-apple-load-tcp-harvest.md`](explicit-apple-load-tcp-harvest.md) —
   child-side support force/moment and welded/free defaults.
-- [`mujoco-apple-payload.md`](mujoco-apple-payload.md) — reflected payload
-  mass, COM, and inertia.
 - H2 [`handbook-variable-impedance.md`](handbook-variable-impedance.md) —
   controller wrench and joint-torque paths; controller effort is not fed back
   as the next plant wrench.
@@ -287,6 +303,7 @@ The default simulation device is CUDA when available; `--device cpu` and
 | `coupled_fruiting/proxy_coupling.py` | Mirror, VBD-history alignment, reaction harvest, and batched harvest kernels. |
 | `coupled_fruiting/apply_wrench.py` | Registry-indexed TCP `body_f` writes. |
 | `coupled_fruiting/builders.py` | Single and heterogeneous FR3 builders; explicit-load and payload setup. |
+| `coupled_fruiting/mujoco_apple_payload.py` | Welded TCP `apple_payload` mass, COM, and spherical inertia. |
 | `coupled_fruiting/batched_heterogeneous_build.py::build_batched_heterogeneous_scene` | Config-driven settle/weld build. |
 | `coupled_fruiting/batched_heterogeneous_coupled_sim.py::BatchedHeterogeneousCoupledSim` | Public batched runtime. |
 | `coupled_fruiting/batched_heterogeneous_config.py::BatchedHeterogeneousCoupledSimConfig` | Public configuration and presets. |

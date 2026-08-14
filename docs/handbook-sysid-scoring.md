@@ -13,6 +13,27 @@
 This handbook is the canonical contract for `batched_sysid_v1` bags and the
 features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
 
+> **Warning — do not tare simulated `ft_wrist`.**
+>
+> Real compiled bags already isolate plant load:
+> `ft_wrist = ft_wrist_raw − ft_wrist_baseline`, where the baseline is an
+> unloaded same-motion replay of the robot (no fruiting asset). Convert that
+> compiled column; score it; never convert an uncorrected `*_robot.parquet`
+> whose metadata says `dynamic_baseline.applied = false`.
+>
+> Sim `ft_wrist` is already the plant TCP wrench. Gym copies
+> `coupling_forces_cache` (`tcp_coupling_force`): stem-apple harvest plus
+> optional explicit apple weight. EE gravity, tool inertia, and VIC effort do
+> **not** enter that 6-vector on the `vic` / `vic_pose` path
+> (`vic_use_joint_torques=True`; controller wrenches go to `joint_f`). A
+> robot-only replay therefore reports `ft_wrist = 0`. Subtracting a simulated
+> baseline is a no-op today and must not be added “for parity.”
+>
+> If harvest later becomes a sensor-like external wrench (tool weight and
+> inertia included), this warning is void: then mimic the real unloaded
+> same-motion tare, once per GT episode. Until then, leave candidate
+> `ft_wrist` unsubtracted.
+
 ## 1. Three layers
 
 Keep these layers separate; similarly named fields do not imply identical
@@ -129,10 +150,12 @@ with the same geometry:
    \(F_W=R_{W,TCP}F_{EE}\) and
    \(\tau_W=R_{W,TCP}\tau_{EE}\). Conversion applies this to `ft_wrist` and
    `raw_ft_wrist`, without another sign flip or lever-arm transport. Scoring
-   uses converted `ft_wrist`; `raw_ft_wrist` is diagnostic only.
-2. **No sim filter.**
-   Candidate replay uses its live world-frame `ft_wrist`. There is no
-   score-time F/T transform and no simulated EMA/LPF.
+   uses converted `ft_wrist` (already tared in the compiled real parquet);
+   `raw_ft_wrist` is diagnostic only.
+2. **No sim filter and no sim tare.**
+   Candidate replay uses its live world-frame plant harvest as `ft_wrist`.
+   There is no score-time F/T transform, no simulated EMA/LPF, and no unloaded
+   baseline subtraction. See the warning at the top of this handbook.
 3. **Woody points.**
    `real_to_batched_sysid.tag_poses_to_cma_woody` maps Branch and Spur tag
    translations to the two `CMA_WOODY_JUNCTIONS` starts and maps the Apple tag
@@ -228,26 +251,43 @@ the historical MMD grid specs.
 ## 8. Replay alignment notes
 
 Sim-collected datasets can include a settled pre-weld reconstruction row with
-`step_idx=-1`. `batched_sysid_mmd_grid.strip_pre_weld_rows` removes it before
-building recorded action tensors, loading score episodes, or comparing replay
-frames. After stripping, recorded row \(i\) is the post-step observation for
-replay action \(i\).
+`step_idx=-1`, `phase=-1`. `batched_sysid_mmd_grid.strip_pre_weld_rows` removes
+it before building recorded action tensors, loading score episodes, or
+comparing replay frames. After stripping, recorded row \(i\) is the post-step
+observation for replay action \(i\). Metric helpers fail fast if a leading
+pre-weld row is still present.
 
 A structure has one weld/grasp point shared by all directions and all
 candidates. Reusing direction 0's representative weld metadata is intentional,
 not a GT-parameter shortcut. Build parameters and initial dynamic state are
 independent choices: `--infer-params` selects observation-derived build
-parameters, while snapshot use is a separate privileged-state option. See
-`docs/sysid-mmd-grid-replay-alignment.md` for the retained replay diagnostics.
+parameters, while `--use-snapshot` is a separate privileged-state option.
+
+Grid CLI defaults: `--use-median`, `--hold-id-onehot`, and `--pool-directions`
+on (full hold windows). Console `--score-mse` with `--use-median` uses
+`trajectory_paired_hold_median_mse`. Wasserstein with `--use-median` uses
+hold→hold median bags. Deprecated `--mse-hold-aggregation` still maps onto
+`--use-median`; `--mse-hold-latter-half` is a no-op. By default the grid skips
+manifest episodes with `excluded: true`; pass `--include-excluded` only for
+debug. Replay reads `manifest.collection.control_hz` (fallback
+`CONTROL_HZ = 30.0`).
 
 ## 9. Legacy single-env Parquet
 
-The older `metadata.parquet` plus `frames/<episode_id>.parquet` format belongs
-to single-env collection and replay. It repeats `episode_id`/`dir_idx`, stores
-6D twist actions, and may store both woody starts and ends. Those properties
-must not be copied into `batched_sysid_v1` scoring bags. See
-`docs/sysid-trajectory-storage.md`, now explicitly marked **Legacy single-env
-only**.
+The older layout under `apple_pick_sim/system_id/trajectory_store.py` is:
+
+```text
+<output_dir>/
+  metadata.parquet
+  frames/<episode_id>.parquet
+  initial_states/<episode_id>.npz   # optional privileged snapshot
+```
+
+It repeats `episode_id`/`dir_idx`, stores 6D twist actions, and may store both
+woody starts and ends. Those properties must not be copied into
+`batched_sysid_v1` scoring bags. Observation-first replay is the default;
+`--use-snapshot` is sim-to-sim debug only. Use `ApplePickReplay-v0` /
+`example_gym_replay.py` for this path.
 
 ## 10. Code map and tests
 

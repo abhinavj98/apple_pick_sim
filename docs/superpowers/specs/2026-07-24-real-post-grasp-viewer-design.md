@@ -11,7 +11,7 @@
 | **Supersession** | Proxy orientation: use logged TCP quat (true SE(3)), not look-at +Z∥ŵ — see 2026-08-04 design |
 
 Related: `docs/superpowers/specs/2026-07-24-real-pre-grasp-settle-viewer-design.md`,
-`docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md`,
+`docs/handbook-real-replay.md`, `robot_replay/README.md`,
 `docs/digital-twin.md`.
 
 ## Problem

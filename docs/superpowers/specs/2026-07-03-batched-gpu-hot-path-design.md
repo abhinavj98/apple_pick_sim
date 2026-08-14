@@ -192,7 +192,7 @@ uv run python apple_pick_sim/diagnostics/benchmark_batched_heterogeneous.py \
 
 ## References
 
-- `docs/vectorized-coupled-fruiting.md` — θ application table, config map
+- `docs/handbook-coupled-simulation.md` — θ application table, config map
 - `docs/heterogeneous-batched-vectorization-audit.md` — prior audit (bootstrap section stale)
 - `docs/gpu-coupling-optimization.md` — single-env GPU doc (needs batched section)
 - `docs/ROADMAP.md` — V.3.3+ sequencing

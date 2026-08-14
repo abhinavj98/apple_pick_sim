@@ -49,7 +49,7 @@ positions and world-frame twists. The doc and fixture metadata must state this
 explicitly; no `obs_schema` change is required for this slice.
 
 Episode metadata continues to record `robot_base_pos` and `fruiting_base_pos` for
-replay and digital-twin calibration (`docs/sysid-trajectory-storage.md`).
+replay and digital-twin calibration (`docs/handbook-sysid-scoring.md`).
 For this fixture, `fruiting_base_pos` is the **T center** (mid-span spur junction),
 not a cantilever root.
 
@@ -161,7 +161,7 @@ load (not a simple serial subtree cut — see `docs/WRENCH_READOUT.md` §5.1).
 
 Markers stay on **visible surfaces**; compile / ingest applies the known
 **real-world offset** so stored junctions match **sim centerline / CoM** frames
-(see `docs/real-sysid-pre-post-grasp-fixes.md` and
+(see H4 `docs/handbook-real-replay.md` and
 `apple_pick_sim/system_id/real_pre_grasp_params.py`).
 
 | Tracked point | Meaning (robot frame) | Sim use |
@@ -418,7 +418,7 @@ migrating to this fixture if metadata base poses are updated consistently.
    under asymmetric branch loading is not validated (branch cut `primary_spur` is tested).
 7. **Intra-cable collisions** — default builds disable all fruiting-chain shape contacts
    (`enable_self_collisions=False`): woody, stem, apple, and gripper proxy do not collide
-   with each other. Ground contact only. See `docs/vectorized-coupled-fruiting.md` (warning).
+   with each other. Ground contact only. See H1 `docs/handbook-coupled-simulation.md` (warning).
 
 ---
 

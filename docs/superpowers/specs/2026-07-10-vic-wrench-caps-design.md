@@ -65,7 +65,7 @@ Independent scaling (does **not** scale the full 6D wrench as one vector). Match
 
 ## Docs
 
-- `docs/variable-impedance-teleop.md` — note VIC caps and defaults.
+- `docs/handbook-variable-impedance.md` — note VIC caps and defaults.
 - Fix stale “100 N / 100 N·m” stem-cap prose where it still appears if touched; at least update damping/sys-id notes that cite the old 30/10 if present in the same edit set.
 
 ## Success criteria

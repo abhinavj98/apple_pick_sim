@@ -19,7 +19,8 @@ Related boundaries:
 - See H1 for settle → weld and where VIC runs in the coupled substep.
 - See H4 for the real-data conversion and replay pipeline that defaults to
   `vic_pose`.
-- See H5 for grid/CMA controller selection through `--controller-mode`.
+- See H5 for the grid's `--controller-mode` selection and the ROADMAP-owned
+  real-CMA wiring that remains open.
 
 ## 1. Total TCP wrench and joint-torque control
 
@@ -187,8 +188,8 @@ The 100 N / 40 N·m values proposed by
 | Legacy/default MMD and simulation grid paths | `vic`, 6D twist |
 | Default CMA/synthetic-data path | `vic`, 6D twist |
 | Converted real replay (`vic_pose_v1`) | `vic_pose`, 19D pose + gains |
-| Real-data Young's grid | Infers `vic_pose` from dataset metadata; may opt in with `--controller-mode vic_pose` |
-| Controller-selecting grid/CMA CLIs | `--controller-mode` is the explicit override; see H5 |
+| Real-data Young's grid | Infers `vic_pose` from dataset metadata; `--controller-mode` is the explicit override; see H5 |
+| Real-data CMA | Not yet wired to the H4 builder/controller override; see H5 and ROADMAP |
 
 Converted real datasets identify pose actions with
 `action_layout=vic_pose_v1` and `action_dim=19`. A 6D real pose-controller

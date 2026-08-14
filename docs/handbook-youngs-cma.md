@@ -1,0 +1,305 @@
+# Young's-modulus grid and CMA handbook
+
+This is the canonical living reference for the support-joint \(k_p\) ×
+spur/stem Young's-modulus phenotype, its Cartesian diagnostic, and the
+simulation CMA-ES loop. Scoring mathematics belongs in H3; delivery status and
+the next real-data acceptance work belong in `docs/ROADMAP.md`.
+
+## Document status
+
+| Field | Value |
+| ----- | ----- |
+| Last reviewed | 2026-08-14 |
+| Code owners | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py`; `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
+| Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
+| Related handbooks | H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H4 `docs/handbook-real-replay.md` |
+| Archive specs | **Implemented:** `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md`; **Superseded phenotype, implemented loop:** `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`; **Partial:** `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md` |
+
+Related boundaries:
+
+- H2 defines `vic` and `vic_pose` action/controller semantics.
+- H3 defines `batched_sysid_v1`, `STATE_VECTOR`, normalization, and Sinkhorn
+  scoring. This handbook does not duplicate that math.
+- H4 owns real-log conversion and
+  `real_batched_replay_build.make_real_replay_build_env_fn`.
+- `docs/batched-stability-monitor-design.md` owns online stability monitoring
+  and episode exclusion details.
+
+## 1. Phenotype
+
+The current fitted candidate is
+
+\[
+\theta =
+\left(
+\log_{10} k_p^{\mathrm{support}},
+\log_{10} E_\mathrm{spur},
+\log_{10} E_\mathrm{stem}
+\right).
+\]
+
+`batched_sysid_cmaes.SupportKpYoungsCandidate` stores the corresponding
+physical values `(support_kp, spur, stem)`. The single support value is applied
+to both left and right primary support joints and to both angular and linear
+\(k_p\) slots. This is one pragmatic search knob; it is not a claim that the
+angular and linear units are dimensionally identical.
+
+`SupportKpYoungsCandidate.apply_to` changes spur and stem \(E\) through
+`fruiting_system.set_rod_youngs_modulus`. Fused replay separately applies the
+per-environment support penalties through
+`apply_per_env_support_joint_penalties`. Support \(k_d\) is derived using the
+dataset's support-joint damping ratio and each child body's mass/inertia.
+
+The following remain fixed:
+
+- primary and secondary Young's modulus;
+- support-joint damping ratio;
+- non-support fixed-joint penalties;
+- geometry, topology, density, apple parameters, and other structure state.
+
+Primary \(E\) is intentionally not a grid or optimizer axis. The support
+mounts dominate the relevant primary compliance in the proxy fixture, so
+freeing primary \(E\) would misattribute mount compliance to wood.
+
+## 2. Cartesian and fused grid
+
+`example_youngs_modulus_sys_id.py` builds a Cartesian product from:
+
+- `--support-kp-values` in physical units, or mutually exclusive
+  `--log10-support-kp`;
+- `--log10-e-spur`; and
+- `--log10-e-stem`.
+
+`iter_support_kp_youngs_candidates` preserves Cartesian order. The default
+multi-structure scheduler flattens compatible work as
+`structure × local candidate × physical direction`. Stable
+`ReplaySlotKey(structure_idx, local_candidate_idx, direction_idx)` identities
+survive parameter application, action routing, scoring, and reporting.
+Physical chunks preserve complete candidate/direction blocks under
+`--max-envs-per-batch`; incompatible structures or a fused runtime failure use
+the structure-local scalar fallback. `--no-multi-structure-batch` forces that
+debug path.
+
+Rankings remain structure-local. Eligible candidates sort by ascending pooled
+Sinkhorn fitness, with local candidate index as the deterministic tie-breaker.
+The CLI writes `ranking.json`, per-structure overlays, and optional replay
+exports. For simulation datasets, `--include-gt-candidate` can insert the exact
+recorded support-\(k_p\)/spur/stem candidate when it is absent.
+
+Controller selection is data-aware:
+
+- simulation collection and the default simulation grid use 6D `vic`;
+- `action_layout=vic_pose_v1` / `action_dim=19` selects `vic_pose`;
+- `--controller-mode vic|vic_pose` is an explicit grid override.
+
+See H2 for action meaning. A pose-control wrench must never be interpreted as a
+twist.
+
+## 3. CMA-ES loop
+
+`example_youngs_modulus_cmaes.py` is a separate simulation-data fit command;
+it does not replace the Cartesian diagnostic. One independent pycma optimizer
+owns each selected structure. Active structures advance in synchronized waves:
+
+1. each active optimizer calls `ask()` once;
+2. all populations enter one logical fused evaluation;
+3. results route back in original sample order;
+4. each successful structure calls `tell()` independently; and
+5. stopped bounded phenotype means (`es.result.xfavorite`) enter one explicit
+   final-mean evaluation wave.
+
+The measured final mean is the fitted estimate. Best sampled points and
+covariance are diagnostics only. Stored simulation GT values are used for
+post-hoc reporting, never optimizer initialization or fitness.
+
+### Search defaults
+
+`CMA_SEARCH_PARAMS` is the source of truth:
+
+| Knob | Default |
+| ---- | ------- |
+| Coordinates | `log10([support_kp, E_spur, E_stem])` |
+| Initial mean | `[4.0, 9.5, 9.5]` |
+| Initial sigma | `1.0` decade |
+| Population | `15` |
+| Maximum generations | `10` |
+| CMA base seed | `56` |
+| Bounds | lower `[2,8,8]`, upper `[6,11,11]` |
+
+The support box is \(10^2\)–\(10^6\); spur/stem \(E\) each use
+\(10^8\)–\(10^{11}\) Pa. `"bounds_midpoint"` initialization is also supported.
+The ranges fixture remains required for replay `sim_build` settings, but its
+narrow material ranges are not the default CMA safety box.
+
+### Invalid samples, stopping, and reports
+
+With at least one finite eligible score, invalid samples receive
+`worst_finite + max(1, abs(worst_finite))`. An all-invalid generation is
+re-asked up to `DEFAULT_ALL_INVALID_REASKS` (3) times, then told a uniform
+`ALL_INVALID_FLAT_PENALTY` (`1e12`) so the structure remains active. The
+generation cap and native pycma stop conditions are both honored.
+
+The CLI atomically checkpoints `<output>/cmaes_report.json` before replay and
+after each wave or state transition. Structure states are `active`,
+`stopped_pending_final_evaluation`, `fitted`, or `failed`. Reports distinguish:
+
+- `completed_generations` and `optimizer_samples_told`;
+- logical `replay_candidate_evaluations` and `final_mean_evaluations`;
+- physical environment slots and scalar retries;
+- final mean, best sample, evaluated-history extrema, and covariance
+  diagnostics; and
+- structure-local failures versus non-fatal artifact errors.
+
+The CMA integrity gate checks finite, coherent fit evidence and does not impose
+a GT-error threshold.
+
+## 4. Scoring handoff to H3
+
+Grid ranking and CMA fitness use the production complete pooled Sinkhorn path
+owned by H3:
+
+- bag and `STATE_VECTOR` fields;
+- fixed physical scales and GT-only centering;
+- hold/direction handling and completeness;
+- exclusion of `action` from the score vector; and
+- per-direction diagnostic versus pooled optimizer fitness.
+
+See `docs/handbook-sysid-scoring.md`. Do not infer the current objective from
+historical MMD grid or primary-\(E\) design documents.
+
+## 5. Real-data path and status boundary
+
+The real grid path reuses H4's
+`make_real_replay_build_env_fn`, including open-loop FR3 initialization,
+recorded control rate, logged gripper transform, post-grasp SE(3), and 19D
+`vic_pose` drive. `example_youngs_modulus_sys_id.py` auto-detects
+`vic_pose_v1` metadata or accepts `--controller-mode vic_pose`.
+
+Converted real bags have no simulator-oracle recoverable phenotype.
+Consequently `gt_candidate` is `None`, every row has `is_gt=false`, and
+`--include-gt-candidate` is forced off with a warning. One converted episode is
+currently one structure; `vic_pose` grid runs reject multi-structure selection.
+
+This plumbing is shipped, but a successful build/replay is not ranking
+acceptance. The following remain ROADMAP-owned and must not be inferred as
+complete from this handbook:
+
+- post-alignment trusted Cartesian ranking on real bags;
+- real CMA wiring through the same H4 builder; and
+- multi-episode discovery/manifest policy.
+
+The current CMA CLI has no `--controller-mode` and still follows the
+simulation-data build path. See `docs/ROADMAP.md` for the ordered M4.0 work.
+
+## 6. Stability and exclusion
+
+Online monitoring, sticky soft-disable, manifest exclusion, and the default
+unstable-frame threshold are documented in
+`docs/batched-stability-monitor-design.md`. Candidate replay uses the same
+exclusion/disqualification policy as the grid and scoring stack.
+
+Soft-disabled 6D rows become zero twist; soft-disabled 19D rows freeze the last
+pose-and-gains command, as defined in H2. A missing direction, unstable
+episode, empty bag, or non-finite score disqualifies the affected candidate
+without silently changing the expected comparison set.
+
+## 7. Commands
+
+Run from the repository root.
+
+### Simulation collect → grid
+
+```bash
+uv run python apple_pick_gym/batched_examples/example_batched_collect_sysid_data.py \
+  --viewer null --num-structures 2 --num-directions 3 --max-steps 200 \
+  --output tmp/support_kp_sysid_dataset --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
+  --viewer null --dataset tmp/support_kp_sysid_dataset \
+  --output tmp/support_kp_grid \
+  --support-kp-values 1e3,1e4,1e5 \
+  --log10-e-spur 8.0,9.5,11.0 \
+  --log10-e-stem 8.0,9.5,11.0 \
+  --include-gt-candidate --overwrite
+```
+
+### Simulation CMA
+
+```bash
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --viewer null --dataset tmp/support_kp_sysid_dataset \
+  --output tmp/support_kp_cmaes_fit --overwrite
+```
+
+### Real convert → grid plumbing smoke
+
+```bash
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input robot_replay/new_data/s09/s09-d00.parquet \
+  --dataset-out tmp/real_batched_s09_d00 --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
+  --dataset tmp/real_batched_s09_d00 \
+  --output tmp/real_kp_e_grid \
+  --viewer null \
+  --support-kp-values 1e3,1e4 \
+  --log10-e-spur 9.0 \
+  --log10-e-stem 9.0 \
+  --no-include-gt-candidate \
+  --overwrite
+```
+
+This real command proves build/replay plumbing only until ROADMAP's trusted
+ranking smoke is accepted.
+
+### Gates
+
+```bash
+bash scripts/gate_youngs_modulus_sysid.sh
+bash scripts/gate_youngs_modulus_cmaes.sh
+```
+
+Both gates are expensive multi-seed simulation workflows. The first enforces
+the ranking policy; the second validates CMA fit integrity.
+
+## 8. Code map, tests, and verification
+
+| Responsibility | Module / symbol |
+| -------------- | --------------- |
+| Candidate mapping, support penalties, evaluation, CMA coordinator | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` |
+| Stable slot planning, chunking, fused/scalar replay | `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py` |
+| Cartesian grid, ranking, real-builder opt-in | `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py` |
+| CMA search defaults, CLI, counters, atomic report | `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
+| Shared real replay build | `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
+| Ranking and CMA gates | `apple_pick_gym/batched_envs/youngs_modulus_gate_report.py`; `youngs_modulus_cmaes_gate_report.py`; `scripts/gate_youngs_modulus_*.sh` |
+
+Focused grid/controller-mode checks:
+
+```bash
+uv run --env-file pytest.env python -m pytest -p no:launch_testing \
+  apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
+  apple_pick_gym/tests/test_batched_sysid_youngs_grid.py \
+  apple_pick_gym/tests/test_example_youngs_modulus_sys_id_cli.py \
+  apple_pick_gym/tests/test_youngs_modulus_gate_report.py \
+  apple_pick_gym/tests/test_gate_youngs_modulus_sysid_script.py -q
+```
+
+Focused CMA checks:
+
+```bash
+uv run --env-file pytest.env python -m pytest -p no:launch_testing \
+  apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
+  apple_pick_gym/tests/test_batched_sysid_cmaes_loop.py \
+  apple_pick_gym/tests/test_example_youngs_modulus_cmaes_cli.py \
+  apple_pick_gym/tests/test_youngs_modulus_cmaes_gate_report.py \
+  apple_pick_gym/tests/test_gate_youngs_modulus_cmaes_script.py -q
+```
+
+The multi-replay module imports simulation fixtures by the bare name
+`conftest`; isolate those imports when running it beside Gym tests:
+
+```bash
+uv run --env-file pytest.env python -m pytest -p no:launch_testing \
+  --import-mode=importlib \
+  apple_pick_gym/tests/test_batched_sysid_multi_replay.py -q
+```

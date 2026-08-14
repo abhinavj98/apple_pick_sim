@@ -1,5 +1,11 @@
 # Gym observation contract (v3)
 
+> **Layer boundary:** this document defines runtime observation dictionaries.
+> Runtime obs may include `woody_part_end_pos`; `batched_sysid_v1` trajectory
+> bags do not, and score vectors use only `STATE_VECTOR_FIELDS`. See
+> [`handbook-sysid-scoring.md`](handbook-sysid-scoring.md) for the canonical
+> obs vs bag vs score glossary.
+
 ## Schema version
 
 All `apple_pick_gym` envs include `info["obs_schema"] == "v3"` on `reset()` and `step()`.

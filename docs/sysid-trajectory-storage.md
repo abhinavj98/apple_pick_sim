@@ -1,5 +1,12 @@
 # SysID trajectory storage
 
+> **Legacy single-env only.** This document describes the older
+> `metadata.parquet` + `frames/` layout. For `batched_sysid_v1` bags and the
+> production score contract, use
+> [`handbook-sysid-scoring.md`](handbook-sysid-scoring.md). In particular,
+> legacy trajectory woody ends are not part of batched trajectory bags or
+> `STATE_VECTOR_FIELDS`.
+
 Parquet persistence for quasi-static (and future) sysID rollouts, plus dataset-backed replay for CEM/MMD parameter tuning.
 
 ## Status

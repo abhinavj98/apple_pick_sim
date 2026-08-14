@@ -25,7 +25,7 @@ GT bags come from convert (`apple_pick_sim/system_id/real_to_batched_sysid.py`).
 | USD tool length | Cylinder 180 mm (`EE_CYLINDER_HALF_HEIGHT = 0.09`). Old 140 mm / `0.1034` panda-hand default is stale vs this recording. |
 | `F_x_Cee` | Tool **mass COM** in flange F, **not** the wrench point. Do not use 0.077 m as an `ft_wrist` convert offset. |
 | Sim woody start/end | Parent/child anchors of the **same FIXED joint** (gap ~µm–0.8 mm), not rod chords. |
-| Real woody | Three tags: spur start, spur end, apple. Convert today splits length-9 into `primary_spur` / `spur_stem` / `stem_apple` as if they were chords — wrong vs sim. |
+| Real woody | Unified parquet only (not `apple_pullto_static` robot rows). `compile_static_sysid.py` packs AprilTags **Branch / Spur / Apple**. Convert today slices length-9 as three independent chords — wrong vs sim FIXED-joint anchors. |
 
 ## Slice order
 
@@ -40,7 +40,7 @@ Implement in that order. Slice 0 does not change Sinkhorn features. Slices 1–3
 
 ## Non-goals (all slices)
 
-- LPF / EMA on sim `ft_wrist` (real already has `ft_ema_alpha` default 0.2)
+- LPF / EMA on sim `ft_wrist`. Real `α=0.2` runs at **1 kHz** (~4 ms). Rate-matched at 15–30 Hz is `α≈1` (passthrough). Literal `α=0.2` at `control_hz` would over-smooth holds. CMA scores holds, where the 4 ms filter has already settled. Do not copy torque slew (`_MAX_TORQUE_DELTA`) into F/T obs.
 - Torque-point transport along 0.1034 m or 0.18 m
 - Second negate of real F/T
 - Restricting Sinkhorn `action` to `action[0:7]` (stay full 19D)
@@ -90,7 +90,7 @@ F_world = R(tcp) @ F_logged
 
 `R(tcp)` is the 3×3 of logged TCP orientation from `tcp_pose_4x4`. Vic-pose convert already carries that column; **raise** if it is missing — do not skip the rotate or fall back to identity. Same rotation on force and torque. **No** second negate. **No** transport from K to another point.
 
-Write the rotated 6-vector into converted `ft_wrist` (and `raw_ft_wrist` with the same rotation if that column is copied). Do not leave EE-frame F/T in the converted bag.
+Write the rotated 6-vector into converted `ft_wrist`. Prefer the logger’s **`ft_wrist`** (dynamic-baseline-corrected when the unified file applied it). Rotate `ft_wrist_raw` the same way if that column is copied, but **do not score `raw_ft_wrist`**. Convert the **unified** episode parquet (`s01-d01.parquet`), not `*_robot.parquet` (no woody/apple). Do not leave EE-frame F/T in the converted bag. Raise if `tcp_pose_4x4` is missing.
 
 **Why convert-time, not score-time:** CMA GT is the converted bag; candidates are sim world wrenches. One write, both consumers match. Plumbing-spec score-time transform is **rejected**.
 
@@ -133,21 +133,27 @@ Live gym obs **may** still expose `woody_part_end_pos` for debug / force viz. Co
 
 Rest pose remains frame 0 of that bag. Two angles, in `CMA_WOODY_JUNCTIONS` order.
 
-**Convert packing of real length-9** (locked from `s01-d01` frame 0; do not treat the two vectors as three chords):
+**Convert packing** from `compile_static_sysid._endpoints` (do not treat length-9 as three independent chords):
 
-| Slot | What it is on this collection |
-| ---- | ----------------------------- |
-| `woody_part_start_pos[0:3]` and `[3:6]` | spur start (T); duplicates |
-| `woody_part_end_pos[0:3]` | spur end |
-| `woody_part_end_pos[3:6]` and `[6:9]` | apple; duplicates |
+```text
+starts = [Branch, Branch, Spur]
+ends   = [Spur,   Apple,  Apple]
+# chords: Branch→Spur (spur), Branch→Apple (skip-level, drop), Spur→Apple (stem)
+```
+
+| Slot | Tag |
+| ---- | --- |
+| `woody_part_start_pos[0:3]` and `[3:6]` | **Branch** (T) |
+| `woody_part_start_pos[6:9]` and `woody_part_end_pos[0:3]` | **Spur** |
+| `woody_part_end_pos[3:6]` and `[6:9]` | **Apple** (duplicates `apple_pos`) |
 
 Map:
 
-- `woody_start__primary_spur` ← `woody_part_start_pos[0:3]`
-- `woody_start__spur_stem` ← `woody_part_end_pos[0:3]`
-- `apple_pos` ← existing `apple_pos` column (not a woody column; matches the apple slots)
+- `woody_start__primary_spur` ← Branch (`start[0:3]`)
+- `woody_start__spur_stem` ← Spur (`end[0:3]`)
+- `apple_pos` ← existing `apple_pos` column
 
-Ignore the duplicate slots. Do not emit `stem_apple` or any `woody_end__*` column.
+Drop the Branch→Apple skip chord. Do not emit `stem_apple` or any `woody_end__*` column.
 
 Must change **sim collect + collector + `STATE_VECTOR`**, not convert-only. Otherwise live candidate bags still emit three joints × start+end.
 
@@ -196,7 +202,8 @@ Existing woody-end tests (`test_mmd_features`, `test_trajectory_store`, `test_re
 
 ## Out of scope follow-ups (named, not this work)
 
-- Match sim F/T filtering to real EMA
+- Match sim F/T filtering to real 1 kHz EMA (rate-matched equivalent is a no-op at `control_hz`)
+- Mimic unloaded dynamic baseline subtraction in sim
 - Reconcile logger metadata string (“force in EE, torque in base”) with the interface that rotates both
 - Drop Kp/Kd from Sinkhorn `action`
 - Multi-episode / multi-structure fused real CMA

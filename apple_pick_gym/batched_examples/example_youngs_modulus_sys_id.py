@@ -23,6 +23,9 @@ Run from repo root::
         --output /tmp/youngs_rank \\
         --support-kp-values 1e3,1e4,1e5 --log10-e-spur 7.5 --log10-e-stem 7.0
 
+    # Optional GL MP4 of the batched multi-world view (requires --viewer gl):
+    #   --record-video /tmp/youngs_grid.mp4 --viewer gl
+
 Candidates are ``support_kp x E_spur x E_stem``; primary \\(E\\) is fixed from
 the structure's true/fixture params and is never a free grid axis.
 """
@@ -36,6 +39,7 @@ import math
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +92,7 @@ from apple_pick_sim.system_id.batched_replay_export import (
     ReplayCandidateSpec,
     export_replay_candidates_for_structure,
 )
+from robot_replay.gl_video_recorder import GlVideoRecorder
 
 CONTROL_HZ = 30.0
 SUB_DT = 1.0 / 1800.0
@@ -182,9 +187,11 @@ def _winner_summary(evaluation: YoungsModulusEvaluation) -> dict[str, Any] | Non
     relative_error: dict[str, float | None] = {}
     for segment in ("support_kp", "spur", "stem"):
         winner_value = _json_float(getattr(winner.candidate, segment))
-        gt_value = _json_float(getattr(gt, segment))
+        gt_value = _json_float(getattr(gt, segment)) if gt is not None else None
         winner_log10 = _json_log10(getattr(winner.candidate, segment))
-        gt_log10 = _json_log10(getattr(gt, segment))
+        gt_log10 = (
+            _json_log10(getattr(gt, segment)) if gt is not None else None
+        )
         log10_error[segment] = (
             _json_float(winner_log10 - gt_log10)
             if winner_log10 is not None and gt_log10 is not None
@@ -208,18 +215,26 @@ def _structure_result_to_json(evaluation: YoungsModulusEvaluation) -> dict[str, 
         (int(score.rank) for score in evaluation.scores if score.is_gt and score.rank is not None),
         None,
     )
-    return {
-        "structure_idx": int(evaluation.structure_idx),
-        "gt_support_kp": _json_float(gt.support_kp),
-        "gt_youngs_modulus_pa": {
+    if gt is None:
+        gt_support_kp = None
+        gt_youngs = {"spur": None, "stem": None}
+        gt_log10_vector: list[float | None] = [None, None, None]
+    else:
+        gt_support_kp = _json_float(gt.support_kp)
+        gt_youngs = {
             "spur": _json_float(gt.spur),
             "stem": _json_float(gt.stem),
-        },
-        "gt_log10_vector": [
+        }
+        gt_log10_vector = [
             _json_log10(gt.support_kp),
             _json_log10(gt.spur),
             _json_log10(gt.stem),
-        ],
+        ]
+    return {
+        "structure_idx": int(evaluation.structure_idx),
+        "gt_support_kp": gt_support_kp,
+        "gt_youngs_modulus_pa": gt_youngs,
+        "gt_log10_vector": gt_log10_vector,
         "fixed_secondary_e_pa": _json_float(evaluation.fixed_secondary_e_pa),
         "direction_indices": [int(d) for d in evaluation.direction_indices],
         "candidates": [_candidate_to_json_row(score) for score in evaluation.scores],
@@ -694,6 +709,17 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Draw cyan pull-direction arrows (requires --viewer gl).",
     )
+    p.add_argument(
+        "--record-video",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write GL viewer frames to PATH.mp4 for the batched multi-world "
+            "view (requires --viewer gl; --headless OK). FPS matches sim "
+            "control_hz. Chunked candidate batches append into one file."
+        ),
+    )
     p.add_argument("--settle-substeps", type=int, default=None)
     p.add_argument(
         "--settle-gravity-ramp",
@@ -702,6 +728,73 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--settle-quiet-every", type=int, default=SETTLE_QUIET_EVERY)
     return p
+
+
+def require_gl_frame_capture(viewer: object) -> None:
+    """Raise ``SystemExit`` unless ``viewer`` supports ``get_frame`` (ViewerGL)."""
+    if not hasattr(viewer, "get_frame"):
+        raise SystemExit(
+            "--record-video requires a GL viewer with get_frame(); "
+            "pass --viewer gl (optionally --headless)."
+        )
+
+
+def make_grid_on_step(
+    viewer: object,
+    *,
+    control_hz: float,
+    graphical: bool,
+    use_viewer: bool,
+    show_pull_direction: bool = False,
+    recorder: GlVideoRecorder | None = None,
+) -> Callable[..., bool]:
+    """Render each replay frame; optionally capture GL frames into ``recorder``."""
+    frame_dt = 1.0 / float(control_hz)
+    viewer_state: dict[str, object] = {"model": None}
+
+    def on_step(*, frame_idx: int, env: object) -> bool:
+        if hasattr(viewer, "is_running") and not viewer.is_running():
+            return False
+        if not use_viewer:
+            return True
+
+        sim = getattr(env, "_sim", None)
+        if sim is None:
+            return True
+        scene = getattr(sim, "scene", None)
+        if scene is None:
+            return True
+
+        active_model = scene.cable.model
+        if viewer_state.get("model") is not active_model:
+            viewer.set_model(active_model)
+            if graphical and getattr(env, "num_envs", 1) > 1:
+                viewer.set_world_offsets(tuple(sim.config.runtime.env_spacing))
+            if viewer_state.get("model") is None and hasattr(
+                viewer, "hide_loading_splash"
+            ):
+                viewer.hide_loading_splash()
+            viewer_state["model"] = active_model
+
+        hz = float(getattr(sim.config.runtime, "control_hz", control_hz))
+        sim_time = float(frame_idx) / max(hz, 1e-9)
+        obs = getattr(env, "_last_obs", None)
+        _render_frame(
+            viewer,
+            env,
+            sim_time,
+            obs=obs,
+            show_pull_direction=show_pull_direction,
+        )
+        if recorder is not None:
+            if recorder.fps is None:
+                recorder.set_fps(hz)
+            recorder.capture(viewer)
+        elif graphical:
+            time.sleep(max(0.0, frame_dt))
+        return True
+
+    return on_step
 
 
 def _render_frame(
@@ -783,6 +876,7 @@ def _run(
     parser: argparse.ArgumentParser,
     *,
     viewer: object,
+    recorder: GlVideoRecorder | None = None,
 ) -> dict[str, Any]:
     device = args.device
     if device == "cuda":
@@ -905,46 +999,14 @@ def _run(
     graphical = isinstance(viewer, newton.viewer.ViewerGL)
     use_viewer = graphical or getattr(args, "viewer", None) != "null"
     show_pull_direction = bool(args.show_pull_direction) and graphical
-    frame_dt = 1.0 / float(control_hz)
-    viewer_state: dict[str, object] = {"model": None}
-
-    def on_step(*, frame_idx: int, env: object) -> bool:
-        if hasattr(viewer, "is_running") and not viewer.is_running():
-            return False
-        if not use_viewer:
-            return True
-
-        sim = getattr(env, "_sim", None)
-        if sim is None:
-            return True
-        scene = getattr(sim, "scene", None)
-        if scene is None:
-            return True
-
-        active_model = scene.cable.model
-        if viewer_state.get("model") is not active_model:
-            viewer.set_model(active_model)
-            if graphical and getattr(env, "num_envs", 1) > 1:
-                viewer.set_world_offsets(tuple(sim.config.runtime.env_spacing))
-            if viewer_state.get("model") is None and hasattr(
-                viewer, "hide_loading_splash"
-            ):
-                viewer.hide_loading_splash()
-            viewer_state["model"] = active_model
-
-        hz = float(getattr(sim.config.runtime, "control_hz", control_hz))
-        sim_time = float(frame_idx) / max(hz, 1e-9)
-        obs = getattr(env, "_last_obs", None)
-        _render_frame(
-            viewer,
-            env,
-            sim_time,
-            obs=obs,
-            show_pull_direction=show_pull_direction,
-        )
-        if graphical:
-            time.sleep(max(0.0, frame_dt))
-        return True
+    on_step = make_grid_on_step(
+        viewer,
+        control_hz=control_hz,
+        graphical=graphical,
+        use_viewer=use_viewer,
+        show_pull_direction=show_pull_direction,
+        recorder=recorder,
+    )
 
     candidates_by_structure: dict[int, list] = {}
     candidate_errors: dict[int, str] = {}
@@ -1106,6 +1168,16 @@ def _run(
     )
     _write_ranking_json_atomic(output_dir / "ranking.json", ranking_payload)
 
+    if recorder is not None:
+        if recorder.frame_count <= 0:
+            raise SystemExit(
+                f"--record-video requested but wrote 0 frames ({recorder.path})"
+            )
+        print(
+            f"recorded video frames={recorder.frame_count} path={recorder.path}",
+            file=sys.stderr,
+        )
+
     return {
         "dataset": str(args.dataset),
         "output": str(output_dir),
@@ -1124,14 +1196,21 @@ def main() -> None:
 
     parser = _make_parser()
     viewer, args = newton.examples.init(parser=parser)
+    recorder: GlVideoRecorder | None = None
+    record_path = getattr(args, "record_video", None)
+    if record_path is not None:
+        require_gl_frame_capture(viewer)
+        recorder = GlVideoRecorder(record_path)
     try:
-        result = _run(args, parser, viewer=viewer)
+        result = _run(args, parser, viewer=viewer, recorder=recorder)
         failures = [
             row for row in result["structure_results"] if row.get("error") is not None
         ]
         if failures and all(row.get("evaluation") is None for row in result["structure_results"]):
             raise SystemExit(1)
     finally:
+        if recorder is not None:
+            recorder.close()
         if hasattr(viewer, "close"):
             viewer.close()
 

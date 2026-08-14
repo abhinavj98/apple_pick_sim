@@ -91,6 +91,12 @@ Add a target control rate (default 15 Hz). Convert resamples the 1 kHz log
 instead of inheriting its rate through `_resolve_control_hz`. The decimated
 rate is written to `collection.control_hz` and episode metadata.
 
+Decimation is **nearest-timestamp subsampling**: pick the logged row closest to
+each target-rate timestamp and copy it unchanged. No averaging and no
+low-pass, consistent with the no-filter rule in `docs/handbook-sysid-scoring.md`
+— averaging would smear the pull/hold phase boundary and blend `hold_index`
+values across holds.
+
 ### Tree folder → one structure
 
 Iterate `sXX-dNN.parquet` in a folder. `direction_idx` comes from
@@ -115,7 +121,7 @@ Per-pull fields stay per direction: post-grasp apple and TCP SE(3),
 
 ### Multi-tree merge
 
-Assign `structure_idx` per folder in a deterministic order and set
+Assign `structure_idx` by lexicographic folder name (`s09` → 0, `s11` → 1) and set
 `env_idx = structure_idx · num_directions + direction_idx`. Write a
 sim-collect-shaped manifest in one pass (today `write_manifest` is called once
 with `num_structures: 1`, `num_directions: 1` and overwrites everything):
@@ -133,8 +139,13 @@ must be written at convert time:
 | Field | Why | Consequence if missing |
 | --- | --- | --- |
 | `collection.n_holds` | Fixes the hold one-hot width | See below — silent feature-width mismatch |
-| `collection.sim_config.joint_damping_ratio` | Support \(k_d = \zeta \cdot 2\sqrt{k I}\) for the free \(k_p\) dimension | Falls back to `SUPPORT_JOINT_ZETA_FALLBACK = 0.5`; matches the fixture today, so latent, not broken |
+| `collection.sim_config` | `support_joint_zeta_from_dataset` reads `sim_config.joint_damping_ratio` for the support \(k_d = \zeta \cdot 2\sqrt{kI}\) that pairs with the free \(k_p\) dimension | Falls back to `SUPPORT_JOINT_ZETA_FALLBACK = 0.5`; equals the fixture value today, so latent rather than broken |
 | `collection.topology_seed` | Scene DR seed | Grid defaults to `collection.seed` (0), CMA hardcodes 42 — the two CLIs disagree |
+
+Write the **whole** `sim_config` block through `sim_config_to_manifest_dict`,
+built from `real_replay_sim_config`, exactly as sim collection does. A partial
+block containing only `joint_damping_ratio` would leave the replay-time
+manifest-versus-env comparison reporting spurious mismatches.
 
 **`n_holds` is a correctness blocker, not a cosmetic gap.** With
 `scoring.n_holds = None`, `build_transition_features_by_direction` infers the

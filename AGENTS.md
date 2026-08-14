@@ -6,9 +6,10 @@ Read these **before** substantial implementation work. They apply to automated a
 
 1. **`docs/VISION.md`** — Intent, scope, non-goals, success criteria, ambiguity defaults.
 2. **`docs/ROADMAP.md`** — Current focus, milestones, ordered next slices, validation commands, when to stop and ask.
-3. **`docs/CODEBASE_GUIDE.md`** — Map of the codebase and the full `docs/` set; read this before searching for "which doc covers X."
-4. **Post-grasp VIC (when relevant):** **`docs/variable-impedance-teleop.md`** — dynamic arm, total TCP wrench, FD modes for \(\pi_{\mathrm{exp}}\).
-5. **`.cursor/rules/`** — Persistent project rules (environment, TDD, tooling, Newton layout, **GPU/Warp parallelism**). Obey them unless the maintainer overrides them for a specific task.
+3. **Living handbooks (H1–H5)** — subsystem contracts; start from **`docs/FEATURES.md`** or the Document index in **`docs/CODEBASE_GUIDE.md`**.
+4. **`docs/CODEBASE_GUIDE.md`** — Map of the codebase and the full `docs/` set; read this before searching for "which doc covers X."
+5. **Post-grasp VIC (when relevant):** **`docs/handbook-variable-impedance.md`** (stub: `docs/variable-impedance-teleop.md`) — dynamic arm, total TCP wrench, `vic` / `vic_pose`.
+6. **`.cursor/rules/`** — Persistent project rules (environment, TDD, tooling, Newton layout, **GPU/Warp parallelism**). Obey them unless the maintainer overrides them for a specific task.
 
 If **vision**, **roadmap**, and **code** disagree, **stop** and report the conflict instead of silently choosing a direction.
 

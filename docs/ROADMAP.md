@@ -28,10 +28,10 @@
 | Phase | Status | Outcome |
 | ----- | ------ | ------- |
 | **[P0]** | Done | Variational fruiting geometry, fixtures, force readouts, `example_fruiting_system.py` |
-| **[M1]** | Done | MuJoCo + VBD coupling, FR3, VIC teleop, settle→weld (`docs/mujoco-vbd-coupling-architecture.md`) |
+| **[M1]** | Done | MuJoCo + VBD coupling, FR3, VIC teleop, settle→weld (`docs/handbook-coupled-simulation.md`, `docs/handbook-variable-impedance.md`) |
 | **[M2]** | Partial | M2.1 `ApplePickCoupled-v0` shipped; RL/FID slices in backlog |
-| **[M3]** | Infra done | Sys-ID recording, replay, legacy single-env MMD grid (`docs/system_identification.md`); batched paths → **V.4** / **V.5** |
-| **[V].1–2** | Done | Batched `replicate(N)`, heterogeneous per-env DR, fixtures, runtime actions (`docs/vectorized-coupled-fruiting.md`) |
+| **[M3]** | Infra done | Sys-ID recording, replay, legacy single-env MMD grid (`docs/handbook-sysid-scoring.md`); batched paths → **V.4** / **V.5** |
+| **[V].1–2** | Done | Batched `replicate(N)`, heterogeneous per-env DR, fixtures, runtime actions (`docs/handbook-coupled-simulation.md`) |
 | **[V].3** | Done | Sim API + batched gym (V.3.1–V.3.5) |
 | **[V].4** | Done | Parallel collect, batched replay, in-process MSE/Wasserstein grid, tooling |
 | **[V].5** | Infra Done | V.5.1–V.5.2 Done; **V.5.3 held-out deferred** while **M4.0** starts |
@@ -42,7 +42,7 @@
 
 ## Current focus
 
-**Next slice:** **M4.0 trusted Cartesian ranking** (then CMA on the same builder). **Feature alignment Done** per `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md` slices 0–3: USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`** (see `docs/superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md`). Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
+**Next slice:** **M4.0 trusted Cartesian ranking** (then CMA on the same builder). **Feature alignment Done**; use H3 `docs/handbook-sysid-scoring.md` for the aligned bag/scale contract, H4 `docs/handbook-real-replay.md` for convert/replay, and H5 `docs/handbook-youngs-cma.md` for ranking/CMA. Slices 0–3 delivered USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
 
 **Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see `docs/youngs-modulus-sysid.md`.
 
@@ -88,11 +88,12 @@
 
 **Build on (do not reimplement):**
 
-- `robot_replay/convert_real_to_batched_sysid_metadata.py`, `real_to_batched_sysid.export_real_episode_to_batched_dataset` (19D pack)
-- `robot_replay/example_replay_real_batched.py` (`--controller-mode vic_pose`; post-grasp SE(3) weld)
-- `gripper_proxy_for_real_batched_replay` / `apply_logged_post_grasp_se3_to_cable` (`batched_digital_twin_init.py`) — reuse in CMA seed
-- `example_youngs_modulus_cmaes.py` / `batched_sysid_cmaes.py` / `replay_batched_sysid_structure` (additive `action_dim`)
-- Specs: `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md`, `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 3), `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `docs/variable-impedance-teleop.md` §`vic_pose`, `robot_replay/README.md`
+- H4 `docs/handbook-real-replay.md` — conversion, 19D pack, post-grasp SE(3), replay CLI, and shared `make_real_replay_build_env_fn`
+- H2 `docs/handbook-variable-impedance.md` — `vic_pose` action semantics, anisotropic wrench, and soft-disable behavior
+- H3 `docs/handbook-sysid-scoring.md` — aligned bags, fixed physical scales, and Sinkhorn scoring contract
+- H5 `docs/handbook-youngs-cma.md` — support-\(k_p\) × spur/stem-\(E\) phenotype, grid, CMA loop, and gates
+- H1 `docs/handbook-coupled-simulation.md` — settle→weld builders and geometry/frame ownership
+- Archived implementation records remain under `docs/superpowers/specs/`; use them for decision history, not as competing living contracts.
 
 **Shipped wins relevant to this slice (do not reimplement):**
 
@@ -111,7 +112,7 @@
 
 **Also build on (milestones):**
 
-- [M1] `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_fr3`, VIC joint torques (`docs/variable-impedance-teleop.md`)
+- [M1] `CoupledFruitingScene.coupled_substep`, `build_coupled_fruiting_fr3`, VIC joint torques (H1 `docs/handbook-coupled-simulation.md`, H2 `docs/handbook-variable-impedance.md`)
 - [M2.1] `apple_pick_gym/` observation contract v3
 - [V.4.3] / [V.5.2] grid + support-\(k_p\) CMA / fused multi-structure replay
 

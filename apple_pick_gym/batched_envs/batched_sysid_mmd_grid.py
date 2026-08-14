@@ -1,4 +1,9 @@
-"""Bend-stiffness grid and recorded-action tensor helpers for batched sys-ID MMD."""
+"""Bend-stiffness grid and recorded-action tensor helpers for batched sys-ID MMD.
+
+Note: the biased_mmd2 scoring helpers in this module are stale; active
+Young's / CMA ranking uses Sinkhorn in wasserstein.py. They still call
+fit_gt_normalization and therefore inherit fixed physical scales.
+"""
 
 from __future__ import annotations
 

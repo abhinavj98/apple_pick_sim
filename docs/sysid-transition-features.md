@@ -37,7 +37,6 @@ Columns are concatenated in this order:
 | ----- | --- | -------------- |
 | `ft_wrist` | 6 | Wrist wrench (force 3 + torque 3), robot-facing |
 | `tcp_velocity` | 6 | TCP linear (3) + angular (3) velocity |
-| `action` | 6 | Recorded EE velocity command (replay drive signal) |
 | `tcp_pos` | 3 | TCP position |
 | `apple_pos` | 3 | Apple / fruit body position |
 | `woody_part_start_pos` | \(3 N_j\) | Junction endpoint starts, flattened in `junction_names` order |
@@ -49,8 +48,13 @@ Columns are concatenated in this order:
 **Total state dim**
 
 \[
-D_s = 6+6+6+3+3 + 3N_j + 3N_j + N_j = 24 + 7 N_j
+D_s = 6+6+3+3 + 3N_j + 3N_j + N_j = 18 + 7 N_j
 \]
+
+`action` is still required in episode bags (`REQUIRED_ARRAY_KEYS`) for replay
+drive and collector validation, but it is **not** concatenated into score-time
+`STATE_VECTOR` (see
+`docs/superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md`).
 
 ### Woody geometry and bending angles
 
@@ -68,6 +72,7 @@ D_s = 6+6+6+3+3 + 3N_j + 3N_j + N_j = 24 + 7 N_j
 | `excitation_direction` | 3D unit vector (recorded; bags key by `dir_idx`) |
 | `excitation_type` | Trajectory family id |
 | `junction_names` | Ordered woody labels |
+| `action` | Full replay command (e.g. 19D `vic_pose`); required in bags, excluded from `STATE_VECTOR` |
 | `stable` | Optional bool mask; unstable frames excluded from hold samples |
 | `hold_number` | Optional 0-based hold index within a direction (`-1` if unknown) |
 
@@ -119,7 +124,7 @@ Pooled Sinkhorn path (`wasserstein.py`):
 
 1. Build per-direction bags (with dir one-hot when pooling).
 2. Concatenate all directions into one bag keyed by `POOLED_DIRECTION_KEY = -1`.
-3. Fit one GT z-score on the pooled bag; score candidates with Sinkhorn.
+3. Fit one GT mean + fixed physical scale on the pooled bag; score candidates with Sinkhorn.
 
 ### Complete candidate scoring
 
@@ -170,7 +175,7 @@ From `scripts/gate_sysid_gt_sinkhorn.sh` (`SCORE_EXTRA`). Script default
 ## 4. Pre-processing before distance
 
 1. **Hold-only** transitions as above (per direction, then optional pool).
-2. **GT z-score** per bag: `fit_gt_normalization` / `apply_normalization` (`mmd.py`) — mean/std from GT features for that direction (or pooled bag); clamp tiny std to `eps`.
+2. **GT mean + fixed physical scale** per bag: `fit_gt_normalization` / `apply_normalization` (`mmd.py`) — mean from GT features for that direction (or pooled bag); divide by fixed `STATE_VECTOR_PHYS_SCALE` (not GT std). See `docs/superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md`. Hold/dir one-hots use scale 1 and are not mean-centered.
 3. **Sinkhorn:** Geomloss `SamplesLoss("sinkhorn", p=2, blur=1.0)` on normalized bags (`wasserstein.py`).
 4. **MMD (library):** biased MMD² with RBF bandwidth from GT median pairwise distance (`rbf_bandwidth_median`).
 
@@ -188,7 +193,7 @@ Current shipped bags are built for **§2.1 quasi-static hold** scoring of **bend
 | `tcp_pos`, `apple_pos` | Critical — deflection | High — path, overshoot, settling |
 | Woody start/end + bending angles | High (sim / marked rods) — segment shape | High — time series of chord deflection |
 | `tcp_velocity` | Low on settled holds | Critical on move / early hold ring-down |
-| `action` | Low–medium (shared under aligned replay) | Medium–high — same command, different response |
+| `action` | Not in score-time `STATE_VECTOR` (replay drive only) | Medium–high — same command, different response |
 | `hold_id` one-hot | Medium — keeps amplitude steps distinct | Lower priority if phase/context labeled elsewhere |
 | `dir_idx` one-hot (pooling) | Medium–high — preserves anisotropic \(K(\hat u)\) | Medium — avoid mixing directions in one OT bag |
 | Hold medians / hold-only \(\Delta s\) | Strong for \(K(x)\) staircase | Weak for \(B\) — prefer frame \(\Delta s\) on move |

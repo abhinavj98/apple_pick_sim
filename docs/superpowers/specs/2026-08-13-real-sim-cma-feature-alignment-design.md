@@ -25,7 +25,7 @@ GT bags come from convert (`apple_pick_sim/system_id/real_to_batched_sysid.py`).
 | USD tool length | Cylinder 180 mm (`EE_CYLINDER_HALF_HEIGHT = 0.09`). Old 140 mm / `0.1034` panda-hand default is stale vs this recording. |
 | `F_x_Cee` | Tool **mass COM** in flange F, **not** the wrench point. Do not use 0.077 m as an `ft_wrist` convert offset. |
 | Sim woody start/end | Parent/child anchors of the **same FIXED joint** (gap ~µm–0.8 mm), not rod chords. |
-| Real woody | Unified parquet only (not `apple_pullto_static` robot rows). `compile_static_sysid.py` packs AprilTags **Branch / Spur / Apple**. Convert today slices length-9 as three independent chords — wrong vs sim FIXED-joint anchors. |
+| Real woody | Tag poses `branch_pose_4x4` / `spur_pose_4x4` / `apple_pose_4x4` (translations → CMA starts + `apple_pos`). Packed source `woody_part_*` is not a convert path. Bit-1 metadata snapshots may still carry length-9 packing. |
 
 ## Slice order
 
@@ -43,7 +43,7 @@ Implement in that order. Slice 0 does not change Sinkhorn features. Slices 1–3
 - LPF / EMA on sim `ft_wrist`. Real `α=0.2` runs at **1 kHz** (~4 ms). Rate-matched at 15–30 Hz is `α≈1` (passthrough). Literal `α=0.2` at `control_hz` would over-smooth holds. CMA scores holds, where the 4 ms filter has already settled. Do not copy torque slew (`_MAX_TORQUE_DELTA`) into F/T obs.
 - Torque-point transport along 0.1034 m or 0.18 m
 - Second negate of real F/T
-- Restricting Sinkhorn `action` to `action[0:7]` (stay full 19D)
+- Restricting Sinkhorn `action` to `action[0:7]` (stay full 19D). **Amended 2026-08-14:** `action` is removed from score-time `STATE_VECTOR`; replay and bag contracts still carry full 19D `vic_pose`. See `docs/superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md`.
 - Injecting real F/T into MuJoCo
 - Writing hold one-hot into parquet
 - Support-joint or `stem_apple` woody feature columns
@@ -116,9 +116,9 @@ No `support`. No `stem_apple`. Plant still has support FIXED joints; they are no
 
 | Feature | Real convert | Sim collect / live replay |
 | ------- | ------------ | ------------------------- |
-| `woody_start__primary_spur` | spur-start tag | parent anchor of `primary_spur` |
-| `woody_start__spur_stem` | spur-end tag | parent anchor of `spur_stem` |
-| `apple_pos` | apple tag (already a column) | apple body translation (already a column) |
+| `woody_start__primary_spur` | `branch_pose_4x4` translation | parent anchor of `primary_spur` |
+| `woody_start__spur_stem` | `spur_pose_4x4` translation | parent anchor of `spur_stem` |
+| `apple_pos` | `apple_pose_4x4` translation | apple body translation (already a column) |
 
 **Drop from the sys-ID bag contract:** `woody_part_end_pos` / `woody_end__*` parquet columns, `ReplayObservationCollector` `woody_end`, `STATE_VECTOR_FIELDS` / `REQUIRED_ARRAY_KEYS` entry `woody_part_end_pos`.
 
@@ -133,27 +133,17 @@ Live gym obs **may** still expose `woody_part_end_pos` for debug / force viz. Co
 
 Rest pose remains frame 0 of that bag. Two angles, in `CMA_WOODY_JUNCTIONS` order.
 
-**Convert packing** from `compile_static_sysid._endpoints` (do not treat length-9 as three independent chords):
-
-```text
-starts = [Branch, Branch, Spur]
-ends   = [Spur,   Apple,  Apple]
-# chords: Branch→Spur (spur), Branch→Apple (skip-level, drop), Spur→Apple (stem)
-```
-
-| Slot | Tag |
-| ---- | --- |
-| `woody_part_start_pos[0:3]` and `[3:6]` | **Branch** (T) |
-| `woody_part_start_pos[6:9]` and `woody_part_end_pos[0:3]` | **Spur** |
-| `woody_part_end_pos[3:6]` and `[6:9]` | **Apple** (duplicates `apple_pos`) |
+**Convert source (2026-08-14):** Sinkhorn woody/apple come from tag SE(3) translations via `tag_poses_to_cma_woody`. Convert **requires** table columns `branch_pose_4x4`, `spur_pose_4x4`, `apple_pose_4x4` (null cells raise). Source `woody_part_start_pos` / `woody_part_end_pos` packing is **not** read (`compiler_woody_to_cma_starts` removed). Converted bag still writes `woody_start__primary_spur` / `woody_start__spur_stem` / `apple_pos`.
 
 Map:
 
-- `woody_start__primary_spur` ← Branch (`start[0:3]`)
-- `woody_start__spur_stem` ← Spur (`end[0:3]`)
-- `apple_pos` ← existing `apple_pos` column
+- `woody_start__primary_spur` ← `branch_pose_4x4` translation (T / top of spur)
+- `woody_start__spur_stem` ← `spur_pose_4x4` translation (bottom of spur / top of stem)
+- `apple_pos` ← `apple_pose_4x4` translation (apple center)
 
-Drop the Branch→Apple skip chord. Do not emit `stem_apple` or any `woody_end__*` column.
+Do not emit `stem_apple` or any `woody_end__*` column. Bit-1 pre-grasp rebuild may still unpack packed woody from **metadata** snapshots.
+
+Must change **sim collect + collector + `STATE_VECTOR`**, not convert-only. Otherwise live candidate bags still emit three joints × start+end.
 
 Must change **sim collect + collector + `STATE_VECTOR`**, not convert-only. Otherwise live candidate bags still emit three joints × start+end.
 
@@ -180,12 +170,13 @@ Unchanged keys except woody ends removed:
 ```text
 ft_wrist                  # world, env-on-robot, about TCP (both bags)
 tcp_velocity
-action                    # full 19D vic_pose
 tcp_pos
 apple_pos                 # also the stem distal point
 woody_part_start_pos      # primary_spur, spur_stem only
 woody_bending_angles      # 2 chords: spur then stem
 ```
+
+**Amended 2026-08-14:** `action` dropped from score-time `STATE_VECTOR` only; replay still drives full 19D `vic_pose` and bags still require `action`. See `docs/superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md`.
 
 Bag still concatenates `[s, Δs, hold_id_onehot, dir_onehot]` at score time. Not scored: `woody_part_force`, quats, joints, cameras, raw F/T.
 
@@ -195,7 +186,7 @@ Bag still concatenates `[s, Δs, hold_id_onehot, dir_onehot]` at score time. Not
 | ----- | ----- |
 | 0 | USDA scrape: ee mass 1.1, COM (0,0,−0.077), `I_ee` diagonal, tcp mass 0.001, on both `testfr3.usda` and `testfr3_resolved.usda`. RotX(180) helper. |
 | 1 | Convert unit: `R @ wrench` on F and τ; no sign flip. Hold `cos(F, pull) < 0` on a fixture row with known TCP R. Converted bag `ft_wrist` ≠ EE-frame input. |
-| 2 | Convert maps three tags → two starts + `apple_pos`. No `woody_end__*` / `stem_apple` / `support` woody columns. `build_bending_angles` uses the two chords. Collector does not require `woody_end`. `STATE_VECTOR` width matches 2 junctions × start + 2 angles. Sim collect parquet `junction_names == ["primary_spur", "spur_stem"]`. |
+| 2 | Convert maps tag 4×4 translations → two starts + `apple_pos` (`tag_poses_to_cma_woody`). Requires `branch_pose_4x4` / `spur_pose_4x4` / `apple_pose_4x4`. No `woody_end__*` / `stem_apple` / `support` woody columns. `build_bending_angles` uses the two chords. Collector does not require `woody_end`. `STATE_VECTOR` width matches 2 junctions × start + 2 angles. Sim collect parquet `junction_names == ["primary_spur", "spur_stem"]`. |
 | 3 | `_scalar_hold_number` from `hold_index` even if `hold_number` is length-4. Scorer one-hot still works. |
 
 Existing woody-end tests (`test_mmd_features`, `test_trajectory_store`, `test_real_to_batched_sysid`, gym MSE helpers) update to the new contract; do not keep dual start+end scoring paths.

@@ -39,17 +39,18 @@ Columns are concatenated in this order:
 | `tcp_velocity` | 6 | TCP linear (3) + angular (3) velocity |
 | `tcp_pos` | 3 | TCP position |
 | `apple_pos` | 3 | Apple / fruit body position |
-| `woody_part_start_pos` | \(3 N_j\) | Junction endpoint starts, flattened in `junction_names` order |
-| `woody_part_end_pos` | \(3 N_j\) | Junction endpoint ends, same order |
+| `woody_part_start_pos` | \(3 N_j\) | Junction start anchors, flattened in `junction_names` order |
 | `woody_bending_angles` | \(N_j\) | Per-junction chord deflection (rad) from **frame-0 rest** |
 
-\(N_j = \texttt{len(junction\_names)}\).
+\(N_j = \texttt{len(junction\_names)}\) (CMA bags use \(N_j=2\): `primary_spur`, `spur_stem`).
 
 **Total state dim**
 
 \[
-D_s = 6+6+3+3 + 3N_j + 3N_j + N_j = 18 + 7 N_j
+D_s = 6+6+3+3 + 3N_j + N_j = 18 + 4 N_j
 \]
+
+For \(N_j=2\): \(D_s = 26\).
 
 `action` is still required in episode bags (`REQUIRED_ARRAY_KEYS`) for replay
 drive and collector validation, but it is **not** concatenated into score-time
@@ -58,10 +59,12 @@ drive and collector validation, but it is **not** concatenated into score-time
 
 ### Woody geometry and bending angles
 
-- Endpoints come from Sim observations (or real markers at rod start/end).
-- For junction \(j\), chord direction at frame \(t\): \(\hat d_t = (p_{\mathrm{end}}-p_{\mathrm{start}}) / \|\cdot\|\).
+- Starts come from sim parent anchors (or real tag-pose translations at convert).
+- Chords are **not** per-junction `end − start` (sim FIXED anchors are ~coincident). After the woody schema slice, two angles use:
+  - spur (`primary_spur`): \(\hat d_t = (p_{\mathrm{start[spur\_stem]}} - p_{\mathrm{start[primary\_spur]}}) / \|\cdot\|\)
+  - stem (`spur_stem`): \(\hat d_t = (p_{\mathrm{apple}} - p_{\mathrm{start[spur\_stem]}}) / \|\cdot\|\)
 - `woody_bending_angles[j,t] = \arccos(\mathrm{clip}(\hat d_t \cdot \hat d_0, -1, 1))`, with frame 0 forced to 0.
-- Full ArUco marker orientations (twist about the chord) are **not** in the bag today; endpoint positions + angles are sufficient for bend stiffness ranking.
+- Full ArUco marker orientations (twist about the chord) are **not** in the bag today; start positions + angles are sufficient for bend stiffness ranking. `woody_part_end_pos` is not in `STATE_VECTOR_FIELDS`.
 
 ### Auxiliary arrays (not columns of \(s\), but required for bagging)
 
@@ -191,14 +194,14 @@ Current shipped bags are built for **§2.1 quasi-static hold** scoring of **bend
 | ------- | ----------------------------------- | ----------------------------------------------------- |
 | `ft_wrist` | Critical — equilibrium \(F \approx Kx\) | High — peaks / lag / decay during move→settle |
 | `tcp_pos`, `apple_pos` | Critical — deflection | High — path, overshoot, settling |
-| Woody start/end + bending angles | High (sim / marked rods) — segment shape | High — time series of chord deflection |
+| Woody starts + bending angles | High (sim / marked rods) — segment shape | High — time series of chord deflection |
 | `tcp_velocity` | Low on settled holds | Critical on move / early hold ring-down |
 | `action` | Not in score-time `STATE_VECTOR` (replay drive only) | Medium–high — same command, different response |
 | `hold_id` one-hot | Medium — keeps amplitude steps distinct | Lower priority if phase/context labeled elsewhere |
 | `dir_idx` one-hot (pooling) | Medium–high — preserves anisotropic \(K(\hat u)\) | Medium — avoid mixing directions in one OT bag |
 | Hold medians / hold-only \(\Delta s\) | Strong for \(K(x)\) staircase | Weak for \(B\) — prefer frame \(\Delta s\) on move |
 
-Real-world ArUco at woody start/end maps cleanly onto `woody_part_*_pos`; marker **orientation** (torsion) is optional and not required for the current feature set.
+Real-world tag-pose translations map onto `woody_part_start_pos` and `apple_pos` at convert; marker **orientation** (torsion) is optional and not required for the current feature set.
 
 ---
 

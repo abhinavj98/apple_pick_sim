@@ -145,8 +145,6 @@ Do not emit `stem_apple` or any `woody_end__*` column. Bit-1 pre-grasp rebuild m
 
 Must change **sim collect + collector + `STATE_VECTOR`**, not convert-only. Otherwise live candidate bags still emit three joints × start+end.
 
-Must change **sim collect + collector + `STATE_VECTOR`**, not convert-only. Otherwise live candidate bags still emit three joints × start+end.
-
 **Grid woody MSE** that iterates end positions: either use the two starts + `apple_pos`, or skip end-based MSE. Do not resurrect `woody_end` in the bag to keep old MSE.
 
 ---

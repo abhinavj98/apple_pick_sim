@@ -10,11 +10,29 @@ from apple_pick_sim.system_id.mmd_features import (
     build_bending_angles,
     build_state_matrix,
     build_transition_features_by_direction,
+    cma_woody_junctions_from_env,
     combine_transition_features,
     flatten_woody_positions,
     iter_kept_hold_segments,
     replay_obs_dict_from_sysid_numpy,
 )
+
+
+def test_cma_woody_junctions_filters_support():
+    assert cma_woody_junctions_from_env(
+        [
+            "primary_support_left",
+            "primary_support_right",
+            "primary_spur",
+            "spur_stem",
+            "stem_apple",
+        ]
+    ) == ["primary_spur", "spur_stem"]
+
+
+def test_cma_woody_junctions_from_env_raises_when_missing():
+    with pytest.raises(ValueError, match="missing"):
+        cma_woody_junctions_from_env(["primary_support_left", "primary_spur"])
 
 
 def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None) -> dict:

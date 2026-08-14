@@ -14,6 +14,7 @@ from apple_pick_sim.system_id.batched_trajectory_store import (
     BATCHED_REQUIRED_FRAME_COLUMNS,
     BatchedEpisodeWriter,
     BatchedSysIdDataset,
+    PRE_WELD_STEP_IDX,
     SCHEMA_VERSION,
     batched_dataset_exists,
     episode_filename,
@@ -280,6 +281,66 @@ def test_load_episode_obs_arrays_skips_missing_woody_end_columns(tmp_path: Path)
     arrays = BatchedSysIdDataset(tmp_path).load_episode_obs_arrays(0, 0)
     assert set(arrays["woody_part_start_pos"]) == {"joint_0", "joint_1"}
     assert arrays["woody_part_end_pos"] == {}
+
+
+def test_load_episode_obs_arrays_fills_nan_when_end_only_on_pre_weld_row(tmp_path: Path):
+    """Pre-weld row may keep full-set ends for geometry rebuild; trajectory rows don't.
+
+    The reader must not crash on the resulting partial (per-row-null) column;
+    non-pre-weld rows should read back as NaN instead.
+    """
+    writer = BatchedEpisodeWriter(episode_id="pre-weld-ends-only")
+    pre_weld_obs = _synthetic_obs(n_woody=2)
+    writer.record_step(
+        step_idx=PRE_WELD_STEP_IDX,
+        sim_time=0.0,
+        phase="pre_weld",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=pre_weld_obs,
+    )
+    trajectory_obs = _synthetic_obs(n_woody=2)
+    del trajectory_obs["woody_part_end_pos"]
+    writer.record_step(
+        step_idx=0,
+        sim_time=1 / 60.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=trajectory_obs,
+    )
+    writer.save(
+        tmp_path / episode_filename(0, 0),
+        _synthetic_episode_metadata(episode_id="pre-weld-ends-only"),
+    )
+    write_manifest(
+        tmp_path,
+        command_argv=["test"],
+        collection={"seed": 0, "num_structures": 1, "num_directions": 1},
+        structures=[
+            {
+                "structure_idx": 0,
+                "params_fingerprint": "{}",
+                "junction_names": ["joint_0", "joint_1"],
+                "n_woody_parts": 2,
+            }
+        ],
+        episodes=[
+            {
+                "structure_idx": 0,
+                "direction_idx": 0,
+                "env_idx": 0,
+                "filename": episode_filename(0, 0),
+                "episode_id": "pre-weld-ends-only",
+                "n_frames": 2,
+            }
+        ],
+    )
+    arrays = BatchedSysIdDataset(tmp_path).load_episode_obs_arrays(0, 0)
+    end = arrays["woody_part_end_pos"]
+    assert set(end) == {"joint_0", "joint_1"}
+    np.testing.assert_allclose(end["joint_0"][0], pre_weld_obs["woody_part_end_pos"]["joint_0"])
+    assert np.all(np.isnan(end["joint_0"][1]))
 
 
 def test_materialize_legacy_episode_dir(tmp_path: Path):

@@ -9,6 +9,20 @@ import numpy as np
 
 CMA_WOODY_JUNCTIONS: tuple[str, str] = ("primary_spur", "spur_stem")
 
+
+def cma_woody_junctions_from_env(names: list[str]) -> list[str]:
+    """Filter an env's full T-junction ``names`` down to the CMA woody subset.
+
+    Real environments expose a larger T-junction set (e.g.
+    ``primary_support_left``, ``primary_support_right``, ``stem_apple``, ...).
+    CMA/MMD features only use ``CMA_WOODY_JUNCTIONS``; raise if either is missing.
+    """
+    have = set(names)
+    missing = [n for n in CMA_WOODY_JUNCTIONS if n not in have]
+    if missing:
+        raise ValueError(f"env junction_names missing {missing}; got {names}")
+    return list(CMA_WOODY_JUNCTIONS)
+
 STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "ft_wrist",
     "tcp_velocity",

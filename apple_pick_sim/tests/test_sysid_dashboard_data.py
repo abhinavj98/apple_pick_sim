@@ -90,6 +90,18 @@ def test_woody_endpoint_series_respects_junction_order_and_mask():
     np.testing.assert_allclose(series[1].xyz, [[41.0, 42.0, 43.0], [42.0, 43.0, 44.0]])
 
 
+def test_woody_endpoint_series_omits_end_when_missing():
+    """Bags no longer persist woody_part_end_pos; series should degrade to starts only."""
+    arrays = _dashboard_arrays()
+    del arrays["woody_part_end_pos"]
+    mask = build_frame_mask(arrays, direction=0, phases=("hold",))
+
+    series = woody_endpoint_series(arrays, mask)
+
+    assert [item.name for item in series] == ["joint_b start", "joint_a start"]
+    np.testing.assert_allclose(series[0].xyz, [[21.0, 22.0, 23.0], [22.0, 23.0, 24.0]])
+
+
 def test_hold_summaries_group_by_direction_and_amplitude():
     arrays = _dashboard_arrays()
 

@@ -21,6 +21,7 @@ from apple_pick_gym.batched_envs.real_batched_replay_build import (
     dataset_declares_vic_pose,
 )
 from apple_pick_gym.grid_viz_metrics import (
+    _woody_end_or_apple_2d,
     bend_stiffness_values_match,
     woody_segment_pos_mse_hold_aggregated,
     woody_segment_pos_mse_masked,
@@ -557,9 +558,9 @@ def trajectory_mse(
     if junction_names and _has_woody_for_scoring(replay, recorded, junction_names):
         for name in junction_names:
             start_rep = np.asarray(replay["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
-            end_rep = np.asarray(replay["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rep = _woody_end_or_apple_2d(replay, name, n)
             start_rec = np.asarray(recorded["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
-            end_rec = np.asarray(recorded["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rec = _woody_end_or_apple_2d(recorded, name, n)
             rep = np.concatenate([start_rep, end_rep], axis=1)
             rec = np.concatenate([start_rec, end_rec], axis=1)
             woody_mse[name] = _masked_mse(
@@ -607,15 +608,23 @@ def _has_woody_for_scoring(
     recorded: Mapping[str, Any],
     junction_names: list[str],
 ) -> bool:
-    for key in ("woody_part_start_pos", "woody_part_end_pos"):
-        for source in (replay, recorded):
-            woody = source.get(key)
-            if not isinstance(woody, dict):
+    """True when both sides have woody starts (ends optional; ``apple_pos`` fallback)."""
+    if not junction_names:
+        return False
+    for source in (replay, recorded):
+        woody_start = source.get("woody_part_start_pos")
+        if not isinstance(woody_start, dict):
+            return False
+        for name in junction_names:
+            if name not in woody_start:
                 return False
-            for name in junction_names:
-                if name not in woody:
-                    return False
-    return bool(junction_names)
+        woody_end = source.get("woody_part_end_pos")
+        has_full_end = isinstance(woody_end, dict) and all(
+            name in woody_end for name in junction_names
+        )
+        if not has_full_end and "apple_pos" not in source:
+            return False
+    return True
 
 
 def prepare_gt_mmd_context(
@@ -1056,11 +1065,30 @@ def _concat_replay_arrays(left: dict[str, Any], right: dict[str, Any]) -> dict[s
             name: _cat_1d_or_2d_for_woody(left["woody_part_start_pos"][name], right["woody_part_start_pos"][name])
             for name in junction_names
         },
-        "woody_part_end_pos": {
-            name: _cat_1d_or_2d_for_woody(left["woody_part_end_pos"][name], right["woody_part_end_pos"][name])
-            for name in junction_names
-        },
+        "woody_part_end_pos": _concat_woody_end_pos(left, right, junction_names),
         "junction_names": junction_names,
+    }
+
+
+def _concat_woody_end_pos(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    junction_names: list[str],
+) -> dict[str, np.ndarray]:
+    """Concatenate ``woody_part_end_pos`` when both sides have it; else empty.
+
+    Collector-produced arrays (``ReplayObservationCollector.to_arrays()``) no
+    longer emit ``woody_part_end_pos``; tolerate its absence instead of
+    resurrecting the column.
+    """
+    left_end = left.get("woody_part_end_pos")
+    right_end = right.get("woody_part_end_pos")
+    if not isinstance(left_end, dict) or not isinstance(right_end, dict):
+        return {}
+    return {
+        name: _cat_1d_or_2d_for_woody(left_end[name], right_end[name])
+        for name in junction_names
+        if name in left_end and name in right_end
     }
 
 

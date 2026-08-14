@@ -10,6 +10,7 @@ from apple_pick_gym.grid_viz_metrics import average_ranks
 from apple_pick_gym.grid_viz_metrics import bend_stiffness_values_match
 from apple_pick_gym.grid_viz_metrics import log_l2_distance_to_gt
 from apple_pick_gym.grid_viz_metrics import (
+    _woody_end_or_apple_2d,
     woody_segment_pos_mse_hold_aggregated,
     woody_segment_pos_mse_masked,
 )
@@ -151,9 +152,9 @@ def replay_vs_recorded_errors(
             ):
                 continue
             start_rep = np.asarray(replay["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
-            end_rep = np.asarray(replay["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rep = _woody_end_or_apple_2d(replay, name, n)
             start_rec = np.asarray(recorded["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
-            end_rec = np.asarray(recorded["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rec = _woody_end_or_apple_2d(recorded, name, n)
             rep = np.concatenate([start_rep, end_rep], axis=1)
             rec = np.concatenate([start_rec, end_rec], axis=1)
             woody_mse[name] = _masked_mse(

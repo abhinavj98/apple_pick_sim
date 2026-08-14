@@ -336,6 +336,15 @@ class BatchedSysIdDataset:
             return np.stack([np.asarray(row, dtype=np.float32).reshape(-1) for row in rows], axis=0)
 
         def _stack_woody(prefix: str) -> dict[str, np.ndarray]:
+            """Stack per-frame woody positions for ``junction_names``.
+
+            Trajectory frames no longer write ``woody_end__*`` columns (bags
+            must not persist ends); only the pre-weld row (``step_idx=-1``) may
+            still have them, for digital-twin geometry rebuild. Rows without a
+            value for an otherwise-present column are filled with NaN rather
+            than raising, so callers indexing the pre-weld frame specifically
+            still get real data.
+            """
             out: dict[str, np.ndarray] = {}
             for name in junction_names:
                 col = f"{prefix}{name}"
@@ -343,7 +352,12 @@ class BatchedSysIdDataset:
                     continue
                 rows = table.column(col).to_pylist()
                 out[name] = np.stack(
-                    [np.asarray(row, dtype=np.float32).reshape(3) for row in rows],
+                    [
+                        np.asarray(row, dtype=np.float32).reshape(3)
+                        if row is not None
+                        else np.full(3, np.nan, dtype=np.float32)
+                        for row in rows
+                    ],
                     axis=0,
                 )
             return out

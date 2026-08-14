@@ -50,6 +50,7 @@ from apple_pick_sim.system_id.mmd_features import (
     _stable_masked_segment,
     combine_transition_features,
     iter_kept_hold_segments,
+    n_junctions_from_episodes,
     replay_obs_dict_from_sysid_numpy,
 )
 from apple_pick_sim.system_id.manifest_sim_config import warn_manifest_sim_config_mismatch
@@ -653,9 +654,10 @@ def prepare_gt_mmd_context(
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
+    n_junctions = n_junctions_from_episodes(recorded_episodes)
     context: dict[int, MmdDirectionContext] = {}
     for direction, gt_features in gt_by_direction.items():
-        stats = fit_gt_normalization(gt_features)
+        stats = fit_gt_normalization(gt_features, n_junctions=n_junctions)
         gt_norm = apply_normalization(gt_features, stats)
         bandwidth = rbf_bandwidth_median(gt_norm)
         context[int(direction)] = MmdDirectionContext(

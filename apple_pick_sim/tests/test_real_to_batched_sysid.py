@@ -14,26 +14,29 @@ from apple_pick_sim.system_id.real_to_batched_sysid import (
     SIM_JUNCTION_NAMES,
     build_episode_metadata_from_real,
     build_fruiting_params_from_real,
-    compiler_woody_to_cma_starts,
     flat_woody_to_dicts,
     range_midpoint,
     rod_directions_from_woody,
     split_pregrasp_and_trajectory,
+    tag_poses_to_cma_woody,
 )
 
 VARIANCE = Path("apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json")
 
 
-def test_compiler_woody_to_cma_starts_maps_branch_and_spur():
-    branch = np.array([1.0, 2.0, 3.0])
-    spur = np.array([4.0, 5.0, 6.0])
-    apple = np.array([7.0, 8.0, 9.0])
-    start9 = np.concatenate([branch, branch, spur])
-    end9 = np.concatenate([spur, apple, apple])
-    got = compiler_woody_to_cma_starts(start9, end9)
-    assert set(got) == {"primary_spur", "spur_stem"}
-    np.testing.assert_allclose(got["primary_spur"], branch)
-    np.testing.assert_allclose(got["spur_stem"], spur)
+def test_tag_poses_to_cma_woody_maps_translations():
+    branch = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    spur = np.array([4.0, 5.0, 6.0], dtype=np.float32)
+    apple = np.array([7.0, 8.0, 9.0], dtype=np.float32)
+    starts, apple_pos = tag_poses_to_cma_woody(
+        _identity_pose_4x4(branch.tolist()),
+        _identity_pose_4x4(spur.tolist()),
+        _identity_pose_4x4(apple.tolist()),
+    )
+    assert set(starts) == {"primary_spur", "spur_stem"}
+    np.testing.assert_allclose(starts["primary_spur"], branch)
+    np.testing.assert_allclose(starts["spur_stem"], spur)
+    np.testing.assert_allclose(apple_pos, apple)
 
 
 def test_flat_woody_to_dicts_order():
@@ -227,6 +230,30 @@ def _identity_pose_4x4(pos: list[float]) -> list[float]:
     return [1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, z, 0.0, 0.0, 0.0, 1.0]
 
 
+_TAG_POSE_COLUMNS = ("branch_pose_4x4", "spur_pose_4x4", "apple_pose_4x4")
+
+
+def _skip_unless_tag_poses(src: Path) -> None:
+    names = set(pq.read_schema(src).names)
+    missing = [c for c in _TAG_POSE_COLUMNS if c not in names]
+    if missing:
+        pytest.skip(f"{src} missing tag pose columns {missing}")
+
+_WRENCH_EXPORT_KW = dict(
+    action=[1.0, -2.0, -3.0, -0.5, 0.1, -0.2],
+    action_semantics=(
+        "per-frame pose-control wrench [Fx, Fy, Fz, Tx, Ty, Tz] "
+        "computed from the current pose error and velocity"
+    ),
+    action_order=["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+    target_pose_4x4=_identity_pose_4x4([0.1, 0.2, 0.3]),
+    controller_gains={
+        "task_prop_gains": [100.0, 100.0, 100.0, 30.0, 30.0, 30.0],
+        "task_deriv_gains": [17.5, 17.5, 17.5, 9.5, 9.5, 9.5],
+    },
+)
+
+
 def _write_synthetic_real(
     path: Path,
     *,
@@ -242,27 +269,42 @@ def _write_synthetic_real(
     skip_tcp_pose_4x4: bool = False,
     hold_index: int | None = None,
     hold_number: list[float] | None = None,
+    include_tag_poses: bool = True,
+    tag_pose_columns: tuple[str, ...] | None = None,
+    include_woody_part_columns: bool = False,
+    packed_woody_start: list[float] | None = None,
+    packed_woody_end: list[float] | None = None,
 ) -> None:
     """Minimal real-episode-shaped parquet for native pre/post → batched meta."""
-    # Woody: compiler starts=[Branch,Branch,Spur], ends=[Spur,Apple,Apple].
     branch = [0.0, 1.0, 0.6]
     spur = [0.0, 1.0, 0.5]
     apple_pos = [0.0, 0.95, 0.38]
     tcp_pos = [0.0, 0.9, 0.4]
-    woody_start = branch + branch + spur
-    woody_end = spur + apple_pos + apple_pos
+    snap_woody_start = branch + branch + spur
+    snap_woody_end = spur + apple_pos + apple_pos
+    woody_start = packed_woody_start if packed_woody_start is not None else snap_woody_start
+    woody_end = packed_woody_end if packed_woody_end is not None else snap_woody_end
     joint = [0.1 * j for j in range(7)]
-    base_row = {
+    base_row: dict = {
         "step_idx": 0,
         "joint_pos": joint,
         "tcp_pos": tcp_pos,
         "apple_pos": apple_pos,
-        "woody_part_start_pos": woody_start,
-        "woody_part_end_pos": woody_end,
         "excitation_direction": [0.0, -1.0, 0.0],
         "tcp_velocity": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         "ft_wrist": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     }
+    if include_woody_part_columns:
+        base_row["woody_part_start_pos"] = list(woody_start)
+        base_row["woody_part_end_pos"] = list(woody_end)
+    if include_tag_poses:
+        pose_cols = tag_pose_columns if tag_pose_columns is not None else _TAG_POSE_COLUMNS
+        if "branch_pose_4x4" in pose_cols:
+            base_row["branch_pose_4x4"] = _identity_pose_4x4(branch)
+        if "spur_pose_4x4" in pose_cols:
+            base_row["spur_pose_4x4"] = _identity_pose_4x4(spur)
+        if "apple_pose_4x4" in pose_cols:
+            base_row["apple_pose_4x4"] = _identity_pose_4x4(apple_pos)
     if action is not None:
         base_row["action"] = list(action)
     if target_pose_4x4 is not None:
@@ -282,8 +324,8 @@ def _write_synthetic_real(
     rows = [dict(base_row), {**base_row, "step_idx": 1}]
     table = pa.Table.from_pylist(rows)
     snap = {
-        "woody_part_start_pos": woody_start,
-        "woody_part_end_pos": woody_end,
+        "woody_part_start_pos": snap_woody_start,
+        "woody_part_end_pos": snap_woody_end,
         "woody_bending_angles": [0.0, 0.0, 0.0],
         "apple_pos": apple_pos,
         "apple_pose_4x4": _identity_pose_4x4(apple_pos),
@@ -573,6 +615,117 @@ def test_export_writes_two_woody_starts_and_no_ends(tmp_path: Path):
     np.testing.assert_allclose(
         arrays["apple_pos"][0], [0.0, 0.95, 0.38], atol=1e-6
     )
+    np.testing.assert_allclose(
+        arrays["woody_part_start_pos"]["primary_spur"][0], [0.0, 1.0, 0.6], atol=1e-6
+    )
+    np.testing.assert_allclose(
+        arrays["woody_part_start_pos"]["spur_stem"][0], [0.0, 1.0, 0.5], atol=1e-6
+    )
+
+
+def _export_wrench(tmp_path: Path, name: str, **extra):
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = tmp_path / f"{name}.parquet"
+    _write_synthetic_real(src, **_WRENCH_EXPORT_KW, **extra)
+    out = tmp_path / f"{name}_out"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    return src, out
+
+
+def test_export_tag_poses_without_woody_part_columns(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+
+    _src, out = _export_wrench(tmp_path, "poses_only")
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    np.testing.assert_allclose(
+        arrays["woody_part_start_pos"]["primary_spur"][0], [0.0, 1.0, 0.6], atol=1e-6
+    )
+    np.testing.assert_allclose(
+        arrays["woody_part_start_pos"]["spur_stem"][0], [0.0, 1.0, 0.5], atol=1e-6
+    )
+    np.testing.assert_allclose(arrays["apple_pos"][0], [0.0, 0.95, 0.38], atol=1e-6)
+
+
+def test_export_ignores_woody_part_columns_when_tag_poses_present(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+
+    _src, out = _export_wrench(
+        tmp_path,
+        "ignore_pack",
+        include_woody_part_columns=True,
+        packed_woody_start=[9.0] * 9,
+        packed_woody_end=[8.0] * 9,
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    np.testing.assert_allclose(
+        arrays["woody_part_start_pos"]["primary_spur"][0], [0.0, 1.0, 0.6], atol=1e-6
+    )
+    np.testing.assert_allclose(
+        arrays["woody_part_start_pos"]["spur_stem"][0], [0.0, 1.0, 0.5], atol=1e-6
+    )
+    np.testing.assert_allclose(arrays["apple_pos"][0], [0.0, 0.95, 0.38], atol=1e-6)
+
+
+def test_export_missing_tag_poses_raises(tmp_path: Path):
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = tmp_path / "no_poses.parquet"
+    _write_synthetic_real(
+        src,
+        **_WRENCH_EXPORT_KW,
+        include_tag_poses=False,
+        include_woody_part_columns=True,
+    )
+    with pytest.raises(ValueError, match="branch_pose_4x4"):
+        export_real_episode_to_batched_dataset(
+            src, fixture_path=VARIANCE, output_dir=tmp_path / "out", overwrite=True
+        )
+
+
+def test_export_partial_tag_poses_raises(tmp_path: Path):
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = tmp_path / "partial_poses.parquet"
+    _write_synthetic_real(
+        src,
+        **_WRENCH_EXPORT_KW,
+        tag_pose_columns=("spur_pose_4x4",),
+    )
+    with pytest.raises(ValueError, match="branch_pose_4x4"):
+        export_real_episode_to_batched_dataset(
+            src, fixture_path=VARIANCE, output_dir=tmp_path / "out", overwrite=True
+        )
+
+
+def test_export_s01_d01_spur_stem_differs_from_primary_spur(tmp_path: Path):
+    """Real s01: skip unless tag poses exist; spur and branch translations must differ."""
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = Path("robot_replay/new_data/s01-d01.parquet")
+    if not src.is_file():
+        pytest.skip("missing robot_replay/new_data/s01-d01.parquet")
+    _skip_unless_tag_poses(src)
+
+    out = tmp_path / "batched_s01"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    primary = arrays["woody_part_start_pos"]["primary_spur"]
+    spur = arrays["woody_part_start_pos"]["spur_stem"]
+    assert float(np.max(np.linalg.norm(primary - spur, axis=1))) > 0.05
 
 
 def test_export_real_to_batched_dataset_loads(tmp_path: Path):
@@ -585,6 +738,7 @@ def test_export_real_to_batched_dataset_loads(tmp_path: Path):
     src = Path("robot_replay/s02-d00.parquet")
     if not src.is_file():
         pytest.skip("missing robot_replay/s02-d00.parquet")
+    _skip_unless_tag_poses(src)
 
     out = tmp_path / "batched_real"
     export_real_episode_to_batched_dataset(
@@ -622,6 +776,7 @@ def test_export_s00_packs_vic_pose_from_target_pose(tmp_path: Path):
     src = Path("robot_replay/s00-d00.parquet")
     if not src.is_file():
         pytest.skip("missing robot_replay/s00-d00.parquet")
+    _skip_unless_tag_poses(src)
 
     out = tmp_path / "batched_s00_vic_pose"
     export_real_episode_to_batched_dataset(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -32,7 +32,7 @@ STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "woody_bending_angles",
 )
 
-STATE_VECTOR_PHYS_SCALE: tuple[float, ...] = (
+_STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     # ft_wrist F
     3.0,
     3.0,
@@ -57,29 +57,61 @@ STATE_VECTOR_PHYS_SCALE: tuple[float, ...] = (
     0.02,
     0.02,
     0.02,
-    # woody primary_spur, spur_stem (junction order; both 0.02)
-    0.02,
-    0.02,
-    0.02,
-    0.02,
-    0.02,
-    0.02,
-    # woody_bending_angles
-    0.05,
-    0.05,
+)
+WOODY_START_PHYS_SCALE = 0.02
+BEND_ANGLE_PHYS_SCALE = 0.05
+
+
+def state_vector_phys_scale(n_junctions: int) -> np.ndarray:
+    """Fixed physical scales for one STATE_VECTOR row at ``n_junctions``.
+
+    Woody XYZ and bend scales are uniform across junctions. CMA production
+    uses ``n_junctions=2``; the exported ``STATE_VECTOR_PHYS_SCALE`` tuple is
+    that instance.
+    """
+    n = int(n_junctions)
+    if n < 1:
+        raise ValueError(f"n_junctions must be >= 1, got {n_junctions!r}")
+    prefix = np.asarray(_STATE_VECTOR_PREFIX_PHYS_SCALE, dtype=np.float64)
+    woody = np.full(3 * n, WOODY_START_PHYS_SCALE, dtype=np.float64)
+    bend = np.full(n, BEND_ANGLE_PHYS_SCALE, dtype=np.float64)
+    return np.concatenate([prefix, woody, bend])
+
+
+STATE_VECTOR_PHYS_SCALE: tuple[float, ...] = tuple(
+    float(x) for x in state_vector_phys_scale(n_junctions=2)
 )
 
 
-def transition_feature_scale(n_features: int) -> np.ndarray:
+def transition_feature_scale(n_features: int, *, n_junctions: int = 2) -> np.ndarray:
     """Return divisor vector for [s, Δs, trailing one-hots]."""
-    state = np.asarray(STATE_VECTOR_PHYS_SCALE, dtype=np.float64)
+    state = state_vector_phys_scale(n_junctions)
     state_dim = int(state.size)
     if n_features < 2 * state_dim:
         raise ValueError(
-            f"transition features width {n_features} < 2*state_dim={2 * state_dim}"
+            f"transition features width {n_features} < 2*state_dim={2 * state_dim} "
+            f"(n_junctions={int(n_junctions)})"
         )
     n_extra = int(n_features) - 2 * state_dim
     return np.concatenate([state, state, np.ones(n_extra, dtype=np.float64)])
+
+
+def n_junctions_from_episodes(episodes: Sequence[Mapping[str, Any]]) -> int:
+    """Return the shared woody-junction count from recorded/replay bags."""
+    if not episodes:
+        raise ValueError("need at least one episode to resolve n_junctions")
+    counts: list[int] = []
+    for episode in episodes:
+        names = episode.get("junction_names")
+        if names is None:
+            raise KeyError("episode missing junction_names")
+        counts.append(len(names))
+    if len(set(counts)) != 1:
+        raise ValueError(f"mixed junction counts across episodes: {counts}")
+    n = int(counts[0])
+    if n < 1:
+        raise ValueError(f"n_junctions must be >= 1, got {n}")
+    return n
 
 REQUIRED_ARRAY_KEYS: tuple[str, ...] = (
     "ft_wrist",

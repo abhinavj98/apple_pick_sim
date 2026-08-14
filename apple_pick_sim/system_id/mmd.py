@@ -24,23 +24,29 @@ def _as_feature_matrix(values: np.ndarray, *, name: str) -> np.ndarray:
     return arr
 
 
-def fit_gt_normalization(gt: np.ndarray, eps: float = 1.0e-6) -> NormalizationStats:
+def fit_gt_normalization(
+    gt: np.ndarray,
+    eps: float = 1.0e-6,
+    *,
+    n_junctions: int = 2,
+) -> NormalizationStats:
     """Fit GT mean; use fixed physical scales as divisors.
 
     ``eps`` is retained for call-site compatibility but ignored: scale no longer
-    comes from GT std. Trailing columns beyond ``2 * len(STATE_VECTOR_PHYS_SCALE)``
-    (hold/dir one-hots) use mean=0 and scale=1.
+    comes from GT std. Trailing columns beyond ``2 * state_dim(n_junctions)``
+    (hold/dir one-hots) use mean=0 and scale=1. Default ``n_junctions=2`` is the
+    CMA woody pair; pass the bag's junction count for 1-junction MMD examples.
     """
     del eps  # unused; kept for signature compatibility
     from apple_pick_sim.system_id.mmd_features import (
-        STATE_VECTOR_PHYS_SCALE,
+        state_vector_phys_scale,
         transition_feature_scale,
     )
 
     gt_arr = _as_feature_matrix(gt, name="gt")
     mean = np.mean(gt_arr, axis=0)
-    scale = transition_feature_scale(gt_arr.shape[1])
-    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    scale = transition_feature_scale(gt_arr.shape[1], n_junctions=n_junctions)
+    state_dim = int(state_vector_phys_scale(n_junctions).size)
     mean = mean.copy()
     mean[2 * state_dim :] = 0.0
     return NormalizationStats(mean=mean, std=scale)

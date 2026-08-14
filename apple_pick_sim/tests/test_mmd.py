@@ -73,6 +73,49 @@ def test_trailing_onehot_is_not_mean_centered():
     np.testing.assert_allclose(out[0, -4:], [1, 0, 0, 0])
 
 
+def _state_dim_for_junctions(n_junctions: int) -> int:
+    # ft(6)+vel(6)+tcp(3)+apple(3)+woody(3J)+bend(J)
+    return 18 + 4 * int(n_junctions)
+
+
+def test_fit_gt_normalization_scales_one_junction_woody_and_bend():
+    n_junctions = 1
+    state_dim = _state_dim_for_junctions(n_junctions)
+    n = 2 * state_dim
+    gt = np.zeros((2, n), dtype=np.float64)
+    gt[:, 0] = [0.0, 6.0]  # Fx mean 3 N
+
+    stats = fit_gt_normalization(gt, n_junctions=n_junctions)
+
+    assert stats.std.shape == (n,)
+    np.testing.assert_allclose(stats.std[0], 3.0)
+    np.testing.assert_allclose(stats.std[18:21], 0.02)
+    assert stats.std[21] == pytest.approx(0.05)
+    np.testing.assert_allclose(stats.std[state_dim : state_dim + 6], stats.std[:6])
+    cand = np.zeros((1, n), dtype=np.float64)
+    cand[0, 0] = 6.0
+    out = apply_normalization(cand, stats)
+    assert out[0, 0] == pytest.approx(1.0)
+
+
+def test_fit_gt_normalization_does_not_treat_extra_junctions_as_onehots():
+    n_junctions = 3
+    state_dim = _state_dim_for_junctions(n_junctions)
+    n = 2 * state_dim
+    gt = np.full((2, n), 0.4, dtype=np.float64)
+
+    stats = fit_gt_normalization(gt, n_junctions=n_junctions)
+
+    woody0 = 18
+    last_bend = state_dim - 1
+    np.testing.assert_allclose(stats.std[woody0 : woody0 + 9], 0.02)
+    np.testing.assert_allclose(stats.std[woody0 + 9 : state_dim], 0.05)
+    np.testing.assert_allclose(stats.mean[last_bend], 0.4)
+    np.testing.assert_allclose(stats.std[last_bend], 0.05)
+    np.testing.assert_allclose(stats.mean[state_dim + last_bend], 0.4)
+    np.testing.assert_allclose(stats.std[state_dim + last_bend], 0.05)
+
+
 def test_rbf_bandwidth_uses_median_pairwise_distance():
     gt_norm = np.array(
         [

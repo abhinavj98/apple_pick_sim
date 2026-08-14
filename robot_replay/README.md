@@ -119,6 +119,12 @@ The converter is a **thin adapter** over the settle-viewer native builders
 - **Bit 2:** `--dataset-out` → 1×1 `batched_sysid_v1` dataset (`manifest.json` +
   `episodes/s00_d00.parquet`) for trajectory viz / FR3 replay.
 
+Bit 2 Sinkhorn woody/apple come from table columns `branch_pose_4x4`,
+`spur_pose_4x4`, and `apple_pose_4x4` (translations). Convert **raises** if any
+of those is missing. Packed `woody_part_start_pos` / `woody_part_end_pos` on the
+source file are ignored. Converted bags still write `woody_start__primary_spur`,
+`woody_start__spur_stem`, and `apple_pos`.
+
 Parity gate (native vs convert):
 
 ```bash

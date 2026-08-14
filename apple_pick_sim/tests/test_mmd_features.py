@@ -7,6 +7,7 @@ import pytest
 
 from apple_pick_sim.system_id.mmd_features import (
     ReplayObservationCollector,
+    STATE_VECTOR_PHYS_SCALE,
     build_bending_angles,
     build_state_matrix,
     build_transition_features_by_direction,
@@ -149,6 +150,11 @@ def test_build_state_matrix_uses_exact_feature_order():
     )
     assert state.shape == (1, expected.size)
     np.testing.assert_allclose(state[0], expected)
+
+
+def test_state_vector_phys_scale_length_matches_two_junction_state_matrix():
+    arrays = _arrays_for_steps(steps=1, junction_names=["joint_b", "joint_a"])
+    assert len(STATE_VECTOR_PHYS_SCALE) == build_state_matrix(arrays).shape[1]
 
 
 def test_transition_features_are_hold_only_per_direction_and_segment():

@@ -77,7 +77,7 @@ Derived from measured GT statistics on `s09-d00` (real hold std, real pull ampli
 | `woody_bending_angles` (primary_spur, spur_stem) | 2 | 0.05 rad | ~hold mean/spread (~0.05–0.1 rad) |
 | hold one-hot | n_holds | 1 (no centering) | categorical, not physical |
 
-Column order matches `STATE_VECTOR_FIELDS` after dropping `action`: `ft_wrist(6) → tcp_velocity(6) → tcp_pos(3) → apple_pos(3) → woody_part_start_pos(6, primary_spur then spur_stem) → woody_bending_angles(2)`, mirrored for the `Δs` half, then hold one-hot appended.
+Column order matches `STATE_VECTOR_FIELDS` after dropping `action`: `ft_wrist(6) → tcp_velocity(6) → tcp_pos(3) → apple_pos(3) → woody_part_start_pos(3J) → woody_bending_angles(J)`, mirrored for the `Δs` half, then hold one-hot appended. Woody XYZ (`0.02`) and bend (`0.05`) tile across junctions; `STATE_VECTOR_PHYS_SCALE` is the CMA `J=2` instance (length 26). `fit_gt_normalization(..., n_junctions=)` must match the bag so `J≠2` does not treat extra woody/bend columns as one-hots.
 
 ### 4. Blast radius / stale path note
 

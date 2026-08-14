@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-08-13 |
+| **Last updated** | 2026-08-14 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 | **Active work**  | **[M4].0 feature alignment Done** (slices 0–3); next: trusted Cartesian ranking → CMA; V.5.3 held-out deferred |
@@ -42,7 +42,7 @@
 
 ## Current focus
 
-**Next slice:** **M4.0 trusted Cartesian ranking** (then CMA on the same builder). **Feature alignment Done** per `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md` slices 0–3: USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. **No sim EMA/LPF. Full 19D `action` in Sinkhorn.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
+**Next slice:** **M4.0 trusted Cartesian ranking** (then CMA on the same builder). **Feature alignment Done** per `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md` slices 0–3: USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`** (see `docs/superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md`). Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
 
 **Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see `docs/youngs-modulus-sysid.md`.
 
@@ -60,7 +60,7 @@
 - **Slice 1:** Convert `R(tcp) @` logged F and τ; raise if `tcp_pose_4x4` missing; score converted `ft_wrist` (not raw); **no sim EMA/LPF**
 - **Slice 2:** Compiler Branch/Spur/Apple → two woody starts + `apple_pos`; drop `woody_end` from sys-ID bag / collector / `STATE_VECTOR`
 - **Slice 3:** Scalar `hold_number` from `hold_index`; one-hot only at score time
-- **Not in scope:** pose-only `action[0:7]` Sinkhorn; sim F/T low-pass; plumbing spec score-time F/T+LPF plan (superseded)
+- **Not in scope:** scoring `action` (including pose-only `action[0:7]`); sim F/T low-pass; plumbing spec score-time F/T+LPF plan (superseded)
 
 **Out of scope (M4.0 remaining / slice 2+):**
 

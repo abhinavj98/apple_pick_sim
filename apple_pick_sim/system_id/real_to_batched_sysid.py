@@ -58,14 +58,44 @@ def flat_woody_to_dicts(
     return starts, ends
 
 
-def compiler_woody_to_cma_starts(start9: Any, end9: Any) -> dict[str, np.ndarray]:
-    """Map compiler Branch/Spur/Apple length-9 packing to two CMA woody starts."""
-    start = np.asarray(start9, dtype=np.float32).reshape(9)
-    end = np.asarray(end9, dtype=np.float32).reshape(9)
+def tag_poses_to_cma_woody(
+    branch_pose_4x4: Any,
+    spur_pose_4x4: Any,
+    apple_pose_4x4: Any,
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Branch/Spur/Apple SE(3) translations → CMA woody starts + apple_pos."""
+    from apple_pick_sim.system_id.real_post_grasp_plan import pose_4x4_to_pos_quat
+
+    branch_pos, _ = pose_4x4_to_pos_quat(branch_pose_4x4)
+    spur_pos, _ = pose_4x4_to_pos_quat(spur_pose_4x4)
+    apple_pos, _ = pose_4x4_to_pos_quat(apple_pose_4x4)
     return {
-        "primary_spur": start[0:3].copy(),
-        "spur_stem": end[0:3].copy(),
-    }
+        "primary_spur": np.asarray(branch_pos, dtype=np.float32),
+        "spur_stem": np.asarray(spur_pos, dtype=np.float32),
+    }, np.asarray(apple_pos, dtype=np.float32)
+
+
+_TAG_POSE_COLUMNS: tuple[str, str, str] = (
+    "branch_pose_4x4",
+    "spur_pose_4x4",
+    "apple_pose_4x4",
+)
+
+
+def _require_tag_pose_columns(table: Any, path: Path) -> None:
+    missing = [name for name in _TAG_POSE_COLUMNS if name not in table.column_names]
+    if missing:
+        raise ValueError(
+            f"{path}: convert Sinkhorn woody/apple requires tag pose columns "
+            f"{list(_TAG_POSE_COLUMNS)}; missing {missing}"
+        )
+
+
+def _pose_cell(table: Any, name: str, row_i: int, path: Path) -> Any:
+    raw = table.column(name)[row_i].as_py()
+    if raw is None:
+        raise ValueError(f"{path}: {name} is null at row {row_i}")
+    return raw
 
 
 def rod_directions_from_woody(
@@ -570,7 +600,9 @@ def export_real_episode_to_batched_dataset(
     """Write a 1×1 ``batched_sysid_v1`` dataset from one real-world parquet.
 
     Uses bit-1 metadata builders for episode schema metadata and maps trajectory
-    rows into batched frame columns (including per-junction woody columns).
+    rows into batched frame columns. Sinkhorn woody/apple come from
+    ``branch_pose_4x4`` / ``spur_pose_4x4`` / ``apple_pose_4x4`` translations
+    (source ``woody_part_*`` packing is ignored).
 
     When real ``action`` is a pose-control wrench, packs a 19D ``vic_pose``
     action from ``target_pose_4x4`` + ``dump.controller_gains`` instead of
@@ -598,6 +630,7 @@ def export_real_episode_to_batched_dataset(
             "fruiting_system_params": json.dumps(params_blob, sort_keys=True),
         }
     table = pq.read_table(path)
+    _require_tag_pose_columns(table, path)
 
     dm_raw = pq.read_metadata(path).schema.to_arrow_schema().metadata or {}
     dm_blob = dm_raw.get(b"dataset_metadata")
@@ -668,7 +701,6 @@ def export_real_episode_to_batched_dataset(
             ).reshape(6)
 
         tcp_pos = np.asarray(table.column("tcp_pos")[i].as_py(), dtype=np.float32).reshape(3)
-        apple_pos = np.asarray(table.column("apple_pos")[i].as_py(), dtype=np.float32).reshape(3)
         if pack_vic_pose:
             if "tcp_pose_4x4" not in table.column_names:
                 raise ValueError(
@@ -683,10 +715,12 @@ def export_real_episode_to_batched_dataset(
             _, tcp_quat = pose_4x4_to_pos_quat(table.column("tcp_pose_4x4")[i].as_py())
         else:
             tcp_quat = (0.0, 0.0, 0.0, 1.0)
-        if "apple_pose_4x4" in table.column_names:
-            _, apple_quat = pose_4x4_to_pos_quat(table.column("apple_pose_4x4")[i].as_py())
-        else:
-            apple_quat = (0.0, 0.0, 0.0, 1.0)
+
+        branch_pose = _pose_cell(table, "branch_pose_4x4", i, path)
+        spur_pose = _pose_cell(table, "spur_pose_4x4", i, path)
+        apple_pose = _pose_cell(table, "apple_pose_4x4", i, path)
+        woody_starts, apple_pos = tag_poses_to_cma_woody(branch_pose, spur_pose, apple_pose)
+        _, apple_quat = pose_4x4_to_pos_quat(apple_pose)
 
         if "joint_pos" in table.column_names:
             joint_q = np.asarray(table.column("joint_pos")[i].as_py(), dtype=np.float32).reshape(7)
@@ -696,10 +730,6 @@ def export_real_episode_to_batched_dataset(
             ).reshape(7)
         else:
             joint_q = np.zeros(7, dtype=np.float32)
-
-        start9 = table.column("woody_part_start_pos")[i].as_py()
-        end9 = table.column("woody_part_end_pos")[i].as_py()
-        woody_starts = compiler_woody_to_cma_starts(start9, end9)
 
         if "excitation_direction" in table.column_names:
             exc = np.asarray(

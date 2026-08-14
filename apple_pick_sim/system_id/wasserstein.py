@@ -9,7 +9,10 @@ from typing import Any
 import numpy as np
 
 from apple_pick_sim.system_id.mmd import NormalizationStats, apply_normalization, fit_gt_normalization
-from apple_pick_sim.system_id.mmd_features import combine_transition_features
+from apple_pick_sim.system_id.mmd_features import (
+    combine_transition_features,
+    n_junctions_from_episodes,
+)
 
 SINKHORN_P = 2
 SINKHORN_BLUR = 1.0
@@ -184,9 +187,10 @@ def prepare_gt_wasserstein_context(
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
+    n_junctions = n_junctions_from_episodes(recorded_episodes)
     context: dict[int, WassersteinDirectionContext] = {}
     for direction, gt_features in gt_by_direction.items():
-        stats = fit_gt_normalization(gt_features)
+        stats = fit_gt_normalization(gt_features, n_junctions=n_junctions)
         gt_norm = apply_normalization(gt_features, stats)
         context[int(direction)] = WassersteinDirectionContext(gt_norm=gt_norm, stats=stats)
     return context
@@ -310,9 +314,10 @@ def prepare_gt_wasserstein_scoring_context(
     if not per_direction_features:
         raise ValueError("No valid hold-only GT transition features were found.")
 
+    n_junctions = n_junctions_from_episodes(recorded_episodes)
     per_direction: dict[int, WassersteinDirectionContext] = {}
     for direction, gt_features in per_direction_features.items():
-        stats = fit_gt_normalization(gt_features)
+        stats = fit_gt_normalization(gt_features, n_junctions=n_junctions)
         gt_norm = apply_normalization(gt_features, stats)
         per_direction[int(direction)] = WassersteinDirectionContext(
             gt_norm=gt_norm, stats=stats
@@ -334,7 +339,7 @@ def prepare_gt_wasserstein_scoring_context(
     if not pooled_features:
         raise ValueError("No valid hold-only GT transition features were found.")
     pooled_raw = pooled_features[POOLED_DIRECTION_KEY]
-    pooled_stats = fit_gt_normalization(pooled_raw)
+    pooled_stats = fit_gt_normalization(pooled_raw, n_junctions=n_junctions)
     pooled = WassersteinDirectionContext(
         gt_norm=apply_normalization(pooled_raw, pooled_stats),
         stats=pooled_stats,

@@ -9,7 +9,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class NormalizationStats:
-    """Per-feature normalization statistics fit from GT transitions."""
+    """GT mean plus fixed physical-scale divisors (``std`` field stores scale)."""
 
     mean: np.ndarray
     std: np.ndarray

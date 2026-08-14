@@ -98,6 +98,16 @@ def range_midpoint(band: dict[str, Any]) -> float:
     return 0.5 * (float(band["min"]) + float(band["max"]))
 
 
+def world_wrench_from_ee_logged(ft_ee: Any, tcp_pose_4x4: Any) -> np.ndarray:
+    """Rotate logged EE-frame wrench ``[F, τ]`` into world using ``R(tcp)``."""
+    ft = np.asarray(ft_ee, dtype=np.float64).reshape(6)
+    R = np.asarray(tcp_pose_4x4, dtype=np.float64).reshape(4, 4)[:3, :3]
+    out = np.empty(6, dtype=np.float32)
+    out[:3] = (R @ ft[:3]).astype(np.float32)
+    out[3:] = (R @ ft[3:]).astype(np.float32)
+    return out
+
+
 def build_fruiting_params_from_real(
     *,
     ranges_path: str | Path,
@@ -648,7 +658,17 @@ def export_real_episode_to_batched_dataset(
 
         tcp_pos = np.asarray(table.column("tcp_pos")[i].as_py(), dtype=np.float32).reshape(3)
         apple_pos = np.asarray(table.column("apple_pos")[i].as_py(), dtype=np.float32).reshape(3)
-        if "tcp_pose_4x4" in table.column_names:
+        if pack_vic_pose:
+            if "tcp_pose_4x4" not in table.column_names:
+                raise ValueError(
+                    f"{path}: pose-control wrench semantics require tcp_pose_4x4 "
+                    "to rotate ft_wrist into the TCP world frame"
+                )
+            tcp_pose = table.column("tcp_pose_4x4")[i].as_py()
+            ft = world_wrench_from_ee_logged(ft, tcp_pose)
+            raw_ft = world_wrench_from_ee_logged(raw_ft, tcp_pose)
+            _, tcp_quat = pose_4x4_to_pos_quat(tcp_pose)
+        elif "tcp_pose_4x4" in table.column_names:
             _, tcp_quat = pose_4x4_to_pos_quat(table.column("tcp_pose_4x4")[i].as_py())
         else:
             tcp_quat = (0.0, 0.0, 0.0, 1.0)

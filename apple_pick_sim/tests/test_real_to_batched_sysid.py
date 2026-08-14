@@ -222,6 +222,10 @@ def _write_synthetic_real(
     target_pose_4x4: list[float] | None = None,
     controller_gains: dict | None = None,
     camera_to_base_4x4: list[list[float]] | None = None,
+    tcp_pose_4x4: list[float] | None = None,
+    ft_wrist: list[float] | None = None,
+    ft_wrist_raw: list[float] | None = None,
+    skip_tcp_pose_4x4: bool = False,
 ) -> None:
     """Minimal real-episode-shaped parquet for native pre/post → batched meta."""
     # Woody: part0 Branch→Spur, part1 Branch unused chord, part2 Spur→Apple CoM.
@@ -247,6 +251,14 @@ def _write_synthetic_real(
         base_row["action"] = list(action)
     if target_pose_4x4 is not None:
         base_row["target_pose_4x4"] = list(target_pose_4x4)
+    if tcp_pose_4x4 is not None:
+        base_row["tcp_pose_4x4"] = list(tcp_pose_4x4)
+    elif target_pose_4x4 is not None and not skip_tcp_pose_4x4:
+        base_row["tcp_pose_4x4"] = _identity_pose_4x4(tcp_pos)
+    if ft_wrist is not None:
+        base_row["ft_wrist"] = list(ft_wrist)
+    if ft_wrist_raw is not None:
+        base_row["ft_wrist_raw"] = list(ft_wrist_raw)
     rows = [dict(base_row), {**base_row, "step_idx": 1}]
     table = pa.Table.from_pylist(rows)
     snap = {
@@ -748,6 +760,94 @@ def test_load_episode_obs_arrays_reads_19d_action_column(tmp_path: Path):
     arrays = BatchedSysIdDataset(tmp_path).load_episode_obs_arrays(0, 0)
     assert arrays["action"].shape == (1, 19)
     np.testing.assert_allclose(arrays["action"][0], action19, atol=1e-6)
+
+
+def test_world_wrench_from_ee_logged_rotates_force_and_torque():
+    from apple_pick_sim.system_id.real_to_batched_sysid import world_wrench_from_ee_logged
+
+    # 90° about Z: e1 -> e2
+    pose = [
+        0.0, -1.0, 0.0, 0.0,
+        1.0,  0.0, 0.0, 0.0,
+        0.0,  0.0, 1.0, 0.0,
+        0.0,  0.0, 0.0, 1.0,
+    ]
+    ft_ee = np.array([1.0, 0.0, 0.0, 0.0, 2.0, 0.0], dtype=np.float32)
+    got = world_wrench_from_ee_logged(ft_ee, pose)
+    # R @ e1 = e2; R @ (2 e2) = -2 e1. Do not expect τ → e3.
+    np.testing.assert_allclose(got[:3], [0.0, 1.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(got[3:], [-2.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_world_wrench_from_ee_logged_does_not_negate():
+    from apple_pick_sim.system_id.real_to_batched_sysid import world_wrench_from_ee_logged
+
+    pose = _identity_pose_4x4([0.1, 0.2, 0.3])
+    ft_ee = np.array([1.0, -2.0, 3.0, 4.0, -5.0, 6.0], dtype=np.float32)
+    got = world_wrench_from_ee_logged(ft_ee, pose)
+    np.testing.assert_allclose(got, ft_ee, atol=1e-6)
+
+
+def test_export_rotates_ft_wrist_and_requires_tcp_pose(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    rotz90 = [
+        0.0, -1.0, 0.0, 0.0,
+        1.0,  0.0, 0.0, 0.0,
+        0.0,  0.0, 1.0, 0.0,
+        0.0,  0.0, 0.0, 1.0,
+    ]
+    kp = [100.0] * 6
+    kd = [10.0] * 6
+    target = _identity_pose_4x4([0.1, 0.2, 0.3])
+    ft_ee = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    pull = np.array([0.0, -1.0, 0.0], dtype=np.float64)
+
+    src = tmp_path / "rot_ft.parquet"
+    _write_synthetic_real(
+        src,
+        action=[0.0] * 6,
+        action_semantics="per-frame pose-control wrench [Fx, Fy, Fz, Tx, Ty, Tz]",
+        action_order=["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+        target_pose_4x4=target,
+        controller_gains={"task_prop_gains": kp, "task_deriv_gains": kd},
+        tcp_pose_4x4=rotz90,
+        ft_wrist=ft_ee,
+        ft_wrist_raw=[2.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    )
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    ft_world = arrays["ft_wrist"][0]
+    np.testing.assert_allclose(ft_world[:3], [0.0, 1.0, 0.0], atol=1e-5)
+    assert not np.allclose(ft_world[:3], ft_ee[:3])
+    F = ft_world[:3]
+    cos_fp = float(np.dot(F, pull) / (np.linalg.norm(F) * np.linalg.norm(pull)))
+    assert cos_fp < 0.0
+    np.testing.assert_allclose(
+        arrays["raw_ft_wrist"][0, :3], [0.0, 2.0, 0.0], atol=1e-5
+    )
+
+    src_no_tcp = tmp_path / "no_tcp.parquet"
+    _write_synthetic_real(
+        src_no_tcp,
+        action=[0.0] * 6,
+        action_semantics="per-frame pose-control wrench [Fx, Fy, Fz, Tx, Ty, Tz]",
+        action_order=["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+        target_pose_4x4=target,
+        controller_gains={"task_prop_gains": kp, "task_deriv_gains": kd},
+        ft_wrist=ft_ee,
+        skip_tcp_pose_4x4=True,
+    )
+    with pytest.raises(ValueError, match="tcp_pose_4x4"):
+        export_real_episode_to_batched_dataset(
+            src_no_tcp, fixture_path=VARIANCE, output_dir=tmp_path / "out2", overwrite=True
+        )
 
 
 def _assert_quat_close(got, expected, *, atol: float = 1e-9) -> None:

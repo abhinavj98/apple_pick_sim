@@ -124,7 +124,7 @@ Shipped hold bags support frame→frame \(\Delta s\) or hold→hold median \(\De
 
 - **Time sync:** Simulator $\Delta t$ matches real sensor polling rate.
 - **Fixed-physical-scale normalization:** Fit the mean from the complete GT bag, then divide by the fixed per-field `STATE_VECTOR_PHYS_SCALE` (mirrored for \([s,\Delta s]\)); appended hold/direction one-hots are uncentered with scale 1. Candidate data never determines normalization statistics.
-- **Replay fidelity:** Each optimizer rollout is driven by the **recorded EE velocity telemetry** from the source run, not a re-synthesized chirp. Phase/amplitude mismatch otherwise inflates the objective for the wrong reason.
+- **Replay fidelity:** Each optimizer rollout is driven by the **recorded actions** from the source run (6D `vic` twist or 19D `vic_pose_v1`, as declared by action metadata), not a re-synthesized chirp. Phase/amplitude mismatch otherwise inflates the objective for the wrong reason.
 
 ### 3.4 Optimizer data pooling
 

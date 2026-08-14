@@ -8,7 +8,7 @@ biased MMD and Sinkhorn (Wasserstein) scoring on hold-phase quasi-static data.
 | Role | Module |
 | ---- | ------ |
 | State + transition builders | `apple_pick_sim/system_id/mmd_features.py` |
-| GT z-score + MMD² | `apple_pick_sim/system_id/mmd.py` |
+| GT mean + fixed physical scale (+ biased MMD²) | `apple_pick_sim/system_id/mmd.py` |
 | Sinkhorn bags + pooling | `apple_pick_sim/system_id/wasserstein.py` |
 | CLI flags | `apple_pick_gym/batched_examples/example_batched_sysid_mmd_grid.py` |
 | Young's-modulus complete scoring | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` |

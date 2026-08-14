@@ -25,13 +25,25 @@ def _as_feature_matrix(values: np.ndarray, *, name: str) -> np.ndarray:
 
 
 def fit_gt_normalization(gt: np.ndarray, eps: float = 1.0e-6) -> NormalizationStats:
-    """Fit per-feature mean/std from GT transitions only."""
+    """Fit GT mean; use fixed physical scales as divisors.
+
+    ``eps`` is retained for call-site compatibility but ignored: scale no longer
+    comes from GT std. Trailing columns beyond ``2 * len(STATE_VECTOR_PHYS_SCALE)``
+    (hold/dir one-hots) use mean=0 and scale=1.
+    """
+    del eps  # unused; kept for signature compatibility
+    from apple_pick_sim.system_id.mmd_features import (
+        STATE_VECTOR_PHYS_SCALE,
+        transition_feature_scale,
+    )
 
     gt_arr = _as_feature_matrix(gt, name="gt")
     mean = np.mean(gt_arr, axis=0)
-    std = np.std(gt_arr, axis=0)
-    std = np.where(std < float(eps), float(eps), std)
-    return NormalizationStats(mean=mean, std=std)
+    scale = transition_feature_scale(gt_arr.shape[1])
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    mean = mean.copy()
+    mean[2 * state_dim :] = 0.0
+    return NormalizationStats(mean=mean, std=scale)
 
 
 def apply_normalization(values: np.ndarray, stats: NormalizationStats) -> np.ndarray:

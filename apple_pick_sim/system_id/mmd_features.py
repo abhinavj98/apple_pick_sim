@@ -32,6 +32,55 @@ STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "woody_bending_angles",
 )
 
+STATE_VECTOR_PHYS_SCALE: tuple[float, ...] = (
+    # ft_wrist F
+    3.0,
+    3.0,
+    3.0,
+    # ft_wrist τ
+    0.5,
+    0.5,
+    0.5,
+    # tcp_velocity v
+    0.02,
+    0.02,
+    0.02,
+    # tcp_velocity ω
+    0.02,
+    0.02,
+    0.02,
+    # tcp_pos
+    0.01,
+    0.01,
+    0.01,
+    # apple_pos
+    0.02,
+    0.02,
+    0.02,
+    # woody primary_spur, spur_stem (junction order; both 0.02)
+    0.02,
+    0.02,
+    0.02,
+    0.02,
+    0.02,
+    0.02,
+    # woody_bending_angles
+    0.05,
+    0.05,
+)
+
+
+def transition_feature_scale(n_features: int) -> np.ndarray:
+    """Return divisor vector for [s, Δs, trailing one-hots]."""
+    state = np.asarray(STATE_VECTOR_PHYS_SCALE, dtype=np.float64)
+    state_dim = int(state.size)
+    if n_features < 2 * state_dim:
+        raise ValueError(
+            f"transition features width {n_features} < 2*state_dim={2 * state_dim}"
+        )
+    n_extra = int(n_features) - 2 * state_dim
+    return np.concatenate([state, state, np.ones(n_extra, dtype=np.float64)])
+
 REQUIRED_ARRAY_KEYS: tuple[str, ...] = (
     "ft_wrist",
     "tcp_velocity",

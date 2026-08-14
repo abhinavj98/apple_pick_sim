@@ -24,10 +24,15 @@ geomloss = pytest.importorskip("geomloss")
 
 
 def _arrays_for_steps(*, steps: int, shift: float = 0.0) -> dict:
-    junction_names = ["joint_a"]
+    junction_names = ["primary_spur", "spur_stem"]
     base = np.arange(steps, dtype=np.float32).reshape(steps, 1) + float(shift)
     woody_start = {
-        "joint_a": np.hstack([base + 100.0, base + 101.0, base + 102.0]).astype(np.float32),
+        "primary_spur": np.hstack([base + 100.0, base + 101.0, base + 102.0]).astype(
+            np.float32
+        ),
+        "spur_stem": np.hstack([base + 200.0, base + 201.0, base + 202.0]).astype(
+            np.float32
+        ),
     }
     return {
         "ft_wrist": np.hstack([base + i for i in range(6)]).astype(np.float32),
@@ -718,3 +723,36 @@ def test_sinkhorn_mse_spearman_excludes_disqualified():
         disqualified=[False, False, True],
     )
     assert out.spearman == pytest.approx(1.0)
+
+
+def test_near_constant_gt_column_does_not_explode_sinkhorn():
+    """Hold-constant features must not dominate cost via eps std floor."""
+    steps = 12
+    base = _arrays_for_steps(steps=steps)
+    gt_ep = _episode_with_median_holds(dir_idx=0, n_holds=4)
+    ctx = prepare_gt_wasserstein_scoring_context(
+        [gt_ep], use_median=True, hold_id_onehot=True, pool_directions=True, n_directions=1
+    )
+    sim_ep = _episode_with_median_holds(dir_idx=0, n_holds=4, shift=0.05)
+    self_score = score_candidate_wasserstein_complete(
+        candidate_index=0,
+        stiffnesses={},
+        gt_context=ctx,
+        replay_observations=[gt_ep],
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        n_directions=1,
+    )
+    sim_score = score_candidate_wasserstein_complete(
+        candidate_index=0,
+        stiffnesses={},
+        gt_context=ctx,
+        replay_observations=[sim_ep],
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        n_directions=1,
+    )
+    assert self_score.aggregate_sinkhorn == pytest.approx(0.0, abs=1e-6)
+    assert sim_score.aggregate_sinkhorn < 1.0e6

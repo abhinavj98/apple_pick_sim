@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from apple_pick_sim.system_id.mmd import (
     apply_normalization,
@@ -12,32 +13,64 @@ from apple_pick_sim.system_id.mmd import (
 )
 
 
-def test_gt_normalization_is_per_feature_and_uses_gt_only_statistics():
-    gt = np.array(
-        [
-            [1.0, 10.0],
-            [3.0, 10.0],
-            [5.0, 10.0],
-        ],
-        dtype=np.float32,
+def test_fit_gt_normalization_uses_fixed_physical_scale_not_gt_std():
+    from apple_pick_sim.system_id.mmd_features import (
+        STATE_VECTOR_PHYS_SCALE,
+        transition_feature_scale,
     )
-    candidate = np.array(
-        [
-            [100.0, -1000.0],
-            [200.0, -2000.0],
-        ],
-        dtype=np.float32,
-    )
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    # Minimal transition row width: [s, Δs] only (no one-hot)
+    n = 2 * state_dim
+    gt = np.zeros((3, n), dtype=np.float64)
+    # Column 0 is Fx: give GT real variance that must NOT become the divisor
+    gt[:, 0] = [0.0, 3.0, 6.0]
+    # Matching Δ column (index state_dim) left at 0
 
     stats = fit_gt_normalization(gt)
-    normalized_gt = apply_normalization(gt, stats)
-    normalized_candidate = apply_normalization(candidate, stats)
+    scale = transition_feature_scale(n)
+    np.testing.assert_allclose(stats.std, scale)
+    np.testing.assert_allclose(stats.mean[0], 3.0)
+    # Candidate residual 3 N on Fx → 3/3 = 1.0 after apply, not 3/std(GT)=3/sqrt(6)
+    cand = np.zeros((1, n), dtype=np.float64)
+    cand[0, 0] = 6.0  # 3 N above GT mean
+    out = apply_normalization(cand, stats)
+    assert out[0, 0] == pytest.approx(1.0)
 
-    np.testing.assert_allclose(stats.mean, [3.0, 10.0])
-    np.testing.assert_allclose(stats.std, [np.std([1.0, 3.0, 5.0]), 1.0e-6])
-    np.testing.assert_allclose(normalized_gt[:, 1], 0.0)
-    assert np.all(np.isfinite(normalized_candidate))
-    assert normalized_candidate[0, 0] > 50.0
+
+def test_near_zero_gt_velocity_does_not_explode_candidate_residual():
+    from apple_pick_sim.system_id.mmd_features import STATE_VECTOR_PHYS_SCALE
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n = 2 * state_dim
+    vx = 6  # index of tcp_velocity vx in STATE_VECTOR after dropping action
+    assert STATE_VECTOR_PHYS_SCALE[vx] == pytest.approx(0.02)
+
+    gt = np.zeros((4, n), dtype=np.float64)
+    gt[:, vx] = [0.0, 1e-4, -1e-4, 0.0]  # tiny hold variance
+    stats = fit_gt_normalization(gt)
+    cand = np.zeros((1, n), dtype=np.float64)
+    cand[0, vx] = 0.01  # 1 cm/s residual
+    out = apply_normalization(cand, stats)
+    # Fixed scale 0.02 → 0.5; old GT-std path would be O(100)
+    assert out[0, vx] == pytest.approx(0.01 / 0.02)
+    assert abs(out[0, vx]) < 2.0
+
+
+def test_trailing_onehot_is_not_mean_centered():
+    from apple_pick_sim.system_id.mmd_features import STATE_VECTOR_PHYS_SCALE
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n_holds = 4
+    n = 2 * state_dim + n_holds
+    gt = np.zeros((2, n), dtype=np.float64)
+    gt[0, -4:] = [1, 0, 0, 0]
+    gt[1, -4:] = [0, 1, 0, 0]
+    stats = fit_gt_normalization(gt)
+    np.testing.assert_allclose(stats.mean[-4:], 0.0)
+    np.testing.assert_allclose(stats.std[-4:], 1.0)
+    out = apply_normalization(gt, stats)
+    np.testing.assert_allclose(out[0, -4:], [1, 0, 0, 0])
 
 
 def test_rbf_bandwidth_uses_median_pairwise_distance():

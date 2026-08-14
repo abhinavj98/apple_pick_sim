@@ -240,6 +240,8 @@ def _write_synthetic_real(
     ft_wrist: list[float] | None = None,
     ft_wrist_raw: list[float] | None = None,
     skip_tcp_pose_4x4: bool = False,
+    hold_index: int | None = None,
+    hold_number: list[float] | None = None,
 ) -> None:
     """Minimal real-episode-shaped parquet for native pre/post → batched meta."""
     # Woody: compiler starts=[Branch,Branch,Spur], ends=[Spur,Apple,Apple].
@@ -273,6 +275,10 @@ def _write_synthetic_real(
         base_row["ft_wrist"] = list(ft_wrist)
     if ft_wrist_raw is not None:
         base_row["ft_wrist_raw"] = list(ft_wrist_raw)
+    if hold_index is not None:
+        base_row["hold_index"] = int(hold_index)
+    if hold_number is not None:
+        base_row["hold_number"] = list(hold_number)
     rows = [dict(base_row), {**base_row, "step_idx": 1}]
     table = pa.Table.from_pylist(rows)
     snap = {
@@ -484,6 +490,41 @@ def test_build_episode_metadata_from_real(tmp_path: Path):
     assert meta["initial_robot_joint_q"] == [0.1 * j for j in range(7)]
     assert meta["fruiting_system_params"]["schema"] == "fruiting_system_params_v2"
     assert meta["fruiting_system_params"]["topology"] == "t_junction"
+
+
+def test_scalar_hold_number_prefers_hold_index_over_onehot():
+    from apple_pick_sim.system_id.real_to_batched_sysid import _scalar_hold_number
+
+    assert _scalar_hold_number([0.0, 0.0, 1.0, 0.0], hold_index=2) == 2
+    assert _scalar_hold_number([0.0, 1.0, 0.0, 0.0], hold_index=None) == 1
+    assert _scalar_hold_number(None, hold_index=0) == 0
+    assert _scalar_hold_number(None, hold_index=None) == -1
+
+
+def test_export_hold_number_is_scalar(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = tmp_path / "hold_scalar.parquet"
+    _write_synthetic_real(
+        src,
+        hold_index=1,
+        hold_number=[0.0, 1.0, 0.0, 0.0],
+        action=[0.01, 0.0, 0.0, 0.0, 0.0, 0.0],
+        action_semantics="EE twist",
+        action_order=["vx", "vy", "vz", "wx", "wy", "wz"],
+    )
+    out = tmp_path / "batched_hold"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    hn = arrays["hold_number"]
+    assert hn.dtype == np.int32
+    assert hn.shape == (2,)
+    np.testing.assert_array_equal(hn, np.array([1, 1], dtype=np.int32))
 
 
 def test_export_writes_two_woody_starts_and_no_ends(tmp_path: Path):

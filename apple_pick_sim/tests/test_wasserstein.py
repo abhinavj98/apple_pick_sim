@@ -29,9 +29,6 @@ def _arrays_for_steps(*, steps: int, shift: float = 0.0) -> dict:
     woody_start = {
         "joint_a": np.hstack([base + 100.0, base + 101.0, base + 102.0]).astype(np.float32),
     }
-    woody_end = {
-        "joint_a": np.hstack([base + 300.0, base + 301.0, base + 302.0]).astype(np.float32),
-    }
     return {
         "ft_wrist": np.hstack([base + i for i in range(6)]).astype(np.float32),
         "tcp_velocity": np.hstack([base + 10.0 + i for i in range(6)]).astype(np.float32),
@@ -39,7 +36,6 @@ def _arrays_for_steps(*, steps: int, shift: float = 0.0) -> dict:
         "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
         "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
         "woody_part_start_pos": woody_start,
-        "woody_part_end_pos": woody_end,
         "excitation_direction": np.tile(
             np.array([[0.0, 1.0, 0.0]], dtype=np.float32), (steps, 1)
         ),

@@ -16,7 +16,6 @@ STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "tcp_pos",
     "apple_pos",
     "woody_part_start_pos",
-    "woody_part_end_pos",
     "woody_bending_angles",
 )
 
@@ -27,7 +26,6 @@ REQUIRED_ARRAY_KEYS: tuple[str, ...] = (
     "tcp_pos",
     "apple_pos",
     "woody_part_start_pos",
-    "woody_part_end_pos",
     "excitation_direction",
     "phase",
     "excitation_type",
@@ -74,9 +72,6 @@ class ReplayObservationCollector:
         self._woody_start: dict[str, list[np.ndarray]] = {
             name: [] for name in self._junction_names
         }
-        self._woody_end: dict[str, list[np.ndarray]] = {
-            name: [] for name in self._junction_names
-        }
 
     @property
     def n_rows(self) -> int:
@@ -105,7 +100,7 @@ class ReplayObservationCollector:
                 f"frame_idx={frame_idx} out of range for recorded episode "
                 f"with {n_frames} frames"
             )
-        for key in ("ft_wrist", "tcp_velocity", "tcp_pos", "apple_pos", "woody_start", "woody_end"):
+        for key in ("ft_wrist", "tcp_velocity", "tcp_pos", "apple_pos", "woody_start"):
             if key not in obs:
                 raise KeyError(f"missing replay observation field: {key}")
 
@@ -149,8 +144,6 @@ class ReplayObservationCollector:
             obs["woody_start"], key="woody_start"
         ).items():
             self._woody_start[name].append(np.array(pos, dtype=np.float32, copy=True))
-        for name, pos in self._split_flat_woody(obs["woody_end"], key="woody_end").items():
-            self._woody_end[name].append(np.array(pos, dtype=np.float32, copy=True))
         self._rows["stable"].append(bool(stable))
 
     def to_arrays(self) -> dict[str, Any]:
@@ -173,10 +166,6 @@ class ReplayObservationCollector:
             "woody_part_start_pos": {
                 name: np.stack(rows, axis=0).astype(np.float32)
                 for name, rows in self._woody_start.items()
-            },
-            "woody_part_end_pos": {
-                name: np.stack(rows, axis=0).astype(np.float32)
-                for name, rows in self._woody_end.items()
             },
             "junction_names": list(self._junction_names),
         }
@@ -241,11 +230,6 @@ def replay_obs_dict_from_sysid_numpy(
             frame_idx=0,
             junction_names=junction_names,
         ),
-        "woody_end": flatten_woody_positions(
-            sysid_obs["woody_part_end_pos"],
-            frame_idx=0,
-            junction_names=junction_names,
-        ),
     }
 
 
@@ -268,6 +252,49 @@ def _stack_woody(
     return np.stack(rows, axis=0).astype(np.float32, copy=False)
 
 
+def _tiled_positions(values: Any, *, n_frames: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = np.tile(arr, (n_frames, 1))
+    return arr
+
+
+def _bending_chords(
+    arrays: Mapping[str, Any],
+    *,
+    n_frames: int,
+    junction_names: list[str],
+) -> list[np.ndarray]:
+    """Per-junction chord vectors (n_frames, 3) used for bending deflection.
+
+    ``CMA_WOODY_JUNCTIONS`` (``primary_spur``, ``spur_stem``) uses the real
+    Branch/Spur/Apple-aligned chords: ``primary_spur`` chords
+    ``start[spur_stem] - start[primary_spur]``; ``spur_stem`` chords
+    ``apple_pos - start[spur_stem]``. Other junction orderings fall back to the
+    distal rule: chord ``i`` is ``start[i+1] - start[i]`` and the last chord is
+    ``apple_pos - start[last]``.
+    """
+    starts_by_name = arrays["woody_part_start_pos"]
+    apple_pos = _tiled_positions(arrays["apple_pos"], n_frames=n_frames)
+
+    if list(junction_names) == list(CMA_WOODY_JUNCTIONS):
+        primary_spur = _tiled_positions(
+            starts_by_name["primary_spur"], n_frames=n_frames
+        )
+        spur_stem = _tiled_positions(starts_by_name["spur_stem"], n_frames=n_frames)
+        return [spur_stem - primary_spur, apple_pos - spur_stem]
+
+    starts = [
+        _tiled_positions(starts_by_name[name], n_frames=n_frames)
+        for name in junction_names
+    ]
+    n_junctions = len(junction_names)
+    return [
+        starts[i + 1] - starts[i] if i < n_junctions - 1 else apple_pos - starts[i]
+        for i in range(n_junctions)
+    ]
+
+
 def build_bending_angles(
     arrays: Mapping[str, Any],
     *,
@@ -279,17 +306,10 @@ def build_bending_angles(
     if n_junctions == 0:
         return np.zeros((n_frames, 0), dtype=np.float32)
 
+    chords = _bending_chords(arrays, n_frames=n_frames, junction_names=junction_names)
+
     angles = np.zeros((n_frames, n_junctions), dtype=np.float64)
-    for j_idx, name in enumerate(junction_names):
-        starts = np.asarray(arrays["woody_part_start_pos"][name], dtype=np.float64)
-        ends = np.asarray(arrays["woody_part_end_pos"][name], dtype=np.float64)
-
-        if starts.ndim == 1:
-            starts = np.tile(starts, (n_frames, 1))
-        if ends.ndim == 1:
-            ends = np.tile(ends, (n_frames, 1))
-
-        vectors = ends - starts  # (n_frames, 3)
+    for j_idx, vectors in enumerate(chords):
         lengths = np.linalg.norm(vectors, axis=1, keepdims=True)
 
         lengths_nonzero = np.where(lengths == 0.0, 1.0, lengths)
@@ -326,11 +346,6 @@ def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
         _as_2d(arrays["apple_pos"], name="apple_pos", n_frames=n_frames),
         _stack_woody(
             arrays["woody_part_start_pos"],
-            n_frames=n_frames,
-            junction_names=junction_names,
-        ),
-        _stack_woody(
-            arrays["woody_part_end_pos"],
             n_frames=n_frames,
             junction_names=junction_names,
         ),

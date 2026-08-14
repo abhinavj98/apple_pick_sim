@@ -7,6 +7,7 @@ import pytest
 
 from apple_pick_sim.system_id.mmd_features import (
     ReplayObservationCollector,
+    build_bending_angles,
     build_state_matrix,
     build_transition_features_by_direction,
     combine_transition_features,
@@ -27,14 +28,6 @@ def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None) ->
             np.float32
         ),
     }
-    woody_end = {
-        "joint_a": np.hstack([base + 300.0, base + 301.0, base + 302.0]).astype(
-            np.float32
-        ),
-        "joint_b": np.hstack([base + 400.0, base + 401.0, base + 402.0]).astype(
-            np.float32
-        ),
-    }
     return {
         "ft_wrist": np.hstack([base + i for i in range(6)]).astype(np.float32),
         "tcp_velocity": np.hstack([base + 10.0 + i for i in range(6)]).astype(
@@ -44,7 +37,6 @@ def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None) ->
         "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
         "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
         "woody_part_start_pos": woody_start,
-        "woody_part_end_pos": woody_end,
         "excitation_direction": np.tile(
             np.array([[0.0, 1.0, 0.0]], dtype=np.float32), (steps, 1)
         ),
@@ -65,6 +57,35 @@ def test_flatten_woody_positions_uses_junction_names_order():
     )
 
     np.testing.assert_allclose(flat, [200.0, 201.0, 202.0, 100.0, 101.0, 102.0])
+
+
+def test_build_bending_angles_uses_spur_and_stem_chords():
+    n = 2
+    arrays = {
+        "junction_names": ["primary_spur", "spur_stem"],
+        "woody_part_start_pos": {
+            "primary_spur": np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32),
+            "spur_stem": np.array([[0.0, 0.0, -0.1], [0.1, 0.0, 0.0]], dtype=np.float32),
+        },
+        "apple_pos": np.array([[0.0, 0.0, -0.2], [0.1, 0.0, -0.1]], dtype=np.float32),
+    }
+    ang = build_bending_angles(arrays, n_frames=n, junction_names=list(arrays["junction_names"]))
+    assert ang.shape == (2, 2)
+    assert ang[0, 0] == pytest.approx(0.0)
+    assert ang[0, 1] == pytest.approx(0.0)
+    # rest spur chord (0,0,-0.1); frame 1 (0.1,0,0) is 90° from -Z
+    assert ang[1, 0] == pytest.approx(np.pi / 2, rel=1e-5)
+    assert ang[1, 1] == pytest.approx(0.0)
+
+
+def test_build_bending_angles_non_cma_names_use_distal_rule():
+    """Non-CMA junction names fall back to start[i+1]-start[i]; last = apple_pos-start[last]."""
+    arrays = _arrays_for_steps(steps=2, junction_names=["joint_b", "joint_a"])
+    ang = build_bending_angles(
+        arrays, n_frames=2, junction_names=arrays["junction_names"]
+    )
+    assert ang.shape == (2, 2)
+    assert ang[0].tolist() == [0.0, 0.0]
 
 
 def test_build_state_matrix_uses_exact_feature_order():
@@ -109,13 +130,6 @@ def test_build_state_matrix_uses_exact_feature_order():
             100.0,
             101.0,
             102.0,
-            # woody ends in junction_names order: joint_b then joint_a
-            400.0,
-            401.0,
-            402.0,
-            300.0,
-            301.0,
-            302.0,
             # woody_bending_angles in junction_names order: joint_b then joint_a
             0.0,
             0.0,
@@ -168,14 +182,10 @@ def test_replay_obs_dict_from_sysid_numpy_flattens_woody():
             "joint_b": np.array([7.0, 8.0, 9.0], dtype=np.float32),
             "joint_a": np.array([10.0, 11.0, 12.0], dtype=np.float32),
         },
-        "woody_part_end_pos": {
-            "joint_b": np.array([13.0, 14.0, 15.0], dtype=np.float32),
-            "joint_a": np.array([16.0, 17.0, 18.0], dtype=np.float32),
-        },
     }
     out = replay_obs_dict_from_sysid_numpy(sysid_obs, junction_names=["joint_b", "joint_a"])
     np.testing.assert_allclose(out["woody_start"], [7, 8, 9, 10, 11, 12])
-    np.testing.assert_allclose(out["woody_end"], [13, 14, 15, 16, 17, 18])
+    assert "woody_end" not in out
 
 
 def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
@@ -194,10 +204,6 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
             name: recorded["woody_part_start_pos"][name][frame_idx]
             for name in junction_names
         },
-        "woody_part_end_pos": {
-            name: recorded["woody_part_end_pos"][name][frame_idx]
-            for name in junction_names
-        },
     }
     adapted = replay_obs_dict_from_sysid_numpy(sysid_obs, junction_names=junction_names)
 
@@ -209,11 +215,6 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
         "apple_pos": sysid_obs["apple_pos"],
         "woody_start": flatten_woody_positions(
             recorded["woody_part_start_pos"],
-            frame_idx=frame_idx,
-            junction_names=junction_names,
-        ),
-        "woody_end": flatten_woody_positions(
-            recorded["woody_part_end_pos"],
             frame_idx=frame_idx,
             junction_names=junction_names,
         ),
@@ -230,10 +231,7 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
             adapted_arrays["woody_part_start_pos"][name],
             direct_arrays["woody_part_start_pos"][name],
         )
-        np.testing.assert_allclose(
-            adapted_arrays["woody_part_end_pos"][name],
-            direct_arrays["woody_part_end_pos"][name],
-        )
+    assert "woody_part_end_pos" not in adapted_arrays
 
 
 def test_replay_observation_collector_stable_column():
@@ -247,7 +245,6 @@ def test_replay_observation_collector_stable_column():
         "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32),
         "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32),
         "woody_start": np.array([10.0, 11.0, 12.0, 20.0, 21.0, 22.0], dtype=np.float32),
-        "woody_end": np.array([30.0, 31.0, 32.0, 40.0, 41.0, 42.0], dtype=np.float32),
     }
     collector.record(obs, frame_idx=1, stable=False)
     arrays = collector.to_arrays()
@@ -265,12 +262,31 @@ def test_replay_observation_collector_oob_frame_raises():
         "tcp_pos": np.zeros(3, dtype=np.float32),
         "apple_pos": np.zeros(3, dtype=np.float32),
         "woody_start": np.zeros(3, dtype=np.float32),
-        "woody_end": np.zeros(3, dtype=np.float32),
     }
     with pytest.raises(IndexError, match="frame_idx"):
         collector.record(obs, frame_idx=2)
     with pytest.raises(IndexError, match="frame_idx"):
         collector.record(obs, frame_idx=-1)
+
+
+def test_replay_observation_collector_record_requires_woody_start_not_end():
+    """record() must require woody_start; it must not require woody_end."""
+    recorded = _arrays_for_steps(steps=2, junction_names=["joint_a"])
+    recorded["phase"] = np.array([0, 1], dtype=np.int8)
+    recorded["dir_idx"] = np.array([0, 0], dtype=np.int32)
+    collector = ReplayObservationCollector(recorded)
+    base_obs = {
+        "ft_wrist": np.arange(6, dtype=np.float32),
+        "tcp_velocity": np.arange(6, dtype=np.float32),
+        "tcp_pos": np.zeros(3, dtype=np.float32),
+        "apple_pos": np.zeros(3, dtype=np.float32),
+    }
+    with pytest.raises(KeyError, match="woody_start"):
+        collector.record(dict(base_obs), frame_idx=0)
+
+    # Succeeds without woody_end.
+    collector.record({**base_obs, "woody_start": np.zeros(3, dtype=np.float32)}, frame_idx=0)
+    assert collector.n_rows == 1
 
 
 def test_transition_features_exclude_unstable_hold_frame():
@@ -332,7 +348,6 @@ def test_replay_observation_collector_supports_19d_vic_pose_actions():
         "tcp_pos": np.zeros(3, dtype=np.float32),
         "apple_pos": np.zeros(3, dtype=np.float32),
         "woody_start": np.zeros(3, dtype=np.float32),
-        "woody_end": np.zeros(3, dtype=np.float32),
     }
     collector.record(obs, frame_idx=1)
 
@@ -354,9 +369,6 @@ def test_replay_observation_collector_builds_dataset_shaped_arrays():
         "woody_start": np.array(
             [10.0, 11.0, 12.0, 20.0, 21.0, 22.0], dtype=np.float32
         ),
-        "woody_end": np.array(
-            [30.0, 31.0, 32.0, 40.0, 41.0, 42.0], dtype=np.float32
-        ),
     }
 
     collector.record(obs, frame_idx=1)
@@ -372,6 +384,7 @@ def test_replay_observation_collector_builds_dataset_shaped_arrays():
     np.testing.assert_allclose(
         arrays["woody_part_start_pos"]["joint_b"][0], [20.0, 21.0, 22.0]
     )
+    assert "woody_part_end_pos" not in arrays
 
 
 def test_iter_kept_hold_segments_keeps_full_hold():
@@ -510,7 +523,7 @@ def test_transition_features_exclude_pre_weld_row_after_strip():
         arrays[key] = np.vstack(
             [np.zeros((1, arrays[key].shape[1]), dtype=np.float32), arrays[key]]
         )
-    for woody_key in ("woody_part_start_pos", "woody_part_end_pos"):
+    for woody_key in ("woody_part_start_pos",):
         for name in arrays[woody_key]:
             arrays[woody_key][name] = np.vstack(
                 [

@@ -3,7 +3,8 @@
 | Field | Value |
 | ----- | ----- |
 | **Date** | 2026-07-03 |
-| **Status** | Approved (phased PRs) |
+| **Status** | Historical |
+| **Canonical living doc:** | `docs/handbook-coupled-simulation.md` |
 | **Goal** | Delete redundant examples/builders; FR3-only batched path; narrow public API before V.3.3 gym |
 | **Execution** | Phased PRs (5 PRs), worktree `chore/pre-gym-cleanup` |
 

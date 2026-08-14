@@ -2,6 +2,7 @@
 
 **Date:** 2026-07-10  
 **Status:** Implemented  
+**Canonical living doc:** `docs/handbook-variable-impedance.md`
 **Branch:** `feature/batched-sysid-mmd`
 
 ## Problem

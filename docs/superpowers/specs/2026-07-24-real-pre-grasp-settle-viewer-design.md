@@ -3,6 +3,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Status** | Implemented |
+| **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-07-24 |
 | **Scope** | Plant-only: pre-grasp → `FruitingSystemParams` → settle → Newton viewer |
 | **Non-goals** | Robot, weld, trajectory/`action`, CMA-ES / full `batched_sysid_v1` writer |

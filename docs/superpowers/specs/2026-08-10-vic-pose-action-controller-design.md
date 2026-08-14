@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | **Implemented 2026-08-10** — export-side 19D packing plus `mode=vic_pose` controller, aniso wrench kernel, sim step wiring, and `example_replay_real_batched.py --controller-mode vic_pose` |
+| **Status** | Implemented |
+| **Canonical living doc:** | `docs/handbook-variable-impedance.md` |
 | **Date** | 2026-08-10 |
 | **Depends on** | Batched VIC joint-torque path (`Fr3BatchedEEImpedanceController`, `vic_joint_torques_batched`) |
 | **Related** | `docs/variable-impedance-teleop.md`, `robot_replay/example_replay_real_batched.py`, real-robot `compute_pose_task_wrench` |
@@ -131,7 +132,7 @@ Prefer: pack into `action` at convert or at replay entry so `env.step` still see
 
 ```bash
 uv run --env-file pytest.env python -m pytest \
-  apple_pick_sim/tests/test_vic_pose_actions.py \
+  apple_pick_sim/tests/test_ee_impedance_batched_pose_actions.py \
   apple_pick_sim/tests/test_controller_config_actions.py \
   apple_pick_sim/tests/test_batched_heterogeneous_config.py -q
 

@@ -1,7 +1,8 @@
 # Batched API GPU hot path and defaults alignment
 
 **Date:** 2026-07-03  
-**Status:** Approved design (brainstorming)  
+**Status:** Historical
+**Canonical living doc:** `docs/handbook-coupled-simulation.md`
 **Scope:** `BatchedHeterogeneousCoupledSim` — init/build, frame, substep; `defaults()` preset  
 **Roadmap context:** V.3.1–V.3.2 done; supports V.3.3 gym migration  
 

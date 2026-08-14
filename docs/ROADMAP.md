@@ -136,7 +136,7 @@
 **[V].5 — sim-sim transfer wrap-up**
 
 - [x] **V.5.1 — Harden loss calculation in `example_batched_sysid_mmd_grid.py`:**
-  - [x] Soft-disable + manifest `excluded` / offline exclude (unstable-frame fraction > 0.25) + stability caps 100 N / 40 N·m
+  - [x] Soft-disable + manifest `excluded` / offline exclude (unstable-frame fraction > 0.25) + batched scene/monitor stability caps 40 N / 10 N·m
   - [x] Documented transition-feature / Sinkhorn scoring contract (`docs/sysid-transition-features.md`) + named gate CLI (`scripts/gate_sysid_gt_sinkhorn.sh`; default `gate_pooled_dirs`, also `gate_median_hold` / `gate_hold_id`)
   - [x] GT preference is established on healthy samples; the operational gate uses a strict majority per seed and preserves bad-sampling misses for diagnosis
   - [x] Primary scorer is **Wasserstein** (Sinkhorn); optional CLI `--score-mmd` deferred as cleanup (library MMD already exists)

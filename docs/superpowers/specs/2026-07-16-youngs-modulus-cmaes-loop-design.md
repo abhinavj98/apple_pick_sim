@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-16  
 **Roadmap slice:** V.5.2 — continuous Young's-modulus calibration  
-**Status:** Approved; implementation complete — Task 8 verification passed (focused/full tests + CUDA 5×5 acceptance, 2026-07-17). Search-box defaults amended 2026-07-22 to match shipped `CMA_SEARCH_PARAMS` (absolute 0.1–100 GPa). All-invalid recovery and joint-kd ζ-hold amended 2026-07-22 (see Error handling / Non-goals).
+**Status:** Superseded — the loop shipped, but its primary-\(E\) phenotype was replaced by support-\(k_p\) × spur/stem \(E\).
+**Canonical living doc:** `docs/handbook-youngs-cma.md`
 **Implementation notes / how-to:** `docs/youngs-modulus-cmaes-implementation.md`; README → **CMA-ES sim-to-sim transfer**.
 
 ## Purpose

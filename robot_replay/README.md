@@ -37,10 +37,7 @@ rebuild.
 
 | Path | Role |
 | ---- | ---- |
-| `s00-d00.parquet` | Example compiled real episode (`real_static_sysid_episode` v1.0.0) |
-| `s02-d00.parquet` | Preferred bit-2 source: real episode with wrench + `target_pose_4x4` + gains |
-| `s02-d00_action.parquet` | Legacy/local alias (optional) |
-| `funified.parquet` | Additional real / fused episode artifact |
+| `new_data/<session>/*.parquet` | Current compiled real episodes and their robot/tracking source logs (for example `new_data/s09/s09-d00.parquet`) |
 | `manifest.json` | Collection/run manifest (sim-side batch metadata companion) |
 | `example_view_pre_grasp_settle.py` | Plant-only VBD: pre-grasp settle → optional post-grasp weld → viewer |
 | `example_view_batched_episode_meta.py` | Same settle/weld view from **converted** episode metadata JSON |
@@ -62,7 +59,7 @@ From repo root:
 
 ```bash
 uv run python robot_replay/example_view_pre_grasp_settle.py \
-  --parquet robot_replay/s00-d00.parquet \
+  --parquet robot_replay/new_data/s09/s09-d00.parquet \
   --fixture apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json \
   --settle-substeps 5000 \
   --viewer gl
@@ -72,7 +69,7 @@ Post-grasp weld (true logged TCP + apple SE(3); follow measured poses):
 
 ```bash
 uv run python robot_replay/example_view_pre_grasp_settle.py \
-  --parquet robot_replay/s00-d00.parquet \
+  --parquet robot_replay/new_data/s09/s09-d00.parquet \
   --grasp-after-settle \
   --post-grasp-settle-substeps 500 \
   --tcp-radius-warn-m 0.02 \
@@ -103,7 +100,7 @@ Headless smoke:
 
 ```bash
 uv run python robot_replay/example_view_pre_grasp_settle.py \
-  --parquet robot_replay/s00-d00.parquet \
+  --parquet robot_replay/new_data/s09/s09-d00.parquet \
   --grasp-after-settle \
   --settle-substeps 80 \
   --post-grasp-settle-substeps 40 \
@@ -136,9 +133,9 @@ From repo root:
 
 ```bash
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
-  --input robot_replay/s00-d00.parquet \
+  --input robot_replay/new_data/s09/s09-d00.parquet \
   --fixture apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json \
-  --out /tmp/s00_d00_episode_meta.json
+  --out /tmp/s09_d00_episode_meta.json
 ```
 
 Optional: `--weld-direction-sign {+1,-1}` (see CLI `--help`).
@@ -147,7 +144,7 @@ Eyeball the converted JSON (same settle / optional weld as the native viewer):
 
 ```bash
 uv run python robot_replay/example_view_batched_episode_meta.py \
-  --episode-meta /tmp/s00_d00_episode_meta.json \
+  --episode-meta /tmp/s09_d00_episode_meta.json \
   --grasp-after-settle \
   --settle-substeps 80 \
   --post-grasp-settle-substeps 40 \
@@ -160,8 +157,9 @@ Bit-2 plan: `docs/superpowers/plans/2026-08-07-real-batched-trajectory-replay-bi
 
 ### Bit 2 — full dataset + trajectory viz + placement smoke
 
-Preferred source: `s02-d00.parquet` (has non-zero logged wrench + `target_pose_4x4`
-+ `dump.controller_gains`).
+Use a compiled episode under `new_data/<session>/` that has non-zero logged
+wrench, `target_pose_4x4`, and `dump.controller_gains`; the examples below use
+`new_data/s09/s09-d00.parquet`.
 
 **Action packing:** compiled real logs store a pose-control **wrench** `[Fx…Tz]` in
 `action` (`dump.action_semantics`), not an EE twist. Convert **packs** a 19D
@@ -195,39 +193,42 @@ real pose-PD wrench / `vic_pose` packing.
 
 ```bash
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
-  --input robot_replay/s02-d00.parquet \
-  --dataset-out /tmp/real_batched_s02_d00 \
+  --input robot_replay/new_data/s09/s09-d00.parquet \
+  --dataset-out /tmp/real_batched_s09_d00 \
   --overwrite
 
 uv run python apple_pick_gym/batched_examples/example_batched_sysid_trajectory_viz.py \
-  --dataset /tmp/real_batched_s02_d00 \
-  --output /tmp/real_batched_s02_d00_viz \
+  --dataset /tmp/real_batched_s09_d00 \
+  --output /tmp/real_batched_s09_d00_viz \
   --no-hold-check
 
 # Default path: vic_pose replay (19D pose+gains from convert):
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset /tmp/real_batched_s02_d00 \
+  --dataset /tmp/real_batched_s09_d00 \
   --max-frames 24 --viewer null
+```
 
-### Bit 3 — grid smoke (slice 1 plumbing; F/T ranking deferred to slice 2)
+### Bit 3 — grid smoke
 
 After convert, run a tiny support-\(k_p\) × spur/stem \(E\) grid on the same
 real-replay builder (`real_batched_replay_build.make_real_replay_build_env_fn`).
 Grid auto-detects `vic_pose_v1` / `action_dim=19`; `--include-gt-candidate` is
 forced off on real datasets (no `collection.sim_config` oracle).
 
-**Slice 1 success criteria:** envs build, 19D actions replay, no wrench-as-twist,
-no `sim_config` crash. **Ranking F/T (Sinkhorn on `ft_wrist`) is not trusted
-until slice 2** (F/T frame alignment + LPF on sim bags; pose-only action features).
+**Slice 1 success criteria:** envs build, 6D or 19D actions replay according to
+dataset metadata, no wrench-as-twist, and no `sim_config` crash. Current scoring
+rotates measured F/T at convert time with `R(tcp) @`; it applies **no sim
+EMA/LPF**, and `action` is required for replay but excluded from
+`STATE_VECTOR_FIELDS` and Sinkhorn features.
 
 ```bash
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
-  --input robot_replay/s02-d00.parquet \
-  --dataset-out /tmp/real_batched_s02_d00 \
+  --input robot_replay/new_data/s09/s09-d00.parquet \
+  --dataset-out /tmp/real_batched_s09_d00 \
   --overwrite
 
 uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
-  --dataset /tmp/real_batched_s02_d00 \
+  --dataset /tmp/real_batched_s09_d00 \
   --output /tmp/real_kp_e_grid \
   --viewer null \
   --support-kp-values 1e3,1e4 \
@@ -239,10 +240,12 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
 
 CLI help smoke (no GPU): `example_youngs_modulus_sys_id.py --help` must list
 `--controller-mode {vic,vic_pose}`. Full GPU grid smoke needs
-`robot_replay/s02-d00.parquet` locally (parquet episodes are often not in clone).
+an appropriate compiled episode under `robot_replay/new_data/` locally (parquet
+episodes are often not in clone).
 
 Design: `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`.
 
+```bash
 # Legacy only: re-pack a pre-vic_pose 6D dataset, or --force new constant Kp/Kd.
 uv run python robot_replay/pack_vic_pose_actions.py \
   --dataset-in /tmp/old_6d_batched \
@@ -261,11 +264,16 @@ uv run python robot_replay/example_replay_real_batched.py \
 # Settle defaults match example_view_pre_grasp_settle.
 # Open-loop joints from initial_robot_joint_q (skip IK; base at origin).
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset /tmp/real_batched_s02_d00 \
+  --dataset /tmp/real_batched_s09_d00 \
   --viewer gl --max-frames 0 \
   --settle-substeps 5000 --settle-quiet-every 300 \
-  --post-grasp-settle-substeps 500
+  --post-grasp-settle-substeps 500 \
+  --record-video /tmp/real_batched_s09_d00.mp4
 ```
+
+When converted episode metadata includes `camera_to_base_4x4`, GL replay places
+the viewer at the real recording-camera pose. `--record-video PATH` records the
+trajectory frames to MP4 and requires `--viewer gl`.
 
 TCP-motion pytest (short settle for CI; skips if preferred parquet missing):
 
@@ -275,14 +283,14 @@ uv run --env-file pytest.env python -m pytest \
   -q -p no:launch_testing
 ```
 
-**Note:** Older `s00-d0*` episodes may still have empty `action`
-(`real-replay-action-zero`). Prefer `s02-d00.parquet` (or newer fixed
-logs). Optional temporary fill for old files:
+**Note:** Older episodes may still have empty `action`
+(`real-replay-action-zero`). Prefer current compiled files under `new_data/`.
+Optional temporary fill for an old file:
 
 ```bash
 uv run python robot_replay/fill_actions_from_tcp_velocity.py \
-  --input robot_replay/s00-d03.parquet \
-  --out robot_replay/s00-d03_with_actions.parquet
+  --input "robot_replay/new_data/$SESSION/$OLD_EPISODE.parquet" \
+  --out /tmp/old_episode_with_actions.parquet
 ```
 
 Replay rebuilds from converted episode metadata (same native geometry as

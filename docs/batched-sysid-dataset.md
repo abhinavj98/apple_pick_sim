@@ -126,6 +126,8 @@ Stored as JSON-encoded strings in Parquet schema metadata. Keys include:
 `control_hz`, `seed`, `n_woody_parts`, `junction_names`, reset poses
 (`initial_tcp_pos/quat`, `initial_apple_pos/quat`, `initial_robot_joint_q`),
 `fixture_path`, weld/placement fields, and quasi-static trajectory knobs.
+Action metadata records `action_dim` (6 or 19), `action_layout` (for example
+`vic_pose_v1`), and `action_compatible_with_vic_twist`.
 
 ### Frame table (one row per sim step)
 
@@ -135,16 +137,19 @@ Required columns:
 |--------|-------|-------------|
 | `step_idx` | int | Frame index |
 | `phase` | int8 | 0=move_out, 1=hold, 2=return |
+| `hold_number` | int32 | Scalar hold ID; converted real data derives it from `hold_index` |
 | `excitation_type` | int8 | 0=quasi_static |
 | `excitation_direction` | f32×3 | Pull direction unit vector |
-| `action` | f32×6 | EE velocity command |
+| `action` | f32×6 or f32×19 | Required replay drive: 6D `vic` twist or 19D `vic_pose_v1`, as declared by action metadata |
 | `tcp_velocity` | f32×6 | Measured TCP twist |
 | `ft_wrist` | f32×6 | Wrist F/T |
 
 Bonus columns: `sim_time`, `amplitude_m`, `raw_ft_wrist`, `tcp_pos`, `tcp_quat`,
 `apple_pos`, `apple_quat`, `robot_joint_q`, `woody_part_force`, `stable` (per-frame online
 monitor: `False` = blow-up/unsafe, **not** QS quality; one `False` does not imply manifest
-`excluded`), plus dynamic `woody_start__<junction>` / `woody_end__<junction>` pairs.
+`excluded`), plus dynamic `woody_start__<junction>` columns. Batched trajectory frames do
+**not** write `woody_end__<junction>`; `woody_end` may still exist in runtime observations or
+pre-weld reconstruction metadata, but it is not part of the bag/score contract.
 
 Unlike the legacy layout, batched episode frames omit `episode_id` and `dir_idx`
 (always one direction per file).

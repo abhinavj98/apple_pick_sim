@@ -3,7 +3,8 @@
 | Field | Value |
 | ----- | ----- |
 | **Date** | 2026-07-04 |
-| **Status** | Approved (brainstorming) |
+| **Status** | Historical |
+| **Canonical living doc:** | `docs/handbook-sysid-scoring.md` |
 | **Roadmap** | [V].4 — batched sys-ID (collection slice) |
 | **Depends on** | V.3.3 `ApplePickBatchedBaseEnv` (done) |
 

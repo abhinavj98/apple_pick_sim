@@ -3,6 +3,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Status** | Implemented |
+| **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-08-12 |
 | **Code** | `real_to_batched_sysid.build_episode_metadata_from_real`, `robot_replay/example_replay_real_batched.py` |
 

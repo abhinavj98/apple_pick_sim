@@ -1,5 +1,8 @@
 # Median hold features + named Sinkhorn gates
 
+**Status:** Implemented
+**Canonical living doc:** `docs/handbook-sysid-scoring.md`
+
 > **Amendment (2026-07-15):** Batched grid CLI defaults `--use-median`,
 > `--hold-id-onehot`, and `--pool-directions` **on**. Gate harness default is
 > `GATE=gate_pooled_dirs`. Canonical contract: `docs/sysid-transition-features.md`.

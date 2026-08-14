@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-04  
 **Slice:** V.3.3 — `ApplePickBatchedBaseEnv`  
-**Status:** Approved for implementation planning  
+**Status:** Implemented
+**Canonical living doc:** `docs/handbook-coupled-simulation.md`
 
 ## Summary
 

@@ -1,6 +1,7 @@
 # Batched heterogeneous coupled sim runtime (V.3.1 step B)
 
-**Status:** Draft — approved in brainstorming session  
+**Status:** Implemented
+**Canonical living doc:** `docs/handbook-coupled-simulation.md`
 **Scope:** Runtime parent class `BatchedHeterogeneousCoupledSim`; settle disk cache; `step()` / `gather_obs()`  
 **Prerequisite:** [Build layer spec (step A)](2026-07-03-batched-heterogeneous-build-design.md) — `build_batched_heterogeneous_scene()` implemented in `batched_heterogeneous_build.py`  
 **Config:** [`apple_pick_sim/coupled_fruiting/batched_heterogeneous_config.py`](../../apple_pick_sim/coupled_fruiting/batched_heterogeneous_config.py)  

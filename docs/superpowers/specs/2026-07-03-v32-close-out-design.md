@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Approved — ready for implementation |
+| **Status** | Historical |
+| **Canonical living doc:** | `docs/handbook-coupled-simulation.md` |
 | **Date** | 2026-07-03 |
 | **Slice** | V.3.2 close-out (housekeeping after thin example + library API ship) |
 | **Next slice (out of scope here)** | V.3.3 — `ApplePickBatchedBaseEnv` |

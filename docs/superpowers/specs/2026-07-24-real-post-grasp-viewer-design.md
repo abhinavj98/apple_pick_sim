@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Implemented (slice A); **orientation superseded** by `2026-08-04-true-tcp-pose-weld-design.md` |
+| **Status** | Superseded — slice A shipped, but the orientation contract was replaced by true TCP SE(3) |
+| **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-07-24 |
 | **Scope** | Extend pre-grasp settle viewer: long settle → TCP-anchored grasp snap → short settle; FR3 milestone |
 | **Implements first** | Slice A — proxy-only grasp (no FR3) |

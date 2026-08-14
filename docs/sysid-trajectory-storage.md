@@ -34,7 +34,7 @@ Digital-twin fixture catalog (M3.0.4) is shipped — see `docs/digital-twin.md`.
 | `tcp_velocity` | list[f32]×6 | EE velocity observation |
 | `woody_start__<junction>` | list[f32]×3 | Parent-side anchor for one junction (e.g. `woody_start__stem_apple`) |
 | `woody_end__<junction>` | list[f32]×3 | Child-side anchor for the same junction |
-| `ft_wrist` | list[f32]×6 | Applied plant F/T feedback at TCP `[F, τ]`; sys-ID defaults cap force/torque norms at 100 N / 100 N·m before applying them to the robot |
+| `ft_wrist` | list[f32]×6 | Applied plant F/T feedback at TCP `[F, τ]`; this legacy single-env SysId path explicitly defaults to 100 N / 100 N·m (batched coupled scenes use 40 N / 10 N·m) |
 
 Per-junction woody columns are dynamic (one start/end pair per entry in `junction_names` metadata). There are no flat `woody_part_start_pos` / `woody_part_end_pos` frame columns.
 

@@ -6,6 +6,8 @@
 **Roadmap slices:** V.4.2.1 (digital-twin replay init) + V.4.3 (in-process batched MMD)  
 **Builds on:** V.4.2 batched collection (`ApplePickBatchedSysIdEnv`, `batched_sysid_collect.py`)  
 **Supersedes:** subprocess `apple_pick_gym/examples/run_system_identification.py` for batched datasets
+**Status:** Historical
+**Canonical living doc:** `docs/handbook-sysid-scoring.md`
 
 ## Problem
 
@@ -139,7 +141,7 @@ GT features: recorded parquet only. Candidate features: live replay via `ApplePi
 
 | Test | Asserts |
 |------|---------|
-| `test_batched_sysid_mmd_grid.py` | Collect tiny v1 dataset via existing collect path → run grid orchestrator → GT ranks #1 (MMD + Wasserstein) |
+| `test_batched_sysid_mmd_grid_helpers.py` | Grid helper and orchestration contract |
 | `test_wasserstein.py` | Unit tests |
 | Extend `test_mmd_features.py` | Collector parity |
 | Extend `test_batched_sysid_collect.py` patterns | Shared indexing/broadcast imports stable |

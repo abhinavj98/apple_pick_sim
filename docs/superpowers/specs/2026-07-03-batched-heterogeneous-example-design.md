@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-03  
 **Slice:** ROADMAP **V.3.2** — thin heterogeneous example  
-**Status:** Design only (no implementation in this doc)
+**Status:** Implemented
+**Canonical living doc:** `docs/handbook-coupled-simulation.md`
 
 ---
 

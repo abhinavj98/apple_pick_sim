@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Phase B GL + post-grasp settle **plumbing Done**; **correct action drive pending** (wrench ≠ twist VIC) |
+| **Status** | Implemented — Drive is Done via 19D `vic_pose` |
+| **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-08-10 |
 | **Depends on** | Bit-2 format export (`batched_sysid_v1` from real parquet) |
 | **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C6), `robot_replay/example_replay_real_batched.py`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
@@ -23,7 +24,7 @@ Export/replay refuse wrench-as-twist unless `--allow-wrench-as-twist`.
 | ----- | ----- | ------ |
 | **B** | GL `on_step` on real replay CLI; TCP motion gate; rebuild from episode metadata | **Plumbing Done**; TCP gate ≠ correct wrench drive |
 | **Post-grasp** | `SceneSettleCollisionConfig.post_grasp_settle_substeps` (CLI default 500); free settle 5000 + quiet 300; rebrand smoke → `example_replay_real_batched.py` | **Done** |
-| **Drive** | Pose PD (`vic_pose`) or logged-wrench apply matching real `action_semantics` | **Pending** |
+| **Drive** | Pose PD (`vic_pose`) matching converted real action semantics | **Done** |
 | **A** | Later: teach `example_batched_sysid_mmd_grid.py` the same real clamps / flags so grids, scoring, and GL work on exported real datasets | Follow-on |
 
 ## Architecture

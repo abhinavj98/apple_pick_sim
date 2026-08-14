@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Slices 0–3 implemented on `feature/real-replay-parallel-sysid` |
+| **Status** | Implemented |
+| **Canonical living doc:** | `docs/handbook-sysid-scoring.md` |
 | **Date** | 2026-08-13 |
 | **Roadmap** | M4.0 real `robot_replay` → CMA (Sinkhorn on converted GT + live sim replay) |
 | **Extends** | `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md` |

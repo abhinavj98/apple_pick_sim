@@ -1,7 +1,8 @@
 # VIC wrench caps (FR3-aligned)
 
 **Date:** 2026-07-10  
-**Status:** approved for planning  
+**Status:** Superseded — current scene caps are 40 N / 10 N·m
+**Canonical living doc:** `docs/handbook-variable-impedance.md`
 **Branch:** `feature/batched-sysid-mmd`
 
 ## Problem

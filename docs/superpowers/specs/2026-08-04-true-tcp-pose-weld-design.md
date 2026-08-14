@@ -3,6 +3,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Status** | Implemented |
+| **Canonical living doc:** | `docs/handbook-coupled-simulation.md` |
 | **Date** | 2026-08-04 |
 | **Scope** | Post-grasp replay weld uses full logged TCP SE(3); drop look-at orientation |
 | **Amends** | `docs/superpowers/specs/2026-07-24-real-post-grasp-viewer-design.md` (orientation contract) |

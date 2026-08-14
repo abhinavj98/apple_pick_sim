@@ -102,9 +102,9 @@ MMD compares **distributions** of transitions; encoding must respect causality w
 | --- | --- | --- |
 | $W_{ee}$ | Interaction wrench (3D force, 3D torque) | `ft_wrist` (6) |
 | $v_{ee}$ | End-effector velocity | `tcp_velocity` (6: linear + angular) |
-| — | Recorded drive signal | `action` (6) |
+| — | Recorded drive signal | `action` is required in trajectory bags (6D `vic` or 19D `vic_pose_v1`) but is **not** part of `STATE_VECTOR_FIELDS` or the score vector |
 | — | TCP / fruit pose | `tcp_pos` (3), `apple_pos` (3) |
-| $P_{\text{nodes}}$ | Tracked branch/spring endpoints when available | `woody_part_{start,end}_pos` (\(3N_j\) each) + `woody_bending_angles` (\(N_j\)); total \(D_s=24+7N_j\) |
+| $P_{\text{nodes}}$ | Tracked branch/spring endpoints when available | `woody_part_start_pos` (\(3N_j\)) + `woody_bending_angles` (\(N_j\)); trajectory bags do not score or store `woody_end`; total \(D_s=18+4N_j\) (26 for CMA's two junctions) |
 | \(\phi_{\text{exc}}\) | Trajectory type + chirp frequency \(f(t)\) | Not columns of \(s_t\); `excitation_type` is auxiliary / bag metadata. Instantaneous \(f(t)\) is for §2.2 chirps (not hold bags today) |
 | \(\hat{u}\) | Unit excitation direction | Recorded as `excitation_direction`; bags key by `dir_idx` (optional dir one-hot only when pooling) |
 
@@ -123,7 +123,7 @@ Shipped hold bags support frame→frame \(\Delta s\) or hold→hold median \(\De
 ### 3.3 Pre-Processing
 
 - **Time sync:** Simulator $\Delta t$ matches real sensor polling rate.
-- **Z-score normalization:** Zero mean, unit variance per feature dimension before MMD so Newton-scale wrench does not dominate meter-scale position (GT fit per direction bag, or one pooled bag when `--pool-directions`).
+- **Fixed-physical-scale normalization:** Fit the mean from the complete GT bag, then divide by the fixed per-field `STATE_VECTOR_PHYS_SCALE` (mirrored for \([s,\Delta s]\)); appended hold/direction one-hots are uncentered with scale 1. Candidate data never determines normalization statistics.
 - **Replay fidelity:** Each optimizer rollout is driven by the **recorded EE velocity telemetry** from the source run, not a re-synthesized chirp. Phase/amplitude mismatch otherwise inflates the objective for the wrong reason.
 
 ### 3.4 Optimizer data pooling
@@ -137,20 +137,17 @@ diagnostics and do not drive optimizer updates. See
 ## 4. Optimization: CMA-ES
 
 The immediate V.5.2 optimizer is a separate pycma ask/tell loop for each
-selected structure:
+selected structure. Its current phenotype is:
 
 \[
-\theta = \log_{10}([E_\mathrm{primary}, E_\mathrm{spur}, E_\mathrm{stem}]).
+\theta = \log_{10}([k_{p,\mathrm{support}}, E_\mathrm{spur}, E_\mathrm{stem}]).
 \]
 
-Bounds for the CMA search box come from `CMA_SEARCH_PARAMS["search_bounds_log10"]`
-(shipped default: absolute 0.1–100 GPa / \(\log_{10} E \in [8, 11]\) per role;
-`None` = unbounded), not the narrow fixture `youngs_modulus_pa` ε-bands.
-Default initialization is the search-box midpoint `[9.5, 9.5, 9.5]`, not
-recorded GT; optional `"bounds_midpoint"` uses the loaded fixture midpoints.
-Geometry, damping ratio, density, mass, secondary E, and all other non-fitted
-fields remain fixed for this slice. Derived VBD knobs are rebuilt from
-candidate E; they are not independent optimizer dimensions.
+Bounds and initialization come from `CMA_SEARCH_PARAMS` and
+`extract_support_kp_youngs_modulus_cma_bounds`. Primary and secondary \(E\),
+geometry, damping ratio, density, mass, and all other non-fitted fields remain
+fixed. Candidate support-joint \(k_p\) is applied to the support penalties;
+candidate spur/stem \(E\) rebuilds the corresponding derived VBD knobs.
 
 Runnable collect → fit commands: **README.md** → **CMA-ES sim-to-sim transfer
 (Young's modulus)**.
@@ -318,7 +315,7 @@ Quasi-static behavior comes from **hold settling**, not slow crawl speed.
 
 Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0.10`, `move_speed_mps=0.2`, `hold_duration_s=1.5`, `control_hz=60`, `skip_return=True`.
 
-`ApplePickSysIdEnv` extends VIC with `Box(6)` EE velocity actions, excitation metadata obs, actual `tcp_pos` from `body_q` (not the VIC target), and optional robot-facing weld placement. Default VIC stiffness is `vic_linear_k=2000` N/m (not the replay-env default). Applied stem feedback defaults to `stem_force_cap_n=100` N and `stem_torque_cap_nm=100` N·m.
+`ApplePickSysIdEnv` extends VIC with `Box(6)` EE velocity actions, excitation metadata obs, actual `tcp_pos` from `body_q` (not the VIC target), and optional robot-facing weld placement. Default VIC stiffness is `vic_linear_k=2000` N/m (not the replay-env default). This **legacy single-env SysId** class explicitly defaults applied stem feedback to `stem_force_cap_n=100` N and `stem_torque_cap_nm=100` N·m; batched coupled scenes use the scene defaults, 40 N / 10 N·m.
 
 **Grasp-pose snapshot/restore:** `reset()` calls `snapshot_grasp_pose()`, which stores robot `body_q`/`joint_q`, cable `body_q`, and VIC `target_tf`. `restore_grasp_pose()` writes those buffers back, re-syncs MuJoCo/`robot_state_1`, aligns VBD `body_q_prev`, zeros lagged `proxy_forces`/`coupling_forces_cache`, and resets `vic_target_twist`. Use this at direction boundaries when `skip_return=True`. Full-transition logging (`[s_t, Δs_t]`) should mark or exclude teleported frames because `tcp_pos` jumps discontinuously.
 
@@ -328,7 +325,7 @@ Default `QuasiStaticStepConfig`: `movement_per_step_m=0.05`, `total_movement_m=0
 
 **Episode length:** `ApplePickSysIdEnv` defaults to `max_episode_steps=240`. A full multi-direction run needs `estimate_trajectory_frames(config, n_directions) + margin`. `gym.make(..., max_episode_steps=N)` only sets the `TimeLimit` wrapper — the env still truncates at its constructor default (240) unless you pass `max_episode_steps` into `ApplePickSysIdEnv(...)` directly.
 
-**Wrench guard:** `ApplePickSysIdEnv` caps the applied stem-harvest feedback to the robot at 100 N and 100 N·m by default (`ft_wrist`). It also exposes/logs `raw_ft_wrist`, the uncapped stem-harvest TCP wrench, so diagnostics and objectives can still see solver spikes. `compute_terminated` still inherits the coupled-env stub (`False` always); callers should monitor force limits for abort policy.
+**Wrench guard:** the legacy single-env `ApplePickSysIdEnv` caps the applied stem-harvest feedback to the robot at 100 N and 100 N·m by default (`ft_wrist`); this is not the batched scene default of 40 N / 10 N·m. It also exposes/logs `raw_ft_wrist`, the uncapped stem-harvest TCP wrench, so diagnostics and objectives can still see solver spikes. `compute_terminated` still inherits the coupled-env stub (`False` always); callers should monitor force limits for abort policy.
 
 ### Code map (§2.1)
 

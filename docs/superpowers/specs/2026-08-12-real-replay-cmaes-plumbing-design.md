@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | **Slice 1 implemented** (2026-08-12); slice 2 **superseded** by `2026-08-13-real-sim-cma-feature-alignment-design.md` |
+| **Status** | Partial — slice 1 implemented; slice 2 superseded; later CMA plumbing remains ROADMAP-owned |
+| **Canonical living doc:** | `docs/handbook-youngs-cma.md` |
 | **Date** | 2026-08-12 |
 | **Roadmap** | M4.0 bit 3 (real `robot_replay` → grid / CMA) |
 | **Extends** | `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md` (slice B), `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 3), `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |

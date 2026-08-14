@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | **Slice A + B Implemented** (example + shared `make_real_replay_build_env_fn` / batched `apply_logged_post_grasp_se3_to_cable`) |
+| **Status** | Implemented |
+| **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-08-11 |
 | **Extends** | `docs/superpowers/specs/2026-08-07-pre-grasp-apple-orientation-design.md`, `docs/superpowers/specs/2026-08-04-true-tcp-pose-weld-design.md`, `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` |
 | **Code** | `gripper_proxy_for_real_batched_replay`, `apply_logged_post_grasp_se3_to_cable` in `batched_digital_twin_init.py`; wired in `robot_replay/example_replay_real_batched.py` |

@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Bits 1–2 Done (incl. `vic_pose` pack + controller); **bit 3 = ROADMAP M4.0 (Current focus)** |
+| **Status** | Partial — bits 1–2 implemented; remaining bit-3 work is ROADMAP-owned |
+| **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-08-07 (status revised 2026-08-11) |
 | **Source of truth** | `robot_replay/example_view_pre_grasp_settle.py` (native pre/post stack) |
 | **Related** | `docs/ROADMAP.md` M4.0, `docs/real-sysid-pre-post-grasp-fixes.md` (C1), `robot_replay/README.md`, `docs/batched-sysid-dataset.md`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |

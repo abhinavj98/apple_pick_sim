@@ -422,19 +422,19 @@ MMD / sim-sim CMA stay on twist `vic`).
 ```bash
 # 1) Real parquet → batched_sysid_v1 (packs 19D vic_pose_v1 actions)
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
-  --input robot_replay/s02-d00.parquet \
-  --dataset-out tmp/real_batched_s02_d00 \
+  --input robot_replay/new_data/s09/s09-d00.parquet \
+  --dataset-out tmp/real_batched_s09_d00 \
   --overwrite
 
 # 2) Headless FR3 replay (defaults: --controller-mode vic_pose)
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset tmp/real_batched_s02_d00 \
+  --dataset tmp/real_batched_s09_d00 \
   --viewer null --max-frames 24 \
   --settle-substeps 80 --post-grasp-settle-substeps 0
 
 # 3) GL: full episode after off-screen settle (defaults match pre-grasp settle viewer)
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset tmp/real_batched_s02_d00 \
+  --dataset tmp/real_batched_s09_d00 \
   --viewer gl --max-frames 0 \
   --settle-substeps 5000 --settle-quiet-every 300 \
   --post-grasp-settle-substeps 500

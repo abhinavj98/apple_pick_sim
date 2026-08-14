@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Implemented on feature/real-replay-parallel-sysid (Tasks 1–3) |
+| **Status** | Implemented |
+| **Canonical living doc:** | `docs/handbook-sysid-scoring.md` |
 | **Date** | 2026-08-14 |
 | **Roadmap** | M4.0 real `robot_replay` → CMA (Sinkhorn on converted GT + live sim replay) |
 | **Extends / amends** | `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md` — that spec locks full 19D `action` in `STATE_VECTOR`; this spec drops `action` from the **score** only (replay still drives full 19D) |

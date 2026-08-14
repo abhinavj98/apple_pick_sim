@@ -318,6 +318,9 @@ Nominal fixture may use fixed angles for reproducible IK smoke tests.
 | Tool radius | 0.05 m (50 mm; Ø100) | **Specified** |
 | TCP location | Distal tip face center, out from link7 / `ee` flange | **Specified** |
 | Tool mass | 1.1 kg | **Measured** (synced to `EE_MASS_KG` / USD `ee`) |
+| EE COM (flange frame) | `(0, 0, 0.077) m` | **Measured** (`EE_COM_IN_FLANGE_M`; Desk `F_x_Cee`) |
+| EE COM (ee local) | `(0, 0, -0.077) m` | **Measured** (`EE_COM_IN_EE_LOCAL_M`; RotX 180° via `fr3_joint8`) |
+| EE inertia diagonal | `(0.002152, 0.002152, 0.001191) kg·m²` | **Measured** (`EE_INERTIA_DIAG_KGM2`; Desk `I_ee`) |
 
 **Tip / flange / tip-out contract:**
 
@@ -504,5 +507,6 @@ uv run --env-file pytest.env python -m pytest \
 | 2026-06-26 | Magnet detach → stem **torsion** (follow-up slice); interim bend only |
 | 2026-06-26 | EE 140 mm × Ø100 (r=50 mm), TCP +Z tip-out; mass placeholder 0.5 kg until measured |
 | 2026-08-11 | EE mass set to **1.1 kg** (`EE_MASS_KG`, `PLACEHOLDER_EE_MASS_KG`, USD `ee`) |
+| 2026-08-13 | EE COM `(0,0,0.077)_F` / `(0,0,-0.077)_ee` and `I_ee` diagonal on USD `/fr3/ee`; `/ee/tcp` stays 0.001 kg massless for coupling |
 | 2026-06-26 | Apple density placeholder 700 kg/m³ until measured |
 | 2026-06-26 | T builder shipped; default topology `t_junction`; opt-in `linear_chain` |

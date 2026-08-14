@@ -28,8 +28,11 @@ from apple_pick_sim.robot.fr3_robot.controllers.keyboard import (
     read_keyboard_ee_velocity,
 )
 from apple_pick_sim.robot.fr3_robot.paths import (
+    EE_COM_IN_EE_LOCAL_M,
+    EE_COM_IN_FLANGE_M,
     EE_CYLINDER_HALF_HEIGHT,
     EE_CYLINDER_RADIUS,
+    EE_INERTIA_DIAG_KGM2,
     EE_MASS_KG,
     EE_TCP_ORIENT_WXYZ,
     OMNIVERSE_FR3_SCHEMA,
@@ -71,8 +74,11 @@ from apple_pick_sim.robot.fr3_robot.setup import (
 )
 
 __all__ = [
+    "EE_COM_IN_EE_LOCAL_M",
+    "EE_COM_IN_FLANGE_M",
     "EE_CYLINDER_HALF_HEIGHT",
     "EE_CYLINDER_RADIUS",
+    "EE_INERTIA_DIAG_KGM2",
     "EE_MASS_KG",
     "EE_TCP_ORIENT_WXYZ",
     "EEVelocity",

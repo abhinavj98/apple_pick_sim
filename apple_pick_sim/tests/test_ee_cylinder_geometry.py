@@ -5,11 +5,17 @@ import pytest
 from apple_pick_sim.robot.fr3_robot.ee_cylinder_geometry import (
     assert_tip_flange_tcp_contract,
     ee_cylinder_layout_from_authored,
+    flange_com_to_ee_local,
     scrape_ee_cylinder_authored,
+    scrape_ee_mass_properties,
 )
 from apple_pick_sim.robot.fr3_robot.paths import (
+    EE_COM_IN_EE_LOCAL_M,
+    EE_COM_IN_FLANGE_M,
     EE_CYLINDER_HALF_HEIGHT,
     EE_CYLINDER_RADIUS,
+    EE_INERTIA_DIAG_KGM2,
+    EE_MASS_KG,
     EE_TCP_ORIENT_WXYZ,
     TESTFR3_SCENE_USD,
 )
@@ -86,3 +92,18 @@ def test_resolved_usd_tip_flange_tcp_contract():
     )
     assert layout.tip_z_m < 0.0
     assert layout.tcp_z_m < 0.0
+
+
+def test_flange_com_to_ee_local_is_rotx_180():
+    assert flange_com_to_ee_local((0.0, 0.0, 0.077)) == pytest.approx((0.0, 0.0, -0.077))
+    assert flange_com_to_ee_local((0.01, 0.02, 0.03)) == pytest.approx((0.01, -0.02, -0.03))
+    assert flange_com_to_ee_local(EE_COM_IN_FLANGE_M) == pytest.approx(EE_COM_IN_EE_LOCAL_M)
+
+
+@pytest.mark.parametrize("usd_path", [AUTHORING_USD, TESTFR3_SCENE_USD])
+def test_usd_ee_mass_com_inertia_and_massless_tcp(usd_path):
+    props = scrape_ee_mass_properties(usd_path)
+    assert props["ee_mass_kg"] == pytest.approx(EE_MASS_KG, abs=1e-6)
+    assert props["ee_com_xyz"] == pytest.approx(EE_COM_IN_EE_LOCAL_M, abs=1e-6)
+    assert props["ee_inertia_diag"] == pytest.approx(EE_INERTIA_DIAG_KGM2, rel=1e-6)
+    assert props["tcp_mass_kg"] == pytest.approx(0.001, abs=1e-6)

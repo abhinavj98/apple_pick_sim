@@ -127,13 +127,6 @@ def test_build_state_matrix_uses_exact_feature_order():
             13.0,
             14.0,
             15.0,
-            # action
-            20.0,
-            21.0,
-            22.0,
-            23.0,
-            24.0,
-            25.0,
             # tcp_pos, apple_pos
             30.0,
             31.0,

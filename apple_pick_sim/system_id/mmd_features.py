@@ -26,7 +26,6 @@ def cma_woody_junctions_from_env(names: list[str]) -> list[str]:
 STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "ft_wrist",
     "tcp_velocity",
-    "action",
     "tcp_pos",
     "apple_pos",
     "woody_part_start_pos",
@@ -355,7 +354,6 @@ def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
     columns = [
         _as_2d(arrays["ft_wrist"], name="ft_wrist", n_frames=n_frames),
         _as_2d(arrays["tcp_velocity"], name="tcp_velocity", n_frames=n_frames),
-        _as_2d(arrays["action"], name="action", n_frames=n_frames),
         _as_2d(arrays["tcp_pos"], name="tcp_pos", n_frames=n_frames),
         _as_2d(arrays["apple_pos"], name="apple_pos", n_frames=n_frames),
         _stack_woody(

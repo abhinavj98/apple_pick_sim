@@ -923,7 +923,6 @@ def _build_real_episode(
         dm = json.loads(
             dm_blob.decode("utf-8") if isinstance(dm_blob, (bytes, bytearray)) else str(dm_blob)
         )
-    _require_dump_direction_index(path, dm, direction_idx)
     pack_vic_pose = is_pose_control_wrench_semantics(dm)
     kp: list[float] | None = None
     kd: list[float] | None = None
@@ -1175,7 +1174,7 @@ def _write_batched_manifest(
     source_real_parquet: str | None = None,
     source_real_parquets: list[str] | None = None,
     num_directions: int,
-    topology_seed: int,
+    topology_seed: int | None = None,
     sim_config: dict[str, Any] | None = None,
     n_holds: int | None = None,
 ) -> None:
@@ -1208,17 +1207,19 @@ def _write_batched_manifest(
         for ep in sorted(episodes, key=lambda item: item.direction_idx)
     ]
     seed_raw = ref.episode_meta.get("seed")
+    seed_fallback = int(topology_seed) if topology_seed is not None else 0
     collection: dict[str, Any] = {
-        "seed": int(seed_raw) if seed_raw is not None else int(topology_seed),
+        "seed": int(seed_raw) if seed_raw is not None else seed_fallback,
         "ranges_path": str(fixture.resolve()),
         "control_hz": output_hz,
         "ft_filter": dict(ft_filter),
         "num_structures": 1,
         "num_directions": int(num_directions),
         "max_steps": int(max_steps),
-        "topology_seed": int(topology_seed),
         "drive_fill": ref.dm.get("drive_fill"),
     }
+    if topology_seed is not None:
+        collection["topology_seed"] = int(topology_seed)
     if source_real_parquet is not None:
         collection["source_real_parquet"] = source_real_parquet
     if source_real_parquets is not None:
@@ -1283,7 +1284,6 @@ def export_real_episode_to_batched_dataset(
         command_argv=list(command_argv or ["export_real_episode_to_batched_dataset"]),
         source_real_parquet=str(path.resolve()),
         num_directions=1,
-        topology_seed=int(converted.episode_meta.get("seed") or 0),
     )
     return out
 
@@ -1309,19 +1309,22 @@ def export_real_tree_folder_to_batched_dataset(
     out = Path(output_dir)
     fixture = Path(fixture_path)
     discovered = _discover_tree_parquets(src_dir)
-    converted = [
-        _build_real_episode(
-            path,
-            fixture_path=fixture,
-            direction_idx=direction_idx,
-            weld_direction_sign=weld_direction_sign,
-            allow_zero_action=allow_zero_action,
-            control_hz=control_hz,
-            ft_lpf_hz=ft_lpf_hz,
-            ft_lpf_order=ft_lpf_order,
+    converted: list[_ConvertedEpisode] = []
+    for path, direction_idx in discovered:
+        dm = _load_dataset_metadata(path)
+        _require_dump_direction_index(path, dm, direction_idx)
+        converted.append(
+            _build_real_episode(
+                path,
+                fixture_path=fixture,
+                direction_idx=direction_idx,
+                weld_direction_sign=weld_direction_sign,
+                allow_zero_action=allow_zero_action,
+                control_hz=control_hz,
+                ft_lpf_hz=ft_lpf_hz,
+                ft_lpf_order=ft_lpf_order,
+            )
         )
-        for path, direction_idx in discovered
-    ]
     _canonicalize_tree_geometry(converted, base_pos_tolerance_m=float(base_pos_tolerance_m))
     if out.exists() and any(out.iterdir()) and not overwrite:
         raise FileExistsError(f"output_dir not empty (pass overwrite=True): {out}")

@@ -1763,6 +1763,32 @@ def test_single_file_convert_still_writes_s00_d00(tmp_path: Path):
     assert ep["filename"] == "episodes/s00_d00.parquet"
     assert ds.manifest["collection"].get("source_real_parquet")
     assert "source_real_parquets" not in ds.manifest["collection"]
+    assert "topology_seed" not in ds.manifest["collection"]
+    assert "n_holds" not in ds.manifest["collection"]
+    assert "sim_config" not in ds.manifest["collection"]
+
+
+def test_single_file_convert_ignores_dump_direction_index(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = tmp_path / "s09-d05.parquet"
+    _write_synthetic_real(
+        src,
+        **_folder_export_action_kw(),
+        direction_index=5,
+    )
+    out = tmp_path / "batched_d05_single"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    assert (out / "episodes/s00_d00.parquet").is_file()
+    meta = ds.load_episode_metadata(0, 0)
+    assert meta["direction_idx"] == 0
+    assert meta["env_idx"] == 0
 
 
 def test_convert_cli_input_dir_does_not_require_input():

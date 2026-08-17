@@ -130,4 +130,4 @@ def tcp_displacement_along_pull(
 
     hold_tcp = tcp[hold_indices]
     along_pull = signed_parallel_series(hold_tcp, pull_direction)
-    return np.round(along_pull - along_pull[0], decimals=12)
+    return np.asarray(along_pull - along_pull[0], dtype=np.float64)

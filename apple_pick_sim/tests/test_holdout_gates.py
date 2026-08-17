@@ -99,4 +99,4 @@ def test_tcp_displacement_references_first_hold_frame_not_episode_start():
     s = tcp_displacement_along_pull(
         tcp, phase=phase, dir_idx=dir_idx, direction=0, pull_direction=(0.0, 0.0, 1.0)
     )
-    assert s.tolist() == [0.0, 0.2]
+    assert s == pytest.approx([0.0, 0.2])

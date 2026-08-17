@@ -1569,3 +1569,68 @@ def test_run_rejects_multiple_structures_for_vic_pose(monkeypatch, tmp_path):
         SystemExit, match="one converted episode / one structure per run"
     ):
         module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+
+
+def test_run_rejects_vic_on_one_structure_vic_pose_dataset(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 1,
+            "ranges_path": str(ranges_path),
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+    }
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    monkeypatch.setattr(
+        module,
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: pytest.fail(
+            "must not load sim GT for packed vic_pose with vic mode"
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_make_build_env_fn",
+        lambda **_kwargs: pytest.fail(
+            "must not use sim builder for packed vic_pose with vic mode"
+        ),
+    )
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(tmp_path / "out"),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode="vic",
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    with pytest.raises(
+        SystemExit,
+        match="vic_pose datasets must use --controller-mode vic_pose",
+    ):
+        module._run(args, argparse.ArgumentParser(), viewer=MagicMock())

@@ -605,6 +605,11 @@ def _run(
             "vic_pose real replay currently supports one converted episode / "
             "one structure per run; select exactly one --structure-index."
         )
+    if dataset_is_vic_pose and mode == "vic":
+        raise SystemExit(
+            "packed 19D vic_pose datasets must use --controller-mode vic_pose "
+            "(or omit the flag), not twist vic"
+        )
     action_dim = 19 if mode == "vic_pose" else 6
 
     settle_config = _settle_config_kwargs(args=args)

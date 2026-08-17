@@ -468,6 +468,12 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Replay RNG seed (default: manifest collection.seed).",
     )
     p.add_argument(
+        "--controller-mode",
+        choices=("vic", "vic_pose"),
+        default=None,
+        help="Replay controller mode (default: infer vic_pose from dataset, else vic).",
+    )
+    p.add_argument(
         "--use-median",
         action=argparse.BooleanOptionalAction,
         default=True,

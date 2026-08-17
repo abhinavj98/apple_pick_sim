@@ -486,6 +486,35 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
     assert "--max-overlay-candidates" not in option_strings
 
 
+def test_parser_accepts_controller_mode_vic_pose(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    args = parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/ds",
+            "--output",
+            "/tmp/out",
+            "--controller-mode",
+            "vic_pose",
+        ]
+    )
+    assert args.controller_mode == "vic_pose"
+
+
+def test_parser_controller_mode_defaults_to_none(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    args = parser.parse_args(["--dataset", "/tmp/ds", "--output", "/tmp/out"])
+    assert args.controller_mode is None
+
+
 def test_grid_parser_still_exposes_grid_only_controls(monkeypatch):
     """Unchanged grid CLI regression: grid-only flags remain available."""
     module = _load_grid_module()

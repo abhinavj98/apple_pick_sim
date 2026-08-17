@@ -31,11 +31,15 @@ def test_fit_gt_normalization_uses_fixed_physical_scale_not_gt_std():
     scale = transition_feature_scale(n)
     np.testing.assert_allclose(stats.std, scale)
     np.testing.assert_allclose(stats.mean[0], 3.0)
-    # Candidate residual 3 N on Fx → 3/3 = 1.0 after apply, not 3/std(GT)=3/sqrt(6)
+    # Candidate residual 3 N on Fx → 3/2 = 1.5 after apply, not 3/std(GT)=3/sqrt(6)
     cand = np.zeros((1, n), dtype=np.float64)
     cand[0, 0] = 6.0  # 3 N above GT mean
     out = apply_normalization(cand, stats)
-    assert out[0, 0] == pytest.approx(1.0)
+    assert out[0, 0] == pytest.approx(3.0 / 2.0)
+    assert STATE_VECTOR_PHYS_SCALE[0] == pytest.approx(2.0)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[12:15], 0.005)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[15:18], 0.005)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[18:24], 0.005)
 
 
 def test_near_zero_gt_velocity_does_not_explode_candidate_residual():
@@ -88,14 +92,16 @@ def test_fit_gt_normalization_scales_one_junction_woody_and_bend():
     stats = fit_gt_normalization(gt, n_junctions=n_junctions)
 
     assert stats.std.shape == (n,)
-    np.testing.assert_allclose(stats.std[0], 3.0)
-    np.testing.assert_allclose(stats.std[18:21], 0.02)
+    np.testing.assert_allclose(stats.std[0], 2.0)
+    np.testing.assert_allclose(stats.std[12:15], 0.005)  # tcp_pos
+    np.testing.assert_allclose(stats.std[15:18], 0.005)  # apple_pos
+    np.testing.assert_allclose(stats.std[18:21], 0.005)  # woody_start
     assert stats.std[21] == pytest.approx(0.05)
     np.testing.assert_allclose(stats.std[state_dim : state_dim + 6], stats.std[:6])
     cand = np.zeros((1, n), dtype=np.float64)
     cand[0, 0] = 6.0
     out = apply_normalization(cand, stats)
-    assert out[0, 0] == pytest.approx(1.0)
+    assert out[0, 0] == pytest.approx(3.0 / 2.0)
 
 
 def test_fit_gt_normalization_does_not_treat_extra_junctions_as_onehots():
@@ -108,7 +114,7 @@ def test_fit_gt_normalization_does_not_treat_extra_junctions_as_onehots():
 
     woody0 = 18
     last_bend = state_dim - 1
-    np.testing.assert_allclose(stats.std[woody0 : woody0 + 9], 0.02)
+    np.testing.assert_allclose(stats.std[woody0 : woody0 + 9], 0.005)
     np.testing.assert_allclose(stats.std[woody0 + 9 : state_dim], 0.05)
     np.testing.assert_allclose(stats.mean[last_bend], 0.4)
     np.testing.assert_allclose(stats.std[last_bend], 0.05)

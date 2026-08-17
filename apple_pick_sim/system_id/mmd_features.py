@@ -34,9 +34,9 @@ STATE_VECTOR_FIELDS: tuple[str, ...] = (
 
 _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     # ft_wrist F
-    3.0,
-    3.0,
-    3.0,
+    2.0,
+    2.0,
+    2.0,
     # ft_wrist τ
     0.5,
     0.5,
@@ -50,15 +50,15 @@ _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     0.02,
     0.02,
     # tcp_pos
-    0.01,
-    0.01,
-    0.01,
+    0.005,
+    0.005,
+    0.005,
     # apple_pos
-    0.02,
-    0.02,
-    0.02,
+    0.005,
+    0.005,
+    0.005,
 )
-WOODY_START_PHYS_SCALE = 0.02
+WOODY_START_PHYS_SCALE = 0.005
 BEND_ANGLE_PHYS_SCALE = 0.05
 
 

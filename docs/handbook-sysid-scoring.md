@@ -188,7 +188,7 @@ For one `J=2` state half,
 
 | State block | Scale per component |
 | ----------- | ------------------- |
-| F/T force | 1 N |
+| F/T force | 2 N |
 | F/T torque | 0.5 N·m |
 | TCP linear velocity | 0.02 m/s |
 | TCP angular velocity | 0.02 rad/s |

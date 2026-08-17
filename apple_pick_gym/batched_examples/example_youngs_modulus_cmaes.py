@@ -109,9 +109,12 @@ ViewerCancelled = SysIdReplayCancelled
 # Support k_p: absolute safety box (not a per-structure DR quantity / fixture
 # ε-band) — 100 .. 1e6 N/m or N*m/rad (log10 2-6). Spur/stem E: absolute
 # 0.1-100 GPa (log10 8-11), same box as before. Init from the search box
-# midpoint, never from ground truth.
+# midpoint, never from ground truth. Sim-sim box is 0.1–100 GPa; real vic_pose
+# overrides spur/stem floor to 10^7 Pa via _effective_search_bounds_log10.
 _CMA_SEARCH_LOG10_LOWER = [2.0, 8.0, 8.0]  # support_kp 1e2, spur/stem 0.1 GPa
 _CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 11.0]  # support_kp 1e6, spur/stem 100 GPa
+_REAL_CMA_SEARCH_LOG10_LOWER = [2.0, 7.0, 7.0]  # support_kp 1e2, spur/stem 10 MPa
+_REAL_CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 11.0]
 _CMA_MEAN_LOG10 = [_CMA_SEARCH_LOG10_LOWER[i] + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i]) for i in range(3)]
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),
@@ -124,6 +127,20 @@ CMA_SEARCH_PARAMS: dict[str, Any] = {
         "upper": _CMA_SEARCH_LOG10_UPPER,
     },
 }
+
+
+def _effective_search_bounds_log10(
+    mode: str,
+    search: dict[str, Any],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose lowers spur/stem floor to 1e7 Pa."""
+    if mode == "vic_pose":
+        return (
+            tuple(float(x) for x in _REAL_CMA_SEARCH_LOG10_LOWER),
+            tuple(float(x) for x in _REAL_CMA_SEARCH_LOG10_UPPER),
+        )
+    raw = search.get("search_bounds_log10")
+    return normalize_search_bounds_log10(raw)
 
 
 def accumulate_cma_batch_counters(
@@ -563,12 +580,6 @@ def _run(
         population_size = int(population_size)
         if population_size < 1:
             raise SystemExit("CMA_SEARCH_PARAMS['population_size'] must be >= 1")
-    try:
-        search_bounds_log10 = normalize_search_bounds_log10(
-            search.get("search_bounds_log10")
-        )
-    except ValueError as exc:
-        raise SystemExit(f"CMA_SEARCH_PARAMS['search_bounds_log10']: {exc}") from exc
 
     topology_seed = int(collection.get("topology_seed", 42))
     control_hz = _collection_control_hz(collection)
@@ -611,6 +622,11 @@ def _run(
             "(or omit the flag), not twist vic"
         )
     action_dim = 19 if mode == "vic_pose" else 6
+
+    try:
+        search_bounds_log10 = _effective_search_bounds_log10(mode, search)
+    except ValueError as exc:
+        raise SystemExit(f"CMA_SEARCH_PARAMS['search_bounds_log10']: {exc}") from exc
 
     settle_config = _settle_config_kwargs(args=args)
     if mode == "vic_pose":

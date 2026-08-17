@@ -1521,6 +1521,106 @@ def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(monkeypatch, tmp_pa
     assert "gt_diagnostics" not in report["structures"]["0"]
 
 
+def test_run_vic_pose_lowers_spur_stem_search_floor(monkeypatch, tmp_path):
+    module = _load_module()
+    output_dir = tmp_path / "cma_out"
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 1,
+            "ranges_path": str(ranges_path),
+            "topology_seed": 9,
+            "seed": 7,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+        "control_hz": 15.0,
+        "fruiting_base_pos": [1.0, 2.0, 3.0],
+        "initial_robot_joint_q": [0.1, 0.2],
+        "action_compatible_with_vic_twist": False,
+    }
+
+    create_calls: list[dict] = []
+
+    def fake_create(bounds, **kwargs):
+        create_calls.append(dict(kwargs))
+        return cmaes.create_structure_cma_optimizer(bounds, **kwargs)
+
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+        del max_generations, evaluate_fn
+        for state in states.values():
+            state.status = "fitted"
+            state.gt_candidate = None
+            state.final_mean_log10 = (4.0, 9.0, 9.0)
+            state.final_evaluation = _evaluation(
+                state.structure_idx,
+                [cmaes.candidates_from_log10_vector(state.final_mean_log10)],
+                [0.1],
+                direction_indices=(0,),
+            )
+            state.final_evaluation.gt_candidate = None
+        if on_progress is not None:
+            on_progress(states)
+        return cmaes.YoungsModulusCmaFitResult(
+            states=dict(states),
+            fitted_structure_indices=(0,),
+            failed_structure_indices=(),
+            generation_waves=1,
+            final_mean_batch=None,
+        )
+
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    monkeypatch.setattr(module, "make_real_replay_build_env_fn", lambda **_k: MagicMock())
+    monkeypatch.setattr(
+        module,
+        "real_replay_sim_config",
+        lambda **_k: SimpleNamespace(controller=SimpleNamespace(mode="vic_pose")),
+    )
+    monkeypatch.setattr(module, "create_structure_cma_optimizer", fake_create)
+    monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
+    monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
+
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert create_calls[0]["search_bounds_log10"] == (
+        (2.0, 7.0, 7.0),
+        (6.0, 11.0, 11.0),
+    )
+
+
 def test_run_rejects_multiple_structures_for_vic_pose(monkeypatch, tmp_path):
     module = _load_module()
     ranges_path = tmp_path / "ranges.json"

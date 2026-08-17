@@ -29,11 +29,16 @@ def build_parser() -> argparse.ArgumentParser:
             "builders. Emit metadata JSON and/or a full batched_sysid_v1 dataset."
         )
     )
-    parser.add_argument(
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "--input",
         type=Path,
-        required=True,
         help="Real-world episode parquet path (prefer s02-d00.parquet)",
+    )
+    input_group.add_argument(
+        "--input-dir",
+        type=Path,
+        help="Folder of compiled sXX-dNN.parquet files for one tree (1×N convert).",
     )
     parser.add_argument(
         "--fixture",
@@ -89,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=4,
         help="Butterworth order for --ft-lpf-hz (default: 4).",
     )
+    parser.add_argument(
+        "--base-pos-tolerance-m",
+        type=float,
+        default=5e-3,
+        help="Max per-axis fruiting_base_pos spread across directions (default: 5e-3).",
+    )
     return parser
 
 
@@ -99,11 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     from apple_pick_sim.system_id.real_to_batched_sysid import (
         build_episode_metadata_from_real,
         export_real_episode_to_batched_dataset,
+        export_real_tree_folder_to_batched_dataset,
     )
 
     if args.dataset_out is not None:
-        out_dir = export_real_episode_to_batched_dataset(
-            args.input,
+        common_kw = dict(
             fixture_path=args.fixture,
             output_dir=args.dataset_out,
             weld_direction_sign=args.weld_direction_sign,
@@ -114,11 +125,25 @@ def main(argv: list[str] | None = None) -> int:
             ft_lpf_hz=float(args.ft_lpf_hz),
             ft_lpf_order=int(args.ft_lpf_order),
         )
+        if args.input_dir is not None:
+            out_dir = export_real_tree_folder_to_batched_dataset(
+                args.input_dir,
+                base_pos_tolerance_m=float(args.base_pos_tolerance_m),
+                **common_kw,
+            )
+        else:
+            out_dir = export_real_episode_to_batched_dataset(
+                args.input,
+                **common_kw,
+            )
         print(f"Wrote batched dataset {out_dir}", file=sys.stderr)
 
+    input_path = args.input if args.input is not None else None
     if args.out is not None or args.dataset_out is None:
+        if input_path is None:
+            parser.error("metadata JSON output requires --input (single parquet)")
         meta = build_episode_metadata_from_real(
-            args.input,
+            input_path,
             fixture_path=args.fixture,
             weld_direction_sign=args.weld_direction_sign,
         )

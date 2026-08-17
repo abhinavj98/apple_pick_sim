@@ -276,6 +276,8 @@ def _write_synthetic_real(
     packed_woody_end: list[float] | None = None,
     n_rows: int = 2,
     dump_control_hz: float | None = None,
+    direction_index: int | None = None,
+    base_offset_xyz: list[float] | None = None,
     phase_frames: list[int] | None = None,
     ft_wrist_frames: list[list[float]] | None = None,
     ft_wrist_raw_frames: list[list[float]] | None = None,
@@ -410,6 +412,15 @@ def _write_synthetic_real(
                 "description": action_semantics or "action",
             }
         }
+    if direction_index is not None:
+        dump["direction_index"] = int(direction_index)
+    if base_offset_xyz is not None:
+        off = np.asarray(base_offset_xyz, dtype=np.float64).reshape(3)
+        snap_woody_start_arr = np.asarray(snap_woody_start, dtype=np.float64).reshape(9)
+        snap_woody_start_arr[0:3] = snap_woody_start_arr[0:3] + off
+        snap_woody_start = snap_woody_start_arr.tolist()
+        snap["woody_part_start_pos"] = snap_woody_start
+        dataset_metadata["pre_grasp_geometry"]["rest_snapshot_during_run"] = snap
     if camera_to_base_4x4 is not None:
         dataset_metadata["camera_to_base_4x4_used"] = camera_to_base_4x4
     meta = {b"dataset_metadata": json.dumps(dataset_metadata).encode("utf-8")}
@@ -1519,3 +1530,258 @@ def test_export_15hz_source_stamps_nyquist_skip_and_copies_lpf(tmp_path: Path):
     assert filt["skip_reason"] == "cutoff_at_or_above_nyquist"
     assert filt["source_hz"] == pytest.approx(15.0)
     assert filt["column"] == "ft_wrist_lpf"
+
+
+def _folder_export_action_kw() -> dict:
+    return {
+        "action": [0.01, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "action_semantics": "EE twist",
+        "action_order": ["vx", "vy", "vz", "wx", "wy", "wz"],
+    }
+
+
+def _write_folder_parquet(
+    path: Path,
+    direction_idx: int,
+    *,
+    base_offset_xyz: list[float] | None = None,
+    hold_index: int | None = None,
+    dump_direction_index: int | None = None,
+    dump_control_hz: float | None = None,
+    n_rows: int = 330,
+) -> None:
+    kw = _folder_export_action_kw()
+    if dump_control_hz is not None:
+        kw = {**kw, "dump_control_hz": dump_control_hz, "n_rows": n_rows}
+    _write_synthetic_real(
+        path,
+        **kw,
+        direction_index=dump_direction_index if dump_direction_index is not None else direction_idx,
+        base_offset_xyz=base_offset_xyz,
+        hold_index=hold_index,
+    )
+
+
+def test_folder_convert_writes_one_structure_per_direction(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    src_dir = tmp_path / "s09"
+    src_dir.mkdir()
+    _write_folder_parquet(src_dir / "s09-d00.parquet", 0)
+    _write_folder_parquet(src_dir / "s09-d01.parquet", 1)
+    out = tmp_path / "batched"
+    export_real_tree_folder_to_batched_dataset(
+        src_dir, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    collection = ds.manifest["collection"]
+    assert collection["num_structures"] == 1
+    assert collection["num_directions"] == 2
+    assert (out / "episodes/s00_d00.parquet").is_file()
+    assert (out / "episodes/s00_d01.parquet").is_file()
+    for ep in ds.episode_entries():
+        d = int(ep["direction_idx"])
+        assert ep["env_idx"] == d
+        assert ep["filename"] == f"episodes/s00_d{d:02d}.parquet"
+        meta = ds.load_episode_metadata(0, d)
+        assert meta["direction_idx"] == d
+        assert meta["env_idx"] == d
+
+
+def test_folder_convert_maps_sparse_direction_numbers(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    src_dir = tmp_path / "s09_sparse"
+    src_dir.mkdir()
+    _write_folder_parquet(src_dir / "s09-d03.parquet", 3)
+    _write_folder_parquet(src_dir / "s09-d05.parquet", 5)
+    out = tmp_path / "batched_sparse"
+    export_real_tree_folder_to_batched_dataset(
+        src_dir, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    assert ds.manifest["collection"]["num_directions"] == 6
+    assert len(ds.episode_entries()) == 2
+    assert (out / "episodes/s00_d03.parquet").is_file()
+    assert (out / "episodes/s00_d05.parquet").is_file()
+    for ep in ds.episode_entries():
+        assert ep["excluded"] is False
+        assert ep["direction_idx"] == ep["env_idx"]
+
+
+def test_folder_convert_rejects_direction_index_mismatch(tmp_path: Path):
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    src_dir = tmp_path / "s09_mismatch"
+    src_dir.mkdir()
+    _write_folder_parquet(src_dir / "s09-d00.parquet", 0)
+    _write_folder_parquet(
+        src_dir / "s09-d01.parquet", 1, dump_direction_index=4
+    )
+    with pytest.raises(ValueError, match="direction_index"):
+        export_real_tree_folder_to_batched_dataset(
+            src_dir, fixture_path=VARIANCE, output_dir=tmp_path / "out", overwrite=True
+        )
+
+
+def test_folder_convert_rejects_duplicate_and_empty_inputs(tmp_path: Path):
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    dup_dir = tmp_path / "dup"
+    dup_dir.mkdir()
+    _write_folder_parquet(dup_dir / "s09-d00.parquet", 0)
+    _write_folder_parquet(dup_dir / "s09-d000.parquet", 0)
+    with pytest.raises(ValueError):
+        export_real_tree_folder_to_batched_dataset(
+            dup_dir, fixture_path=VARIANCE, output_dir=tmp_path / "out_dup", overwrite=True
+        )
+
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    with pytest.raises(ValueError):
+        export_real_tree_folder_to_batched_dataset(
+            empty_dir, fixture_path=VARIANCE, output_dir=tmp_path / "out_empty", overwrite=True
+        )
+
+
+def test_folder_convert_ignores_uncompiled_siblings(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    src_dir = tmp_path / "s09_siblings"
+    src_dir.mkdir()
+    _write_folder_parquet(src_dir / "s09-d00.parquet", 0)
+    _write_synthetic_real(src_dir / "s09-d00_robot.parquet", **_folder_export_action_kw())
+    _write_synthetic_real(src_dir / "s09-d00_tracking.parquet", **_folder_export_action_kw())
+    (src_dir / "frame.png").write_bytes(b"\x89PNG\r\n")
+    out = tmp_path / "batched_one"
+    export_real_tree_folder_to_batched_dataset(
+        src_dir, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    assert len(ds.episode_entries()) == 1
+    assert ds.episode_entries()[0]["direction_idx"] == 0
+
+
+def test_folder_convert_rejects_base_pose_spread(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    spread_dir = tmp_path / "s09_spread"
+    spread_dir.mkdir()
+    _write_folder_parquet(spread_dir / "s09-d00.parquet", 0)
+    _write_folder_parquet(
+        spread_dir / "s09-d01.parquet", 1, base_offset_xyz=[0.02, 0.0, 0.0]
+    )
+    with pytest.raises(ValueError, match="tolerance"):
+        export_real_tree_folder_to_batched_dataset(
+            spread_dir,
+            fixture_path=VARIANCE,
+            output_dir=tmp_path / "out_spread",
+            overwrite=True,
+            base_pos_tolerance_m=5e-3,
+        )
+
+    ok_dir = tmp_path / "s09_ok"
+    ok_dir.mkdir()
+    _write_folder_parquet(ok_dir / "s09-d00.parquet", 0, base_offset_xyz=[-0.001, 0.0, 0.0])
+    _write_folder_parquet(ok_dir / "s09-d01.parquet", 1, base_offset_xyz=[0.001, 0.0, 0.0])
+    out = tmp_path / "batched_ok"
+    export_real_tree_folder_to_batched_dataset(
+        ok_dir,
+        fixture_path=VARIANCE,
+        output_dir=out,
+        overwrite=True,
+        base_pos_tolerance_m=5e-3,
+    )
+    ds = BatchedSysIdDataset(out)
+    meta0 = ds.load_episode_metadata(0, 0)
+    meta1 = ds.load_episode_metadata(0, 1)
+    np.testing.assert_allclose(meta0["fruiting_base_pos"], meta1["fruiting_base_pos"], atol=1e-9)
+    assert meta0["params_fingerprint"] == meta1["params_fingerprint"]
+    assert meta0["fruiting_system_params"] == meta1["fruiting_system_params"]
+    mean_x = 0.5 * (float(meta0["fruiting_base_pos"][0]) + float(meta1["fruiting_base_pos"][0]))
+    assert abs(float(meta0["fruiting_base_pos"][0]) - mean_x) <= 1e-9
+
+
+def test_folder_convert_writes_n_holds_sim_config_and_topology_seed(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    src_dir = tmp_path / "s09_holds"
+    src_dir.mkdir()
+    _write_folder_parquet(src_dir / "s09-d00.parquet", 0, hold_index=0, dump_control_hz=1000.0)
+    _write_folder_parquet(src_dir / "s09-d01.parquet", 1, hold_index=3, dump_control_hz=1000.0)
+    out = tmp_path / "batched_holds"
+    export_real_tree_folder_to_batched_dataset(
+        src_dir, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    collection = ds.manifest["collection"]
+    assert collection["n_holds"] == 4
+    assert "joint_damping_ratio" in collection["sim_config"]
+    assert collection["sim_config"]["controller"]["mode"] == "vic_pose"
+    assert "topology_seed" in collection
+    assert collection["control_hz"] == pytest.approx(30.0)
+    max_frames = max(int(ep["n_frames"]) for ep in ds.episode_entries())
+    assert collection["max_steps"] == max_frames
+
+
+def test_single_file_convert_still_writes_s00_d00(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = tmp_path / "single.parquet"
+    _write_synthetic_real(src, **_folder_export_action_kw())
+    out = tmp_path / "batched_single"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    assert (out / "episodes/s00_d00.parquet").is_file()
+    assert len(ds.episode_entries()) == 1
+    ep = ds.episode_entries()[0]
+    assert ep["direction_idx"] == 0
+    assert ep["filename"] == "episodes/s00_d00.parquet"
+    assert ds.manifest["collection"].get("source_real_parquet")
+    assert "source_real_parquets" not in ds.manifest["collection"]
+
+
+def test_convert_cli_input_dir_does_not_require_input():
+    import importlib.util
+
+    path = Path("robot_replay/convert_real_to_batched_sysid_metadata.py")
+    spec = importlib.util.spec_from_file_location("convert_real_cli", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    args = mod.build_parser().parse_args(
+        ["--input-dir", "/tmp/s09", "--dataset-out", "/tmp/out"]
+    )
+    assert args.input_dir == Path("/tmp/s09")
+    args_single = mod.build_parser().parse_args(
+        ["--input", "x.parquet", "--dataset-out", "out"]
+    )
+    assert args_single.input == Path("x.parquet")
+    with pytest.raises(SystemExit):
+        mod.build_parser().parse_args(
+            ["--input", "x.parquet", "--input-dir", "/tmp/s09", "--dataset-out", "out"]
+        )

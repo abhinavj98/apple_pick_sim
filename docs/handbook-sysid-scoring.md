@@ -17,10 +17,11 @@ features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
 >
 > Real compiled bags already isolate plant load as EMA−EMA:
 > `ft_wrist` is loaded EMA minus the unloaded same-motion replay EMA.
-> Convert that compiled column (do not subtract `ft_wrist_raw −
-> ft_wrist_baseline` again); then apply the convert-time zero-phase
-> Butterworth and block-mean to `collection.control_hz` (default 30 Hz).
-> Never convert an uncorrected `*_robot.parquet`.
+> Convert that compiled column (do not subtract `ft_wrist_raw − ft_wrist_baseline`
+> again). Convert keeps world-rotated `ft_wrist` as an unfiltered 30 Hz
+> block-mean and writes a separate `ft_wrist_lpf` series (zero-phase
+> Butterworth, default 10 Hz, then the same block-mean). Scoring uses
+> `ft_wrist_lpf` when present. Never convert an uncorrected `*_robot.parquet`.
 >
 > Sim `ft_wrist` is already the plant TCP wrench. Gym copies
 > `coupling_forces_cache` (`tcp_coupling_force`): stem-apple harvest plus
@@ -96,7 +97,8 @@ logged pose-control wrench as a twist.
 `step_idx`, `phase`, `excitation_type`, `excitation_direction`, `action`,
 `tcp_velocity`, and `ft_wrist`. Scoring-aligned writers also provide
 `hold_number`, `tcp_pos`, `apple_pos`, `stable`, and dynamic
-`woody_start__<junction>` columns. `hold_number` remains loader-compatible
+`woody_start__<junction>` columns. Real convert also writes optional
+`ft_wrist_lpf` (not required on sim bags). `hold_number` remains loader-compatible
 optional data for older bags; missing values fall back to inferred segment
 indices or `-1` where the collector needs a sentinel.
 
@@ -123,7 +125,7 @@ CMA pair `J=2`, `mmd_features.CMA_WOODY_JUNCTIONS` is
 
 | Offset | Field | Dimensions | Meaning |
 | ------ | ----- | ---------- | ------- |
-| 0:6 | `ft_wrist` | 6 | World-frame force then torque, env-on-robot, about TCP |
+| 0:6 | `ft_wrist` | 6 | World-frame force then torque, env-on-robot, about TCP. Real GT uses `ft_wrist_lpf` when that column is present; candidate replay always uses live `ft_wrist`. |
 | 6:12 | `tcp_velocity` | 6 | Linear then angular TCP velocity |
 | 12:15 | `tcp_pos` | 3 | TCP world position |
 | 15:18 | `apple_pos` | 3 | Apple world position |
@@ -151,10 +153,12 @@ with the same geometry:
    `real_to_batched_sysid.world_wrench_from_ee_logged` applies
    \(F_W=R_{W,TCP}F_{EE}\) and
    \(\tau_W=R_{W,TCP}\tau_{EE}\). Conversion applies this to `ft_wrist` and
-   `raw_ft_wrist`, without another sign flip or lever-arm transport. Scoring
-   uses converted `ft_wrist` (already EMA−EMA tared in the compiled real
-   parquet, then convert-time 10 Hz `filtfilt` + block-mean to
-   `collection.control_hz`); `raw_ft_wrist` is diagnostic only, same windows.
+   `raw_ft_wrist`, without another sign flip or lever-arm transport.
+   World `ft_wrist` is then block-mean downsampled unfiltered. Convert also
+   writes `ft_wrist_lpf`: the same world wrench after a 10 Hz `filtfilt`, then
+   the same block-mean to `collection.control_hz`. Scoring
+   (`mmd_features.scored_ft_wrist` / `build_state_matrix`) uses `ft_wrist_lpf`
+   when present; `raw_ft_wrist` remains diagnostic only, unfiltered.
 2. **No sim filter and no sim tare.**
    Candidate replay uses its live world-frame plant harvest as `ft_wrist`.
    There is no score-time F/T transform, no simulated EMA/LPF, and no unloaded
@@ -173,7 +177,8 @@ with the same geometry:
    not evidence about candidate plant fidelity and is not scored.
 
 Other non-scored fields include `woody_part_force`, TCP/apple quaternions,
-robot joints, camera calibration, and raw F/T.
+robot joints, camera calibration, raw F/T, and unfiltered real `ft_wrist`
+when `ft_wrist_lpf` is present.
 
 ## 5. Normalization
 
@@ -296,7 +301,7 @@ woody starts and ends. Those properties must not be copied into
 
 | Owner | Contract |
 | ----- | -------- |
-| `mmd_features.STATE_VECTOR_FIELDS`, `STATE_VECTOR_PHYS_SCALE`, `REQUIRED_ARRAY_KEYS`, `CMA_WOODY_JUNCTIONS` | State order, scale, bag validation, CMA geometry |
+| `mmd_features.STATE_VECTOR_FIELDS`, `STATE_VECTOR_PHYS_SCALE`, `REQUIRED_ARRAY_KEYS`, `CMA_WOODY_JUNCTIONS`, `scored_ft_wrist` | State order, scale, bag validation, CMA geometry, real LPF wrench |
 | `mmd_features.build_state_matrix`, `build_transition_features_by_direction`, `combine_transition_features` | State and transition rows |
 | `mmd.fit_gt_normalization`, `apply_normalization` | GT mean plus fixed physical scale |
 | `wasserstein.prepare_gt_wasserstein_scoring_context`, `score_candidate_wasserstein_complete`, `sinkhorn_distance` | Production Sinkhorn context and score |
@@ -313,9 +318,9 @@ Key tests:
 - `apple_pick_sim/tests/test_wasserstein.py` — per-direction and pooled
   contexts, completeness, singleton bags, and direction one-hots.
 - `apple_pick_sim/tests/test_real_to_batched_sysid.py` — F/T rotation,
-  EMA−EMA no re-tare, 10 Hz `filtfilt` + 30 Hz block-mean, last-sample
-  phase, two-start tag mapping, scalar holds, no trajectory ends, and 19D
-  pose action packing.
+  EMA−EMA no re-tare, unfiltered `ft_wrist` plus 10 Hz `ft_wrist_lpf` + 30 Hz
+  block-mean, last-sample phase, two-start tag mapping, scalar holds, no
+  trajectory ends, and 19D pose action packing.
 - `apple_pick_sim/tests/test_batched_trajectory_store.py` and
   `apple_pick_gym/tests/test_batched_sysid_collect.py` — storage and collector
   round trips.

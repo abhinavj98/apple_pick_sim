@@ -9,7 +9,7 @@ the next real-data acceptance work belong in `docs/ROADMAP.md`.
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-14 |
+| Last reviewed | 2026-08-17 |
 | Code owners | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py`; `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H4 `docs/handbook-real-replay.md` |
@@ -97,7 +97,8 @@ twist.
 
 ## 3. CMA-ES loop
 
-`example_youngs_modulus_cmaes.py` is a separate simulation-data fit command;
+`example_youngs_modulus_cmaes.py` is the per-structure fit command for
+simulation datasets and for real 1×1 `vic_pose` bags;
 it does not replace the Cartesian diagnostic. One independent pycma optimizer
 owns each selected structure. Active structures advance in synchronized waves:
 
@@ -158,7 +159,7 @@ a GT-error threshold.
 Grid ranking and CMA fitness use the production complete pooled Sinkhorn path
 owned by H3:
 
-- bag and `STATE_VECTOR` fields;
+- bag and `STATE_VECTOR` fields (real GT F/T from `ft_wrist_lpf` when present);
 - fixed physical scales and GT-only centering;
 - hold/direction handling and completeness;
 - exclusion of `action` from the score vector; and
@@ -193,6 +194,9 @@ Real 1×1 `vic_pose` CMA (same H4 builder as the grid):
 
 - Real 1×1 `vic_pose` datasets auto-select `make_real_replay_build_env_fn`;
   `--controller-mode` is the explicit opt-in/override.
+- Each selected structure's recorded bag must include convert-time
+  `ft_wrist_lpf`; CMA refuses otherwise. Sinkhorn scores that column (H3);
+  live candidate harvest stays unfiltered `ft_wrist`.
 - `gt_candidate` is `None`; `cmaes_report.json` omits `gt_diagnostics`.
 - Effective spur/stem floor is \(\log_{10} E = 7\) on real runs only.
 - Multi-episode convert / per-direction weld remain ROADMAP-owned (spec slices

@@ -152,6 +152,13 @@ def test_build_state_matrix_uses_exact_feature_order():
     np.testing.assert_allclose(state[0], expected)
 
 
+def test_build_state_matrix_prefers_ft_wrist_lpf_when_present():
+    arrays = _arrays_for_steps(steps=1, junction_names=["joint_b", "joint_a"])
+    arrays["ft_wrist_lpf"] = np.full((1, 6), 7.0, dtype=np.float32)
+    state = build_state_matrix(arrays)
+    np.testing.assert_allclose(state[0, :6], [7.0] * 6)
+
+
 def test_state_vector_phys_scale_length_matches_two_junction_state_matrix():
     arrays = _arrays_for_steps(steps=1, junction_names=["joint_b", "joint_a"])
     assert len(STATE_VECTOR_PHYS_SCALE) == build_state_matrix(arrays).shape[1]

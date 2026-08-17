@@ -16,13 +16,14 @@ Sequencing, ranking acceptance, and CMA status belong in `docs/ROADMAP.md`.
 
 > **Warning — tare real F/T, never simulated F/T.** Convert the compiled
 > episode parquet whose `ft_wrist` is already loaded EMA minus unloaded EMA.
-> Convert then rotates to world, applies a zero-phase Butterworth (default
-> 10 Hz), and block-means F/T and TCP velocity to `--control-hz` (default
-> 30). Commands, poses, phase, hold, joints, and woody geometry take the last
-> sample of each window. Do not subtract a robot-only sim replay from candidate
-> `ft_wrist`: on `vic_pose` that signal is plant harvest only, so the unload
-> would be zero. Full contract: H3 `docs/handbook-sysid-scoring.md` (warning
-> at top).
+> Convert then rotates to world, block-means unfiltered F/T and TCP velocity
+> to `--control-hz` (default 30 Hz), and writes a separate `ft_wrist_lpf`
+> column (10 Hz zero-phase Butterworth, then the same block-mean). Scoring
+> uses `ft_wrist_lpf`. Commands, poses, phase, hold, joints, and woody geometry
+> take the last sample of each window. Do not subtract a robot-only sim replay
+> from candidate `ft_wrist`: on `vic_pose` that signal is plant harvest only,
+> so the unload would be zero. Full contract: H3
+> `docs/handbook-sysid-scoring.md` (warning at top).
 
 Related boundaries:
 
@@ -130,12 +131,14 @@ Conversion aligns real bags with H3:
   There is no second sign flip, lever-arm transport, or simulated tare.
   The source `ft_wrist` must already be compiled EMA−EMA (loaded EMA minus
   unloaded EMA). Convert then `filtfilt`s a Butterworth (default cutoff
-  10 Hz, order 4) on world `ft_wrist`, `raw_ft_wrist`, and `tcp_velocity`,
-  then block-means those series to `--control-hz` (default 30 Hz).
+  10 Hz, order 4) on world `ft_wrist` only, writing the result as
+  `ft_wrist_lpf`, and block-means unfiltered `ft_wrist`, `raw_ft_wrist`,
+  `tcp_velocity`, and `ft_wrist_lpf` to `--control-hz` (default 30 Hz).
   Action / `vic_pose`, TCP and tag poses, `phase`, hold index, joint `q`,
   and woody starts copy the **last sample** of each window so labels and
   commands are not averaged. Sim harvest is not filtered. Provenance is
-  `collection.ft_filter` and episode `ft_filter`.
+  `collection.ft_filter` (`column: ft_wrist_lpf`, `applied`) and episode
+  `ft_filter`.
 - `tag_poses_to_cma_woody` reads Branch, Spur, and Apple pose translations.
   It emits the two woody starts `primary_spur` and `spur_stem`, plus
   `apple_pos`. Trajectory bags do not carry woody ends.
@@ -251,7 +254,7 @@ here.
 | -------------- | --------------- |
 | Native real metadata mapping and batched export | `apple_pick_sim/system_id/real_to_batched_sysid.py` — `build_episode_metadata_from_real`, `export_real_episode_to_batched_dataset` |
 | Pre-grasp rod geometry, `mass_kg` → density | `apple_pick_sim/system_id/real_pre_grasp_params.py` — `map_pre_grasp_geometry`, `fruiting_params_from_pre_grasp_meta` |
-| F/T, woody, hold, camera conversion | same module — `world_wrench_from_ee_logged`, `tag_poses_to_cma_woody`, `_scalar_hold_number`, `camera_to_base_4x4_from_dataset_metadata`, `zero_phase_lowpass`, `block_mean_downsample` |
+| F/T, woody, hold, camera conversion | same module — `world_wrench_from_ee_logged`, `tag_poses_to_cma_woody`, `_scalar_hold_number`, `camera_to_base_4x4_from_dataset_metadata`, `zero_phase_lowpass`, `zero_phase_lowpass_with_status`, `block_mean_downsample` |
 | Twin init and logged weld pose | `apple_pick_sim/system_id/batched_digital_twin_init.py` — `gripper_proxy_for_real_batched_replay`, `apply_logged_post_grasp_se3_to_cable` |
 | Shared gym build path | `apple_pick_gym/batched_envs/real_batched_replay_build.py` — `real_replay_sim_config`, `make_real_replay_build_env_fn` |
 | Standalone replay and GL camera | `robot_replay/example_replay_real_batched.py` — `_run`, `make_replay_on_step`, `gl_camera_from_camera_to_base` |

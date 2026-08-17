@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
@@ -1406,6 +1407,10 @@ def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(monkeypatch, tmp_pa
         "initial_robot_joint_q": [0.1, 0.2],
         "action_compatible_with_vic_twist": False,
     }
+    dataset.load_episode_obs_arrays.return_value = {
+        "ft_wrist": np.zeros((4, 6), dtype=np.float32),
+        "ft_wrist_lpf": np.ones((4, 6), dtype=np.float32),
+    }
 
     real_builder = MagicMock()
     real_builder_calls: list[dict] = []
@@ -1547,6 +1552,10 @@ def test_run_vic_pose_lowers_spur_stem_search_floor(monkeypatch, tmp_path):
         "fruiting_base_pos": [1.0, 2.0, 3.0],
         "initial_robot_joint_q": [0.1, 0.2],
         "action_compatible_with_vic_twist": False,
+    }
+    dataset.load_episode_obs_arrays.return_value = {
+        "ft_wrist": np.zeros((4, 6), dtype=np.float32),
+        "ft_wrist_lpf": np.ones((4, 6), dtype=np.float32),
     }
 
     create_calls: list[dict] = []
@@ -1734,3 +1743,77 @@ def test_run_rejects_vic_on_one_structure_vic_pose_dataset(monkeypatch, tmp_path
         match="vic_pose datasets must use --controller-mode vic_pose",
     ):
         module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+
+
+def test_run_vic_pose_refuses_dataset_without_ft_wrist_lpf(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 1,
+            "ranges_path": str(ranges_path),
+            "seed": 7,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+        "control_hz": 15.0,
+        "fruiting_base_pos": [1.0, 2.0, 3.0],
+        "initial_robot_joint_q": [0.1, 0.2],
+        "action_compatible_with_vic_twist": False,
+    }
+    dataset.load_episode_obs_arrays.return_value = {
+        "ft_wrist": np.zeros((4, 6), dtype=np.float32),
+    }
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(tmp_path / "out"),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    with pytest.raises(SystemExit, match="ft_wrist_lpf"):
+        module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+
+
+def test_require_ft_wrist_lpf_refuses_when_later_direction_omits_column():
+    module = _load_module()
+    dataset = MagicMock()
+    dataset.manifest = {"collection": {"num_directions": 2}}
+
+    def _load(_structure_idx, direction_idx):
+        if int(direction_idx) == 0:
+            return {
+                "ft_wrist": np.zeros((4, 6), dtype=np.float32),
+                "ft_wrist_lpf": np.ones((4, 6), dtype=np.float32),
+            }
+        return {"ft_wrist": np.zeros((4, 6), dtype=np.float32)}
+
+    dataset.load_episode_obs_arrays.side_effect = _load
+    with pytest.raises(SystemExit, match="ft_wrist_lpf"):
+        module._require_ft_wrist_lpf_per_structure(dataset, [0])

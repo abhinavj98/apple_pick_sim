@@ -4,7 +4,7 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-08-14 |
+| **Last updated** | 2026-08-17 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
 | **Active work**  | **[M4].0 feature alignment Done** (slices 0–3); next: trusted Cartesian ranking → CMA; V.5.3 held-out deferred |
@@ -42,7 +42,7 @@
 
 ## Current focus
 
-**Next slice:** **M4.0 trusted Cartesian ranking** (then CMA on the same builder). **Feature alignment Done**; use H3 `docs/handbook-sysid-scoring.md` for the aligned bag/scale contract, H4 `docs/handbook-real-replay.md` for convert/replay, and H5 `docs/handbook-youngs-cma.md` for ranking/CMA. Slices 0–3 delivered USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
+**Next slice:** **M4.0 trusted Cartesian ranking** (then CMA on the same builder). **Feature alignment Done**; use H3 `docs/handbook-sysid-scoring.md` for the aligned bag/scale contract, H4 `docs/handbook-real-replay.md` for convert/replay, and H5 `docs/handbook-youngs-cma.md` for ranking/CMA. Slices 0–3 delivered USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. Convert writes unfiltered world `ft_wrist` plus scored `ft_wrist_lpf` (10 Hz `filtfilt` + 30 Hz block-mean). **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
 
 **Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see H5 `docs/handbook-youngs-cma.md`.
 
@@ -57,7 +57,7 @@
 **Scope for feature alignment (Done — spec `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md`):**
 
 - **Slice 0:** USD `/fr3/ee` mass 1.1 kg, COM `(0,0,−0.077)`, diagonal `I_ee`; massless `/ee/tcp`
-- **Slice 1:** Convert `R(tcp) @` logged F and τ; raise if `tcp_pose_4x4` missing; score converted `ft_wrist` (not raw); **no sim EMA/LPF**
+- **Slice 1:** Convert `R(tcp) @` logged F and τ; raise if `tcp_pose_4x4` missing; score convert-time `ft_wrist_lpf` (keep unfiltered `ft_wrist`); **no sim EMA/LPF**
 - **Slice 2:** Compiler Branch/Spur/Apple → two woody starts + `apple_pos`; drop `woody_end` from sys-ID bag / collector / `STATE_VECTOR`
 - **Slice 3:** Scalar `hold_number` from `hold_index`; one-hot only at score time
 - **Not in scope:** scoring `action` (including pose-only `action[0:7]`); sim F/T low-pass; plumbing spec score-time F/T+LPF plan (superseded)
@@ -80,7 +80,7 @@
 - [ ] End-to-end smoke on `s02-d00` (convert → grid) with `--viewer null` — commands documented in validation block + `robot_replay/README.md`; **not executed in worktree** (parquet gitignored); acceptance: envs build, 19D steps, no wrench-as-twist, no `sim_config` crash; ranking **not** trusted until post-alignment smoke
 - [x] README + validation commands updated
 - [x] **Alignment slice 0:** USD `/fr3/ee` mass/COM/`I_ee` from recorded `ee_config` (spec `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md`)
-- [x] **Alignment slice 1:** Convert-time `R(tcp) @` F/T; no sim EMA; full 19D action in bag
+- [x] **Alignment slice 1:** Convert-time `R(tcp) @` F/T; scored `ft_wrist_lpf`; no sim EMA; full 19D action in bag
 - [x] **Alignment slice 2:** Two-start woody + `apple_pos`; `woody_end` dropped from sys-ID bag
 - [x] **Alignment slice 3:** Scalar `hold_number` from `hold_index`
 - [ ] **Post-alignment:** Trusted Cartesian ranking on aligned bags (Sinkhorn smoke / grid)

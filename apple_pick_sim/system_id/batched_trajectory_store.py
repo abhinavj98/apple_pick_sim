@@ -394,6 +394,8 @@ class BatchedSysIdDataset:
             "robot_joint_q": _stack_column("robot_joint_q").reshape(-1, 7),
             "junction_names": list(junction_names),
         }
+        if "ft_wrist_lpf" in table.column_names:
+            arrays["ft_wrist_lpf"] = _stack_column("ft_wrist_lpf").reshape(-1, 6)
         if "sim_time" in table.column_names:
             arrays["sim_time"] = _stack_column("sim_time").reshape(-1)
         if "amplitude_m" in table.column_names:

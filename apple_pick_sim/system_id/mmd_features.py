@@ -96,6 +96,17 @@ def transition_feature_scale(n_features: int, *, n_junctions: int = 2) -> np.nda
     return np.concatenate([state, state, np.ones(n_extra, dtype=np.float64)])
 
 
+def scored_ft_wrist(arrays: Mapping[str, Any]) -> Any:
+    """Prefer convert-time ``ft_wrist_lpf`` when present; else live ``ft_wrist``."""
+    lpf = arrays.get("ft_wrist_lpf")
+    if lpf is None:
+        return arrays["ft_wrist"]
+    arr = np.asarray(lpf)
+    if arr.size == 0:
+        return arrays["ft_wrist"]
+    return lpf
+
+
 def n_junctions_from_episodes(episodes: Sequence[Mapping[str, Any]]) -> int:
     """Return the shared woody-junction count from recorded/replay bags."""
     if not episodes:
@@ -433,7 +444,7 @@ def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
     junction_names = [str(name) for name in arrays["junction_names"]]
 
     columns = [
-        _as_2d(arrays["ft_wrist"], name="ft_wrist", n_frames=n_frames),
+        _as_2d(scored_ft_wrist(arrays), name="ft_wrist", n_frames=n_frames),
         _as_2d(arrays["tcp_velocity"], name="tcp_velocity", n_frames=n_frames),
         _as_2d(arrays["tcp_pos"], name="tcp_pos", n_frames=n_frames),
         _as_2d(arrays["apple_pos"], name="apple_pos", n_frames=n_frames),

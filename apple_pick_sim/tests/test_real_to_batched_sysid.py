@@ -1230,6 +1230,20 @@ def test_zero_phase_lowpass_does_not_delay_gaussian_peak():
     assert int(np.argmax(filtered)) == int(np.argmax(signal))
 
 
+def test_zero_phase_lowpass_with_status_skips_cutoff_at_or_above_nyquist():
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        zero_phase_lowpass_with_status,
+    )
+
+    values = np.linspace(0.0, 1.0, 16, dtype=np.float64).reshape(-1, 1)
+    filtered, status = zero_phase_lowpass_with_status(
+        values, source_hz=15.0, cutoff_hz=10.0, order=4
+    )
+    np.testing.assert_allclose(filtered, values)
+    assert status["applied"] is False
+    assert status["skip_reason"] == "cutoff_at_or_above_nyquist"
+
+
 def _khz_pose_wrench_kw() -> dict:
     return {
         "action": [0.0] * 6,
@@ -1267,6 +1281,7 @@ def test_export_does_not_retare_compiled_ft_wrist(tmp_path: Path):
     )
     arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
     np.testing.assert_allclose(arrays["ft_wrist"][:, :3], [[3.0, 0.0, 0.0]] * 10, atol=0.05)
+    np.testing.assert_allclose(arrays["ft_wrist_lpf"][:, :3], [[3.0, 0.0, 0.0]] * 10, atol=0.05)
     assert not np.allclose(arrays["ft_wrist"][:, :3], [[9.0, 0.0, 0.0]] * 10, atol=0.5)
 
 
@@ -1285,6 +1300,7 @@ def test_export_decimates_1000hz_to_30hz_and_stamps_filter(tmp_path: Path):
     ds = BatchedSysIdDataset(out)
     arrays = ds.load_episode_obs_arrays(0, 0)
     assert arrays["ft_wrist"].shape[0] == 10
+    assert arrays["ft_wrist_lpf"].shape == arrays["ft_wrist"].shape
     assert arrays["action"].shape[0] == 10
     assert ds.manifest["collection"]["control_hz"] == pytest.approx(30.0)
     meta = ds.load_episode_metadata(0, 0)
@@ -1297,7 +1313,8 @@ def test_export_decimates_1000hz_to_30hz_and_stamps_filter(tmp_path: Path):
     assert filt["source_hz"] == pytest.approx(1000.0)
     assert filt["target_hz"] == pytest.approx(30.0)
     assert filt["tare"] == "ema_minus_ema"
-    assert filt["column"] == "ft_wrist"
+    assert filt["column"] == "ft_wrist_lpf"
+    assert filt["applied"] is True
 
 
 def test_export_block_mean_recovers_constant_force(tmp_path: Path):
@@ -1318,6 +1335,7 @@ def test_export_block_mean_recovers_constant_force(tmp_path: Path):
     arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
     assert arrays["ft_wrist"].shape[0] == 10
     np.testing.assert_allclose(np.median(arrays["ft_wrist"][:, 0]), 3.0, atol=0.08)
+    np.testing.assert_allclose(np.median(arrays["ft_wrist_lpf"][:, 0]), 3.0, atol=0.08)
 
 
 def test_export_zero_phase_pulse_stays_in_source_window(tmp_path: Path):
@@ -1342,6 +1360,8 @@ def test_export_zero_phase_pulse_stays_in_source_window(tmp_path: Path):
     arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
     unfiltered = block_mean_downsample(pulse[:, :1], 33).reshape(-1)
     assert int(np.argmax(np.abs(arrays["ft_wrist"][:, 0]))) == int(np.argmax(unfiltered))
+    np.testing.assert_allclose(arrays["ft_wrist"][:, 0], unfiltered, atol=1e-5)
+    assert "ft_wrist_lpf" in arrays
 
 
 def test_export_phase_uses_last_sample_of_window(tmp_path: Path):
@@ -1399,6 +1419,7 @@ def test_export_rotates_then_decimates_constant_ee_force(tmp_path: Path):
     arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
     assert arrays["ft_wrist"].shape[0] == 10
     np.testing.assert_allclose(arrays["ft_wrist"][:, :3], [[0.0, 1.0, 0.0]] * 10, atol=0.05)
+    np.testing.assert_allclose(arrays["ft_wrist_lpf"][:, :3], [[0.0, 1.0, 0.0]] * 10, atol=0.05)
     np.testing.assert_allclose(arrays["raw_ft_wrist"][:, :3], [[0.0, 2.0, 0.0]] * 10, atol=0.05)
 
 
@@ -1424,6 +1445,7 @@ def test_export_forwards_custom_ft_lpf_hz(tmp_path: Path):
     assert filt["cutoff_hz"] == pytest.approx(8.0)
     assert filt["order"] == 2
     assert filt["target_hz"] == pytest.approx(30.0)
+    assert filt["column"] == "ft_wrist_lpf"
 
 
 def test_convert_cli_defaults_control_hz_and_lpf():
@@ -1438,3 +1460,62 @@ def test_convert_cli_defaults_control_hz_and_lpf():
     assert args.control_hz == pytest.approx(30.0)
     assert args.ft_lpf_hz == pytest.approx(10.0)
     assert args.ft_lpf_order == 4
+
+
+def test_export_keeps_unfiltered_ft_wrist_and_writes_lpf_column(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        block_mean_downsample,
+        export_real_episode_to_batched_dataset,
+        zero_phase_lowpass,
+    )
+
+    n = 330
+    t = np.arange(n, dtype=np.float64) / 1000.0
+    force = 3.0 + 4.0 * np.sin(2.0 * np.pi * 80.0 * t)
+    frames = [[float(force[i]), 0.0, 0.0, 0.0, 0.0, 0.0] for i in range(n)]
+    src = tmp_path / "lpf_col.parquet"
+    _write_synthetic_real(src, **_khz_pose_wrench_kw(), ft_wrist_frames=frames)
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    world = np.asarray(frames, dtype=np.float64)
+    expected_unfiltered = block_mean_downsample(world, 33)
+    expected_lpf = block_mean_downsample(
+        zero_phase_lowpass(world, source_hz=1000.0, cutoff_hz=10.0, order=4),
+        33,
+    )
+    np.testing.assert_allclose(arrays["ft_wrist"], expected_unfiltered, atol=1e-5)
+    np.testing.assert_allclose(arrays["ft_wrist_lpf"], expected_lpf, atol=1e-5)
+    assert not np.allclose(arrays["ft_wrist"], arrays["ft_wrist_lpf"], atol=0.05)
+
+
+def test_export_15hz_source_stamps_nyquist_skip_and_copies_lpf(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    n = 16
+    t = np.arange(n, dtype=np.float64) / 15.0
+    force = 3.0 + 4.0 * np.sin(2.0 * np.pi * 5.0 * t)
+    frames = [[float(force[i]), 0.0, 0.0, 0.0, 0.0, 0.0] for i in range(n)]
+    src = tmp_path / "already_15hz.parquet"
+    kw = _khz_pose_wrench_kw()
+    kw["dump_control_hz"] = 15.0
+    kw.pop("n_rows")
+    _write_synthetic_real(src, **kw, ft_wrist_frames=frames)
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    arrays = ds.load_episode_obs_arrays(0, 0)
+    np.testing.assert_allclose(arrays["ft_wrist"], arrays["ft_wrist_lpf"], atol=1e-5)
+    filt = ds.manifest["collection"]["ft_filter"]
+    assert filt["applied"] is False
+    assert filt["skip_reason"] == "cutoff_at_or_above_nyquist"
+    assert filt["source_hz"] == pytest.approx(15.0)
+    assert filt["column"] == "ft_wrist_lpf"

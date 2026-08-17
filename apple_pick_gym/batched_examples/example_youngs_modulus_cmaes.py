@@ -143,6 +143,37 @@ def _effective_search_bounds_log10(
     return normalize_search_bounds_log10(raw)
 
 
+def _require_ft_wrist_lpf_per_structure(dataset: Any, structure_indices: list[int]) -> None:
+    """Real CMA scores convert-time ``ft_wrist_lpf``; refuse bags that omit it."""
+    import numpy as np
+
+    collection = {}
+    manifest = getattr(dataset, "manifest", None)
+    if isinstance(manifest, dict):
+        raw = manifest.get("collection")
+        if isinstance(raw, dict):
+            collection = raw
+    resolved = _resolve_n_directions(dataset, collection)
+    num_directions = int(resolved) if resolved is not None and int(resolved) >= 1 else 1
+
+    missing: list[int] = []
+    for structure_idx in structure_indices:
+        for direction_idx in range(num_directions):
+            arrays = dataset.load_episode_obs_arrays(
+                int(structure_idx), int(direction_idx)
+            )
+            lpf = arrays.get("ft_wrist_lpf") if isinstance(arrays, dict) else None
+            if lpf is None or np.asarray(lpf).size == 0:
+                missing.append(int(structure_idx))
+                break
+    if missing:
+        raise SystemExit(
+            "vic_pose CMA requires convert-time ft_wrist_lpf on each selected "
+            f"structure; missing on {missing}. Re-run convert so the LPF "
+            "column is written."
+        )
+
+
 def accumulate_cma_batch_counters(
     counters: dict[str, int],
     batch: YoungsModulusBatchEvaluation,
@@ -622,6 +653,8 @@ def _run(
             "(or omit the flag), not twist vic"
         )
     action_dim = 19 if mode == "vic_pose" else 6
+    if mode == "vic_pose":
+        _require_ft_wrist_lpf_per_structure(dataset, structure_indices)
 
     try:
         search_bounds_log10 = _effective_search_bounds_log10(mode, search)

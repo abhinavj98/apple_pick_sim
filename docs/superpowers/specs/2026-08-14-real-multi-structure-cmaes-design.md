@@ -88,10 +88,11 @@ Measured on `tmp/final_data` at design time; re-check if the data is regenerated
 ### Decimation
 
 > **Superseded for F/T and velocity (2026-08-17).** Convert no longer uses
-> nearest-timestamp 15 Hz copies. Default `--control-hz` is **30 Hz**. Scored
-> continuous signals (`ft_wrist`, `tcp_velocity`, diagnostic `raw_ft_wrist`)
-> are world-rotated, zero-phase Butterworth low-passed (default 10 Hz), then
-> block-mean downsampled. Discrete/drive fields (`action`, poses, `phase`,
+> nearest-timestamp 15 Hz copies. Default `--control-hz` is **30 Hz**.
+> Unfiltered world `ft_wrist`, `tcp_velocity`, and diagnostic `raw_ft_wrist`
+> are block-mean downsampled. Convert also writes scored `ft_wrist_lpf`:
+> world-rotated F/T, zero-phase Butterworth (default 10 Hz), then the same
+> block-mean. Discrete/drive fields (`action`, poses, `phase`,
 > hold, joints, woody) still take one sample per window (the last), so
 > averaging does not smear pull/hold boundaries. See H3/H4.
 

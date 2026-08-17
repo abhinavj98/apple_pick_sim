@@ -642,12 +642,26 @@ def zero_phase_lowpass(
     order: int = DEFAULT_FT_LPF_ORDER,
 ) -> np.ndarray:
     """Forward-backward Butterworth; skip when cutoff is unusable or the series is too short."""
+    filtered, _status = zero_phase_lowpass_with_status(
+        values, source_hz=source_hz, cutoff_hz=cutoff_hz, order=order
+    )
+    return filtered
+
+
+def zero_phase_lowpass_with_status(
+    values: np.ndarray,
+    *,
+    source_hz: float,
+    cutoff_hz: float,
+    order: int = DEFAULT_FT_LPF_ORDER,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Return filtered values plus ``applied`` / ``skip_reason`` provenance."""
     x = np.asarray(values, dtype=np.float64)
     if cutoff_hz <= 0.0 or source_hz <= 0.0:
-        return x.copy()
+        return x.copy(), {"applied": False, "skip_reason": "nonpositive_hz"}
     nyquist = 0.5 * float(source_hz)
     if float(cutoff_hz) >= nyquist:
-        return x.copy()
+        return x.copy(), {"applied": False, "skip_reason": "cutoff_at_or_above_nyquist"}
     from scipy.signal import butter, filtfilt
 
     sos_order = int(order)
@@ -656,9 +670,9 @@ def zero_phase_lowpass(
     b, a = butter(sos_order, float(cutoff_hz) / nyquist, btype="low")
     padlen = 3 * (max(len(a), len(b)) - 1)
     if x.shape[0] <= padlen:
-        return x.copy()
+        return x.copy(), {"applied": False, "skip_reason": "series_shorter_than_padlen"}
     filtered = filtfilt(b, a, x, axis=0)
-    return np.asarray(filtered, dtype=np.float64)
+    return np.asarray(filtered, dtype=np.float64), {"applied": True}
 
 
 def export_real_episode_to_batched_dataset(
@@ -686,9 +700,10 @@ def export_real_episode_to_batched_dataset(
     copying the wrench (which is not an EE twist for ``mode=vic``).
 
     Compiled ``ft_wrist`` is treated as already EMA−EMA tared. Convert rotates
-    it to world, applies a zero-phase Butterworth, then block-means F/T and
-    velocity to ``control_hz`` (default 30). Commands, poses, phase, hold, and
-    woody geometry use the last sample of each window. Sim F/T is not filtered.
+    it to world, block-means F/T and velocity to ``control_hz`` (default 30),
+    and writes a separate convert-time zero-phase Butterworth series
+    ``ft_wrist_lpf``. Commands, poses, phase, hold, and woody geometry use the
+    last sample of each window. Sim F/T is not filtered.
     """
     from apple_pick_sim.system_id.batched_trajectory_store import (
         BatchedEpisodeWriter,
@@ -874,27 +889,19 @@ def export_real_episode_to_batched_dataset(
                 step_idx = i
         step_indices.append(step_idx)
 
-    ft_world = zero_phase_lowpass(
-        np.stack(fts, axis=0),
+    ft_unfiltered = np.stack(fts, axis=0)
+    raw_unfiltered = np.stack(raw_fts, axis=0)
+    vel_unfiltered = np.stack(tcp_vels, axis=0)
+    ft_lpf, lpf_info = zero_phase_lowpass_with_status(
+        ft_unfiltered,
         source_hz=source_hz,
         cutoff_hz=float(ft_lpf_hz),
         order=int(ft_lpf_order),
     )
-    raw_ft_world = zero_phase_lowpass(
-        np.stack(raw_fts, axis=0),
-        source_hz=source_hz,
-        cutoff_hz=float(ft_lpf_hz),
-        order=int(ft_lpf_order),
-    )
-    vel_world = zero_phase_lowpass(
-        np.stack(tcp_vels, axis=0),
-        source_hz=source_hz,
-        cutoff_hz=float(ft_lpf_hz),
-        order=int(ft_lpf_order),
-    )
-    ft_out = block_mean_downsample(ft_world, window)
-    raw_ft_out = block_mean_downsample(raw_ft_world, window)
-    vel_out = block_mean_downsample(vel_world, window)
+    ft_out = block_mean_downsample(ft_unfiltered, window)
+    raw_ft_out = block_mean_downsample(raw_unfiltered, window)
+    vel_out = block_mean_downsample(vel_unfiltered, window)
+    ft_lpf_out = block_mean_downsample(ft_lpf, window)
     pick = last_sample_indices(n_src, window)
 
     ft_filter = {
@@ -904,9 +911,12 @@ def export_real_episode_to_batched_dataset(
         "source_hz": source_hz,
         "target_hz": output_hz,
         "tare": "ema_minus_ema",
-        "column": "ft_wrist",
+        "column": "ft_wrist_lpf",
         "window": int(window),
+        "applied": bool(lpf_info.get("applied")),
     }
+    if not ft_filter["applied"] and lpf_info.get("skip_reason"):
+        ft_filter["skip_reason"] = str(lpf_info["skip_reason"])
     episode_meta = {
         **episode_meta,
         "control_hz": float(output_hz),
@@ -921,6 +931,7 @@ def export_real_episode_to_batched_dataset(
             "excitation_direction": excitations[int(src_i)],
             "tcp_velocity": vel_out[out_i],
             "ft_wrist": ft_out[out_i],
+            "ft_wrist_lpf": ft_lpf_out[out_i],
             "raw_ft_wrist": raw_ft_out[out_i],
             "tcp_pos": tcp_pos_rows[int(src_i)],
             "apple_pos": apple_pos_rows[int(src_i)],

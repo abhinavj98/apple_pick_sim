@@ -104,11 +104,53 @@ def test_map_pre_grasp_branch_is_fruiting_base_pos():
     assert mapped.rod_geometry["spur"]["density_kg_m3"] == pytest.approx(1200.0)
     assert mapped.apple_radius_m == pytest.approx(0.04)
     assert mapped.apple_density_kg_m3 == pytest.approx(650.0)
+    assert mapped.diagnostics.get("rod_density", {}).get("spur") is None
     assert "spur_length_error" in mapped.diagnostics
     # Stem chord = ‖spur_end − apple_CoM‖ − apple_radius (CoM is sphere center).
     spur_to_com = float(np.linalg.norm(np.array([0.05, 0.0, -0.13]) - np.array([0.02, 0.0, -0.10])))
     assert mapped.diagnostics["stem_spur_to_com_m"] == pytest.approx(spur_to_com)
     assert mapped.diagnostics["stem_chord_length_m"] == pytest.approx(spur_to_com - 0.04)
+
+
+def test_map_pre_grasp_overrides_spur_density_from_mass_kg():
+    meta = _synthetic_pre_grasp_meta()
+    spur = meta["pre_grasp_geometry"]["parts"]["spur"]
+    spur["mass_kg"] = 0.026
+    mapped = map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
+    length = float(spur["length_m"])
+    radius = float(spur["radius_m"])
+    expected_rho = 0.026 / (math.pi * radius * radius * length)
+    assert mapped.rod_geometry["spur"]["radius_m"] == pytest.approx(radius)
+    assert mapped.rod_geometry["spur"]["length_m"] == pytest.approx(length)
+    assert mapped.rod_geometry["spur"]["density_kg_m3"] == pytest.approx(expected_rho)
+    diag = mapped.diagnostics["rod_density"]["spur"]
+    assert diag["source"] == "mass_kg"
+    assert diag["mass_kg"] == pytest.approx(0.026)
+    assert diag["catalog_density_kg_m3"] == pytest.approx(1200.0)
+    assert diag["density_kg_m3"] == pytest.approx(expected_rho)
+
+
+def test_map_pre_grasp_rejects_nonpositive_mass_kg():
+    meta = _synthetic_pre_grasp_meta()
+    meta["pre_grasp_geometry"]["parts"]["spur"]["mass_kg"] = 0.0
+    with pytest.raises(ValueError, match="mass_kg"):
+        map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
+
+
+def test_fruiting_params_uses_mass_derived_spur_density():
+    meta = _synthetic_pre_grasp_meta()
+    meta["pre_grasp_geometry"]["parts"]["spur"]["mass_kg"] = 0.026
+    params, _base, diagnostics = fruiting_params_from_pre_grasp_meta(
+        meta, fixture_path=VARIANCE
+    )
+    spur = meta["pre_grasp_geometry"]["parts"]["spur"]
+    expected_rho = 0.026 / (
+        math.pi * float(spur["radius_m"]) ** 2 * float(spur["length_m"])
+    )
+    assert params.spur is not None
+    assert params.spur.radius == pytest.approx(float(spur["radius_m"]))
+    assert params.spur.density == pytest.approx(expected_rho)
+    assert diagnostics["rod_density"]["spur"]["source"] == "mass_kg"
 
 
 def test_map_pre_grasp_strict_rejects_nonzero_bend():

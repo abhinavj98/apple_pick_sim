@@ -9,10 +9,10 @@ Sequencing, ranking acceptance, and CMA status belong in `docs/ROADMAP.md`.
 | Field | Value |
 | ----- | ----- |
 | Last reviewed | 2026-08-14 |
-| Code owners | `robot_replay/`; `apple_pick_sim/system_id/real_to_batched_sysid.py`; `apple_pick_sim/system_id/batched_digital_twin_init.py`; `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
+| Code owners | `robot_replay/`; `apple_pick_sim/system_id/real_to_batched_sysid.py`; `apple_pick_sim/system_id/real_pre_grasp_params.py`; `apple_pick_sim/system_id/batched_digital_twin_init.py`; `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md`; H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H5 `docs/handbook-youngs-cma.md` |
-| Archive specs | **Partial:** `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`; **Implemented:** `docs/superpowers/specs/2026-08-10-real-batched-gl-replay-design.md`, `2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `2026-08-12-real-camera-gl-viewer-design.md`, `2026-08-12-gl-video-record-design.md`; **Partial:** `2026-08-12-real-replay-cmaes-plumbing-design.md` |
+| Archive specs | **Partial:** `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`; **Implemented:** `docs/superpowers/specs/2026-08-10-real-batched-gl-replay-design.md`, `2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `2026-08-12-real-camera-gl-viewer-design.md`, `2026-08-12-gl-video-record-design.md`, `2026-08-14-real-rod-mass-density-override-design.md`; **Partial:** `2026-08-12-real-replay-cmaes-plumbing-design.md` |
 
 > **Warning — tare real F/T, never simulated F/T.** Convert the compiled
 > episode parquet (already `raw − unloaded baseline`). Do not subtract a
@@ -132,6 +132,11 @@ Conversion aligns real bags with H3:
   only in H3 score construction.
 - `action` remains required to replay the episode but is excluded from
   `STATE_VECTOR_FIELDS` and Sinkhorn features.
+- Rod `mass_kg` (today `parts.spur.mass_kg`) overrides that rod's
+  `density_kg_m3` as \(\rho = m/(\pi r^{2} L)\). Catalog `radius_m` is
+  unchanged so bending \(I \propto r^{4}\) stays geometric. Missing
+  `mass_kg` keeps catalog density. `map_pre_grasp_geometry` owns this;
+  `build_fruiting_params_from_real` still reads `rod_geometry` density.
 
 Missing target/TCP/tag poses required by these contracts raise during convert
 instead of silently producing a differently framed bag.
@@ -234,6 +239,7 @@ here.
 | Responsibility | Module / symbol |
 | -------------- | --------------- |
 | Native real metadata mapping and batched export | `apple_pick_sim/system_id/real_to_batched_sysid.py` — `build_episode_metadata_from_real`, `export_real_episode_to_batched_dataset` |
+| Pre-grasp rod geometry, `mass_kg` → density | `apple_pick_sim/system_id/real_pre_grasp_params.py` — `map_pre_grasp_geometry`, `fruiting_params_from_pre_grasp_meta` |
 | F/T, woody, hold, camera conversion | same module — `world_wrench_from_ee_logged`, `tag_poses_to_cma_woody`, `_scalar_hold_number`, `camera_to_base_4x4_from_dataset_metadata` |
 | Twin init and logged weld pose | `apple_pick_sim/system_id/batched_digital_twin_init.py` — `gripper_proxy_for_real_batched_replay`, `apply_logged_post_grasp_se3_to_cable` |
 | Shared gym build path | `apple_pick_gym/batched_envs/real_batched_replay_build.py` — `real_replay_sim_config`, `make_real_replay_build_env_fn` |
@@ -247,6 +253,8 @@ Key regression coverage:
 - `apple_pick_sim/tests/test_real_to_batched_sysid.py` — metadata parity,
   camera propagation, 19D packing, F/T rotation, two woody starts, scalar
   holds, and no trajectory woody ends.
+- `apple_pick_sim/tests/test_real_pre_grasp_params.py` — Branch T-junction,
+  rest-snapshot preference, and rod `mass_kg` → density override.
 - `apple_pick_sim/tests/test_batched_digital_twin_init.py` — twin initialization
   and post-grasp SE(3).
 - `apple_pick_gym/tests/test_real_batched_replay_build.py` — shared builder,
@@ -261,6 +269,7 @@ Focused checks from the repository root:
 ```bash
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_real_to_batched_sysid.py \
+  apple_pick_sim/tests/test_real_pre_grasp_params.py \
   apple_pick_gym/tests/test_real_batched_replay_build.py \
   apple_pick_gym/tests/test_real_batched_replay_cli.py \
   robot_replay/tests/test_gl_video_recorder.py \

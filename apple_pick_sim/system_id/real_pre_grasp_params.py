@@ -220,12 +220,37 @@ def map_pre_grasp_geometry(
         np.linalg.norm(np.asarray(spur_start_surface, dtype=np.float64) - np.asarray(fruiting_base))
     )
 
+    rod_density_diag: dict[str, dict[str, Any]] = {}
+
     def _geo(name: str) -> dict[str, float]:
         block = parts[name]
+        length = float(block["length_m"])
+        radius = float(block["radius_m"])
+        catalog_density = float(block["density_kg_m3"])
+        density = catalog_density
+        raw_mass = block.get("mass_kg")
+        if raw_mass is not None:
+            mass = float(raw_mass)
+            if not math.isfinite(mass) or mass <= 0.0:
+                raise ValueError(
+                    f"parts[{name!r}].mass_kg must be finite > 0, got {mass}"
+                )
+            volume = math.pi * radius * radius * length
+            if volume < _ZERO_EPS:
+                raise ValueError(
+                    f"parts[{name!r}] cylinder volume too small to convert mass_kg"
+                )
+            density = mass / volume
+            rod_density_diag[name] = {
+                "source": "mass_kg",
+                "mass_kg": mass,
+                "catalog_density_kg_m3": catalog_density,
+                "density_kg_m3": density,
+            }
         return {
-            "length_m": float(block["length_m"]),
-            "radius_m": float(block["radius_m"]),
-            "density_kg_m3": float(block["density_kg_m3"]),
+            "length_m": length,
+            "radius_m": radius,
+            "density_kg_m3": density,
         }
 
     spur_chord = float(np.linalg.norm(spur_end - spur_start_surface))
@@ -240,6 +265,11 @@ def map_pre_grasp_geometry(
     spur_L = float(parts["spur"]["length_m"])
     stem_L = float(parts["stem"]["length_m"])
     apple_vs_chord = apple_pos - apple_chord_end
+    rod_geometry = {
+        "primary": _geo("primary"),
+        "spur": _geo("spur"),
+        "stem": _geo("stem"),
+    }
 
     def _rel_err(catalog: float, measured: float) -> float:
         if abs(catalog) < _ZERO_EPS:
@@ -280,17 +310,14 @@ def map_pre_grasp_geometry(
         "fruiting_base_pos_source": "spur_start_surface − r_primary·radial_hat",
         "fruiting_base_pos": list(fruiting_base),
         "pre_grasp_snapshot_source": snap_source,
+        "rod_density": rod_density_diag,
     }
 
     return PreGraspMappedGeometry(
         fruiting_base_pos=fruiting_base,
         spur_direction=spur_dir,
         stem_direction=stem_dir,
-        rod_geometry={
-            "primary": _geo("primary"),
-            "spur": _geo("spur"),
-            "stem": _geo("stem"),
-        },
+        rod_geometry=rod_geometry,
         apple_radius_m=apple_r,
         apple_density_kg_m3=apple_d,
         woody_bending_angles=bend,

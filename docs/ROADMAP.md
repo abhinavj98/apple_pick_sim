@@ -86,6 +86,11 @@
 - [ ] **Post-alignment:** Trusted Cartesian ranking on aligned bags (Sinkhorn smoke / grid)
 - [x] **Slice 4:** CMA `example_youngs_modulus_cmaes.py` on the same real builder
   (**1×1 wiring** Done)
+- [ ] **Follow-up:** Real-mode CMA still seeds from shipped
+  `initial_mean_log10=[4.0, 9.5, 9.5]` while the spec fixture band is
+  ~\(10^{7.4}\)–\(10^{8}\) Pa; the real spur/stem floor (\(\log_{10} E = 7\))
+  makes that region reachable, but search starts ~1.5σ high — retarget mean
+  later, not in slice 4.
 - [ ] Folder convert + multi-direction replay (spec slices 1–3) before multi-tree CMA
 
 **Build on (do not reimplement):**
@@ -109,6 +114,10 @@
 
 - [x] **Post-grasp apple orientation vs GT** — Fixed 2026-08-07 (pre-grasp quat seed).
 - [x] **Real parquet `action` is pose-control wrench** — Fixed 2026-08-10 (`vic_pose` pack + controller).
+- [ ] **Real CMA native crash (exit 139)** — Undiagnosed. With local
+  `population_size=6`, `max_generations=4` on `s09-d00`, the process exited
+  **139** while starting generation 3 after two completed generations
+  (`eligible_mean` `19.46 → 18.23`). Root cause not established.
 
 **Goal:** **M4.0** real CMA on `robot_replay` → (optional return to) **V.5.3** held-out sim-sim → broader **[M4]** collection → **[M5]**.
 
@@ -433,6 +442,11 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
   --overwrite
 # Post-alignment success = build/replay without crash; ranking trusted after smoke on aligned bags.
 # CMA (slice 4, 1×1 wiring): plumbing/fit-loop smoke; ranking quality still ROADMAP-owned.
+# Shipped CMA_SEARCH_PARAMS: population_size=15, max_generations=10 (~hours on RTX 4090).
+# That full run has NOT been executed in verification. Local smoke: temporarily set
+# population_size=4, max_generations=3 in example_youngs_modulus_cmaes.py, restore before commit.
+# Verified reduced run (tmp/real_kp_e_cmaes_s09_d00_retry): eligible_mean 18.85 → 17.99 → 13.75.
+# pop=6 / max_generations=4 crashed exit 139 starting gen 3 (eligible_mean 19.46 → 18.23); undiagnosed.
 uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --dataset tmp/real_batched_s09_d00 \
   --output tmp/real_kp_e_cmaes_s09_d00 \

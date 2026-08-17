@@ -501,6 +501,16 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --overwrite
 ```
 
+Shipped `CMA_SEARCH_PARAMS` in
+`apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` is
+`population_size=15`, `max_generations=10` (~hours on an RTX 4090). That full
+run has **not** been executed in verification. For a local smoke, temporarily set
+`population_size=4`, `max_generations=3` in that file, run the command above
+(with a distinct `--output` if you want to keep artifacts), then restore the
+shipped knobs before commit. Verified reduced run on `s09-d00`
+(`tmp/real_kp_e_cmaes_s09_d00_retry`): generation-wise `eligible_mean`
+`18.85 → 17.99 → 13.75`. Ranking is still not trusted.
+
 Useful options:
 
 ```bash

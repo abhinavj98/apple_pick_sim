@@ -178,7 +178,9 @@ recorded control rate, logged gripper transform, post-grasp SE(3), and 19D
 Converted real bags have no simulator-oracle recoverable phenotype.
 Consequently `gt_candidate` is `None`, every row has `is_gt=false`, and
 `--include-gt-candidate` is forced off with a warning. One converted episode is
-currently one structure; `vic_pose` grid runs reject multi-structure selection.
+currently one structure; `vic_pose` grid and CMA runs reject multi-structure
+selection. Explicit `--controller-mode vic` on a `vic_pose_v1` packed dataset is
+refused (twist replay is not valid for recorded pose-control bags).
 
 This plumbing is shipped, but a successful build/replay is not ranking
 acceptance. The following remain ROADMAP-owned and must not be inferred as
@@ -195,6 +197,9 @@ Real 1×1 `vic_pose` CMA (same H4 builder as the grid):
 - Effective spur/stem floor is \(\log_{10} E = 7\) on real runs only.
 - Multi-episode convert / per-direction weld remain ROADMAP-owned (spec slices
   1–3).
+- **Known issue (undiagnosed):** local `population_size=6`, `max_generations=4`
+  on `s09-d00` exited native **139** while starting generation 3 after two
+  completed generations (`eligible_mean` `19.46 → 18.23`).
 
 See `docs/ROADMAP.md` for the ordered M4.0 work.
 
@@ -270,9 +275,17 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
 ```
 
 This is a plumbing/fit-loop smoke on one converted episode; ranking quality is
-still ROADMAP-owned. Optional verification: runtime CMA on
-`tmp/real_batched_s09_d00` with falling generation-wise `eligible_mean` (reduce
-`CMA_SEARCH_PARAMS` locally; do not commit `tmp/`).
+still ROADMAP-owned. Shipped `CMA_SEARCH_PARAMS` is `population_size=15`,
+`max_generations=10` (~hours on an RTX 4090); that full run has **not** been
+executed in verification. For a local smoke, temporarily set
+`population_size=4`, `max_generations=3` in
+`apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py`, run with a
+distinct `--output`, then restore shipped knobs before commit. Verified reduced
+run on `s09-d00` (`tmp/real_kp_e_cmaes_s09_d00_retry`): `eligible_mean`
+`18.85 → 17.99 → 13.75`. A separate local run with `population_size=6`,
+`max_generations=4` crashed with native exit **139** starting generation 3
+(`eligible_mean` `19.46 → 18.23` in two completed generations); root cause
+undiagnosed. Do not commit `tmp/` artifacts.
 
 ### Gates
 

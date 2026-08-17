@@ -52,6 +52,15 @@ def _valid_ranges_dict() -> dict:
     }
 
 
+def _sim_episode_meta() -> dict:
+    return {"action_dim": 6, "action_compatible_with_vic_twist": True}
+
+
+def _attach_sim_episode_meta(dataset: MagicMock) -> MagicMock:
+    dataset.load_episode_metadata.return_value = _sim_episode_meta()
+    return dataset
+
+
 def _score(candidate_index: int, candidate, sinkhorn: float):
     return cmaes.YoungsModulusCandidateScore(
         candidate_index=candidate_index,
@@ -131,6 +140,7 @@ def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
         }
     }
     dataset.structure_summaries.return_value = [{}]
+    _attach_sim_episode_meta(dataset)
 
     create_calls: list[dict] = []
 
@@ -226,6 +236,7 @@ def test_run_reads_search_knobs_from_cma_search_params_only(monkeypatch, tmp_pat
         }
     }
     dataset.structure_summaries.return_value = [{}, {}]
+    _attach_sim_episode_meta(dataset)
 
     fit_calls: list[dict] = []
     create_calls: list[dict] = []
@@ -335,6 +346,7 @@ def test_run_cli_cma_seed_overrides_cma_search_params(monkeypatch, tmp_path):
         }
     }
     dataset.structure_summaries.return_value = [{}, {}]
+    _attach_sim_episode_meta(dataset)
 
     create_calls: list[dict] = []
 
@@ -830,6 +842,7 @@ def test_run_viewer_cancel_checkpoints_cancelled_and_exits_nonzero(
         }
     }
     dataset.structure_summaries.return_value = [{}, {}]
+    _attach_sim_episode_meta(dataset)
 
     def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
         raise module.ViewerCancelled("viewer closed; cancelling CMA-ES fit")
@@ -936,6 +949,7 @@ def test_run_writes_initial_report_before_fit_and_progress_updates(monkeypatch, 
         }
     }
     dataset.structure_summaries.return_value = [{}, {}]
+    _attach_sim_episode_meta(dataset)
 
     write_times: list[str] = []
     original_write = module._write_cmaes_report_atomic
@@ -1063,6 +1077,7 @@ def test_run_continues_after_structure_failure_unless_fail_fast(monkeypatch, tmp
         }
     }
     dataset.structure_summaries.return_value = [{}, {}]
+    _attach_sim_episode_meta(dataset)
 
     def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
         states[0].status = "failed"
@@ -1152,6 +1167,7 @@ def test_run_all_failed_sets_exit_nonzero(monkeypatch, tmp_path):
         }
     }
     dataset.structure_summaries.return_value = [{}]
+    _attach_sim_episode_meta(dataset)
 
     def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
         states[0].status = "failed"
@@ -1218,6 +1234,7 @@ def test_run_records_overlay_error_without_invalidating_fitted(monkeypatch, tmp_
         }
     }
     dataset.structure_summaries.return_value = [{}]
+    _attach_sim_episode_meta(dataset)
 
     def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
         state = states[0]
@@ -1318,6 +1335,7 @@ def test_run_fail_fast_aborts_on_global_evaluator_error(monkeypatch, tmp_path):
         }
     }
     dataset.structure_summaries.return_value = [{}]
+    _attach_sim_episode_meta(dataset)
 
     def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
         raise RuntimeError("batch exploded")
@@ -1359,3 +1377,195 @@ def test_run_fail_fast_aborts_on_global_evaluator_error(monkeypatch, tmp_path):
     report = json.loads((output_dir / "cmaes_report.json").read_text(encoding="utf-8"))
     assert report["command_status"] in {"global_error", "failed"}
     assert "batch exploded" in str(report.get("command_error", ""))
+
+
+def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(monkeypatch, tmp_path):
+    module = _load_module()
+    output_dir = tmp_path / "cma_out"
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 1,
+            "ranges_path": str(ranges_path),
+            "topology_seed": 9,
+            "seed": 7,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+        "control_hz": 15.0,
+        "fruiting_base_pos": [1.0, 2.0, 3.0],
+        "initial_robot_joint_q": [0.1, 0.2],
+        "action_compatible_with_vic_twist": False,
+    }
+
+    real_builder = MagicMock()
+    real_builder_calls: list[dict] = []
+    evaluate_calls: list[dict] = []
+
+    def fake_make_real_builder(**kwargs):
+        real_builder_calls.append(dict(kwargs))
+        return real_builder
+
+    def fake_real_config(**kwargs):
+        return SimpleNamespace(
+            controller=SimpleNamespace(mode=kwargs["controller_mode"], action_dim=19),
+            runtime=SimpleNamespace(control_hz=kwargs["control_hz"]),
+        )
+
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+        del max_generations
+        for state in states.values():
+            assert state.gt_candidate is None
+            state.status = "fitted"
+            state.final_mean_log10 = (4.0, 9.0, 9.0)
+            state.final_evaluation = _evaluation(
+                state.structure_idx,
+                [cmaes.candidates_from_log10_vector(state.final_mean_log10)],
+                [0.1],
+                direction_indices=(0,),
+            )
+            state.final_evaluation.gt_candidate = None
+            state.gt_candidate = None
+        batch = evaluate_fn(
+            structures=[
+                (0, (cmaes.candidates_from_log10_vector((4.0, 9.0, 9.0)),))
+            ],
+            wave_kind="final_mean",
+        )
+        evaluate_calls.append(batch)
+        if on_progress is not None:
+            on_progress(states)
+        return cmaes.YoungsModulusCmaFitResult(
+            states=dict(states),
+            fitted_structure_indices=(0,),
+            failed_structure_indices=(),
+            generation_waves=1,
+            final_mean_batch=None,
+        )
+
+    def fake_evaluate_structures(**kwargs):
+        evaluate_calls.append(dict(kwargs))
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={
+                0: _evaluation(
+                    0,
+                    [cmaes.SupportKpYoungsCandidate(1e4, 1e9, 1e7)],
+                    [0.1],
+                    direction_indices=(0,),
+                )
+            },
+            errors={},
+            replay_diagnostics=None,
+            retried_structures=(),
+            prepared_structures=1,
+            physical_slots_by_structure={0: 1},
+        )
+
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    monkeypatch.setattr(module, "make_real_replay_build_env_fn", fake_make_real_builder)
+    monkeypatch.setattr(module, "real_replay_sim_config", fake_real_config)
+    monkeypatch.setattr(module, "evaluate_youngs_modulus_structures", fake_evaluate_structures)
+    monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
+    monkeypatch.setattr(
+        module,
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: pytest.fail("real CMA must not load sim GT"),
+    )
+    monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
+
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    result = module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert result["exit_nonzero"] is False
+    assert len(real_builder_calls) == 1
+    assert real_builder_calls[0]["controller_mode"] == "vic_pose"
+    assert real_builder_calls[0]["control_hz"] == pytest.approx(15.0)
+    assert real_builder_calls[0]["fruiting_base_pos"] == pytest.approx((1.0, 2.0, 3.0))
+    assert real_builder_calls[0]["bootstrap_joint_q"] == pytest.approx((0.1, 0.2))
+    struct_kwargs = [c for c in evaluate_calls if isinstance(c, dict)]
+    assert struct_kwargs[0]["build_env_fn"] is real_builder
+    assert struct_kwargs[0]["action_dim"] == 19
+    report = json.loads((output_dir / "cmaes_report.json").read_text(encoding="utf-8"))
+    assert "gt_diagnostics" not in report["structures"]["0"]
+
+
+def test_run_rejects_multiple_structures_for_vic_pose(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 1,
+            "ranges_path": str(ranges_path),
+        }
+    }
+    dataset.structure_summaries.return_value = [{}, {}]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+    }
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(tmp_path / "out"),
+        structure_indices=(0, 1),
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode="vic",
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    with pytest.raises(
+        SystemExit, match="one converted episode / one structure per run"
+    ):
+        module._run(args, argparse.ArgumentParser(), viewer=MagicMock())

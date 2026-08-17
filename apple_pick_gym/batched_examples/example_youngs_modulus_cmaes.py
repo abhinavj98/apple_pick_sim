@@ -65,6 +65,15 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
 from apple_pick_gym.batched_envs.batched_sysid_multi_replay import (
     SysIdReplayCancelled,
 )
+from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    bootstrap_joint_q_from_episode_metadata,
+    check_action_semantics,
+    control_hz_from_episode_metadata,
+    dataset_declares_vic_pose,
+    fruiting_base_pos_from_episode_metadata,
+    make_real_replay_build_env_fn,
+    real_replay_sim_config,
+)
 from apple_pick_gym.youngs_modulus_cmaes_viz import write_cmaes_visualization_bundle
 from apple_pick_gym.youngs_modulus_overlay_viz import (
     overlay_episodes_from_replay_evaluation,
@@ -76,6 +85,7 @@ from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDatase
 # Re-export grid helpers used by tests and shared replay setup.
 SETTLE_GRAVITY_RAMP = _grid.SETTLE_GRAVITY_RAMP
 SETTLE_QUIET_EVERY = _grid.SETTLE_QUIET_EVERY
+SETTLE_SUBSTEPS = _grid.SETTLE_SUBSTEPS
 build_sim_config = _grid.build_sim_config
 _make_build_env_fn = _grid._make_build_env_fn
 _resolve_structure_indices = _grid._resolve_structure_indices
@@ -579,15 +589,71 @@ def _run(
     if replay_seed is None and "seed" in collection:
         replay_seed = int(collection["seed"])
 
-    settle_config = _settle_config_kwargs(args=args)
-    build_env_fn = _make_build_env_fn(
-        ranges_path=str(ranges_path),
-        topology_seed=topology_seed,
-        control_hz=control_hz,
-        device=device,
-        settle_config=settle_config,
+    episode_meta = dataset.load_episode_metadata(structure_indices[0], 0)
+    dataset_is_vic_pose = dataset_declares_vic_pose(collection, episode_meta)
+    mode = getattr(args, "controller_mode", None)
+    if mode is None:
+        mode = "vic_pose" if dataset_is_vic_pose else "vic"
+    check_action_semantics(
+        controller_mode=mode,
+        collection=collection,
+        episode_meta=episode_meta,
+        allow_wrench_as_twist=False,
     )
-    replay_sim_config = build_sim_config(num_envs=1, ranges=ranges, **settle_config)
+    if (mode == "vic_pose" or dataset_is_vic_pose) and len(structure_indices) > 1:
+        raise SystemExit(
+            "vic_pose real replay currently supports one converted episode / "
+            "one structure per run; select exactly one --structure-index."
+        )
+    action_dim = 19 if mode == "vic_pose" else 6
+
+    settle_config = _settle_config_kwargs(args=args)
+    if mode == "vic_pose":
+        control_hz = control_hz_from_episode_metadata(
+            episode_meta,
+            collection=collection,
+        )
+        fruiting_base_pos = fruiting_base_pos_from_episode_metadata(episode_meta)
+        bootstrap_joint_q = bootstrap_joint_q_from_episode_metadata(episode_meta)
+        real_topology_seed = int(
+            collection.get("topology_seed", collection.get("seed", 0))
+        )
+        build_env_fn = make_real_replay_build_env_fn(
+            ranges_path=Path(ranges_path),
+            ranges=ranges,
+            topology_seed=real_topology_seed,
+            fruiting_base_pos=fruiting_base_pos,
+            episode_meta=episode_meta,
+            settle_substeps=settle_config.get("settle_substeps") or SETTLE_SUBSTEPS,
+            settle_quiet_every=settle_config.get("settle_quiet_every"),
+            settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
+            post_grasp_settle_substeps=500,
+            bootstrap_joint_q=bootstrap_joint_q,
+            controller_mode="vic_pose",
+            control_hz=control_hz,
+        )
+        replay_sim_config = real_replay_sim_config(
+            num_envs=1,
+            topology_seed=real_topology_seed,
+            fruiting_base_pos=fruiting_base_pos,
+            ranges=ranges,
+            settle_substeps=settle_config.get("settle_substeps") or SETTLE_SUBSTEPS,
+            settle_quiet_every=settle_config.get("settle_quiet_every"),
+            settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
+            post_grasp_settle_substeps=500,
+            bootstrap_joint_q=bootstrap_joint_q,
+            controller_mode="vic_pose",
+            control_hz=control_hz,
+        )
+    else:
+        build_env_fn = _make_build_env_fn(
+            ranges_path=str(ranges_path),
+            topology_seed=topology_seed,
+            control_hz=control_hz,
+            device=device,
+            settle_config=settle_config,
+        )
+        replay_sim_config = build_sim_config(num_envs=1, ranges=ranges, **settle_config)
     scoring = YoungsModulusScoringConfig(
         use_median=bool(args.use_median),
         hold_id_onehot=bool(args.hold_id_onehot),
@@ -618,13 +684,16 @@ def _run(
             population_size=int(es.popsize),
             search_bounds_log10=search_bounds_log10,
         )
-        try:
-            state.gt_candidate = gt_support_kp_youngs_candidate_from_structure(
-                dataset, int(structure_idx)
-            )
-        except Exception as exc:
-            state.status = "failed"
-            state.failure = CmaGenerationFailure("prepare", str(exc))
+        if mode == "vic_pose":
+            state.gt_candidate = None
+        else:
+            try:
+                state.gt_candidate = gt_support_kp_youngs_candidate_from_structure(
+                    dataset, int(structure_idx)
+                )
+            except Exception as exc:
+                state.status = "failed"
+                state.failure = CmaGenerationFailure("prepare", str(exc))
         states[int(structure_idx)] = state
 
     report_path = output_dir / "cmaes_report.json"
@@ -750,6 +819,7 @@ def _run(
                 fail_fast=bool(args.fail_fast),
                 on_step=on_step,
                 replay_sim_config=replay_sim_config,
+                action_dim=action_dim,
             )
         else:
             evaluations: dict[int, Any] = {}
@@ -768,6 +838,7 @@ def _run(
                         include_excluded=bool(args.include_excluded),
                         on_step=on_step,
                         replay_sim_config=replay_sim_config,
+                        action_dim=action_dim,
                     )
                 except ViewerCancelled:
                     raise

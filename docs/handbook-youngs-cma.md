@@ -184,12 +184,19 @@ This plumbing is shipped, but a successful build/replay is not ranking
 acceptance. The following remain ROADMAP-owned and must not be inferred as
 complete from this handbook:
 
-- post-alignment trusted Cartesian ranking on real bags;
-- real CMA wiring through the same H4 builder; and
+- post-alignment trusted Cartesian ranking on real bags; and
 - multi-episode discovery/manifest policy.
 
-The current CMA CLI has no `--controller-mode` and still follows the
-simulation-data build path. See `docs/ROADMAP.md` for the ordered M4.0 work.
+Real 1×1 `vic_pose` CMA (same H4 builder as the grid):
+
+- Real 1×1 `vic_pose` datasets auto-select `make_real_replay_build_env_fn`;
+  `--controller-mode` is the explicit opt-in/override.
+- `gt_candidate` is `None`; `cmaes_report.json` omits `gt_diagnostics`.
+- Effective spur/stem floor is \(\log_{10} E = 7\) on real runs only.
+- Multi-episode convert / per-direction weld remain ROADMAP-owned (spec slices
+  1–3).
+
+See `docs/ROADMAP.md` for the ordered M4.0 work.
 
 ## 6. Stability and exclusion
 
@@ -251,6 +258,21 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
 
 This real command proves build/replay plumbing only until ROADMAP's trusted
 ranking smoke is accepted.
+
+### Real convert → CMA plumbing smoke
+
+```bash
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --dataset tmp/real_batched_s09_d00 \
+  --output tmp/real_kp_e_cmaes_s09_d00 \
+  --viewer null \
+  --overwrite
+```
+
+This is a plumbing/fit-loop smoke on one converted episode; ranking quality is
+still ROADMAP-owned. Optional verification: runtime CMA on
+`tmp/real_batched_s09_d00` with falling generation-wise `eligible_mean` (reduce
+`CMA_SEARCH_PARAMS` locally; do not commit `tmp/`).
 
 ### Gates
 

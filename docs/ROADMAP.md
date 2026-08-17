@@ -84,7 +84,9 @@
 - [x] **Alignment slice 2:** Two-start woody + `apple_pos`; `woody_end` dropped from sys-ID bag
 - [x] **Alignment slice 3:** Scalar `hold_number` from `hold_index`
 - [ ] **Post-alignment:** Trusted Cartesian ranking on aligned bags (Sinkhorn smoke / grid)
-- [ ] **Slice 4:** CMA `example_youngs_modulus_cmaes.py` on the same real builder
+- [x] **Slice 4:** CMA `example_youngs_modulus_cmaes.py` on the same real builder
+  (**1×1 wiring** Done)
+- [ ] Folder convert + multi-direction replay (spec slices 1–3) before multi-tree CMA
 
 **Build on (do not reimplement):**
 
@@ -430,7 +432,15 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py \
   --no-include-gt-candidate \
   --overwrite
 # Post-alignment success = build/replay without crash; ranking trusted after smoke on aligned bags.
-# CMA (slice 4): example_youngs_modulus_cmaes.py on same builder — not yet wired.
+# CMA (slice 4, 1×1 wiring): plumbing/fit-loop smoke; ranking quality still ROADMAP-owned.
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --dataset tmp/real_batched_s09_d00 \
+  --output tmp/real_kp_e_cmaes_s09_d00 \
+  --viewer null \
+  --overwrite
+uv run --env-file pytest.env python -m pytest \
+  apple_pick_gym/tests/test_example_youngs_modulus_cmaes_cli.py \
+  -q -p no:launch_testing
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_real_to_batched_sysid.py \
   apple_pick_gym/tests/test_real_batched_replay_cli.py \

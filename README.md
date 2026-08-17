@@ -490,6 +490,17 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --overwrite
 ```
 
+**Real 1×1 CMA** (auto-detects `vic_pose_v1` metadata; same H4 builder as the
+grid; plumbing/fit-loop smoke — ranking quality is ROADMAP-owned):
+
+```bash
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --dataset tmp/real_batched_s09_d00 \
+  --output tmp/real_kp_e_cmaes_s09_d00 \
+  --viewer null \
+  --overwrite
+```
+
 Useful options:
 
 ```bash

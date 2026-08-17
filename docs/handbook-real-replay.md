@@ -8,17 +8,21 @@ Sequencing, ranking acceptance, and CMA status belong in `docs/ROADMAP.md`.
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-14 |
+| Last reviewed | 2026-08-17 |
 | Code owners | `robot_replay/`; `apple_pick_sim/system_id/real_to_batched_sysid.py`; `apple_pick_sim/system_id/real_pre_grasp_params.py`; `apple_pick_sim/system_id/batched_digital_twin_init.py`; `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md`; H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H5 `docs/handbook-youngs-cma.md` |
 | Archive specs | **Partial:** `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`; **Implemented:** `docs/superpowers/specs/2026-08-10-real-batched-gl-replay-design.md`, `2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `2026-08-12-real-camera-gl-viewer-design.md`, `2026-08-12-gl-video-record-design.md`, `2026-08-14-real-rod-mass-density-override-design.md`; **Partial:** `2026-08-12-real-replay-cmaes-plumbing-design.md` |
 
 > **Warning — tare real F/T, never simulated F/T.** Convert the compiled
-> episode parquet (already `raw − unloaded baseline`). Do not subtract a
-> robot-only sim replay from candidate `ft_wrist`: on `vic_pose` that signal
-> is plant harvest only, so the unload would be zero. Full contract: H3
-> `docs/handbook-sysid-scoring.md` (warning at top).
+> episode parquet whose `ft_wrist` is already loaded EMA minus unloaded EMA.
+> Convert then rotates to world, applies a zero-phase Butterworth (default
+> 10 Hz), and block-means F/T and TCP velocity to `--control-hz` (default
+> 30). Commands, poses, phase, hold, joints, and woody geometry take the last
+> sample of each window. Do not subtract a robot-only sim replay from candidate
+> `ft_wrist`: on `vic_pose` that signal is plant harvest only, so the unload
+> would be zero. Full contract: H3 `docs/handbook-sysid-scoring.md` (warning
+> at top).
 
 Related boundaries:
 
@@ -122,9 +126,16 @@ Conversion aligns real bags with H3:
 
 - `world_wrench_from_ee_logged` rotates force and torque with
   \(R_{W,TCP}\): \(F_W=R_{W,TCP}F_{EE}\) and
-  \(\tau_W=R_{W,TCP}\tau_{EE}\). There is no second sign flip, lever-arm
-  transport, simulated EMA/LPF, or simulated tare. The source `ft_wrist`
-  must already be the compiled (baseline-subtracted) column.
+  \(\tau_W=R_{W,TCP}\tau_{EE}\). Rotation happens **before** filtering.
+  There is no second sign flip, lever-arm transport, or simulated tare.
+  The source `ft_wrist` must already be compiled EMA−EMA (loaded EMA minus
+  unloaded EMA). Convert then `filtfilt`s a Butterworth (default cutoff
+  10 Hz, order 4) on world `ft_wrist`, `raw_ft_wrist`, and `tcp_velocity`,
+  then block-means those series to `--control-hz` (default 30 Hz).
+  Action / `vic_pose`, TCP and tag poses, `phase`, hold index, joint `q`,
+  and woody starts copy the **last sample** of each window so labels and
+  commands are not averaged. Sim harvest is not filtered. Provenance is
+  `collection.ft_filter` and episode `ft_filter`.
 - `tag_poses_to_cma_woody` reads Branch, Spur, and Apple pose translations.
   It emits the two woody starts `primary_spur` and `spur_stem`, plus
   `apple_pos`. Trajectory bags do not carry woody ends.
@@ -240,7 +251,7 @@ here.
 | -------------- | --------------- |
 | Native real metadata mapping and batched export | `apple_pick_sim/system_id/real_to_batched_sysid.py` — `build_episode_metadata_from_real`, `export_real_episode_to_batched_dataset` |
 | Pre-grasp rod geometry, `mass_kg` → density | `apple_pick_sim/system_id/real_pre_grasp_params.py` — `map_pre_grasp_geometry`, `fruiting_params_from_pre_grasp_meta` |
-| F/T, woody, hold, camera conversion | same module — `world_wrench_from_ee_logged`, `tag_poses_to_cma_woody`, `_scalar_hold_number`, `camera_to_base_4x4_from_dataset_metadata` |
+| F/T, woody, hold, camera conversion | same module — `world_wrench_from_ee_logged`, `tag_poses_to_cma_woody`, `_scalar_hold_number`, `camera_to_base_4x4_from_dataset_metadata`, `zero_phase_lowpass`, `block_mean_downsample` |
 | Twin init and logged weld pose | `apple_pick_sim/system_id/batched_digital_twin_init.py` — `gripper_proxy_for_real_batched_replay`, `apply_logged_post_grasp_se3_to_cable` |
 | Shared gym build path | `apple_pick_gym/batched_envs/real_batched_replay_build.py` — `real_replay_sim_config`, `make_real_replay_build_env_fn` |
 | Standalone replay and GL camera | `robot_replay/example_replay_real_batched.py` — `_run`, `make_replay_on_step`, `gl_camera_from_camera_to_base` |

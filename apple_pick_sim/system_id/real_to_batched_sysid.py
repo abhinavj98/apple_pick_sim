@@ -40,6 +40,9 @@ _JUNCTION_TO_ROD: dict[str, str] = {
 }
 _ZERO_CHORD_EPS = 1e-12
 _DEFAULT_CONTROL_HZ = 15.0
+DEFAULT_TARGET_CONTROL_HZ = 30.0
+DEFAULT_FT_LPF_CUTOFF_HZ = 10.0
+DEFAULT_FT_LPF_ORDER = 4
 
 
 def flat_woody_to_dicts(
@@ -587,6 +590,77 @@ def _vic_pose_action_row(
     return np.asarray([*pos, *quat_wxyz, *kp, *kd], dtype=np.float32)
 
 
+def decimation_window_size(source_hz: float, target_hz: float) -> int:
+    """Samples per output frame; at least 1 (no upsample)."""
+    source = float(source_hz)
+    target = float(target_hz)
+    if source <= 0.0 or target <= 0.0:
+        raise ValueError(f"source_hz and target_hz must be positive, got {source_hz}, {target_hz}")
+    return max(1, int(round(source / target)))
+
+
+def last_sample_indices(n_frames: int, window: int) -> np.ndarray:
+    """Index of the last source sample in each complete ``window``-sample block."""
+    if window < 1:
+        raise ValueError(f"window must be positive, got {window}")
+    n_out = int(n_frames) // int(window)
+    if n_out < 1:
+        raise ValueError(
+            f"need at least one full window of {window} samples, got n_frames={n_frames}"
+        )
+    return (np.arange(n_out, dtype=np.int64) + 1) * int(window) - 1
+
+
+def block_mean_downsample(values: np.ndarray, window: int) -> np.ndarray:
+    """Mean each complete block of ``window`` rows; drop a trailing remainder."""
+    if window < 1:
+        raise ValueError(f"window must be positive, got {window}")
+    x = np.asarray(values, dtype=np.float64)
+    squeeze = False
+    if x.ndim == 1:
+        x = x[:, None]
+        squeeze = True
+    if x.ndim != 2:
+        raise ValueError(f"values must be 1D or 2D, got shape {x.shape}")
+    n_out = x.shape[0] // int(window)
+    if n_out < 1:
+        raise ValueError(
+            f"need at least one full window of {window} samples, got n_frames={x.shape[0]}"
+        )
+    trimmed = x[: n_out * int(window)]
+    out = trimmed.reshape(n_out, int(window), x.shape[1]).mean(axis=1)
+    if squeeze:
+        out = out[:, 0]
+    return out.astype(np.float32)
+
+
+def zero_phase_lowpass(
+    values: np.ndarray,
+    *,
+    source_hz: float,
+    cutoff_hz: float,
+    order: int = DEFAULT_FT_LPF_ORDER,
+) -> np.ndarray:
+    """Forward-backward Butterworth; skip when cutoff is unusable or the series is too short."""
+    x = np.asarray(values, dtype=np.float64)
+    if cutoff_hz <= 0.0 or source_hz <= 0.0:
+        return x.copy()
+    nyquist = 0.5 * float(source_hz)
+    if float(cutoff_hz) >= nyquist:
+        return x.copy()
+    from scipy.signal import butter, filtfilt
+
+    sos_order = int(order)
+    if sos_order < 1:
+        raise ValueError(f"filter order must be positive, got {order}")
+    b, a = butter(sos_order, float(cutoff_hz) / nyquist, btype="low")
+    padlen = 3 * (max(len(a), len(b)) - 1)
+    if x.shape[0] <= padlen:
+        return x.copy()
+    filtered = filtfilt(b, a, x, axis=0)
+    return np.asarray(filtered, dtype=np.float64)
+
+
 def export_real_episode_to_batched_dataset(
     input_path: str | Path,
     *,
@@ -596,6 +670,9 @@ def export_real_episode_to_batched_dataset(
     overwrite: bool = False,
     allow_zero_action: bool = False,
     command_argv: list[str] | None = None,
+    control_hz: float | None = None,
+    ft_lpf_hz: float = DEFAULT_FT_LPF_CUTOFF_HZ,
+    ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
 ) -> Path:
     """Write a 1×1 ``batched_sysid_v1`` dataset from one real-world parquet.
 
@@ -607,6 +684,11 @@ def export_real_episode_to_batched_dataset(
     When real ``action`` is a pose-control wrench, packs a 19D ``vic_pose``
     action from ``target_pose_4x4`` + ``dump.controller_gains`` instead of
     copying the wrench (which is not an EE twist for ``mode=vic``).
+
+    Compiled ``ft_wrist`` is treated as already EMA−EMA tared. Convert rotates
+    it to world, applies a zero-phase Butterworth, then block-means F/T and
+    velocity to ``control_hz`` (default 30). Commands, poses, phase, hold, and
+    woody geometry use the last sample of each window. Sim F/T is not filtered.
     """
     from apple_pick_sim.system_id.batched_trajectory_store import (
         BatchedEpisodeWriter,
@@ -672,16 +754,35 @@ def export_real_episode_to_batched_dataset(
             "robot_replay/fill_actions_from_tcp_velocity.py, or set allow_zero_action=True."
         )
 
-    control_hz = float(episode_meta["control_hz"])
-    if control_hz <= 0:
-        raise ValueError(f"invalid control_hz={control_hz}")
+    source_hz = float(episode_meta["control_hz"])
+    if source_hz <= 0:
+        raise ValueError(f"invalid source control_hz={source_hz}")
+    target_hz = DEFAULT_TARGET_CONTROL_HZ if control_hz is None else float(control_hz)
+    if target_hz <= 0:
+        raise ValueError(f"invalid control_hz={target_hz}")
+    window = decimation_window_size(source_hz, target_hz)
+    output_hz = source_hz if window == 1 else target_hz
 
-    traj = BatchedEpisodeWriter(episode_id=str(episode_meta["episode_id"]))
-    junction_names = list(episode_meta["junction_names"])
+    n_src = int(table.num_rows)
+    phases: list[str] = []
+    actions: list[np.ndarray] = []
+    tcp_vels: list[np.ndarray] = []
+    fts: list[np.ndarray] = []
+    raw_fts: list[np.ndarray] = []
+    tcp_pos_rows: list[np.ndarray] = []
+    tcp_quats: list[np.ndarray] = []
+    apple_pos_rows: list[np.ndarray] = []
+    apple_quats: list[np.ndarray] = []
+    joint_qs: list[np.ndarray] = []
+    woody_rows: list[dict[str, np.ndarray]] = []
+    excitations: list[np.ndarray] = []
+    amplitudes: list[float] = []
+    hold_numbers: list[int] = []
+    step_indices: list[int] = []
 
-    for i in range(table.num_rows):
+    for i in range(n_src):
         phase_raw = _phase_name_for_row(table, i)
-        phase = _REAL_PHASE_NAME_TO_BATCHED.get(phase_raw, "move_out")
+        phases.append(_REAL_PHASE_NAME_TO_BATCHED.get(phase_raw, "move_out"))
 
         if pack_vic_pose:
             assert kp is not None and kd is not None
@@ -692,7 +793,10 @@ def export_real_episode_to_batched_dataset(
             action = np.asarray(
                 table.column("action")[i].as_py(), dtype=np.float32
             ).reshape(6)
-        tcp_vel = np.asarray(table.column("tcp_velocity")[i].as_py(), dtype=np.float32).reshape(6)
+        actions.append(action)
+        tcp_vels.append(
+            np.asarray(table.column("tcp_velocity")[i].as_py(), dtype=np.float32).reshape(6)
+        )
         ft = np.asarray(table.column("ft_wrist")[i].as_py(), dtype=np.float32).reshape(6)
         raw_ft = ft
         if "ft_wrist_raw" in table.column_names:
@@ -715,12 +819,19 @@ def export_real_episode_to_batched_dataset(
             _, tcp_quat = pose_4x4_to_pos_quat(table.column("tcp_pose_4x4")[i].as_py())
         else:
             tcp_quat = (0.0, 0.0, 0.0, 1.0)
+        fts.append(np.asarray(ft, dtype=np.float32).reshape(6))
+        raw_fts.append(np.asarray(raw_ft, dtype=np.float32).reshape(6))
+        tcp_pos_rows.append(tcp_pos)
+        tcp_quats.append(np.asarray(tcp_quat, dtype=np.float32))
 
         branch_pose = _pose_cell(table, "branch_pose_4x4", i, path)
         spur_pose = _pose_cell(table, "spur_pose_4x4", i, path)
         apple_pose = _pose_cell(table, "apple_pose_4x4", i, path)
         woody_starts, apple_pos = tag_poses_to_cma_woody(branch_pose, spur_pose, apple_pose)
         _, apple_quat = pose_4x4_to_pos_quat(apple_pose)
+        woody_rows.append(woody_starts)
+        apple_pos_rows.append(np.asarray(apple_pos, dtype=np.float32))
+        apple_quats.append(np.asarray(apple_quat, dtype=np.float32))
 
         if "joint_pos" in table.column_names:
             joint_q = np.asarray(table.column("joint_pos")[i].as_py(), dtype=np.float32).reshape(7)
@@ -730,6 +841,7 @@ def export_real_episode_to_batched_dataset(
             ).reshape(7)
         else:
             joint_q = np.zeros(7, dtype=np.float32)
+        joint_qs.append(joint_q)
 
         if "excitation_direction" in table.column_names:
             exc = np.asarray(
@@ -738,11 +850,13 @@ def export_real_episode_to_batched_dataset(
         else:
             pull = episode_meta.get("pull_direction") or [0.0, -1.0, 0.0]
             exc = np.asarray(pull, dtype=np.float32).reshape(3)
+        excitations.append(exc)
 
         amp = 0.0
         if "amplitude_m" in table.column_names:
             amp_raw = table.column("amplitude_m")[i].as_py()
             amp = float(np.asarray(amp_raw, dtype=np.float64).reshape(-1)[0])
+        amplitudes.append(amp)
 
         hold_idx = None
         if "hold_index" in table.column_names:
@@ -750,7 +864,7 @@ def export_real_episode_to_batched_dataset(
         hold_raw = None
         if "hold_number" in table.column_names:
             hold_raw = table.column("hold_number")[i].as_py()
-        hold_number = _scalar_hold_number(hold_raw, hold_index=hold_idx)
+        hold_numbers.append(_scalar_hold_number(hold_raw, hold_index=hold_idx))
 
         step_idx = i
         if "step_idx" in table.column_names:
@@ -758,30 +872,73 @@ def export_real_episode_to_batched_dataset(
                 step_idx = int(table.column("step_idx")[i].as_py())
             except (TypeError, ValueError):
                 step_idx = i
+        step_indices.append(step_idx)
 
+    ft_world = zero_phase_lowpass(
+        np.stack(fts, axis=0),
+        source_hz=source_hz,
+        cutoff_hz=float(ft_lpf_hz),
+        order=int(ft_lpf_order),
+    )
+    raw_ft_world = zero_phase_lowpass(
+        np.stack(raw_fts, axis=0),
+        source_hz=source_hz,
+        cutoff_hz=float(ft_lpf_hz),
+        order=int(ft_lpf_order),
+    )
+    vel_world = zero_phase_lowpass(
+        np.stack(tcp_vels, axis=0),
+        source_hz=source_hz,
+        cutoff_hz=float(ft_lpf_hz),
+        order=int(ft_lpf_order),
+    )
+    ft_out = block_mean_downsample(ft_world, window)
+    raw_ft_out = block_mean_downsample(raw_ft_world, window)
+    vel_out = block_mean_downsample(vel_world, window)
+    pick = last_sample_indices(n_src, window)
+
+    ft_filter = {
+        "method": "butterworth_filtfilt",
+        "cutoff_hz": float(ft_lpf_hz),
+        "order": int(ft_lpf_order),
+        "source_hz": source_hz,
+        "target_hz": output_hz,
+        "tare": "ema_minus_ema",
+        "column": "ft_wrist",
+        "window": int(window),
+    }
+    episode_meta = {
+        **episode_meta,
+        "control_hz": float(output_hz),
+        "ft_filter": dict(ft_filter),
+    }
+
+    traj = BatchedEpisodeWriter(episode_id=str(episode_meta["episode_id"]))
+    junction_names = list(episode_meta["junction_names"])
+    for out_i, src_i in enumerate(pick.tolist()):
         obs = {
             "excitation_type": 0,
-            "excitation_direction": exc,
-            "tcp_velocity": tcp_vel,
-            "ft_wrist": ft,
-            "raw_ft_wrist": raw_ft,
-            "tcp_pos": tcp_pos,
-            "apple_pos": apple_pos,
-            "tcp_quat": np.asarray(tcp_quat, dtype=np.float32),
-            "apple_quat": np.asarray(apple_quat, dtype=np.float32),
-            "robot_joint_q": joint_q,
-            "woody_part_start_pos": woody_starts,
+            "excitation_direction": excitations[int(src_i)],
+            "tcp_velocity": vel_out[out_i],
+            "ft_wrist": ft_out[out_i],
+            "raw_ft_wrist": raw_ft_out[out_i],
+            "tcp_pos": tcp_pos_rows[int(src_i)],
+            "apple_pos": apple_pos_rows[int(src_i)],
+            "tcp_quat": tcp_quats[int(src_i)],
+            "apple_quat": apple_quats[int(src_i)],
+            "robot_joint_q": joint_qs[int(src_i)],
+            "woody_part_start_pos": woody_rows[int(src_i)],
             "woody_part_force": np.zeros(0, dtype=np.float32),
         }
         traj.record_step(
-            step_idx=step_idx,
-            sim_time=float(i) / control_hz,
-            phase=phase,
-            amplitude_m=amp,
-            action=action,
+            step_idx=int(step_indices[int(src_i)]),
+            sim_time=float(out_i) / float(output_hz),
+            phase=phases[int(src_i)],
+            amplitude_m=amplitudes[int(src_i)],
+            action=actions[int(src_i)],
             obs=obs,
             stable=True,
-            hold_number=hold_number,
+            hold_number=hold_numbers[int(src_i)],
         )
 
     if out.exists() and any(out.iterdir()) and not overwrite:
@@ -817,7 +974,8 @@ def export_real_episode_to_batched_dataset(
         # Replay helpers require an int seed; real logs often omit one.
         "seed": int(seed_raw) if seed_raw is not None else 0,
         "ranges_path": str(fixture.resolve()),
-        "control_hz": control_hz,
+        "control_hz": float(output_hz),
+        "ft_filter": dict(ft_filter),
         "num_structures": 1,
         "num_directions": 1,
         "max_steps": traj.n_frames,

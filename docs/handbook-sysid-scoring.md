@@ -4,7 +4,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-14 |
+| Last reviewed | 2026-08-17 |
 | Code owners | `apple_pick_sim/system_id/mmd_features.py`, `apple_pick_sim/system_id/mmd.py`, `apple_pick_sim/system_id/wasserstein.py`, `apple_pick_sim/system_id/batched_trajectory_store.py`, `apple_pick_sim/system_id/real_to_batched_sysid.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H4 `docs/handbook-real-replay.md` (convert must emit this contract); H5 `docs/handbook-youngs-cma.md` (grid/CMA scores it); H2 `docs/handbook-variable-impedance.md` (action semantics only) |
@@ -15,11 +15,12 @@ features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
 
 > **Warning — do not tare simulated `ft_wrist`.**
 >
-> Real compiled bags already isolate plant load:
-> `ft_wrist = ft_wrist_raw − ft_wrist_baseline`, where the baseline is an
-> unloaded same-motion replay of the robot (no fruiting asset). Convert that
-> compiled column; score it; never convert an uncorrected `*_robot.parquet`
-> whose metadata says `dynamic_baseline.applied = false`.
+> Real compiled bags already isolate plant load as EMA−EMA:
+> `ft_wrist` is loaded EMA minus the unloaded same-motion replay EMA.
+> Convert that compiled column (do not subtract `ft_wrist_raw −
+> ft_wrist_baseline` again); then apply the convert-time zero-phase
+> Butterworth and block-mean to `collection.control_hz` (default 30 Hz).
+> Never convert an uncorrected `*_robot.parquet`.
 >
 > Sim `ft_wrist` is already the plant TCP wrench. Gym copies
 > `coupling_forces_cache` (`tcp_coupling_force`): stem-apple harvest plus
@@ -27,7 +28,8 @@ features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
 > **not** enter that 6-vector on the `vic` / `vic_pose` path
 > (`vic_use_joint_torques=True`; controller wrenches go to `joint_f`). A
 > robot-only replay therefore reports `ft_wrist = 0`. Subtracting a simulated
-> baseline is a no-op today and must not be added “for parity.”
+> baseline is a no-op today and must not be added “for parity.” Do not copy
+> the real convert LPF onto sim harvest.
 >
 > If harvest later becomes a sensor-like external wrench (tool weight and
 > inertia included), this warning is void: then mimic the real unloaded
@@ -75,7 +77,7 @@ and optional exclusion state.
 `batched_trajectory_store.EPISODE_METADATA_KEYS` defines the serialized schema
 metadata allow-list. Replay-relevant entries include reset TCP/apple poses and
 robot joints, fixture and weld fields, `junction_names`, physical parameters,
-control rate, and action declarations:
+control rate, action declarations, and convert `ft_filter` provenance:
 
 - `action_dim`: 6 or 19;
 - `action_layout`: for example `vic_pose_v1`;
@@ -150,8 +152,9 @@ with the same geometry:
    \(F_W=R_{W,TCP}F_{EE}\) and
    \(\tau_W=R_{W,TCP}\tau_{EE}\). Conversion applies this to `ft_wrist` and
    `raw_ft_wrist`, without another sign flip or lever-arm transport. Scoring
-   uses converted `ft_wrist` (already tared in the compiled real parquet);
-   `raw_ft_wrist` is diagnostic only.
+   uses converted `ft_wrist` (already EMA−EMA tared in the compiled real
+   parquet, then convert-time 10 Hz `filtfilt` + block-mean to
+   `collection.control_hz`); `raw_ft_wrist` is diagnostic only, same windows.
 2. **No sim filter and no sim tare.**
    Candidate replay uses its live world-frame plant harvest as `ft_wrist`.
    There is no score-time F/T transform, no simulated EMA/LPF, and no unloaded
@@ -310,8 +313,9 @@ Key tests:
 - `apple_pick_sim/tests/test_wasserstein.py` — per-direction and pooled
   contexts, completeness, singleton bags, and direction one-hots.
 - `apple_pick_sim/tests/test_real_to_batched_sysid.py` — F/T rotation,
-  two-start tag mapping, scalar holds, no trajectory ends, and 19D pose action
-  packing.
+  EMA−EMA no re-tare, 10 Hz `filtfilt` + 30 Hz block-mean, last-sample
+  phase, two-start tag mapping, scalar holds, no trajectory ends, and 19D
+  pose action packing.
 - `apple_pick_sim/tests/test_batched_trajectory_store.py` and
   `apple_pick_gym/tests/test_batched_sysid_collect.py` — storage and collector
   round trips.

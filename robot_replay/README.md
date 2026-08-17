@@ -64,7 +64,11 @@ uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
 ```
 
 Fresh pose-controller logs are converted directly to 19D `vic_pose_v1`.
-Do not run `pack_vic_pose_actions.py` on a fresh conversion.
+Do not run `pack_vic_pose_actions.py` on a fresh conversion. Source
+`ft_wrist` must already be EMA−EMA tared. Convert rotates it to world,
+applies a 10 Hz zero-phase Butterworth, block-means F/T and velocity to
+30 Hz (`--control-hz` / `--ft-lpf-hz`), and copies commands/poses/phase
+from the last sample of each 33 ms window.
 
 ## Replay
 

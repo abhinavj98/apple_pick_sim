@@ -47,7 +47,7 @@ SE(3), and bootstrap joints are batch-scalar at build time, and
 | Parallelism | Orchestration-level: one pycma per structure, synchronized waves, one structure per physical chunk |
 | Phenotype | Unchanged: \(\log_{10}(k_p^{\mathrm{support}}, E_{\mathrm{spur}}, E_{\mathrm{stem}})\); primary \(E\) fixed |
 | Dataset shape | One tree folder → one structure; `dNN` → directions; multiple trees merged into one multi-structure `batched_sysid_v1` |
-| Control rate | Convert decimates the 1 kHz log to a target rate (default 15 Hz) |
+| Control rate | Convert decimates 1 kHz F/T with filtfilt + block-mean to 30 Hz (discrete fields: last sample per window). 15 Hz nearest-copy is superseded. |
 | Structure geometry | One canonical geometry per tree; per-pull post-grasp state stays per direction |
 | Frame alignment | Bags keep true lengths; padding happens only in the replay drive tensor; replay is truncated back before scoring |
 | Ranking GT | Real logged bags; no sim-oracle GT candidate |
@@ -87,15 +87,17 @@ Measured on `tmp/final_data` at design time; re-check if the data is regenerated
 
 ### Decimation
 
-Add a target control rate (default 15 Hz). Convert resamples the 1 kHz log
+> **Superseded for F/T and velocity (2026-08-17).** Convert no longer uses
+> nearest-timestamp 15 Hz copies. Default `--control-hz` is **30 Hz**. Scored
+> continuous signals (`ft_wrist`, `tcp_velocity`, diagnostic `raw_ft_wrist`)
+> are world-rotated, zero-phase Butterworth low-passed (default 10 Hz), then
+> block-mean downsampled. Discrete/drive fields (`action`, poses, `phase`,
+> hold, joints, woody) still take one sample per window (the last), so
+> averaging does not smear pull/hold boundaries. See H3/H4.
+
+Add a target control rate (default 30 Hz). Convert resamples the 1 kHz log
 instead of inheriting its rate through `_resolve_control_hz`. The decimated
 rate is written to `collection.control_hz` and episode metadata.
-
-Decimation is **nearest-timestamp subsampling**: pick the logged row closest to
-each target-rate timestamp and copy it unchanged. No averaging and no
-low-pass, consistent with the no-filter rule in `docs/handbook-sysid-scoring.md`
-— averaging would smear the pull/hold phase boundary and blend `hold_index`
-values across holds.
 
 ### Tree folder → one structure
 

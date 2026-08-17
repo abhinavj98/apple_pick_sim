@@ -91,6 +91,7 @@ EPISODE_METADATA_KEYS: tuple[str, ...] = (
     "action_compatible_with_vic_twist",
     "action_dim",
     "action_layout",
+    "ft_filter",
 )
 
 

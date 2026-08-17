@@ -274,6 +274,12 @@ def _write_synthetic_real(
     include_woody_part_columns: bool = False,
     packed_woody_start: list[float] | None = None,
     packed_woody_end: list[float] | None = None,
+    n_rows: int = 2,
+    dump_control_hz: float | None = None,
+    phase_frames: list[int] | None = None,
+    ft_wrist_frames: list[list[float]] | None = None,
+    ft_wrist_raw_frames: list[list[float]] | None = None,
+    tcp_velocity_frames: list[list[float]] | None = None,
 ) -> None:
     """Minimal real-episode-shaped parquet for native pre/post → batched meta."""
     branch = [0.0, 1.0, 0.6]
@@ -321,7 +327,23 @@ def _write_synthetic_real(
         base_row["hold_index"] = int(hold_index)
     if hold_number is not None:
         base_row["hold_number"] = list(hold_number)
-    rows = [dict(base_row), {**base_row, "step_idx": 1}]
+    if ft_wrist_frames is not None:
+        n_rows = len(ft_wrist_frames)
+    if n_rows < 1:
+        raise ValueError("n_rows must be positive")
+    rows: list[dict] = []
+    for i in range(n_rows):
+        row = dict(base_row)
+        row["step_idx"] = i
+        if ft_wrist_frames is not None:
+            row["ft_wrist"] = list(ft_wrist_frames[i])
+        if ft_wrist_raw_frames is not None:
+            row["ft_wrist_raw"] = list(ft_wrist_raw_frames[i])
+        if tcp_velocity_frames is not None:
+            row["tcp_velocity"] = list(tcp_velocity_frames[i])
+        if phase_frames is not None:
+            row["phase"] = int(phase_frames[i])
+        rows.append(row)
     table = pa.Table.from_pylist(rows)
     snap = {
         "woody_part_start_pos": snap_woody_start,
@@ -330,7 +352,10 @@ def _write_synthetic_real(
         "apple_pos": apple_pos,
         "apple_pose_4x4": _identity_pose_4x4(apple_pos),
     }
-    dump: dict = {"control_hz": 15.0, "episode_id": "synthetic-real-ep"}
+    dump: dict = {
+        "control_hz": 15.0 if dump_control_hz is None else float(dump_control_hz),
+        "episode_id": "synthetic-real-ep",
+    }
     if action_semantics is not None:
         dump["action_semantics"] = action_semantics
     if controller_gains is not None:
@@ -1168,3 +1193,248 @@ def test_s00_d00_convert_matches_native_pre_post(parquet: Path):
     assert isinstance(meta["control_hz"], float)
     assert meta["control_hz"] > 0.0
     assert str(meta["episode_id"]).strip() != ""
+
+
+def test_decimation_window_size_1000_to_30():
+    from apple_pick_sim.system_id.real_to_batched_sysid import decimation_window_size
+
+    assert decimation_window_size(1000.0, 30.0) == 33
+    assert decimation_window_size(15.0, 30.0) == 1
+
+
+def test_last_sample_indices_take_window_end():
+    from apple_pick_sim.system_id.real_to_batched_sysid import last_sample_indices
+
+    np.testing.assert_array_equal(last_sample_indices(99, 33), [32, 65, 98])
+
+
+def test_block_mean_downsample_length_and_values():
+    from apple_pick_sim.system_id.real_to_batched_sysid import block_mean_downsample
+
+    values = np.arange(330, dtype=np.float64).reshape(330, 1)
+    got = block_mean_downsample(values, 33)
+    assert got.shape == (10, 1)
+    np.testing.assert_allclose(got[0, 0], np.mean(np.arange(33)))
+    np.testing.assert_allclose(got[-1, 0], np.mean(np.arange(297, 330)))
+
+
+def test_zero_phase_lowpass_does_not_delay_gaussian_peak():
+    from apple_pick_sim.system_id.real_to_batched_sysid import zero_phase_lowpass
+
+    t = np.arange(330, dtype=np.float64) / 1000.0
+    mu = 0.165
+    signal = np.exp(-0.5 * ((t - mu) / 0.01) ** 2)
+    filtered = zero_phase_lowpass(
+        signal.reshape(-1, 1), source_hz=1000.0, cutoff_hz=10.0, order=4
+    ).reshape(-1)
+    assert int(np.argmax(filtered)) == int(np.argmax(signal))
+
+
+def _khz_pose_wrench_kw() -> dict:
+    return {
+        "action": [0.0] * 6,
+        "action_semantics": "per-frame pose-control wrench [Fx, Fy, Fz, Tx, Ty, Tz]",
+        "action_order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+        "target_pose_4x4": _identity_pose_4x4([0.1, 0.2, 0.3]),
+        "controller_gains": {
+            "task_prop_gains": [100.0] * 6,
+            "task_deriv_gains": [10.0] * 6,
+        },
+        "dump_control_hz": 1000.0,
+        "n_rows": 330,
+        "tcp_pose_4x4": _identity_pose_4x4([0.0, 0.9, 0.4]),
+    }
+
+
+def test_export_does_not_retare_compiled_ft_wrist(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    tared = [3.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    loaded_raw = [9.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    src = tmp_path / "tared.parquet"
+    _write_synthetic_real(
+        src,
+        **_khz_pose_wrench_kw(),
+        ft_wrist=tared,
+        ft_wrist_raw=loaded_raw,
+    )
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    np.testing.assert_allclose(arrays["ft_wrist"][:, :3], [[3.0, 0.0, 0.0]] * 10, atol=0.05)
+    assert not np.allclose(arrays["ft_wrist"][:, :3], [[9.0, 0.0, 0.0]] * 10, atol=0.5)
+
+
+def test_export_decimates_1000hz_to_30hz_and_stamps_filter(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = tmp_path / "khz.parquet"
+    _write_synthetic_real(src, **_khz_pose_wrench_kw(), ft_wrist=[3.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    ds = BatchedSysIdDataset(out)
+    arrays = ds.load_episode_obs_arrays(0, 0)
+    assert arrays["ft_wrist"].shape[0] == 10
+    assert arrays["action"].shape[0] == 10
+    assert ds.manifest["collection"]["control_hz"] == pytest.approx(30.0)
+    meta = ds.load_episode_metadata(0, 0)
+    assert meta["control_hz"] == pytest.approx(30.0)
+    assert meta["ft_filter"]["method"] == "butterworth_filtfilt"
+    filt = ds.manifest["collection"]["ft_filter"]
+    assert filt["method"] == "butterworth_filtfilt"
+    assert filt["cutoff_hz"] == pytest.approx(10.0)
+    assert filt["order"] == 4
+    assert filt["source_hz"] == pytest.approx(1000.0)
+    assert filt["target_hz"] == pytest.approx(30.0)
+    assert filt["tare"] == "ema_minus_ema"
+    assert filt["column"] == "ft_wrist"
+
+
+def test_export_block_mean_recovers_constant_force(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    rng = np.random.default_rng(0)
+    noise = rng.normal(0.0, 0.4, size=(330, 1))
+    frames = [[3.0 + float(noise[i, 0]), 0.0, 0.0, 0.0, 0.0, 0.0] for i in range(330)]
+    src = tmp_path / "noisy.parquet"
+    _write_synthetic_real(src, **_khz_pose_wrench_kw(), ft_wrist_frames=frames)
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    assert arrays["ft_wrist"].shape[0] == 10
+    np.testing.assert_allclose(np.median(arrays["ft_wrist"][:, 0]), 3.0, atol=0.08)
+
+
+def test_export_zero_phase_pulse_stays_in_source_window(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        block_mean_downsample,
+        export_real_episode_to_batched_dataset,
+    )
+
+    pulse = np.zeros((330, 6), dtype=np.float64)
+    pulse[30:33, 0] = 1.0
+    src = tmp_path / "pulse.parquet"
+    _write_synthetic_real(
+        src,
+        **_khz_pose_wrench_kw(),
+        ft_wrist_frames=pulse.tolist(),
+    )
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    unfiltered = block_mean_downsample(pulse[:, :1], 33).reshape(-1)
+    assert int(np.argmax(np.abs(arrays["ft_wrist"][:, 0]))) == int(np.argmax(unfiltered))
+
+
+def test_export_phase_uses_last_sample_of_window(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+    from apple_pick_sim.system_id.trajectory_store import PHASE_TO_INT
+
+    phases = [0] * 50 + [1] * 16
+    src = tmp_path / "phase.parquet"
+    kw = _khz_pose_wrench_kw()
+    kw["n_rows"] = 66
+    _write_synthetic_real(
+        src,
+        **kw,
+        ft_wrist=[3.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        phase_frames=phases,
+    )
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    assert arrays["phase"].shape[0] == 2
+    assert int(arrays["phase"][0]) == int(PHASE_TO_INT["move_out"])
+    assert int(arrays["phase"][1]) == int(PHASE_TO_INT["hold"])
+
+
+def test_export_rotates_then_decimates_constant_ee_force(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    rotz90 = [
+        0.0, -1.0, 0.0, 0.0,
+        1.0,  0.0, 0.0, 0.0,
+        0.0,  0.0, 1.0, 0.0,
+        0.0,  0.0, 0.0, 1.0,
+    ]
+    src = tmp_path / "rot_khz.parquet"
+    kw = _khz_pose_wrench_kw()
+    kw["tcp_pose_4x4"] = rotz90
+    _write_synthetic_real(
+        src,
+        **kw,
+        ft_wrist=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ft_wrist_raw=[2.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    )
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src, fixture_path=VARIANCE, output_dir=out, overwrite=True
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    assert arrays["ft_wrist"].shape[0] == 10
+    np.testing.assert_allclose(arrays["ft_wrist"][:, :3], [[0.0, 1.0, 0.0]] * 10, atol=0.05)
+    np.testing.assert_allclose(arrays["raw_ft_wrist"][:, :3], [[0.0, 2.0, 0.0]] * 10, atol=0.05)
+
+
+def test_export_forwards_custom_ft_lpf_hz(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    src = tmp_path / "lpf.parquet"
+    _write_synthetic_real(src, **_khz_pose_wrench_kw(), ft_wrist=[3.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src,
+        fixture_path=VARIANCE,
+        output_dir=out,
+        overwrite=True,
+        control_hz=30.0,
+        ft_lpf_hz=8.0,
+        ft_lpf_order=2,
+    )
+    filt = BatchedSysIdDataset(out).manifest["collection"]["ft_filter"]
+    assert filt["cutoff_hz"] == pytest.approx(8.0)
+    assert filt["order"] == 2
+    assert filt["target_hz"] == pytest.approx(30.0)
+
+
+def test_convert_cli_defaults_control_hz_and_lpf():
+    import importlib.util
+
+    path = Path("robot_replay/convert_real_to_batched_sysid_metadata.py")
+    spec = importlib.util.spec_from_file_location("convert_real_cli", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    args = mod.build_parser().parse_args(["--input", "x.parquet", "--dataset-out", "out"])
+    assert args.control_hz == pytest.approx(30.0)
+    assert args.ft_lpf_hz == pytest.approx(10.0)
+    assert args.ft_lpf_order == 4

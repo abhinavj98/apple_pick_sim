@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Convert a real-world sys-ID parquet using settle-viewer pre/post "
@@ -71,6 +71,29 @@ def main(argv: list[str] | None = None) -> int:
         default=1.0,
         help="Multiply weld_direction by this sign (default: 1.0)",
     )
+    parser.add_argument(
+        "--control-hz",
+        type=float,
+        default=30.0,
+        help="Output control rate after F/T block-mean decimation (default: 30).",
+    )
+    parser.add_argument(
+        "--ft-lpf-hz",
+        type=float,
+        default=10.0,
+        help="Zero-phase Butterworth cutoff in Hz before decimation (default: 10).",
+    )
+    parser.add_argument(
+        "--ft-lpf-order",
+        type=int,
+        default=4,
+        help="Butterworth order for --ft-lpf-hz (default: 4).",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     from apple_pick_sim.system_id.real_to_batched_sysid import (
@@ -87,6 +110,9 @@ def main(argv: list[str] | None = None) -> int:
             overwrite=bool(args.overwrite),
             allow_zero_action=bool(args.allow_zero_action),
             command_argv=list(sys.argv if argv is None else ["convert", *argv]),
+            control_hz=float(args.control_hz),
+            ft_lpf_hz=float(args.ft_lpf_hz),
+            ft_lpf_order=int(args.ft_lpf_order),
         )
         print(f"Wrote batched dataset {out_dir}", file=sys.stderr)
 

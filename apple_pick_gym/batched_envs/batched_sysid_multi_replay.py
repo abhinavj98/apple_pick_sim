@@ -522,6 +522,7 @@ def replay_multi_structure_candidate_blocks(
                 len(slots),
                 [slot.recorded for slot in slots],
             )
+            recorded_n_frames_arr = np.asarray(recorded_n_frames, dtype=np.int64)
             for frame_idx in range(int(recorded_actions.shape[1])):
                 actions = actions_tensor_from_recorded_frame(
                     recorded_actions,
@@ -537,11 +538,17 @@ def replay_multi_structure_candidate_blocks(
                 if last_obs is None:
                     raise RuntimeError("env._last_obs missing after step")
                 step_report = monitor.check(last_obs, step_idx=frame_idx)
+                record_mask = disable_ctrl.should_record_mask()
+                if hasattr(record_mask, "detach"):
+                    record_mask = record_mask.detach().cpu().numpy()
+                else:
+                    record_mask = np.asarray(record_mask, dtype=bool).reshape(-1)
+                within_recorded = int(frame_idx) < recorded_n_frames_arr
                 collectors.record_all_envs_step(
                     env,
                     frame_idx=frame_idx,
                     unstable=step_report.unstable,
-                    record_mask=disable_ctrl.should_record_mask(),
+                    record_mask=record_mask & within_recorded,
                 )
                 disable_ctrl.update(hard_blowup_mask(step_report))
 

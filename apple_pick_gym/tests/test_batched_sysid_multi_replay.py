@@ -1150,6 +1150,242 @@ def test_padded_frames_absent_from_features(monkeypatch, _fake_replay_runtime):
     stacked = np.concatenate(
         [np.asarray(arrays1["ft_wrist"]).reshape(-1), np.asarray(arrays1["tcp_pos"]).reshape(-1)]
     )
-    assert _PADDED_FRAME_SENTINEL not in stacked
+    assert np.all(stacked != _PADDED_FRAME_SENTINEL)
     assert arrays1["ft_wrist"].shape[0] == 3
+
+
+def _recorded_for_real_collector(
+    structure_idx: int,
+    direction_idx: int,
+    *,
+    frames: int,
+    action_dim: int = 6,
+    junction_names: tuple[str, ...] = ("support", "primary_spur", "spur_stem"),
+) -> dict[str, Any]:
+    recorded = _recorded(
+        structure_idx,
+        direction_idx,
+        frames=frames,
+        action_dim=action_dim,
+        junction_names=junction_names,
+    )
+    recorded["phase"] = np.zeros(frames, dtype=np.int8)
+    recorded["dir_idx"] = np.full(frames, direction_idx, dtype=np.int32)
+    recorded["excitation_type"] = np.zeros(frames, dtype=np.int8)
+    recorded["excitation_direction"] = np.tile(
+        np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        (frames, 1),
+    )
+    return recorded
+
+
+def _batched_replay_obs(
+    *,
+    num_envs: int,
+    frame_idx: int,
+    junction_names: list[str],
+    recorded_n_frames: tuple[int, ...],
+    pad_sentinel: float,
+) -> dict[str, Any]:
+    woody_part_info: dict[str, dict[str, torch.Tensor]] = {}
+    for name in junction_names:
+        anchors = torch.zeros(num_envs, 6, dtype=torch.float32)
+        for env_idx in range(num_envs):
+            anchors[env_idx] = torch.tensor(
+                [
+                    10.0 + frame_idx,
+                    11.0 + frame_idx,
+                    12.0 + frame_idx,
+                    20.0 + frame_idx,
+                    21.0 + frame_idx,
+                    22.0 + frame_idx,
+                ],
+                dtype=torch.float32,
+            ) + float(env_idx)
+        woody_part_info[name] = {
+            "anchors_pos": anchors,
+            "anchor_force": torch.zeros(num_envs, 6, dtype=torch.float32),
+        }
+
+    ft_wrist = torch.zeros(num_envs, 6, dtype=torch.float32)
+    for env_idx in range(num_envs):
+        if frame_idx >= int(recorded_n_frames[env_idx]):
+            ft_wrist[env_idx] = pad_sentinel
+        else:
+            ft_wrist[env_idx] = 100.0 + float(frame_idx) + float(env_idx)
+
+    return {
+        "woody_part_info": woody_part_info,
+        "apple_pos": torch.full((num_envs, 3), 4.0 + float(frame_idx), dtype=torch.float32),
+        "tcp_force": torch.zeros(num_envs, 6, dtype=torch.float32),
+        "tcp_velocity": torch.full((num_envs, 6), 200.0 + float(frame_idx), dtype=torch.float32),
+        "ft_wrist": ft_wrist,
+        "raw_ft_wrist": torch.zeros(num_envs, 6, dtype=torch.float32),
+        "tcp_pos": torch.full((num_envs, 3), 1.0 + float(frame_idx), dtype=torch.float32),
+        "tcp_quat": torch.zeros(num_envs, 4, dtype=torch.float32),
+        "apple_quat": torch.zeros(num_envs, 4, dtype=torch.float32),
+        "robot_joint_q": torch.zeros(num_envs, 7, dtype=torch.float32),
+        "excitation_type": torch.zeros(num_envs, dtype=torch.long),
+        "excitation_f_inst": torch.zeros(num_envs, dtype=torch.float32),
+        "excitation_direction": torch.zeros(num_envs, 3, dtype=torch.float32),
+    }
+
+
+class _ObsFakeEnv:
+    def __init__(
+        self,
+        params,
+        grippers,
+        *,
+        recorded_n_frames: tuple[int, ...],
+        pad_sentinel: float,
+    ):
+        self.params = list(params)
+        self.grippers = list(grippers)
+        self.num_envs = len(self.params)
+        self.device = torch.device("cpu")
+        self.recorded_n_frames = tuple(int(n) for n in recorded_n_frames)
+        self.pad_sentinel = float(pad_sentinel)
+        self.junction_names = list(
+            _recorded_for_real_collector(0, 0, frames=1)["junction_names"]
+        )
+        self._sim = SimpleNamespace(build_result=None)
+        self.closed = False
+        self.actions: list[np.ndarray] = []
+        self._last_obs = _batched_replay_obs(
+            num_envs=self.num_envs,
+            frame_idx=0,
+            junction_names=self.junction_names,
+            recorded_n_frames=self.recorded_n_frames,
+            pad_sentinel=self.pad_sentinel,
+        )
+
+    def reset(self, *, seed: int):
+        self.seed = seed
+
+    def step(self, actions):
+        self.actions.append(np.asarray(actions))
+        frame_idx = len(self.actions) - 1
+        self._last_obs = _batched_replay_obs(
+            num_envs=self.num_envs,
+            frame_idx=frame_idx,
+            junction_names=self.junction_names,
+            recorded_n_frames=self.recorded_n_frames,
+            pad_sentinel=self.pad_sentinel,
+        )
+
+    def close(self):
+        self.closed = True
+
+
+def _patch_real_collector_replay_runtime(monkeypatch) -> None:
+    class FakeMonitor:
+        def __init__(self, num_envs, **_kwargs):
+            self.num_envs = num_envs
+
+        def check(self, _obs, *, step_idx):
+            return SimpleNamespace(
+                step_idx=step_idx,
+                unstable=torch.zeros(self.num_envs, dtype=torch.bool),
+                reasons=[[] for _ in range(self.num_envs)],
+            )
+
+    class FakeDisable:
+        def __init__(self, num_envs, **_kwargs):
+            self.num_envs = num_envs
+
+        def apply_actions(self, actions):
+            return actions
+
+        def should_record_mask(self):
+            return torch.ones(self.num_envs, dtype=torch.bool)
+
+        def update(self, _mask):
+            return None
+
+    monkeypatch.setattr(multi, "BatchedStabilityMonitor", FakeMonitor, raising=False)
+    monkeypatch.setattr(multi, "EnvDisableController", FakeDisable, raising=False)
+    monkeypatch.setattr(
+        multi,
+        "ik_bootstrap_unstable_mask",
+        lambda _env, n: torch.zeros(n, dtype=torch.bool),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        multi,
+        "hard_blowup_mask",
+        lambda report: torch.zeros_like(report.unstable),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        multi,
+        "actions_tensor_from_recorded_frame",
+        lambda recorded_actions, *, frame_idx, device: torch.as_tensor(
+            recorded_actions[:, frame_idx, :],
+            device=device,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        multi,
+        "initialize_batched_env_from_episode_sources",
+        lambda _env, _dataset, _sources: None,
+        raising=False,
+    )
+
+
+def test_unequal_length_replay_gates_real_collector_record_mask(monkeypatch):
+    _patch_real_collector_replay_runtime(monkeypatch)
+    action0 = np.stack(
+        [np.full(6, 10.0 + float(i), dtype=np.float32) for i in range(5)]
+    )
+    action1 = np.stack(
+        [np.full(6, 20.0 + float(i), dtype=np.float32) for i in range(3)]
+    )
+    rec0 = _recorded_for_real_collector(4, 0, frames=5)
+    rec1 = _recorded_for_real_collector(4, 1, frames=3)
+    rec0["action"] = action0
+    rec1["action"] = action1
+    request = dataclasses.replace(
+        _request(
+            4,
+            candidates=(_Candidate(40.0),),
+            directions=(0, 1),
+            frames=5,
+        ),
+        recorded_by_direction={0: rec0, 1: rec1},
+    )
+    blocks = multi.build_replay_candidate_blocks((request,))
+    built: list[_ObsFakeEnv] = []
+
+    def build_env_fn(**kwargs):
+        env = _ObsFakeEnv(
+            kwargs["per_env_params"],
+            kwargs["per_env_grippers"],
+            recorded_n_frames=(5, 3),
+            pad_sentinel=_PADDED_FRAME_SENTINEL,
+        )
+        built.append(env)
+        return env
+
+    outcome = multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+        fail_fast=True,
+    )
+
+    key0 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=0)
+    key1 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=1)
+    arrays0 = outcome.replay_by_key[key0]
+    arrays1 = outcome.replay_by_key[key1]
+    assert arrays0["ft_wrist"].shape[0] == 5
+    assert arrays1["ft_wrist"].shape[0] == 3
+    stacked = np.concatenate(
+        [np.asarray(arrays1["ft_wrist"]).reshape(-1), np.asarray(arrays1["tcp_pos"]).reshape(-1)]
+    )
+    assert np.all(stacked != _PADDED_FRAME_SENTINEL)
+    assert len(built) == 1
+    assert len(built[0].actions) == 5
 

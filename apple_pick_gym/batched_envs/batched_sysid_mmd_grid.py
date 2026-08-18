@@ -856,6 +856,20 @@ def load_recorded_episodes_for_structure(
     return out
 
 
+def load_episode_metadata_for_directions(
+    dataset: BatchedSysIdDataset,
+    *,
+    structure_idx: int,
+    direction_indices: Sequence[int],
+) -> dict[int, dict]:
+    """Load episode metadata keyed by direction index. Do not merge into recorded arrays."""
+    out: dict[int, dict] = {}
+    for direction_idx in direction_indices:
+        key = int(direction_idx)
+        out[key] = dict(dataset.load_episode_metadata(int(structure_idx), key))
+    return out
+
+
 def direction_episodes_from_collectors(
     collectors: BatchedSysIdReplayCollectors,
     *,

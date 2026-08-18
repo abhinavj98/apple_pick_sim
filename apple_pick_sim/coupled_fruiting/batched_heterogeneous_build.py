@@ -212,6 +212,7 @@ def build_batched_heterogeneous_scene(
                 per_world_proxy_offsets=scene.per_world_proxy_offsets,
                 ik_bootstrap_iterations=config.robot.ik_bootstrap_iterations,
                 bootstrap_joint_q=config.robot.bootstrap_joint_q,
+                per_world_bootstrap_joint_q=config.robot.per_world_bootstrap_joint_q,
             )
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None
@@ -268,6 +269,7 @@ def build_batched_heterogeneous_scene(
                 per_world_proxy_offsets=scene.per_world_proxy_offsets,
                 ik_bootstrap_iterations=config.robot.ik_bootstrap_iterations,
                 bootstrap_joint_q=config.robot.bootstrap_joint_q,
+                per_world_bootstrap_joint_q=config.robot.per_world_bootstrap_joint_q,
             )
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None
@@ -653,6 +655,11 @@ def _rebootstrap_fr3_after_post_grasp_settle(
     align_proxy_body_q_prev_for_vbd(cable, tuple(range(body_count)))
     sync_model_body_q_rest_from_state(cable)
 
+    if config.robot.per_world_bootstrap_joint_q is not None:
+        _bootstrap_tcp_at_fixed_origin(
+            scene, per_world_bootstrap_joint_q=config.robot.per_world_bootstrap_joint_q
+        )
+        return
     if config.robot.bootstrap_joint_q is not None:
         # Keep open-loop recorded joints after plant settle (no IK).
         _bootstrap_tcp_at_fixed_origin(

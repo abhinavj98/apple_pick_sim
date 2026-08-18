@@ -31,6 +31,9 @@ from apple_pick_sim.system_id import (
     ReplayEpisodeSource,
     initialize_batched_env_from_episode_sources,
 )
+from apple_pick_sim.system_id.batched_digital_twin_init import (
+    gripper_proxy_for_real_batched_replay,
+)
 
 
 class ReplayFusionIncompatible(ValueError):
@@ -64,6 +67,7 @@ class ReplayStructureRequest:
     base_params: FruitingSystemParams
     recorded_by_direction: Mapping[int, dict[str, Any]]
     gripper: GripperProxyConfig
+    meta_by_direction: Mapping[int, dict] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -74,6 +78,7 @@ class ReplaySlot:
     source: ReplayEpisodeSource
     gripper: GripperProxyConfig
     support_kp: float | None = None
+    episode_meta: dict | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -254,26 +259,35 @@ def build_replay_candidate_blocks(
         for local_candidate_idx, candidate in enumerate(request.candidates):
             params = candidate.apply_to(request.base_params)
             support_kp = getattr(candidate, "support_kp", None)
-            slots = tuple(
-                ReplaySlot(
-                    key=ReplaySlotKey(
-                        structure_idx=structure_idx,
-                        local_candidate_idx=local_candidate_idx,
-                        direction_idx=direction_idx,
-                    ),
-                    params=params,
-                    recorded=request.recorded_by_direction[direction_idx],
-                    source=ReplayEpisodeSource(
-                        structure_idx=structure_idx,
-                        direction_idx=direction_idx,
-                    ),
-                    gripper=request.gripper,
-                    support_kp=float(support_kp)
-                    if support_kp is not None
-                    else None,
+            slots_list: list[ReplaySlot] = []
+            for direction_idx in directions:
+                if request.meta_by_direction is not None:
+                    env_meta = dict(request.meta_by_direction[direction_idx])
+                    slot_gripper = gripper_proxy_for_real_batched_replay(env_meta)
+                else:
+                    env_meta = None
+                    slot_gripper = request.gripper
+                slots_list.append(
+                    ReplaySlot(
+                        key=ReplaySlotKey(
+                            structure_idx=structure_idx,
+                            local_candidate_idx=local_candidate_idx,
+                            direction_idx=direction_idx,
+                        ),
+                        params=params,
+                        recorded=request.recorded_by_direction[direction_idx],
+                        source=ReplayEpisodeSource(
+                            structure_idx=structure_idx,
+                            direction_idx=direction_idx,
+                        ),
+                        gripper=slot_gripper,
+                        support_kp=float(support_kp)
+                        if support_kp is not None
+                        else None,
+                        episode_meta=env_meta,
+                    )
                 )
-                for direction_idx in directions
-            )
+            slots = tuple(slots_list)
             block = ReplayCandidateBlock(
                 structure_idx=structure_idx,
                 local_candidate_idx=local_candidate_idx,
@@ -417,11 +431,19 @@ def replay_multi_structure_candidate_blocks(
         env = None
         try:
             build_started = time.perf_counter()
+            build_kwargs: dict[str, Any] = {}
+            if getattr(build_env_fn, "wants_per_env_meta", False) and all(
+                slot.episode_meta is not None for slot in slots
+            ):
+                build_kwargs["per_env_episode_meta"] = [
+                    dict(slot.episode_meta) for slot in slots
+                ]
             env = build_env_fn(
                 num_envs=len(slots),
                 per_env_params=[slot.params for slot in slots],
                 per_env_grippers=[slot.gripper for slot in slots],
                 max_episode_steps=int(recorded_actions.shape[1]),
+                **build_kwargs,
             )
             _synchronize_device()
             build_seconds += time.perf_counter() - build_started

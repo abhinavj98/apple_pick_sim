@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -243,6 +243,7 @@ def make_real_replay_build_env_fn(
         max_episode_steps: int,
         gripper: GripperProxyConfig | None = None,
         per_env_grippers: list[GripperProxyConfig] | None = None,
+        per_env_episode_meta: Sequence[Mapping[str, Any]] | None = None,
     ) -> ApplePickBatchedSysIdEnv:
         if gripper is not None and per_env_grippers is not None:
             raise ValueError("scalar gripper and per_env_grippers cannot both be provided")
@@ -267,9 +268,15 @@ def make_real_replay_build_env_fn(
             controller_mode=controller_mode,
             control_hz=control_hz,
         )
+        robot_updates: dict[str, Any] = {"gripper": grippers[0]}
+        if per_env_episode_meta is not None:
+            robot_updates["per_world_bootstrap_joint_q"] = tuple(
+                bootstrap_joint_q_from_episode_metadata(env_meta)
+                for env_meta in per_env_episode_meta
+            )
         sim_config = dataclasses.replace(
             sim_config,
-            robot=dataclasses.replace(sim_config.robot, gripper=grippers[0]),
+            robot=dataclasses.replace(sim_config.robot, **robot_updates),
         )
         env = ApplePickBatchedSysIdEnv(
             num_envs=num_envs,
@@ -286,7 +293,18 @@ def make_real_replay_build_env_fn(
         layout = getattr(scene, "layout", None)
         cable = getattr(scene, "cable", None)
         if cable is not None:
-            apply_logged_post_grasp_se3_to_cable(cable, dict(episode_meta), layout=layout)
+            if per_env_episode_meta is not None:
+                apply_logged_post_grasp_se3_to_cable(
+                    cable,
+                    dict(episode_meta),
+                    layout=layout,
+                    per_env_meta=per_env_episode_meta,
+                )
+            else:
+                apply_logged_post_grasp_se3_to_cable(
+                    cable, dict(episode_meta), layout=layout
+                )
         return env
 
+    build_env_fn.wants_per_env_meta = True
     return build_env_fn

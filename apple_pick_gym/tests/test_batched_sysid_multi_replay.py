@@ -55,13 +55,14 @@ def _request(
     frames: int = 3,
     action_dim: int = 6,
     junction_names: tuple[str, ...] = ("support", "primary_spur", "spur_stem"),
+    meta_by_direction: dict[int, dict[str, Any]] | None = None,
 ) -> multi.ReplayStructureRequest:
-    return multi.ReplayStructureRequest(
-        structure_idx=structure_idx,
-        candidates=candidates,
-        direction_indices=directions,
-        base_params=_params(structure_idx) if params is None else params,
-        recorded_by_direction={
+    kwargs: dict[str, Any] = {
+        "structure_idx": structure_idx,
+        "candidates": candidates,
+        "direction_indices": directions,
+        "base_params": _params(structure_idx) if params is None else params,
+        "recorded_by_direction": {
             direction_idx: _recorded(
                 structure_idx,
                 direction_idx,
@@ -71,13 +72,30 @@ def _request(
             )
             for direction_idx in directions
         },
-        gripper=GripperProxyConfig(
+        "gripper": GripperProxyConfig(
             fix_to_apple=True,
             weld_direction=(1.0, 0.0, 0.0),
         )
         if gripper is None
         else gripper,
-    )
+    }
+    if meta_by_direction is not None:
+        kwargs["meta_by_direction"] = meta_by_direction
+    return multi.ReplayStructureRequest(**kwargs)
+
+
+def _real_dir_meta(*, apple_pos: tuple[float, float, float]) -> dict[str, Any]:
+    tcp_pos = (apple_pos[0], apple_pos[1] - 0.05, apple_pos[2])
+    return {
+        "weld_direction": [0.0, -1.0, 0.0],
+        "initial_apple_pos": list(apple_pos),
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": list(tcp_pos),
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+        "weld_reference_pos": list(apple_pos),
+        "weld_reference_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_robot_joint_q": [0.1, 0.2, 0.3, -1.0, 0.0, 1.5, -0.5],
+    }
 
 
 def test_build_replay_candidate_blocks_preserves_original_stable_identity_and_payloads():
@@ -915,4 +933,86 @@ def test_replay_multi_structure_support_kp_sets_solver_arrays_per_env(
     assert env.kp_before_reset is not None
     assert env.kp_before_reset[0] == pytest.approx(1.0e3)
     assert env.kp_before_reset[1] == pytest.approx(2.0e4)
+
+
+def test_real_build_env_fn_advertises_per_env_meta():
+    from pathlib import Path
+
+    from apple_pick_gym.batched_envs.real_batched_replay_build import (
+        make_real_replay_build_env_fn,
+    )
+    from apple_pick_sim.fruiting_system.params import load_ranges
+
+    ranges_path = Path(
+        "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json"
+    )
+    fn = make_real_replay_build_env_fn(
+        ranges_path=ranges_path,
+        ranges=load_ranges(ranges_path),
+        topology_seed=0,
+        fruiting_base_pos=(0.0, 0.5, 0.95),
+        episode_meta=_real_dir_meta(apple_pos=(0.1, 0.2, 0.3)),
+    )
+    assert getattr(fn, "wants_per_env_meta", False) is True
+
+
+def test_two_direction_batch_gets_distinct_weld_poses(_fake_replay_runtime):
+    meta_d0 = _real_dir_meta(apple_pos=(1.0, 0.0, 0.0))
+    meta_d1 = _real_dir_meta(apple_pos=(2.0, 0.0, 0.0))
+    request = _request(
+        4,
+        candidates=(_Candidate(40.0),),
+        directions=(0, 1),
+        meta_by_direction={0: meta_d0, 1: meta_d1},
+    )
+    blocks = multi.build_replay_candidate_blocks((request,))
+    slots = blocks[0].slots
+    assert slots[0].episode_meta != slots[1].episode_meta
+    assert slots[0].gripper.weld_reference_pos != slots[1].gripper.weld_reference_pos
+    d0_weld = tuple(float(x) for x in meta_d0["weld_reference_pos"])
+    assert slots[0].gripper.weld_reference_pos == pytest.approx(d0_weld)
+    assert slots[1].gripper.weld_reference_pos != d0_weld
+
+    build_calls: list[dict[str, Any]] = []
+
+    def build_env_fn(**kwargs):
+        build_calls.append(kwargs)
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    build_env_fn.wants_per_env_meta = True
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    assert build_calls[0]["per_env_episode_meta"] == [meta_d0, meta_d1]
+
+
+def test_slots_without_meta_do_not_pass_per_env_meta(_fake_replay_runtime):
+    request = _request(4, candidates=(_Candidate(40.0),), directions=(0, 1))
+    blocks = multi.build_replay_candidate_blocks((request,))
+    assert all(slot.gripper is request.gripper for slot in blocks[0].slots)
+
+    build_calls: list[dict[str, Any]] = []
+
+    def build_env_fn(**kwargs):
+        build_calls.append(kwargs)
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    build_env_fn.wants_per_env_meta = True
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    assert "per_env_episode_meta" not in build_calls[0]
+    assert all(slot.gripper == request.gripper for slot in blocks[0].slots)
 

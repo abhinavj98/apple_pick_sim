@@ -122,6 +122,8 @@ class RobotConfig:
     force_batched_layout: bool = False
     # When set, weld/post-grasp arm placement writes these joints open-loop (no IK).
     bootstrap_joint_q: tuple[float, ...] | None = None
+    # When set, each world gets its own open-loop joint_q (no world-0 broadcast).
+    per_world_bootstrap_joint_q: tuple[tuple[float, ...], ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)

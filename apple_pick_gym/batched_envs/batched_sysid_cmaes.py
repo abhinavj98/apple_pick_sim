@@ -34,6 +34,8 @@ from apple_pick_sim.system_id.wasserstein import (
 from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     UNSTABLE_DISQUALIFY_THRESHOLD,
     direction_episodes_from_collectors,
+    list_usable_direction_indices,
+    load_episode_metadata_for_directions,
     load_recorded_episodes_for_structure,
     replay_candidates_for_structure,
     replay_instability_fraction_all_frames,
@@ -725,15 +727,32 @@ def prepare_youngs_modulus_structure(
     num_directions: int,
     scoring: YoungsModulusScoringConfig,
     include_excluded: bool = False,
+    direction_indices: Sequence[int] | None = None,
 ) -> PreparedYoungsModulusStructure:
     """Load and prepare one structure without running physical replay."""
     candidate_list = tuple(candidates)
     if not candidate_list:
         raise ValueError("candidates must be non-empty")
+    if direction_indices is not None:
+        usable = set(
+            list_usable_direction_indices(
+                dataset,
+                int(structure_idx),
+                include_excluded=bool(include_excluded),
+            )
+        )
+        for direction_idx in direction_indices:
+            disk_id = int(direction_idx)
+            if disk_id not in usable:
+                raise ValueError(
+                    f"direction index {disk_id} is not available on disk "
+                    f"for structure {int(structure_idx)}"
+                )
     resolved = resolve_direction_indices(
         dataset,
         structure_idx=int(structure_idx),
         num_directions=int(num_directions),
+        direction_indices=direction_indices,
         include_excluded=bool(include_excluded),
     )
     direction_indices = tuple(int(direction_idx) for direction_idx in resolved)
@@ -785,6 +804,11 @@ def prepare_youngs_modulus_structure(
         else float(base_params.secondary.youngs_modulus_pa)
     )
     recorded_by_direction = dict(zip(direction_indices, recorded, strict=True))
+    meta_by_direction = load_episode_metadata_for_directions(
+        dataset,
+        structure_idx=int(structure_idx),
+        direction_indices=direction_indices,
+    )
     return PreparedYoungsModulusStructure(
         replay_request=ReplayStructureRequest(
             structure_idx=int(structure_idx),
@@ -793,6 +817,7 @@ def prepare_youngs_modulus_structure(
             base_params=base_params,
             recorded_by_direction=recorded_by_direction,
             gripper=gripper,
+            meta_by_direction=meta_by_direction,
         ),
         candidates=candidate_list,
         gt_candidate=gt_candidate,
@@ -954,6 +979,7 @@ def evaluate_youngs_modulus_candidates(
     max_envs_per_batch: int = 0,
     seed: int | None = None,
     include_excluded: bool = False,
+    direction_indices: Sequence[int] | None = None,
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
     action_dim: int | None = None,
@@ -966,6 +992,7 @@ def evaluate_youngs_modulus_candidates(
         num_directions=int(num_directions),
         scoring=scoring,
         include_excluded=bool(include_excluded),
+        direction_indices=direction_indices,
     )
     if action_dim is None:
         first_meta = dataset.load_episode_metadata(
@@ -1027,6 +1054,7 @@ def evaluate_youngs_modulus_structures(
     max_envs_per_batch: int = 0,
     seed: int | None = None,
     include_excluded: bool = False,
+    direction_indices: Sequence[int] | None = None,
     fail_fast: bool = False,
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
@@ -1050,6 +1078,7 @@ def evaluate_youngs_modulus_structures(
                 num_directions=int(num_directions),
                 scoring=scoring,
                 include_excluded=bool(include_excluded),
+                direction_indices=direction_indices,
             )
         except SysIdReplayCancelled:
             raise
@@ -1078,6 +1107,7 @@ def evaluate_youngs_modulus_structures(
                 max_envs_per_batch=int(max_envs_per_batch),
                 seed=seed,
                 include_excluded=bool(include_excluded),
+                direction_indices=direction_indices,
                 on_step=on_step,
                 replay_sim_config=replay_sim_config,
                 action_dim=action_dim,

@@ -1016,3 +1016,140 @@ def test_slots_without_meta_do_not_pass_per_env_meta(_fake_replay_runtime):
     assert "per_env_episode_meta" not in build_calls[0]
     assert all(slot.gripper == request.gripper for slot in blocks[0].slots)
 
+
+_PADDED_FRAME_SENTINEL = 8888.0
+
+
+def _unequal_length_request(
+    structure_idx: int = 4, *, action_dim: int = 6
+) -> multi.ReplayStructureRequest:
+    action0 = np.stack(
+        [np.full(action_dim, 10.0 + float(i), dtype=np.float32) for i in range(5)]
+    )
+    action1 = np.stack(
+        [np.full(action_dim, 20.0 + float(i), dtype=np.float32) for i in range(3)]
+    )
+    rec0 = _recorded(structure_idx, 0, frames=5, action_dim=action_dim)
+    rec1 = _recorded(structure_idx, 1, frames=3, action_dim=action_dim)
+    rec0["action"] = action0
+    rec1["action"] = action1
+    return dataclasses.replace(
+        _request(
+            structure_idx,
+            candidates=(_Candidate(40.0),),
+            directions=(0, 1),
+            frames=5,
+            action_dim=action_dim,
+        ),
+        recorded_by_direction={0: rec0, 1: rec1},
+    )
+
+
+def _patch_horizon_collectors(monkeypatch, *, pad_sentinel: float) -> None:
+    class HorizonCollectors:
+        def __init__(self, num_envs, recorded_by_env):
+            assert num_envs == len(recorded_by_env)
+            self.recorded = list(recorded_by_env)
+            self.env = None
+            self._n_steps = 0
+
+        def record_all_envs_step(self, env, *, frame_idx, **_kwargs):
+            self.env = env
+            self._n_steps = int(frame_idx) + 1
+
+        def to_arrays(self, env_idx):
+            n_replayed = int(self._n_steps)
+            n_true = int(np.asarray(self.recorded[env_idx]["action"]).shape[0])
+            ft = np.arange(n_replayed, dtype=np.float32).reshape(n_replayed, 1)
+            if n_true < n_replayed:
+                ft[n_true:] = pad_sentinel
+            return {"ft_wrist": ft.copy(), "tcp_pos": ft.copy()}
+
+    monkeypatch.setattr(
+        multi, "BatchedSysIdReplayCollectors", HorizonCollectors, raising=False
+    )
+
+
+def test_drive_tensor_pads_short_directions_with_last_action(
+    monkeypatch,
+    _fake_replay_runtime,
+):
+    _patch_horizon_collectors(monkeypatch, pad_sentinel=_PADDED_FRAME_SENTINEL)
+    request = _unequal_length_request()
+    blocks = multi.build_replay_candidate_blocks((request,))
+    last_logged = np.asarray(request.recorded_by_direction[1]["action"][-1])
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    env = _fake_replay_runtime.built[0]
+    drive = np.stack([np.asarray(step) for step in env.actions], axis=1)
+    assert drive.shape == (2, 5, 6)
+    np.testing.assert_array_equal(drive[0], request.recorded_by_direction[0]["action"])
+    np.testing.assert_array_equal(drive[1, :3], request.recorded_by_direction[1]["action"])
+    np.testing.assert_array_equal(drive[1, 3], last_logged)
+    np.testing.assert_array_equal(drive[1, 4], last_logged)
+    assert not np.allclose(drive[1, 3:], 0.0)
+
+
+def test_replay_arrays_truncate_to_recorded_length(monkeypatch, _fake_replay_runtime):
+    _patch_horizon_collectors(monkeypatch, pad_sentinel=_PADDED_FRAME_SENTINEL)
+    request = _unequal_length_request()
+    blocks = multi.build_replay_candidate_blocks((request,))
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    outcome = multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    key0 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=0)
+    key1 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=1)
+    arrays0 = outcome.replay_by_key[key0]
+    arrays1 = outcome.replay_by_key[key1]
+    assert arrays0["ft_wrist"].shape[0] == 5
+    assert arrays1["ft_wrist"].shape[0] == 3
+    assert arrays1["tcp_pos"].shape[0] == 3
+    assert int(np.asarray(request.recorded_by_direction[1]["action"]).shape[0]) == 3
+
+
+def test_padded_frames_absent_from_features(monkeypatch, _fake_replay_runtime):
+    _patch_horizon_collectors(monkeypatch, pad_sentinel=_PADDED_FRAME_SENTINEL)
+    request = _unequal_length_request()
+    blocks = multi.build_replay_candidate_blocks((request,))
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    outcome = multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    key1 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=1)
+    arrays1 = outcome.replay_by_key[key1]
+    stacked = np.concatenate(
+        [np.asarray(arrays1["ft_wrist"]).reshape(-1), np.asarray(arrays1["tcp_pos"]).reshape(-1)]
+    )
+    assert _PADDED_FRAME_SENTINEL not in stacked
+    assert arrays1["ft_wrist"].shape[0] == 3
+

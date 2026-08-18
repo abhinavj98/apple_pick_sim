@@ -172,11 +172,8 @@ def _validate_request(request: ReplayStructureRequest) -> _ReplayCompatibilitySi
         episode_frames = int(action.shape[0])
         if frame_count is None:
             frame_count = episode_frames
-        elif episode_frames != frame_count:
-            raise ValueError(
-                "all direction episodes must have the same frame count for "
-                f"structure {int(request.structure_idx)}"
-            )
+        else:
+            frame_count = max(frame_count, episode_frames)
         episode_junctions = tuple(str(name) for name in recorded.get("junction_names", ()))
         if junction_names is None:
             junction_names = episode_junctions
@@ -213,6 +210,50 @@ def _validate_request(request: ReplayStructureRequest) -> _ReplayCompatibilitySi
         direction_indices=directions,
         gripper=gripper_signature,
     )
+
+
+def _pad_actions_with_last(actions_by_slot: Sequence[np.ndarray]) -> np.ndarray:
+    """Stack ragged ``(T_i, A)`` actions to ``(N, T_max, A)`` by repeating the last row."""
+    arrays = [np.asarray(action, dtype=np.float32) for action in actions_by_slot]
+    if not arrays:
+        raise ValueError("cannot pad an empty recorded-action list")
+    t_max = max(int(action.shape[0]) for action in arrays)
+    action_width = int(arrays[0].shape[1])
+    out = np.empty((len(arrays), t_max, action_width), dtype=np.float32)
+    for slot_idx, action in enumerate(arrays):
+        n_frames = int(action.shape[0])
+        if n_frames == 0:
+            raise ValueError("cannot pad an empty action episode")
+        if int(action.shape[1]) != action_width:
+            raise ValueError("all slots must have the same action width")
+        out[slot_idx, :n_frames] = action
+        pad = t_max - n_frames
+        if pad:
+            out[slot_idx, n_frames:] = np.repeat(action[-1][None, :], pad, axis=0)
+    return out
+
+
+def _truncate_time_axis(value: Any, n_frames: int) -> Any:
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return value
+        return value[: int(n_frames)]
+    return value
+
+
+def _truncate_replay_arrays(arrays: Mapping[str, Any], n_frames: int) -> dict[str, Any]:
+    """Slice time-varying replay arrays to the recorded length before features."""
+    n = int(n_frames)
+    out: dict[str, Any] = {}
+    for key, value in arrays.items():
+        if key == "junction_names":
+            out[key] = value
+            continue
+        if isinstance(value, dict):
+            out[key] = {name: _truncate_time_axis(arr, n) for name, arr in value.items()}
+            continue
+        out[key] = _truncate_time_axis(value, n)
+    return out
 
 
 def _raise_if_incompatible(
@@ -421,12 +462,11 @@ def replay_multi_structure_candidate_blocks(
             continue
         slots = tuple(slot for block in surviving_blocks for slot in block.slots)
         chunk_env_counts.append(len(slots))
-        recorded_actions = np.stack(
-            [
-                np.asarray(slot.recorded["action"], dtype=np.float32)
-                for slot in slots
-            ],
-            axis=0,
+        recorded_n_frames = tuple(
+            int(np.asarray(slot.recorded["action"]).shape[0]) for slot in slots
+        )
+        recorded_actions = _pad_actions_with_last(
+            [slot.recorded["action"] for slot in slots]
         )
         env = None
         try:
@@ -508,7 +548,10 @@ def replay_multi_structure_candidate_blocks(
             for env_idx, slot in enumerate(slots):
                 if slot.key in replay_by_key:
                     raise RuntimeError(f"duplicate replay result key: {slot.key}")
-                replay_by_key[slot.key] = collectors.to_arrays(env_idx)
+                replay_by_key[slot.key] = _truncate_replay_arrays(
+                    collectors.to_arrays(env_idx),
+                    recorded_n_frames[env_idx],
+                )
             _synchronize_device()
             replay_seconds += time.perf_counter() - replay_started
         except SysIdReplayCancelled:

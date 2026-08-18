@@ -63,15 +63,17 @@ def _make_eight_dir_dataset(
     *,
     structure_idx: int = 0,
     gt_params: fs.FruitingSystemParams,
+    vic_pose: bool = False,
 ) -> MagicMock:
     dataset = MagicMock()
-    dataset.manifest = {
-        "collection": {
-            "num_directions": 8,
-            "action_dim": 6,
-            "seed": 0,
-        }
+    collection: dict[str, object] = {
+        "num_directions": 8,
+        "action_dim": 19 if vic_pose else 6,
+        "seed": 0,
     }
+    if vic_pose:
+        collection["action_layout"] = "vic_pose_v1"
+    dataset.manifest = {"collection": collection}
     dataset.episode_entries.return_value = [
         {"structure_idx": structure_idx, "direction_idx": d} for d in range(8)
     ]
@@ -139,6 +141,14 @@ def _patch_prepare_side_effects(
             weld_direction=(1.0, 0.0, 0.0),
         ),
     )
+    monkeypatch.setattr(
+        cmaes,
+        "gripper_proxy_for_real_batched_replay",
+        lambda _meta: fs.GripperProxyConfig(
+            fix_to_apple=True,
+            weld_direction=(0.0, 0.0, 1.0),
+        ),
+    )
 
 
 def test_prepare_uses_only_requested_directions(
@@ -192,7 +202,7 @@ def test_prepare_attaches_meta_by_direction_for_selection(
     gt_params: fs.FruitingSystemParams,
 ):
     _patch_prepare_side_effects(monkeypatch, gt_params=gt_params)
-    dataset = _make_eight_dir_dataset(structure_idx=0, gt_params=gt_params)
+    dataset = _make_eight_dir_dataset(structure_idx=0, gt_params=gt_params, vic_pose=True)
     selected = (2, 4, 5)
 
     prepared = cmaes.prepare_youngs_modulus_structure(
@@ -210,6 +220,25 @@ def test_prepare_attaches_meta_by_direction_for_selection(
     for direction_idx in selected:
         assert meta[direction_idx]["direction_idx"] == direction_idx
         assert meta[direction_idx]["meta_tag"] == f"s0-d{direction_idx}"
+
+
+def test_prepare_omits_meta_by_direction_for_sim_sim(
+    monkeypatch: pytest.MonkeyPatch,
+    gt_params: fs.FruitingSystemParams,
+):
+    _patch_prepare_side_effects(monkeypatch, gt_params=gt_params)
+    dataset = _make_eight_dir_dataset(structure_idx=0, gt_params=gt_params)
+
+    prepared = cmaes.prepare_youngs_modulus_structure(
+        dataset=dataset,
+        structure_idx=0,
+        candidates=(_default_candidate(gt_params),),
+        num_directions=8,
+        scoring=_default_scoring(),
+        direction_indices=(2, 4, 5),
+    )
+
+    assert prepared.replay_request.meta_by_direction is None
 
 
 def test_prepare_defaults_to_all_usable_directions(

@@ -804,10 +804,14 @@ def prepare_youngs_modulus_structure(
         else float(base_params.secondary.youngs_modulus_pa)
     )
     recorded_by_direction = dict(zip(direction_indices, recorded, strict=True))
-    meta_by_direction = load_episode_metadata_for_directions(
-        dataset,
-        structure_idx=int(structure_idx),
-        direction_indices=direction_indices,
+    meta_by_direction = (
+        load_episode_metadata_for_directions(
+            dataset,
+            structure_idx=int(structure_idx),
+            direction_indices=direction_indices,
+        )
+        if real
+        else None
     )
     return PreparedYoungsModulusStructure(
         replay_request=ReplayStructureRequest(

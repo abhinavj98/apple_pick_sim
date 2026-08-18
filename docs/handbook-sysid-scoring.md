@@ -297,8 +297,10 @@ Pull axis \(\hat p\) is the logged unit `pull_direction` (else first-hold
 If \(\mu_{\mathrm{real}}\) is below the floor, pass iff
 \(\mu_{\mathrm{fit}} < 3\mu_{\mathrm{real}} + 0.4\) in the same units instead
 of a raw ratio. `force_magnitude_ok` is true only if **both** force and
-torque pass. TCP pose magnitude uses the same helper; as implemented it
-reuses the force floor/slack constants.
+torque pass. TCP pose magnitude uses the same helper with **ratio only**
+(\(\mu_{\mathrm{fit}} / \mu_{\mathrm{real}} \in [1/3, 3]\), `floor=0`,
+`slack=0`). Do **not** reuse Newton force floor/slack (`FORCE_FLOOR_N=0.2`)
+on meter displacements.
 
 **Trend.** Per-hold mean of the signed series is a length-`n_holds` vector
 (skip empty holds; need ≥3 holds). Pearson

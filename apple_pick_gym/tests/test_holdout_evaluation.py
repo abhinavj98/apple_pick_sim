@@ -182,6 +182,27 @@ def test_direction_verification_fails_ten_times_stiff_pose():
     assert report["tcp_pose_magnitude_ok"] is False
 
 
+def test_direction_verification_fails_ten_times_stiff_pose_at_cm_scale():
+    # Hold mean |s| ≈ 0.02 m (2 cm); 10× stiff fit ≈ 0.002 m. Frame 0 TCP is
+    # far from the first hold so a wrong x_hold0 would not catch this.
+    real = _episode_with_holds(
+        tcp_z_pull=0.0, tcp_z_hold0=1.0, tcp_hold_step=0.02 / 1.5
+    )
+    fitted = _episode_with_holds(
+        tcp_z_pull=0.0,
+        tcp_z_hold0=1.0,
+        tcp_hold_step=0.02 / 1.5,
+        tcp_scale=0.1,
+    )
+    report = direction_verification(
+        real=real,
+        fitted=fitted,
+        direction=0,
+        pull_direction=(0.0, 0.0, 1.0),
+    )
+    assert report["tcp_pose_magnitude_ok"] is False
+
+
 def test_direction_verification_fails_torque_magnitude():
     real = _episode_with_holds()
     fitted = _episode_with_holds(torque_scale=10.0)

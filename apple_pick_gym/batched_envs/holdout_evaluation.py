@@ -183,7 +183,7 @@ def direction_verification(
         real_mean=real_t_mean,
         fitted_mean=fit_t_mean,
         floor=TORQUE_FLOOR_NM,
-        slack=FORCE_SLACK_N,
+        slack=FORCE_SLACK_N,  # N·m; same numeric slack as force (0.4)
     )
     force_magnitude_ok = bool(force_mag_ok and torque_mag_ok)
 
@@ -217,11 +217,12 @@ def direction_verification(
     )
     real_tcp_mean = float(np.mean(np.abs(real_tcp_s[hold_idx])))
     fit_tcp_mean = float(np.mean(np.abs(fit_tcp_s[hold_idx])))
+    # Pose is meters (~cm); never reuse Newton force floor/slack.
     tcp_pose_magnitude_ok, tcp_ratio = magnitude_ratio_ok(
         real_mean=real_tcp_mean,
         fitted_mean=fit_tcp_mean,
-        floor=FORCE_FLOOR_N,
-        slack=FORCE_SLACK_N,
+        floor=0.0,
+        slack=0.0,
     )
     real_tcp_hold = per_hold_means(
         real_tcp_s,

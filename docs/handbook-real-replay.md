@@ -12,7 +12,7 @@ Sequencing, ranking acceptance, and CMA status belong in `docs/ROADMAP.md`.
 | Code owners | `robot_replay/`; `apple_pick_sim/system_id/real_to_batched_sysid.py`; `apple_pick_sim/system_id/real_pre_grasp_params.py`; `apple_pick_sim/system_id/batched_digital_twin_init.py`; `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md`; H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H5 `docs/handbook-youngs-cma.md` |
-| Archive specs | **Partial:** `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`; **Implemented:** `docs/superpowers/specs/2026-08-10-real-batched-gl-replay-design.md`, `2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `2026-08-12-real-camera-gl-viewer-design.md`, `2026-08-12-gl-video-record-design.md`, `2026-08-14-real-rod-mass-density-override-design.md`; **Partial:** `2026-08-12-real-replay-cmaes-plumbing-design.md` |
+| Archive specs | **Partial:** `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`; **Implemented:** `docs/superpowers/specs/2026-08-10-real-batched-gl-replay-design.md`, `2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `2026-08-12-real-camera-gl-viewer-design.md`, `2026-08-12-gl-video-record-design.md`, `2026-08-14-real-rod-mass-density-override-design.md`; **Partial:** `2026-08-12-real-replay-cmaes-plumbing-design.md`; **Implemented (convert/replay; science gate Task 9):** `2026-08-17-one-structure-multidir-holdout-cmaes-design.md` |
 
 > **Warning — tare real F/T, never simulated F/T.** Convert the compiled
 > episode parquet whose `ft_wrist` is already loaded EMA minus unloaded EMA.
@@ -36,14 +36,14 @@ Related boundaries:
 ## 1. End-to-end flow
 
 ```text
-compiled real parquet
-  → convert metadata and trajectory
-  → 1×1 batched_sysid_v1 dataset
+compiled real parquet(s)
+  → convert --input (1×1) or --input-dir (1×N)
+  → batched_sysid_v1 dataset (episodes/s00_dNN)
   → rebuild pre-grasp digital twin
   → free settle
-  → logged post-grasp apple/TCP weld
+  → per-direction logged post-grasp apple/TCP weld, gripper, arm joints
   → optional welded settle
-  → replay converted 19D vic_pose actions
+  → replay converted 19D vic_pose actions (pad last action; truncate before features)
   → grid/ranking/CMA (H5 and ROADMAP)
 ```
 
@@ -54,9 +54,11 @@ that source column with a 19D `vic_pose_v1` action, and
 `real_batched_replay_build.check_action_semantics` rejects an incompatible
 `vic` replay unless a legacy smoke-only escape hatch is explicitly requested.
 
-**Status boundary:** Drive = `vic_pose` **Done**. Trusted Cartesian ranking and
-real-data CMA remain open; see H5 and `docs/ROADMAP.md`. A successful replay or
-environment build does not establish a trustworthy ranking.
+**Status boundary:** Drive = `vic_pose` **Done**. Folder convert and
+per-direction replay for one tree are **Done**. Opt-in 5/3 holdout CMA is
+wired (H5); the GPU science gate is Task 9 / ROADMAP and is **not** claimed
+here. A successful replay or environment build does not establish a
+trustworthy ranking.
 
 ## 2. Episode inputs
 
@@ -81,13 +83,17 @@ them at runtime. A usable compiled episode provides:
 - a stable episode id and control rate, with converter fallbacks for older
   compiler layouts.
 
-The converter writes one real episode as one structure and one direction:
+Single-file `--input` still writes one episode as one structure and one
+direction (`episodes/s00_d00.parquet`). Folder `--input-dir` writes one
+structure and one episode per compiled pull:
 
 ```text
 <dataset>/
   manifest.json
   episodes/
     s00_d00.parquet
+    s00_d01.parquet
+    ...
 ```
 
 `manifest.json` carries collection provenance and action declarations. Episode
@@ -98,8 +104,51 @@ general bag schema and the runtime-obs/bag/score-vector distinction.
 ## 3. Convert contract
 
 The CLI `robot_replay/convert_real_to_batched_sysid_metadata.py` is a thin
-front end to
-`real_to_batched_sysid.export_real_episode_to_batched_dataset`.
+front end. `--input` and `--input-dir` are a required mutually exclusive
+group:
+
+- `--input` → `export_real_episode_to_batched_dataset` (1×1; unchanged);
+- `--input-dir` → `export_real_tree_folder_to_batched_dataset` (1×N).
+
+Passing both is an argparse error. `--out` JSON metadata remains single-file
+only.
+
+### Folder convert (one tree, N directions)
+
+`--input-dir` collects compiled files matching `sXX-dNN.parquet`. It ignores
+`*_robot` / `*_tracking` siblings, PNGs, and videos. The integer `NN` from
+the filename is `direction_idx`. If parquet `dump.direction_index` is
+present, it **must** equal `NN` or convert fails. Duplicate `dNN`, mixed tree
+prefixes, or an empty folder fail loudly.
+
+Canonical geometry (one tree):
+
+- Every direction must share rod geometry (`junction_names` and rebuilt
+  `fruiting_system_params` lengths/radii/segment counts).
+- `fruiting_base_pos` is the mean across directions. Convert fails if any
+  axis spread exceeds `--base-pos-tolerance-m` (default 5 mm).
+- After the assert, every episode gets the same mean base pose and the same
+  canonical `fruiting_system_params` / `params_fingerprint` (copied from the
+  lowest `direction_idx`). `true_params_for_structure` still reads direction
+  0.
+
+Manifest for the folder path:
+
+- `collection.num_structures = 1`, `structure_idx = 0`;
+- `collection.num_directions = max(NN)+1` (sparse `d03`+`d05` ⇒ width 6 with
+  two episode rows);
+- `env_idx = direction_idx`;
+- `collection.n_holds = max(hold_number)+1` (4 for the s09 logs);
+- `collection.control_hz` from `--control-hz` (default 30);
+- `collection.sim_config` via `sim_config_to_manifest_dict` built in
+  `apple_pick_sim` (`controller.mode = "vic_pose"`; no gym import);
+- `collection.topology_seed` present;
+- `collection.source_real_parquets` is the list of compiled inputs (the 1×1
+  path keeps singular `source_real_parquet`).
+
+Holdout CMA still requires eight usable disk dirs; sparse convert is legal
+for the bag. Scoring one-hot width is this collection width, not
+`len(selected)` — see H3.
 
 ### Action packing
 
@@ -240,7 +289,36 @@ replay and optimization callers on the same initialization path:
 
 The Young's grid can opt into this builder from real dataset metadata. That
 plumbing being present is not the same as accepting its ranking. Trusted
-ranking and CMA execution remain H5/ROADMAP work.
+ranking remains H5/ROADMAP work (GPU science gate is Task 9).
+
+### Per-direction weld, gripper, and arm joints
+
+A 1×N real batch must not reuse direction 0's grasp for every env. When
+`ReplayStructureRequest.meta_by_direction` is set:
+
+- each `ReplaySlot` stores that direction's episode metadata;
+- `ReplaySlot.gripper` is `gripper_proxy_for_real_batched_replay` of **that**
+  meta (the driver already prefers `per_env_grippers=[slot.gripper, …]`);
+- `make_real_replay_build_env_fn` advertises `wants_per_env_meta = True` and
+  accepts `per_env_episode_meta`;
+- logged post-grasp apple/TCP SE(3) is applied per env
+  (`apply_logged_post_grasp_se3_to_cable(..., per_env_meta=…)`);
+- open-loop FR3 joints use `per_world_bootstrap_joint_q` from each meta's
+  `initial_robot_joint_q` (`apply_open_loop_fr3_joint_q_per_world`; no
+  broadcast from world 0).
+
+Sim-sim (no `meta_by_direction`) is unchanged: one `request.gripper` and the
+scalar bootstrap path. Per-direction controller gains stay inside the 19D
+`vic_pose` action.
+
+### Unequal lengths: pad the drive, truncate before features
+
+Directions in one batch may differ in frame count. Replay allocates
+`(num_slots, T_max, A)` and pads each shorter drive with the **last logged
+action** (not zeros). After stepping, every collected array is sliced to that
+slot's recorded `n_frames` **before** feature extraction / Sinkhorn, and
+padded control frames are excluded from the collector `record_mask`. Padded
+tails must not enter scores.
 
 ## 8. CLI cheat-sheet
 
@@ -252,11 +330,13 @@ here.
 
 | Responsibility | Module / symbol |
 | -------------- | --------------- |
-| Native real metadata mapping and batched export | `apple_pick_sim/system_id/real_to_batched_sysid.py` — `build_episode_metadata_from_real`, `export_real_episode_to_batched_dataset` |
+| Native real metadata mapping and batched export | `apple_pick_sim/system_id/real_to_batched_sysid.py` — `build_episode_metadata_from_real`, `export_real_episode_to_batched_dataset`, `export_real_tree_folder_to_batched_dataset` |
 | Pre-grasp rod geometry, `mass_kg` → density | `apple_pick_sim/system_id/real_pre_grasp_params.py` — `map_pre_grasp_geometry`, `fruiting_params_from_pre_grasp_meta` |
 | F/T, woody, hold, camera conversion | same module — `world_wrench_from_ee_logged`, `tag_poses_to_cma_woody`, `_scalar_hold_number`, `camera_to_base_4x4_from_dataset_metadata`, `zero_phase_lowpass`, `zero_phase_lowpass_with_status`, `block_mean_downsample` |
-| Twin init and logged weld pose | `apple_pick_sim/system_id/batched_digital_twin_init.py` — `gripper_proxy_for_real_batched_replay`, `apply_logged_post_grasp_se3_to_cable` |
-| Shared gym build path | `apple_pick_gym/batched_envs/real_batched_replay_build.py` — `real_replay_sim_config`, `make_real_replay_build_env_fn` |
+| Twin init and logged weld pose | `apple_pick_sim/system_id/batched_digital_twin_init.py` — `gripper_proxy_for_real_batched_replay`, `apply_logged_post_grasp_se3_to_cable` (optional `per_env_meta`) |
+| Per-world open-loop joints | `apple_pick_sim/coupled_fruiting/settle_then_weld.py` — `apply_open_loop_fr3_joint_q_per_world` |
+| Shared gym build path | `apple_pick_gym/batched_envs/real_batched_replay_build.py` — `real_replay_sim_config`, `make_real_replay_build_env_fn` (`wants_per_env_meta`) |
+| Multi-direction replay slots, last-action pad, truncate | `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py` — `ReplaySlot.episode_meta`, `_pad_actions_with_last`, `_truncate_replay_arrays` |
 | Standalone replay and GL camera | `robot_replay/example_replay_real_batched.py` — `_run`, `make_replay_on_step`, `gl_camera_from_camera_to_base` |
 | MP4 writer | `robot_replay/gl_video_recorder.py` — `GlVideoRecorder` |
 
@@ -266,13 +346,20 @@ Key regression coverage:
 
 - `apple_pick_sim/tests/test_real_to_batched_sysid.py` — metadata parity,
   camera propagation, 19D packing, F/T rotation, two woody starts, scalar
-  holds, and no trajectory woody ends.
+  holds, no trajectory woody ends, folder `--input-dir` (filename
+  `direction_idx`, canonical geometry, `n_holds` / `sim_config` /
+  `topology_seed`), and 1×1 `s00_d00` regression.
 - `apple_pick_sim/tests/test_real_pre_grasp_params.py` — Branch T-junction,
   rest-snapshot preference, and rod `mass_kg` → density override.
 - `apple_pick_sim/tests/test_batched_digital_twin_init.py` — twin initialization
-  and post-grasp SE(3).
+  and post-grasp SE(3), including per-env logged poses.
+- `apple_pick_sim/tests/test_open_loop_joint_bootstrap.py` — per-world
+  `joint_q` (no broadcast).
 - `apple_pick_gym/tests/test_real_batched_replay_build.py` — shared builder,
   per-env grippers, and batched logged-pose application.
+- `apple_pick_gym/tests/test_batched_sysid_multi_replay.py` — distinct
+  per-direction weld/gripper metadata, last-action drive padding, and
+  truncate-before-features.
 - `apple_pick_gym/tests/test_real_batched_replay_cli.py` — action semantics,
   camera placement, replay callbacks, and video flag parsing.
 - `robot_replay/tests/test_gl_video_recorder.py` and
@@ -302,5 +389,15 @@ uv run python robot_replay/example_replay_real_batched.py \
   --settle-substeps 80 --post-grasp-settle-substeps 0
 ```
 
-The smoke proves conversion/build/19D drive, not ranking quality. Use the
-current `docs/ROADMAP.md` validation block for the next real grid/CMA gate.
+The smoke proves conversion/build/19D drive, not ranking quality. Folder
+convert of one tree (`s09`, eight compiled pulls):
+
+```bash
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input-dir robot_replay/new_data/s09 \
+  --dataset-out tmp/real_batched_s09 --overwrite
+```
+
+Expect `collection.num_structures=1`, `num_directions=8`, `control_hz=30`,
+`n_holds=4`, and `episodes/s00_d00` … `s00_d07`. Holdout CMA on that bag is
+H5 / `docs/ROADMAP.md` (GPU science gate is Task 9).

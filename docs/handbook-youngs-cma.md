@@ -13,7 +13,7 @@ the next real-data acceptance work belong in `docs/ROADMAP.md`.
 | Code owners | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py`; `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H4 `docs/handbook-real-replay.md` |
-| Archive specs | **Implemented:** `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md`; **Superseded phenotype, implemented loop:** `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`; **Partial:** `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md` |
+| Archive specs | **Implemented:** `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md`; **Superseded phenotype, implemented loop:** `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`; **Partial:** `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`; **Implemented (holdout CLI; science gate Task 9):** `docs/superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md` |
 
 Related boundaries:
 
@@ -178,17 +178,19 @@ recorded control rate, logged gripper transform, post-grasp SE(3), and 19D
 
 Converted real bags have no simulator-oracle recoverable phenotype.
 Consequently `gt_candidate` is `None`, every row has `is_gt=false`, and
-`--include-gt-candidate` is forced off with a warning. One converted episode is
-currently one structure; `vic_pose` grid and CMA runs reject multi-structure
-selection. Explicit `--controller-mode vic` on a `vic_pose_v1` packed dataset is
-refused (twist replay is not valid for recorded pose-control bags).
+`--include-gt-candidate` is forced off with a warning. One converted tree is
+one structure (1×1 or 1×N); `vic_pose` grid and CMA runs reject
+multi-structure selection. Explicit `--controller-mode vic` on a
+`vic_pose_v1` packed dataset is refused (twist replay is not valid for
+recorded pose-control bags).
 
 This plumbing is shipped, but a successful build/replay is not ranking
-acceptance. The following remain ROADMAP-owned and must not be inferred as
-complete from this handbook:
+acceptance. Folder convert and per-direction weld are H4 (shipped). The
+following remain ROADMAP-owned and must not be inferred as complete from this
+handbook:
 
-- post-alignment trusted Cartesian ranking on real bags; and
-- multi-episode discovery/manifest policy.
+- GPU science-gate pass on s09 holdout (Task 9; not yet run); and
+- multi-tree merge / dropping the one-structure `vic_pose` guard.
 
 Real 1×1 `vic_pose` CMA (same H4 builder as the grid):
 
@@ -199,11 +201,66 @@ Real 1×1 `vic_pose` CMA (same H4 builder as the grid):
   live candidate harvest stays unfiltered `ft_wrist`.
 - `gt_candidate` is `None`; `cmaes_report.json` omits `gt_diagnostics`.
 - Effective spur/stem floor is \(\log_{10} E = 7\) on real runs only.
-- Multi-episode convert / per-direction weld remain ROADMAP-owned (spec slices
-  1–3).
 - **Known issue (undiagnosed):** local `population_size=6`, `max_generations=4`
   on `s09-d00` exited native **139** while starting generation 3 after two
   completed generations (`eligible_mean` `19.46 → 18.23`).
+
+### Opt-in holdout (5 train / 3 val)
+
+Default CMA (no split flags) still scores **all** usable directions, writes
+no `holdout_report.json`, and leaves sim-sim / 1×1 real behavior unchanged.
+
+Holdout mode is opt-in:
+
+| Flag | Semantics |
+| ---- | --------- |
+| `--direction-split-seed` | `nargs="?"`, `const=17`, `default=None`. Bare flag ⇒ seed 17. Absent ⇒ no holdout. |
+| `--direction-indices` + `--val-direction-indices` | Together pin a split (comma-separated ints). Exactly one of the pair is `SystemExit`. |
+
+Holdout always requires **eight** usable disk dirs (seed or explicit). Lists
+must be disjoint, non-empty, and a subset of disk. Seeded sample uses stdlib
+`random.Random(seed).sample(sorted(dirs), 5)`. Train = that sample sorted;
+val = sorted complement. Seed 17 on `{0…7}` yields train `{2,4,5,6,7}`,
+val `{0,1,3}`. One-hot `n_directions` stays `collection.num_directions` (8).
+
+Fit: every `ask`/`tell` and the final-mean wave pass `direction_indices=train`
+only. After a successful fit, freeze CMA `final_mean` (the same vector the
+CLI already evaluates at the end of fit). Holdout eval replays **val** dirs
+at shipped `CMA_SEARCH_PARAMS["initial_mean_log10"]` (baseline) and at
+`final_mean` (fitted). Those calls must not `tell()`. Failed fit: no
+`holdout_report.json`; non-zero exit preserved.
+
+`holdout_report.json` is written atomically next to `cmaes_report.json`.
+Required keys:
+
+- `structure_idx` (int, `0`)
+- `direction_split_seed` (int; **omitted** when both explicit index flags
+  overrode the draw)
+- `train_direction_indices` / `val_direction_indices` (sorted int lists)
+- `phenotype_log10.baseline` / `phenotype_log10.fitted` (length-3 log10
+  vectors)
+- `train_fitted`, `val_baseline`, `val_fitted`: each has
+  `eligible_mean_sinkhorn`, `mae_force_n`, `mae_torque_nm` (finite floats)
+- `verification`: `train_sinkhorn_decreased`, `val_sinkhorn_improved`, and
+  per-val-dir `force_magnitude_ok`, `force_trend_ok`,
+  `tcp_pose_magnitude_ok`, `tcp_pose_trend_ok` (plus diagnostic ratios /
+  Pearson \(r\); see H3)
+- `val_overlay_paths`: one HTML per val dir under
+  `structure_000/holdout/direction_0NN.html` (real vs **fitted**, not the
+  train overlay)
+
+`--overwrite` clears `holdout_report.json` and `structure_000/holdout/`.
+
+**Exit code:** a successful fit still writes the report, then exits **1** if
+any gate fails. The CLI prints one line naming the first failed gate (and
+direction). Magnitude/trend fail even if Sinkhorn improved. Beating the
+shipped initial-mean Sinkhorn on val is required but cheap (baseline
+\(E \sim 3\,\mathrm{GPa}\)); the signed pose/force gates are the physics
+check. **Do not infer a passing science gate from this handbook** — Task 9
+runs GPU acceptance.
+
+Keep the one-structure `vic_pose` `SystemExit`. Two-tree merge is out of
+scope.
 
 See `docs/ROADMAP.md` for the ordered M4.0 work.
 
@@ -291,6 +348,29 @@ run on `s09-d00` (`tmp/real_kp_e_cmaes_s09_d00_retry`): `eligible_mean`
 (`eligible_mean` `19.46 → 18.23` in two completed generations); root cause
 undiagnosed. Do not commit `tmp/` artifacts.
 
+### Real folder convert → holdout CMA
+
+Opt-in 5/3 holdout on one converted tree. Requires eight compiled
+`s09-dNN.parquet` under `robot_replay/new_data/s09/`. GPU science gate is
+Task 9 — this recipe is the contract, not a claimed pass.
+
+```bash
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input-dir robot_replay/new_data/s09 \
+  --dataset-out tmp/real_batched_s09 \
+  --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --dataset tmp/real_batched_s09 \
+  --output tmp/real_kp_e_cmaes_s09_holdout \
+  --direction-split-seed 17 \
+  --viewer null \
+  --overwrite
+```
+
+Bare `--direction-split-seed` is the same as `--direction-split-seed 17`.
+Omit the flag to score all dirs with no `holdout_report.json`.
+
 ### Gates
 
 ```bash
@@ -309,6 +389,7 @@ the ranking policy; the second validates CMA fit integrity.
 | Stable slot planning, chunking, fused/scalar replay | `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py` |
 | Cartesian grid, ranking, real-builder opt-in | `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py` |
 | CMA search defaults, CLI, counters, atomic report | `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
+| Holdout split, report, val overlays, exit on gate fail | `apple_pick_sim/system_id/holdout_gates.py`; `apple_pick_gym/batched_envs/holdout_evaluation.py` |
 | Shared real replay build | `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
 | Ranking and CMA gates | `apple_pick_gym/batched_envs/youngs_modulus_gate_report.py`; `youngs_modulus_cmaes_gate_report.py`; `scripts/gate_youngs_modulus_*.sh` |
 
@@ -330,6 +411,8 @@ uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
   apple_pick_gym/tests/test_batched_sysid_cmaes_loop.py \
   apple_pick_gym/tests/test_example_youngs_modulus_cmaes_cli.py \
+  apple_pick_gym/tests/test_holdout_evaluation.py \
+  apple_pick_sim/tests/test_holdout_gates.py \
   apple_pick_gym/tests/test_youngs_modulus_cmaes_gate_report.py \
   apple_pick_gym/tests/test_gate_youngs_modulus_cmaes_script.py -q
 ```

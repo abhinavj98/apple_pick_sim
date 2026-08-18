@@ -7,7 +7,7 @@
 | **Last updated** | 2026-08-17 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[M4].0 feature alignment Done** (slices 0–3); next: trusted Cartesian ranking → CMA; V.5.3 held-out deferred |
+| **Active work**  | **[M4].0** folder convert + 1×8 replay + opt-in holdout CMA shipped; **Task 9 GPU science gate not yet run** |
 
 ---
 
@@ -42,7 +42,7 @@
 
 ## Current focus
 
-**Next slice:** **M4.0 trusted Cartesian ranking** (then CMA on the same builder). **Feature alignment Done**; use H3 `docs/handbook-sysid-scoring.md` for the aligned bag/scale contract, H4 `docs/handbook-real-replay.md` for convert/replay, and H5 `docs/handbook-youngs-cma.md` for ranking/CMA. Slices 0–3 delivered USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. Convert writes unfiltered world `ft_wrist` plus scored `ft_wrist_lpf` (10 Hz `filtfilt` + 30 Hz block-mean). **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
+**Next slice:** **M4.0 GPU holdout acceptance (Task 9)** on `s09` (one tree × eight directions, 5/3 split). Folder convert, per-direction weld/gripper/joints, last-action pad + truncate-before-features, and opt-in holdout CMA (`--direction-split-seed`) are shipped (Tasks 1–7). **Do not claim the science gate passed** until Task 9 records the knobs actually run, Sinkhorn columns, and per-dir magnitude/trend flags. Use H3 `docs/handbook-sysid-scoring.md` for signed \(F_\parallel\) / \(x_{\mathrm{hold0}}\) gates and one-hot width, H4 `docs/handbook-real-replay.md` for convert/replay, and H5 `docs/handbook-youngs-cma.md` for holdout flags / `holdout_report.json`. Slices 0–3 delivered USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. Convert writes unfiltered world `ft_wrist` plus scored `ft_wrist_lpf` (10 Hz `filtfilt` + 30 Hz block-mean). **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
 
 **Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see H5 `docs/handbook-youngs-cma.md`.
 
@@ -73,7 +73,7 @@
 
 - [x] `example_replay_real_batched.py`: pre-grasp init apple → logged post-grasp apple+TCP SE(3) at weld (helpers in `batched_digital_twin_init`; spec `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md`)
 - [x] **CMA / shared path (slice B):** post-grasp SE(3) on shared `make_real_replay_build_env_fn` + batched `apply_logged_post_grasp_se3_to_cable(..., layout=...)` so grid/CMA real replay match the example (spec `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`)
-- [ ] Dataset discovery / multi-episode manifest for real converted dirs (or documented one-dataset-per-episode CMA loop)
+- [x] Dataset discovery / multi-episode manifest for real converted dirs (`--input-dir` folder convert; `sXX-dNN.parquet` → `direction_idx=NN`; 1×N `batched_sysid_v1`)
 - [x] CMA / multi-replay / grid build path selects `vic_pose` + `action_dim=19` from dataset metadata (twist default preserved; `--controller-mode` opt-in)
 - [x] Real GT feature bags load without requiring sim `fruiting_system_params` as the ranking oracle (`gt_candidate is None`; `--include-gt-candidate` forced off on real datasets)
 - [x] Unit/CLI tests for metadata→controller mode selection; refuse wrench-as-twist regressions
@@ -83,15 +83,18 @@
 - [x] **Alignment slice 1:** Convert-time `R(tcp) @` F/T; scored `ft_wrist_lpf`; no sim EMA; full 19D action in bag
 - [x] **Alignment slice 2:** Two-start woody + `apple_pos`; `woody_end` dropped from sys-ID bag
 - [x] **Alignment slice 3:** Scalar `hold_number` from `hold_index`
-- [ ] **Post-alignment:** Trusted Cartesian ranking on aligned bags (Sinkhorn smoke / grid)
+- [ ] **Post-alignment:** Trusted Cartesian ranking on aligned bags (Sinkhorn smoke / grid) — superseded as M4.0 *acceptance* by the holdout science gate below; still not claimed
 - [x] **Slice 4:** CMA `example_youngs_modulus_cmaes.py` on the same real builder
   (**1×1 wiring** Done)
+- [x] **Folder convert + multi-direction replay** (H4): per-dir weld/gripper/arm joints; last-action pad; truncate before features
+- [x] **Opt-in holdout CMA** (H5): `--direction-split-seed` (default 17 when present); train-only fit; frozen `final_mean`; `holdout_report.json`; exit 1 on gate fail
+- [ ] **Task 9 GPU acceptance (science gate):** convert `robot_replay/new_data/s09/` → holdout CMA with `--direction-split-seed 17`. Pass iff train `eligible_mean` last < first; `val_fitted` Sinkhorn < `val_baseline`; every val dir (`{0,1,3}` at seed 17) passes force magnitude + force trend + TCP pose magnitude + TCP pose trend. **Not yet run — do not treat as passed.** Knobs actually run and scalars: TBD after Task 9.
 - [ ] **Follow-up:** Real-mode CMA still seeds from shipped
   `initial_mean_log10=[4.0, 9.5, 9.5]` while the spec fixture band is
   ~\(10^{7.4}\)–\(10^{8}\) Pa; the real spur/stem floor (\(\log_{10} E = 7\))
   makes that region reachable, but search starts ~1.5σ high — retarget mean
-  later, not in slice 4.
-- [ ] Folder convert + multi-direction replay (spec slices 1–3) before multi-tree CMA
+  later, not in this slice.
+- [ ] Two-tree merge / drop the one-structure `vic_pose` guard (out of scope for this holdout slice)
 
 **Build on (do not reimplement):**
 
@@ -162,7 +165,7 @@
 
 **[M4] real-data calibration**
 
-- [ ] **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)** — **In progress** (plumbing + feature alignment Done; trusted ranking → CMA next)
+- [ ] **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)** — **In progress** (plumbing + alignment + 1×8 holdout pipeline shipped; Task 9 GPU science gate not yet run)
 - [ ] **M4.1+** — Broader real collection / held-out real segments (after M4.0)
 
 **[M3] parallel infra** (optional alongside [V])
@@ -222,7 +225,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
-| **M4.0** | **In progress** | Plumbing + feature alignment Done (slices 0–3); trusted ranking → CMA next |
+| **M4.0** | **In progress** | Plumbing + alignment + folder convert + holdout CMA shipped; Task 9 GPU science gate not yet run |
 | **M4.1+** | Later | Broader real collection / held-out real metrics |
 
 Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Public API: H1 `docs/handbook-coupled-simulation.md`.
@@ -421,9 +424,29 @@ uv run --env-file pytest.env python \
 # CUDA acceptance (Task 8 passed): collect 5x5, fused CMA-ES, scalar smoke, and
 # validation reports under tmp/task8_cuda_acceptance/ (see implementation notes).
 
-# [M4].0 — real robot_replay → vic_pose replay → grid (plumbing + feature alignment Done; ranking smoke next)
-# Convert packs 19D vic_pose_v1; gym collect / MMD / default sim-sim CMA stay on twist vic.
-# Requires robot_replay/s02-d00.parquet (not always in clone; use local bench log if missing).
+# [M4].0 — real robot_replay → vic_pose replay → 1×8 holdout CMA
+# Folder convert + per-dir replay + opt-in holdout CLI shipped (Tasks 1–7).
+# Task 9 GPU science gate is NOT claimed here. Requires robot_replay/new_data/s09/
+# compiled s09-dNN.parquet (not always in clone).
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input-dir robot_replay/new_data/s09 \
+  --dataset-out tmp/real_batched_s09 --overwrite
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --dataset tmp/real_batched_s09 \
+  --output tmp/real_kp_e_cmaes_s09_holdout \
+  --direction-split-seed 17 \
+  --viewer null \
+  --overwrite
+# Acceptance (Task 9): manifest 1×8, control_hz=30, n_holds=4;
+# cmaes_report.json command_status completed; no gt_diagnostics; spur/stem floor log10 E=7;
+# holdout_report.json seed 17, train {2,4,5,6,7}, val {0,1,3}; every generation ⊆ train;
+# verification flags + val overlays. Science gate: train eligible_mean last < first;
+# val_fitted Sinkhorn < val_baseline; all three val dirs pass force/TCP magnitude+trend.
+# Shipped CMA_SEARCH_PARAMS: population_size=15, max_generations=10 (~hours on RTX 4090).
+# If CUDA exit 139, shrink population/generations for smoke, record knobs, restore before commit.
+# Knobs actually run / scalars: TBD after Task 9.
+
+# 1×1 plumbing smoke (still valid; ranking not trusted):
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
   --input robot_replay/s02-d00.parquet \
   --dataset-out /tmp/real_batched_s02_d00 --overwrite
@@ -454,10 +477,13 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --overwrite
 uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_example_youngs_modulus_cmaes_cli.py \
+  apple_pick_gym/tests/test_holdout_evaluation.py \
+  apple_pick_sim/tests/test_holdout_gates.py \
   -q -p no:launch_testing
 uv run --env-file pytest.env python -m pytest \
   apple_pick_sim/tests/test_real_to_batched_sysid.py \
   apple_pick_gym/tests/test_real_batched_replay_cli.py \
+  apple_pick_gym/tests/test_batched_sysid_multi_replay.py \
   robot_replay/tests/test_pack_vic_pose_actions.py -q
 
 # Optional Sinkhorn gate wrapper (not a full slow e2e; needs GPU + long runtime)

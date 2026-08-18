@@ -8,7 +8,7 @@
 | Code owners | `apple_pick_sim/system_id/mmd_features.py`, `apple_pick_sim/system_id/mmd.py`, `apple_pick_sim/system_id/wasserstein.py`, `apple_pick_sim/system_id/batched_trajectory_store.py`, `apple_pick_sim/system_id/real_to_batched_sysid.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H4 `docs/handbook-real-replay.md` (convert must emit this contract); H5 `docs/handbook-youngs-cma.md` (grid/CMA scores it); H2 `docs/handbook-variable-impedance.md` (action semantics only) |
-| Archive specs | [Real/sim CMA feature alignment](superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md) — Implemented; [fixed-scale normalization](superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md) — Implemented; [median-hold features](superpowers/specs/2026-07-14-median-hold-features-design.md) — Implemented; [batched MMD grid](superpowers/specs/2026-07-06-batched-sysid-mmd-grid-design.md) — Historical; [MMD grid diagnostic](superpowers/specs/2026-06-22-mmd-grid-diagnostic-design.md) — Historical; [batched collection](superpowers/specs/2026-07-04-batched-sysid-collection-design.md) — Historical; [dataset dashboard](superpowers/specs/2026-06-22-sysid-dashboard-design.md) — Historical |
+| Archive specs | [One-structure multi-dir holdout](superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md) — Implemented (gates/one-hot; science gate Task 9); [Real/sim CMA feature alignment](superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md) — Implemented; [fixed-scale normalization](superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md) — Implemented; [median-hold features](superpowers/specs/2026-07-14-median-hold-features-design.md) — Implemented; [batched MMD grid](superpowers/specs/2026-07-06-batched-sysid-mmd-grid-design.md) — Historical; [MMD grid diagnostic](superpowers/specs/2026-06-22-mmd-grid-diagnostic-design.md) — Historical; [batched collection](superpowers/specs/2026-07-04-batched-sysid-collection-design.md) — Historical; [dataset dashboard](superpowers/specs/2026-06-22-sysid-dashboard-design.md) — Historical |
 
 This handbook is the canonical contract for `batched_sysid_v1` bags and the
 features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
@@ -240,6 +240,15 @@ pooled bag. Complete scoring also maintains independently normalized
 per-direction bags for diagnostics. Missing expected directions disqualify the
 candidate instead of silently changing the comparison set.
 
+**One-hot width is collection width, not the loaded-slot count.**
+`YoungsModulusScoringConfig.n_directions` (and `_one_hot_dir_id`) stays
+`collection.num_directions` (8 on s09, or `max(disk_id)+1`). Do not set it to
+`len(selected)`. Train IDs `{2,4,5,6,7}` are illegal if the width is 5
+because dir 5 is out of range. `WassersteinScoringContext.expected_directions`
+is the keys of bags that were actually loaded, so empty val slots never enter
+the pool. Collector layout uses local `0 .. len(selected)-1` and zips onto
+disk IDs; that local index is not the one-hot width.
+
 ## 7. Scorers
 
 `wasserstein.sinkhorn_distance` is the production scorer used by the
@@ -256,7 +265,58 @@ when pooling is disabled).
 production optimization contract. Do not infer current scoring behavior from
 the historical MMD grid specs.
 
-## 8. Replay alignment notes
+## 8. Holdout magnitude and trend gates
+
+H5's opt-in holdout writes Cartesian F/T MAE and signed pose/force gates on
+**hold frames only**, world `ft_wrist` via `scored_ft_wrist` (real
+`ft_wrist_lpf` when present; live candidate `ft_wrist`). **No sim tare** and
+no extra LPF on sim harvest — same warning as the top of this handbook.
+Pull axis \(\hat p\) is the logged unit `pull_direction` (else first-hold
+`excitation_direction`). Constants live in
+`apple_pick_sim/system_id/holdout_gates.py`:
+
+| Constant | Value |
+| -------- | ----- |
+| `MAGNITUDE_RATIO_MIN` / `MAX` | \(1/3\), \(3\) |
+| `TREND_PEARSON_MIN` | \(0.5\) |
+| `FORCE_FLOOR_N` | \(0.2\,\mathrm{N}\) |
+| `TORQUE_FLOOR_NM` | \(0.05\,\mathrm{N\cdot m}\) |
+| `FLOOR_SLACK_FACTOR` / `FORCE_SLACK_N` | \(3\), \(0.4\) (N or N·m) |
+
+**Signed series (not unsigned norms):**
+
+- Force: \(F_\parallel = F \cdot \hat p\) (N). Torque uses magnitude
+  \(\lvert\tau\rvert\) only (no parallel axis in this slice).
+- Pose: TCP displacement along pull,
+  \(s = (x - x_{\mathrm{hold0}}) \cdot \hat p\) (m). \(x_{\mathrm{hold0}}\) is
+  TCP at the **first hold frame** of that direction, not episode frame 0
+  (that frame is still pull-in).
+
+**Magnitude.** Hold-frame mean \(\lvert F_\parallel\rvert\) and mean
+\(\lvert\tau\rvert\): \(\mu_{\mathrm{fit}} / \mu_{\mathrm{real}} \in [1/3, 3]\).
+If \(\mu_{\mathrm{real}}\) is below the floor, pass iff
+\(\mu_{\mathrm{fit}} < 3\mu_{\mathrm{real}} + 0.4\) in the same units instead
+of a raw ratio. `force_magnitude_ok` is true only if **both** force and
+torque pass. TCP pose magnitude uses the same helper; as implemented it
+reuses the force floor/slack constants.
+
+**Trend.** Per-hold mean of the signed series is a length-`n_holds` vector
+(skip empty holds; need ≥3 holds). Pearson
+\(r(\mathrm{real}, \mathrm{fitted}) \ge 0.5\). If either series has variance
+≈ 0 (or \(r\) is not finite), trend passes **iff** the matching magnitude
+gate already passed. Opposite-sign \(F_\parallel\) fails trend even when
+magnitude passes.
+
+**Cartesian MAE is diagnostic.** Hold-frame mean \(\lvert\Delta F\rvert\) (N)
+and \(\lvert\Delta\tau\rvert\) (N·m) are stored on
+`train_fitted` / `val_baseline` / `val_fitted` in `holdout_report.json`. They
+are not CLI exit gates. Apple `pos` along \(\hat p\) is reported the same way
+and **does not fail** the run if TCP already passes.
+
+CLI exit-code mapping of these booleans is H5. GPU science-gate pass/fail is
+Task 9 / ROADMAP — this handbook does not claim a passing run.
+
+## 9. Replay alignment notes
 
 Sim-collected datasets can include a settled pre-weld reconstruction row with
 `step_idx=-1`, `phase=-1`. `batched_sysid_mmd_grid.strip_pre_weld_rows` removes
@@ -265,11 +325,13 @@ comparing replay frames. After stripping, recorded row \(i\) is the post-step
 observation for replay action \(i\). Metric helpers fail fast if a leading
 pre-weld row is still present.
 
-A structure has one weld/grasp point shared by all directions and all
-candidates. Reusing direction 0's representative weld metadata is intentional,
-not a GT-parameter shortcut. Build parameters and initial dynamic state are
-independent choices: `--infer-params` selects observation-derived build
-parameters, while `--use-snapshot` is a separate privileged-state option.
+A **sim-collected** structure has one weld/grasp point shared by all
+directions and all candidates. Reusing direction 0's representative weld
+metadata on that path is intentional, not a GT-parameter shortcut. **Real**
+1×N replay uses per-direction weld/gripper/joints (H4). Build parameters and
+initial dynamic state are independent choices: `--infer-params` selects
+observation-derived build parameters, while `--use-snapshot` is a separate
+privileged-state option.
 
 Grid CLI defaults: `--use-median`, `--hold-id-onehot`, and `--pool-directions`
 on (full hold windows). Console `--score-mse` with `--use-median` uses
@@ -280,7 +342,7 @@ manifest episodes with `excluded: true`; pass `--include-excluded` only for
 debug. Replay reads `manifest.collection.control_hz` (fallback
 `CONTROL_HZ = 30.0`).
 
-## 9. Legacy single-env Parquet
+## 10. Legacy single-env Parquet
 
 The older layout under `apple_pick_sim/system_id/trajectory_store.py` is:
 
@@ -297,7 +359,7 @@ woody starts and ends. Those properties must not be copied into
 `--use-snapshot` is sim-to-sim debug only. Use `ApplePickReplay-v0` /
 `example_gym_replay.py` for this path.
 
-## 10. Code map and tests
+## 11. Code map and tests
 
 | Owner | Contract |
 | ----- | -------- |
@@ -305,6 +367,8 @@ woody starts and ends. Those properties must not be copied into
 | `mmd_features.build_state_matrix`, `build_transition_features_by_direction`, `combine_transition_features` | State and transition rows |
 | `mmd.fit_gt_normalization`, `apply_normalization` | GT mean plus fixed physical scale |
 | `wasserstein.prepare_gt_wasserstein_scoring_context`, `score_candidate_wasserstein_complete`, `sinkhorn_distance` | Production Sinkhorn context and score |
+| `holdout_gates.magnitude_ratio_ok`, `trend_pearson_ok`, `signed_parallel_series`, `tcp_displacement_along_pull` | Holdout magnitude/trend reductions; \(x_{\mathrm{hold0}}\) = first hold frame |
+| `apple_pick_gym/batched_envs/holdout_evaluation.py` — `cartesian_ft_mae`, `direction_verification` | Diagnostic Cartesian MAE; torque folded into `force_magnitude_ok` |
 | `batched_trajectory_store.BatchedEpisodeWriter`, `BatchedSysIdDataset` | Batched Parquet write/load contract |
 | `real_to_batched_sysid.export_real_episode_to_batched_dataset` | Real F/T, hold, woody, and `vic_pose_v1` conversion |
 
@@ -317,6 +381,14 @@ Key tests:
   non-centered one-hots, variable junction counts, and diagnostic MMD.
 - `apple_pick_sim/tests/test_wasserstein.py` — per-direction and pooled
   contexts, completeness, singleton bags, and direction one-hots.
+- `apple_pick_sim/tests/test_holdout_gates.py` — seed-17 split, factor-of-3
+  magnitude, Pearson ≥ 0.5, zero-variance deferral, signed \(F_\parallel\),
+  first-hold \(x_{\mathrm{hold0}}\).
+- `apple_pick_gym/tests/test_holdout_evaluation.py` — hold-only MAE, torque
+  inside `force_magnitude_ok`, flipped-force trend fail, apple diagnostic.
+- `apple_pick_gym/tests/test_batched_sysid_cmaes.py` — subset evaluate keeps
+  one-hot `n_directions` at collection width; `expected_directions` is the
+  loaded set.
 - `apple_pick_sim/tests/test_real_to_batched_sysid.py` — F/T rotation,
   EMA−EMA no re-tare, unfiltered `ft_wrist` plus 10 Hz `ft_wrist_lpf` + 30 Hz
   block-mean, last-sample phase, two-start tag mapping, scalar holds, no
@@ -331,5 +403,7 @@ From the repository root:
 
 ```bash
 uv run --env-file pytest.env python -m pytest \
-  apple_pick_sim/tests/test_mmd_features.py apple_pick_sim/tests/test_mmd.py -q -p no:launch_testing
+  apple_pick_sim/tests/test_mmd_features.py apple_pick_sim/tests/test_mmd.py \
+  apple_pick_sim/tests/test_holdout_gates.py \
+  apple_pick_gym/tests/test_holdout_evaluation.py -q -p no:launch_testing
 ```

@@ -179,7 +179,7 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 
 ### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/handbook-coupled-simulation.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, stiffness/E grids, and CMA-ES: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3, [V].5.2 Done; Current focus **[M4].0** real `robot_replay` → CMA).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/handbook-coupled-simulation.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, stiffness/E grids, and CMA-ES: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3, [V].5.2 Done; Current focus **[M4].0** s09 holdout CMA — Task 9 GPU science gate not yet run).
 
 ```bash
 # Headless smoke (settle→weld)
@@ -416,8 +416,10 @@ Convert a compiled real sys-ID parquet into a 1×1 `batched_sysid_v1` dataset, t
 replay with open-loop FR3 under **`vic_pose`** (19D pose+gains packed from
 `target_pose_4x4` + `dump.controller_gains`; real `action` is a pose-control
 wrench, not an EE twist). Full contract: **`robot_replay/README.md`**.
-Roadmap Current focus: **[M4].0** (wire these datasets into CMA; gym collect /
-MMD / sim-sim CMA stay on twist `vic`).
+Folder convert of one tree (`--input-dir`) writes 1×N episodes
+(`sXX-dNN.parquet` → `direction_idx=NN`). Roadmap Current focus: **[M4].0**
+holdout CMA (Task 9 GPU science gate not yet run); gym collect / MMD /
+sim-sim CMA stay on twist `vic`.
 
 ```bash
 # 1) Real parquet → batched_sysid_v1 (packs 19D vic_pose_v1 actions)
@@ -501,6 +503,26 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --overwrite
 ```
 
+**Real folder convert → holdout CMA** (opt-in 5/3 split; seed 17 ⇒ train
+`{2,4,5,6,7}`, val `{0,1,3}`). Requires eight compiled `s09-dNN.parquet`.
+GPU science gate is Task 9 — this recipe is the documented command, not a
+claimed pass. Omit `--direction-split-seed` to score all dirs with no
+`holdout_report.json`.
+
+```bash
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input-dir robot_replay/new_data/s09 \
+  --dataset-out tmp/real_batched_s09 \
+  --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --dataset tmp/real_batched_s09 \
+  --output tmp/real_kp_e_cmaes_s09_holdout \
+  --direction-split-seed 17 \
+  --viewer null \
+  --overwrite
+```
+
 Shipped `CMA_SEARCH_PARAMS` in
 `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` is
 `population_size=15`, `max_generations=10` (~hours on an RTX 4090). That full
@@ -531,9 +553,9 @@ Edit search knobs (`initial_mean_log10`, `initial_sigma_log10`, `population_size
 Default 3-vector is
 \(\log_{10}([k_p^{\mathrm{support}}, E_{\mathrm{spur}}, E_{\mathrm{stem}}])\)
 with bounds lower `[2, 8, 8]` / upper `[6, 11, 11]` (support \(k_p\): 100–1e6;
-spur/stem \(E\): 0.1–100 GPa). No new CMA CLI flags — only `--cma-seed` and
-shared dataset/replay knobs on the CLI. `--cma-seed` overrides the dict's
-`cma_seed` only.
+spur/stem \(E\): 0.1–100 GPa). `--cma-seed` overrides the dict's `cma_seed`
+only. Holdout flags (H5): `--direction-split-seed` (bare ⇒ 17), or both
+`--direction-indices` and `--val-direction-indices`.
 
 Regenerate Plotly figures from an existing report:
 

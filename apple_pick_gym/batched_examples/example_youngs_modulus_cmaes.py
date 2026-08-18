@@ -40,6 +40,11 @@ from apple_pick_gym.batched_examples.example_batched_sysid_mmd_grid import (
     parse_comma_separated_ints,
 )
 from apple_pick_gym.batched_examples import example_youngs_modulus_sys_id as _grid
+from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import list_usable_direction_indices
+from apple_pick_sim.system_id.holdout_gates import (
+    DIRECTION_SPLIT_SEED,
+    choose_direction_split,
+)
 from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     CmaGenerationFailure,
     StructureCmaState,
@@ -143,22 +148,41 @@ def _effective_search_bounds_log10(
     return normalize_search_bounds_log10(raw)
 
 
-def _require_ft_wrist_lpf_per_structure(dataset: Any, structure_indices: list[int]) -> None:
+def _require_ft_wrist_lpf_per_structure(
+    dataset: Any,
+    structure_indices: list[int],
+    *,
+    include_excluded: bool = False,
+) -> None:
     """Real CMA scores convert-time ``ft_wrist_lpf``; refuse bags that omit it."""
     import numpy as np
 
-    collection = {}
-    manifest = getattr(dataset, "manifest", None)
-    if isinstance(manifest, dict):
-        raw = manifest.get("collection")
-        if isinstance(raw, dict):
-            collection = raw
-    resolved = _resolve_n_directions(dataset, collection)
-    num_directions = int(resolved) if resolved is not None and int(resolved) >= 1 else 1
-
     missing: list[int] = []
     for structure_idx in structure_indices:
-        for direction_idx in range(num_directions):
+        entries = [
+            ep
+            for ep in dataset.episode_entries()
+            if int(ep.get("structure_idx", -1)) == int(structure_idx)
+        ]
+        if entries:
+            direction_idxs = list_usable_direction_indices(
+                dataset,
+                int(structure_idx),
+                include_excluded=bool(include_excluded),
+            )
+        else:
+            collection = {}
+            manifest = getattr(dataset, "manifest", None)
+            if isinstance(manifest, dict):
+                raw = manifest.get("collection")
+                if isinstance(raw, dict):
+                    collection = raw
+            resolved = _resolve_n_directions(dataset, collection)
+            num_directions = (
+                int(resolved) if resolved is not None and int(resolved) >= 1 else 1
+            )
+            direction_idxs = list(range(num_directions))
+        for direction_idx in direction_idxs:
             arrays = dataset.load_episode_obs_arrays(
                 int(structure_idx), int(direction_idx)
             )
@@ -172,6 +196,59 @@ def _require_ft_wrist_lpf_per_structure(dataset: Any, structure_indices: list[in
             f"structure; missing on {missing}. Re-run convert so the LPF "
             "column is written."
         )
+
+
+def _resolve_holdout_direction_split(
+    args: Any,
+    dataset: BatchedSysIdDataset,
+    structure_indices: list[int],
+    *,
+    include_excluded: bool,
+) -> tuple[tuple[int, ...] | None, tuple[int, ...] | None]:
+    """Return (train, val) disk direction indices, or (None, None) if no holdout."""
+    explicit_train = getattr(args, "direction_indices", None)
+    explicit_val = getattr(args, "val_direction_indices", None)
+    split_seed = getattr(args, "direction_split_seed", None)
+
+    if (explicit_train is None) ^ (explicit_val is None):
+        raise SystemExit(
+            "--direction-indices and --val-direction-indices must be passed together"
+        )
+
+    holdout = split_seed is not None or explicit_train is not None
+    if not holdout:
+        return None, None
+
+    structure_idx = int(structure_indices[0])
+    disk_dirs = tuple(
+        list_usable_direction_indices(
+            dataset,
+            structure_idx,
+            include_excluded=bool(include_excluded),
+        )
+    )
+    if len(disk_dirs) != 8:
+        raise SystemExit(
+            "holdout mode requires exactly 8 usable direction episodes on disk; "
+            f"got {len(disk_dirs)}"
+        )
+
+    if explicit_train is not None:
+        train = tuple(sorted(int(d) for d in explicit_train))
+        val = tuple(sorted(int(d) for d in explicit_val))
+        if not train or not val:
+            raise SystemExit("train and val direction splits must be non-empty")
+        if set(train) & set(val):
+            raise SystemExit("train and val direction indices must be disjoint")
+        disk_set = set(disk_dirs)
+        if not set(train).issubset(disk_set) or not set(val).issubset(disk_set):
+            raise SystemExit(
+                "explicit direction indices must be a subset of usable disk directions"
+            )
+        return train, val
+
+    train, val = choose_direction_split(disk_dirs, seed=int(split_seed))
+    return train, val
 
 
 def accumulate_cma_batch_counters(
@@ -532,6 +609,29 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Replay controller mode (default: infer vic_pose from dataset, else vic).",
     )
     p.add_argument(
+        "--direction-split-seed",
+        nargs="?",
+        type=int,
+        const=DIRECTION_SPLIT_SEED,
+        default=None,
+        help=(
+            "Holdout train/val split seed (default 17 when flag present without value). "
+            "Requires eight usable direction episodes on disk."
+        ),
+    )
+    p.add_argument(
+        "--direction-indices",
+        type=parse_comma_separated_ints,
+        default=None,
+        help="Explicit train direction indices (requires --val-direction-indices).",
+    )
+    p.add_argument(
+        "--val-direction-indices",
+        type=parse_comma_separated_ints,
+        default=None,
+        help="Explicit validation direction indices (requires --direction-indices).",
+    )
+    p.add_argument(
         "--use-median",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -652,6 +752,22 @@ def _run(
             "packed 19D vic_pose datasets must use --controller-mode vic_pose "
             "(or omit the flag), not twist vic"
         )
+
+    train_direction_indices: tuple[int, ...] | None = None
+    val_direction_indices: tuple[int, ...] | None = None
+    try:
+        train_direction_indices, val_direction_indices = _resolve_holdout_direction_split(
+            args,
+            dataset,
+            list(structure_indices),
+            include_excluded=bool(args.include_excluded),
+        )
+    except SystemExit:
+        raise
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    fit_direction_indices = train_direction_indices
+
     action_dim = 19 if mode == "vic_pose" else 6
     if mode == "vic_pose":
         _require_ft_wrist_lpf_per_structure(dataset, structure_indices)
@@ -802,6 +918,8 @@ def _run(
             "output": str(output_dir),
             "ranges_path": str(ranges_path),
             "structure_indices": structure_indices,
+            "train_direction_indices": train_direction_indices,
+            "val_direction_indices": val_direction_indices,
             "states": states,
             "exit_nonzero": True,
         }
@@ -874,6 +992,7 @@ def _run(
                 on_step=on_step,
                 replay_sim_config=replay_sim_config,
                 action_dim=action_dim,
+                direction_indices=fit_direction_indices,
             )
         else:
             evaluations: dict[int, Any] = {}
@@ -893,6 +1012,7 @@ def _run(
                         on_step=on_step,
                         replay_sim_config=replay_sim_config,
                         action_dim=action_dim,
+                        direction_indices=fit_direction_indices,
                     )
                 except ViewerCancelled:
                     raise
@@ -963,6 +1083,8 @@ def _run(
             "output": str(output_dir),
             "ranges_path": str(ranges_path),
             "structure_indices": structure_indices,
+            "train_direction_indices": train_direction_indices,
+            "val_direction_indices": val_direction_indices,
             "states": states,
             "exit_nonzero": True,
         }
@@ -974,6 +1096,8 @@ def _run(
             "output": str(output_dir),
             "ranges_path": str(ranges_path),
             "structure_indices": structure_indices,
+            "train_direction_indices": train_direction_indices,
+            "val_direction_indices": val_direction_indices,
             "states": states,
             "exit_nonzero": True,
         }
@@ -1028,6 +1152,8 @@ def _run(
         "output": str(output_dir),
         "ranges_path": str(ranges_path),
         "structure_indices": structure_indices,
+        "train_direction_indices": train_direction_indices,
+        "val_direction_indices": val_direction_indices,
         "states": states,
         "fitted_structure_indices": fitted,
         "failed_structure_indices": failed,

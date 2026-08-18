@@ -1805,6 +1805,10 @@ def test_require_ft_wrist_lpf_refuses_when_later_direction_omits_column():
     module = _load_module()
     dataset = MagicMock()
     dataset.manifest = {"collection": {"num_directions": 2}}
+    dataset.episode_entries.return_value = [
+        {"structure_idx": 0, "direction_idx": 0},
+        {"structure_idx": 0, "direction_idx": 1},
+    ]
 
     def _load(_structure_idx, direction_idx):
         if int(direction_idx) == 0:
@@ -1817,3 +1821,488 @@ def test_require_ft_wrist_lpf_refuses_when_later_direction_omits_column():
     dataset.load_episode_obs_arrays.side_effect = _load
     with pytest.raises(SystemExit, match="ft_wrist_lpf"):
         module._require_ft_wrist_lpf_per_structure(dataset, [0])
+
+
+def _eight_dir_vic_pose_dataset(*, ranges_path: Path) -> MagicMock:
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 8,
+            "ranges_path": str(ranges_path),
+            "topology_seed": 9,
+            "seed": 7,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+    dataset.episode_entries.return_value = [
+        {"structure_idx": 0, "direction_idx": d} for d in range(8)
+    ]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+        "control_hz": 15.0,
+        "fruiting_base_pos": [1.0, 2.0, 3.0],
+        "initial_robot_joint_q": [0.1, 0.2],
+        "action_compatible_with_vic_twist": False,
+    }
+    dataset.load_episode_obs_arrays.return_value = {
+        "ft_wrist": np.zeros((4, 6), dtype=np.float32),
+        "ft_wrist_lpf": np.ones((4, 6), dtype=np.float32),
+    }
+    return dataset
+
+
+def _holdout_run_stub(monkeypatch, module, *, dataset: MagicMock, tmp_path: Path):
+    """Patch _run for holdout tests; returns (evaluate_calls, output_dir)."""
+    output_dir = tmp_path / "cma_out"
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+
+    evaluate_calls: list[dict] = []
+
+    def fake_evaluate_structures(**kwargs):
+        evaluate_calls.append(dict(kwargs))
+        structures = kwargs["structures"]
+        evaluations = {}
+        for structure_idx, candidates in structures:
+            dirs = kwargs.get("direction_indices")
+            if dirs is None:
+                dirs = tuple(range(8))
+            evaluations[int(structure_idx)] = _evaluation(
+                int(structure_idx),
+                list(candidates),
+                [0.1] * len(candidates),
+                direction_indices=tuple(int(d) for d in dirs),
+            )
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations=evaluations,
+            errors={},
+            replay_diagnostics=None,
+            retried_structures=(),
+            prepared_structures=len(evaluations),
+            physical_slots_by_structure={
+                int(idx): len(cands) * len(evaluations[int(idx)].direction_indices)
+                for idx, cands in structures
+            },
+        )
+
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+        del max_generations
+        cand = cmaes.candidates_from_log10_vector((4.0, 9.0, 9.0))
+        for _ in range(2):
+            evaluate_fn(structures=[(0, (cand, cand))], wave_kind="generation")
+        batch = evaluate_fn(
+            structures=[(0, (cand,))],
+            wave_kind="final_mean",
+        )
+        for state in states.values():
+            state.status = "fitted"
+            state.final_mean_log10 = (4.0, 9.0, 9.0)
+            state.final_evaluation = batch.evaluations[0]
+            state.gt_candidate = None
+        if on_progress is not None:
+            on_progress(states)
+        return cmaes.YoungsModulusCmaFitResult(
+            states=dict(states),
+            fitted_structure_indices=(0,),
+            failed_structure_indices=(),
+            generation_waves=2,
+            final_mean_batch=batch,
+        )
+
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    monkeypatch.setattr(module, "make_real_replay_build_env_fn", lambda **_k: MagicMock())
+    monkeypatch.setattr(
+        module,
+        "real_replay_sim_config",
+        lambda **_k: SimpleNamespace(controller=SimpleNamespace(mode="vic_pose")),
+    )
+    monkeypatch.setattr(module, "evaluate_youngs_modulus_structures", fake_evaluate_structures)
+    monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
+    monkeypatch.setattr(
+        module,
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: pytest.fail("real CMA must not load sim GT"),
+    )
+    monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
+    return evaluate_calls, output_dir, ranges_path
+
+
+def test_parser_direction_split_seed_defaults_to_seventeen_when_bare(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    args = parser.parse_args(
+        ["--dataset", "/tmp/ds", "--output", "/tmp/out", "--direction-split-seed"]
+    )
+    assert args.direction_split_seed == 17
+    args = parser.parse_args(
+        ["--dataset", "/tmp/ds", "--output", "/tmp/out", "--direction-split-seed", "42"]
+    )
+    assert args.direction_split_seed == 42
+
+
+def test_parser_direction_split_seed_absent_is_none(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    args = parser.parse_args(["--dataset", "/tmp/ds", "--output", "/tmp/out"])
+    assert args.direction_split_seed is None
+    assert args.direction_indices is None
+    assert args.val_direction_indices is None
+
+
+def test_run_without_split_flags_uses_all_directions(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    evaluate_calls, output_dir, _ = _holdout_run_stub(
+        monkeypatch, module, dataset=dataset, tmp_path=tmp_path
+    )
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode=None,
+        direction_split_seed=None,
+        direction_indices=None,
+        val_direction_indices=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    result = module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert result["train_direction_indices"] is None
+    assert result["val_direction_indices"] is None
+    struct_calls = [c for c in evaluate_calls if "structures" in c]
+    assert struct_calls
+    assert all(c.get("direction_indices") is None for c in struct_calls)
+    assert not (output_dir / "holdout_report.json").exists()
+
+
+def test_run_holdout_seed_selects_pinned_split(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    evaluate_calls, output_dir, _ = _holdout_run_stub(
+        monkeypatch, module, dataset=dataset, tmp_path=tmp_path
+    )
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode=None,
+        direction_split_seed=17,
+        direction_indices=None,
+        val_direction_indices=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    result = module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert result["train_direction_indices"] == (2, 4, 5, 6, 7)
+    assert result["val_direction_indices"] == (0, 1, 3)
+    struct_calls = [c for c in evaluate_calls if "structures" in c]
+    assert struct_calls
+    for call in struct_calls:
+        assert call["direction_indices"] == (2, 4, 5, 6, 7)
+
+
+def test_run_holdout_never_loads_val_directions_during_fit(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    evaluate_calls, output_dir, _ = _holdout_run_stub(
+        monkeypatch, module, dataset=dataset, tmp_path=tmp_path
+    )
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode=None,
+        direction_split_seed=17,
+        direction_indices=None,
+        val_direction_indices=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    seen_dirs: set[int] = set()
+    for call in evaluate_calls:
+        dirs = call.get("direction_indices")
+        if dirs is not None:
+            seen_dirs.update(int(d) for d in dirs)
+    assert seen_dirs.isdisjoint({0, 1, 3})
+
+
+def test_run_rejects_partial_explicit_split(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(tmp_path / "out"),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode=None,
+        direction_split_seed=None,
+        direction_indices=(0, 1, 2),
+        val_direction_indices=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    with pytest.raises(SystemExit, match="direction-indices"):
+        module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+
+
+def test_run_rejects_overlapping_or_empty_explicit_split(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+
+    def _args(**overrides):
+        base = dict(
+            dataset="/tmp/real",
+            output=str(tmp_path / "out"),
+            structure_indices=None,
+            ranges=None,
+            max_envs_per_batch=0,
+            seed=None,
+            cma_seed=None,
+            controller_mode=None,
+            direction_split_seed=None,
+            direction_indices=(0, 1, 2, 3, 4),
+            val_direction_indices=(3, 4, 5),
+            include_excluded=False,
+            use_median=True,
+            hold_id_onehot=True,
+            pool_directions=True,
+            multi_structure_batch=True,
+            fail_fast=False,
+            overwrite=True,
+            device="cpu",
+            settle_substeps=None,
+            settle_gravity_ramp=False,
+            settle_quiet_every=None,
+            show_pull_direction=False,
+            viewer="null",
+        )
+        base.update(overrides)
+        return SimpleNamespace(**base)
+
+    with pytest.raises(SystemExit, match="disjoint"):
+        module._run(_args(), argparse.ArgumentParser(), viewer=MagicMock())
+    with pytest.raises(SystemExit, match="non-empty"):
+        module._run(
+            _args(direction_indices=(), val_direction_indices=(0, 1, 2)),
+            argparse.ArgumentParser(),
+            viewer=MagicMock(),
+        )
+
+
+def test_run_rejects_holdout_on_non_eight_direction_dataset(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 4,
+            "ranges_path": str(ranges_path),
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+    dataset.episode_entries.return_value = [
+        {"structure_idx": 0, "direction_idx": d} for d in range(4)
+    ]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+    }
+    dataset.load_episode_obs_arrays.return_value = {
+        "ft_wrist": np.zeros((4, 6), dtype=np.float32),
+        "ft_wrist_lpf": np.ones((4, 6), dtype=np.float32),
+    }
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+
+    def _args(**overrides):
+        base = dict(
+            dataset="/tmp/real",
+            output=str(tmp_path / "out"),
+            structure_indices=None,
+            ranges=None,
+            max_envs_per_batch=0,
+            seed=None,
+            cma_seed=None,
+            controller_mode=None,
+            direction_split_seed=17,
+            direction_indices=None,
+            val_direction_indices=None,
+            include_excluded=False,
+            use_median=True,
+            hold_id_onehot=True,
+            pool_directions=True,
+            multi_structure_batch=True,
+            fail_fast=False,
+            overwrite=True,
+            device="cpu",
+            settle_substeps=None,
+            settle_gravity_ramp=False,
+            settle_quiet_every=None,
+            show_pull_direction=False,
+            viewer="null",
+        )
+        base.update(overrides)
+        return SimpleNamespace(**base)
+
+    with pytest.raises(SystemExit, match="8"):
+        module._run(_args(), argparse.ArgumentParser(), viewer=MagicMock())
+    with pytest.raises(SystemExit, match="8"):
+        module._run(
+            _args(
+                direction_split_seed=None,
+                direction_indices=(0, 1),
+                val_direction_indices=(2, 3),
+            ),
+            argparse.ArgumentParser(),
+            viewer=MagicMock(),
+        )
+
+
+def test_run_holdout_keeps_one_structure_guard(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    dataset.structure_summaries.return_value = [{}, {}]
+    dataset.episode_entries.return_value = [
+        {"structure_idx": s, "direction_idx": d}
+        for s in range(2)
+        for d in range(8)
+    ]
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    args = SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(tmp_path / "out"),
+        structure_indices=(0, 1),
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode=None,
+        direction_split_seed=17,
+        direction_indices=None,
+        val_direction_indices=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+    with pytest.raises(
+        SystemExit, match="one converted episode / one structure per run"
+    ):
+        module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+
+
+def test_require_ft_wrist_lpf_iterates_episode_rows():
+    module = _load_module()
+    dataset = MagicMock()
+    dataset.manifest = {"collection": {"num_directions": 6}}
+    dataset.episode_entries.return_value = [
+        {"structure_idx": 0, "direction_idx": 3},
+        {"structure_idx": 0, "direction_idx": 5},
+    ]
+    dataset.load_episode_obs_arrays.return_value = {
+        "ft_wrist": np.zeros((4, 6), dtype=np.float32),
+        "ft_wrist_lpf": np.ones((4, 6), dtype=np.float32),
+    }
+    module._require_ft_wrist_lpf_per_structure(dataset, [0])

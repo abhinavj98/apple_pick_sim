@@ -45,6 +45,7 @@ from apple_pick_sim.system_id.holdout_gates import (
     DIRECTION_SPLIT_SEED,
     choose_direction_split,
 )
+from apple_pick_gym.batched_envs.holdout_evaluation import run_holdout_evaluation
 from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     CmaGenerationFailure,
     StructureCmaState,
@@ -360,18 +361,26 @@ def _clear_cma_owned_artifacts(
     report = output_dir / "cmaes_report.json"
     if report.exists():
         report.unlink()
+    holdout_report = output_dir / "holdout_report.json"
+    if holdout_report.exists():
+        holdout_report.unlink()
     for path in output_dir.glob(".cmaes_report.json.*.tmp"):
+        path.unlink(missing_ok=True)
+    for path in output_dir.glob(".holdout_report.json.*.tmp"):
         path.unlink(missing_ok=True)
     if structure_indices is None:
         return
     for structure_idx in structure_indices:
-        overlay = (
-            output_dir
-            / f"structure_{int(structure_idx):03d}"
-            / "youngs_modulus_overlay.html"
-        )
+        structure_dir = output_dir / f"structure_{int(structure_idx):03d}"
+        overlay = structure_dir / "youngs_modulus_overlay.html"
         if overlay.exists():
             overlay.unlink()
+        holdout_dir = structure_dir / "holdout"
+        if holdout_dir.is_dir():
+            for overlay_path in holdout_dir.glob("direction_*.html"):
+                overlay_path.unlink(missing_ok=True)
+            if not any(holdout_dir.iterdir()):
+                holdout_dir.rmdir()
 
 
 def _write_cmaes_report_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -1121,6 +1130,65 @@ def _run(
                 break
         else:
             timing["visualization_error"] = str(exc)
+
+    holdout_report_seed: int | None = None
+    if val_direction_indices is not None and getattr(args, "direction_indices", None) is None:
+        holdout_report_seed = int(getattr(args, "direction_split_seed"))
+
+    fitted = [idx for idx, state in states.items() if state.status == "fitted"]
+    if val_direction_indices is not None and fitted:
+        for structure_idx in fitted:
+            state = states[int(structure_idx)]
+            if state.final_mean_log10 is None:
+                continue
+
+            def evaluate_val(
+                log10_vector: list[float] | tuple[float, ...],
+                val_dirs: tuple[int, ...],
+                *,
+                _structure_idx: int = int(structure_idx),
+            ) -> YoungsModulusBatchEvaluation:
+                candidate = candidates_from_log10_vector(tuple(log10_vector))
+                return evaluate_youngs_modulus_structures(
+                    dataset=dataset,
+                    structures=[(_structure_idx, (candidate,))],
+                    num_directions=int(num_directions),
+                    build_env_fn=build_env_fn,
+                    scoring=scoring,
+                    max_envs_per_batch=int(args.max_envs_per_batch),
+                    seed=replay_seed,
+                    include_excluded=bool(args.include_excluded),
+                    fail_fast=bool(args.fail_fast),
+                    on_step=on_step,
+                    replay_sim_config=replay_sim_config,
+                    action_dim=action_dim,
+                    direction_indices=val_dirs,
+                )
+
+            try:
+                _report, gate_failures = run_holdout_evaluation(
+                    output_dir=output_dir,
+                    dataset=dataset,
+                    structure_idx=int(structure_idx),
+                    state=state,
+                    train_direction_indices=train_direction_indices or (),
+                    val_direction_indices=val_direction_indices,
+                    direction_split_seed=holdout_report_seed,
+                    baseline_log10=list(initial_mean),
+                    fitted_log10=list(state.final_mean_log10),
+                    num_directions=int(num_directions),
+                    include_excluded=bool(args.include_excluded),
+                    evaluate_val=evaluate_val,
+                )
+            except Exception as exc:
+                exit_nonzero = True
+                state.artifact_errors.append(f"holdout: {exc}")
+                write_report(status="running")
+                continue
+            if gate_failures:
+                exit_nonzero = True
+                print(f"holdout gate failed: {gate_failures[0]}")
+            write_report(status="running")
 
     fitted = [idx for idx, state in states.items() if state.status == "fitted"]
     failed = [idx for idx, state in states.items() if state.status == "failed"]

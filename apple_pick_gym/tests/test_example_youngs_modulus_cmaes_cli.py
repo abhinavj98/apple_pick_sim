@@ -82,8 +82,11 @@ def _evaluation(
     scores,
     *,
     direction_indices: tuple[int, ...] = (0, 1),
+    replay_episodes=None,
 ):
     dirs = tuple(int(d) for d in direction_indices)
+    if replay_episodes is None:
+        replay_episodes = [[{} for _ in dirs] for _ in candidates]
     return cmaes.YoungsModulusEvaluation(
         structure_idx=int(structure_idx),
         gt_candidate=cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
@@ -92,8 +95,43 @@ def _evaluation(
         scores=[
             _score(i, cand, float(scores[i])) for i, cand in enumerate(candidates)
         ],
-        replay_episodes=[[{} for _ in dirs] for _ in candidates],
+        replay_episodes=replay_episodes,
         applied_params=[MagicMock() for _ in candidates],
+    )
+
+
+def _synthetic_recorded_episode(*, direction: int) -> dict:
+    n = 9
+    phase = np.array([0, 1, 0, 1, 0, 1, 0, 1, 0], dtype=np.int8)
+    ft = np.zeros((n, 6), dtype=np.float32)
+    ft[:, 2] = 2.0
+    ft[:, 4] = 0.2
+    tcp = np.zeros((n, 3), dtype=np.float32)
+    tcp[0, 2] = 0.0
+    hold_idx = np.where(phase == 1)[0]
+    for j, idx in enumerate(hold_idx):
+        tcp[idx, 2] = 1.0 + 0.05 * j
+    return {
+        "action": np.zeros((n, 6), dtype=np.float32),
+        "phase": phase,
+        "dir_idx": np.full(n, int(direction), dtype=np.int32),
+        "ft_wrist": ft,
+        "ft_wrist_lpf": ft.copy(),
+        "tcp_pos": tcp,
+        "apple_pos": tcp + 0.1,
+        "excitation_direction": np.tile(
+            np.array([0.0, 0.0, 1.0], dtype=np.float32), (n, 1)
+        ),
+    }
+
+
+def _candidate_log10(candidate) -> tuple[float, float, float]:
+    import math
+
+    return (
+        math.log10(float(candidate.support_kp)),
+        math.log10(float(candidate.spur)),
+        math.log10(float(candidate.stem)),
     )
 
 
@@ -602,6 +640,11 @@ def test_clear_cma_owned_artifacts_removes_report_temp_and_selected_overlays(tmp
     selected = output_dir / "structure_001"
     selected.mkdir()
     (selected / "youngs_modulus_overlay.html").write_text("old", encoding="utf-8")
+    holdout = selected / "holdout"
+    holdout.mkdir()
+    (holdout / "direction_000.html").write_text("old", encoding="utf-8")
+    (output_dir / "holdout_report.json").write_text("{}", encoding="utf-8")
+    (output_dir / ".holdout_report.json.9.tmp").write_text("{}", encoding="utf-8")
     (selected / "other.txt").write_text("keep", encoding="utf-8")
 
     other = output_dir / "structure_002"
@@ -612,8 +655,11 @@ def test_clear_cma_owned_artifacts_removes_report_temp_and_selected_overlays(tmp
 
     assert not report.exists()
     assert not tmp.exists()
+    assert not (output_dir / "holdout_report.json").exists()
+    assert not (output_dir / ".holdout_report.json.9.tmp").exists()
     assert keep.read_text(encoding="utf-8") == "keep"
     assert not (selected / "youngs_modulus_overlay.html").exists()
+    assert not (holdout / "direction_000.html").exists()
     assert (selected / "other.txt").exists()
     assert (other / "youngs_modulus_overlay.html").exists()
 
@@ -1863,19 +1909,32 @@ def _holdout_run_stub(monkeypatch, module, *, dataset: MagicMock, tmp_path: Path
 
     evaluate_calls: list[dict] = []
 
+    def fake_create_optimizer(*_args, **_kwargs):
+        es = MagicMock()
+        es.popsize = 15
+        return es, 56, None
+
     def fake_evaluate_structures(**kwargs):
         evaluate_calls.append(dict(kwargs))
         structures = kwargs["structures"]
+        dirs = kwargs.get("direction_indices")
+        if dirs is None:
+            dirs = tuple(range(8))
+        dirs = tuple(int(d) for d in dirs)
         evaluations = {}
         for structure_idx, candidates in structures:
-            dirs = kwargs.get("direction_indices")
-            if dirs is None:
-                dirs = tuple(range(8))
+            replay_eps = [_synthetic_recorded_episode(direction=d) for d in dirs]
+            sinkhorn = 0.1
+            if dirs == (0, 1, 3) and len(candidates) == 1:
+                cand_log10 = _candidate_log10(candidates[0])
+                baseline = tuple(module.CMA_SEARCH_PARAMS["initial_mean_log10"])
+                sinkhorn = 2.0 if cand_log10 == baseline else 1.0
             evaluations[int(structure_idx)] = _evaluation(
                 int(structure_idx),
                 list(candidates),
-                [0.1] * len(candidates),
-                direction_indices=tuple(int(d) for d in dirs),
+                [sinkhorn] * len(candidates),
+                direction_indices=dirs,
+                replay_episodes=[replay_eps for _ in candidates],
             )
         return cmaes.YoungsModulusBatchEvaluation(
             evaluations=evaluations,
@@ -1898,11 +1957,36 @@ def _holdout_run_stub(monkeypatch, module, *, dataset: MagicMock, tmp_path: Path
             structures=[(0, (cand,))],
             wave_kind="final_mean",
         )
+        dist = cmaes.CmaDistributionSnapshot(mean_log10=(4.0, 9.0, 9.0), sigma=1.0)
         for state in states.values():
             state.status = "fitted"
             state.final_mean_log10 = (4.0, 9.0, 9.0)
             state.final_evaluation = batch.evaluations[0]
             state.gt_candidate = None
+            state.generations = [
+                cmaes.CmaGenerationRecord(
+                    generation_index=0,
+                    structure_idx=0,
+                    ask_samples_log10=((4.0, 9.0, 9.0),),
+                    candidates=(cand,),
+                    raw_scores=(),
+                    penalized_fitness=(2.0,),
+                    penalty_metadata=({"penalized": False, "raw_aggregate_sinkhorn": 2.0},),
+                    ask_distribution=dist,
+                    post_tell_distribution=dist,
+                ),
+                cmaes.CmaGenerationRecord(
+                    generation_index=1,
+                    structure_idx=0,
+                    ask_samples_log10=((4.0, 9.0, 9.0),),
+                    candidates=(cand,),
+                    raw_scores=(),
+                    penalized_fitness=(1.0,),
+                    penalty_metadata=({"penalized": False, "raw_aggregate_sinkhorn": 1.0},),
+                    ask_distribution=dist,
+                    post_tell_distribution=dist,
+                ),
+            ]
         if on_progress is not None:
             on_progress(states)
         return cmaes.YoungsModulusCmaFitResult(
@@ -1915,11 +1999,30 @@ def _holdout_run_stub(monkeypatch, module, *, dataset: MagicMock, tmp_path: Path
 
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
     monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    monkeypatch.setattr(module, "create_structure_cma_optimizer", fake_create_optimizer)
     monkeypatch.setattr(module, "make_real_replay_build_env_fn", lambda **_k: MagicMock())
     monkeypatch.setattr(
         module,
         "real_replay_sim_config",
         lambda **_k: SimpleNamespace(controller=SimpleNamespace(mode="vic_pose")),
+    )
+    import apple_pick_gym.batched_envs.holdout_evaluation as holdout_eval
+
+    monkeypatch.setattr(
+        holdout_eval,
+        "load_recorded_episodes_for_structure",
+        lambda _dataset, **kwargs: [
+            _synthetic_recorded_episode(direction=int(d))
+            for d in kwargs["direction_indices"]
+        ],
+    )
+    monkeypatch.setattr(
+        holdout_eval,
+        "load_episode_metadata_for_directions",
+        lambda _dataset, **kwargs: {
+            int(d): {"pull_direction": [0.0, 0.0, 1.0]}
+            for d in kwargs["direction_indices"]
+        },
     )
     monkeypatch.setattr(module, "evaluate_youngs_modulus_structures", fake_evaluate_structures)
     monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
@@ -1928,7 +2031,7 @@ def _holdout_run_stub(monkeypatch, module, *, dataset: MagicMock, tmp_path: Path
         "gt_support_kp_youngs_candidate_from_structure",
         lambda *_a, **_k: pytest.fail("real CMA must not load sim GT"),
     )
-    monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: [])
     monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
     return evaluate_calls, output_dir, ranges_path
 
@@ -2043,7 +2146,8 @@ def test_run_holdout_seed_selects_pinned_split(monkeypatch, tmp_path):
     assert result["val_direction_indices"] == (0, 1, 3)
     struct_calls = [c for c in evaluate_calls if "structures" in c]
     assert struct_calls
-    for call in struct_calls:
+    fit_calls = [c for c in struct_calls if c.get("direction_indices") != (0, 1, 3)]
+    for call in fit_calls:
         assert call["direction_indices"] == (2, 4, 5, 6, 7)
 
 
@@ -2085,7 +2189,7 @@ def test_run_holdout_never_loads_val_directions_during_fit(monkeypatch, tmp_path
     seen_dirs: set[int] = set()
     for call in evaluate_calls:
         dirs = call.get("direction_indices")
-        if dirs is not None:
+        if dirs is not None and dirs != (0, 1, 3):
             seen_dirs.update(int(d) for d in dirs)
     assert seen_dirs.isdisjoint({0, 1, 3})
 
@@ -2306,3 +2410,162 @@ def test_require_ft_wrist_lpf_iterates_episode_rows():
         "ft_wrist_lpf": np.ones((4, 6), dtype=np.float32),
     }
     module._require_ft_wrist_lpf_per_structure(dataset, [0])
+
+
+def _holdout_args(output_dir: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        dataset="/tmp/real",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        controller_mode=None,
+        direction_split_seed=17,
+        direction_indices=None,
+        val_direction_indices=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+    )
+
+
+def test_run_holdout_evaluates_baseline_and_fitted_on_val_only(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    evaluate_calls, output_dir, _ = _holdout_run_stub(
+        monkeypatch, module, dataset=dataset, tmp_path=tmp_path
+    )
+    module._run(_holdout_args(output_dir), argparse.ArgumentParser(), viewer=MagicMock())
+
+    val_calls = [
+        c
+        for c in evaluate_calls
+        if c.get("direction_indices") == (0, 1, 3)
+    ]
+    assert len(val_calls) == 2
+    baseline = tuple(module.CMA_SEARCH_PARAMS["initial_mean_log10"])
+    seen_log10 = {
+        _candidate_log10(c["structures"][0][1][0]) for c in val_calls
+    }
+    assert _candidate_log10(cmaes.candidates_from_log10_vector(baseline)) in seen_log10
+    assert _candidate_log10(cmaes.candidates_from_log10_vector((4.0, 9.0, 9.0))) in seen_log10
+
+
+def test_run_holdout_does_not_tell_optimizer_on_val(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    tell_calls: list[int] = []
+
+    def fake_create_optimizer(*_args, **_kwargs):
+        es = MagicMock()
+        es.popsize = 15
+
+        def _tell(*_a, **_k):
+            tell_calls.append(1)
+
+        es.tell = _tell
+        return es, 56, None
+
+    evaluate_calls, output_dir, _ = _holdout_run_stub(
+        monkeypatch, module, dataset=dataset, tmp_path=tmp_path
+    )
+    monkeypatch.setattr(module, "create_structure_cma_optimizer", fake_create_optimizer)
+    stub_fit = module.fit_youngs_modulus_structures
+
+    def fake_fit(*args, **kwargs):
+        result = stub_fit(*args, **kwargs)
+        for state in args[0].values():
+            state.optimizer.tell([], [])
+        return result
+
+    monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
+    module._run(_holdout_args(output_dir), argparse.ArgumentParser(), viewer=MagicMock())
+    assert len(tell_calls) == 1
+
+
+def test_run_writes_holdout_report_with_val_overlays(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    train_overlay = tmp_path / "train_overlay.html"
+    monkeypatch.setattr(
+        module,
+        "_write_final_mean_overlay",
+        lambda *_a, **_k: train_overlay.write_text("train", encoding="utf-8"),
+    )
+    _, output_dir, _ = _holdout_run_stub(
+        monkeypatch, module, dataset=dataset, tmp_path=tmp_path
+    )
+    module._run(_holdout_args(output_dir), argparse.ArgumentParser(), viewer=MagicMock())
+
+    report_path = output_dir / "holdout_report.json"
+    assert report_path.is_file()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert set(report["val_overlay_paths"]) == {"0", "1", "3"}
+    for path in report["val_overlay_paths"].values():
+        assert Path(path).is_file()
+        assert "holdout/direction_" in path
+        assert path != str(train_overlay)
+
+
+def test_run_skips_holdout_report_when_fit_failed(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    evaluate_calls, output_dir, _ = _holdout_run_stub(
+        monkeypatch, module, dataset=dataset, tmp_path=tmp_path
+    )
+
+    def failed_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+        del max_generations, evaluate_fn, on_progress
+        for state in states.values():
+            state.status = "failed"
+        return cmaes.YoungsModulusCmaFitResult(
+            states=dict(states),
+            fitted_structure_indices=(),
+            failed_structure_indices=(0,),
+            generation_waves=0,
+            final_mean_batch=None,
+        )
+
+    monkeypatch.setattr(module, "fit_youngs_modulus_structures", failed_fit)
+    result = module._run(
+        _holdout_args(output_dir), argparse.ArgumentParser(), viewer=MagicMock()
+    )
+    assert result["exit_nonzero"] is True
+    assert not (output_dir / "holdout_report.json").exists()
+    assert not any(
+        c.get("direction_indices") == (0, 1, 3) for c in evaluate_calls
+    )
+
+
+def test_run_holdout_report_absent_without_split_flags(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    _, output_dir, _ = _holdout_run_stub(
+        monkeypatch, module, dataset=dataset, tmp_path=tmp_path
+    )
+    args = _holdout_args(output_dir)
+    args.direction_split_seed = None
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert not (output_dir / "holdout_report.json").exists()

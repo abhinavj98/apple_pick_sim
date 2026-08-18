@@ -179,7 +179,7 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 
 ### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/handbook-coupled-simulation.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, stiffness/E grids, and CMA-ES: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3, [V].5.2 Done; Current focus **[M4].0** s09 holdout CMA — Task 9 GPU science gate not yet run).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/handbook-coupled-simulation.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, stiffness/E grids, and CMA-ES: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3, [V].5.2 Done; Current focus **[M4].0** s09 holdout CMA — Task 9 GPU science gate **failed** on val torque magnitude).
 
 ```bash
 # Headless smoke (settle→weld)
@@ -418,7 +418,7 @@ replay with open-loop FR3 under **`vic_pose`** (19D pose+gains packed from
 wrench, not an EE twist). Full contract: **`robot_replay/README.md`**.
 Folder convert of one tree (`--input-dir`) writes 1×N episodes
 (`sXX-dNN.parquet` → `direction_idx=NN`). Roadmap Current focus: **[M4].0**
-holdout CMA (Task 9 GPU science gate not yet run); gym collect / MMD /
+holdout CMA (Task 9 GPU science gate **failed** on val torque); gym collect / MMD /
 sim-sim CMA stay on twist `vic`.
 
 ```bash
@@ -505,8 +505,9 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
 
 **Real folder convert → holdout CMA** (opt-in 5/3 split; seed 17 ⇒ train
 `{2,4,5,6,7}`, val `{0,1,3}`). Requires eight compiled `s09-dNN.parquet`.
-GPU science gate is Task 9 — this recipe is the documented command, not a
-claimed pass. Omit `--direction-split-seed` to score all dirs with no
+Task 9 ran this recipe (2026-08-17, pop=15 / gen=10): plumbing passed;
+science gate **failed** on val torque magnitude (see `docs/ROADMAP.md`).
+Omit `--direction-split-seed` to score all dirs with no
 `holdout_report.json`.
 
 ```bash

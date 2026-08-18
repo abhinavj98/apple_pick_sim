@@ -8,7 +8,7 @@
 | Code owners | `apple_pick_sim/system_id/mmd_features.py`, `apple_pick_sim/system_id/mmd.py`, `apple_pick_sim/system_id/wasserstein.py`, `apple_pick_sim/system_id/batched_trajectory_store.py`, `apple_pick_sim/system_id/real_to_batched_sysid.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H4 `docs/handbook-real-replay.md` (convert must emit this contract); H5 `docs/handbook-youngs-cma.md` (grid/CMA scores it); H2 `docs/handbook-variable-impedance.md` (action semantics only) |
-| Archive specs | [One-structure multi-dir holdout](superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md) — Implemented (gates/one-hot; science gate Task 9); [Real/sim CMA feature alignment](superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md) — Implemented; [fixed-scale normalization](superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md) — Implemented; [median-hold features](superpowers/specs/2026-07-14-median-hold-features-design.md) — Implemented; [batched MMD grid](superpowers/specs/2026-07-06-batched-sysid-mmd-grid-design.md) — Historical; [MMD grid diagnostic](superpowers/specs/2026-06-22-mmd-grid-diagnostic-design.md) — Historical; [batched collection](superpowers/specs/2026-07-04-batched-sysid-collection-design.md) — Historical; [dataset dashboard](superpowers/specs/2026-06-22-sysid-dashboard-design.md) — Historical |
+| Archive specs | [One-structure multi-dir holdout](superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md) — Implemented (gates/one-hot; Task 9 science gate failed on torque); [Real/sim CMA feature alignment](superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md) — Implemented; [fixed-scale normalization](superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md) — Implemented; [median-hold features](superpowers/specs/2026-07-14-median-hold-features-design.md) — Implemented; [batched MMD grid](superpowers/specs/2026-07-06-batched-sysid-mmd-grid-design.md) — Historical; [MMD grid diagnostic](superpowers/specs/2026-06-22-mmd-grid-diagnostic-design.md) — Historical; [batched collection](superpowers/specs/2026-07-04-batched-sysid-collection-design.md) — Historical; [dataset dashboard](superpowers/specs/2026-06-22-sysid-dashboard-design.md) — Historical |
 
 This handbook is the canonical contract for `batched_sysid_v1` bags and the
 features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
@@ -313,8 +313,9 @@ and \(\lvert\Delta\tau\rvert\) (N·m) are stored on
 are not CLI exit gates. Apple `pos` along \(\hat p\) is reported the same way
 and **does not fail** the run if TCP already passes.
 
-CLI exit-code mapping of these booleans is H5. GPU science-gate pass/fail is
-Task 9 / ROADMAP — this handbook does not claim a passing run.
+CLI exit-code mapping of these booleans is H5. Task 9 GPU run (2026-08-17,
+shipped 15×10): Sinkhorn and TCP gates passed; science gate **failed** on
+val torque magnitude. This handbook does not claim a passing run.
 
 ## 9. Replay alignment notes
 

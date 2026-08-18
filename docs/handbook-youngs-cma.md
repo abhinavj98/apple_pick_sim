@@ -13,7 +13,7 @@ the next real-data acceptance work belong in `docs/ROADMAP.md`.
 | Code owners | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py`; `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H4 `docs/handbook-real-replay.md` |
-| Archive specs | **Implemented:** `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md`; **Superseded phenotype, implemented loop:** `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`; **Partial:** `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`; **Implemented (holdout CLI; science gate Task 9):** `docs/superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md` |
+| Archive specs | **Implemented:** `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md`; **Superseded phenotype, implemented loop:** `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`; **Partial:** `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`; **Implemented (holdout CLI; Task 9 science gate failed on torque):** `docs/superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md` |
 
 Related boundaries:
 
@@ -189,7 +189,8 @@ acceptance. Folder convert and per-direction weld are H4 (shipped). The
 following remain ROADMAP-owned and must not be inferred as complete from this
 handbook:
 
-- GPU science-gate pass on s09 holdout (Task 9; not yet run); and
+- GPU science-gate **pass** on s09 holdout (Task 9 **ran** 2026-08-17 at
+  shipped 15×10: Sinkhorn + TCP passed; **failed** on val torque magnitude); and
 - multi-tree merge / dropping the one-structure `vic_pose` guard.
 
 Real 1×1 `vic_pose` CMA (same H4 builder as the grid):
@@ -257,7 +258,7 @@ direction). Magnitude/trend fail even if Sinkhorn improved. Beating the
 shipped initial-mean Sinkhorn on val is required but cheap (baseline
 \(E \sim 3\,\mathrm{GPa}\)); the signed pose/force gates are the physics
 check. **Do not infer a passing science gate from this handbook** — Task 9
-runs GPU acceptance.
+ran 2026-08-17 and **failed** on val torque magnitude (see ROADMAP).
 
 Keep the one-structure `vic_pose` `SystemExit`. Two-tree merge is out of
 scope.
@@ -351,8 +352,9 @@ undiagnosed. Do not commit `tmp/` artifacts.
 ### Real folder convert → holdout CMA
 
 Opt-in 5/3 holdout on one converted tree. Requires eight compiled
-`s09-dNN.parquet` under `robot_replay/new_data/s09/`. GPU science gate is
-Task 9 — this recipe is the contract, not a claimed pass.
+`s09-dNN.parquet` under `robot_replay/new_data/s09/`. Task 9 ran this recipe
+(2026-08-17, pop=15 / gen=10): plumbing passed; science gate **failed** on
+val torque magnitude (ROADMAP).
 
 ```bash
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \

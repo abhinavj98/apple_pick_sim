@@ -12,7 +12,7 @@ Sequencing, ranking acceptance, and CMA status belong in `docs/ROADMAP.md`.
 | Code owners | `robot_replay/`; `apple_pick_sim/system_id/real_to_batched_sysid.py`; `apple_pick_sim/system_id/real_pre_grasp_params.py`; `apple_pick_sim/system_id/batched_digital_twin_init.py`; `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md`; H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H5 `docs/handbook-youngs-cma.md` |
-| Archive specs | **Partial:** `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`; **Implemented:** `docs/superpowers/specs/2026-08-10-real-batched-gl-replay-design.md`, `2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `2026-08-12-real-camera-gl-viewer-design.md`, `2026-08-12-gl-video-record-design.md`, `2026-08-14-real-rod-mass-density-override-design.md`; **Partial:** `2026-08-12-real-replay-cmaes-plumbing-design.md`; **Implemented (convert/replay; science gate Task 9):** `2026-08-17-one-structure-multidir-holdout-cmaes-design.md` |
+| Archive specs | **Partial:** `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md`; **Implemented:** `docs/superpowers/specs/2026-08-10-real-batched-gl-replay-design.md`, `2026-08-11-batched-real-replay-post-grasp-se3-design.md`, `2026-08-12-real-camera-gl-viewer-design.md`, `2026-08-12-gl-video-record-design.md`, `2026-08-14-real-rod-mass-density-override-design.md`; **Partial:** `2026-08-12-real-replay-cmaes-plumbing-design.md`; **Implemented (convert/replay; Task 9 science gate failed on torque):** `2026-08-17-one-structure-multidir-holdout-cmaes-design.md` |
 
 > **Warning — tare real F/T, never simulated F/T.** Convert the compiled
 > episode parquet whose `ft_wrist` is already loaded EMA minus unloaded EMA.
@@ -56,8 +56,8 @@ that source column with a 19D `vic_pose_v1` action, and
 
 **Status boundary:** Drive = `vic_pose` **Done**. Folder convert and
 per-direction replay for one tree are **Done**. Opt-in 5/3 holdout CMA is
-wired (H5); the GPU science gate is Task 9 / ROADMAP and is **not** claimed
-here. A successful replay or environment build does not establish a
+wired (H5); Task 9 GPU science gate **ran and failed** on val torque
+magnitude (ROADMAP) and is **not** claimed as a pass here. A successful replay or environment build does not establish a
 trustworthy ranking.
 
 ## 2. Episode inputs
@@ -289,7 +289,7 @@ replay and optimization callers on the same initialization path:
 
 The Young's grid can opt into this builder from real dataset metadata. That
 plumbing being present is not the same as accepting its ranking. Trusted
-ranking remains H5/ROADMAP work (GPU science gate is Task 9).
+ranking remains H5/ROADMAP work (Task 9 science gate failed on val torque).
 
 ### Per-direction weld, gripper, and arm joints
 
@@ -400,4 +400,4 @@ uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
 
 Expect `collection.num_structures=1`, `num_directions=8`, `control_hz=30`,
 `n_holds=4`, and `episodes/s00_d00` … `s00_d07`. Holdout CMA on that bag is
-H5 / `docs/ROADMAP.md` (GPU science gate is Task 9).
+H5 / `docs/ROADMAP.md` (Task 9 science gate failed on val torque).

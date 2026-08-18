@@ -7,7 +7,7 @@
 | **Last updated** | 2026-08-17 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[M4].0** folder convert + 1×8 replay + opt-in holdout CMA shipped; **Task 9 GPU science gate not yet run** |
+| **Active work**  | **[M4].0** 1×8 holdout pipeline shipped; **Task 9 GPU science gate FAILED** (val torque magnitude; Sinkhorn + TCP passed) |
 
 ---
 
@@ -42,7 +42,7 @@
 
 ## Current focus
 
-**Next slice:** **M4.0 GPU holdout acceptance (Task 9)** on `s09` (one tree × eight directions, 5/3 split). Folder convert, per-direction weld/gripper/joints, last-action pad + truncate-before-features, and opt-in holdout CMA (`--direction-split-seed`) are shipped (Tasks 1–7). **Do not claim the science gate passed** until Task 9 records the knobs actually run, Sinkhorn columns, and per-dir magnitude/trend flags. Use H3 `docs/handbook-sysid-scoring.md` for signed \(F_\parallel\) / \(x_{\mathrm{hold0}}\) gates and one-hot width, H4 `docs/handbook-real-replay.md` for convert/replay, and H5 `docs/handbook-youngs-cma.md` for holdout flags / `holdout_report.json`. Slices 0–3 delivered USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. Convert writes unfiltered world `ft_wrist` plus scored `ft_wrist_lpf` (10 Hz `filtfilt` + 30 Hz block-mean). **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
+**Next slice:** decide how to treat the **Task 9 torque-magnitude fail** on s09 holdout (sim \(\lvert\tau\rvert\) ~15–70× too small on val dirs 0/1/3). Folder convert, per-direction weld/gripper/joints, last-action pad + truncate-before-features, and opt-in holdout CMA (`--direction-split-seed`) are shipped (Tasks 1–8). Task 9 **ran** shipped knobs (pop 15 / gen 10, ~32 min RTX 4090): train Sinkhorn 22.54→17.08, val Sinkhorn 23.63→17.13, TCP magnitude+trend pass; `force_magnitude_ok` fails all three val dirs on **torque ratio** (0.073 / 0.014 / 0.044). **Do not claim the science gate passed.** Use H3 `docs/handbook-sysid-scoring.md` for signed \(F_\parallel\) / \(x_{\mathrm{hold0}}\) gates and one-hot width, H4 `docs/handbook-real-replay.md` for convert/replay, and H5 `docs/handbook-youngs-cma.md` for holdout flags / `holdout_report.json`. Slices 0–3 delivered USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. Convert writes unfiltered world `ft_wrist` plus scored `ft_wrist_lpf` (10 Hz `filtfilt` + 30 Hz block-mean). **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
 
 **Phenotype (unchanged):** support-joint \(k_p\) × spur/stem Young's \(E\) (primary \(E\) fixed); see H5 `docs/handbook-youngs-cma.md`.
 
@@ -88,7 +88,7 @@
   (**1×1 wiring** Done)
 - [x] **Folder convert + multi-direction replay** (H4): per-dir weld/gripper/arm joints; last-action pad; truncate before features
 - [x] **Opt-in holdout CMA** (H5): `--direction-split-seed` (default 17 when present); train-only fit; frozen `final_mean`; `holdout_report.json`; exit 1 on gate fail
-- [ ] **Task 9 GPU acceptance (science gate):** convert `robot_replay/new_data/s09/` → holdout CMA with `--direction-split-seed 17`. Pass iff train `eligible_mean` last < first; `val_fitted` Sinkhorn < `val_baseline`; every val dir (`{0,1,3}` at seed 17) passes force magnitude + force trend + TCP pose magnitude + TCP pose trend. **Not yet run — do not treat as passed.** Knobs actually run and scalars: TBD after Task 9.
+- [x] **Task 9 GPU run (science gate recorded, not passed):** convert `s09` → holdout CMA `--direction-split-seed 17`, shipped pop=15 / gen=10. Train `eligible_mean` 22.54→17.08; val Sinkhorn 23.63→17.13; TCP mag+trend pass on `{0,1,3}`. **FAIL:** `force_magnitude_ok` false on all three val dirs because torque ratio \(\ll 1/3\) (0.073 / 0.014 / 0.044); parallel-force ratios were in \([1/3, 3]\). Fitted `log10` `[2.265, 9.120, 10.994]`. Artifacts under `tmp/real_kp_e_cmaes_s09_holdout/` (gitignored). **Do not treat M4.0 ranking as accepted.**
 - [ ] **Follow-up:** Real-mode CMA still seeds from shipped
   `initial_mean_log10=[4.0, 9.5, 9.5]` while the spec fixture band is
   ~\(10^{7.4}\)–\(10^{8}\) Pa; the real spur/stem floor (\(\log_{10} E = 7\))
@@ -165,7 +165,7 @@
 
 **[M4] real-data calibration**
 
-- [ ] **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)** — **In progress** (plumbing + alignment + 1×8 holdout pipeline shipped; Task 9 GPU science gate not yet run)
+- [ ] **M4.0 — Real `robot_replay` → CMA-ES (`vic_pose`)** — **In progress** (plumbing + holdout pipeline shipped; Task 9 GPU science gate **failed** on val torque magnitude)
 - [ ] **M4.1+** — Broader real collection / held-out real segments (after M4.0)
 
 **[M3] parallel infra** (optional alongside [V])
@@ -225,7 +225,7 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 
 | Slice | Status | Deliverable |
 | ----- | ------ | ----------- |
-| **M4.0** | **In progress** | Plumbing + alignment + folder convert + holdout CMA shipped; Task 9 GPU science gate not yet run |
+| **M4.0** | **In progress** | Plumbing + holdout CMA shipped; Task 9 GPU science gate **failed** (val torque ~15–70× too small) |
 | **M4.1+** | Later | Broader real collection / held-out real metrics |
 
 Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py`. Public API: H1 `docs/handbook-coupled-simulation.md`.
@@ -425,9 +425,10 @@ uv run --env-file pytest.env python \
 # validation reports under tmp/task8_cuda_acceptance/ (see implementation notes).
 
 # [M4].0 — real robot_replay → vic_pose replay → 1×8 holdout CMA
-# Folder convert + per-dir replay + opt-in holdout CLI shipped (Tasks 1–7).
-# Task 9 GPU science gate is NOT claimed here. Requires robot_replay/new_data/s09/
-# compiled s09-dNN.parquet (not always in clone).
+# Folder convert + per-dir replay + opt-in holdout CLI shipped (Tasks 1–8).
+# Task 9 ran 2026-08-17 at shipped knobs (pop=15, gen=10, ~32 min RTX 4090).
+# Plumbing OK; science gate FAILED on val torque magnitude (see checklist).
+# Requires robot_replay/new_data/s09/ compiled s09-dNN.parquet (not always in clone).
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
   --input-dir robot_replay/new_data/s09 \
   --dataset-out tmp/real_batched_s09 --overwrite
@@ -437,14 +438,13 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --direction-split-seed 17 \
   --viewer null \
   --overwrite
-# Acceptance (Task 9): manifest 1×8, control_hz=30, n_holds=4;
-# cmaes_report.json command_status completed; no gt_diagnostics; spur/stem floor log10 E=7;
-# holdout_report.json seed 17, train {2,4,5,6,7}, val {0,1,3}; every generation ⊆ train;
-# verification flags + val overlays. Science gate: train eligible_mean last < first;
-# val_fitted Sinkhorn < val_baseline; all three val dirs pass force/TCP magnitude+trend.
-# Shipped CMA_SEARCH_PARAMS: population_size=15, max_generations=10 (~hours on RTX 4090).
-# If CUDA exit 139, shrink population/generations for smoke, record knobs, restore before commit.
-# Knobs actually run / scalars: TBD after Task 9.
+# Acceptance (Task 9 recorded): manifest 1×8, control_hz=30, n_holds=4;
+# cmaes_report.json command_status completed; gt null; spur/stem floor log10 E=7;
+# holdout_report.json seed 17, train {2,4,5,6,7}, val {0,1,3}; every generation ⊆ train.
+# Sinkhorn: train eligible_mean 22.54 → 17.08; val 23.63 → 17.13.
+# Phenotype log10 fitted [2.265, 9.120, 10.994]. TCP mag+trend pass.
+# FAIL: torque_ratio 0.073 / 0.014 / 0.044 on val dirs 0/1/3 (force |F_|| | in [1/3, 3]).
+# Shipped CMA_SEARCH_PARAMS: population_size=15, max_generations=10. No CUDA 139 on this run.
 
 # 1×1 plumbing smoke (still valid; ranking not trusted):
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \

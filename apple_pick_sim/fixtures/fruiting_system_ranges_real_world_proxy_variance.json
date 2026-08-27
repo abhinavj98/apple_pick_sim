@@ -59,7 +59,7 @@
     "youngs_modulus_pa": {"min": 25000000.4, "max": 100000000.9},
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_force": {
-      "max_force_n": 15.0,
+      "max_force_n": 35.0,
       "damping_ratio": 1.0
     }
   },

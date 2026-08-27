@@ -4,7 +4,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-17 |
+| Last reviewed | 2026-08-19 |
 | Code owners | `apple_pick_sim/system_id/mmd_features.py`, `apple_pick_sim/system_id/mmd.py`, `apple_pick_sim/system_id/wasserstein.py`, `apple_pick_sim/system_id/batched_trajectory_store.py`, `apple_pick_sim/system_id/real_to_batched_sysid.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H4 `docs/handbook-real-replay.md` (convert must emit this contract); H5 `docs/handbook-youngs-cma.md` (grid/CMA scores it); H2 `docs/handbook-variable-impedance.md` (action semantics only) |
@@ -46,7 +46,7 @@ storage or scoring semantics.
 | ----- | ------- | ------------------ |
 | **Runtime obs** | Gym or scene observation dictionaries produced while simulation runs. | May include debug/rebuild fields such as `woody_part_end_pos`; see `docs/gym-observation-contract.md`. |
 | **Bag** | Arrays loaded from a `batched_sysid_v1` episode Parquet plus episode metadata. | Carries replay inputs, including 6D or 19D `action`; trajectory frames do not carry woody ends. |
-| **Score vector** | Numeric columns assembled by `mmd_features.build_state_matrix` and its transition builders. | Uses `STATE_VECTOR_FIELDS`; `action`, quaternions, joints, raw F/T, and woody ends are not scored. |
+| **Score vector** | Numeric columns assembled by `mmd_features.build_state_matrix` and its transition builders. | Uses `STATE_VECTOR_FIELDS`; `action`, `apple_pos`, quaternions, joints, raw F/T, and woody ends are not scored. `apple_pos` remains in the bag for bend-chord geometry. |
 
 H2 owns the meaning of a 6D `vic` action versus a 19D `vic_pose_v1` action.
 H4 owns real-log conversion. H5 owns candidate selection. This handbook owns
@@ -121,18 +121,19 @@ column solely so digital-twin initialization can address the pre-weld row.
 
 `mmd_features.STATE_VECTOR_FIELDS` fixes score-time order. For the production
 CMA pair `J=2`, `mmd_features.CMA_WOODY_JUNCTIONS` is
-`("primary_spur", "spur_stem")` and the state width is 26:
+`("primary_spur", "spur_stem")` and the state width is 23:
 
 | Offset | Field | Dimensions | Meaning |
 | ------ | ----- | ---------- | ------- |
 | 0:6 | `ft_wrist` | 6 | World-frame force then torque, env-on-robot, about TCP. Real GT uses `ft_wrist_lpf` when that column is present; candidate replay always uses live `ft_wrist`. |
 | 6:12 | `tcp_velocity` | 6 | Linear then angular TCP velocity |
 | 12:15 | `tcp_pos` | 3 | TCP world position |
-| 15:18 | `apple_pos` | 3 | Apple world position |
-| 18:24 | `woody_part_start_pos` | `3J=6` | Starts flattened in `junction_names` order |
-| 24:26 | `woody_bending_angles` | `J=2` | Rest-relative spur then stem chord angles |
+| 15:21 | `woody_part_start_pos` | `3J=6` | Starts flattened in `junction_names` order |
+| 21:23 | `woody_bending_angles` | `J=2` | Rest-relative spur then stem chord angles |
 
-In general, \(D_s = 18 + 4J\). For the CMA pair the bending chords are:
+In general, \(D_s = 15 + 4J\). `apple_pos` stays in the bag (and in
+`REQUIRED_ARRAY_KEYS`) so bend chords can use the Apple tag, but it is not a
+scored state column. For the CMA pair the bending chords are:
 
 - `primary_spur`: `start[spur_stem] - start[primary_spur]`;
 - `spur_stem`: `apple_pos - start[spur_stem]`.
@@ -142,7 +143,9 @@ frame-0 direction and forces frame 0 to exactly zero.
 
 `mmd_features.REQUIRED_ARRAY_KEYS` still includes `action`. This validates a
 complete replay bag and supplies frame count, but `action` is deliberately
-absent from `STATE_VECTOR_FIELDS` and `build_state_matrix` output.
+absent from `STATE_VECTOR_FIELDS` and `build_state_matrix` output. `apple_pos`
+is required in the bag for the same reason as woody starts (chord geometry)
+and is likewise absent from the score vector.
 
 ## 4. Feature alignment contract
 
@@ -176,7 +179,7 @@ with the same geometry:
    The full action remains in each bag to drive an equivalent replay. It is
    not evidence about candidate plant fidelity and is not scored.
 
-Other non-scored fields include `woody_part_force`, TCP/apple quaternions,
+Other non-scored fields include `apple_pos`, `woody_part_force`, TCP/apple quaternions,
 robot joints, camera calibration, raw F/T, and unfiltered real `ft_wrist`
 when `ft_wrist_lpf` is present.
 
@@ -201,7 +204,6 @@ For one `J=2` state half,
 | TCP linear velocity | 0.02 m/s |
 | TCP angular velocity | 0.02 rad/s |
 | TCP position | 0.005 m |
-| Apple position | 0.005 m |
 | Woody start XYZ | 0.005 m |
 | Bending angle | 0.05 rad |
 
@@ -225,9 +227,17 @@ and optionally appends source-hold and direction one-hots.
 - **Frame-to-frame (`use_median=False`)**: within each contiguous full hold,
   use consecutive retained frames. `stable=False` removes a sample but does
   not split the hold, so a transition can bridge dropped frames.
-- **Hold-to-hold median (`use_median=True`)**: compute one state median from
-  stable frames in each full hold, then emit
+- **Hold-to-hold median (`use_median=True` / `hold_reduce="median"`)**: compute
+  one state median from stable frames in each full hold, then emit
   `[s_i, s_{i+1}-s_i]` for consecutive retained holds.
+- **Hold-to-hold mean (`hold_reduce="mean"`)**: same as median but uses the
+  arithmetic mean across stable hold frames. This is the default for the
+  `example_youngs_modulus_cmaes.py` CMA path (set via `--hold-aggregation mean`)
+  as of 2026-08-24. Pass `--hold-aggregation median` to restore median behavior or
+  `--use-median` (deprecated alias). Each generation report `raw_scores` entry
+  carries `mean_hold_force_err_n`, `mean_hold_torque_err_nm`,
+  `mean_hold_woody_start_m`, and `mean_hold_woody_bend_rad` fields computed using
+  the same per-hold mean states as Sinkhorn to guarantee consistency.
 
 There is no latter-half burn-in in these feature builders. Quasi-static
 diagnostic windows elsewhere are a different layer.
@@ -377,9 +387,9 @@ woody starts and ends. Those properties must not be copied into
 
 Key tests:
 
-- `apple_pick_sim/tests/test_mmd_features.py` — exact state order and width,
-  CMA chords, no required woody end, 19D action support, stable masks,
-  median-hold rows, and one-hot placement.
+- `apple_pick_sim/tests/test_mmd_features.py` — exact state order and width
+  (no scored `apple_pos`), CMA chords, no required woody end, 19D action
+  support, stable masks, median-hold rows, and one-hot placement.
 - `apple_pick_sim/tests/test_mmd.py` — GT-only mean, fixed divisors,
   non-centered one-hots, variable junction counts, and diagnostic MMD.
 - `apple_pick_sim/tests/test_wasserstein.py` — per-direction and pooled

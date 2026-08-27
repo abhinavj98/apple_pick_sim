@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from apple_pick_sim.system_id import wasserstein
 from apple_pick_sim.system_id.wasserstein import (
     LOW_SAMPLE_MIN_TRANSITIONS,
     POOLED_DIRECTION_KEY,
@@ -132,6 +133,19 @@ def test_sinkhorn_distance_singleton_shift_matches_geomloss_half_sqdist():
     expected = 0.5 * float(np.sum((x - y) ** 2))
     assert dist == pytest.approx(expected, abs=1e-12)
     assert dist > 0.0
+
+
+def test_feature_kwargs_forward_hold_reduce_mean():
+    kwargs = wasserstein._feature_kwargs(
+        use_median=False,
+        hold_id_onehot=False,
+        n_holds=5,
+        dir_id_onehot=False,
+        n_directions=8,
+        hold_reduce="mean",
+    )
+    assert kwargs["hold_reduce"] == "mean"
+    assert kwargs["use_median"] is False
 
 
 def test_complete_score_single_transition_bags_are_low_sample_and_finite():

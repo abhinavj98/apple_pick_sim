@@ -393,6 +393,50 @@ def test_build_recorded_actions_tensor_rejects_mismatched_frame_counts():
         )
 
 
+def test_build_recorded_actions_for_structure_pads_unequal_direction_lengths():
+    dataset = MagicMock()
+
+    def load_episode_obs_arrays(structure_idx: int, direction_idx: int) -> dict:
+        del structure_idx
+        n_frames = 5 if direction_idx == 0 else 3
+        action = np.arange(n_frames * 6, dtype=np.float32).reshape(n_frames, 6)
+        action[:, 0] = float(direction_idx)
+        return {"action": action}
+
+    dataset.load_episode_obs_arrays.side_effect = load_episode_obs_arrays
+
+    tensor, n_frames_per_env = grid.build_recorded_actions_for_structure(
+        dataset,
+        structure_idx=0,
+        num_directions=2,
+        num_candidates=2,
+        pad_unequal_lengths=True,
+    )
+    assert tensor.shape == (4, 5, 6)
+    assert n_frames_per_env == (5, 3, 5, 3)
+    np.testing.assert_array_equal(tensor[1, 3], tensor[1, 2])
+    np.testing.assert_array_equal(tensor[1, 4], tensor[1, 2])
+
+
+def test_truncate_replay_arrays_keeps_woody_dict_indexable_by_name():
+    arrays = {
+        "action": np.arange(20, dtype=np.float32).reshape(5, 4),
+        "ft_wrist": np.ones((5, 6), dtype=np.float32),
+        "woody_part_start_pos": {
+            "primary_spur": np.arange(15, dtype=np.float32).reshape(5, 3),
+            "spur_stem": np.arange(15, 30, dtype=np.float32).reshape(5, 3),
+        },
+        "junction_names": ["primary_spur", "spur_stem"],
+    }
+    out = grid._truncate_replay_arrays(arrays, 3)
+    assert out["action"].shape[0] == 3
+    assert out["junction_names"] == ["primary_spur", "spur_stem"]
+    np.testing.assert_array_equal(
+        out["woody_part_start_pos"]["primary_spur"],
+        arrays["woody_part_start_pos"]["primary_spur"][:3],
+    )
+
+
 def test_actions_tensor_from_recorded_frame_shape_and_device():
     recorded = np.arange(24, dtype=np.float32).reshape(2, 2, 6)
     device = torch.device("cpu")

@@ -141,7 +141,8 @@ def test_make_real_replay_build_env_fn_applies_post_grasp_with_layout(monkeypatc
     class _FakeEnv:
         def __init__(self, **_kwargs):
             self._sim = SimpleNamespace(
-                scene=SimpleNamespace(cable=cable, layout=layout)
+                scene=SimpleNamespace(cable=cable, layout=layout),
+                capture_episode_snapshot=lambda: None,
             )
 
     monkeypatch.setattr(build, "ApplePickBatchedSysIdEnv", _FakeEnv)
@@ -170,6 +171,65 @@ def test_make_real_replay_build_env_fn_applies_post_grasp_with_layout(monkeypatc
     fn(num_envs=2, per_env_params=[None, None], max_episode_steps=4)
 
     assert apply_calls == [{"cable": cable, "meta": meta, "layout": layout}]
+
+
+def test_make_real_replay_build_env_fn_recaptures_snapshot_after_post_grasp_se3(
+    monkeypatch,
+):
+    """Fused replay reset() restores the env-init snapshot.
+
+    Logged SE(3) is applied after that capture. Recapture after the write so
+    restore keeps the grasped apple pose, not the pre-grasp weld.
+    """
+    from apple_pick_gym.batched_envs import real_batched_replay_build as build
+
+    logged_pos = [0.11, 0.22, 0.33]
+    pre_grasp_pos = [9.0, 9.0, 9.0]
+
+    class _FakeSim:
+        def __init__(self):
+            self.apple_pos = list(pre_grasp_pos)
+            self._snapshot = None
+            self.scene = SimpleNamespace(cable=object(), layout=object())
+
+        def capture_episode_snapshot(self):
+            self._snapshot = list(self.apple_pos)
+
+        def restore_episode_snapshot(self):
+            self.apple_pos = list(self._snapshot)
+
+    class _FakeEnv:
+        last = None
+
+        def __init__(self, **_kwargs):
+            self._sim = _FakeSim()
+            self._sim.capture_episode_snapshot()
+            type(self).last = self
+
+    def _apply(_cable, _meta, **_kwargs):
+        env = _FakeEnv.last
+        assert env is not None
+        env._sim.apple_pos = list(logged_pos)
+
+    monkeypatch.setattr(build, "ApplePickBatchedSysIdEnv", _FakeEnv)
+    monkeypatch.setattr(build, "apply_logged_post_grasp_se3_to_cable", _apply)
+    meta = {
+        "initial_apple_pos": logged_pos,
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": [0.11, 0.15, 0.33],
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+    }
+    fn = build.make_real_replay_build_env_fn(
+        ranges_path=_VARIANCE,
+        ranges=load_ranges(_VARIANCE),
+        topology_seed=0,
+        fruiting_base_pos=(0.0, 0.5, 0.95),
+        episode_meta=meta,
+        controller_mode="vic_pose",
+    )
+    env = fn(num_envs=1, per_env_params=[None], max_episode_steps=4)
+    env._sim.restore_episode_snapshot()
+    assert env._sim.apple_pos == logged_pos
 
 
 def test_bootstrap_joint_q_from_episode_metadata():
@@ -239,3 +299,23 @@ def test_real_replay_sim_config_applies_vic_pose_and_control_hz():
     assert cfg.scene.fruiting_base_pos == (0.117, 0.787, 0.577)
     assert cfg.scene.post_grasp_settle_substeps == 500
     assert cfg.runtime.control_hz == pytest.approx(15.0)
+    assert cfg.robot.reuse_replicated_mujoco is False
+
+
+def test_real_replay_sim_config_can_enable_replicated_mujoco_reuse():
+    if not _VARIANCE.is_file():
+        pytest.skip(f"missing {_VARIANCE}")
+
+    from apple_pick_gym.batched_envs.real_batched_replay_build import (
+        real_replay_sim_config,
+    )
+
+    ranges = load_ranges(_VARIANCE)
+    cfg = real_replay_sim_config(
+        num_envs=2,
+        topology_seed=0,
+        fruiting_base_pos=(0.117, 0.787, 0.577),
+        ranges=ranges,
+        reuse_replicated_mujoco=True,
+    )
+    assert cfg.robot.reuse_replicated_mujoco is True

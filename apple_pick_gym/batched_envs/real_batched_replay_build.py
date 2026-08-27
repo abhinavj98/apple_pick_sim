@@ -158,6 +158,7 @@ def real_replay_sim_config(
     bootstrap_joint_q: tuple[float, ...] | None = None,
     controller_mode: str = _DEFAULT_CONTROLLER_MODE,
     control_hz: float | None = None,
+    reuse_replicated_mujoco: bool = False,
 ) -> BatchedHeterogeneousCoupledSimConfig:
     """Gym FR3+VIC config with fixture sim_build; episode fruiting_base_pos."""
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=num_envs)
@@ -195,6 +196,7 @@ def real_replay_sim_config(
             robot_base_pos=(0.0, 0.0, 0.0),
             per_env_ik=False,
             bootstrap_joint_q=bootstrap_joint_q,
+            reuse_replicated_mujoco=bool(reuse_replicated_mujoco),
         ),
         scene=dataclasses.replace(
             gym_cfg.scene,
@@ -235,6 +237,7 @@ def make_real_replay_build_env_fn(
     bootstrap_joint_q: tuple[float, ...] | None = None,
     controller_mode: str = _DEFAULT_CONTROLLER_MODE,
     control_hz: float | None = None,
+    reuse_replicated_mujoco: bool = False,
 ) -> Callable[..., ApplePickBatchedSysIdEnv]:
     def build_env_fn(
         *,
@@ -267,6 +270,7 @@ def make_real_replay_build_env_fn(
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode=controller_mode,
             control_hz=control_hz,
+            reuse_replicated_mujoco=reuse_replicated_mujoco,
         )
         robot_updates: dict[str, Any] = {"gripper": grippers[0]}
         if per_env_episode_meta is not None:
@@ -304,6 +308,10 @@ def make_real_replay_build_env_fn(
                 apply_logged_post_grasp_se3_to_cable(
                     cable, dict(episode_meta), layout=layout
                 )
+            # Env __init__ snapshots settle→weld *before* this write.
+            # Fused/scalar replay always reset() next; recapture so restore
+            # keeps the logged grasp, not the pre-grasp weld.
+            env._sim.capture_episode_snapshot()
         return env
 
     build_env_fn.wants_per_env_meta = True

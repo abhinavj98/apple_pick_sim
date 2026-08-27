@@ -148,7 +148,8 @@ def build_fr3_robot_model_from_usd(
     add_ground_plane: bool = False,
     add_apple_payload: bool = False,
     mujoco_solver_kwargs: dict[str, Any] | None = None,
-) -> tuple[newton.Model, int, SolverMuJoCo]:
+    create_solver: bool = True,
+) -> tuple[newton.Model, int, SolverMuJoCo | None]:
     """Build FR3 + Isaac-exported EE/tcp from USD for ``SolverMuJoCo``.
 
     Default USD is [`assets/testfr3_resolved.usda`] (paired with [`assets/testfr3.usd`] in Omni).
@@ -184,6 +185,9 @@ def build_fr3_robot_model_from_usd(
     model.set_gravity((0.0, 0.0, 0.0))
 
     tcp_idx = resolve_tcp_body_index(model)
+
+    if not create_solver:
+        return model, tcp_idx, None
 
     mj_kw: dict[str, Any] = {
         "solver": "newton",

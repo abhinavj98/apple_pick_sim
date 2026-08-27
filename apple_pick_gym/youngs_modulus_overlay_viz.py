@@ -5,7 +5,9 @@ Hygiene rules (see V.5.2 first-slice plan):
 - Default time panels show norms only (‖F‖, ‖T‖, ‖Δtcp‖).
 - Cap distinct candidates; refuse if over the cap.
 - Phase as vertical shaded bands, not extra legend entries.
-- Excluded episodes are omitted from traces.
+- Omit episodes whose unstable-frame fraction exceeds the ranking
+  threshold (``DEFAULT_UNSTABLE_FRACTION_THRESHOLD`` = 0.25). A single
+  spike does not hide a candidate.
 """
 
 from __future__ import annotations
@@ -16,6 +18,9 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from apple_pick_gym.batched_envs.batched_stability_monitor import (
+    DEFAULT_UNSTABLE_FRACTION_THRESHOLD,
+)
 from apple_pick_sim.system_id.trajectory_store import PHASE_TO_INT
 
 _MOVE = int(PHASE_TO_INT["move_out"])
@@ -460,7 +465,11 @@ def overlay_episodes_from_replay_evaluation(
                 dtype=np.float64,
             ).reshape(-1, 3)[0]
             stable = np.asarray(replay.get("stable", np.ones(n, dtype=bool)), dtype=bool).reshape(-1)[:n]
-            excluded = not bool(np.all(stable))
+            denom = int(stable.size)
+            unstable_frac = (
+                float(np.count_nonzero(~stable)) / float(denom) if denom > 0 else 0.0
+            )
+            excluded = unstable_frac > float(DEFAULT_UNSTABLE_FRACTION_THRESHOLD)
             episodes.append(
                 OverlayEpisode(
                     structure_idx=cand_idx,

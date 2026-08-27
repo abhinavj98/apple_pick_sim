@@ -426,6 +426,7 @@ def build_sim_config(
     settle_quiet_every: int | None = None,
     device: str | None = None,
     ranges: dict | None = None,
+    reuse_replicated_mujoco: bool = False,
 ) -> BatchedHeterogeneousCoupledSimConfig:
     if ranges is None:
         ranges = load_ranges(default_ranges_fixture_path())
@@ -467,6 +468,10 @@ def build_sim_config(
             joint_angular_kp_overrides=joint_angular_kp,
             joint_linear_kp_overrides=joint_linear_kp,
             joint_damping_ratio=joint_damping_ratio,
+        ),
+        robot=dataclasses.replace(
+            gym_cfg.robot,
+            reuse_replicated_mujoco=bool(reuse_replicated_mujoco),
         ),
     )
 
@@ -532,6 +537,7 @@ def _make_build_env_fn(
     control_hz: float,
     device: str | None = None,
     settle_config: dict | None = None,
+    reuse_replicated_mujoco: bool = False,
 ):
     from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
 
@@ -553,6 +559,7 @@ def _make_build_env_fn(
             num_envs=num_envs,
             device=device,
             ranges=ranges,
+            reuse_replicated_mujoco=reuse_replicated_mujoco,
             **(settle_config or {}),
         )
         sim_config = dataclasses.replace(

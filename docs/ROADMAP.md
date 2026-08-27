@@ -89,11 +89,10 @@
 - [x] **Folder convert + multi-direction replay** (H4): per-dir weld/gripper/arm joints; last-action pad; truncate before features
 - [x] **Opt-in holdout CMA** (H5): `--direction-split-seed` (default 17 when present); train-only fit; frozen `final_mean`; `holdout_report.json`; exit 1 on gate fail
 - [x] **Task 9 GPU run (science gate recorded, not passed):** convert `s09` → holdout CMA `--direction-split-seed 17`, shipped pop=15 / gen=10. Train `eligible_mean` 22.54→17.08; val Sinkhorn 23.63→17.13; TCP mag+trend pass on `{0,1,3}`. **FAIL:** `force_magnitude_ok` false on all three val dirs because torque ratio \(\ll 1/3\) (0.073 / 0.014 / 0.044); parallel-force ratios were in \([1/3, 3]\). Fitted `log10` `[2.265, 9.120, 10.994]`. Artifacts under `tmp/real_kp_e_cmaes_s09_holdout/` (gitignored). **Do not treat M4.0 ranking as accepted.**
-- [ ] **Follow-up:** Real-mode CMA still seeds from shipped
-  `initial_mean_log10=[4.0, 9.5, 9.5]` while the spec fixture band is
-  ~\(10^{7.4}\)–\(10^{8}\) Pa; the real spur/stem floor (\(\log_{10} E = 7\))
-  makes that region reachable, but search starts ~1.5σ high — retarget mean
-  later, not in this slice.
+- [x] **Follow-up:** Real-mode CMA seeds from `_REAL_CMA_MEAN_LOG10=[4.0, 8.0, 8.0]`
+  (100 MPa spur/stem, fixture band ~\(10^{7.4}\)–\(10^{8}\) Pa). Real spur/stem
+  box is \(\log_{10} E \in [7, 9.5]\) (10 MPa–3 GPa). Sim-sim still uses shipped
+  `[4.0, 9.5, 9.5]` and `[8, 11]`.
 - [ ] Two-tree merge / drop the one-structure `vic_pose` guard (out of scope for this holdout slice)
 
 **Build on (do not reimplement):**

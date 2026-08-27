@@ -1082,6 +1082,23 @@ def test_world_wrench_from_ee_logged_does_not_negate():
     np.testing.assert_allclose(got, ft_ee, atol=1e-6)
 
 
+def test_world_wrench_transport_cancels_base_origin_moment():
+    from apple_pick_sim.system_id.real_to_batched_sysid import world_wrench_from_ee_logged
+
+    p = np.array([0.0, 0.7, 0.0], dtype=np.float64)
+    pose = _identity_pose_4x4(p.tolist())
+    f = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    t_about_base = np.cross(p, f)
+    ft_ee = np.concatenate([f, t_about_base]).astype(np.float32)
+    rotated = world_wrench_from_ee_logged(ft_ee, pose)
+    np.testing.assert_allclose(rotated[3:], t_about_base, atol=1e-6)
+    transported = world_wrench_from_ee_logged(
+        ft_ee, pose, transport_torque_to_tcp=True
+    )
+    np.testing.assert_allclose(transported[:3], f, atol=1e-6)
+    np.testing.assert_allclose(transported[3:], 0.0, atol=1e-6)
+
+
 def test_export_rotates_ft_wrist_and_requires_tcp_pose(tmp_path: Path):
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
     from apple_pick_sim.system_id.real_to_batched_sysid import (
@@ -1142,6 +1159,40 @@ def test_export_rotates_ft_wrist_and_requires_tcp_pose(tmp_path: Path):
         export_real_episode_to_batched_dataset(
             src_no_tcp, fixture_path=VARIANCE, output_dir=tmp_path / "out2", overwrite=True
         )
+
+
+def test_export_transport_torque_to_tcp_zeroes_pure_lever_arm(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_episode_to_batched_dataset,
+    )
+
+    p = [0.0, 0.7, 0.0]
+    pose = _identity_pose_4x4(p)
+    ft_ee = [1.0, 0.0, 0.0, 0.0, 0.0, -0.7]
+    src = tmp_path / "lever.parquet"
+    _write_synthetic_real(
+        src,
+        action=[0.0] * 6,
+        action_semantics="per-frame pose-control wrench [Fx, Fy, Fz, Tx, Ty, Tz]",
+        action_order=["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+        target_pose_4x4=pose,
+        controller_gains={"task_prop_gains": [100.0] * 6, "task_deriv_gains": [10.0] * 6},
+        tcp_pose_4x4=pose,
+        ft_wrist=ft_ee,
+        ft_wrist_raw=ft_ee,
+    )
+    out = tmp_path / "batched"
+    export_real_episode_to_batched_dataset(
+        src,
+        fixture_path=VARIANCE,
+        output_dir=out,
+        overwrite=True,
+        transport_torque_to_tcp=True,
+    )
+    arrays = BatchedSysIdDataset(out).load_episode_obs_arrays(0, 0)
+    np.testing.assert_allclose(arrays["ft_wrist"][0, :3], [1.0, 0.0, 0.0], atol=1e-5)
+    np.testing.assert_allclose(arrays["ft_wrist"][0, 3:], 0.0, atol=1e-5)
 
 
 def _assert_quat_close(got, expected, *, atol: float = 1e-9) -> None:
@@ -1471,6 +1522,11 @@ def test_convert_cli_defaults_control_hz_and_lpf():
     assert args.control_hz == pytest.approx(30.0)
     assert args.ft_lpf_hz == pytest.approx(10.0)
     assert args.ft_lpf_order == 4
+    assert args.transport_torque_to_tcp is False
+    args_on = mod.build_parser().parse_args(
+        ["--input", "x.parquet", "--dataset-out", "out", "--transport-torque-to-tcp"]
+    )
+    assert args_on.transport_torque_to_tcp is True
 
 
 def test_export_keeps_unfiltered_ft_wrist_and_writes_lpf_column(tmp_path: Path):

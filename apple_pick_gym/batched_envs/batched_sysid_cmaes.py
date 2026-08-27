@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import time
+import traceback
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import product
@@ -26,6 +27,8 @@ from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_for_real_batched_replay,
     true_params_for_structure,
 )
+from apple_pick_sim.system_id.holdout_gates import FORCE_FLOOR_N
+from apple_pick_sim.system_id.mmd_features import mean_hold_block_errors
 from apple_pick_sim.system_id.wasserstein import (
     WassersteinScoringContext,
     prepare_gt_wasserstein_scoring_context,
@@ -485,6 +488,28 @@ def validate_initial_sigma_log10(sigma: float) -> float:
     return value
 
 
+def validate_max_sigma_log10(sigma: float | None) -> float | None:
+    """Allow None (uncapped) or a positive finite log10-sigma ceiling."""
+    if sigma is None:
+        return None
+    if isinstance(sigma, bool) or not isinstance(sigma, (int, float)):
+        raise ValueError("max sigma must be numeric or None")
+    value = float(sigma)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("max sigma must be positive and finite")
+    return value
+
+
+def clamp_optimizer_sigma(optimizer: Any, *, max_sigma_log10: float | None) -> None:
+    """Cap pycma ``sigma`` after ``tell``; ``maxstd`` alone does not cap ``sigma``."""
+    cap = validate_max_sigma_log10(max_sigma_log10)
+    if cap is None:
+        return
+    current = float(getattr(optimizer, "sigma", float("nan")))
+    if math.isfinite(current) and current > cap:
+        optimizer.sigma = cap
+
+
 def resolve_initial_mean_log10(
     spec: Any,
     bounds: YoungsModulusCmaBounds,
@@ -610,6 +635,7 @@ def build_pycma_options(
     population_size: int | None = None,
     search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
     | None = None,
+    max_sigma_log10: float | None = None,
 ) -> dict[str, Any]:
     """Build pycma options; omit bounds when ``search_bounds_log10`` is None."""
     options: dict[str, Any] = {
@@ -622,6 +648,9 @@ def build_pycma_options(
         options["bounds"] = [list(lower), list(upper)]
     if population_size is not None:
         options["popsize"] = int(population_size)
+    cap = validate_max_sigma_log10(max_sigma_log10)
+    if cap is not None:
+        options["maxstd"] = float(cap)
     return options
 
 
@@ -635,9 +664,13 @@ def create_structure_cma_optimizer(
     population_size: int | None = None,
     search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
     | None = None,
+    max_sigma_log10: float | None = None,
 ) -> tuple[cma.CMAEvolutionStrategy, int, np.random.Generator]:
     """Construct one pycma optimizer (bounded only when search bounds are set)."""
     sigma = validate_initial_sigma_log10(initial_sigma_log10)
+    cap = validate_max_sigma_log10(max_sigma_log10)
+    if cap is not None and cap < sigma:
+        raise ValueError("max_sigma_log10 must be >= initial_sigma_log10")
     mean = resolve_initial_mean_log10(
         "bounds_midpoint" if initial_mean_log10 is None else initial_mean_log10,
         bounds,
@@ -648,6 +681,7 @@ def create_structure_cma_optimizer(
         randn=make_pycma_randn(rng),
         population_size=population_size,
         search_bounds_log10=search_bounds_log10,
+        max_sigma_log10=cap,
     )
     es = cma.CMAEvolutionStrategy(
         list(mean),
@@ -665,6 +699,125 @@ class YoungsModulusScoringConfig:
     n_holds: int | None = None
     n_directions: int | None = None
     device: str | None = None
+    hold_aggregation: str | None = None
+
+
+def _hold_reduce_from_scoring(scoring: YoungsModulusScoringConfig) -> str | None:
+    if scoring.hold_aggregation is not None:
+        return str(scoring.hold_aggregation)
+    return None
+
+
+def _mean(values: list[float | None]) -> float | None:
+    finite = [float(v) for v in values if v is not None and math.isfinite(float(v))]
+    if not finite:
+        return None
+    return float(sum(finite) / len(finite))
+
+
+def _format_structure_eval_error(exc: BaseException) -> str:
+    """Preserve the exception message plus traceback for CMA batch diagnostics."""
+    message = str(exc)
+    tb = traceback.format_exc()
+    if tb.strip():
+        return f"{message}\n{tb}"
+    return message
+
+
+def _empty_mean_hold_error_payload() -> dict[str, Any]:
+    return {
+        "force_err_n": None,
+        "torque_err_nm": None,
+        "woody_start_m": None,
+        "woody_bend_rad": None,
+        "force_norm_n": {"real": None, "sim": None},
+        "torque_norm_nm": {"real": None, "sim": None},
+    }
+
+
+def _empty_mean_hold_error_fields() -> dict[str, Any]:
+    return {
+        "mean_hold_force_err_n": None,
+        "mean_hold_torque_err_nm": None,
+        "mean_hold_woody_start_m": None,
+        "mean_hold_woody_bend_rad": None,
+        "per_direction_mean_hold_force_err_n": {},
+        "per_direction_mean_hold_torque_err_nm": {},
+        "per_direction_mean_hold_woody_start_m": {},
+        "per_direction_mean_hold_woody_bend_rad": {},
+        "per_direction_mean_hold_force_norm_n": {},
+        "per_direction_mean_hold_torque_norm_nm": {},
+    }
+
+
+def _mean_hold_error_fields(
+    *,
+    recorded_episodes: Sequence[Mapping[str, Any]],
+    replay_episodes: Sequence[Mapping[str, Any]],
+    direction_indices: Sequence[int],
+) -> dict[str, Any]:
+    per_force: dict[int, float | None] = {}
+    per_torque: dict[int, float | None] = {}
+    per_woody: dict[int, float | None] = {}
+    per_bend: dict[int, float | None] = {}
+    per_force_norm: dict[int, dict[str, float | None]] = {}
+    per_torque_norm: dict[int, dict[str, float | None]] = {}
+    for recorded, replay, direction in zip(
+        recorded_episodes, replay_episodes, direction_indices, strict=True
+    ):
+        key = int(direction)
+        try:
+            err = mean_hold_block_errors(
+                real=recorded, sim=replay, direction=key
+            )
+        except (KeyError, ValueError, TypeError):
+            err = _empty_mean_hold_error_payload()
+        per_force[key] = err["force_err_n"]
+        per_torque[key] = err["torque_err_nm"]
+        per_woody[key] = err["woody_start_m"]
+        per_bend[key] = err["woody_bend_rad"]
+        per_force_norm[key] = dict(err["force_norm_n"])
+        per_torque_norm[key] = dict(err["torque_norm_nm"])
+    return {
+        "mean_hold_force_err_n": _mean(list(per_force.values())),
+        "mean_hold_torque_err_nm": _mean(list(per_torque.values())),
+        "mean_hold_woody_start_m": _mean(list(per_woody.values())),
+        "mean_hold_woody_bend_rad": _mean(list(per_bend.values())),
+        "per_direction_mean_hold_force_err_n": per_force,
+        "per_direction_mean_hold_torque_err_nm": per_torque,
+        "per_direction_mean_hold_woody_start_m": per_woody,
+        "per_direction_mean_hold_woody_bend_rad": per_bend,
+        "per_direction_mean_hold_force_norm_n": per_force_norm,
+        "per_direction_mean_hold_torque_norm_nm": per_torque_norm,
+    }
+
+
+def _eligible_mean_hold_summary(
+    scores: Sequence[YoungsModulusCandidateScore],
+) -> dict[str, float | None]:
+    eligible = [s for s in scores if not s.disqualified]
+
+    def _attr_mean(name: str) -> float | None:
+        return _mean([getattr(s, name) for s in eligible])
+
+    def _attr_best(name: str) -> float | None:
+        vals = [
+            float(v)
+            for s in eligible
+            if (v := getattr(s, name)) is not None and math.isfinite(float(v))
+        ]
+        return float(min(vals)) if vals else None
+
+    return {
+        "eligible_mean_hold_force_err_n": _attr_mean("mean_hold_force_err_n"),
+        "eligible_mean_hold_torque_err_nm": _attr_mean("mean_hold_torque_err_nm"),
+        "eligible_mean_hold_woody_start_m": _attr_mean("mean_hold_woody_start_m"),
+        "eligible_mean_hold_woody_bend_rad": _attr_mean("mean_hold_woody_bend_rad"),
+        "best_eligible_mean_hold_force_err_n": _attr_best("mean_hold_force_err_n"),
+        "best_eligible_mean_hold_torque_err_nm": _attr_best("mean_hold_torque_err_nm"),
+        "best_eligible_mean_hold_woody_start_m": _attr_best("mean_hold_woody_start_m"),
+        "best_eligible_mean_hold_woody_bend_rad": _attr_best("mean_hold_woody_bend_rad"),
+    }
 
 
 @dataclass(frozen=True)
@@ -678,6 +831,16 @@ class YoungsModulusCandidateScore:
     disqualification_reason: str | None
     rank: int | None
     is_gt: bool
+    mean_hold_force_err_n: float | None = None
+    mean_hold_torque_err_nm: float | None = None
+    mean_hold_woody_start_m: float | None = None
+    mean_hold_woody_bend_rad: float | None = None
+    per_direction_mean_hold_force_err_n: dict[int, float | None] | None = None
+    per_direction_mean_hold_torque_err_nm: dict[int, float | None] | None = None
+    per_direction_mean_hold_woody_start_m: dict[int, float | None] | None = None
+    per_direction_mean_hold_woody_bend_rad: dict[int, float | None] | None = None
+    per_direction_mean_hold_force_norm_n: dict[int, dict[str, float | None]] | None = None
+    per_direction_mean_hold_torque_norm_nm: dict[int, dict[str, float | None]] | None = None
 
 
 @dataclass
@@ -781,6 +944,7 @@ def prepare_youngs_modulus_structure(
         hold_id_onehot=bool(scoring.hold_id_onehot),
         n_holds=scoring.n_holds,
         n_directions=scoring_n_directions,
+        hold_reduce=_hold_reduce_from_scoring(scoring),
     )
     base_params = true_params_for_structure(dataset, int(structure_idx))
     first_direction_idx = direction_indices[0]
@@ -862,59 +1026,85 @@ def score_prepared_youngs_modulus_structure(
                 raise RuntimeError(f"invalid routed replay key: {key}")
         replay_eps = [replay_by_key[key] for key in keys]
         replay_episodes.append(replay_eps)
-        direction_instability = [
-            replay_instability_fraction_all_frames(replay=replay, recorded=recorded)
-            for replay, recorded in zip(
-                replay_eps, prepared.recorded_episodes, strict=True
-            )
-        ]
-        finite_instability = [
-            float(fraction)
-            for fraction in direction_instability
-            if math.isfinite(float(fraction))
-        ]
-        instability_fraction = (
-            max(finite_instability) if finite_instability else float("nan")
-        )
-        disqualified = any(
-            math.isfinite(float(fraction))
-            and float(fraction) > float(UNSTABLE_DISQUALIFY_THRESHOLD)
-            for fraction in direction_instability
-        )
-        disqualification_reason = "replay_instability" if disqualified else None
-
-        w_result = score_candidate_wasserstein_complete(
-            candidate_index=local_candidate_idx,
-            stiffnesses=_candidate_stiffness_diagnostics(candidate),
-            gt_context=prepared.gt_context,
-            replay_observations=replay_eps,
-            device=scoring.device,
-            use_median=bool(scoring.use_median),
-            hold_id_onehot=bool(scoring.hold_id_onehot),
-            n_holds=scoring.n_holds,
-            pool_directions=bool(scoring.pool_directions),
-            n_directions=scoring_n_directions,
-        )
-        if int(w_result.candidate_index) != local_candidate_idx:
-            raise RuntimeError(
-                "Wasserstein scorer candidate index mismatch: "
-                f"expected {local_candidate_idx}, got {w_result.candidate_index}"
-            )
-        if w_result.missing_directions:
-            disqualified = True
-            if disqualification_reason is None:
-                expected = set(prepared.gt_context.expected_directions)
-                missing = {int(direction) for direction in w_result.missing_directions}
-                disqualification_reason = (
-                    "empty_transition_bag"
-                    if expected and missing == expected
-                    else "missing_directions"
+        try:
+            direction_instability = [
+                replay_instability_fraction_all_frames(replay=replay, recorded=recorded)
+                for replay, recorded in zip(
+                    replay_eps, prepared.recorded_episodes, strict=True
                 )
-        aggregate_sinkhorn = float(w_result.aggregate_sinkhorn)
-        if not math.isfinite(aggregate_sinkhorn):
-            disqualified = True
-            if disqualification_reason is None:
-                disqualification_reason = "non_finite_sinkhorn"
+            ]
+            finite_instability = [
+                float(fraction)
+                for fraction in direction_instability
+                if math.isfinite(float(fraction))
+            ]
+            instability_fraction = (
+                max(finite_instability) if finite_instability else float("nan")
+            )
+            disqualified = any(
+                math.isfinite(float(fraction))
+                and float(fraction) > float(UNSTABLE_DISQUALIFY_THRESHOLD)
+                for fraction in direction_instability
+            )
+            disqualification_reason = "replay_instability" if disqualified else None
+
+            w_result = score_candidate_wasserstein_complete(
+                candidate_index=local_candidate_idx,
+                stiffnesses=_candidate_stiffness_diagnostics(candidate),
+                gt_context=prepared.gt_context,
+                replay_observations=replay_eps,
+                device=scoring.device,
+                use_median=bool(scoring.use_median),
+                hold_id_onehot=bool(scoring.hold_id_onehot),
+                n_holds=scoring.n_holds,
+                pool_directions=bool(scoring.pool_directions),
+                n_directions=scoring_n_directions,
+                hold_reduce=_hold_reduce_from_scoring(scoring),
+            )
+            if int(w_result.candidate_index) != local_candidate_idx:
+                raise RuntimeError(
+                    "Wasserstein scorer candidate index mismatch: "
+                    f"expected {local_candidate_idx}, got {w_result.candidate_index}"
+                )
+            if w_result.missing_directions:
+                disqualified = True
+                if disqualification_reason is None:
+                    expected = set(prepared.gt_context.expected_directions)
+                    missing = {int(direction) for direction in w_result.missing_directions}
+                    disqualification_reason = (
+                        "empty_transition_bag"
+                        if expected and missing == expected
+                        else "missing_directions"
+                    )
+            aggregate_sinkhorn = float(w_result.aggregate_sinkhorn)
+            if not math.isfinite(aggregate_sinkhorn):
+                disqualified = True
+                if disqualification_reason is None:
+                    disqualification_reason = "non_finite_sinkhorn"
+            hold_errors = _mean_hold_error_fields(
+                recorded_episodes=prepared.recorded_episodes,
+                replay_episodes=replay_eps,
+                direction_indices=prepared.direction_indices,
+            )
+        except (TypeError, ValueError) as exc:
+            provisional.append(
+                YoungsModulusCandidateScore(
+                    candidate_index=local_candidate_idx,
+                    candidate=candidate,
+                    aggregate_sinkhorn=float("nan"),
+                    per_direction_sinkhorn={},
+                    instability_fraction=float("nan"),
+                    disqualified=True,
+                    disqualification_reason=f"invalid_replay_features: {exc}",
+                    rank=None,
+                    is_gt=(
+                        prepared.gt_candidate is not None
+                        and youngs_modulus_values_match(candidate, prepared.gt_candidate)
+                    ),
+                    **_empty_mean_hold_error_fields(),
+                )
+            )
+            continue
         provisional.append(
             YoungsModulusCandidateScore(
                 candidate_index=local_candidate_idx,
@@ -929,6 +1119,7 @@ def score_prepared_youngs_modulus_structure(
                     prepared.gt_candidate is not None
                     and youngs_modulus_values_match(candidate, prepared.gt_candidate)
                 ),
+                **hold_errors,
             )
         )
 
@@ -955,6 +1146,16 @@ def score_prepared_youngs_modulus_structure(
             disqualification_reason=score.disqualification_reason,
             rank=rank_by_index.get(score.candidate_index),
             is_gt=score.is_gt,
+            mean_hold_force_err_n=score.mean_hold_force_err_n,
+            mean_hold_torque_err_nm=score.mean_hold_torque_err_nm,
+            mean_hold_woody_start_m=score.mean_hold_woody_start_m,
+            mean_hold_woody_bend_rad=score.mean_hold_woody_bend_rad,
+            per_direction_mean_hold_force_err_n=score.per_direction_mean_hold_force_err_n,
+            per_direction_mean_hold_torque_err_nm=score.per_direction_mean_hold_torque_err_nm,
+            per_direction_mean_hold_woody_start_m=score.per_direction_mean_hold_woody_start_m,
+            per_direction_mean_hold_woody_bend_rad=score.per_direction_mean_hold_woody_bend_rad,
+            per_direction_mean_hold_force_norm_n=score.per_direction_mean_hold_force_norm_n,
+            per_direction_mean_hold_torque_norm_nm=score.per_direction_mean_hold_torque_norm_nm,
         )
         for score in provisional
     ]
@@ -1089,7 +1290,7 @@ def evaluate_youngs_modulus_structures(
         except Exception as exc:
             if fail_fast:
                 raise
-            errors[idx] = str(exc)
+            errors[idx] = _format_structure_eval_error(exc)
 
     evaluations: dict[int, YoungsModulusEvaluation] = {}
     retried: list[int] = []
@@ -1121,7 +1322,7 @@ def evaluate_youngs_modulus_structures(
         except Exception as exc:
             if fail_fast:
                 raise
-            errors[structure_idx] = str(exc)
+            errors[structure_idx] = _format_structure_eval_error(exc)
 
     physical_slots_by_structure = {
         int(idx): len(prepared.candidates) * len(prepared.direction_indices)
@@ -1166,7 +1367,7 @@ def evaluate_youngs_modulus_structures(
                 except Exception as exc:
                     if fail_fast:
                         raise
-                    errors[structure_idx] = str(exc)
+                    errors[structure_idx] = _format_structure_eval_error(exc)
                 finally:
                     scoring_seconds += time.perf_counter() - scoring_started
 
@@ -1246,6 +1447,7 @@ class StructureCmaState:
     search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]] | None = (
         None
     )
+    max_sigma_log10: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1374,12 +1576,57 @@ def generation_score_summary(
     }
 
 
+def force_magnitude_log_ratio_penalty(
+    per_direction_norms: Mapping[int, Mapping[str, float | None]] | None,
+    *,
+    floor_n: float = FORCE_FLOOR_N,
+) -> float:
+    """Mean |log(sim‖F‖ / real‖F‖)| over directions with finite real and sim norms.
+
+    Each side is floored at ``floor_n`` before the ratio (same force floor as
+    holdout magnitude gates). Directions missing either side are skipped.
+    Returns 0.0 when no usable direction remains.
+    """
+    if not per_direction_norms:
+        return 0.0
+    floor = float(floor_n)
+    if not math.isfinite(floor) or floor <= 0.0:
+        raise ValueError(f"floor_n must be positive and finite, got {floor_n}")
+    terms: list[float] = []
+    for norms in per_direction_norms.values():
+        real = norms.get("real")
+        sim = norms.get("sim")
+        if real is None or sim is None:
+            continue
+        real_f = float(real)
+        sim_f = float(sim)
+        if not (math.isfinite(real_f) and math.isfinite(sim_f)):
+            continue
+        terms.append(abs(math.log(max(sim_f, floor) / max(real_f, floor))))
+    if not terms:
+        return 0.0
+    return float(sum(terms) / len(terms))
+
+
 def penalize_youngs_modulus_scores(
     scores: Sequence[YoungsModulusCandidateScore],
+    *,
+    force_magnitude_weight: float = 0.0,
 ) -> tuple[list[float], list[dict[str, Any]]]:
-    """Replace invalid scores with worst_finite + max(1, abs(worst_finite))."""
+    """Replace invalid scores with worst_finite + max(1, abs(worst_finite)).
+
+    Eligible fitness is ``aggregate_sinkhorn + force_magnitude_weight *
+    force_magnitude_log_ratio_penalty(...)``. Weight ``<= 0`` preserves
+    Sinkhorn-only fitness (magnitude penalty recorded as 0).
+    """
     ordered = sorted(scores, key=lambda score: int(score.candidate_index))
     _require_complete_candidate_indices(ordered, population_size=len(ordered))
+    weight = float(force_magnitude_weight)
+    if not math.isfinite(weight):
+        raise CmaGenerationFailure(
+            "penalty",
+            f"force_magnitude_weight must be finite, got {force_magnitude_weight}",
+        )
     eligible = [
         float(score.aggregate_sinkhorn)
         for score in ordered
@@ -1402,7 +1649,21 @@ def penalize_youngs_modulus_scores(
     for score in ordered:
         raw = float(score.aggregate_sinkhorn)
         invalid = bool(score.disqualified) or (not math.isfinite(raw))
-        value = penalty if invalid else raw
+        if weight <= 0.0:
+            mag_pen = 0.0
+        else:
+            mag_pen = force_magnitude_log_ratio_penalty(
+                score.per_direction_mean_hold_force_norm_n
+            )
+        if invalid:
+            value = penalty
+        else:
+            value = raw + weight * mag_pen
+            if not math.isfinite(value):
+                raise CmaGenerationFailure(
+                    "penalty",
+                    "force-magnitude fitness overflowed to a non-finite value",
+                )
         fitness.append(float(value))
         metadata.append(
             {
@@ -1411,6 +1672,8 @@ def penalize_youngs_modulus_scores(
                 "raw_aggregate_sinkhorn": raw,
                 "fitness": float(value),
                 "disqualification_reason": score.disqualification_reason,
+                "force_magnitude_penalty": float(mag_pen),
+                "force_magnitude_weight": float(weight),
             }
         )
     return fitness, metadata
@@ -1495,6 +1758,7 @@ def run_cma_generation_wave(
     evaluate_fn: Callable[..., YoungsModulusBatchEvaluation],
     generation_index: int,
     all_invalid_reasks: int = DEFAULT_ALL_INVALID_REASKS,
+    force_magnitude_weight: float = 0.0,
 ) -> CmaGenerationWaveResult:
     """Ask active optimizers, evaluate fused, then tell independently.
 
@@ -1548,6 +1812,7 @@ def run_cma_generation_wave(
         state = active_states[structure_idx]
         samples = ask_samples[structure_idx]
         state.optimizer.tell(samples, fitness)
+        clamp_optimizer_sigma(state.optimizer, max_sigma_log10=state.max_sigma_log10)
         state.completed_generations += 1
         state.optimizer_samples_told += len(fitness)
         if update_best:
@@ -1630,7 +1895,10 @@ def run_cma_generation_wave(
                     structure_idx, last_batch
                 )
                 try:
-                    fitness, metadata = penalize_youngs_modulus_scores(ordered_scores)
+                    fitness, metadata = penalize_youngs_modulus_scores(
+                        ordered_scores,
+                        force_magnitude_weight=force_magnitude_weight,
+                    )
                 except CmaGenerationFailure as exc:
                     if exc.stage != "all_invalid":
                         raise
@@ -1835,6 +2103,7 @@ def fit_youngs_modulus_structures(
     max_generations: int,
     evaluate_fn: Callable[..., YoungsModulusBatchEvaluation],
     on_progress: Callable[[Mapping[int, StructureCmaState]], None] | None = None,
+    force_magnitude_weight: float = 0.0,
 ) -> YoungsModulusCmaFitResult:
     """Coordinate synchronized waves until active optimizers stop, then score means."""
     if int(max_generations) <= 0:
@@ -1860,6 +2129,7 @@ def fit_youngs_modulus_structures(
             active,
             evaluate_fn=evaluate_fn,
             generation_index=generation_waves,
+            force_magnitude_weight=force_magnitude_weight,
         )
         if wave.records:
             seconds = float(next(iter(wave.records.values())).wave_seconds or 0.0)
@@ -2029,10 +2299,13 @@ def structure_cma_report_snapshot(
                 "ask_samples_log10": [list(row) for row in record.ask_samples_log10],
                 "penalized_fitness": list(record.penalized_fitness),
                 "penalty_metadata": list(record.penalty_metadata),
-                "score_summary": generation_score_summary(
-                    record.penalty_metadata,
-                    penalized_fitness=record.penalized_fitness,
-                ),
+                "score_summary": {
+                    **generation_score_summary(
+                        record.penalty_metadata,
+                        penalized_fitness=record.penalized_fitness,
+                    ),
+                    **_eligible_mean_hold_summary(record.raw_scores),
+                },
                 "wave_seconds": (
                     None
                     if record.wave_seconds is None
@@ -2048,6 +2321,16 @@ def structure_cma_report_snapshot(
                             str(k): float(v)
                             for k, v in score.per_direction_sinkhorn.items()
                         },
+                        "mean_hold_force_err_n": score.mean_hold_force_err_n,
+                        "mean_hold_torque_err_nm": score.mean_hold_torque_err_nm,
+                        "mean_hold_woody_start_m": score.mean_hold_woody_start_m,
+                        "mean_hold_woody_bend_rad": score.mean_hold_woody_bend_rad,
+                        "per_direction_mean_hold_force_err_n": score.per_direction_mean_hold_force_err_n,
+                        "per_direction_mean_hold_torque_err_nm": score.per_direction_mean_hold_torque_err_nm,
+                        "per_direction_mean_hold_woody_start_m": score.per_direction_mean_hold_woody_start_m,
+                        "per_direction_mean_hold_woody_bend_rad": score.per_direction_mean_hold_woody_bend_rad,
+                        "per_direction_mean_hold_force_norm_n": score.per_direction_mean_hold_force_norm_n,
+                        "per_direction_mean_hold_torque_norm_nm": score.per_direction_mean_hold_torque_norm_nm,
                     }
                     for score in record.raw_scores
                 ],

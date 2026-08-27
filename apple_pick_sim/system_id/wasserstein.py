@@ -141,6 +141,7 @@ def _feature_kwargs(
     n_holds: int | None,
     dir_id_onehot: bool,
     n_directions: int | None,
+    hold_reduce: str | None = None,
 ) -> dict[str, Any]:
     return {
         "use_median": bool(use_median),
@@ -148,6 +149,7 @@ def _feature_kwargs(
         "n_holds": n_holds,
         "dir_id_onehot": bool(dir_id_onehot),
         "n_directions": n_directions,
+        "hold_reduce": hold_reduce,
     }
 
 
@@ -169,6 +171,7 @@ def prepare_gt_wasserstein_context(
     n_holds: int | None = None,
     pool_directions: bool = False,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
 ) -> dict[int, WassersteinDirectionContext]:
     """Fit GT normalization from recorded transition bags (per-dir or pooled)."""
     dir_id_onehot = bool(pool_directions)
@@ -180,6 +183,7 @@ def prepare_gt_wasserstein_context(
             n_holds=n_holds,
             dir_id_onehot=dir_id_onehot,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
         ),
     )
     if pool_directions:
@@ -208,6 +212,7 @@ def score_candidate_wasserstein(
     n_holds: int | None = None,
     pool_directions: bool = False,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
 ) -> WassersteinCandidateResult:
     """Score one replayed candidate against precomputed GT Wasserstein context."""
     dir_id_onehot = bool(pool_directions)
@@ -219,6 +224,7 @@ def score_candidate_wasserstein(
             n_holds=n_holds,
             dir_id_onehot=dir_id_onehot,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
         ),
     )
     if pool_directions:
@@ -293,6 +299,7 @@ def prepare_gt_wasserstein_scoring_context(
     n_holds: int | None = None,
     pool_directions: bool = True,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
 ) -> WassersteinScoringContext:
     """Build pooled fitness GT and independently normalized per-direction diagnostics.
 
@@ -309,6 +316,7 @@ def prepare_gt_wasserstein_scoring_context(
             n_holds=n_holds,
             dir_id_onehot=False,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
         ),
     )
     if not per_direction_features:
@@ -333,6 +341,7 @@ def prepare_gt_wasserstein_scoring_context(
             n_holds=n_holds,
             dir_id_onehot=True,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
         ),
     )
     pooled_features = _pool_by_direction(pooled_source)
@@ -359,6 +368,7 @@ def score_candidate_wasserstein_complete(
     n_holds: int | None = None,
     pool_directions: bool = True,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
 ) -> WassersteinCandidateResult:
     """Score a candidate with pooled fitness and physical-direction diagnostics."""
     candidate_per_direction = combine_transition_features(
@@ -369,6 +379,7 @@ def score_candidate_wasserstein_complete(
             n_holds=n_holds,
             dir_id_onehot=False,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
         ),
     )
 
@@ -427,6 +438,7 @@ def score_candidate_wasserstein_complete(
                 n_holds=n_holds,
                 dir_id_onehot=True,
                 n_directions=n_directions,
+                hold_reduce=hold_reduce,
             ),
         )
         # Restrict to expected physical directions before pooling.

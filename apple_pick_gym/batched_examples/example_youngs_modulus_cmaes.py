@@ -30,6 +30,7 @@ import math
 import os
 import sys
 import time
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import Any
 
@@ -67,9 +68,17 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     structure_cma_report_snapshot,
     to_strict_jsonable,
     validate_initial_sigma_log10,
+    validate_max_sigma_log10,
 )
 from apple_pick_gym.batched_envs.batched_sysid_multi_replay import (
     SysIdReplayCancelled,
+)
+from apple_pick_gym.batched_envs.cma_wave_evaluation import (
+    build_cma_replay_context_from_cli,
+    execute_cma_wave_evaluation,
+    make_cma_wave_evaluation_spec,
+    reuse_replicated_mujoco_for_cma,
+    spawn_isolated_cma_wave_evaluation,
 )
 from apple_pick_gym.batched_envs.real_batched_replay_build import (
     bootstrap_joint_q_from_episode_metadata,
@@ -116,17 +125,19 @@ ViewerCancelled = SysIdReplayCancelled
 # ε-band) — 100 .. 1e6 N/m or N*m/rad (log10 2-6). Spur/stem E: absolute
 # 0.1-100 GPa (log10 8-11), same box as before. Init from the search box
 # midpoint, never from ground truth. Sim-sim box is 0.1–100 GPa; real vic_pose
-# overrides spur/stem floor to 10^7 Pa via _effective_search_bounds_log10.
+# uses spur/stem 10 MPa–3 GPa (log10 7–9.5) via _effective_search_bounds_log10.
 _CMA_SEARCH_LOG10_LOWER = [2.0, 8.0, 8.0]  # support_kp 1e2, spur/stem 0.1 GPa
 _CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 11.0]  # support_kp 1e6, spur/stem 100 GPa
 _REAL_CMA_SEARCH_LOG10_LOWER = [2.0, 7.0, 7.0]  # support_kp 1e2, spur/stem 10 MPa
-_REAL_CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 11.0]
+_REAL_CMA_SEARCH_LOG10_UPPER = [6.0, 9.5, 9.5]  # support_kp 1e6, spur/stem 3 GPa
 _CMA_MEAN_LOG10 = [_CMA_SEARCH_LOG10_LOWER[i] + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i]) for i in range(3)]
+_REAL_CMA_MEAN_LOG10 = [4.0, 8.0, 8.0]  # support_kp 1e4, spur/stem 100 MPa
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),
-    "initial_sigma_log10": 1.0,
-    "population_size": 15,
-    "max_generations": 10,
+    "initial_sigma_log10": 0.2,
+    "max_sigma_log10": 0.5,
+    "population_size": 20,
+    "max_generations": 20,
     "cma_seed": 56,
     "search_bounds_log10": {
         "lower": _CMA_SEARCH_LOG10_LOWER,
@@ -139,7 +150,7 @@ def _effective_search_bounds_log10(
     mode: str,
     search: dict[str, Any],
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
-    """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose lowers spur/stem floor to 1e7 Pa."""
+    """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose uses spur/stem 10 MPa–3 GPa."""
     if mode == "vic_pose":
         return (
             tuple(float(x) for x in _REAL_CMA_SEARCH_LOG10_LOWER),
@@ -147,6 +158,16 @@ def _effective_search_bounds_log10(
         )
     raw = search.get("search_bounds_log10")
     return normalize_search_bounds_log10(raw)
+
+
+def _effective_initial_mean_log10(
+    mode: str,
+    search: dict[str, Any],
+    bounds: Any,
+) -> list[float]:
+    """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose starts 1.5 decades softer in E."""
+    raw = _REAL_CMA_MEAN_LOG10 if mode == "vic_pose" else search["initial_mean_log10"]
+    return list(resolve_initial_mean_log10(raw, bounds))
 
 
 def _require_ft_wrist_lpf_per_structure(
@@ -427,6 +448,7 @@ def _build_cmaes_report_payload(
     base_seed: int,
     initial_mean_log10: tuple[float, float, float] | list[float] | None,
     initial_sigma_log10: float,
+    max_sigma_log10: float | None = None,
     max_generations: int,
     scoring: YoungsModulusScoringConfig,
     command_status: str,
@@ -436,6 +458,8 @@ def _build_cmaes_report_payload(
     population_size: int | None = None,
     search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
     | None = None,
+    force_magnitude_weight: float = 0.0,
+    isolated_eval_waves: bool = True,
 ) -> dict[str, Any]:
     counters = counter_totals or {}
     structures: dict[str, Any] = {}
@@ -487,6 +511,9 @@ def _build_cmaes_report_payload(
             if initial_mean_log10 is not None
             else None,
             "initial_sigma_log10": float(initial_sigma_log10),
+            "max_sigma_log10": None
+            if max_sigma_log10 is None
+            else float(max_sigma_log10),
             "max_generations": int(max_generations),
             "population_size": population_size,
             "search_bounds_log10": None
@@ -498,12 +525,15 @@ def _build_cmaes_report_payload(
             "search_params_source": "CMA_SEARCH_PARAMS",
         },
         "scoring": {
+            "hold_aggregation": scoring.hold_aggregation,
             "use_median": bool(scoring.use_median),
             "hold_id_onehot": bool(scoring.hold_id_onehot),
             "pool_directions": bool(scoring.pool_directions),
             "n_holds": scoring.n_holds,
             "n_directions": scoring.n_directions,
             "device": scoring.device,
+            "force_magnitude_weight": float(force_magnitude_weight),
+            "isolated_eval_waves": bool(isolated_eval_waves),
         },
         "command_status": str(command_status),
         "structures": structures,
@@ -643,8 +673,23 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--use-median",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use full-hold median hold→hold features for Sinkhorn scoring.",
+        default=None,
+        help="(deprecated) Use --hold-aggregation median instead.",
+    )
+    p.add_argument(
+        "--hold-aggregation",
+        choices=["median", "mean", "none"],
+        default="mean",
+        help="Hold state aggregation for Sinkhorn scoring. Default: mean.",
+    )
+    p.add_argument(
+        "--force-magnitude-weight",
+        type=float,
+        default=100.0,
+        help=(
+            "Weight λ on mean |log(sim‖F‖/real‖F‖)| added to aggregate Sinkhorn "
+            "fitness (0 disables). Default: 100."
+        ),
     )
     p.add_argument(
         "--hold-id-onehot",
@@ -662,6 +707,16 @@ def _make_parser() -> argparse.ArgumentParser:
         "--fail-fast",
         action="store_true",
         help="Stop on the first structure error instead of recording it.",
+    )
+    p.add_argument(
+        "--isolated-eval-waves",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Run each CMA evaluation wave in a fresh subprocess (default: on). "
+            "Use --no-isolated-eval-waves to reuse USD/MuJoCo in-process "
+            "(interactive viewer also forces this)."
+        ),
     )
     p.add_argument(
         "--overwrite",
@@ -708,6 +763,9 @@ def _run(
     search = CMA_SEARCH_PARAMS
     initial_mean = resolve_initial_mean_log10(search["initial_mean_log10"], bounds)
     initial_sigma = validate_initial_sigma_log10(float(search["initial_sigma_log10"]))
+    max_sigma = validate_max_sigma_log10(search.get("max_sigma_log10"))
+    if max_sigma is not None and max_sigma < initial_sigma:
+        raise SystemExit("CMA_SEARCH_PARAMS['max_sigma_log10'] must be >= initial_sigma_log10")
     if getattr(args, "cma_seed", None) is not None:
         base_seed = int(args.cma_seed)
     else:
@@ -761,6 +819,7 @@ def _run(
             "packed 19D vic_pose datasets must use --controller-mode vic_pose "
             "(or omit the flag), not twist vic"
         )
+    initial_mean = _effective_initial_mean_log10(mode, search, bounds)
 
     train_direction_indices: tuple[int, ...] | None = None
     val_direction_indices: tuple[int, ...] | None = None
@@ -833,16 +892,65 @@ def _run(
             settle_config=settle_config,
         )
         replay_sim_config = build_sim_config(num_envs=1, ranges=ranges, **settle_config)
+    replay_context = build_cma_replay_context_from_cli(
+        mode=mode,
+        ranges_path=ranges_path,
+        topology_seed=topology_seed if mode != "vic_pose" else int(
+            collection.get("topology_seed", collection.get("seed", 0))
+        ),
+        control_hz=float(control_hz),
+        device=device,
+        settle_config=settle_config,
+        post_grasp_settle_substeps=500,
+        real_topology_seed=int(
+            collection.get("topology_seed", collection.get("seed", 0))
+        )
+        if mode == "vic_pose"
+        else None,
+        fruiting_base_pos=fruiting_base_pos_from_episode_metadata(episode_meta)
+        if mode == "vic_pose"
+        else None,
+        bootstrap_joint_q=bootstrap_joint_q_from_episode_metadata(episode_meta)
+        if mode == "vic_pose"
+        else None,
+        episode_meta=episode_meta if mode == "vic_pose" else None,
+    )
     scoring = YoungsModulusScoringConfig(
-        use_median=bool(args.use_median),
+        use_median=args.use_median is True,
         hold_id_onehot=bool(args.hold_id_onehot),
         pool_directions=bool(args.pool_directions),
         n_holds=_resolve_n_holds(dataset, collection),
         n_directions=int(num_directions),
         device=device,
+        hold_aggregation=getattr(args, "hold_aggregation", None),
     )
 
     derive_structure_cma_seeds(base_seed=base_seed, structure_indices=structure_indices)
+
+    graphical = isinstance(viewer, newton.viewer.ViewerGL)
+    use_viewer = graphical or getattr(args, "viewer", None) != "null"
+    if "PYTEST_CURRENT_TEST" in os.environ and not hasattr(args, "isolated_eval_waves"):
+        use_isolated_eval_waves = False
+    else:
+        use_isolated_eval_waves = bool(getattr(args, "isolated_eval_waves", True))
+    if graphical and use_isolated_eval_waves:
+        raise SystemExit(
+            "Interactive GL viewer cannot run with --isolated-eval-waves; "
+            "pass --no-isolated-eval-waves."
+        )
+    if use_viewer and use_isolated_eval_waves:
+        print(
+            "Note: disabling isolated eval waves because interactive viewer is active.",
+            file=sys.stderr,
+        )
+        use_isolated_eval_waves = False
+
+    replay_context = _dc_replace(
+        replay_context,
+        reuse_replicated_mujoco=reuse_replicated_mujoco_for_cma(
+            isolated_eval_waves=use_isolated_eval_waves
+        ),
+    )
 
     states: dict[int, StructureCmaState] = {}
     for structure_idx in structure_indices:
@@ -854,6 +962,7 @@ def _run(
             structure_idx=int(structure_idx),
             population_size=population_size,
             search_bounds_log10=search_bounds_log10,
+            max_sigma_log10=max_sigma,
         )
         state = StructureCmaState(
             structure_idx=int(structure_idx),
@@ -862,6 +971,7 @@ def _run(
             effective_seed=int(effective_seed),
             population_size=int(es.popsize),
             search_bounds_log10=search_bounds_log10,
+            max_sigma_log10=max_sigma,
         )
         if mode == "vic_pose":
             state.gt_candidate = None
@@ -903,6 +1013,7 @@ def _run(
             base_seed=base_seed,
             initial_mean_log10=initial_mean,
             initial_sigma_log10=initial_sigma,
+            max_sigma_log10=max_sigma,
             max_generations=int(max_generations),
             scoring=scoring,
             command_status=command_status,
@@ -911,6 +1022,10 @@ def _run(
             timing=timing,
             population_size=population_size,
             search_bounds_log10=search_bounds_log10,
+            force_magnitude_weight=float(
+                getattr(args, "force_magnitude_weight", 100.0)
+            ),
+            isolated_eval_waves=bool(use_isolated_eval_waves),
         )
         _write_cmaes_report_atomic(report_path, payload)
 
@@ -933,8 +1048,6 @@ def _run(
             "exit_nonzero": True,
         }
 
-    graphical = isinstance(viewer, newton.viewer.ViewerGL)
-    use_viewer = graphical or getattr(args, "viewer", None) != "null"
     show_pull_direction = bool(args.show_pull_direction) and graphical
     frame_dt = 1.0 / float(control_hz)
     viewer_state: dict[str, object] = {"model": None}
@@ -977,6 +1090,19 @@ def _run(
             time.sleep(max(0.0, frame_dt))
         return True
 
+    def _accumulate_wave_counters(
+        batch: YoungsModulusBatchEvaluation,
+        structure_list: list[tuple[int, tuple[Any, ...]]],
+        wave_kind: str,
+    ) -> None:
+        accumulate_cma_batch_counters(
+            counters,
+            batch,
+            structures=structure_list,
+            wave_kind=str(wave_kind),
+            num_directions=int(num_directions),
+        )
+
     def evaluate_fn(
         *,
         structures,
@@ -987,72 +1113,30 @@ def _run(
             (int(structure_idx), tuple(candidates))
             for structure_idx, candidates in structures
         ]
-        if bool(getattr(args, "multi_structure_batch", True)):
-            batch = evaluate_youngs_modulus_structures(
-                dataset=dataset,
-                structures=structure_list,
-                num_directions=int(num_directions),
-                build_env_fn=build_env_fn,
-                scoring=scoring,
-                max_envs_per_batch=int(args.max_envs_per_batch),
-                seed=replay_seed,
-                include_excluded=bool(args.include_excluded),
-                fail_fast=bool(args.fail_fast),
-                on_step=on_step,
-                replay_sim_config=replay_sim_config,
-                action_dim=action_dim,
-                direction_indices=fit_direction_indices,
-            )
-        else:
-            evaluations: dict[int, Any] = {}
-            errors: dict[int, str] = {}
-            for structure_idx, candidates in structure_list:
-                try:
-                    evaluations[int(structure_idx)] = evaluate_youngs_modulus_candidates(
-                        dataset=dataset,
-                        structure_idx=int(structure_idx),
-                        candidates=list(candidates),
-                        num_directions=int(num_directions),
-                        build_env_fn=build_env_fn,
-                        scoring=scoring,
-                        max_envs_per_batch=int(args.max_envs_per_batch),
-                        seed=replay_seed,
-                        include_excluded=bool(args.include_excluded),
-                        on_step=on_step,
-                        replay_sim_config=replay_sim_config,
-                        action_dim=action_dim,
-                        direction_indices=fit_direction_indices,
-                    )
-                except ViewerCancelled:
-                    raise
-                except Exception as exc:
-                    if bool(args.fail_fast):
-                        raise
-                    errors[int(structure_idx)] = str(exc)
-            cand_by_idx = {
-                int(structure_idx): candidates
-                for structure_idx, candidates in structure_list
-            }
-            physical_slots_by_structure = {
-                int(idx): len(cand_by_idx[int(idx)])
-                * len(evaluation.direction_indices)
-                for idx, evaluation in evaluations.items()
-            }
-            batch = YoungsModulusBatchEvaluation(
-                evaluations=evaluations,
-                errors=errors,
-                replay_diagnostics=None,
-                retried_structures=(),
-                prepared_structures=len(evaluations),
-                physical_slots_by_structure=physical_slots_by_structure,
-            )
-        accumulate_cma_batch_counters(
-            counters,
-            batch,
+        spec = make_cma_wave_evaluation_spec(
+            dataset_dir=args.dataset,
             structures=structure_list,
             wave_kind=str(wave_kind),
+            scoring=scoring,
+            replay_context=replay_context,
             num_directions=int(num_directions),
+            direction_indices=fit_direction_indices,
+            max_envs_per_batch=int(args.max_envs_per_batch),
+            seed=replay_seed,
+            include_excluded=bool(args.include_excluded),
+            fail_fast=bool(args.fail_fast),
+            action_dim=action_dim,
+            multi_structure_batch=bool(getattr(args, "multi_structure_batch", True)),
+            on_step=on_step if use_viewer else None,
         )
+        if use_isolated_eval_waves:
+            batch = spawn_isolated_cma_wave_evaluation(
+                spec,
+                output_dir=output_dir,
+            )
+        else:
+            batch = execute_cma_wave_evaluation(spec)
+        _accumulate_wave_counters(batch, structure_list, str(wave_kind))
         return batch
 
     def on_progress(progress_states) -> None:
@@ -1081,6 +1165,9 @@ def _run(
             max_generations=int(max_generations),
             evaluate_fn=evaluate_fn,
             on_progress=on_progress,
+            force_magnitude_weight=float(
+                getattr(args, "force_magnitude_weight", 100.0)
+            ),
         )
         timing.update(dict(fit_result.timing or {}))
         write_report(status="running")

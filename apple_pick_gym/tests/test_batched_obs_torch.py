@@ -8,6 +8,7 @@ import torch
 import warp as wp
 
 from apple_pick_gym.batched_envs.obs_torch import (
+    batched_obs_for_replay_download,
     download_batched_replay_obs_numpy,
     legacy_v3_numpy_from_batched,
     obs_dict_from_bufs,
@@ -92,6 +93,30 @@ def test_obs_dict_from_bufs_shapes():
         obs["woody_part_info"]["a_b"]["anchor_force"][1],
         torch.tensor([1.0, 1.0, 1.0, 2.0, 2.0, 2.0], dtype=torch.float32),
     )
+
+
+def test_obs_dict_from_bufs_does_not_alias_warp_storage():
+    layout = _layout()
+    cable = _FakeCable()
+    bufs = make_batched_obs_buffers(layout, cable, "cpu")
+    names = ["a_b", "b_c"]
+    ft = np.arange(12, dtype=np.float32).reshape(2, 6)
+    bufs.tcp_coupling_force.assign(ft)
+    bufs.apple_pos.assign(np.ones((2, 3), dtype=np.float32))
+    bufs.tcp_force.assign(np.zeros((2, 6), dtype=np.float32))
+    bufs.tcp_velocity.assign(np.zeros((2, 6), dtype=np.float32))
+    bufs.woody_parent_pos.assign(np.zeros((4, 3), dtype=np.float32))
+    bufs.woody_child_pos.assign(np.zeros((4, 3), dtype=np.float32))
+    bufs.woody_force.assign(np.zeros((4, 3), dtype=np.float32))
+    bufs.woody_torque.assign(np.zeros((4, 3), dtype=np.float32))
+
+    obs = obs_dict_from_bufs(bufs, names, torch.device("cpu"))
+    ft_before = obs["ft_wrist"].detach().clone()
+    apple_before = obs["apple_pos"].detach().clone()
+    bufs.tcp_coupling_force.assign(np.full((2, 6), 9.0, dtype=np.float32))
+    bufs.apple_pos.assign(np.full((2, 3), 8.0, dtype=np.float32))
+    torch.testing.assert_close(obs["ft_wrist"], ft_before)
+    torch.testing.assert_close(obs["apple_pos"], apple_before)
 
 
 def test_legacy_v3_mapping_num_envs_one():
@@ -206,3 +231,22 @@ def test_download_batched_replay_obs_numpy_copies_away_from_torch_buffer():
     obs["tcp_pos"].fill_(9.0)
     np.testing.assert_allclose(snap["tcp_pos"], tcp_before)
     assert not np.allclose(snap["tcp_pos"], 9.0)
+
+
+def test_batched_obs_for_replay_download_recovers_from_stale_last_obs():
+    junction_names = ["joint_a"]
+    good_obs = _batched_sysid_torch_obs(num_envs=1, junction_names=junction_names)
+    calls = {"n": 0}
+
+    class _Env:
+        def _gather_obs(self):
+            calls["n"] += 1
+            return good_obs
+
+    env = _Env()
+    env._last_obs = lambda: None  # type: ignore[attr-defined]
+
+    recovered = batched_obs_for_replay_download(env)
+
+    assert calls["n"] == 1
+    assert recovered is good_obs

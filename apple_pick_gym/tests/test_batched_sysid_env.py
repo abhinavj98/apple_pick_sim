@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -232,3 +233,190 @@ def test_batched_sysid_step_preserves_export_contract():
         assert obs["tcp_pos"].shape == (1, 3)
     finally:
         env.close()
+
+
+@gymnasium_available
+def test_batched_base_env_close_drops_sim_and_reclaims_device_memory(monkeypatch):
+    """close() must drop the sim AND force GC + Warp sync (naive ``_sim = None`` leaks)."""
+    import apple_pick_gym.batched_envs.apple_pick_batched_base_env as base_mod
+
+    gc_calls: list[int] = []
+    sync_calls: list[int] = []
+    monkeypatch.setattr(base_mod.gc, "collect", lambda: gc_calls.append(1) or 0)
+    monkeypatch.setattr(base_mod.wp, "synchronize", lambda: sync_calls.append(1))
+
+    class _Holder:
+        def __init__(self) -> None:
+            self._sim = object()
+
+    env = _Holder()
+    ApplePickBatchedBaseEnv.close(env)
+    assert env._sim is None
+    assert gc_calls == [1]
+    assert sync_calls == [1]
+
+
+@gymnasium_available
+def test_batched_base_env_close_releases_obs_aliases_before_dropping_sim(monkeypatch):
+    """Torch obs from wp.to_torch aliases Warp storage; release before freeing ``_sim``."""
+    import apple_pick_gym.batched_envs.apple_pick_batched_base_env as base_mod
+
+    order: list[str] = []
+    monkeypatch.setattr(base_mod.gc, "collect", lambda: order.append("gc") or 0)
+    monkeypatch.setattr(base_mod.wp, "synchronize", lambda: order.append("sync"))
+
+    class _Holder:
+        def __init__(self) -> None:
+            self._sim = object()
+            self._last_obs: dict[str, object] | None = {"ft_wrist": object()}
+
+        def _release_observation_aliases(self) -> None:
+            order.append("release")
+            assert self._sim is not None
+            self._last_obs = None
+
+    env = _Holder()
+    ApplePickBatchedBaseEnv.close(env)
+    assert env._sim is None
+    assert env._last_obs is None
+    assert order[0] == "release"
+    assert order[1:] == ["gc", "sync"]
+
+
+@gymnasium_available
+def test_batched_base_env_close_does_not_call_clear_kernel_cache(monkeypatch):
+    """close() must not call wp.clear_kernel_cache (too slow; does not fix CMA leak)."""
+    import apple_pick_gym.batched_envs.apple_pick_batched_base_env as base_mod
+
+    def _forbidden_clear_kernel_cache() -> None:
+        raise AssertionError("close() must not call wp.clear_kernel_cache")
+
+    monkeypatch.setattr(base_mod.wp, "clear_kernel_cache", _forbidden_clear_kernel_cache)
+    monkeypatch.setattr(base_mod.gc, "collect", lambda: 0)
+    monkeypatch.setattr(base_mod.wp, "synchronize", lambda: None)
+
+    class _Holder:
+        def __init__(self) -> None:
+            self._sim = object()
+
+    env = _Holder()
+    ApplePickBatchedBaseEnv.close(env)
+    assert env._sim is None
+
+
+def test_batched_sysid_env_release_observation_aliases_clears_last_obs():
+    env = ApplePickBatchedSysIdEnv.__new__(ApplePickBatchedSysIdEnv)
+    env._last_obs = {"ft_wrist": object()}
+    ApplePickBatchedSysIdEnv._release_observation_aliases(env)
+    assert env._last_obs is None
+
+
+def test_sysid_gather_obs_reads_apple_quat_from_apple_pose_not_body_q_numpy(monkeypatch):
+    import warp as wp
+
+    numpy_calls: list[str] = []
+
+    class _ForbiddenBodyQ:
+        def numpy(self):
+            numpy_calls.append("body_q")
+            raise AssertionError("apple quat must not download fused body_q")
+
+    apple_pose = wp.zeros((2, 7), dtype=wp.float32, device="cpu")
+    pose_np = np.zeros((2, 7), dtype=np.float32)
+    pose_np[1] = [0.4, 0.5, 0.6, 0.1, 0.2, 0.3, 0.9]
+    apple_pose.assign(pose_np)
+    tcp_pose = wp.zeros((2, 7), dtype=wp.float32, device="cpu")
+    joint_q = wp.zeros((2, 7), dtype=wp.float32, device="cpu")
+
+    env = ApplePickBatchedSysIdEnv.__new__(ApplePickBatchedSysIdEnv)
+    env.device = torch.device("cpu")
+    env.num_envs = 2
+    env._excitation_type = torch.zeros(2, dtype=torch.long)
+    env._excitation_f_inst = torch.zeros(2, dtype=torch.float32)
+    env._excitation_direction = torch.zeros(2, 3, dtype=torch.float32)
+    env._sim = SimpleNamespace(
+        obs_bufs=SimpleNamespace(
+            apple_pose=apple_pose,
+            tcp_pose=tcp_pose,
+            joint_q=joint_q,
+        ),
+        scene=SimpleNamespace(
+            cable=SimpleNamespace(state_0=SimpleNamespace(body_q=_ForbiddenBodyQ()))
+        ),
+    )
+    base_obs = {
+        "apple_pos": torch.zeros(2, 3),
+        "ft_wrist": torch.zeros(2, 6),
+        "tcp_force": torch.zeros(2, 6),
+        "tcp_velocity": torch.zeros(2, 6),
+        "woody_part_info": {},
+    }
+    monkeypatch.setattr(
+        ApplePickBatchedBaseEnv,
+        "_gather_obs",
+        lambda self: dict(base_obs),
+    )
+
+    obs = ApplePickBatchedSysIdEnv._gather_obs(env)
+    assert numpy_calls == []
+    torch.testing.assert_close(
+        obs["apple_quat"][1],
+        torch.tensor([0.1, 0.2, 0.3, 0.9], dtype=torch.float32),
+    )
+
+
+@gymnasium_available
+@requires_fr3
+@pytest.mark.slow
+def test_batched_sysid_env_close_clears_last_obs_and_tracks_host_heap():
+    """After close, drop wp.to_torch obs aliases and record host/wp growth across rebuilds."""
+    import gc
+    import warp as wp
+
+    def _vm_rss_mb() -> float:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return float(line.split()[1]) / 1024.0
+        return -1.0
+
+    def _wp_array_count() -> int:
+        count = 0
+        for obj in gc.get_objects():
+            try:
+                if isinstance(obj, wp.array):
+                    count += 1
+            except Exception:
+                continue
+        return count
+
+    gc.collect()
+    wp.synchronize()
+    rss_series: list[float] = []
+    wp_series: list[int] = []
+
+    for cycle in range(5):
+        env = _make_env(num_envs=2)
+        env.reset(seed=_SEED + cycle)
+        actions = torch.zeros((2, 6), dtype=torch.float32, device=env.device)
+        env.step(actions)
+        assert env._last_obs is not None
+        env.close()
+        assert env._last_obs is None
+        del env
+        gc.collect()
+        wp.synchronize()
+        rss_series.append(_vm_rss_mb())
+        wp_series.append(_wp_array_count())
+
+    # First rebuild pays one-time Warp/MuJoCo module cost; later cycles must not
+    # compound via retained ``_last_obs`` aliases. Allow residual Warp Var growth
+    # (upstream codegen cache) but keep host RSS from runaway doubling.
+    later_rss = rss_series[2:]
+    assert max(later_rss) < later_rss[0] * 2.0 + 256.0
+    later_wp = wp_series[2:]
+    per_cycle = [later_wp[i] - later_wp[i - 1] for i in range(1, len(later_wp))]
+    assert per_cycle, "expected multiple post-warmup rebuild samples"
+    assert max(per_cycle) < 5000, (
+        f"wp.array growth per rebuild too large: {per_cycle} (series={wp_series})"
+    )

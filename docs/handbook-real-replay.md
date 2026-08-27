@@ -177,7 +177,11 @@ Conversion aligns real bags with H3:
 - `world_wrench_from_ee_logged` rotates force and torque with
   \(R_{W,TCP}\): \(F_W=R_{W,TCP}F_{EE}\) and
   \(\tau_W=R_{W,TCP}\tau_{EE}\). Rotation happens **before** filtering.
-  There is no second sign flip, lever-arm transport, or simulated tare.
+  Default convert does **not** change the moment reference point.
+  Logged `O_F_ext_hat_K` torque is about the robot **base origin**;
+  `--transport-torque-to-tcp` subtracts \(p\times F\) after the rotation
+  so \(\tau\) is about the TCP (needed for H3 scoring). There is no
+  second sign flip or simulated tare.
   The source `ft_wrist` must already be compiled EMA−EMA (loaded EMA minus
   unloaded EMA). Convert then `filtfilt`s a Butterworth (default cutoff
   10 Hz, order 4) on world `ft_wrist` only, writing the result as
@@ -223,6 +227,9 @@ poses. `apply_logged_post_grasp_se3_to_cable` then writes the logged apple pose,
 realigns the proxy, zeros their twists, synchronizes both cable states, aligns
 VBD history, and updates rest state. It is called after the normal
 settle→weld seed so the free settle still starts from pre-grasp geometry.
+`ApplePickBatchedBaseEnv` snapshots physics at the end of construct, before
+that write. `make_real_replay_build_env_fn` recaptures after SE(3) so the
+fused/scalar `reset()` restore keeps the grasped apple/proxy pose.
 
 `example_replay_real_batched.py` uses free-settle defaults of 5000 VBD
 substeps with twists quieted every 300 substeps, followed by 500 welded
@@ -285,7 +292,9 @@ replay and optimization callers on the same initialization path:
   action dimension; and
 - `make_real_replay_build_env_fn` creates `ApplePickBatchedSysIdEnv`, disables
   the settle cache, supplies per-environment candidate params/grippers, and
-  applies the logged post-grasp SE(3) with the batched layout.
+  applies the logged post-grasp SE(3) with the batched layout. Env construct
+  snapshots physics before that write; the builder recaptures afterward so
+  the fused/scalar `reset()` restore keeps the grasped apple/proxy pose.
 
 The Young's grid can opt into this builder from real dataset metadata. That
 plumbing being present is not the same as accepting its ranking. Trusted
@@ -356,7 +365,8 @@ Key regression coverage:
 - `apple_pick_sim/tests/test_open_loop_joint_bootstrap.py` — per-world
   `joint_q` (no broadcast).
 - `apple_pick_gym/tests/test_real_batched_replay_build.py` — shared builder,
-  per-env grippers, and batched logged-pose application.
+  per-env grippers, batched logged-pose application, and snapshot recapture
+  after post-grasp SE(3) so `reset()` keeps the grasped pose.
 - `apple_pick_gym/tests/test_batched_sysid_multi_replay.py` — distinct
   per-direction weld/gripper metadata, last-action drive padding, and
   truncate-before-features.

@@ -15,6 +15,7 @@ from apple_pick_sim.system_id.mmd_features import (
     combine_transition_features,
     flatten_woody_positions,
     iter_kept_hold_segments,
+    mean_hold_block_errors,
     replay_obs_dict_from_sysid_numpy,
 )
 
@@ -128,13 +129,10 @@ def test_build_state_matrix_uses_exact_feature_order():
             13.0,
             14.0,
             15.0,
-            # tcp_pos, apple_pos
+            # tcp_pos (apple_pos is bag/chord geometry only, not scored)
             30.0,
             31.0,
             32.0,
-            40.0,
-            41.0,
-            42.0,
             # woody starts in junction_names order: joint_b then joint_a
             200.0,
             201.0,
@@ -356,6 +354,98 @@ def test_median_features_mid_hold_unstable_keeps_one_hold_pair():
     med1 = np.median(state[[5, 6, 7]], axis=0)
     expected = np.concatenate([med0, med1 - med0]).astype(np.float32)
     np.testing.assert_allclose(by_direction[0][0], expected, rtol=1e-5)
+
+
+def test_mean_hold_reduce_uses_mean_state_not_median():
+    """A 3-frame hold with an outlier must emit mean, not median, hold→hold rows."""
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    # Outlier on hold-0 frame 3 so mean(Fx) != median(Fx).
+    arrays["ft_wrist"][3, 0] = 100.0
+
+    median_rows = build_transition_features_by_direction(arrays, use_median=True)
+    mean_rows = build_transition_features_by_direction(arrays, hold_reduce="mean")
+    assert median_rows[0].shape[0] == 1
+    assert mean_rows[0].shape[0] == 1
+    assert not np.allclose(median_rows[0][0], mean_rows[0][0])
+
+    state = build_state_matrix(arrays)
+    mean0 = np.mean(state[[1, 2, 3]], axis=0)
+    mean1 = np.mean(state[[5, 6, 7]], axis=0)
+    expected = np.concatenate([mean0, mean1 - mean0]).astype(np.float32)
+    np.testing.assert_allclose(mean_rows[0][0], expected, rtol=1e-5)
+
+
+def test_mean_hold_block_errors_match_l2_of_mean_hold_states_not_framewise_mae():
+    # Two holds: frames 1-3 are hold 0, frames 5-7 are hold 1.
+    # Spike only on the *last* frame of hold 0 (frame index 3) so the
+    # per-frame L2 norms are [1, 1, 10] inside that hold, giving
+    # frame-wise MAE = 4.0, while mean-hold L2 = ||mean([1,1,10])|| = 4.0 too.
+    # To discriminate, add a spike only on one frame of hold 0 in Fy so
+    # that the spike direction (Fy) cancels when *mean*-reduced but not
+    # when frame-wise L2'd (norm is always positive).
+    real = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    real["dir_idx"] = np.zeros(8, dtype=np.int32)
+    # phase: 0=pre-hold, 1=hold0 (frames 1-3), 0=inter (frame 4), 1=hold1 (frames 5-7)
+    real["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    sim = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    sim["dir_idx"] = np.zeros(8, dtype=np.int32)
+    sim["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    # Constant +2 N on Fx across all frames in hold 0 (frames 1-3)
+    # and opposite spike +-4 on Fy (frame 1 only).
+    # Mean Fy offset in hold 0 = (-4+0+0)/3 = -4/3; mean Fx = +2.
+    # Frame-wise norms: frame1=sqrt(4+16)=sqrt(20), frame2=2, frame3=2
+    # Frame-wise MAE = (sqrt(20)+2+2)/3 ≈ 2.82
+    # Mean-hold L2 = ||(2, -4/3, 0)|| ≈ 2.40  ← different
+    sim["ft_wrist"] = np.array(real["ft_wrist"], copy=True)
+    sim["ft_wrist"][1:4, 0] = real["ft_wrist"][1:4, 0] + 2.0  # Fx +2 in hold 0
+    sim["ft_wrist"][1, 1] = real["ft_wrist"][1, 1] - 4.0      # Fy spike on frame 1 only
+
+    errors = mean_hold_block_errors(real=real, sim=sim, direction=0)
+    state_real = build_state_matrix(real)
+    state_sim = build_state_matrix(sim)
+    # Mean-hold L2: mean of hold0 frames then ||diff||
+    dF0 = np.mean(state_sim[[1, 2, 3], :3], axis=0) - np.mean(state_real[[1, 2, 3], :3], axis=0)
+    dF1 = np.mean(state_sim[[5, 6, 7], :3], axis=0) - np.mean(state_real[[5, 6, 7], :3], axis=0)
+    # function averages hold errors across both holds
+    expected = (float(np.linalg.norm(dF0)) + float(np.linalg.norm(dF1))) / 2.0
+    assert errors["force_err_n"] == pytest.approx(expected, rel=1e-4)
+    # Frame-wise MAE is strictly greater here because the spike makes
+    # per-frame norms larger than the norm of the mean.
+    framewise_norms = np.linalg.norm(
+        state_sim[[1, 2, 3], :3] - state_real[[1, 2, 3], :3], axis=1
+    )
+    framewise_mae = float(np.mean(framewise_norms))
+    assert abs(errors["force_err_n"] - framewise_mae) > 0.1, (
+        f"mean-hold L2 ({errors['force_err_n']:.4f}) should differ from "
+        f"frame-wise MAE ({framewise_mae:.4f})"
+    )
+
+
+def test_build_state_matrix_rejects_non_mapping_woody_part_start_pos():
+    arrays = _arrays_for_steps(steps=4, junction_names=["joint_a"])
+
+    def _not_a_mapping() -> None:
+        pass
+
+    arrays["woody_part_start_pos"] = _not_a_mapping
+    with pytest.raises(ValueError, match="woody_part_start_pos must be a junction mapping"):
+        build_state_matrix(arrays)
+
+
+def test_mean_hold_block_errors_rejects_non_mapping_episode_with_value_error():
+    real = _arrays_for_steps(steps=4, junction_names=["joint_a"])
+    real["dir_idx"] = np.zeros(4, dtype=np.int32)
+    real["phase"] = np.array([0, 1, 1, 0], dtype=np.int8)
+    sim = dict(real)
+
+    def _not_a_mapping() -> None:
+        pass
+
+    sim["woody_part_start_pos"] = _not_a_mapping
+    with pytest.raises(ValueError, match="woody_part_start_pos must be a junction mapping"):
+        mean_hold_block_errors(real=real, sim=sim, direction=0)
 
 
 def test_replay_observation_collector_supports_19d_vic_pose_actions():

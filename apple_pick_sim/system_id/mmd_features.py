@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -27,20 +27,19 @@ STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "ft_wrist",
     "tcp_velocity",
     "tcp_pos",
-    "apple_pos",
     "woody_part_start_pos",
     "woody_bending_angles",
 )
 
 _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     # ft_wrist F
-    2.0,
-    2.0,
-    2.0,
+    0.5,
+    0.5,
+    0.5,
     # ft_wrist τ
-    0.5,
-    0.5,
-    0.5,
+    1.0,
+    1.0,
+    1.0,
     # tcp_velocity v
     0.02,
     0.02,
@@ -50,15 +49,11 @@ _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     0.02,
     0.02,
     # tcp_pos
-    0.005,
-    0.005,
-    0.005,
-    # apple_pos
-    0.005,
-    0.005,
-    0.005,
+    0.05,
+    0.05,
+    0.05,
 )
-WOODY_START_PHYS_SCALE = 0.005
+WOODY_START_PHYS_SCALE = 0.05
 BEND_ANGLE_PHYS_SCALE = 0.05
 
 
@@ -282,6 +277,13 @@ def _require_keys(arrays: Mapping[str, Any], keys: tuple[str, ...]) -> None:
         raise KeyError(f"missing MMD feature field(s): {', '.join(missing)}")
 
 
+def _require_junction_position_map(value: Any, *, field: str) -> Mapping[str, Any]:
+    """Reject non-mapping woody endpoint bags before junction-name subscripting."""
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} must be a junction mapping, got {type(value).__name__}")
+    return value
+
+
 def _as_2d(values: Any, *, name: str, n_frames: int) -> np.ndarray:
     arr = np.asarray(values, dtype=np.float32)
     if arr.ndim == 1:
@@ -344,6 +346,7 @@ def _stack_woody(
     n_frames: int,
     junction_names: list[str],
 ) -> np.ndarray:
+    _require_junction_position_map(woody_by_junction, field="woody_part_start_pos")
     rows = [
         flatten_woody_positions(
             woody_by_junction,
@@ -379,7 +382,10 @@ def _bending_chords(
     distal rule: chord ``i`` is ``start[i+1] - start[i]`` and the last chord is
     ``apple_pos - start[last]``.
     """
-    starts_by_name = arrays["woody_part_start_pos"]
+    starts_by_name = _require_junction_position_map(
+        arrays["woody_part_start_pos"],
+        field="woody_part_start_pos",
+    )
     apple_pos = _tiled_positions(arrays["apple_pos"], n_frames=n_frames)
 
     if list(junction_names) == list(CMA_WOODY_JUNCTIONS):
@@ -434,7 +440,16 @@ def build_bending_angles(
 
 
 def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
-    """Build per-frame observable state rows in the MMD feature order."""
+    """Build per-frame observable state rows in the MMD feature order.
+
+    ``apple_pos`` is required on ``arrays`` for bend-chord geometry but is not
+    concatenated into the scored state.
+    """
+
+    if not isinstance(arrays, Mapping):
+        raise ValueError(
+            f"feature arrays must be a mapping, got {type(arrays).__name__}"
+        )
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
     action = np.asarray(arrays["action"], dtype=np.float32)
@@ -447,7 +462,6 @@ def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
         _as_2d(scored_ft_wrist(arrays), name="ft_wrist", n_frames=n_frames),
         _as_2d(arrays["tcp_velocity"], name="tcp_velocity", n_frames=n_frames),
         _as_2d(arrays["tcp_pos"], name="tcp_pos", n_frames=n_frames),
-        _as_2d(arrays["apple_pos"], name="apple_pos", n_frames=n_frames),
         _stack_woody(
             arrays["woody_part_start_pos"],
             n_frames=n_frames,
@@ -550,6 +564,20 @@ def _one_hot_dir_id(dir_idx: int, *, n_directions: int) -> np.ndarray:
     return vec
 
 
+_HOLD_REDUCE_VALUES = ("none", "median", "mean")
+
+
+def _resolve_hold_reduce(*, use_median: bool, hold_reduce: str | None) -> str:
+    if hold_reduce is None:
+        return "median" if bool(use_median) else "none"
+    value = str(hold_reduce)
+    if value not in _HOLD_REDUCE_VALUES:
+        raise ValueError(
+            f"hold_reduce must be one of {_HOLD_REDUCE_VALUES}, got {hold_reduce!r}"
+        )
+    return value
+
+
 def combine_transition_features(
     episodes: list[Mapping[str, Any]],
     *,
@@ -558,6 +586,7 @@ def combine_transition_features(
     n_holds: int | None = None,
     dir_id_onehot: bool = False,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
 ) -> dict[int, np.ndarray]:
     """Concatenate hold-only transition features keyed by excitation direction."""
     parts: dict[int, list[np.ndarray]] = {}
@@ -569,6 +598,7 @@ def combine_transition_features(
             n_holds=n_holds,
             dir_id_onehot=dir_id_onehot,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
         ).items():
             parts.setdefault(direction, []).append(features)
     return {
@@ -586,13 +616,14 @@ def build_transition_features_by_direction(
     n_holds: int | None = None,
     dir_id_onehot: bool = False,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
 ) -> dict[int, np.ndarray]:
     """Build hold-only transition feature rows keyed by excitation direction.
 
-    When ``use_median`` is True, emit one row per consecutive hold pair using
-    full-hold median states: ``[s_i, s_{i+1}-s_i]`` (optionally + hold-id /
-    dir-id one-hot). When False, emit frame→frame transitions on full hold
-    segments.
+    ``hold_reduce="median"|"mean"`` emits one row per consecutive hold pair
+    using the reduced hold state ``[s_i, s_{i+1}-s_i]``. ``use_median=True``
+    is an alias for ``hold_reduce="median"``. ``none`` / ``use_median=False``
+    emits frame→frame transitions on full hold segments.
     """
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
@@ -639,14 +670,18 @@ def build_transition_features_by_direction(
             min_frames=1,
         )
         rows: list[np.ndarray] = []
-        if use_median:
-            medians: list[np.ndarray] = []
+        reduce_mode = _resolve_hold_reduce(
+            use_median=use_median, hold_reduce=hold_reduce
+        )
+        if reduce_mode in ("median", "mean"):
+            reducer = np.mean if reduce_mode == "mean" else np.median
+            reduced: list[np.ndarray] = []
             hold_ids: list[int] = []
             for hold_i, segment in enumerate(segments):
                 kept = _stable_masked_segment(segment, stable)
                 if kept.size < 1:
                     continue
-                medians.append(np.median(state[kept], axis=0).astype(np.float32))
+                reduced.append(reducer(state[kept], axis=0).astype(np.float32))
                 if "hold_number" in arrays:
                     hn = int(np.asarray(arrays["hold_number"])[int(kept[0])])
                     hold_ids.append(hn if hn >= 0 else hold_i)
@@ -655,11 +690,11 @@ def build_transition_features_by_direction(
             n_holds_dir = (
                 int(resolved_n_holds)
                 if resolved_n_holds is not None
-                else max(len(medians), 1)
+                else max(len(reduced), 1)
             )
-            for i in range(len(medians) - 1):
-                current = medians[i]
-                delta = medians[i + 1] - current
+            for i in range(len(reduced) - 1):
+                current = reduced[i]
+                delta = reduced[i + 1] - current
                 row = np.concatenate([current, delta]).astype(np.float32)
                 if hold_id_onehot:
                     row = np.concatenate(
@@ -717,3 +752,110 @@ def build_transition_features_by_direction(
             else:
                 out[direction] = arr
     return out
+
+
+def _mean_hold_states(
+    arrays: Mapping[str, Any], *, direction: int
+) -> list[np.ndarray]:
+    state = build_state_matrix(arrays)
+    phase = np.asarray(arrays["phase"]).reshape(-1)
+    dir_idx = np.asarray(arrays["dir_idx"]).reshape(-1)
+    stable = np.asarray(
+        arrays.get("stable", np.ones(phase.shape[0], dtype=bool)), dtype=bool
+    ).reshape(-1)
+    segments = iter_kept_hold_segments(
+        phase=phase,
+        dir_idx=dir_idx,
+        direction=int(direction),
+        min_frames=1,
+    )
+    means: list[np.ndarray] = []
+    for segment in segments:
+        kept = _stable_masked_segment(segment, stable)
+        if kept.size < 1:
+            continue
+        means.append(np.mean(state[kept], axis=0).astype(np.float64))
+    return means
+
+
+def mean_hold_block_errors(
+    *,
+    real: Mapping[str, Any],
+    sim: Mapping[str, Any],
+    direction: int,
+) -> dict[str, Any]:
+    """Block L2 between per-hold mean STATE_VECTOR rows (same reduce as Sinkhorn mean)."""
+    real_means = _mean_hold_states(real, direction=direction)
+    sim_means = _mean_hold_states(sim, direction=direction)
+    n_holds = min(len(real_means), len(sim_means))
+    empty = {
+        "force_err_n": None,
+        "torque_err_nm": None,
+        "woody_start_m": None,
+        "woody_bend_rad": None,
+        "force_norm_n": {"real": None, "sim": None},
+        "torque_norm_nm": {"real": None, "sim": None},
+        "woody_start_norm_m": {"real": None, "sim": None},
+        "woody_bend_norm_rad": {"real": None, "sim": None},
+    }
+    if n_holds < 1:
+        return empty
+
+    n_junctions = len([str(n) for n in real["junction_names"]])
+    woody0 = 15
+    bend0 = 15 + 3 * n_junctions
+
+    def _woody_starts(row: np.ndarray) -> np.ndarray:
+        return np.asarray(row[woody0:bend0], dtype=np.float64).reshape(n_junctions, 3)
+
+    force_err: list[float] = []
+    torque_err: list[float] = []
+    woody_start_err: list[float] = []
+    woody_bend_err: list[float] = []
+    force_norm_real: list[float] = []
+    force_norm_sim: list[float] = []
+    torque_norm_real: list[float] = []
+    torque_norm_sim: list[float] = []
+    woody_disp_real: list[float] = []
+    woody_disp_sim: list[float] = []
+    woody_bend_norm_real: list[float] = []
+    woody_bend_norm_sim: list[float] = []
+    first_real_woody = _woody_starts(real_means[0])
+    first_sim_woody = _woody_starts(sim_means[0])
+    for r, s in zip(real_means[:n_holds], sim_means[:n_holds], strict=True):
+        force_err.append(float(np.linalg.norm(s[:3] - r[:3])))
+        torque_err.append(float(np.linalg.norm(s[3:6] - r[3:6])))
+        wr = _woody_starts(r)
+        ws = _woody_starts(s)
+        woody_start_err.append(float(np.mean(np.linalg.norm(ws - wr, axis=1))))
+        woody_bend_err.append(float(np.mean(np.abs(s[bend0:] - r[bend0:]))))
+        force_norm_real.append(float(np.linalg.norm(r[:3])))
+        force_norm_sim.append(float(np.linalg.norm(s[:3])))
+        torque_norm_real.append(float(np.linalg.norm(r[3:6])))
+        torque_norm_sim.append(float(np.linalg.norm(s[3:6])))
+        woody_disp_real.append(float(np.mean(np.linalg.norm(wr - first_real_woody, axis=1))))
+        woody_disp_sim.append(float(np.mean(np.linalg.norm(ws - first_sim_woody, axis=1))))
+        woody_bend_norm_real.append(float(np.mean(np.abs(r[bend0:]))))
+        woody_bend_norm_sim.append(float(np.mean(np.abs(s[bend0:]))))
+    return {
+        "force_err_n": float(np.mean(force_err)),
+        "torque_err_nm": float(np.mean(torque_err)),
+        "woody_start_m": float(np.mean(woody_start_err)),
+        "woody_bend_rad": float(np.mean(woody_bend_err)),
+        "force_norm_n": {
+            "real": float(np.mean(force_norm_real)),
+            "sim": float(np.mean(force_norm_sim)),
+        },
+        "torque_norm_nm": {
+            "real": float(np.mean(torque_norm_real)),
+            "sim": float(np.mean(torque_norm_sim)),
+        },
+        "woody_start_norm_m": {
+            "real": float(np.mean(woody_disp_real)),
+            "sim": float(np.mean(woody_disp_sim)),
+        },
+        "woody_bend_norm_rad": {
+            "real": float(np.mean(woody_bend_norm_real)),
+            "sim": float(np.mean(woody_bend_norm_sim)),
+        },
+    }

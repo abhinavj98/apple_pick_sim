@@ -165,6 +165,7 @@ def test_make_batched_obs_buffers_shapes():
     assert bufs.num_envs == 2
     assert bufs.num_junctions == 2  # gripper_proxy joint excluded
     assert bufs.apple_pos.shape == (2, 3)
+    assert bufs.apple_pose.shape == (2, 7)
     assert bufs.proxy_pos.shape == (2, 3)
     assert bufs.tcp_pose.shape == (2, 7)
     assert bufs.tcp_force.shape == (2, 6)
@@ -236,6 +237,7 @@ def _mock_scene_for_gather(layout: BatchedEnvLayout, cable):
         apple_idx = layout.apple_body_indices[w]
         proxy_idx = layout.proxy_body_indices[w]
         cable_bq[apple_idx, :3] = [1.0 + w, 2.0 + w, 3.0 + w]
+        cable_bq[apple_idx, 3:7] = [0.1 + w, 0.2, 0.3, 0.9]
         cable_bq[proxy_idx, :3] = [4.0 + w, 5.0 + w, 6.0 + w]
         offset = float(w * layout.bodies_per_world)
         cable_bq[int(offset), :3] = [10.0 + w, 11.0 + w, 12.0 + w]
@@ -312,6 +314,9 @@ def test_gather_batched_obs_end_to_end():
 
     np.testing.assert_allclose(bufs.apple_pos.numpy()[0], [1.0, 2.0, 3.0])
     np.testing.assert_allclose(bufs.apple_pos.numpy()[1], [2.0, 3.0, 4.0])
+    np.testing.assert_allclose(bufs.apple_pose.numpy()[0, :3], [1.0, 2.0, 3.0])
+    np.testing.assert_allclose(bufs.apple_pose.numpy()[0, 3:7], [0.1, 0.2, 0.3, 0.9])
+    np.testing.assert_allclose(bufs.apple_pose.numpy()[1, 3:7], [1.1, 0.2, 0.3, 0.9])
     np.testing.assert_allclose(bufs.proxy_pos.numpy()[0], [4.0, 5.0, 6.0])
     np.testing.assert_allclose(bufs.tcp_pose.numpy()[1, :3], [8.0, 9.0, 10.0])
     np.testing.assert_allclose(bufs.tcp_force.numpy()[0], [1.0, 0.0, 0.0, 0.0, 2.0, 0.0])

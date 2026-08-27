@@ -879,6 +879,46 @@ def test_score_is_gt_false_when_gt_candidate_is_none(
     assert evaluation.scores[0].is_gt is False
 
 
+def test_score_prepared_disqualifies_candidate_with_invalid_replay_features(
+    monkeypatch: pytest.MonkeyPatch,
+    gt_params: fs.FruitingSystemParams,
+):
+    candidate = cmaes.YoungsModulusCandidate(1.0e8, 1.0e7, 1.0e7)
+    prepared = _prepared_structure(
+        structure_idx=0,
+        candidates=(candidate,),
+        directions=(0,),
+        gt_params=gt_params,
+    )
+    broken = _dummy_recorded_episode(direction_idx=0)
+
+    def _not_a_mapping() -> None:
+        pass
+
+    broken["woody_part_start_pos"] = _not_a_mapping
+    replay_by_key = {multi.ReplaySlotKey(0, 0, 0): broken}
+    monkeypatch.setattr(
+        cmaes,
+        "replay_instability_fraction_all_frames",
+        lambda **_kwargs: 0.0,
+    )
+
+    evaluation = cmaes.score_prepared_youngs_modulus_structure(
+        prepared,
+        replay_by_key=replay_by_key,
+        scoring=cmaes.YoungsModulusScoringConfig(
+            n_directions=1,
+            hold_aggregation="mean",
+        ),
+    )
+
+    assert evaluation.scores[0].disqualified is True
+    assert evaluation.scores[0].disqualification_reason.startswith(
+        "invalid_replay_features:"
+    )
+    assert evaluation.scores[0].mean_hold_force_err_n is None
+
+
 def test_scalar_evaluation_uses_resolved_action_dim(
     monkeypatch: pytest.MonkeyPatch,
     gt_params: fs.FruitingSystemParams,
@@ -1331,7 +1371,12 @@ def test_evaluate_multi_structure_records_preparation_error_and_fail_fast_raises
     )
 
     assert tuple(batch.evaluations) == (1,)
-    assert batch.errors == {4: "malformed structure 4"}
+    assert tuple(batch.errors) == (4,)
+    # Prepare-stage errors must carry a traceback, like replay/scoring errors do:
+    # a bare message leaves an instant wave failure undiagnosable.
+    assert batch.errors[4].startswith("malformed structure 4")
+    assert "Traceback (most recent call last)" in batch.errors[4]
+    assert "fake_prepare" in batch.errors[4]
 
     with pytest.raises(ValueError, match="malformed structure 4"):
         cmaes.evaluate_youngs_modulus_structures(

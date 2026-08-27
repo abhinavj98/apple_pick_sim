@@ -51,6 +51,11 @@ from apple_pick_sim.coupled_fruiting.batched_build import (
     build_heterogeneous_coupled_cable_scene,
     build_replicated_robot_model,
 )
+from apple_pick_sim.coupled_fruiting.replicated_robot_cache import (
+    CachedReplicatedRobot,
+    acquire_replicated_fr3_robot,
+    make_replicated_robot_cache_key,
+)
 
 
 def _validate_batched_options(
@@ -417,6 +422,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
     vbd_only: bool = False,
     defer_template_robot_bootstrap: bool = False,
     force_batched_layout: bool = False,
+    reuse_replicated_mujoco: bool = False,
 ) -> CoupledFruitingScene:
     """Build heterogeneous FR3 coupled scenes via ``add_world`` (uniform topology)."""
     if not fr3_robot.fr3_assets_available():
@@ -522,39 +528,66 @@ def build_heterogeneous_coupled_fruiting_fr3(
     tpl_mj_kw = dict(mj_kw)
     batched_mj_kw = _mj_kw_for_batch(dict(mj_kw), num_envs)
 
-    tpl_robot_model, tpl_tcp, _ = fr3_robot.build_fr3_robot_model_from_usd(
-        device=device,
-        usd_path=usd_path,
-        root_xform=root_xform,
-        add_apple_payload=fix,
-        mujoco_solver_kwargs=tpl_mj_kw,
-    )
-    tpl_state = tpl_robot_model.state()
-    if not defer_template_robot_bootstrap:
-        bootstrap_articulated_tcp_from_proxy(
-            cable,
-            tpl_robot_model,
-            tpl_tcp,
-            tpl_state,
-            ik_iterations=ik_bootstrap_iterations,
-        )
-
-    def _robot_builder_factory() -> tuple[newton.ModelBuilder, int]:
-        return fr3_robot.build_fr3_robot_builder(
+    def _build_replicated_robot() -> CachedReplicatedRobot:
+        tpl_robot_model, tpl_tcp, _ = fr3_robot.build_fr3_robot_model_from_usd(
+            device=device,
             usd_path=usd_path,
             root_xform=root_xform,
             add_apple_payload=fix,
+            mujoco_solver_kwargs=tpl_mj_kw,
+            create_solver=False,
+        )
+        tpl_state = tpl_robot_model.state()
+        if not defer_template_robot_bootstrap:
+            bootstrap_articulated_tcp_from_proxy(
+                cable,
+                tpl_robot_model,
+                tpl_tcp,
+                tpl_state,
+                ik_iterations=ik_bootstrap_iterations,
+            )
+
+        def _robot_builder_factory() -> tuple[newton.ModelBuilder, int]:
+            return fr3_robot.build_fr3_robot_builder(
+                usd_path=usd_path,
+                root_xform=root_xform,
+                add_apple_payload=fix,
+            )
+
+        robot_model, template_tcp, mj_solver = build_replicated_robot_model(
+            tpl_robot_model,
+            tpl_tcp,
+            num_envs=num_envs,
+            env_spacing=env_spacing,
+            device=device,
+            template_builder_factory=_robot_builder_factory,
+            mujoco_solver_kwargs=batched_mj_kw,
+        )
+        return CachedReplicatedRobot(
+            robot_model=robot_model,
+            template_tcp=int(template_tcp),
+            mj_solver=mj_solver,
+            template_model=tpl_robot_model,
+            rest_joint_q=tpl_robot_model.joint_q.numpy().copy(),
+            rest_joint_qd=tpl_robot_model.joint_qd.numpy().copy(),
         )
 
-    robot_model, template_tcp, mj_solver = build_replicated_robot_model(
-        tpl_robot_model,
-        tpl_tcp,
-        num_envs=num_envs,
-        env_spacing=env_spacing,
-        device=device,
-        template_builder_factory=_robot_builder_factory,
-        mujoco_solver_kwargs=batched_mj_kw,
+    cached_robot = acquire_replicated_fr3_robot(
+        reuse=bool(reuse_replicated_mujoco),
+        key=make_replicated_robot_cache_key(
+            num_envs=num_envs,
+            device=str(device),
+            usd_path=usd_path,
+            add_apple_payload=fix,
+            robot_base_pos=robot_base_pos,
+            mujoco_kwargs=batched_mj_kw,
+        ),
+        factory=_build_replicated_robot,
     )
+    robot_model = cached_robot.robot_model
+    template_tcp = cached_robot.template_tcp
+    mj_solver = cached_robot.mj_solver
+    tpl_robot_model = cached_robot.template_model
     layout = BatchedEnvLayout.from_template_scene(
         cable,
         cable.model,

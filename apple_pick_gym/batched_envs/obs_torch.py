@@ -13,7 +13,8 @@ from apple_pick_sim.batched_obs import BatchedObsBuffers
 
 
 def _to_torch(arr: wp.array, device: torch.device) -> torch.Tensor:
-    return wp.to_torch(arr).to(device=device, dtype=torch.float32)
+    """Owned torch copy; must not alias live Warp observation buffers."""
+    return wp.to_torch(arr).to(device=device, dtype=torch.float32).clone()
 
 
 def obs_dict_from_bufs(
@@ -118,6 +119,36 @@ def _torch_to_numpy_f32_copy(value: Any) -> np.ndarray:
     if hasattr(value, "detach"):
         value = value.detach().cpu().numpy()
     return np.array(value, dtype=np.float32, copy=True)
+
+
+def _obs_ready_for_replay_download(obs: Mapping[str, Any]) -> bool:
+    woody = obs.get("woody_part_info")
+    if not isinstance(woody, Mapping) or not woody:
+        return False
+    first = next(iter(woody.values()), None)
+    return isinstance(first, Mapping) and "anchors_pos" in first
+
+
+def batched_obs_for_replay_download(env: Any) -> Mapping[str, Any]:
+    """Return batched obs safe for replay download; re-gather if ``_last_obs`` is stale."""
+    last_obs = getattr(env, "_last_obs", None)
+    if isinstance(last_obs, Mapping) and _obs_ready_for_replay_download(last_obs):
+        return last_obs
+    gather = getattr(env, "_gather_obs", None)
+    if not callable(gather):
+        raise RuntimeError("call reset() or step() before recording replay observations")
+    obs = gather()
+    if not isinstance(obs, Mapping):
+        raise TypeError(
+            f"batched obs must be a mapping after gather, got {type(obs).__name__}"
+        )
+    if not _obs_ready_for_replay_download(obs):
+        woody = obs.get("woody_part_info")
+        raise TypeError(
+            "batched obs missing usable woody_part_info for replay download; "
+            f"got {type(woody).__name__}"
+        )
+    return obs
 
 
 def download_batched_replay_obs_numpy(

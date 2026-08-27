@@ -9,8 +9,8 @@ the next real-data acceptance work belong in `docs/ROADMAP.md`.
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-17 |
-| Code owners | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py`; `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
+| Last reviewed | 2026-08-25 |
+| Code owners | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py`; `apple_pick_gym/batched_envs/cma_wave_evaluation.py`; `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H4 `docs/handbook-real-replay.md` |
 | Archive specs | **Implemented:** `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md`; **Superseded phenotype, implemented loop:** `docs/superpowers/specs/2026-07-16-youngs-modulus-cmaes-loop-design.md`; **Partial:** `docs/superpowers/specs/2026-08-12-real-replay-cmaes-plumbing-design.md`; **Implemented (holdout CLI; Task 9 science gate failed on torque):** `docs/superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md` |
@@ -113,6 +113,24 @@ The measured final mean is the fitted estimate. Best sampled points and
 covariance are diagnostics only. Stored simulation GT values are used for
 post-hoc reporting, never optimizer initialization or fitness.
 
+**Process-isolated evaluation waves (2026-08-25):** by default each fused
+evaluation wave (generation, re-ask, or final-mean) runs in a fresh subprocess
+via [`cma_wave_evaluation.py`](../apple_pick_gym/batched_envs/cma_wave_evaluation.py).
+The worker executes the same `evaluate_youngs_modulus_structures` path as the
+CLI (settle → replay collectors → Sinkhorn scoring) and returns a full pickled
+`YoungsModulusBatchEvaluation` (scores, replay episodes, applied params).
+The parent keeps pycma `ask`/`tell` and `penalize_youngs_modulus_scores`.
+`env.close()` does **not** call `wp.clear_kernel_cache()`. Disable with
+`--no-isolated-eval-waves` for interactive viewer debug; holdout val evals
+remain in-process after fit (same as before).
+
+**In-process FR3 reuse (`--no-isolated-eval-waves`):** the in-process path sets
+`RobotConfig.reuse_replicated_mujoco`. After the first fused weld, later waves
+reuse the USD-imported FR3 model and `SolverMuJoCo` (reset to the cached rest
+`joint_q`) and only rebuild the VBD plant. Isolated workers do **not** reuse:
+each wave is a new process, so FR3 is constructed cold. Default isolation is
+unchanged.
+
 ### Search defaults
 
 `CMA_SEARCH_PARAMS` is the source of truth:
@@ -120,12 +138,12 @@ post-hoc reporting, never optimizer initialization or fitness.
 | Knob | Default |
 | ---- | ------- |
 | Coordinates | `log10([support_kp, E_spur, E_stem])` |
-| Initial mean | `[4.0, 9.5, 9.5]` |
-| Initial sigma | `1.0` decade |
+| Initial mean | `[4.0, 9.5, 9.5]` sim-sim; real `vic_pose` `[4.0, 8.0, 8.0]` (100 MPa) |
+| Initial sigma | `0.2` decade; real/sim `max_sigma_log10=0.5` (pycma `maxstd` + post-`tell` σ clamp) |
 | Population | `15` |
 | Maximum generations | `10` |
 | CMA base seed | `56` |
-| Bounds | lower `[2,8,8]`, upper `[6,11,11]` |
+| Bounds | sim-sim lower `[2,8,8]`, upper `[6,11,11]`; real `vic_pose` `[2,7,7]`–`[6,9.5,9.5]` (10 MPa–3 GPa) |
 
 The support box is \(10^2\)–\(10^6\); spur/stem \(E\) each use
 \(10^8\)–\(10^{11}\) Pa. `"bounds_midpoint"` initialization is also supported.
@@ -164,6 +182,24 @@ owned by H3:
 - hold/direction handling and completeness;
 - exclusion of `action` from the score vector; and
 - per-direction diagnostic versus pooled optimizer fitness.
+
+**CMA default hold aggregation (2026-08-24):** `--hold-aggregation mean`
+(arithmetic mean of stable hold frames before emitting `[s_i, s_{i+1}-s_i]`
+transition rows). The deprecated `--use-median` flag and
+`YoungsModulusScoringConfig.use_median=True` both override to median.
+Each generation `raw_scores` entry now carries `mean_hold_force_err_n`,
+`mean_hold_torque_err_nm`, `mean_hold_woody_start_m`, and
+`mean_hold_woody_bend_rad` computed from the same mean-hold states as Sinkhorn.
+The `score_summary` dict adds `eligible_mean_hold_*` / `best_eligible_mean_hold_*`
+across non-disqualified candidates.
+
+**Force-magnitude fitness term (2026-08-24):** eligible CMA fitness is
+`aggregate_sinkhorn + λ · mean_d |log(sim‖F‖ / real‖F‖)|`, where ‖F‖ is
+`per_direction_mean_hold_force_norm_n` and each side is floored at
+`FORCE_FLOOR_N` (0.2 N). CLI `--force-magnitude-weight` sets λ (default 100;
+`0` restores Sinkhorn-only). Recorded under `scoring.force_magnitude_weight`
+in `cmaes_report.json`. This is optimizer fitness only; holdout
+`force_magnitude_ok` gates remain unchanged (H3).
 
 See `docs/handbook-sysid-scoring.md`. Do not infer the current objective from
 historical MMD grid or primary-\(E\) design documents.
@@ -388,6 +424,7 @@ the ranking policy; the second validates CMA fit integrity.
 | Responsibility | Module / symbol |
 | -------------- | --------------- |
 | Candidate mapping, support penalties, evaluation, CMA coordinator | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` |
+| Process-isolated CMA wave evaluation | `apple_pick_gym/batched_envs/cma_wave_evaluation.py`; `cma_wave_evaluation_worker.py` |
 | Stable slot planning, chunking, fused/scalar replay | `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py` |
 | Cartesian grid, ranking, real-builder opt-in | `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py` |
 | CMA search defaults, CLI, counters, atomic report | `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
@@ -411,6 +448,7 @@ Focused CMA checks:
 ```bash
 uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_gym/tests/test_batched_sysid_cmaes_candidate.py \
+  apple_pick_gym/tests/test_cma_wave_evaluation.py \
   apple_pick_gym/tests/test_batched_sysid_cmaes_loop.py \
   apple_pick_gym/tests/test_example_youngs_modulus_cmaes_cli.py \
   apple_pick_gym/tests/test_holdout_evaluation.py \

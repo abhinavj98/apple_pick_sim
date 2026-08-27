@@ -72,6 +72,7 @@ def _score(
     *,
     disqualified: bool = False,
     reason: str | None = None,
+    force_norm_n: dict[int, dict[str, float | None]] | None = None,
 ) -> cmaes.YoungsModulusCandidateScore:
     return cmaes.YoungsModulusCandidateScore(
         candidate_index=candidate_index,
@@ -83,6 +84,7 @@ def _score(
         disqualification_reason=reason,
         rank=None,
         is_gt=False,
+        per_direction_mean_hold_force_norm_n=force_norm_n,
     )
 
 
@@ -136,6 +138,71 @@ def test_penalize_disqualified_uses_worst_finite_plus_margin():
     assert meta[1]["raw_aggregate_sinkhorn"] == 4.0
     assert meta[0]["penalized"] is False
     assert meta[2]["penalized"] is False
+
+
+def test_force_magnitude_log_ratio_penalty_mean_abs_log():
+    norms = {
+        0: {"real": 4.0, "sim": 1.0},  # |log(0.25)|
+        2: {"real": 2.0, "sim": 2.0},  # 0
+    }
+    got = cmaes.force_magnitude_log_ratio_penalty(norms)
+    assert got == pytest.approx(0.5 * abs(math.log(1.0 / 4.0)))
+
+
+def test_force_magnitude_log_ratio_penalty_skips_missing_dirs():
+    norms = {
+        0: {"real": 4.0, "sim": None},
+        1: {"real": None, "sim": 1.0},
+        2: {"real": 3.0, "sim": 3.0},
+    }
+    assert cmaes.force_magnitude_log_ratio_penalty(norms) == pytest.approx(0.0)
+
+
+def test_penalize_adds_weighted_force_magnitude_term():
+    candidates = [
+        cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6),
+        cmaes.YoungsModulusCandidate(2e8, 1e7, 1e6),
+    ]
+    soft = _score(
+        0,
+        candidates[0],
+        10.0,
+        force_norm_n={0: {"real": 6.0, "sim": 0.75}},  # |log(0.125)| ≈ 2.079
+    )
+    matched = _score(
+        1,
+        candidates[1],
+        12.0,
+        force_norm_n={0: {"real": 6.0, "sim": 6.0}},
+    )
+    weight = 10.0
+    fitness, meta = cmaes.penalize_youngs_modulus_scores(
+        [soft, matched], force_magnitude_weight=weight
+    )
+    soft_pen = abs(math.log(0.75 / 6.0))
+    assert fitness[0] == pytest.approx(10.0 + weight * soft_pen)
+    assert fitness[1] == pytest.approx(12.0)
+    assert fitness[0] > fitness[1]  # soft spur no longer wins on Sinkhorn alone
+    assert meta[0]["force_magnitude_penalty"] == pytest.approx(soft_pen)
+    assert meta[0]["force_magnitude_weight"] == pytest.approx(weight)
+    assert meta[0]["raw_aggregate_sinkhorn"] == pytest.approx(10.0)
+
+
+def test_penalize_force_magnitude_weight_zero_preserves_sinkhorn_only():
+    candidates = [cmaes.YoungsModulusCandidate(1e8, 1e7, 1e6)]
+    scores = [
+        _score(
+            0,
+            candidates[0],
+            7.5,
+            force_norm_n={0: {"real": 5.0, "sim": 0.5}},
+        )
+    ]
+    fitness, meta = cmaes.penalize_youngs_modulus_scores(
+        scores, force_magnitude_weight=0.0
+    )
+    assert fitness == pytest.approx([7.5])
+    assert meta[0]["force_magnitude_penalty"] == pytest.approx(0.0)
 
 
 def test_penalize_all_invalid_raises():
@@ -1849,6 +1916,76 @@ def test_structure_report_snapshot_includes_generation_score_summary_and_wave_se
     assert gen0["wave_seconds"] == pytest.approx(1.25)
     assert gen0["score_summary"]["eligible_mean"] == pytest.approx(3.0)
     assert gen0["score_summary"]["eligible_variance"] == pytest.approx(2.0)
+
+
+def test_structure_report_snapshot_includes_mean_hold_errors_on_raw_scores():
+    bounds = _bounds()
+    opt = FakeOptimizer(samples=[[7.0, 6.0, 5.0]])
+    state = cmaes.StructureCmaState(
+        structure_idx=0,
+        optimizer=opt,
+        bounds=bounds,
+        effective_seed=1,
+        population_size=1,
+    )
+    cand = cmaes.YoungsModulusCandidate(1e7, 1e6, 1e5)
+    state.generations.append(
+        cmaes.CmaGenerationRecord(
+            generation_index=0,
+            structure_idx=0,
+            ask_samples_log10=((7.0, 6.0, 5.0),),
+            candidates=(cand,),
+            raw_scores=(
+                cmaes.YoungsModulusCandidateScore(
+                    candidate_index=0,
+                    candidate=cand,
+                    aggregate_sinkhorn=2.0,
+                    per_direction_sinkhorn={0: 2.0},
+                    instability_fraction=0.0,
+                    disqualified=False,
+                    disqualification_reason=None,
+                    rank=1,
+                    is_gt=False,
+                    mean_hold_force_err_n=1.5,
+                    mean_hold_torque_err_nm=0.2,
+                    mean_hold_woody_start_m=0.01,
+                    mean_hold_woody_bend_rad=0.03,
+                    per_direction_mean_hold_force_err_n={0: 1.5},
+                    per_direction_mean_hold_torque_err_nm={0: 0.2},
+                    per_direction_mean_hold_woody_start_m={0: 0.01},
+                    per_direction_mean_hold_woody_bend_rad={0: 0.03},
+                    per_direction_mean_hold_force_norm_n={0: {"real": 4.0, "sim": 3.0}},
+                    per_direction_mean_hold_torque_norm_nm={0: {"real": 0.5, "sim": 0.4}},
+                ),
+            ),
+            penalized_fitness=(2.0,),
+            penalty_metadata=(
+                {
+                    "candidate_index": 0,
+                    "penalized": False,
+                    "raw_aggregate_sinkhorn": 2.0,
+                    "fitness": 2.0,
+                    "disqualification_reason": None,
+                },
+            ),
+            ask_distribution=cmaes.CmaDistributionSnapshot((7.0, 6.0, 5.0), 1.0, None),
+            post_tell_distribution=cmaes.CmaDistributionSnapshot((7.0, 6.0, 5.0), 0.9, None),
+            wave_seconds=1.0,
+        )
+    )
+    snapshot = cmaes.structure_cma_report_snapshot(
+        state,
+        base_seed=0,
+        initial_sigma_log10=1.0,
+    )
+    raw = snapshot["generations"][0]["raw_scores"][0]
+    assert raw["mean_hold_force_err_n"] == pytest.approx(1.5)
+    assert raw["mean_hold_torque_err_nm"] == pytest.approx(0.2)
+    assert raw["mean_hold_woody_start_m"] == pytest.approx(0.01)
+    assert raw["mean_hold_woody_bend_rad"] == pytest.approx(0.03)
+    summary = snapshot["generations"][0]["score_summary"]
+    assert summary["eligible_mean_hold_force_err_n"] == pytest.approx(1.5)
+    assert summary["best_eligible_mean_hold_force_err_n"] == pytest.approx(1.5)
 
 
 # --- Task 6: support-k_p CMA vector semantics ---

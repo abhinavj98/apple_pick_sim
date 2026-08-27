@@ -100,6 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=5e-3,
         help="Max per-axis fruiting_base_pos spread across directions (default: 5e-3).",
     )
+    parser.add_argument(
+        "--transport-torque-to-tcp",
+        action="store_true",
+        help=(
+            "After rotating logged F/T into world, subtract p×F so torque is "
+            "the moment about the TCP (O_F_ext_hat_K is about the base origin)."
+        ),
+    )
     return parser
 
 
@@ -124,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
             control_hz=float(args.control_hz),
             ft_lpf_hz=float(args.ft_lpf_hz),
             ft_lpf_order=int(args.ft_lpf_order),
+            transport_torque_to_tcp=bool(args.transport_torque_to_tcp),
         )
         if args.input_dir is not None:
             out_dir = export_real_tree_folder_to_batched_dataset(

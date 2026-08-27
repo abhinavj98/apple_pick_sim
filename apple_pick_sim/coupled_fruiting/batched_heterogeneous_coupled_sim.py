@@ -382,6 +382,7 @@ class BatchedHeterogeneousCoupledSim:
         bufs = self._obs_bufs
         out: dict[str, Any] = {
             "apple_pos": bufs.apple_pos,
+            "apple_pose": bufs.apple_pose,
             "proxy_pos": bufs.proxy_pos,
         }
         if include_robot:

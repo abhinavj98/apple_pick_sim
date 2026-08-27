@@ -6,13 +6,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
 import torch
-import warp as wp
 
 from apple_pick_gym.batched_envs.apple_pick_batched_base_env import ApplePickBatchedBaseEnv
 from apple_pick_gym.batched_envs.batched_sysid_world_info import per_world_sysid_reset_info
-from apple_pick_gym.batched_envs.obs_torch import sysid_numpy_obs_from_batched
+from apple_pick_gym.batched_envs.obs_torch import _to_torch, sysid_numpy_obs_from_batched
 from apple_pick_sim.system_id.excitation_state import ExcitationContext
 
 if TYPE_CHECKING:
@@ -118,6 +116,10 @@ class ApplePickBatchedSysIdEnv(ApplePickBatchedBaseEnv):
         for i, ctx in enumerate(contexts):
             self.set_excitation_context(i, ctx)
 
+    def _release_observation_aliases(self) -> None:
+        # Drop owned torch obs so close() does not keep the last frame alive.
+        self._last_obs = None
+
     def sysid_numpy_obs(self, env_idx: int) -> dict[str, Any]:
         if self._last_obs is None:
             raise RuntimeError("call reset() or step() before sysid_numpy_obs()")
@@ -155,31 +157,18 @@ class ApplePickBatchedSysIdEnv(ApplePickBatchedBaseEnv):
         del obs, info
         return torch.zeros((self.num_envs, 1), dtype=torch.bool, device=self.device)
 
-    def _apple_quat_tensor(self) -> torch.Tensor:
-        layout = self._sim.layout
-        if layout is None:
-            raise RuntimeError("batched scene missing layout")
-        cable = self._sim.scene.cable
-        bq = cable.state_0.body_q.numpy().reshape(-1, 7)
-        quats = np.stack(
-            [bq[int(layout.apple_body_indices[w]), 3:7] for w in range(self.num_envs)],
-            axis=0,
-        )
-        return torch.as_tensor(quats, dtype=torch.float32, device=self.device)
-
     def _gather_obs(self) -> dict[str, Any]:
         obs = super()._gather_obs()
         bufs = self._sim.obs_bufs
         if bufs is None:
             raise RuntimeError("sim observation buffers not allocated")
 
-        tcp_pose = wp.to_torch(bufs.tcp_pose).to(device=self.device, dtype=torch.float32)
+        tcp_pose = _to_torch(bufs.tcp_pose, self.device)
+        apple_pose = _to_torch(bufs.apple_pose, self.device)
         obs["tcp_pos"] = tcp_pose[:, :3]
         obs["tcp_quat"] = tcp_pose[:, 3:7]
-        obs["apple_quat"] = self._apple_quat_tensor()
-        obs["robot_joint_q"] = wp.to_torch(bufs.joint_q).to(
-            device=self.device, dtype=torch.float32
-        )
+        obs["apple_quat"] = apple_pose[:, 3:7]
+        obs["robot_joint_q"] = _to_torch(bufs.joint_q, self.device)
         obs["raw_ft_wrist"] = obs["ft_wrist"].clone()
         obs["excitation_type"] = self._excitation_type
         obs["excitation_f_inst"] = self._excitation_f_inst

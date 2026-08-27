@@ -1176,13 +1176,12 @@ class BatchedSysIdReplayCollectors:
     ) -> None:
         """Record one replay frame for every env with a single batched GPU download."""
         from apple_pick_gym.batched_envs.obs_torch import (
+            batched_obs_for_replay_download,
             download_batched_replay_obs_numpy,
             replay_obs_dict_from_batched_numpy_row,
         )
 
-        last_obs = getattr(env, "_last_obs", None)
-        if last_obs is None:
-            raise RuntimeError("call reset() or step() before record_all_envs_step()")
+        last_obs = batched_obs_for_replay_download(env)
 
         num_envs = len(self._collectors)
         if num_envs == 0:
@@ -1381,6 +1380,56 @@ def stacked_recorded_actions_for_structure(
     action_dim: int = 6,
 ) -> np.ndarray:
     """Stack recorded EE actions for all candidate/direction env slots."""
+    tensor, _ = build_recorded_actions_for_structure(
+        dataset,
+        structure_idx=structure_idx,
+        num_directions=num_directions,
+        num_candidates=num_candidates,
+        direction_indices=direction_indices,
+        include_excluded=include_excluded,
+        action_dim=action_dim,
+        pad_unequal_lengths=False,
+    )
+    return tensor
+
+
+def _truncate_time_axis(value: Any, n_frames: int) -> Any:
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return value
+        return value[: int(n_frames)]
+    return value
+
+
+def _truncate_replay_arrays(arrays: Mapping[str, Any], n_frames: int) -> dict[str, Any]:
+    """Slice time-varying replay arrays to the recorded length before features."""
+    n = int(n_frames)
+    out: dict[str, Any] = {}
+    for key, value in arrays.items():
+        if key == "junction_names":
+            out[key] = list(value)
+            continue
+        if isinstance(value, dict):
+            out[key] = {
+                name: _truncate_time_axis(arr, n) for name, arr in value.items()
+            }
+            continue
+        out[key] = _truncate_time_axis(value, n)
+    return out
+
+
+def build_recorded_actions_for_structure(
+    dataset: BatchedSysIdDataset,
+    *,
+    structure_idx: int,
+    num_directions: int,
+    num_candidates: int,
+    direction_indices: Sequence[int] | None = None,
+    include_excluded: bool = False,
+    action_dim: int = 6,
+    pad_unequal_lengths: bool = False,
+) -> tuple[np.ndarray, tuple[int, ...]]:
+    """Stack recorded actions; optionally pad ragged direction lengths to T_max."""
     dirs = resolve_direction_indices(
         dataset,
         structure_idx=int(structure_idx),
@@ -1402,7 +1451,8 @@ def stacked_recorded_actions_for_structure(
         if n_frames is None:
             n_frames = int(action.shape[0])
         elif int(action.shape[0]) != n_frames:
-            raise ValueError("all direction episodes must have same n_frames")
+            if not pad_unequal_lengths:
+                raise ValueError("all direction episodes must have same n_frames")
         direction_actions.append(action)
 
     if n_frames is None:
@@ -1410,12 +1460,33 @@ def stacked_recorded_actions_for_structure(
 
     d = len(dirs)
     num_envs = int(num_candidates) * d
+    if pad_unequal_lengths and len({int(a.shape[0]) for a in direction_actions}) > 1:
+        t_max = max(int(action.shape[0]) for action in direction_actions)
+        padded_directions: list[np.ndarray] = []
+        recorded_n_frames_by_direction: list[int] = []
+        for action in direction_actions:
+            n_dir = int(action.shape[0])
+            recorded_n_frames_by_direction.append(n_dir)
+            if n_dir == t_max:
+                padded_directions.append(action)
+                continue
+            pad = np.repeat(action[-1][None, :], t_max - n_dir, axis=0)
+            padded_directions.append(np.concatenate([action, pad], axis=0))
+        out = np.empty((num_envs, t_max, action_dim), dtype=np.float32)
+        recorded_n_frames_per_env: list[int] = []
+        for candidate_idx in range(num_candidates):
+            for local_dir, action in enumerate(padded_directions):
+                env_idx = candidate_idx * d + local_dir
+                out[env_idx] = action
+                recorded_n_frames_per_env.append(recorded_n_frames_by_direction[local_dir])
+        return out, tuple(recorded_n_frames_per_env)
+
     out = np.empty((num_envs, n_frames, action_dim), dtype=np.float32)
     for candidate_idx in range(num_candidates):
         for local_dir, _direction_idx in enumerate(dirs):
             env_idx = candidate_idx * d + local_dir
             out[env_idx] = direction_actions[local_dir]
-    return out
+    return out, tuple(int(n_frames) for _ in range(num_envs))
 
 
 def build_recorded_actions_tensor(
@@ -1492,7 +1563,7 @@ def replay_batched_sysid_structure(
         [c.apply_to(base_params) for c in candidates],
         d,
     )
-    recorded_actions = build_recorded_actions_tensor(
+    recorded_actions, recorded_n_frames_per_env = build_recorded_actions_for_structure(
         dataset,
         structure_idx=int(structure_idx),
         num_directions=d,
@@ -1500,8 +1571,10 @@ def replay_batched_sysid_structure(
         direction_indices=dirs,
         include_excluded=bool(include_excluded),
         action_dim=action_dim,
+        pad_unequal_lengths=True,
     )
     n_frames = int(recorded_actions.shape[1])
+    recorded_n_frames_arr = np.asarray(recorded_n_frames_per_env, dtype=np.int64)
     replay_seed = _resolve_replay_seed(dataset, seed)
     structure_meta = dataset.load_episode_metadata(int(structure_idx), int(dirs[0]))
     collection = dataset.manifest.get("collection", {})
@@ -1583,14 +1656,31 @@ def replay_batched_sysid_structure(
             if last_obs is None:
                 raise RuntimeError("env._last_obs missing after step")
             step_report = monitor.check(last_obs, step_idx=int(frame_idx))
+            record_mask = disable_ctrl.should_record_mask()
+            if hasattr(record_mask, "detach"):
+                record_mask = record_mask.detach().cpu().numpy()
+            else:
+                record_mask = np.asarray(record_mask, dtype=bool).reshape(-1)
+            within_recorded = int(frame_idx) < recorded_n_frames_arr
             collectors.record_all_envs_step(
                 env,
                 frame_idx=frame_idx,
                 unstable=step_report.unstable,
-                record_mask=disable_ctrl.should_record_mask(),
+                record_mask=record_mask & within_recorded,
             )
             disable_ctrl.update(hard_blowup_mask(step_report))
     finally:
         env.close()
+
+    if any(int(n) < n_frames for n in recorded_n_frames_per_env):
+        truncated = BatchedSysIdReplayCollectors.__new__(BatchedSysIdReplayCollectors)
+        truncated._recorded_by_env = list(recorded_by_env)
+        truncated._collectors = [
+            _FrozenReplayCollector(
+                _truncate_replay_arrays(collector.to_arrays(), recorded_n_frames_per_env[env_idx])
+            )
+            for env_idx, collector in enumerate(collectors._collectors)
+        ]
+        return truncated
 
     return collectors

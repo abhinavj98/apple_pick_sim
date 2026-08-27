@@ -124,6 +124,8 @@ class RobotConfig:
     bootstrap_joint_q: tuple[float, ...] | None = None
     # When set, each world gets its own open-loop joint_q (no world-0 broadcast).
     per_world_bootstrap_joint_q: tuple[tuple[float, ...], ...] | None = None
+    # In-process only: reuse USD-imported FR3 + SolverMuJoCo across fused rebuilds.
+    reuse_replicated_mujoco: bool = False
 
 
 @dataclasses.dataclass(frozen=True)

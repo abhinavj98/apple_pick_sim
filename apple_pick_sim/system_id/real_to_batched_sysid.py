@@ -145,13 +145,30 @@ def range_midpoint(band: dict[str, Any]) -> float:
     return 0.5 * (float(band["min"]) + float(band["max"]))
 
 
-def world_wrench_from_ee_logged(ft_ee: Any, tcp_pose_4x4: Any) -> np.ndarray:
-    """Rotate logged EE-frame wrench ``[F, τ]`` into world using ``R(tcp)``."""
+def world_wrench_from_ee_logged(
+    ft_ee: Any,
+    tcp_pose_4x4: Any,
+    *,
+    transport_torque_to_tcp: bool = False,
+) -> np.ndarray:
+    """Rotate logged EE-frame wrench ``[F, τ]`` into world using ``R(tcp)``.
+
+    When ``transport_torque_to_tcp`` is True, subtract ``p × F`` after the
+    rotation so τ is the moment about the TCP origin. Logged
+    ``O_F_ext_hat_K`` torque is the moment about the robot base origin;
+    collection only applies ``R.T``, so convert must transport if the score
+    contract is TCP-local (see libfranka issue #112).
+    """
     ft = np.asarray(ft_ee, dtype=np.float64).reshape(6)
-    R = np.asarray(tcp_pose_4x4, dtype=np.float64).reshape(4, 4)[:3, :3]
+    pose = np.asarray(tcp_pose_4x4, dtype=np.float64).reshape(4, 4)
+    R = pose[:3, :3]
+    f_w = R @ ft[:3]
+    t_w = R @ ft[3:]
+    if transport_torque_to_tcp:
+        t_w = t_w - np.cross(pose[:3, 3], f_w)
     out = np.empty(6, dtype=np.float32)
-    out[:3] = (R @ ft[:3]).astype(np.float32)
-    out[3:] = (R @ ft[3:]).astype(np.float32)
+    out[:3] = f_w.astype(np.float32)
+    out[3:] = t_w.astype(np.float32)
     return out
 
 
@@ -890,6 +907,7 @@ def _build_real_episode(
     control_hz: float | None = None,
     ft_lpf_hz: float = DEFAULT_FT_LPF_CUTOFF_HZ,
     ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
+    transport_torque_to_tcp: bool = False,
 ) -> _ConvertedEpisode:
     """Convert one real parquet into trajectory + metadata (no manifest write)."""
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedEpisodeWriter
@@ -1013,8 +1031,12 @@ def _build_real_episode(
                     "to rotate ft_wrist into the TCP world frame"
                 )
             tcp_pose = table.column("tcp_pose_4x4")[i].as_py()
-            ft = world_wrench_from_ee_logged(ft, tcp_pose)
-            raw_ft = world_wrench_from_ee_logged(raw_ft, tcp_pose)
+            ft = world_wrench_from_ee_logged(
+                ft, tcp_pose, transport_torque_to_tcp=transport_torque_to_tcp
+            )
+            raw_ft = world_wrench_from_ee_logged(
+                raw_ft, tcp_pose, transport_torque_to_tcp=transport_torque_to_tcp
+            )
             _, tcp_quat = pose_4x4_to_pos_quat(tcp_pose)
         elif "tcp_pose_4x4" in table.column_names:
             _, tcp_quat = pose_4x4_to_pos_quat(table.column("tcp_pose_4x4")[i].as_py())
@@ -1100,6 +1122,7 @@ def _build_real_episode(
         "column": "ft_wrist_lpf",
         "window": int(window),
         "applied": bool(lpf_info.get("applied")),
+        "torque_moment": "tcp" if transport_torque_to_tcp else "logged",
     }
     if not ft_filter["applied"] and lpf_info.get("skip_reason"):
         ft_filter["skip_reason"] = str(lpf_info["skip_reason"])
@@ -1255,6 +1278,7 @@ def export_real_episode_to_batched_dataset(
     control_hz: float | None = None,
     ft_lpf_hz: float = DEFAULT_FT_LPF_CUTOFF_HZ,
     ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
+    transport_torque_to_tcp: bool = False,
 ) -> Path:
     """Write a 1×1 ``batched_sysid_v1`` dataset from one real-world parquet."""
     from apple_pick_sim.system_id.batched_trajectory_store import episode_filename
@@ -1271,6 +1295,7 @@ def export_real_episode_to_batched_dataset(
         control_hz=control_hz,
         ft_lpf_hz=ft_lpf_hz,
         ft_lpf_order=ft_lpf_order,
+        transport_torque_to_tcp=transport_torque_to_tcp,
     )
     if out.exists() and any(out.iterdir()) and not overwrite:
         raise FileExistsError(f"output_dir not empty (pass overwrite=True): {out}")
@@ -1301,6 +1326,7 @@ def export_real_tree_folder_to_batched_dataset(
     ft_lpf_hz: float = DEFAULT_FT_LPF_CUTOFF_HZ,
     ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
     base_pos_tolerance_m: float = 5e-3,
+    transport_torque_to_tcp: bool = False,
 ) -> Path:
     """Write a 1×N ``batched_sysid_v1`` dataset from one tree folder of parquets."""
     from apple_pick_sim.system_id.batched_trajectory_store import episode_filename
@@ -1323,6 +1349,7 @@ def export_real_tree_folder_to_batched_dataset(
                 control_hz=control_hz,
                 ft_lpf_hz=ft_lpf_hz,
                 ft_lpf_order=ft_lpf_order,
+                transport_torque_to_tcp=transport_torque_to_tcp,
             )
         )
     _canonicalize_tree_geometry(converted, base_pos_tolerance_m=float(base_pos_tolerance_m))

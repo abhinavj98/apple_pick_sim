@@ -13,6 +13,63 @@ import numpy as np
 import pytest
 
 from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+from apple_pick_gym.batched_envs import cma_wave_evaluation as cma_wave_evaluation_mod
+
+
+def _patch_execute_cma_wave_evaluation(
+    monkeypatch,
+    module,
+    *,
+    dataset,
+    fake_evaluate_structures,
+    ranges_dict: dict | None = None,
+    build_env_fn=None,
+    replay_sim_config=None,
+) -> None:
+    """Route wave eval through CLI test doubles (module + source bindings)."""
+
+    def fake_execute(spec):
+        kwargs = {
+            "dataset": dataset,
+            "structures": list(spec.structures),
+            "num_directions": spec.num_directions,
+            "direction_indices": spec.direction_indices,
+            "max_envs_per_batch": spec.max_envs_per_batch,
+            "seed": spec.seed,
+            "include_excluded": spec.include_excluded,
+            "fail_fast": spec.fail_fast,
+            "action_dim": spec.action_dim,
+            "scoring": spec.scoring,
+        }
+        if build_env_fn is not None:
+            kwargs["build_env_fn"] = build_env_fn
+            kwargs["replay_sim_config"] = replay_sim_config
+        elif ranges_dict is not None:
+            built_env_fn, built_replay_sim_config = (
+                cma_wave_evaluation_mod.build_cma_replay_artifacts(
+                    spec.replay_context,
+                    ranges=ranges_dict,
+                )
+            )
+            kwargs["build_env_fn"] = built_env_fn
+            kwargs["replay_sim_config"] = built_replay_sim_config
+        return fake_evaluate_structures(**kwargs)
+
+    def fake_spawn(spec, **kwargs):
+        return fake_execute(spec)
+
+    monkeypatch.setattr(
+        cma_wave_evaluation_mod,
+        "execute_cma_wave_evaluation",
+        fake_execute,
+    )
+    monkeypatch.setattr(
+        cma_wave_evaluation_mod,
+        "spawn_isolated_cma_wave_evaluation",
+        fake_spawn,
+    )
+    monkeypatch.setattr(module, "execute_cma_wave_evaluation", fake_execute)
+    monkeypatch.setattr(module, "spawn_isolated_cma_wave_evaluation", fake_spawn)
 
 
 def _load_module():
@@ -144,15 +201,17 @@ def test_cma_search_params_dict_is_sole_search_truth_source():
         "population_size",
         "max_generations",
         "cma_seed",
+        "max_sigma_log10",
     }
     # Vector is (log10 support_kp, log10 E_spur, log10 E_stem). Support k_p
     # uses an absolute safety box [2, 6] (never fixture primary-E bands);
     # spur/stem keep the [8, 11] box; mean sits at each axis midpoint.
     assert params["initial_mean_log10"] == [4.0, 9.5, 9.5]
-    assert params["initial_sigma_log10"] == 1.0
-    assert params["population_size"] == 15
-    assert params["max_generations"] == 10
+    assert params["initial_sigma_log10"] == 0.2
+    assert params["population_size"] == 20
+    assert params["max_generations"] == 20
     assert params["cma_seed"] == 56
+    assert params["max_sigma_log10"] == 0.5
     assert params["search_bounds_log10"] == {
         "lower": [2.0, 8.0, 8.0],
         "upper": [6.0, 11.0, 11.0],
@@ -187,7 +246,7 @@ def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
         create_calls.append(dict(kwargs))
         return cmaes.create_structure_cma_optimizer(bounds, **kwargs)
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         del max_generations, evaluate_fn
         for state in states.values():
             state.status = "fitted"
@@ -251,6 +310,7 @@ def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
         (6.0, 11.0, 11.0),
     )
     assert create_calls[0]["initial_mean_log10"] == pytest.approx([4.0, 9.5, 9.5])
+    assert create_calls[0]["max_sigma_log10"] == 0.5
     report = json.loads((output_dir / "cmaes_report.json").read_text(encoding="utf-8"))
     assert report["cma"]["search_bounds_log10"] == {
         "lower": [2.0, 8.0, 8.0],
@@ -285,7 +345,7 @@ def test_run_reads_search_knobs_from_cma_search_params_only(monkeypatch, tmp_pat
         es, seed, rng = cmaes.create_structure_cma_optimizer(bounds, **kwargs)
         return es, seed, rng
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         fit_calls.append({"max_generations": max_generations})
         for state in states.values():
             state.status = "fitted"
@@ -394,7 +454,7 @@ def test_run_cli_cma_seed_overrides_cma_search_params(monkeypatch, tmp_path):
         es, seed, rng = cmaes.create_structure_cma_optimizer(bounds, **kwargs)
         return es, seed, rng
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         for state in states.values():
             state.status = "fitted"
             state.final_mean_log10 = tuple(state.bounds.log10_midpoint)
@@ -490,9 +550,11 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
     assert args.ranges is None
     assert args.multi_structure_batch is True
     assert args.fail_fast is False
-    assert args.use_median is True
+    assert args.use_median is None
+    assert args.hold_aggregation == "mean"
     assert args.hold_id_onehot is True
     assert args.pool_directions is True
+    assert args.isolated_eval_waves is True
     assert module.SETTLE_QUIET_EVERY == 300
     assert args.settle_quiet_every == 300
 
@@ -891,7 +953,7 @@ def test_run_viewer_cancel_checkpoints_cancelled_and_exits_nonzero(
     dataset.structure_summaries.return_value = [{}, {}]
     _attach_sim_episode_meta(dataset)
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         raise module.ViewerCancelled("viewer closed; cancelling CMA-ES fit")
 
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
@@ -1007,7 +1069,7 @@ def test_run_writes_initial_report_before_fit_and_progress_updates(monkeypatch, 
 
     fit_calls: list[dict] = []
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         fit_calls.append(
             {
                 "structure_indices": sorted(states),
@@ -1126,7 +1188,7 @@ def test_run_continues_after_structure_failure_unless_fail_fast(monkeypatch, tmp
     dataset.structure_summaries.return_value = [{}, {}]
     _attach_sim_episode_meta(dataset)
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         states[0].status = "failed"
         states[0].failure = cmaes.CmaGenerationFailure("prepare", "boom")
         states[1].status = "fitted"
@@ -1216,7 +1278,7 @@ def test_run_all_failed_sets_exit_nonzero(monkeypatch, tmp_path):
     dataset.structure_summaries.return_value = [{}]
     _attach_sim_episode_meta(dataset)
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         states[0].status = "failed"
         states[0].failure = cmaes.CmaGenerationFailure("all_invalid", "none valid")
         if on_progress is not None:
@@ -1283,7 +1345,7 @@ def test_run_records_overlay_error_without_invalidating_fitted(monkeypatch, tmp_
     dataset.structure_summaries.return_value = [{}]
     _attach_sim_episode_meta(dataset)
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         state = states[0]
         state.status = "fitted"
         state.final_mean_log10 = tuple(state.bounds.log10_midpoint)
@@ -1384,7 +1446,7 @@ def test_run_fail_fast_aborts_on_global_evaluator_error(monkeypatch, tmp_path):
     dataset.structure_summaries.return_value = [{}]
     _attach_sim_episode_meta(dataset)
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         raise RuntimeError("batch exploded")
 
     monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
@@ -1472,7 +1534,7 @@ def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(monkeypatch, tmp_pa
             runtime=SimpleNamespace(control_hz=kwargs["control_hz"]),
         )
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         del max_generations
         for state in states.values():
             assert state.gt_candidate is None
@@ -1526,6 +1588,17 @@ def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(monkeypatch, tmp_pa
     monkeypatch.setattr(module, "make_real_replay_build_env_fn", fake_make_real_builder)
     monkeypatch.setattr(module, "real_replay_sim_config", fake_real_config)
     monkeypatch.setattr(module, "evaluate_youngs_modulus_structures", fake_evaluate_structures)
+    _patch_execute_cma_wave_evaluation(
+        monkeypatch,
+        module,
+        dataset=dataset,
+        fake_evaluate_structures=fake_evaluate_structures,
+        build_env_fn=real_builder,
+        replay_sim_config=fake_real_config(
+            controller_mode="vic_pose",
+            control_hz=15.0,
+        ),
+    )
     monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
     monkeypatch.setattr(
         module,
@@ -1610,7 +1683,7 @@ def test_run_vic_pose_lowers_spur_stem_search_floor(monkeypatch, tmp_path):
         create_calls.append(dict(kwargs))
         return cmaes.create_structure_cma_optimizer(bounds, **kwargs)
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         del max_generations, evaluate_fn
         for state in states.values():
             state.status = "fitted"
@@ -1672,8 +1745,9 @@ def test_run_vic_pose_lowers_spur_stem_search_floor(monkeypatch, tmp_path):
     module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
     assert create_calls[0]["search_bounds_log10"] == (
         (2.0, 7.0, 7.0),
-        (6.0, 11.0, 11.0),
+        (6.0, 9.5, 9.5),
     )
+    assert create_calls[0]["initial_mean_log10"] == pytest.approx([4.0, 8.0, 8.0])
 
 
 def test_run_rejects_multiple_structures_for_vic_pose(monkeypatch, tmp_path):
@@ -1948,7 +2022,7 @@ def _holdout_run_stub(monkeypatch, module, *, dataset: MagicMock, tmp_path: Path
             },
         )
 
-    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         del max_generations
         cand = cmaes.candidates_from_log10_vector((4.0, 9.0, 9.0))
         for _ in range(2):
@@ -2025,6 +2099,13 @@ def _holdout_run_stub(monkeypatch, module, *, dataset: MagicMock, tmp_path: Path
         },
     )
     monkeypatch.setattr(module, "evaluate_youngs_modulus_structures", fake_evaluate_structures)
+    _patch_execute_cma_wave_evaluation(
+        monkeypatch,
+        module,
+        dataset=dataset,
+        fake_evaluate_structures=fake_evaluate_structures,
+        ranges_dict=_valid_ranges_dict(),
+    )
     monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
     monkeypatch.setattr(
         module,
@@ -2457,7 +2538,7 @@ def test_run_holdout_evaluates_baseline_and_fitted_on_val_only(monkeypatch, tmp_
         if c.get("direction_indices") == (0, 1, 3)
     ]
     assert len(val_calls) == 2
-    baseline = tuple(module.CMA_SEARCH_PARAMS["initial_mean_log10"])
+    baseline = (4.0, 8.0, 8.0)
     seen_log10 = {
         _candidate_log10(c["structures"][0][1][0]) for c in val_calls
     }
@@ -2534,7 +2615,7 @@ def test_run_skips_holdout_report_when_fit_failed(monkeypatch, tmp_path):
         monkeypatch, module, dataset=dataset, tmp_path=tmp_path
     )
 
-    def failed_fit(states, *, max_generations, evaluate_fn, on_progress=None):
+    def failed_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
         del max_generations, evaluate_fn, on_progress
         for state in states.values():
             state.status = "failed"
@@ -2569,3 +2650,102 @@ def test_run_holdout_report_absent_without_split_flags(monkeypatch, tmp_path):
     args.direction_split_seed = None
     module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
     assert not (output_dir / "holdout_report.json").exists()
+
+
+@pytest.mark.parametrize("isolated,reuse", [(True, False), (False, True)])
+def test_run_enables_robot_reuse_only_on_inprocess_eval(monkeypatch, tmp_path, isolated, reuse):
+    module = _load_module()
+    output_dir = tmp_path / "cma_out"
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "control_hz": 30.0,
+            "num_directions": 2,
+            "ranges_path": str(ranges_path),
+            "topology_seed": 42,
+            "seed": 7,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+    _attach_sim_episode_meta(dataset)
+
+    captured: list[bool] = []
+
+    def fake_execute(spec, **_kwargs):
+        captured.append(bool(spec.replay_context.reuse_replicated_mujoco))
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={},
+            errors={},
+            replay_diagnostics=None,
+            retried_structures=(),
+        )
+
+    def fake_fit(states, *, max_generations, evaluate_fn, on_progress=None, **_kwargs):
+        del max_generations
+        evaluate_fn(
+            structures=[(0, (cmaes.SupportKpYoungsCandidate(1e4, 1e8, 1e7),))],
+            wave_kind="generation",
+        )
+        for state in states.values():
+            state.status = "fitted"
+            state.final_mean_log10 = (4.0, 9.5, 9.5)
+            state.final_evaluation = _evaluation(
+                state.structure_idx,
+                [cmaes.candidates_from_log10_vector(state.final_mean_log10)],
+                [0.1],
+            )
+            state.gt_candidate = state.final_evaluation.gt_candidate
+        if on_progress is not None:
+            on_progress(states)
+        return cmaes.YoungsModulusCmaFitResult(
+            states=dict(states),
+            fitted_structure_indices=tuple(sorted(states)),
+            failed_structure_indices=(),
+            generation_waves=1,
+            final_mean_batch=None,
+        )
+
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: _valid_ranges_dict())
+    monkeypatch.setattr(module, "build_sim_config", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(module, "_make_build_env_fn", lambda **_kwargs: MagicMock())
+    monkeypatch.setattr(module, "fit_youngs_modulus_structures", fake_fit)
+    monkeypatch.setattr(
+        module,
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_a, **_k: cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
+    )
+    monkeypatch.setattr(module, "write_cmaes_visualization_bundle", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "_write_final_mean_overlay", lambda *_a, **_k: None)
+    monkeypatch.setattr(module, "execute_cma_wave_evaluation", fake_execute)
+    monkeypatch.setattr(module, "spawn_isolated_cma_wave_evaluation", fake_execute)
+
+    args = SimpleNamespace(
+        dataset="/tmp/gt",
+        output=str(output_dir),
+        structure_indices=None,
+        ranges=None,
+        max_envs_per_batch=0,
+        seed=None,
+        cma_seed=None,
+        include_excluded=False,
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        multi_structure_batch=True,
+        fail_fast=False,
+        overwrite=True,
+        device="cpu",
+        settle_substeps=None,
+        settle_gravity_ramp=False,
+        settle_quiet_every=None,
+        show_pull_direction=False,
+        viewer="null",
+        isolated_eval_waves=isolated,
+        force_magnitude_weight=0.0,
+    )
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert captured == [reuse]

@@ -498,6 +498,46 @@ def test_build_pycma_options_omit_bounds_include_randn_nan_seed_and_optional_pop
     assert options_pop["popsize"] == 8
 
 
+def test_build_pycma_options_sets_maxstd_from_max_sigma_log10():
+    import numpy as np
+
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    randn = cmaes.make_pycma_randn(np.random.default_rng(0))
+    options = cmaes.build_pycma_options(randn=randn, max_sigma_log10=0.5)
+    assert options["maxstd"] == 0.5
+    options_off = cmaes.build_pycma_options(randn=randn)
+    assert "maxstd" not in options_off
+
+
+def test_clamp_optimizer_sigma_caps_sigma_in_place():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    class _Es:
+        sigma = 2.7
+
+    es = _Es()
+    cmaes.clamp_optimizer_sigma(es, max_sigma_log10=0.5)
+    assert es.sigma == 0.5
+    cmaes.clamp_optimizer_sigma(es, max_sigma_log10=None)
+    assert es.sigma == 0.5
+
+
+def test_create_structure_cma_optimizer_passes_maxstd():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    es, _, _ = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_sigma_log10=0.2,
+        base_seed=0,
+        structure_idx=0,
+        population_size=4,
+        max_sigma_log10=0.5,
+    )
+    assert es.opts["maxstd"] == 0.5
+
+
 def test_resolve_initial_mean_log10_bounds_midpoint_and_explicit():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 

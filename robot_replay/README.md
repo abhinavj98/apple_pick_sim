@@ -68,8 +68,10 @@ Do not run `pack_vic_pose_actions.py` on a fresh conversion. Source
 `ft_wrist` must already be EMA−EMA tared. Convert rotates it to world,
 block-means unfiltered F/T and velocity to 30 Hz (`--control-hz`), and writes
 `ft_wrist_lpf` (10 Hz zero-phase Butterworth, then the same block-mean;
-`--ft-lpf-hz`). Commands/poses/phase copy the last sample of each 33 ms
-window. CMA/grid Sinkhorn scores `ft_wrist_lpf` per structure.
+`--ft-lpf-hz`). Logged torque is the moment about the robot **base origin**;
+pass `--transport-torque-to-tcp` so CMA scores TCP-local torque (subtract
+`p × F` after the rotation). Commands/poses/phase copy the last sample of
+each 33 ms window. CMA/grid Sinkhorn scores `ft_wrist_lpf` per structure.
 
 ## Replay
 

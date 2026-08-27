@@ -109,6 +109,7 @@ def test_gym_defaults_preset():
     assert cfg.controller.mode == "vic"
     assert cfg.robot.fix_to_apple is True
     assert cfg.robot.force_batched_layout is True
+    assert cfg.robot.reuse_replicated_mujoco is False
 
 
 def test_test_minimal_preset():
@@ -277,3 +278,15 @@ def test_inject_mode_validate_passes_with_matching_params():
         ),
     )
     cfg.validate()
+
+
+def test_builder_kwargs_forward_reuse_replicated_mujoco():
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_build import _builder_kwargs
+
+    cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=2)
+    cfg = dataclasses.replace(
+        cfg,
+        robot=dataclasses.replace(cfg.robot, reuse_replicated_mujoco=True),
+    )
+    kw = _builder_kwargs(cfg, gripper=cfg.robot.gripper, vbd_only=False)
+    assert kw["reuse_replicated_mujoco"] is True

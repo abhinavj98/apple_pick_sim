@@ -24,7 +24,10 @@ from apple_pick_sim.coupled_fruiting.scene import (
     CoupledFruitingScene,
     init_robot_mujoco_step_buffers,
 )
-from apple_pick_sim.coupled_fruiting.explicit_load import apple_mass_kg_from_model
+from apple_pick_sim.coupled_fruiting.explicit_load import (
+    apple_inertia_kgm2_from_mass_radius,
+    apple_mass_kg_from_model,
+)
 from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import (
     apply_mujoco_apple_payload_inertias,
     resolve_apple_payload_body_index,
@@ -93,6 +96,34 @@ def _cached_apple_mass_kg(cable: CoupledCableScene) -> float:
     if cable.apple_body is None:
         return 0.0
     return apple_mass_kg_from_model(cable.model, cable.apple_body)
+
+
+def _cached_apple_inertia_kgm2(cable: CoupledCableScene) -> float:
+    """Return solid-sphere apple inertia [kg·m²], or 0 when no apple is present."""
+    if cable.apple_body is None:
+        return 0.0
+    m = apple_mass_kg_from_model(cable.model, cable.apple_body)
+    r = None if cable.params.apple_radius is None else float(cable.params.apple_radius)
+    return apple_inertia_kgm2_from_mass_radius(m, r)
+
+
+def _resolve_stem_harvest_explicit_apple_inertia(
+    gripper_proxy: GripperProxyConfig | None,
+    *,
+    override: bool | None = None,
+) -> bool:
+    """Enable explicit apple inertia on harvest for prescribed (welded) apples."""
+    if override is True:
+        if gripper_proxy is not None and not gripper_proxy.fix_to_apple:
+            raise ValueError(
+                "stem_harvest_explicit_apple_inertia=True with fix_to_apple=False is not "
+                "supported: VBD already integrates apple mass; explicit inertia "
+                "double-counts fruit load at the TCP."
+            )
+        return True
+    if override is False:
+        return False
+    return bool(gripper_proxy is not None and gripper_proxy.fix_to_apple)
 
 
 def _resolve_stem_harvest_explicit_apple_weight(
@@ -173,6 +204,7 @@ def _assemble_coupled_robot_scene(
     mirror_welded_cable_after_bootstrap: bool = False,
     skip_ik_bootstrap: bool = False,
     stem_harvest_explicit_apple_weight: bool | None = None,
+    stem_harvest_explicit_apple_inertia: bool | None = None,
     proxy_registry: ProxyBodyRegistry | None = None,
     layout: BatchedEnvLayout | None = None,
     env_spacing: tuple[float, float, float] | None = None,
@@ -225,6 +257,11 @@ def _assemble_coupled_robot_scene(
         grip_cfg,
         override=stem_harvest_explicit_apple_weight,
     )
+    explicit_apple_inertia = _resolve_stem_harvest_explicit_apple_inertia(
+        grip_cfg,
+        override=stem_harvest_explicit_apple_inertia,
+    )
+    robot_tcp_qd_prev = wp.empty_like(robot_state_0.body_qd)
 
     scene = CoupledFruitingScene(
         cable=cable,
@@ -249,15 +286,21 @@ def _assemble_coupled_robot_scene(
         stem_force_cap_N=stem_force_cap_N,
         stem_torque_cap_Nm=stem_torque_cap_Nm,
         apple_mass_kg=_cached_apple_mass_kg(cable),
+        apple_inertia_kgm2=_cached_apple_inertia_kgm2(cable),
         mj_apple_payload_body_index=resolve_apple_payload_body_index(robot_model),
         qd_synced=qd_synced,
         stem_harvest_explicit_apple_weight=explicit_apple_weight,
+        stem_harvest_explicit_apple_inertia=explicit_apple_inertia,
+        robot_tcp_qd_prev=robot_tcp_qd_prev,
         layout=layout,
         env_spacing=env_spacing,
         ik_template_robot_model=ik_template_robot_model,
     )
     init_robot_mujoco_step_buffers(scene)
-    apply_mujoco_apple_payload_inertias(scene)
+    if explicit_apple_inertia:
+        wp.copy(scene.robot_tcp_qd_prev, scene.robot_state_0.body_qd)
+    else:
+        apply_mujoco_apple_payload_inertias(scene)
     return scene
 
 
@@ -286,6 +329,8 @@ def build_coupled_fruiting_fr3(
     robot_base_pos: tuple[float, float, float] | None = None,
     robot_base_from_proxy: bool = False,
     skip_ik_bootstrap: bool = False,
+    stem_harvest_explicit_apple_weight: bool | None = None,
+    stem_harvest_explicit_apple_inertia: bool | None = None,
 ) -> CoupledFruitingScene:
     """Build cable + FR3 arm scene; IK-bootstrap TCP to gripper proxy at construction."""
     if vbd_only and mujoco_only:
@@ -386,6 +431,8 @@ def build_coupled_fruiting_fr3(
         qd_synced=wp.empty_like(cable.state_0.body_qd),
         mirror_welded_cable_after_bootstrap=mujoco_only,
         skip_ik_bootstrap=skip_ik_bootstrap,
+        stem_harvest_explicit_apple_weight=stem_harvest_explicit_apple_weight,
+        stem_harvest_explicit_apple_inertia=stem_harvest_explicit_apple_inertia,
     )
     scene.fr3_root_world_pos = _fr3_root_world_pos(
         ranges,
@@ -423,6 +470,8 @@ def build_heterogeneous_coupled_fruiting_fr3(
     defer_template_robot_bootstrap: bool = False,
     force_batched_layout: bool = False,
     reuse_replicated_mujoco: bool = False,
+    stem_harvest_explicit_apple_weight: bool | None = None,
+    stem_harvest_explicit_apple_inertia: bool | None = None,
 ) -> CoupledFruitingScene:
     """Build heterogeneous FR3 coupled scenes via ``add_world`` (uniform topology)."""
     if not fr3_robot.fr3_assets_available():
@@ -619,10 +668,11 @@ def build_heterogeneous_coupled_fruiting_fr3(
         env_spacing=env_spacing,
         skip_ik_bootstrap=skip_ik_bootstrap,
         ik_template_robot_model=tpl_robot_model,
+        stem_harvest_explicit_apple_weight=stem_harvest_explicit_apple_weight,
+        stem_harvest_explicit_apple_inertia=stem_harvest_explicit_apple_inertia,
     )
     scene.per_env_params = params
     scene.per_world_proxy_offsets = per_world_offsets
-    apply_mujoco_apple_payload_inertias(scene)
     _maybe_prepare_batched_stem_harvest(scene)
     newton.eval_fk(
         robot_model,

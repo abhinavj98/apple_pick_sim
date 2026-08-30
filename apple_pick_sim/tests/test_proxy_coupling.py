@@ -845,6 +845,6 @@ def test_stem_limit_kernel_launch_input_count_regression():
     # One entry per line in the ``inputs=[`` list (16 args as of explicit-load CUDA path).
     input_lines = [ln.strip() for ln in block.split("inputs=[", 1)[1].split("],", 1)[0].splitlines()]
     input_lines = [ln for ln in input_lines if ln and not ln.startswith("#")]
-    assert len(input_lines) == 17, (
-        f"expected 17 launch inputs for stem limit kernel, got {len(input_lines)}: {input_lines}"
+    assert len(input_lines) == 22, (
+        f"expected 22 launch inputs for stem limit kernel, got {len(input_lines)}: {input_lines}"
     )

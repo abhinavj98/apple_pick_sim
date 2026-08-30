@@ -27,7 +27,8 @@ features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
 >
 > Sim `ft_wrist` is already the plant TCP wrench. Gym copies
 > `coupling_forces_cache` (`tcp_coupling_force`): stem-apple harvest plus
-> optional explicit apple payload (`m_apple * g`, env-on-robot). EE gravity,
+> optional explicit apple payload (`m_apple * g`, env-on-robot) and, on welded
+> builds, explicit apple inertia (`-m a_com`, `-I α` about TCP). EE gravity,
 > tool inertia, and VIC effort do **not** enter that 6-vector on the `vic` /
 > `vic_pose` path
 > (`vic_use_joint_torques=True`; controller wrenches go to `joint_f`). A

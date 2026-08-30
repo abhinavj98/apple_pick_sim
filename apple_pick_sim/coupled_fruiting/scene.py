@@ -177,6 +177,8 @@ def init_robot_mujoco_step_buffers(scene: Any) -> None:
     scene.mj_solver._update_mjc_data(
         scene.mj_solver.mj_data, scene.robot_model, scene.robot_state_0
     )
+    if getattr(scene, "robot_tcp_qd_prev", None) is not None:
+        wp.copy(scene.robot_tcp_qd_prev, scene.robot_state_0.body_qd)
 
 
 def _update_fr3_ee_teleop_impl(
@@ -290,8 +292,15 @@ def _harvest_coupling_wrenches(
                 use_explicit_apple_weight_wp=getattr(
                     scene, "stem_harvest_use_explicit_wp", None
                 ),
+                explicit_apple_inertia=scene.stem_harvest_explicit_apple_inertia,
+                use_explicit_apple_inertia_wp=getattr(
+                    scene, "stem_harvest_use_explicit_inertia_wp", None
+                ),
+                apple_inertias_wp=getattr(scene, "stem_harvest_apple_inertias_wp", None),
                 gravity=scene.gravity_vec,
                 robot_body_q=scene.robot_state_0.body_q,
+                robot_body_qd=scene.robot_state_0.body_qd,
+                robot_body_qd_prev=scene.robot_tcp_qd_prev,
                 device=str(scene.proxy_forces.device),
                 out_f=scene.stem_harvest_wrench_f_scratch,
                 out_t=scene.stem_harvest_wrench_t_scratch,
@@ -321,10 +330,14 @@ def _harvest_coupling_wrenches(
                 force_cap_N=scene.stem_force_cap_N,
                 torque_cap_Nm=scene.stem_torque_cap_Nm,
                 explicit_apple_weight=scene.stem_harvest_explicit_apple_weight,
+                explicit_apple_inertia=scene.stem_harvest_explicit_apple_inertia,
                 apple_body_index=apple_bid,
                 apple_mass_kg=scene.apple_mass_kg,
+                apple_inertia_kgm2=scene.apple_inertia_kgm2,
                 gravity=scene.gravity_vec,
                 robot_body_q=scene.robot_state_0.body_q,
+                robot_body_qd=scene.robot_state_0.body_qd,
+                robot_body_qd_prev=scene.robot_tcp_qd_prev,
                 grasp_offset_in_apple_frame=grasp_off,
             )
     else:
@@ -476,10 +489,16 @@ class CoupledFruitingScene:
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM
     stem_harvest_explicit_apple_weight: bool = False
     """Add env-on-robot apple payload ``m_apple * gravity`` into stem harvest (prescribed apple)."""
+    stem_harvest_explicit_apple_inertia: bool = False
+    """Add env-on-robot apple inertial reaction into stem harvest (prescribed apple)."""
     apple_mass_kg: float = 0.0
     """Cached ``body_mass[apple]`` at build; avoids host sync during CUDA graph capture."""
+    apple_inertia_kgm2: float = 0.0
+    """Cached solid-sphere apple inertia at build (CUDA graph safe)."""
     mj_apple_payload_body_index: int | None = None
-    """MuJoCo FIXED child of TCP carrying apple inertia (welded builds only)."""
+    """MuJoCo FIXED child of TCP; mass 0 when harvest inertia is on."""
+    robot_tcp_qd_prev: wp.array | None = None
+    """Previous robot ``body_qd`` snapshot for finite-difference apple inertia."""
     gravity_vec: wp.vec3 = dataclasses.field(default_factory=lambda: wp.vec3(0.0, 0.0, -9.81))
     use_mujoco_contacts: bool = False
     robot_disable_contacts: bool = True
@@ -512,6 +531,8 @@ class CoupledFruitingScene:
     stem_harvest_use_grasp_offset_wp: wp.array | None = None
     stem_harvest_use_explicit_wp: wp.array | None = None
     """Cached per-env explicit-apple-load flags (build-time; avoid per-substep ``wp.full``)."""
+    stem_harvest_apple_inertias_wp: wp.array | None = None
+    stem_harvest_use_explicit_inertia_wp: wp.array | None = None
     stem_harvest_wrench_f_scratch: wp.array | None = None
     stem_harvest_wrench_t_scratch: wp.array | None = None
     co_teleport_apple_ids_wp: wp.array | None = None
@@ -644,3 +665,5 @@ class CoupledFruitingScene:
             harvest_registry=self.proxy_registry,
             cable=self.cable,
         )
+        if self.robot_tcp_qd_prev is not None and self.robot_state_0 is not None:
+            wp.copy(self.robot_tcp_qd_prev, self.robot_state_0.body_qd)

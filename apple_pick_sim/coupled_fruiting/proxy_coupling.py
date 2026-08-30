@@ -385,6 +385,17 @@ def _zero_all_wrenches_kernel(wrenches: wp.array(dtype=wp.spatial_vector)):
     wrenches[wp.tid()] = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
+@wp.func
+def _apple_com_acceleration_from_tcp_twist(
+    a_tcp: wp.vec3,
+    alpha: wp.vec3,
+    omega: wp.vec3,
+    r_tcp_to_apple: wp.vec3,
+) -> wp.vec3:
+    """``a_com = a_tcp + α × r + ω × (ω × r)`` (world frame)."""
+    return a_tcp + wp.cross(alpha, r_tcp_to_apple) + wp.cross(omega, wp.cross(omega, r_tcp_to_apple))
+
+
 @wp.kernel
 def _limit_and_write_tcp_stem_wrench_kernel(
     wrenches: wp.array(dtype=wp.spatial_vector),
@@ -404,6 +415,11 @@ def _limit_and_write_tcp_stem_wrench_kernel(
     apple_body_index: int,
     grasp_offset: wp.transform,
     use_grasp_offset: int,
+    use_explicit_apple_inertia: int,
+    apple_inertia_kgm2: float,
+    robot_body_qd: wp.array(dtype=wp.spatial_vector),
+    robot_body_qd_prev: wp.array(dtype=wp.spatial_vector),
+    dt: float,
 ):
     """Under-relax and clamp stem harvest; write spatial wrench at ``tcp_index``.
 
@@ -439,6 +455,36 @@ def _limit_and_write_tcp_stem_wrench_kernel(
             )
             f_total_tcp = f_total_tcp + f_apple_weight
             tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_apple_weight)
+
+        if (
+            use_explicit_apple_inertia != 0
+            and apple_mass_kg > 0.0
+            and dt > 0.0
+        ):
+            qd = robot_body_qd[tcp_index]
+            qd_prev = robot_body_qd_prev[tcp_index]
+            inv_dt = 1.0 / dt
+            v = wp.spatial_top(qd)
+            w = wp.spatial_bottom(qd)
+            v_prev = wp.spatial_top(qd_prev)
+            w_prev = wp.spatial_bottom(qd_prev)
+            a_tcp = (v - v_prev) * inv_dt
+            alpha = (w - w_prev) * inv_dt
+            a_com = _apple_com_acceleration_from_tcp_twist(
+                a_tcp, alpha, w, r_tcp_to_apple_com
+            )
+            f_inertia = wp.vec3(
+                -apple_mass_kg * a_com[0],
+                -apple_mass_kg * a_com[1],
+                -apple_mass_kg * a_com[2],
+            )
+            f_total_tcp = f_total_tcp + f_inertia
+            tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_inertia)
+            tau_total_tcp = tau_total_tcp - wp.vec3(
+                apple_inertia_kgm2 * alpha[0],
+                apple_inertia_kgm2 * alpha[1],
+                apple_inertia_kgm2 * alpha[2],
+            )
             
     f_total_tcp = f_total_tcp * coupling_gain
     tau_total_tcp = tau_total_tcp * coupling_gain
@@ -477,6 +523,11 @@ def _batched_limit_and_write_tcp_stem_wrench_kernel(
     apple_body_indices: wp.array(dtype=int),
     grasp_offsets: wp.array(dtype=wp.transform),
     use_grasp_offset: wp.array(dtype=int),
+    use_explicit_apple_inertia: wp.array(dtype=int),
+    apple_inertia_kgm2: wp.array(dtype=float),
+    robot_body_qd: wp.array(dtype=wp.spatial_vector),
+    robot_body_qd_prev: wp.array(dtype=wp.spatial_vector),
+    dt: float,
 ):
     """Under-relax and clamp batched stem harvest; write spatial wrench per TCP row.
 
@@ -509,6 +560,26 @@ def _batched_limit_and_write_tcp_stem_wrench_kernel(
             f_apple_weight = wp.vec3(m * g[0], m * g[1], m * g[2])
             f_total_tcp = f_total_tcp + f_apple_weight
             tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_apple_weight)
+
+        if use_explicit_apple_inertia[i] != 0 and apple_mass_kg[i] > 0.0 and dt > 0.0:
+            I = apple_inertia_kgm2[i]
+            m = apple_mass_kg[i]
+            qd = robot_body_qd[tcp_index]
+            qd_prev = robot_body_qd_prev[tcp_index]
+            inv_dt = 1.0 / dt
+            v = wp.spatial_top(qd)
+            w = wp.spatial_bottom(qd)
+            v_prev = wp.spatial_top(qd_prev)
+            w_prev = wp.spatial_bottom(qd_prev)
+            a_tcp = (v - v_prev) * inv_dt
+            alpha = (w - w_prev) * inv_dt
+            a_com = _apple_com_acceleration_from_tcp_twist(
+                a_tcp, alpha, w, r_tcp_to_apple_com
+            )
+            f_inertia = wp.vec3(-m * a_com[0], -m * a_com[1], -m * a_com[2])
+            f_total_tcp = f_total_tcp + f_inertia
+            tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_inertia)
+            tau_total_tcp = tau_total_tcp - wp.vec3(I * alpha[0], I * alpha[1], I * alpha[2])
 
     f_total_tcp = f_total_tcp * coupling_gain
     tau_total_tcp = tau_total_tcp * coupling_gain
@@ -565,8 +636,13 @@ def harvest_batched_stem_tension(
     torque_cap_Nm: float | None = None,
     explicit_apple_weight: bool = True,
     use_explicit_apple_weight_wp: wp.array | None = None,
+    explicit_apple_inertia: bool = False,
+    use_explicit_apple_inertia_wp: wp.array | None = None,
+    apple_inertias_wp: wp.array | None = None,
     gravity: wp.vec3 | None = None,
     robot_body_q: wp.array | None = None,
+    robot_body_qd: wp.array | None = None,
+    robot_body_qd_prev: wp.array | None = None,
     device: str | None = None,
     out_f: wp.array | None = None,
     out_t: wp.array | None = None,
@@ -602,6 +678,16 @@ def harvest_batched_stem_tension(
         use_explicit_arr = use_explicit_apple_weight_wp
     else:
         use_explicit_arr = wp.full(n, 1 if explicit_apple_weight else 0, dtype=int, device=dev)
+    if use_explicit_apple_inertia_wp is not None:
+        use_inertia_arr = use_explicit_apple_inertia_wp
+    else:
+        use_inertia_arr = wp.full(n, 1 if explicit_apple_inertia else 0, dtype=int, device=dev)
+    if apple_inertias_wp is not None:
+        inertia_arr = apple_inertias_wp
+    else:
+        inertia_arr = wp.zeros(n, dtype=float, device=dev)
+    robot_bqd = robot_body_qd if robot_body_qd is not None else out_robot_wrenches
+    robot_bqd_prev = robot_body_qd_prev if robot_body_qd_prev is not None else robot_bqd
 
     f_cap = float(force_cap_N) if force_cap_N is not None else 0.0
     t_cap = float(torque_cap_Nm) if torque_cap_Nm is not None else 0.0
@@ -626,6 +712,11 @@ def harvest_batched_stem_tension(
             apple_indices_wp,
             grasp_offsets_wp,
             use_grasp_offset_wp,
+            use_inertia_arr,
+            inertia_arr,
+            robot_bqd,
+            robot_bqd_prev,
+            float(dt),
         ],
         device=dev,
     )
@@ -658,23 +749,38 @@ def prepare_batched_stem_harvest_arrays(scene: Any, layout: Any) -> None:
             use_grasp.append(1)
 
     masses_np = cable.model.body_mass.numpy()
-    apple_masses = [
-        float(masses_np[int(layout.apple_body_indices[w])])
-        if int(layout.apple_body_indices[w]) >= 0
-        else 0.0
-        for w in range(n)
-    ]
+    apple_masses = []
+    apple_inertias = []
+    per_params: Sequence[Any] | None = getattr(scene, "per_env_params", None)
+    default_params = cable.params
+    for w in range(n):
+        apple_i = int(layout.apple_body_indices[w])
+        if apple_i >= 0:
+            m = float(masses_np[apple_i])
+        else:
+            m = 0.0
+        apple_masses.append(m)
+        params_w = (
+            per_params[w]
+            if per_params is not None and w < len(per_params)
+            else default_params
+        )
+        r = 0.0 if params_w.apple_radius is None else float(params_w.apple_radius)
+        apple_inertias.append(0.4 * m * r * r if m > 0.0 and r > 0.0 else 0.0)
 
     scene.stem_harvest_joint_indices_wp = wp.array(stem_joints, dtype=int, device=dev)
     scene.stem_harvest_tcp_indices_wp = wp.array(list(layout.tcp_body_indices), dtype=int, device=dev)
     scene.stem_harvest_apple_indices_wp = wp.array(list(layout.apple_body_indices), dtype=int, device=dev)
     scene.stem_harvest_grasp_offsets_wp = wp.array(grasp_list, dtype=wp.transform, device=dev)
     scene.stem_harvest_apple_masses_wp = wp.array(apple_masses, dtype=float, device=dev)
+    scene.stem_harvest_apple_inertias_wp = wp.array(apple_inertias, dtype=float, device=dev)
     scene.stem_harvest_use_grasp_offset_wp = wp.array(use_grasp, dtype=int, device=dev)
     scene.stem_harvest_wrench_f_scratch = wp.zeros(n, dtype=wp.vec3, device=dev)
     scene.stem_harvest_wrench_t_scratch = wp.zeros(n, dtype=wp.vec3, device=dev)
     explicit_on = 1 if bool(getattr(scene, "stem_harvest_explicit_apple_weight", False)) else 0
     scene.stem_harvest_use_explicit_wp = wp.full(n, explicit_on, dtype=int, device=dev)
+    inertia_on = 1 if bool(getattr(scene, "stem_harvest_explicit_apple_inertia", False)) else 0
+    scene.stem_harvest_use_explicit_inertia_wp = wp.full(n, inertia_on, dtype=int, device=dev)
 
     # Co-teleport arrays for welded multi-env mirror (reuse every substep).
     if (
@@ -710,10 +816,14 @@ def _harvest_stem_tension_for_tcp_cpu(
     force_cap_N: float | None,
     torque_cap_Nm: float | None,
     explicit_apple_weight: bool = True,
+    explicit_apple_inertia: bool = False,
     apple_body_index: int | None = None,
     apple_mass_kg: float | None = None,
+    apple_inertia_kgm2: float = 0.0,
     gravity: wp.vec3 | None = None,
     robot_body_q: wp.array | None = None,
+    robot_body_qd: wp.array | None = None,
+    robot_body_qd_prev: wp.array | None = None,
     grasp_offset_in_apple_frame: tuple | None = None,
 ) -> None:
     """CPU fallback for stem harvest: NumPy gather, lever-arm transfer, gain/caps.
@@ -773,7 +883,7 @@ def _harvest_stem_tension_for_tcp_cpu(
             r_tcp_to_apple_com = p_apple - p_tcp
             tau_total_tcp = tau_total_tcp + np.cross(r_tcp_to_apple_com, f_stem_at_com)
             
-            if explicit_apple_weight:
+            if explicit_apple_weight or explicit_apple_inertia:
                 g = gravity if gravity is not None else wp.vec3(0.0, 0.0, -9.81)
                 m = (
                     float(apple_mass_kg)
@@ -781,14 +891,23 @@ def _harvest_stem_tension_for_tcp_cpu(
                     else apple_mass_kg_from_model(cable_model, apple_body_index)
                 )
                 if m > 0.0:
-                    from apple_pick_sim.coupled_fruiting.explicit_load import (
-                        apple_explicit_wrench_about_tcp,
+                    f_add, tau_add = explicit_apple_wrench_for_stem_harvest(
+                        mass_kg=m,
+                        gravity=g,
+                        robot_body_q=robot_body_q,
+                        cable_body_q=body_q_post,
+                        tcp_body_index=tcp_body_index,
+                        apple_body_index=int(apple_body_index),
+                        grasp_offset_in_apple_frame=grasp_offset_in_apple_frame,
+                        robot_body_qd=robot_body_qd,
+                        robot_body_qd_prev=robot_body_qd_prev,
+                        dt=float(dt),
+                        inertia_kgm2=float(apple_inertia_kgm2),
+                        explicit_apple_weight=bool(explicit_apple_weight),
+                        explicit_apple_inertia=bool(explicit_apple_inertia),
                     )
-                    f_apple_weight, tau_apple_weight_at_tcp = apple_explicit_wrench_about_tcp(
-                        m, g, p_tcp, apple_pos_world=p_apple
-                    )
-                    f_total_tcp = f_total_tcp + f_apple_weight
-                    tau_total_tcp = tau_total_tcp + tau_apple_weight_at_tcp
+                    f_total_tcp = f_total_tcp + f_add
+                    tau_total_tcp = tau_total_tcp + tau_add
         wrenches[tcp_body_index, :3] = f_total_tcp.astype(np.float32)
         wrenches[tcp_body_index, 3:6] = tau_total_tcp.astype(np.float32)
     limit_stem_coupling_wrench(
@@ -815,10 +934,14 @@ def harvest_stem_tension_for_tcp(
     force_cap_N: float | None = None,
     torque_cap_Nm: float | None = None,
     explicit_apple_weight: bool = True,
+    explicit_apple_inertia: bool = False,
     apple_body_index: int | None = None,
     apple_mass_kg: float | None = None,
+    apple_inertia_kgm2: float = 0.0,
     gravity: wp.vec3 | None = None,
     robot_body_q: wp.array | None = None,
+    robot_body_qd: wp.array | None = None,
+    robot_body_qd_prev: wp.array | None = None,
     grasp_offset_in_apple_frame: tuple | None = None,
     clear_wrenches: bool = True,
 ) -> None:
@@ -857,14 +980,24 @@ def harvest_stem_tension_for_tcp(
     )
     g = gravity if gravity is not None else wp.vec3(0.0, 0.0, -9.81)
     use_explicit = 0
+    use_inertia = 0
     m_apple = 0.0
+    I_apple = 0.0
     apple_bid = -1
     grasp_off = wp.transform_identity()
     use_grasp_offset = 0
     robot_bq = body_q_post
+    robot_bqd = out_robot_wrenches
+    robot_bqd_prev = out_robot_wrenches
     if robot_body_q is not None and apple_body_index is not None and int(apple_body_index) >= 0:
         apple_bid = int(apple_body_index)
         robot_bq = robot_body_q
+        if robot_body_qd is not None:
+            robot_bqd = robot_body_qd
+        if robot_body_qd_prev is not None:
+            robot_bqd_prev = robot_body_qd_prev
+        elif robot_body_qd is not None:
+            robot_bqd_prev = robot_body_qd
         if grasp_offset_in_apple_frame is not None:
             go = grasp_offset_in_apple_frame
             if len(go) == 7:
@@ -878,14 +1011,18 @@ def harvest_stem_tension_for_tcp(
                     wp.quat_identity(),
                 )
             use_grasp_offset = 1
-        if explicit_apple_weight:
+        if explicit_apple_weight or explicit_apple_inertia:
             m_apple = (
                 float(apple_mass_kg)
                 if apple_mass_kg is not None
                 else apple_mass_kg_from_model(cable_model, apple_body_index)
             )
             if m_apple > 0.0:
-                use_explicit = 1
+                if explicit_apple_weight:
+                    use_explicit = 1
+                if explicit_apple_inertia:
+                    use_inertia = 1
+                I_apple = float(apple_inertia_kgm2)
     f_cap = float(force_cap_N) if force_cap_N is not None else 0.0
     t_cap = float(torque_cap_Nm) if torque_cap_Nm is not None else 0.0
     wp.launch(
@@ -909,6 +1046,11 @@ def harvest_stem_tension_for_tcp(
             apple_bid,
             grasp_off,
             use_grasp_offset,
+            use_inertia,
+            float(I_apple),
+            robot_bqd,
+            robot_bqd_prev,
+            float(dt),
         ],
         device=dev,
     )

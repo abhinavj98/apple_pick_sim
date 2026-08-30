@@ -7,8 +7,10 @@ import pytest
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.explicit_load import (
+    apple_com_acceleration_world,
     apple_com_from_tcp_grasp_offset,
     apple_explicit_wrench_about_tcp,
+    apple_inertial_reaction_wrench_about_tcp,
     apple_mass_kg_from_model,
     apple_support_force_world,
     body_com_position_world,
@@ -44,6 +46,40 @@ _SETTLE_WELD_BUILD_KW = dict(
 
 
 _GRAVITY = (0.0, 0.0, -9.81)
+
+
+def test_apple_inertial_reaction_zero_when_at_rest():
+    m, I = 0.2, 0.001
+    r = np.array([0.08, 0.0, 0.0])
+    z = np.zeros(3)
+    f, tau = apple_inertial_reaction_wrench_about_tcp(m, I, z, z, r)
+    np.testing.assert_allclose(f, 0.0, atol=0.0)
+    np.testing.assert_allclose(tau, 0.0, atol=0.0)
+
+
+def test_apple_inertial_reaction_upward_accel_loads_robot_more():
+    m = 0.2
+    a_com = np.array([0.0, 0.0, 0.5])
+    f, tau = apple_inertial_reaction_wrench_about_tcp(m, 0.0, a_com, np.zeros(3), np.zeros(3))
+    np.testing.assert_allclose(f, -m * a_com, rtol=1e-12, atol=1e-12)
+    assert float(f[2]) < 0.0
+
+
+def test_apple_inertial_reaction_free_fall_cancels_weight():
+    m = 0.2
+    g = np.array([0.0, 0.0, -9.81])
+    f_w = apple_support_force_world(m, _GRAVITY)
+    f_i, _ = apple_inertial_reaction_wrench_about_tcp(m, 0.0, g, np.zeros(3), np.zeros(3))
+    np.testing.assert_allclose(f_w + f_i, 0.0, atol=1e-10)
+
+
+def test_apple_com_acceleration_centripetal():
+    w = np.array([0.0, 0.0, 2.0])
+    r = np.array([0.1, 0.0, 0.0])
+    a_com = apple_com_acceleration_world(np.zeros(3), w, np.zeros(3), np.zeros(3), r)
+    expected = np.cross(w, np.cross(w, r))
+    np.testing.assert_allclose(a_com, expected, rtol=1e-12, atol=1e-12)
+    assert float(a_com[0]) < 0.0
 
 
 def test_apple_support_force_world_matches_apple_weight():

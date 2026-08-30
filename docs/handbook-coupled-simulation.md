@@ -186,9 +186,11 @@ The code defaults are:
 - `DEFAULT_STEM_TORQUE_CAP_NM = 10.0`.
 
 Model A remains zero-gravity. Welded FR3 builds (`GripperProxyConfig.fix_to_apple=True`)
-add a mass-only FIXED child of the TCP labeled `apple_payload`. Quasi-static fruit
-weight still enters via stem harvest (`m · g`). The dummy supplies **reflected
-inertia** only:
+add a FIXED child of the TCP labeled `apple_payload` for topology/A/B. **Production
+welded builds with harvest inertia** leave this body at **mass 0**; apple weight
+and rigid-body inertia enter via stem harvest (`m g − m a`, `r×F − Iα`). Legacy A/B
+sets reflected inertia on the payload via `apply_mujoco_apple_payload_inertias` when
+`stem_harvest_explicit_apple_inertia=False`:
 
 \[
 m = m_{\mathrm{AVBD\,apple}},\quad

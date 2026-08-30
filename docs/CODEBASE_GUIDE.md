@@ -130,7 +130,11 @@ and experiment notes that H1–H5 summarize rather than duplicate.
 - **Observations (H2/H3):** `docs/gym-observation-contract.md`.
 - **Sys-ID protocol/stability (H3/H5):** `docs/system_identification.md` and
   `docs/batched-stability-monitor-design.md`.
-- **Replay/twin (H4):** `docs/digital-twin.md` and `robot_replay/README.md`.
+- **Replay/twin (H4):** `docs/digital-twin.md`, `docs/connection-angles-implementation.md`,
+  and `robot_replay/README.md`.
+- **Open defect (H5):** `docs/in-process-rebuild-heap-corruption.md` — intermittent
+  Warp/Newton host-heap corruption when rebuilding and stepping many scenes in one
+  process; why `--no-isolated-eval-waves` is unsafe.
 
 ### Archived design records
 
@@ -152,6 +156,7 @@ and experiment notes that H1–H5 summarize rather than duplicate.
 | Batched digital-twin fidelity (V.4.2.1) | Helpers and `--infer-params` shipped; an infer-only fidelity floor is optional deferred cleanup, not Current focus. | `docs/ROADMAP.md`, `docs/digital-twin.md`, H4 |
 | `real_world_proxy.json` topology | The nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`, so the two fixtures build different topologies. | `docs/real-world-proxy.md`, H1 |
 | Held-out sim-sim validation (V.5.3) | Deferred until after M4.0 or explicit maintainer direction. | `docs/ROADMAP.md`, H5 |
+| In-process rebuild heap corruption | Open, not root-caused. Rebuilding and stepping many scenes in one process intermittently corrupts host object state (SIGSEGV / bogus `code`/`function` attribute errors). Use process-isolated eval waves; `--no-isolated-eval-waves` is unsafe. | `docs/in-process-rebuild-heap-corruption.md`, H5 |
 
 ## Conventions worth knowing before editing docs or code
 

@@ -87,12 +87,12 @@ def test_action_semantics_allows_legacy_6d_hatch_and_vic_pose_mode():
 
 
 def test_parser_settle_defaults_match_pre_grasp_settle_viewer():
-    """Defaults align with example_view_pre_grasp_settle (5000 / quiet 300 / post 500)."""
+    """Defaults align with example_view_pre_grasp_settle (2000 / quiet 100 / post 500)."""
     mod = _load_replay()
     p = mod._make_parser()
     args = p.parse_args(["--dataset", "/tmp/ds", "--viewer", "null"])
-    assert args.settle_substeps == 5000
-    assert args.settle_quiet_every == 300
+    assert args.settle_substeps == 2000
+    assert args.settle_quiet_every == 100
     assert args.settle_gravity_ramp is False
     assert args.post_grasp_settle_substeps == 500
 
@@ -107,13 +107,13 @@ def test_sim_config_applies_settle_quiet_post_grasp_and_substeps():
         topology_seed=0,
         fruiting_base_pos=(0.117, 0.787, 0.577),
         ranges=ranges,
-        settle_substeps=5000,
-        settle_quiet_every=300,
+        settle_substeps=2000,
+        settle_quiet_every=100,
         settle_gravity_ramp=False,
         post_grasp_settle_substeps=500,
     )
-    assert cfg.scene.settle_substeps == 5000
-    assert cfg.scene.settle_quiet_every == 300
+    assert cfg.scene.settle_substeps == 2000
+    assert cfg.scene.settle_quiet_every == 100
     assert cfg.scene.settle_gravity_ramp is False
     assert cfg.scene.post_grasp_settle_substeps == 500
 

@@ -379,7 +379,9 @@ def test_evaluator_uses_source_direction_width_for_sparse_ids(
     assert replay_call["direction_indices"] == [0, 2]
     assert replay_call["num_directions"] == 2
     assert gt_context_calls[0]["n_directions"] == expected_scoring_n_directions
-    assert "pool_directions" not in gt_context_calls[0]
+    assert gt_context_calls[0]["pool_directions"] is pool_directions
+    assert gt_context_calls[0]["include_delta"] is False
+    assert gt_context_calls[0]["categorical_weight"] == pytest.approx(30.0)
     assert score_calls[0]["n_directions"] == expected_scoring_n_directions
     assert score_calls[0]["pool_directions"] is pool_directions
 
@@ -1153,7 +1155,7 @@ def test_evaluate_multi_structure_fuses_in_requested_order_and_scores_local_cand
     assert tuple(batch.evaluations) == (4, 1)
     assert [len(batch.evaluations[idx].scores) for idx in (4, 1)] == [2, 1]
     assert batch.errors == {}
-    assert batch.retried_structures == ()
+    assert not hasattr(batch, "retried_structures")
     assert len(replay_calls) == 1
     assert [(b.structure_idx, b.local_candidate_idx) for b in replay_calls[0]] == [
         (4, 0),
@@ -1162,7 +1164,7 @@ def test_evaluate_multi_structure_fuses_in_requested_order_and_scores_local_cand
     ]
 
 
-def test_evaluate_multi_structure_fusion_incompatibility_falls_back_without_errors(
+def test_evaluate_multi_structure_fusion_incompatibility_raises_actionable_error(
     monkeypatch: pytest.MonkeyPatch,
     gt_params: fs.FruitingSystemParams,
 ):
@@ -1184,44 +1186,27 @@ def test_evaluate_multi_structure_fusion_incompatibility_falls_back_without_erro
         "prepare_youngs_modulus_structure",
         lambda **kwargs: prepared[int(kwargs["structure_idx"])],
     )
-    replay_fused = MagicMock(side_effect=AssertionError("fused replay must not run"))
-    monkeypatch.setattr(cmaes, "replay_multi_structure_candidate_blocks", replay_fused)
-    scalar_calls: list[int] = []
-
-    def fake_scalar(**kwargs):
-        structure_idx = int(kwargs["structure_idx"])
-        assert kwargs["action_dim"] == 19
-        scalar_calls.append(structure_idx)
-        item = prepared[structure_idx]
-        return cmaes.YoungsModulusEvaluation(
-            structure_idx=structure_idx,
-            gt_candidate=item.gt_candidate,
-            fixed_secondary_e_pa=item.fixed_secondary_e_pa,
-            direction_indices=item.direction_indices,
-            scores=[],
-            replay_episodes=[],
-            applied_params=[],
-        )
-
-    monkeypatch.setattr(cmaes, "evaluate_youngs_modulus_candidates", fake_scalar)
-
-    batch = cmaes.evaluate_youngs_modulus_structures(
-        dataset=MagicMock(),
-        structures=structures,
-        num_directions=5,
-        build_env_fn=MagicMock(),
-        scoring=cmaes.YoungsModulusScoringConfig(n_directions=5),
-        action_dim=19,
+    monkeypatch.setattr(
+        cmaes,
+        "evaluate_youngs_modulus_candidates",
+        MagicMock(side_effect=AssertionError("scalar retry must not run")),
     )
 
-    assert tuple(batch.evaluations) == (4, 1)
-    assert batch.errors == {}
-    assert batch.retried_structures == (4, 1)
-    assert scalar_calls == [4, 1]
-    replay_fused.assert_not_called()
+    with pytest.raises(
+        multi.ReplayFusionIncompatible,
+        match=r"direction layout|--no-multi-structure-batch",
+    ):
+        cmaes.evaluate_youngs_modulus_structures(
+            dataset=MagicMock(),
+            structures=structures,
+            num_directions=5,
+            build_env_fn=MagicMock(),
+            scoring=cmaes.YoungsModulusScoringConfig(n_directions=5),
+            action_dim=19,
+        )
 
 
-def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
+def test_evaluate_multi_structure_runtime_failure_records_error_without_retry(
     monkeypatch: pytest.MonkeyPatch,
     gt_params: fs.FruitingSystemParams,
 ):
@@ -1243,6 +1228,12 @@ def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
         "prepare_youngs_modulus_structure",
         lambda **kwargs: prepared[int(kwargs["structure_idx"])],
     )
+    chunk_detail = (
+        "chunk 0: synthetic failure\n"
+        "Traceback (most recent call last):\n"
+        "  File \"fake.py\", line 1, in <module>\n"
+        "RuntimeError: synthetic failure\n"
+    )
     replay_for_1 = {
         multi.ReplaySlotKey(1, 0, direction_idx): _dummy_recorded_episode(
             direction_idx=direction_idx
@@ -1254,7 +1245,7 @@ def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
         "replay_multi_structure_candidate_blocks",
         lambda **_kwargs: multi.MultiStructureReplayOutcome(
             replay_by_key=replay_for_1,
-            failed_structures={4: "chunk 0: synthetic failure"},
+            failed_structures={4: chunk_detail},
             diagnostics=multi.MultiStructureReplayDiagnostics(
                 candidate_blocks=2,
                 flattened_envs=4,
@@ -1278,23 +1269,11 @@ def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
             aggregate=0.1,
         ),
     )
-    scalar_calls: list[int] = []
-
-    def fake_scalar(**kwargs):
-        structure_idx = int(kwargs["structure_idx"])
-        scalar_calls.append(structure_idx)
-        item = prepared[structure_idx]
-        return cmaes.YoungsModulusEvaluation(
-            structure_idx=structure_idx,
-            gt_candidate=item.gt_candidate,
-            fixed_secondary_e_pa=item.fixed_secondary_e_pa,
-            direction_indices=item.direction_indices,
-            scores=[],
-            replay_episodes=[],
-            applied_params=[],
-        )
-
-    monkeypatch.setattr(cmaes, "evaluate_youngs_modulus_candidates", fake_scalar)
+    monkeypatch.setattr(
+        cmaes,
+        "evaluate_youngs_modulus_candidates",
+        MagicMock(side_effect=AssertionError("scalar retry must not run")),
+    )
 
     batch = cmaes.evaluate_youngs_modulus_structures(
         dataset=MagicMock(),
@@ -1304,10 +1283,10 @@ def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
         scoring=cmaes.YoungsModulusScoringConfig(n_directions=5),
     )
 
-    assert tuple(batch.evaluations) == (4, 1)
-    assert batch.errors == {}
-    assert batch.retried_structures == (4,)
-    assert scalar_calls == [4]
+    assert tuple(batch.evaluations) == (1,)
+    assert batch.errors[4] == chunk_detail
+    assert "Traceback (most recent call last)" in batch.errors[4]
+    assert not hasattr(batch, "retried_structures")
 
 
 def test_evaluate_multi_structure_records_preparation_error_and_fail_fast_raises(

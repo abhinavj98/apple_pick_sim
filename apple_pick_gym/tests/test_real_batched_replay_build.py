@@ -302,6 +302,25 @@ def test_real_replay_sim_config_applies_vic_pose_and_control_hz():
     assert cfg.robot.reuse_replicated_mujoco is False
 
 
+def test_real_replay_sim_config_enable_self_collisions():
+    if not _VARIANCE.is_file():
+        pytest.skip(f"missing {_VARIANCE}")
+
+    from apple_pick_gym.batched_envs.real_batched_replay_build import (
+        real_replay_sim_config,
+    )
+
+    ranges = load_ranges(_VARIANCE)
+    cfg = real_replay_sim_config(
+        num_envs=1,
+        topology_seed=0,
+        fruiting_base_pos=(0.117, 0.787, 0.577),
+        ranges=ranges,
+        enable_self_collisions=True,
+    )
+    assert cfg.scene.enable_self_collisions is True
+
+
 def test_real_replay_sim_config_can_enable_replicated_mujoco_reuse():
     if not _VARIANCE.is_file():
         pytest.skip(f"missing {_VARIANCE}")

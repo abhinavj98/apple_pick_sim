@@ -24,6 +24,7 @@ from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     _spur_attach_fraction_from_ranges,
     _spur_surface_offset_from_ranges,
+    _stem_surface_offset_from_ranges,
     _stretch_kw_from_seg_ranges,
     fruiting_params_to_dict,
     load_ranges,
@@ -154,10 +155,10 @@ def world_wrench_from_ee_logged(
     """Rotate logged EE-frame wrench ``[F, τ]`` into world using ``R(tcp)``.
 
     When ``transport_torque_to_tcp`` is True, subtract ``p × F`` after the
-    rotation so τ is the moment about the TCP origin. Logged
-    ``O_F_ext_hat_K`` torque is the moment about the robot base origin;
-    collection only applies ``R.T``, so convert must transport if the score
-    contract is TCP-local (see libfranka issue #112).
+    rotation so τ is the moment about the TCP origin. Use only for legacy
+    parquets whose logged torque is about the robot base origin. Current real
+    collections (``final_data_correct_torque/``) already store TCP-local torque;
+    leave ``transport_torque_to_tcp`` False for convert.
     """
     ft = np.asarray(ft_ee, dtype=np.float64).reshape(6)
     pose = np.asarray(tcp_pose_4x4, dtype=np.float64).reshape(4, 4)
@@ -244,6 +245,7 @@ def build_fruiting_params_from_real(
         topology="t_junction",
         spur_attach_fraction=_spur_attach_fraction_from_ranges(ranges),
         spur_surface_offset=_spur_surface_offset_from_ranges(ranges),
+        stem_surface_offset=_stem_surface_offset_from_ranges(ranges),
     )
 
 
@@ -873,8 +875,8 @@ def _manifest_sim_config_from_fixture(
         ),
         scene=dataclasses.replace(
             gym_cfg.scene,
-            settle_substeps=5000,
-            settle_quiet_every=300,
+            settle_substeps=2000,
+            settle_quiet_every=100,
             settle_gravity_ramp=False,
             post_grasp_settle_substeps=500,
             fruiting_base_pos=fruiting_base_pos,

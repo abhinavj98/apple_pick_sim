@@ -2,9 +2,9 @@
 
 When ``fix_to_apple`` prescribes the apple (``inv_mass == 0``), VBD does not integrate
 gravity on that link. Stem joint gather still reflects stem deformation and kinematic
-coupling, but may under-represent fruit weight at hold. This module adds support force
-``-m_apple * g`` and torque ``(p_apple - p_tcp) × F`` (world frame, about TCP) before
-gain/caps on the harvested wrench.
+coupling, but may under-represent fruit weight at hold. This module adds the apple
+payload ``m_apple * g`` (env-on-robot) and torque ``(p_apple - p_tcp) × F`` (world
+frame, about TCP) before gain/caps on the harvested wrench.
 
 With ``fix_to_apple``, apple pose follows the robot TCP via
 ``gripper_proxy_offset_in_apple_frame`` (same convention as
@@ -38,16 +38,15 @@ def apple_support_force_world(
     mass_kg: float,
     gravity: wp.vec3 | tuple[float, float, float],
 ) -> np.ndarray:
-    """Support force on the apple [N] (world frame).
+    """Apple weight on the robot TCP [N] (world frame, env-on-robot).
 
-    Weight on the apple is ``mass_kg * gravity``; stem support is the opposite:
-    ``-mass_kg * gravity``. With ``gravity = (0, 0, -9.81)``, support is ``(0, 0, +m g)``.
+    With ``gravity = (0, 0, -9.81)``, returns ``(0, 0, -m g)`` (downward payload).
     """
     m = float(mass_kg)
     if m <= 0.0:
         return np.zeros(3, dtype=np.float64)
     gx, gy, gz = _gravity_components(gravity)
-    return np.array([-m * gx, -m * gy, -m * gz], dtype=np.float64)
+    return np.array([m * gx, m * gy, m * gz], dtype=np.float64)
 
 
 def body_com_position_world(body_q: Any, body_index: int) -> np.ndarray:
@@ -107,7 +106,7 @@ def apple_explicit_wrench_about_tcp(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Explicit apple-weight wrench reported about the TCP origin (world frame).
 
-    Force is support ``-m * g`` (same as :func:`apple_support_force_world`).
+    Force is apple payload ``m * g`` (same as :func:`apple_support_force_world`).
     Torque is ``(p_apple - p_tcp) × F`` so offset COM weight produces moment at the flange.
 
     When ``grasp_offset_in_apple_frame`` and ``tcp_orientation_world`` are both set,
@@ -142,7 +141,7 @@ def explicit_apple_wrench_for_stem_harvest(
     apple_body_index: int,
     grasp_offset_in_apple_frame: tuple | np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Support force and TCP moment for stem harvest (world frame, about TCP)."""
+    """Apple payload force and TCP moment for stem harvest (world frame, about TCP)."""
     p_tcp = body_com_position_world(robot_body_q, tcp_body_index)
     if grasp_offset_in_apple_frame is not None:
         tcp_rot = body_orientation_world(robot_body_q, tcp_body_index)

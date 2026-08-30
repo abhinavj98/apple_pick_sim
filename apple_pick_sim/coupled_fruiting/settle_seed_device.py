@@ -21,16 +21,13 @@ def offset7_to_transform(offset_7d: tuple | np.ndarray | Sequence[float]) -> wp.
 
 
 def capture_body_q_numpy(body_q: wp.array) -> np.ndarray:
-    """One host read of cable ``body_q`` for checkpoint persistence."""
-    return (
-        wp.to_torch(body_q)
-        .detach()
-        .cpu()
-        .numpy()
-        .reshape(-1, 7)
-        .astype(np.float32)
-        .copy()
-    )
+    """One host read of cable ``body_q`` for checkpoint persistence.
+
+    Stays on the Warp host-copy path: ``wp.to_torch`` would hand this array's storage
+    to torch, and the rebuild path discards the owning scene right after this call.
+    ``.copy()`` is required because ``numpy()`` aliases storage for host-side arrays.
+    """
+    return np.asarray(body_q.numpy(), dtype=np.float32).reshape(-1, 7).copy()
 
 
 def copy_cable_state_device(src_cable: Any, dst_cable: Any) -> None:

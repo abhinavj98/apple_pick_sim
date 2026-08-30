@@ -21,6 +21,8 @@ from apple_pick_sim.coupled_fruiting.vic_joint_torques_batched import (
 )
 from apple_pick_sim.fruiting_system import load_ranges
 from apple_pick_sim.robot import fr3_robot
+from apple_pick_sim.robot.fr3_robot.fr3_v21_props import load_fr3_v21_inertials, resolve_fr3_link_body_index
+from apple_pick_sim.robot.fr3_robot.setup import FR3_REFLECTED_MOTOR_INERTIA_KGM2
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance_batched import (
     Fr3BatchedEEImpedanceController,
@@ -70,6 +72,27 @@ def _configure_batched_vic(scene) -> Fr3BatchedEEImpedanceController:
     ctrl.stage_targets_to_scene(scene)
     scene.vic_target_twist = EEVelocity()
     return ctrl
+
+
+@requires_fr3
+@pytest.mark.slow
+def test_batched_configure_tiles_fr3_reflected_motor_inertia():
+    scene = _build_batched_scene()
+    _configure_batched_vic(scene)
+    expected = np.asarray(FR3_REFLECTED_MOTOR_INERTIA_KGM2, dtype=np.float64)
+    dof_per = int(scene.layout.joint_dof_count_per_world)
+    arr = scene.robot_model.joint_armature.numpy().reshape(-1)
+    for world in range(_NUM_ENVS):
+        sl = slice(world * dof_per, world * dof_per + _N_ARM_DOF)
+        np.testing.assert_allclose(arr[sl].astype(np.float64), expected, rtol=0.0, atol=1e-6)
+
+    link1 = next(link for link in load_fr3_v21_inertials() if link.link_num == 1)
+    tpl_link1 = resolve_fr3_link_body_index(scene.robot_model, 1)
+    local = tpl_link1 % int(scene.layout.robot_bodies_per_world)
+    masses = scene.robot_model.body_mass.numpy()
+    for world in range(_NUM_ENVS):
+        idx = world * int(scene.layout.robot_bodies_per_world) + local
+        assert float(masses[idx]) == pytest.approx(link1.mass_kg, abs=1e-5)
 
 
 @requires_fr3

@@ -31,6 +31,8 @@ from stress_plant_rebuild_loop import (  # noqa: E402
     resolve_replay_episode_sources,
     run_rebuild_cycles,
     sample_random_candidates,
+    teardown_env,
+    teardown_sim,
     validate_cli_args,
 )
 
@@ -41,7 +43,7 @@ def test_parser_defaults_reuse_mujoco_on():
     assert args.cycles == 10
     assert args.mode == "rebuild"
     assert args.reuse_replicated_mujoco is True
-    assert args.settle_substeps == 5000
+    assert args.settle_substeps == 2000
     assert args.post_grasp_settle_substeps == 500
     assert args.params_seed == 0
     assert args.replay_steps == 0
@@ -49,6 +51,31 @@ def test_parser_defaults_reuse_mujoco_on():
     assert args.resets_per_wave == 100
     assert list(args.log10_lower) == list(DEFAULT_LOG10_LOWER)
     assert list(args.log10_upper) == list(DEFAULT_LOG10_UPPER)
+
+
+def test_teardown_sim_synchronizes_before_collect(monkeypatch):
+    order: list[str] = []
+    import stress_plant_rebuild_loop as stress
+
+    monkeypatch.setattr(stress.wp, "synchronize", lambda: order.append("sync"))
+    monkeypatch.setattr(stress.gc, "collect", lambda: order.append("gc") or 0)
+    teardown_sim(object())
+    assert order == ["sync", "gc"]
+
+
+def test_teardown_env_close_then_sync(monkeypatch):
+    order: list[str] = []
+    import stress_plant_rebuild_loop as stress
+
+    monkeypatch.setattr(stress.wp, "synchronize", lambda: order.append("sync"))
+    monkeypatch.setattr(stress.gc, "collect", lambda: order.append("gc") or 0)
+
+    class _Env:
+        def close(self):
+            order.append("close")
+
+    teardown_env(_Env())
+    assert order == ["close", "sync", "gc"]
 
 
 def test_validate_cli_replay_reset_requires_dataset():

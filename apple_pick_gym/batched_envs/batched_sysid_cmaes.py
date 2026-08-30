@@ -7,13 +7,17 @@ generation waves, and fit reporting for the separate CMA-ES entry point.
 from __future__ import annotations
 
 import math
+import os
+import pickle
 import time
 import traceback
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import product
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+import cloudpickle
 import cma
 import numpy as np
 
@@ -59,6 +63,9 @@ from apple_pick_gym.batched_envs.real_batched_replay_build import (
 
 if TYPE_CHECKING:
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+
+CMA_OPTIMIZER_CHECKPOINT_FILENAME = "cma_optimizer_checkpoint.pkl"
+CMA_CHECKPOINT_VERSION = 1
 
 DEFAULT_INITIAL_SIGMA_LOG10 = 1.0
 _UINT32_MOD = 2**32
@@ -699,13 +706,31 @@ class YoungsModulusScoringConfig:
     n_holds: int | None = None
     n_directions: int | None = None
     device: str | None = None
-    hold_aggregation: str | None = None
+    hold_aggregation: str | None = "none"
+    include_delta: bool = False
+    categorical_weight: float = 30.0
 
 
 def _hold_reduce_from_scoring(scoring: YoungsModulusScoringConfig) -> str | None:
     if scoring.hold_aggregation is not None:
         return str(scoring.hold_aggregation)
     return None
+
+
+def _wasserstein_kwargs_from_scoring(
+    scoring: YoungsModulusScoringConfig,
+    *,
+    scoring_n_directions: int,
+) -> dict[str, Any]:
+    return {
+        "use_median": bool(scoring.use_median),
+        "hold_id_onehot": bool(scoring.hold_id_onehot),
+        "n_holds": scoring.n_holds,
+        "n_directions": int(scoring_n_directions),
+        "hold_reduce": _hold_reduce_from_scoring(scoring),
+        "include_delta": bool(scoring.include_delta),
+        "categorical_weight": float(scoring.categorical_weight),
+    }
 
 
 def _mean(values: list[float | None]) -> float | None:
@@ -873,7 +898,6 @@ class YoungsModulusBatchEvaluation:
     evaluations: dict[int, YoungsModulusEvaluation]
     errors: dict[int, str]
     replay_diagnostics: MultiStructureReplayDiagnostics | None
-    retried_structures: tuple[int, ...]
     prepared_structures: int = 0
     scoring_seconds: float = 0.0
     total_seconds: float = 0.0
@@ -940,11 +964,10 @@ def prepare_youngs_modulus_structure(
     )
     gt_context = prepare_gt_wasserstein_scoring_context(
         recorded,
-        use_median=bool(scoring.use_median),
-        hold_id_onehot=bool(scoring.hold_id_onehot),
-        n_holds=scoring.n_holds,
-        n_directions=scoring_n_directions,
-        hold_reduce=_hold_reduce_from_scoring(scoring),
+        pool_directions=bool(scoring.pool_directions),
+        **_wasserstein_kwargs_from_scoring(
+            scoring, scoring_n_directions=scoring_n_directions
+        ),
     )
     base_params = true_params_for_structure(dataset, int(structure_idx))
     first_direction_idx = direction_indices[0]
@@ -1054,12 +1077,10 @@ def score_prepared_youngs_modulus_structure(
                 gt_context=prepared.gt_context,
                 replay_observations=replay_eps,
                 device=scoring.device,
-                use_median=bool(scoring.use_median),
-                hold_id_onehot=bool(scoring.hold_id_onehot),
-                n_holds=scoring.n_holds,
                 pool_directions=bool(scoring.pool_directions),
-                n_directions=scoring_n_directions,
-                hold_reduce=_hold_reduce_from_scoring(scoring),
+                **_wasserstein_kwargs_from_scoring(
+                    scoring, scoring_n_directions=scoring_n_directions
+                ),
             )
             if int(w_result.candidate_index) != local_candidate_idx:
                 raise RuntimeError(
@@ -1293,36 +1314,8 @@ def evaluate_youngs_modulus_structures(
             errors[idx] = _format_structure_eval_error(exc)
 
     evaluations: dict[int, YoungsModulusEvaluation] = {}
-    retried: list[int] = []
     replay_diagnostics: MultiStructureReplayDiagnostics | None = None
     scoring_seconds = 0.0
-
-    def scalar_retry(structure_idx: int) -> None:
-        if structure_idx in retried:
-            return
-        retried.append(structure_idx)
-        try:
-            evaluations[structure_idx] = evaluate_youngs_modulus_candidates(
-                dataset=dataset,
-                structure_idx=structure_idx,
-                candidates=structures_by_idx[structure_idx],
-                num_directions=int(num_directions),
-                build_env_fn=build_env_fn,
-                scoring=scoring,
-                max_envs_per_batch=int(max_envs_per_batch),
-                seed=seed,
-                include_excluded=bool(include_excluded),
-                direction_indices=direction_indices,
-                on_step=on_step,
-                replay_sim_config=replay_sim_config,
-                action_dim=action_dim,
-            )
-        except SysIdReplayCancelled:
-            raise
-        except Exception as exc:
-            if fail_fast:
-                raise
-            errors[structure_idx] = _format_structure_eval_error(exc)
 
     physical_slots_by_structure = {
         int(idx): len(prepared.candidates) * len(prepared.direction_indices)
@@ -1335,9 +1328,11 @@ def evaluate_youngs_modulus_structures(
             blocks = build_replay_candidate_blocks(
                 tuple(item.replay_request for item in prepared_items)
             )
-        except ReplayFusionIncompatible:
-            for structure_idx in prepared_by_idx:
-                scalar_retry(structure_idx)
+        except ReplayFusionIncompatible as exc:
+            raise ReplayFusionIncompatible(
+                f"{exc}. Compatible structures must share one Newton model; "
+                "use --no-multi-structure-batch to evaluate structures independently."
+            ) from exc
         else:
             outcome = replay_multi_structure_candidate_blocks(
                 dataset=dataset,
@@ -1351,7 +1346,7 @@ def evaluate_youngs_modulus_structures(
             replay_diagnostics = outcome.diagnostics
             for structure_idx, prepared in prepared_by_idx.items():
                 if structure_idx in outcome.failed_structures:
-                    scalar_retry(structure_idx)
+                    errors[structure_idx] = outcome.failed_structures[structure_idx]
                     continue
                 scoring_started = time.perf_counter()
                 try:
@@ -1385,7 +1380,6 @@ def evaluate_youngs_modulus_structures(
         evaluations=ordered_evaluations,
         errors=ordered_errors,
         replay_diagnostics=replay_diagnostics,
-        retried_structures=tuple(retried),
         prepared_structures=len(prepared_by_idx),
         scoring_seconds=float(scoring_seconds),
         total_seconds=float(time.perf_counter() - total_started),
@@ -2097,6 +2091,144 @@ def _evaluate_final_means(
     return batch
 
 
+@dataclass
+class StructureCmaCheckpointRecord:
+    structure_idx: int
+    optimizer: Any
+    completed_generations: int
+    optimizer_samples_told: int
+    best_sample_log10: tuple[float, float, float] | None
+    best_sample_fitness: float | None
+    generations: list[CmaGenerationRecord]
+    effective_seed: int
+    population_size: int
+    status: str
+    search_bounds_log10: (
+        tuple[tuple[float, float, float], tuple[float, float, float]] | None
+    )
+    max_sigma_log10: float | None
+    gt_candidate: YoungsModulusCandidate | None
+    final_mean_log10: tuple[float, float, float] | None
+
+
+def _checkpoint_status_for_persist(state: StructureCmaState) -> str:
+    """Checkpoint mid-run states should resume as active optimizers."""
+    if state.status in {"failed", "stopped_pending_final_evaluation"}:
+        return "active"
+    return str(state.status)
+
+
+def build_cma_optimizer_checkpoint(
+    states: Mapping[int, StructureCmaState],
+    *,
+    counters: Mapping[str, int] | None = None,
+) -> dict[str, Any]:
+    """Build an in-memory checkpoint payload from live optimizer states."""
+    structures: dict[int, StructureCmaCheckpointRecord] = {}
+    for structure_idx, state in states.items():
+        if int(state.completed_generations) <= 0:
+            continue
+        structures[int(structure_idx)] = StructureCmaCheckpointRecord(
+            structure_idx=int(structure_idx),
+            optimizer=state.optimizer,
+            completed_generations=int(state.completed_generations),
+            optimizer_samples_told=int(state.optimizer_samples_told),
+            best_sample_log10=state.best_sample_log10,
+            best_sample_fitness=state.best_sample_fitness,
+            generations=list(state.generations),
+            effective_seed=int(state.effective_seed),
+            population_size=int(state.population_size),
+            status=_checkpoint_status_for_persist(state),
+            search_bounds_log10=state.search_bounds_log10,
+            max_sigma_log10=state.max_sigma_log10,
+            gt_candidate=state.gt_candidate,
+            final_mean_log10=state.final_mean_log10,
+        )
+    return {
+        "version": int(CMA_CHECKPOINT_VERSION),
+        "structures": structures,
+        "counters": {str(key): int(value) for key, value in (counters or {}).items()},
+    }
+
+
+def dump_cma_optimizer_checkpoint(
+    path: Path | str,
+    states: Mapping[int, StructureCmaState],
+    *,
+    counters: Mapping[str, int] | None = None,
+) -> None:
+    """Atomically pickle optimizer state after at least one successful tell."""
+    payload = build_cma_optimizer_checkpoint(states, counters=counters)
+    if not payload["structures"]:
+        return
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        with tmp_path.open("wb") as fh:
+            cloudpickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, target)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def load_cma_optimizer_checkpoint(path: Path | str) -> dict[str, Any]:
+    """Load a checkpoint written by :func:`dump_cma_optimizer_checkpoint`."""
+    target = Path(path)
+    with target.open("rb") as fh:
+        payload = cloudpickle.load(fh)
+    if not isinstance(payload, dict):
+        raise ValueError(f"checkpoint must be a mapping, got {type(payload)!r}")
+    version = int(payload.get("version", -1))
+    if version != int(CMA_CHECKPOINT_VERSION):
+        raise ValueError(
+            f"unsupported checkpoint version {version}; expected {CMA_CHECKPOINT_VERSION}"
+        )
+    structures = payload.get("structures")
+    if not isinstance(structures, dict) or not structures:
+        raise ValueError("checkpoint contains no structure optimizer state")
+    return payload
+
+
+def apply_cma_checkpoint_to_states(
+    states: Mapping[int, StructureCmaState],
+    checkpoint: Mapping[str, Any],
+) -> dict[str, int]:
+    """Restore optimizer progress onto freshly constructed structure states."""
+    records = checkpoint["structures"]
+    for structure_idx, record in records.items():
+        idx = int(structure_idx)
+        if idx not in states:
+            raise KeyError(f"checkpoint structure {idx} missing from live states")
+        state = states[idx]
+        if not isinstance(record, StructureCmaCheckpointRecord):
+            raise TypeError(
+                f"checkpoint record for structure {idx} has unexpected type {type(record)!r}"
+            )
+        state.optimizer = record.optimizer
+        state.completed_generations = int(record.completed_generations)
+        state.optimizer_samples_told = int(record.optimizer_samples_told)
+        state.best_sample_log10 = record.best_sample_log10
+        state.best_sample_fitness = record.best_sample_fitness
+        state.generations = list(record.generations)
+        state.effective_seed = int(record.effective_seed)
+        state.population_size = int(record.population_size)
+        state.search_bounds_log10 = record.search_bounds_log10
+        state.max_sigma_log10 = record.max_sigma_log10
+        state.gt_candidate = record.gt_candidate
+        state.final_mean_log10 = record.final_mean_log10
+        state.failure = None
+        state.stop_kind = None
+        state.stop_conditions = {}
+        if record.status == "fitted":
+            state.status = "fitted"
+        else:
+            state.status = "active"
+    counters = checkpoint.get("counters") or {}
+    return {str(key): int(value) for key, value in counters.items()}
+
+
 def fit_youngs_modulus_structures(
     states: Mapping[int, StructureCmaState],
     *,
@@ -2116,7 +2248,10 @@ def fit_youngs_modulus_structures(
 
     fit_started = time.perf_counter()
     wave_timings: list[dict[str, Any]] = []
-    generation_waves = 0
+    generation_waves = max(
+        (int(state.completed_generations) for state in ordered.values()),
+        default=0,
+    )
     while True:
         active = {
             idx: state
@@ -2283,7 +2418,6 @@ def structure_cma_report_snapshot(
     replay_candidate_evaluations: int = 0,
     final_mean_evaluations: int = 0,
     physical_env_slots: int = 0,
-    scalar_retries: int = 0,
 ) -> dict[str, Any]:
     """Build a per-structure CMA report fragment."""
     try:
@@ -2397,7 +2531,6 @@ def structure_cma_report_snapshot(
         "replay_candidate_evaluations": int(replay_candidate_evaluations),
         "final_mean_evaluations": int(final_mean_evaluations),
         "physical_env_slots": int(physical_env_slots),
-        "scalar_retries": int(scalar_retries),
         "stop_kind": state.stop_kind,
         "stop_conditions": dict(state.stop_conditions),
         "generations": generations,

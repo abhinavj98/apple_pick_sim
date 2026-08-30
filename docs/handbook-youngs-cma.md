@@ -9,7 +9,7 @@ the next real-data acceptance work belong in `docs/ROADMAP.md`.
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-25 |
+| Last reviewed | 2026-08-26 |
 | Code owners | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py`; `apple_pick_gym/batched_envs/cma_wave_evaluation.py`; `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H4 `docs/handbook-real-replay.md` |
@@ -76,9 +76,10 @@ multi-structure scheduler flattens compatible work as
 `ReplaySlotKey(structure_idx, local_candidate_idx, direction_idx)` identities
 survive parameter application, action routing, scoring, and reporting.
 Physical chunks preserve complete candidate/direction blocks under
-`--max-envs-per-batch`; incompatible structures or a fused runtime failure use
-the structure-local scalar fallback. `--no-multi-structure-batch` forces that
-debug path.
+`--max-envs-per-batch`. Incompatible structures raise
+`ReplayFusionIncompatible` (use `--no-multi-structure-batch` to evaluate
+structures independently). A fused chunk runtime failure is recorded as a
+structure error without an automatic scalar retry.
 
 Rankings remain structure-local. Eligible candidates sort by ascending pooled
 Sinkhorn fitness, with local candidate index as the deterministic tie-breaker.
@@ -122,7 +123,8 @@ CLI (settle → replay collectors → Sinkhorn scoring) and returns a full pickl
 The parent keeps pycma `ask`/`tell` and `penalize_youngs_modulus_scores`.
 `env.close()` does **not** call `wp.clear_kernel_cache()`. Disable with
 `--no-isolated-eval-waves` for interactive viewer debug; holdout val evals
-remain in-process after fit (same as before).
+remain in-process after fit (same as before). A failed worker is retried up
+to `--wave-max-attempts` (default 5) before the wave fails.
 
 **In-process FR3 reuse (`--no-isolated-eval-waves`):** the in-process path sets
 `RobotConfig.reuse_replicated_mujoco`. After the first fused weld, later waves
@@ -143,7 +145,7 @@ unchanged.
 | Population | `15` |
 | Maximum generations | `10` |
 | CMA base seed | `56` |
-| Bounds | sim-sim lower `[2,8,8]`, upper `[6,11,11]`; real `vic_pose` `[2,7,7]`–`[6,9.5,9.5]` (10 MPa–3 GPa) |
+| Bounds | sim-sim lower `[2,8,8]`, upper `[6,11,11]`; real `vic_pose` `[2,7,7]`–`[6,11,11]` (10 MPa–100 GPa) |
 
 The support box is \(10^2\)–\(10^6\); spur/stem \(E\) each use
 \(10^8\)–\(10^{11}\) Pa. `"bounds_midpoint"` initialization is also supported.
@@ -183,21 +185,29 @@ owned by H3:
 - exclusion of `action` from the score vector; and
 - per-direction diagnostic versus pooled optimizer fitness.
 
-**CMA default hold aggregation (2026-08-24):** `--hold-aggregation mean`
-(arithmetic mean of stable hold frames before emitting `[s_i, s_{i+1}-s_i]`
-transition rows). The deprecated `--use-median` flag and
-`YoungsModulusScoringConfig.use_median=True` both override to median.
-Each generation `raw_scores` entry now carries `mean_hold_force_err_n`,
+**CMA default hold aggregation (2026-08-27):** `--hold-aggregation none`
+(quasi-static level bags; every stable hold frame is a row). Legacy transition
+bags use `--hold-aggregation mean` (arithmetic mean of stable hold frames before
+emitting `[s_i, s_{i+1}-s_i]` rows). The deprecated `--use-median` flag and
+`YoungsModulusScoringConfig.use_median=True` both override to median when
+`hold_aggregation` is not set explicitly.
+Each generation `raw_scores` entry carries `mean_hold_force_err_n`,
 `mean_hold_torque_err_nm`, `mean_hold_woody_start_m`, and
 `mean_hold_woody_bend_rad` computed from the same mean-hold states as Sinkhorn.
 The `score_summary` dict adds `eligible_mean_hold_*` / `best_eligible_mean_hold_*`
 across non-disqualified candidates.
 
-**Force-magnitude fitness term (2026-08-24):** eligible CMA fitness is
-`aggregate_sinkhorn + λ · mean_d |log(sim‖F‖ / real‖F‖)|`, where ‖F‖ is
+**Stiffness defaults (2026-08-27):** `--hold-aggregation none --no-include-delta
+--categorical-weight 30` with pooled directions (default). Legacy transition bags:
+`--hold-aggregation mean --include-delta --categorical-weight 1`. Recorded under
+`scoring.hold_aggregation`, `scoring.include_delta`, and `scoring.categorical_weight`
+in `cmaes_report.json`.
+
+**Force-magnitude fitness term (2026-08-24, opt-in):** eligible CMA fitness can add
+`λ · mean_d |log(sim‖F‖ / real‖F‖)|`, where ‖F‖ is
 `per_direction_mean_hold_force_norm_n` and each side is floored at
-`FORCE_FLOOR_N` (0.2 N). CLI `--force-magnitude-weight` sets λ (default 100;
-`0` restores Sinkhorn-only). Recorded under `scoring.force_magnitude_weight`
+`FORCE_FLOOR_N` (0.2 N). CLI `--force-magnitude-weight` sets λ (default 0;
+legacy runs often used 100–300). Recorded under `scoring.force_magnitude_weight`
 in `cmaes_report.json`. This is optimizer fitness only; holdout
 `force_magnitude_ok` gates remain unchanged (H3).
 
@@ -425,6 +435,7 @@ the ranking policy; the second validates CMA fit integrity.
 | -------------- | --------------- |
 | Candidate mapping, support penalties, evaluation, CMA coordinator | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` |
 | Process-isolated CMA wave evaluation | `apple_pick_gym/batched_envs/cma_wave_evaluation.py`; `cma_wave_evaluation_worker.py` |
+| Process-isolated CMA snapshot MP4s | `spawn_isolated_cma_snapshot_video`; `cma_snapshot_video_worker.py` (fresh GL process per clip) |
 | Stable slot planning, chunking, fused/scalar replay | `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py` |
 | Cartesian grid, ranking, real-builder opt-in | `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py` |
 | CMA search defaults, CLI, counters, atomic report | `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |

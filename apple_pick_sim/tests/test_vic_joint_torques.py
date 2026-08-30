@@ -15,6 +15,7 @@ from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
     compute_joint_torques_from_wrench_torch,
     find_tcp_link_idx,
     launch_apply_vic_joint_torques,
+    mass_matrix_with_armature,
 )
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import (
@@ -22,6 +23,7 @@ from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import (
     ImpedanceGains,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
+from apple_pick_sim.robot.fr3_robot.setup import FR3_DEFAULT_VIC_JOINT_DAMPING, FR3_REFLECTED_MOTOR_INERTIA_KGM2
 from apple_pick_sim.tests.conftest import (
     DEFAULT_MJ_KW,
     FRAME_DT,
@@ -66,19 +68,22 @@ def _build_mujoco_only_fr3():
 def _configure_joint_torque_vic(
     scene,
     *,
-    vic_joint_damping: float = 1.0,
+    vic_joint_damping: float | None = None,
 ) -> Fr3EEImpedanceController:
     scene.vic_use_joint_torques = True
     ctrl = Fr3EEImpedanceController(tcp_body_index=int(scene.tcp_body_index))
     scene.vic_controller = ctrl
     scene.vic_gains = ImpedanceGains()
+    vic_kw = {}
+    if vic_joint_damping is not None:
+        vic_kw["vic_joint_damping"] = vic_joint_damping
     fr3_robot.configure_vic_joint_torques_arm(
         scene.robot_model,
         scene.robot_state_0,
         scene.robot_control,
         scene.mj_solver,
         scene=scene,
-        vic_joint_damping=vic_joint_damping,
+        **vic_kw,
     )
     ctrl.sync_target_from_state(scene.robot_state_0)
     return ctrl
@@ -97,11 +102,50 @@ def test_configure_vic_sets_passive_joint_damping():
     np.testing.assert_allclose(mj_d, 1.5, rtol=0.0, atol=1e-6)
 
 
+def test_configure_vic_sets_fr3_reflected_motor_inertia():
+    scene = _build_mujoco_only_fr3()
+    expected = np.asarray(FR3_REFLECTED_MOTOR_INERTIA_KGM2, dtype=np.float64)
+    _configure_joint_torque_vic(scene)
+    model_a = scene.robot_model.joint_armature.numpy().reshape(-1)[:_N_ARM_DOF]
+    np.testing.assert_allclose(model_a, expected, rtol=0.0, atol=1e-6)
+    mj_solver = scene.mj_solver
+    if mj_solver.use_mujoco_cpu:
+        mj_a = np.asarray(mj_solver.mj_model.dof_armature).reshape(-1)[:_N_ARM_DOF]
+    else:
+        mj_a = mj_solver.mjw_model.dof_armature.numpy()[0][:_N_ARM_DOF]
+    np.testing.assert_allclose(mj_a.astype(np.float64), expected, rtol=0.0, atol=1e-5)
+
+
+def test_mass_matrix_with_armature_adds_reflected_inertia_diag():
+    rng = np.random.default_rng(0)
+    M = rng.standard_normal((_N_ARM_DOF, _N_ARM_DOF))
+    M = 0.5 * (M + M.T) + np.eye(_N_ARM_DOF)
+    armature = np.asarray(FR3_REFLECTED_MOTOR_INERTIA_KGM2, dtype=np.float64)
+    out = mass_matrix_with_armature(M, armature)
+    np.testing.assert_allclose(out - M, np.diag(armature), rtol=0.0, atol=1e-12)
+
+
+def test_eval_mass_matrix_excludes_joint_armature():
+    """Newton H is body inertia only; VIC Λ must add rotor inertia itself."""
+    scene = _build_mujoco_only_fr3()
+    _configure_joint_torque_vic(scene)
+    model = scene.robot_model
+    state = scene.robot_state_0
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    J = newton.eval_jacobian(model, state)
+    H = newton.eval_mass_matrix(model, state, J=J)
+    M = H.numpy()[0, :_N_ARM_DOF, :_N_ARM_DOF]
+    armature = np.asarray(FR3_REFLECTED_MOTOR_INERTIA_KGM2, dtype=np.float64)
+    diag_delta = np.diag(mass_matrix_with_armature(M, armature) - M)
+    np.testing.assert_allclose(diag_delta, armature, rtol=0.0, atol=1e-12)
+    assert np.max(np.abs(np.diag(M) - armature)) > 0.05
+
+
 def test_configure_vic_joint_damping_defaults_and_opt_out():
     scene = _build_mujoco_only_fr3()
     _configure_joint_torque_vic(scene)
     default_d = scene.robot_model.joint_damping.numpy().reshape(-1)[:_N_ARM_DOF]
-    np.testing.assert_allclose(default_d, 1.0, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(default_d, FR3_DEFAULT_VIC_JOINT_DAMPING, rtol=0.0, atol=1e-6)
 
     scene2 = _build_mujoco_only_fr3()
     _configure_joint_torque_vic(scene2, vic_joint_damping=0.0)
@@ -293,7 +337,10 @@ def test_launch_joint_torques_match_numpy_reference():
 
     J, H = _eval_arm_kinematics(model, state)
     J_np = J.numpy()[0, link_idx * 6 : (link_idx + 1) * 6, :_N_ARM_DOF]
-    M_np = H.numpy()[0, :_N_ARM_DOF, :_N_ARM_DOF]
+    M_np = mass_matrix_with_armature(
+        H.numpy()[0, :_N_ARM_DOF, :_N_ARM_DOF],
+        model.joint_armature.numpy().reshape(-1)[:_N_ARM_DOF],
+    )
     q = state.joint_q.numpy()[:_N_ARM_DOF]
     qd = state.joint_qd.numpy()[:_N_ARM_DOF]
     bqd = state.body_qd.numpy().reshape(-1, 6)[tcp]

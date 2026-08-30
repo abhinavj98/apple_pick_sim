@@ -27,10 +27,10 @@
     "density": {"min": 600.0, "max": 900.0},
     "azimuth_deg": {"min": 0.0, "max": 0.0},
     "elevation_deg": {"min": 0.0, "max": 0.0},
-    "youngs_modulus_pa": {"min": 5000000000.3, "max": 5000000000.8},
+    "youngs_modulus_pa": {"min": 50000000000.3, "max": 50000000000.8},
     "damping_ratio": {"min": 0.3, "max": 0.3},
     "vbd_stretch_force": {
-      "max_force_n": 500.0,
+      "max_force_n": 750.0,
       "damping_ratio": 1.0
     }
   },

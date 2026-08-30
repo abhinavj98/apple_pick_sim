@@ -133,9 +133,9 @@ class SceneSettleCollisionConfig:
     """Fruiting placement, VBD settle, and AVBD collision policy."""
 
     fruiting_base_pos: tuple[float, float, float] | None = None
-    settle_substeps: int = 5000
+    settle_substeps: int = 2000
     settle_gravity_ramp: bool = False
-    settle_quiet_every: int | None = 300
+    settle_quiet_every: int | None = 100
     settle_max_speed_m_s: float = 0.05
     # Extra VBD settle on the welded scene after seed_fix_to_apple (0 = skip).
     # Matches plant-only ``--post-grasp-settle-substeps`` in example_view_pre_grasp_settle.

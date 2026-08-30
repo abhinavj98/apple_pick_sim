@@ -20,6 +20,7 @@ from apple_pick_sim.fruiting_system.params import (
     rod_params_from_material,
     _spur_attach_fraction_from_ranges,
     _spur_surface_offset_from_ranges,
+    _stem_surface_offset_from_ranges,
     _stretch_kw_from_seg_ranges,
     _topology_from_ranges,
 )
@@ -124,6 +125,7 @@ def params_from_ranges_median(ranges: dict) -> FruitingSystemParams:
         topology=_topology_from_ranges(ranges),
         spur_attach_fraction=_spur_attach_fraction_from_ranges(ranges),
         spur_surface_offset=_spur_surface_offset_from_ranges(ranges),
+        stem_surface_offset=_stem_surface_offset_from_ranges(ranges),
     )
 
 
@@ -228,6 +230,7 @@ def infer_params_from_obs(
         topology=topology,
         spur_attach_fraction=template.spur_attach_fraction,
         spur_surface_offset=template.spur_surface_offset,
+        stem_surface_offset=template.stem_surface_offset,
     )
 
 

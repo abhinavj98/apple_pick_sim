@@ -505,7 +505,7 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
         return env
 
     dataset = MagicMock()
-    dataset.manifest = {"collection": {"action_layout": "vic_pose_v1", "action_dim": 19}}
+    dataset.manifest = {"collection": {"action_dim": 6}}
 
     def load_episode_obs_arrays(structure_idx: int, direction_idx: int) -> dict:
         del structure_idx
@@ -550,7 +550,7 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
         direction_indices=[0, 2],
     )
 
-    assert build_calls[0]["gripper"] is real_gripper
+    assert build_calls[0]["gripper"] is sim_gripper
     assert build_calls[0]["per_env_params"] == [
         candidate_0.apply_to(base),
         candidate_0.apply_to(base),
@@ -559,6 +559,40 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
     ]
     assert collectors.to_arrays(0)["dir_idx"][0] == 0
     assert collectors.to_arrays(1)["dir_idx"][0] == 2
+
+
+def test_replay_batched_sysid_structure_rejects_multi_direction_vic_pose(monkeypatch):
+    """Scalar path cannot share direction-0 weld meta across vic_pose directions."""
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _sample_params(seed=0)
+    candidate = cmaes.YoungsModulusCandidate(primary=1.0e8, spur=2.0e7, stem=3.0e7)
+    dataset = MagicMock()
+    dataset.manifest = {"collection": {"action_layout": "vic_pose_v1", "action_dim": 19}}
+    dataset.load_episode_obs_arrays.return_value = _recorded_arrays_for_replay(
+        n_frames=2, direction_idx=0
+    )
+    dataset.load_episode_metadata.return_value = {
+        "junction_names": ["joint_a", "joint_b"],
+        "pull_direction": [1.0, 0.0, 0.0],
+    }
+    monkeypatch.setattr(grid, "base_params_for_replay", lambda *_a, **_k: base)
+    monkeypatch.setattr(
+        grid,
+        "gripper_proxy_for_real_batched_replay",
+        lambda _meta: MagicMock(),
+    )
+
+    with pytest.raises(ValueError, match="per_env_episode_meta"):
+        grid.replay_batched_sysid_structure(
+            dataset=dataset,
+            structure_idx=0,
+            candidates=[candidate],
+            num_directions=2,
+            seed=0,
+            build_env_fn=MagicMock(),
+            direction_indices=[0, 2],
+        )
 
 
 def test_replay_candidates_for_structure_threads_on_step(monkeypatch):

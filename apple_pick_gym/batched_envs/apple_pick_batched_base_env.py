@@ -245,17 +245,22 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
         ``wp.to_torch`` shares device storage. CMA rebuilds a fused world every
         generation; retaining those tensors across ``close()`` pins or races the
         buffers being freed and contributes to host-heap corruption (SIGSEGV).
+
+        Subclasses holding aliases under other attributes must extend this.
         """
+        self._last_obs = None
 
     def close(self) -> None:
-        # Drop torch↔Warp obs aliases first, then the sim. Forced GC + sync help
-        # reclaim device memory when CMA rebuilds a fused world every generation.
-        # Do not call wp.clear_kernel_cache() here: it forces full recompile and
-        # still does not unregister Newton contact @wp.func globals; CMA uses
-        # process-isolated evaluation waves for that lifecycle instead.
+        # Drain queued Warp/CUDA work before dropping ``_sim``. Freeing arrays
+        # while kernels still run (CUDA mempool enabled) poisons the host heap
+        # and shows up later as ``code``/``function`` AttributeErrors or SIGSEGV
+        # during CMA rebuilds. Do not call wp.clear_kernel_cache() here: it
+        # forces full recompile and still does not unregister Newton contact
+        # @wp.func globals; CMA uses process-isolated evaluation waves for that
+        # lifecycle instead.
+        wp.synchronize()
         release = getattr(self, "_release_observation_aliases", None)
         if callable(release):
             release()
         self._sim = None  # type: ignore[assignment]
         gc.collect()
-        wp.synchronize()

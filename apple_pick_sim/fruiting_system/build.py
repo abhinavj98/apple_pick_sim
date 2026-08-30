@@ -245,7 +245,14 @@ def _build_linear_chain_into_builder(
     prev_quats: list[wp.quat] | None = None
 
     for name, rod in rod_specs:
-        start = origin if prev_bodies is None else prev_points[-1]
+        tip_offset_world = wp.vec3(0.0, 0.0, 0.0)
+        if prev_bodies is not None and prev_name == "spur" and name == "stem":
+            if params.stem_surface_offset:
+                assert prev_rod is not None
+                tip_offset_world = _rod_tip_surface_offset_world(
+                    rod.direction, prev_rod.radius
+                )
+        start = origin if prev_bodies is None else prev_points[-1] + tip_offset_world
         points, quats = _make_rod_geometry(
             start, rod.direction, rod.length, rod.num_segments
         )
@@ -271,14 +278,16 @@ def _build_linear_chain_into_builder(
             builder.body_mass[bodies[0]] = 0.0
             builder.body_inv_mass[bodies[0]] = 0.0
         else:
-            assert prev_rod is not None and prev_name is not None
+            assert prev_rod is not None and prev_name is not None and prev_quats is not None
             parent_seg_len = prev_rod.length / prev_rod.num_segments
+            parent_local_offset = wp.quat_rotate_inv(prev_quats[-1], tip_offset_world)
             j_link = _connect_rod_tip_to_base(
                 builder,
                 parent_body=prev_bodies[-1],
                 parent_seg_length=parent_seg_len,
                 child_body=bodies[0],
                 key=f"joint_{prev_name}_{name}",
+                parent_local_offset=parent_local_offset,
             )
             all_joints.append(j_link)
             fruiting_fixed_joints.append((j_link, f"joint_{prev_name}_{name}"))
@@ -422,6 +431,7 @@ def _build_t_junction_into_builder(
 
     for branch_i, (name, rod) in enumerate(branch_specs):
         radial_world = wp.vec3(0.0, 0.0, 0.0)
+        tip_offset_world = wp.vec3(0.0, 0.0, 0.0)
         if branch_i == 0:
             if params.spur_surface_offset:
                 radial_world = _primary_radial_surface_offset_world(
@@ -429,7 +439,11 @@ def _build_t_junction_into_builder(
                 )
             branch_start = primary_points[parent_idx + 1] + radial_world
         else:
-            branch_start = prev_points[-1]
+            if params.stem_surface_offset:
+                tip_offset_world = _rod_tip_surface_offset_world(
+                    rod.direction, prev_rod.radius
+                )
+            branch_start = prev_points[-1] + tip_offset_world
         points, quats = _make_rod_geometry(
             branch_start, rod.direction, rod.length, rod.num_segments
         )
@@ -466,12 +480,14 @@ def _build_t_junction_into_builder(
             )
         else:
             parent_seg_len = prev_rod.length / prev_rod.num_segments
+            parent_local_offset = wp.quat_rotate_inv(prev_quats[-1], tip_offset_world)
             j_link = _connect_rod_tip_to_base(
                 builder,
                 parent_body=prev_bodies[-1],
                 parent_seg_length=parent_seg_len,
                 child_body=bodies[0],
                 key=f"joint_{prev_name}_{name}",
+                parent_local_offset=parent_local_offset,
             )
         all_joints.append(j_link)
         fruiting_fixed_joints.append((j_link, f"joint_{prev_name}_{name}"))
@@ -1006,7 +1022,7 @@ def _add_gripper_proxy(
 
 def make_fruiting_solver_vbd(model: newton.Model, **overrides: Any) -> newton.solvers.SolverVBD:
     kwargs: dict[str, Any] = {
-        "iterations": 25,
+        "iterations": 50,
         "friction_epsilon": 1e-2,
         "rigid_contact_k_start": 1.0e4,
         "rigid_joint_linear_k_start": 1.0e8,
@@ -1932,6 +1948,15 @@ def _primary_radial_surface_offset_world(
     if radial_len < 1e-6:
         return wp.vec3(0.0, 0.0, 0.0)
     return (radial / radial_len) * float(primary_radius)
+
+
+def _rod_tip_surface_offset_world(
+    child_direction: tuple[float, float, float],
+    parent_radius: float,
+) -> wp.vec3:
+    """World offset from parent tip centerline to child-base contact on parent end cap."""
+    d = wp.normalize(wp.vec3(*child_direction))
+    return d * float(parent_radius)
 
 
 def _primary_spur_parent_body_index(num_segments: int, fraction: float) -> int:

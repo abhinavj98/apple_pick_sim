@@ -65,13 +65,15 @@ uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
 
 Fresh pose-controller logs are converted directly to 19D `vic_pose_v1`.
 Do not run `pack_vic_pose_actions.py` on a fresh conversion. Source
-`ft_wrist` must already be EMA−EMA tared. Convert rotates it to world,
-block-means unfiltered F/T and velocity to 30 Hz (`--control-hz`), and writes
-`ft_wrist_lpf` (10 Hz zero-phase Butterworth, then the same block-mean;
-`--ft-lpf-hz`). Logged torque is the moment about the robot **base origin**;
-pass `--transport-torque-to-tcp` so CMA scores TCP-local torque (subtract
-`p × F` after the rotation). Commands/poses/phase copy the last sample of
-each 33 ms window. CMA/grid Sinkhorn scores `ft_wrist_lpf` per structure.
+`ft_wrist` must already be EMA−EMA tared (unloaded replay **without apple**).
+Current collections under `robot_replay/final_data_correct_torque/` store F/T
+in the correct world frame at TCP (env-on-robot, about TCP). Convert rotates
+only when the source is still EE-frame; do **not** pass
+`--transport-torque-to-tcp` on s09-style parquets. Block-mean unfiltered F/T
+and velocity to 30 Hz (`--control-hz`), and write `ft_wrist_lpf` (10 Hz
+zero-phase Butterworth, then the same block-mean; `--ft-lpf-hz`). Commands/poses/
+phase copy the last sample of each 33 ms window. CMA/grid Sinkhorn scores
+`ft_wrist_lpf` per structure.
 
 ## Replay
 

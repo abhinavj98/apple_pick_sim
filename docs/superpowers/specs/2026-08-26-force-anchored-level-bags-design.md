@@ -2,7 +2,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Approved — ready for implementation |
+| **Status** | Implemented — plumbing in tree; stiffness run is opt-in |
 | **Canonical living doc:** | `docs/handbook-sysid-scoring.md` (H3) |
 | **Date** | 2026-08-26 |
 | **Roadmap** | M4.0 — real `robot_replay` → CMA; Young's modulus sys-ID on quasi-static hold frames |
@@ -198,10 +198,14 @@ categoricals.
 
 ### 4. Scoring config and CLI
 
-`wasserstein._feature_kwargs` gains both keys and threads them through
-`prepare_gt_wasserstein_context`, `prepare_gt_wasserstein_scoring_context`,
-`score_candidate_wasserstein`, and `score_candidate_wasserstein_complete`.
-Every `fit_gt_normalization` call site inside `wasserstein.py` passes the same
+`wasserstein._feature_kwargs` forwards `include_delta` into feature
+construction. `categorical_weight` lives only in `_normalization_kwargs` /
+`fit_gt_normalization` (scale, not raw features). Prepare stores both on
+`WassersteinScoringContext` / `WassersteinDirectionContext`. Score-time
+callers still pass both; a mismatch raises `ValueError` rather than silently
+reusing GT `stats`.
+
+Every `fit_gt_normalization` call site inside `wasserstein.py` uses the same
 two values used to build the features — GT and candidate must share one
 normalization contract.
 
@@ -275,8 +279,9 @@ Written before implementation, in the repo's TDD order.
   distance that grows with `categorical_weight` (assert the `w²` relationship
   via the exact singleton shortcut, which is deterministic and needs no GPU).
 - GT context and candidate scoring share one `include_delta` /
-  `categorical_weight` contract; a mismatch raises the existing feature-width
-  error rather than silently comparing different layouts.
+  `categorical_weight` contract; a mismatch raises
+  `include_delta mismatch` / `categorical_weight mismatch` rather than
+  silently comparing different layouts.
 
 `apple_pick_gym/tests/test_example_youngs_modulus_cmaes_cli.py`
 

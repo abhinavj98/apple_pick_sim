@@ -18,19 +18,19 @@ When `fix_to_apple=True`, the apple is **prescribed** for VBD (`inv_mass == 0`)
 while `body_mass` stays analytic. Stem joint gather alone may under-represent
 fruit weight at quasi-static hold.
 
-**When enabled** (`stem_harvest_explicit_apple_weight=True`), stem harvest forms a
-**child-side** plant wrench (before gain/caps):
+**When enabled** (`stem_harvest_explicit_apple_weight=True`), stem harvest adds
+the apple **payload** env-on-robot (before gain/caps):
 
 \[
-\mathbf{F}_{\mathrm{support}} = -m_{\mathrm{apple}}\,\mathbf{g}, \quad
-\boldsymbol{\tau}_{\mathrm{support}} = (\mathbf{p}_{\mathrm{apple}} - \mathbf{p}_{\mathrm{tcp}}) \times \mathbf{F}_{\mathrm{support}}
+\mathbf{F}_{\mathrm{apple}} = m_{\mathrm{apple}}\,\mathbf{g}, \quad
+\boldsymbol{\tau}_{\mathrm{apple}} = (\mathbf{p}_{\mathrm{apple}} - \mathbf{p}_{\mathrm{tcp}}) \times \mathbf{F}_{\mathrm{apple}}
 \]
 
-With \(\mathbf{g}=(0,0,-9.81)\), \(\mathbf{F}_{\mathrm{support}}=(0,0,+m g)\) (upward
-support the stem would supply on the apple). Harvest kernels write that
-**child-side** plant wrench (stem reaction + optional support) into
-`proxy_forces[tcp]` **without negation** (same sign as `main`; negating here
-destabilizes the couple).
+With \(\mathbf{g}=(0,0,-9.81)\), \(\mathbf{F}_{\mathrm{apple}}=(0,0,-m g)\) (downward
+weight on the robot). This matches real compiled bags whose EMA−EMA tare used an
+**unloaded replay without the apple** — apple weight stays in the scored signal.
+Harvest kernels write stem reaction **plus** this payload into `proxy_forces[tcp]`
+**without negation** (same sign as `main`; negating here destabilizes the couple).
 
 When `gripper_proxy_offset_in_apple_frame` is set (`fix_to_apple`), apple COM is
 derived from the TCP pose:
@@ -60,15 +60,15 @@ heterogeneous config is currently **inert** (not passed through builders).
 
 Free-proxy scenes should keep explicit load **off**; welded (settle-then-weld)
 scenes turn it **on** at build so quasi-static TCP readouts include fruit weight
-under the child-side harvest convention above.
+under the env-on-robot payload convention above.
 
 ## Code
 
 | Symbol | Role |
 |--------|------|
-| `explicit_load.apple_support_force_world` | Child-side support \(-\,m\mathbf{g}\) |
-| `explicit_load.explicit_apple_wrench_for_stem_harvest` | Support force + torque about TCP |
-| `proxy_coupling.harvest_stem_tension_for_tcp` / `harvest_batched_stem_tension` | Gather + support → TCP (child-side sign) |
+| `explicit_load.apple_support_force_world` | Env-on-robot payload \(m\mathbf{g}\) (name is historical) |
+| `explicit_load.explicit_apple_wrench_for_stem_harvest` | Payload force + torque about TCP |
+| `proxy_coupling.harvest_stem_tension_for_tcp` / `harvest_batched_stem_tension` | Gather + payload → TCP (same sign as stem write) |
 
 **CUDA graphs:** explicit apple load is computed on device inside the stem harvest
 kernel (no `body_q.numpy()` / `body_mass.numpy()` per substep).
@@ -77,10 +77,11 @@ at scene build.
 
 ## Tests
 
-- `apple_pick_sim/tests/test_explicit_apple_load.py` — support formula, on/off TCP
-  delta (expects child-side \(+\mathrm{F}_z\) from \(+m g\)), settle→weld hold
+- `apple_pick_sim/tests/test_explicit_apple_load.py` — payload formula, on/off TCP
+  delta (expects env-on-robot \(-\mathrm{F}_z\) from \(m\mathbf{g}\) when
+  \(\mathbf{g}=(0,0,-9.81)\)), settle→weld hold
 - `apple_pick_sim/tests/test_coupled_fruiting_system.py` — TCP harvest vs stem
-  gather reference (same-sign child-side write)
+  gather reference (same-sign write)
 
 ```bash
 uv run --env-file pytest.env python -m pytest \

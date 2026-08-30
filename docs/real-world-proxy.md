@@ -91,6 +91,11 @@ The physical bench holds the branch at **both ends**; the spur and apple hang fr
                           v +Y   (reach toward apple)
 ```
 
+Real-episode catalog connection angles (`manual_spur_angle_deg` about primary
++X, `manual_stem_angle_deg` about fruiting→robot −Y) override woody chords
+when both are present. How to check: `docs/handbook-real-replay.md`
+§ Checking connection angles.
+
 **Convention:** `fruiting_base_pos` is the **T center** (world position of the mid-span
 `primary_spur` junction), not the left support or a cantilever root. Primary rod
 geometry is centered on that point; side supports sit at `fruiting_base_pos ± (L/2, 0, 0)`.

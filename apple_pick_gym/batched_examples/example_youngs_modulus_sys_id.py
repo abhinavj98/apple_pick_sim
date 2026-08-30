@@ -97,9 +97,9 @@ from robot_replay.gl_video_recorder import GlVideoRecorder
 CONTROL_HZ = 30.0
 SUB_DT = 1.0 / 1800.0
 ENV_SPACING = (2.0, 2.0, 2.0)
-SETTLE_SUBSTEPS = 5000
+SETTLE_SUBSTEPS = 2000
 SETTLE_GRAVITY_RAMP = False
-SETTLE_QUIET_EVERY: int | None = 300
+SETTLE_QUIET_EVERY: int | None = 100
 MAX_ENVS_PER_BATCH = 25000
 VIC_GAINS = ImpedanceGains(
     linear_k=200.0,
@@ -691,6 +691,21 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Pool transition bags across directions for Sinkhorn scoring.",
     )
     p.add_argument(
+        "--include-delta",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Append the Δs half to each scored transition row (default: on).",
+    )
+    p.add_argument(
+        "--categorical-weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Reciprocal scale for hold/direction one-hot columns in Sinkhorn "
+            "normalization (higher anchors per-hold/per-direction transport)."
+        ),
+    )
+    p.add_argument(
         "--export-replays",
         action="store_true",
         help="Export per-candidate replay mini-datasets.",
@@ -1001,6 +1016,8 @@ def _run(
         n_holds=_resolve_n_holds(dataset, collection),
         n_directions=int(num_directions),
         device=device,
+        include_delta=bool(getattr(args, "include_delta", True)),
+        categorical_weight=float(getattr(args, "categorical_weight", 1.0)),
     )
 
     graphical = isinstance(viewer, newton.viewer.ViewerGL)
@@ -1065,12 +1082,9 @@ def _run(
                 }
             )
         failed_count = sum(row["error"] is not None for row in structure_results)
-        fused_count = max(
-            0, int(batch.prepared_structures) - len(batch.retried_structures)
-        )
         print(
             f"structures prepared={int(batch.prepared_structures)} "
-            f"fused={fused_count} retried={len(batch.retried_structures)} "
+            f"fused={int(batch.prepared_structures) - len(batch.errors)} "
             f"failed={failed_count}"
         )
         diagnostics = batch.replay_diagnostics

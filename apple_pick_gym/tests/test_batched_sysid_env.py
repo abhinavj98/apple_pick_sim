@@ -279,8 +279,45 @@ def test_batched_base_env_close_releases_obs_aliases_before_dropping_sim(monkeyp
     ApplePickBatchedBaseEnv.close(env)
     assert env._sim is None
     assert env._last_obs is None
-    assert order[0] == "release"
-    assert order[1:] == ["gc", "sync"]
+    assert order == ["sync", "release", "gc"]
+
+
+@gymnasium_available
+def test_batched_base_env_release_observation_aliases_clears_last_obs():
+    """The base default must drop obs aliases; an empty body silently pins Warp buffers."""
+
+    class _Holder:
+        def __init__(self) -> None:
+            self._last_obs: dict[str, object] | None = {"ft_wrist": object()}
+
+    env = _Holder()
+    ApplePickBatchedBaseEnv._release_observation_aliases(env)
+    assert env._last_obs is None
+
+
+@gymnasium_available
+def test_batched_base_env_close_synchronizes_before_dropping_sim(monkeypatch):
+    """Queued Warp work must finish before ``_sim`` arrays are collected."""
+    import apple_pick_gym.batched_envs.apple_pick_batched_base_env as base_mod
+
+    order: list[str] = []
+    monkeypatch.setattr(
+        base_mod.wp,
+        "synchronize",
+        lambda: order.append("sync") or order.append(f"sim={env._sim is not None}"),
+    )
+    monkeypatch.setattr(base_mod.gc, "collect", lambda: order.append("gc") or 0)
+
+    class _Holder:
+        def __init__(self) -> None:
+            self._sim = object()
+
+    env = _Holder()
+    ApplePickBatchedBaseEnv.close(env)
+    assert env._sim is None
+    assert order[0] == "sync"
+    assert order[1] == "sim=True"
+    assert order[-1] == "gc"
 
 
 @gymnasium_available

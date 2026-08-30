@@ -8,7 +8,7 @@ Sequencing, ranking acceptance, and CMA status belong in `docs/ROADMAP.md`.
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-17 |
+| Last reviewed | 2026-08-27 |
 | Code owners | `robot_replay/`; `apple_pick_sim/system_id/real_to_batched_sysid.py`; `apple_pick_sim/system_id/real_pre_grasp_params.py`; `apple_pick_sim/system_id/batched_digital_twin_init.py`; `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md`; H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H5 `docs/handbook-youngs-cma.md` |
@@ -177,14 +177,16 @@ Conversion aligns real bags with H3:
 - `world_wrench_from_ee_logged` rotates force and torque with
   \(R_{W,TCP}\): \(F_W=R_{W,TCP}F_{EE}\) and
   \(\tau_W=R_{W,TCP}\tau_{EE}\). Rotation happens **before** filtering.
-  Default convert does **not** change the moment reference point.
-  Logged `O_F_ext_hat_K` torque is about the robot **base origin**;
-  `--transport-torque-to-tcp` subtracts \(p\times F\) after the rotation
-  so \(\tau\) is about the TCP (needed for H3 scoring). There is no
-  second sign flip or simulated tare.
+  **Current real collections** (`robot_replay/final_data_correct_torque/`, e.g.
+  s09) already store compiled `ft_wrist` in the correct world frame at TCP:
+  env-on-robot, force and torque about TCP (libfranka external wrench estimate
+  after collection-time frame correction). Default convert applies rotation only
+  when needed; do **not** use `--transport-torque-to-tcp` on those parquets.
+  There is no second sign flip or simulated tare.
   The source `ft_wrist` must already be compiled EMA−EMA (loaded EMA minus
-  unloaded EMA). Convert then `filtfilt`s a Butterworth (default cutoff
-  10 Hz, order 4) on world `ft_wrist` only, writing the result as
+  unloaded EMA). The **unloaded replay is without the apple**, so apple weight
+  remains in the tared signal. Convert then `filtfilt`s a Butterworth (default
+  cutoff 10 Hz, order 4) on world `ft_wrist` only, writing the result as
   `ft_wrist_lpf`, and block-means unfiltered `ft_wrist`, `raw_ft_wrist`,
   `tcp_velocity`, and `ft_wrist_lpf` to `--control-hz` (default 30 Hz).
   Action / `vic_pose`, TCP and tag poses, `phase`, hold index, joint `q`,
@@ -215,7 +217,10 @@ The two geometry blocks have different jobs:
 1. **Pre-grasp** is the non-bending construction reference. The native mapping
    prefers `pre_grasp_geometry.rest_snapshot_during_run`, falls back to legacy
    `snapshot`, derives `fruiting_base_pos`, and rebuilds the plant. The apple's
-   pre-grasp orientation seeds the free settle.
+   pre-grasp orientation seeds the free settle. When
+   `parts.spur.manual_spur_angle_deg` and `parts.stem.manual_stem_angle_deg`
+   are both set, rod directions come from those catalog connection angles
+   (not woody marker chords). See [Checking connection angles](#checking-connection-angles).
 2. **Post-grasp** is the measured grasped state. After free settle, replay
    places the apple at its logged post-grasp SE(3) and places the proxy from the
    logged apple-to-TCP transform. It must not be used to rebuild rods from bent
@@ -235,6 +240,54 @@ fused/scalar `reset()` restore keeps the grasped apple/proxy pose.
 substeps with twists quieted every 300 substeps, followed by 500 welded
 post-grasp settle substeps. Shorter values are useful for CI smoke tests, but
 they are not equivalent settling evidence.
+
+### Checking connection angles
+
+Catalog `manual_*_angle_deg` is the plant-rebuild ground truth when both keys
+are present. Frames and Rodrigues steps:
+`docs/connection-angles-implementation.md`. Do **not** treat woody marker
+chords or `connection_rpy_deg` as the kit pose: chords are a rest snapshot
+(often nearly vertical) and RPY is a compiler snapshot frame.
+
+Proxy world: primary **+X**, robot reach **+Y**, hang **−Z**. Fruiting→robot is
+**−Y**.
+
+| Catalog field | Rotation axis | Rest / result |
+|---------------|---------------|----------------|
+| `manual_spur_angle_deg` | primary (proxy +X) | Rest = +Y (horizontal T). **90°** hangs to −Z. |
+| `manual_stem_angle_deg` | fruiting→robot (proxy −Y) | Applied **after** the spur hang. **60°** leans the stem in the XZ plane to `(sin 60, 0, −cos 60)`. |
+
+World **Z** is gravity. After a 90° hang the spur already lies on −Z, so a
+rotation about world Z cannot produce a 60° stem. The old sequential elevation
+path (`_deflect_direction`) did that and collapsed spur and stem to collinear
+−Z.
+
+**How to check a converted episode**
+
+1. Print pre-grasp diagnostics (settle viewer already does):
+
+   ```bash
+   uv run python robot_replay/example_view_pre_grasp_settle.py \
+     --parquet robot_replay/final_data_correct_torque/s09/s09-d00.parquet \
+     --viewer null --num-frames 1
+   ```
+
+   Look for the `connection angles:` block:
+   - `source=manual_catalog_angles`
+   - `manual_spur_angle_deg` / `manual_stem_angle_deg` match the parquet parts
+   - `built spur–stem angle` equals the stem catalog angle (90/60 → **60.0°**)
+   - `chord spur–stem angle` may differ (s09 chords are ~5°); that is expected
+
+2. In GL, the spur should hang down and the stem should lean **along the
+   primary** (X), not toward the robot (Y).
+
+3. Unit check:
+
+   ```bash
+   uv run --env-file pytest.env python -m pytest \
+     apple_pick_sim/tests/test_real_pre_grasp_params.py \
+     -k "catalog_angles or connection_angles or smoke" -q
+   ```
 
 ## 5. Digital-twin and arm initialization
 
@@ -359,7 +412,8 @@ Key regression coverage:
   `direction_idx`, canonical geometry, `n_holds` / `sim_config` /
   `topology_seed`), and 1×1 `s00_d00` regression.
 - `apple_pick_sim/tests/test_real_pre_grasp_params.py` — Branch T-junction,
-  rest-snapshot preference, and rod `mass_kg` → density override.
+  rest-snapshot preference, rod `mass_kg` → density override, and catalog
+  connection angles (spur about primary, stem about fruiting→robot).
 - `apple_pick_sim/tests/test_batched_digital_twin_init.py` — twin initialization
   and post-grasp SE(3), including per-env logged poses.
 - `apple_pick_sim/tests/test_open_loop_joint_bootstrap.py` — per-world

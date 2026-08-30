@@ -40,10 +40,10 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     welded_co_teleport_arrays_for_layout,
 )
 
-DEFAULT_STEM_COUPLING_GAIN: float = 0.9
+DEFAULT_STEM_COUPLING_GAIN: float = 1.0
 DEFAULT_STEM_FORCE_CAP_N: float = 40.0
 DEFAULT_STEM_TORQUE_CAP_NM: float = 10.0
-
+222
 DEFAULT_MUJOCO_SOLVER_KWARGS: dict[str, Any] = {
     "solver": "newton",
     "integrator": "implicitfast",
@@ -475,7 +475,7 @@ class CoupledFruitingScene:
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM
     stem_harvest_explicit_apple_weight: bool = False
-    """Add child-side ``-m_apple * gravity`` support into stem harvest (prescribed apple)."""
+    """Add env-on-robot apple payload ``m_apple * gravity`` into stem harvest (prescribed apple)."""
     apple_mass_kg: float = 0.0
     """Cached ``body_mass[apple]`` at build; avoids host sync during CUDA graph capture."""
     mj_apple_payload_body_index: int | None = None

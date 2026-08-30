@@ -17,8 +17,9 @@ Run from repo root::
         --output /tmp/youngs_cmaes
 
 Edit ``CMA_SEARCH_PARAMS`` below to change optimizer search knobs (mean, sigma,
-population, generations, bounds). ``--cma-seed`` overrides
-``CMA_SEARCH_PARAMS["cma_seed"]`` so the multi-seed gate can vary optimizer RNG.
+population, generations, bounds). ``--cma-seed`` and ``--max-generations``
+override ``CMA_SEARCH_PARAMS["cma_seed"]`` and ``max_generations`` for
+operational runs without editing the module defaults.
 
 """
 
@@ -28,11 +29,13 @@ import argparse
 import json
 import math
 import os
+import random
+import shutil
 import sys
 import time
 from dataclasses import replace as _dc_replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping, NamedTuple
 
 import newton.examples
 import newton.viewer
@@ -48,6 +51,7 @@ from apple_pick_sim.system_id.holdout_gates import (
 )
 from apple_pick_gym.batched_envs.holdout_evaluation import run_holdout_evaluation
 from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
+    CMA_OPTIMIZER_CHECKPOINT_FILENAME,
     CmaGenerationFailure,
     StructureCmaState,
     SupportKpYoungsCandidate,
@@ -55,14 +59,17 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     YoungsModulusCandidate,
     YoungsModulusScoringConfig,
     aggregate_fitted_youngs_modulus_stats,
+    apply_cma_checkpoint_to_states,
     candidates_from_log10_vector,
     create_structure_cma_optimizer,
     derive_structure_cma_seeds,
+    dump_cma_optimizer_checkpoint,
     evaluate_youngs_modulus_candidates,
     evaluate_youngs_modulus_structures,
     extract_support_kp_youngs_modulus_cma_bounds,
     fit_youngs_modulus_structures,
     gt_support_kp_youngs_candidate_from_structure,
+    load_cma_optimizer_checkpoint,
     normalize_search_bounds_log10,
     resolve_initial_mean_log10,
     structure_cma_report_snapshot,
@@ -74,10 +81,13 @@ from apple_pick_gym.batched_envs.batched_sysid_multi_replay import (
     SysIdReplayCancelled,
 )
 from apple_pick_gym.batched_envs.cma_wave_evaluation import (
+    DEFAULT_WAVE_MAX_ATTEMPTS,
+    CmaSnapshotVideoJob,
     build_cma_replay_context_from_cli,
     execute_cma_wave_evaluation,
     make_cma_wave_evaluation_spec,
     reuse_replicated_mujoco_for_cma,
+    spawn_isolated_cma_snapshot_video,
     spawn_isolated_cma_wave_evaluation,
 )
 from apple_pick_gym.batched_envs.real_batched_replay_build import (
@@ -96,6 +106,7 @@ from apple_pick_gym.youngs_modulus_overlay_viz import (
 )
 from apple_pick_sim.fruiting_system import load_ranges
 from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+from robot_replay.gl_video_recorder import GlVideoRecorder
 
 # Re-export grid helpers used by tests and shared replay setup.
 SETTLE_GRAVITY_RAMP = _grid.SETTLE_GRAVITY_RAMP
@@ -110,6 +121,8 @@ _collection_control_hz = _grid._collection_control_hz
 _settle_config_kwargs = _grid._settle_config_kwargs
 _render_frame = _grid._render_frame
 _positive_int = _grid._positive_int
+require_gl_frame_capture = _grid.require_gl_frame_capture
+make_grid_on_step = _grid.make_grid_on_step
 
 
 # Shared cancel type from the multi-replay dependency layer.
@@ -125,13 +138,19 @@ ViewerCancelled = SysIdReplayCancelled
 # ε-band) — 100 .. 1e6 N/m or N*m/rad (log10 2-6). Spur/stem E: absolute
 # 0.1-100 GPa (log10 8-11), same box as before. Init from the search box
 # midpoint, never from ground truth. Sim-sim box is 0.1–100 GPa; real vic_pose
-# uses spur/stem 10 MPa–3 GPa (log10 7–9.5) via _effective_search_bounds_log10.
+# uses spur/stem 10 MPa–100 GPa (log10 7–11) via _effective_search_bounds_log10.
 _CMA_SEARCH_LOG10_LOWER = [2.0, 8.0, 8.0]  # support_kp 1e2, spur/stem 0.1 GPa
 _CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 11.0]  # support_kp 1e6, spur/stem 100 GPa
-_REAL_CMA_SEARCH_LOG10_LOWER = [2.0, 7.0, 7.0]  # support_kp 1e2, spur/stem 10 MPa
-_REAL_CMA_SEARCH_LOG10_UPPER = [6.0, 9.5, 9.5]  # support_kp 1e6, spur/stem 3 GPa
+
+
+_REAL_CMA_SEARCH_LOG10_LOWER = [2.0, 8.0, 6.0]  # support_kp 1e2, spur/stem 10 MPa
+_REAL_CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 8.0]  # support_kp 1e6, spur/stem 100 GPa
 _CMA_MEAN_LOG10 = [_CMA_SEARCH_LOG10_LOWER[i] + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i]) for i in range(3)]
-_REAL_CMA_MEAN_LOG10 = [4.0, 8.0, 8.0]  # support_kp 1e4, spur/stem 100 MPa
+_REAL_CMA_MEAN_LOG10 = [
+    _REAL_CMA_SEARCH_LOG10_LOWER[i]
+    + 0.5 * (_REAL_CMA_SEARCH_LOG10_UPPER[i] - _REAL_CMA_SEARCH_LOG10_LOWER[i])
+    for i in range(3)
+]
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),
     "initial_sigma_log10": 0.2,
@@ -150,7 +169,7 @@ def _effective_search_bounds_log10(
     mode: str,
     search: dict[str, Any],
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
-    """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose uses spur/stem 10 MPa–3 GPa."""
+    """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose uses spur/stem 10 MPa–100 GPa."""
     if mode == "vic_pose":
         return (
             tuple(float(x) for x in _REAL_CMA_SEARCH_LOG10_LOWER),
@@ -334,13 +353,6 @@ def accumulate_cma_batch_counters(
                 counters.get(f"physical_env_slots:{structure_idx}", 0) + planned_i
             )
 
-    retried = len(batch.retried_structures)
-    if retried:
-        counters["scalar_retries"] += int(retried)
-        for structure_idx in batch.retried_structures:
-            counters[f"scalar_retries:{structure_idx}"] = (
-                counters.get(f"scalar_retries:{structure_idx}", 0) + 1
-            )
 
 def _resolve_ranges_path(
     args: Any,
@@ -382,6 +394,9 @@ def _clear_cma_owned_artifacts(
     report = output_dir / "cmaes_report.json"
     if report.exists():
         report.unlink()
+    checkpoint = output_dir / CMA_OPTIMIZER_CHECKPOINT_FILENAME
+    if checkpoint.exists():
+        checkpoint.unlink()
     holdout_report = output_dir / "holdout_report.json"
     if holdout_report.exists():
         holdout_report.unlink()
@@ -389,6 +404,12 @@ def _clear_cma_owned_artifacts(
         path.unlink(missing_ok=True)
     for path in output_dir.glob(".holdout_report.json.*.tmp"):
         path.unlink(missing_ok=True)
+    videos_dir = output_dir / "videos"
+    if videos_dir.is_dir():
+        for video in videos_dir.glob("structure_*.mp4"):
+            video.unlink(missing_ok=True)
+        if not any(videos_dir.iterdir()):
+            videos_dir.rmdir()
     if structure_indices is None:
         return
     for structure_idx in structure_indices:
@@ -460,6 +481,7 @@ def _build_cmaes_report_payload(
     | None = None,
     force_magnitude_weight: float = 0.0,
     isolated_eval_waves: bool = True,
+    wave_max_attempts: int = DEFAULT_WAVE_MAX_ATTEMPTS,
 ) -> dict[str, Any]:
     counters = counter_totals or {}
     structures: dict[str, Any] = {}
@@ -480,7 +502,6 @@ def _build_cmaes_report_payload(
             physical_env_slots=int(
                 counters.get(f"physical_env_slots:{structure_idx}", 0)
             ),
-            scalar_retries=int(counters.get(f"scalar_retries:{structure_idx}", 0)),
         )
         gt_diag = _gt_error_diagnostics(state.final_mean_log10, state.gt_candidate)
         if gt_diag is not None:
@@ -532,8 +553,11 @@ def _build_cmaes_report_payload(
             "n_holds": scoring.n_holds,
             "n_directions": scoring.n_directions,
             "device": scoring.device,
+            "include_delta": bool(scoring.include_delta),
+            "categorical_weight": float(scoring.categorical_weight),
             "force_magnitude_weight": float(force_magnitude_weight),
             "isolated_eval_waves": bool(isolated_eval_waves),
+            "wave_max_attempts": int(wave_max_attempts),
         },
         "command_status": str(command_status),
         "structures": structures,
@@ -544,7 +568,6 @@ def _build_cmaes_report_payload(
             ),
             "final_mean_evaluations": int(counters.get("final_mean_evaluations", 0)),
             "physical_env_slots": int(counters.get("physical_env_slots", 0)),
-            "scalar_retries": int(counters.get("scalar_retries", 0)),
         },
         "timing": dict(timing or {}),
     }
@@ -572,6 +595,20 @@ def _write_final_mean_overlay(
         max_overlay_candidates=1,
         title=f"Young's modulus CMA overlay — structure {int(state.structure_idx)}",
     )
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value!r}")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {value!r}")
+    return parsed
 
 
 def _make_parser() -> argparse.ArgumentParser:
@@ -610,6 +647,14 @@ def _make_parser() -> argparse.ArgumentParser:
         help=(
             "Application CMA base seed (overrides CMA_SEARCH_PARAMS['cma_seed']; "
             "not passed directly to pycma)."
+        ),
+    )
+    p.add_argument(
+        "--max-generations",
+        type=_positive_int,
+        default=None,
+        help=(
+            "CMA generation cap (overrides CMA_SEARCH_PARAMS['max_generations'])."
         ),
     )
     p.add_argument(
@@ -679,16 +724,38 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--hold-aggregation",
         choices=["median", "mean", "none"],
-        default="mean",
-        help="Hold state aggregation for Sinkhorn scoring. Default: mean.",
+        default="none",
+        help=(
+            "Hold state aggregation for Sinkhorn scoring. Default: none "
+            "(quasi-static level bags; use mean/median for legacy transition rows)."
+        ),
     )
     p.add_argument(
         "--force-magnitude-weight",
         type=float,
-        default=100.0,
+        default=0.0,
         help=(
             "Weight λ on mean |log(sim‖F‖/real‖F‖)| added to aggregate Sinkhorn "
-            "fitness (0 disables). Default: 100."
+            "fitness (0 disables). Default: 0 (Sinkhorn-only; opt in for legacy runs)."
+        ),
+    )
+    p.add_argument(
+        "--include-delta",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Append the Δs half to each scored transition row. Default: off "
+            "(level bags; pass --include-delta for legacy [s, Δs] rows)."
+        ),
+    )
+    p.add_argument(
+        "--categorical-weight",
+        type=float,
+        default=30.0,
+        help=(
+            "Reciprocal scale for hold/direction one-hot columns in Sinkhorn "
+            "normalization (higher anchors per-hold/per-direction transport). "
+            "Default: 30."
         ),
     )
     p.add_argument(
@@ -719,14 +786,61 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--wave-max-attempts",
+        type=_positive_int,
+        default=DEFAULT_WAVE_MAX_ATTEMPTS,
+        help=(
+            "Total subprocess attempts per isolated evaluation wave before failing "
+            f"(default: {DEFAULT_WAVE_MAX_ATTEMPTS})."
+        ),
+    )
+    p.add_argument(
+        "--enable-self-collision",
+        action="store_true",
+        help="Enable fruiting cable self-collisions during CMA replay (default: off).",
+    )
+    p.add_argument(
         "--overwrite",
         action="store_true",
         help="Allow writing into an existing output directory.",
     )
     p.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume from <output>/cma_optimizer_checkpoint.pkl when present. "
+            "Allows a non-empty output directory without --overwrite."
+        ),
+    )
+    p.add_argument(
+        "--max-process-restarts",
+        type=int,
+        default=10,
+        help=(
+            "Auto-reexec the CLI with --resume after restartable failures "
+            "(failed/global_error). 0 disables (default: 10)."
+        ),
+    )
+    p.add_argument(
+        "--cma-process-attempt",
+        type=int,
+        default=0,
+        help=argparse.SUPPRESS,
+    )
+    p.add_argument(
         "--show-pull-direction",
         action="store_true",
         help="Draw cyan pull-direction arrows (requires --viewer gl).",
+    )
+    p.add_argument(
+        "--snapshot-video-every",
+        type=_nonnegative_int,
+        default=0,
+        help=(
+            "Replay one random CMA sample to MP4 every N completed generations "
+            "(0 disables; videos land in <output>/videos/). Each clip runs in "
+            "a fresh headless GL subprocess so later generations keep recording."
+        ),
     )
     p.add_argument("--settle-substeps", type=int, default=None)
     p.add_argument(
@@ -738,6 +852,488 @@ def _make_parser() -> argparse.ArgumentParser:
     return p
 
 
+class CmaSnapshotSample(NamedTuple):
+    structure_idx: int
+    generation_index: int
+    candidate_index: int
+    log10_vector: tuple[float, float, float]
+    fitness: float | None
+
+
+def should_record_cma_snapshot_video(
+    interval: int,
+    generation_index: int,
+    last_recorded_generation: int | None,
+) -> bool:
+    """True when a snapshot is due for CMA ``generation_index`` (0-based)."""
+    if int(interval) <= 0:
+        return False
+    generation = int(generation_index)
+    if generation < 0:
+        return False
+    if generation % int(interval) != 0:
+        return False
+    if last_recorded_generation is not None and generation == int(last_recorded_generation):
+        return False
+    return True
+
+
+def choose_random_cma_snapshot_sample(
+    states: Mapping[int, Any],
+    *,
+    seed: int,
+) -> CmaSnapshotSample | None:
+    """Pick one asked sample from the latest completed generation, deterministically."""
+    latest: list[tuple[int, Any]] = []
+    latest_generation = -1
+    for structure_idx, state in states.items():
+        generations = getattr(state, "generations", None) or []
+        if not generations:
+            continue
+        record = generations[-1]
+        generation_index = int(getattr(record, "generation_index", -1))
+        if generation_index > latest_generation:
+            latest = [(int(structure_idx), record)]
+            latest_generation = generation_index
+        elif generation_index == latest_generation:
+            latest.append((int(structure_idx), record))
+    if not latest:
+        return None
+    rng = random.Random(int(seed) + latest_generation)
+    structure_idx, record = rng.choice(sorted(latest, key=lambda item: item[0]))
+    samples = tuple(tuple(float(v) for v in row) for row in record.ask_samples_log10)
+    if not samples:
+        return None
+    candidate_index = rng.randrange(len(samples))
+    fitness_values = getattr(record, "penalized_fitness", None) or ()
+    fitness = None
+    if candidate_index < len(fitness_values):
+        value = fitness_values[candidate_index]
+        if value is not None and math.isfinite(float(value)):
+            fitness = float(value)
+    return CmaSnapshotSample(
+        structure_idx=int(structure_idx),
+        generation_index=int(record.generation_index),
+        candidate_index=int(candidate_index),
+        log10_vector=tuple(samples[candidate_index]),
+        fitness=fitness,
+    )
+
+
+def choose_random_snapshot_direction(
+    direction_indices: tuple[int, ...] | None,
+    *,
+    seed: int,
+    generation_index: int,
+) -> int:
+    """Pick one replay direction for the snapshot camera, deterministically."""
+    dirs = tuple(int(d) for d in (direction_indices or ()))
+    if not dirs:
+        dirs = (0,)
+    rng = random.Random(int(seed) + int(generation_index))
+    return int(rng.choice(dirs))
+
+
+def resolve_cma_snapshot_direction_indices(
+    fit_direction_indices: tuple[int, ...] | None,
+    *,
+    dataset: BatchedSysIdDataset,
+    structure_idx: int,
+    num_directions: int,
+    include_excluded: bool,
+) -> tuple[int, ...]:
+    """Direction pool for snapshot replay: train split, else all usable disk dirs."""
+    if fit_direction_indices is not None:
+        return tuple(int(d) for d in fit_direction_indices)
+    try:
+        usable = tuple(
+            int(d)
+            for d in list_usable_direction_indices(
+                dataset,
+                int(structure_idx),
+                include_excluded=bool(include_excluded),
+            )
+        )
+        if usable:
+            return usable
+    except (OSError, ValueError, KeyError):
+        pass
+    n = max(1, int(num_directions))
+    return tuple(range(n))
+
+
+def load_snapshot_camera_to_base(
+    dataset_dir: Path | str,
+    structure_idx: int,
+    direction_idx: int,
+) -> object | None:
+    """Episode ``camera_to_base_4x4`` for the chosen structure, if present."""
+    try:
+        dataset = BatchedSysIdDataset(dataset_dir)
+        meta = dataset.load_episode_metadata(int(structure_idx), int(direction_idx))
+    except (OSError, FileNotFoundError, ValueError, KeyError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    return meta.get("camera_to_base_4x4")
+
+
+def cma_snapshot_video_path(
+    output_dir: Path | str,
+    sample: CmaSnapshotSample,
+    *,
+    direction_idx: int,
+) -> Path:
+    return (
+        Path(output_dir)
+        / "videos"
+        / (
+            f"structure_{int(sample.structure_idx):03d}"
+            f"_gen_{int(sample.generation_index):03d}"
+            f"_dir_{int(direction_idx):03d}"
+            f"_sample_{int(sample.candidate_index):03d}.mp4"
+        )
+    )
+
+
+def _gl_front_from_pitch_yaw(
+    pitch_deg: float, yaw_deg: float
+) -> tuple[float, float, float]:
+    """Newton GL look direction for Z-up (matches ``Camera.get_front``)."""
+    pitch = max(min(float(pitch_deg), 89.0), -89.0)
+    yaw = float(yaw_deg)
+    cp = math.cos(math.radians(pitch))
+    fx = math.cos(math.radians(yaw)) * cp
+    fy = math.sin(math.radians(yaw)) * cp
+    fz = math.sin(math.radians(pitch))
+    norm = math.sqrt(fx * fx + fy * fy + fz * fz) or 1.0
+    return (fx / norm, fy / norm, fz / norm)
+
+
+def _xyz_from_state_array(array: object) -> object:
+    import numpy as np
+
+    if array is None:
+        return None
+    data = array.numpy() if hasattr(array, "numpy") else np.asarray(array)
+    if data is None or np.asarray(data).size == 0:
+        return None
+    pts = np.asarray(data, dtype=np.float64)
+    if pts.ndim < 2 or pts.shape[0] == 0:
+        return None
+    return pts[:, :3]
+
+
+def _plant_points_from_env(env: object) -> object:
+    import numpy as np
+
+    sim = getattr(env, "_sim", None)
+    scene = getattr(sim, "scene", None) if sim is not None else None
+    cable = getattr(scene, "cable", None) if scene is not None else None
+    state = getattr(cable, "state_0", None) if cable is not None else None
+    if state is None:
+        return None
+    chunks = []
+    for attr in ("body_q", "particle_q"):
+        pts = _xyz_from_state_array(getattr(state, attr, None))
+        if pts is not None:
+            chunks.append(pts)
+    if not chunks:
+        return None
+    return np.concatenate(chunks, axis=0)
+
+
+def frame_snapshot_camera_on_structure(
+    viewer: object,
+    env: object,
+    *,
+    camera_to_base_4x4: object | None = None,
+    world_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    look_pitch_deg: float = -20.0,
+    look_yaw_deg: float = 45.0,
+    padding: float = 1.5,
+    min_extent: float = 1.0,
+) -> tuple[tuple[float, float, float], float, float] | None:
+    """Place the GL camera on the chosen structure.
+
+    Prefer episode ``camera_to_base_4x4`` (franka base, same frame as the
+    fruiting plant). ``world_offset`` shifts that pose onto a batched copy.
+    Falls back to a cable AABB fit when the parquet pose is missing.
+    """
+    from robot_replay.example_replay_real_batched import gl_camera_from_camera_to_base
+
+    ox, oy, oz = (float(v) for v in world_offset)
+    if camera_to_base_4x4 is not None:
+        pose = gl_camera_from_camera_to_base(camera_to_base_4x4)
+        if pose is not None:
+            pos, pitch, yaw = pose
+            pos = (pos[0] + ox, pos[1] + oy, pos[2] + oz)
+            if hasattr(viewer, "set_camera"):
+                viewer.set_camera(pos, pitch, yaw)
+            return pos, pitch, yaw
+
+    import numpy as np
+
+    points = _plant_points_from_env(env)
+    if points is None:
+        return None
+    lo = np.min(points, axis=0)
+    hi = np.max(points, axis=0)
+    center = 0.5 * (lo + hi)
+    extent = float(np.max(hi - lo))
+    if not math.isfinite(extent) or extent < float(min_extent):
+        extent = float(min_extent)
+    camera = getattr(viewer, "camera", None)
+    fov = float(getattr(camera, "fov", 45.0) or 45.0)
+    fov = min(90.0, max(15.0, fov))
+    half = math.tan(math.radians(fov) / 2.0)
+    if half <= 1e-12:
+        return None
+    distance = extent / (2.0 * half) * float(padding)
+    pitch = float(look_pitch_deg)
+    yaw = float(look_yaw_deg)
+    front = _gl_front_from_pitch_yaw(pitch, yaw)
+    pos = (
+        float(center[0] - front[0] * distance) + ox,
+        float(center[1] - front[1] * distance) + oy,
+        float(center[2] - front[2] * distance) + oz,
+    )
+    if hasattr(viewer, "set_camera"):
+        viewer.set_camera(pos, pitch, yaw)
+    return pos, pitch, yaw
+
+
+def make_snapshot_on_step(
+    viewer: object,
+    *,
+    control_hz: float,
+    recorder: GlVideoRecorder | None,
+    show_pull_direction: bool = False,
+    camera_to_base_4x4: object | None = None,
+    world_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    frame_camera: Callable[..., object] | None = None,
+) -> Callable[..., bool]:
+    """Render snapshot frames; frame the camera once from the structure pose."""
+    viewer_state: dict[str, object] = {"model": None, "framed": False}
+    if frame_camera is None:
+        def frame_camera(viewer_obj: object, env_obj: object) -> object:
+            return frame_snapshot_camera_on_structure(
+                viewer_obj,
+                env_obj,
+                camera_to_base_4x4=camera_to_base_4x4,
+                world_offset=world_offset,
+            )
+
+    def on_step(*, frame_idx: int, env: object) -> bool:
+        if not _viewer_allows_snapshot_capture(viewer):
+            return False
+        sim = getattr(env, "_sim", None)
+        if sim is None:
+            return True
+        scene = getattr(sim, "scene", None)
+        if scene is None:
+            return True
+        active_model = scene.cable.model
+        if viewer_state.get("model") is not active_model:
+            viewer.set_model(active_model)
+            if getattr(env, "num_envs", 1) > 1:
+                viewer.set_world_offsets(tuple(sim.config.runtime.env_spacing))
+            if viewer_state.get("model") is None and hasattr(
+                viewer, "hide_loading_splash"
+            ):
+                viewer.hide_loading_splash()
+            viewer_state["model"] = active_model
+        if not viewer_state["framed"]:
+            frame_camera(viewer, env)
+            viewer_state["framed"] = True
+        hz = float(getattr(sim.config.runtime, "control_hz", control_hz))
+        sim_time = float(frame_idx) / max(hz, 1e-9)
+        _render_frame(
+            viewer,
+            env,
+            sim_time,
+            obs=getattr(env, "_last_obs", None),
+            show_pull_direction=show_pull_direction,
+        )
+        if recorder is not None:
+            if recorder.fps is None:
+                recorder.set_fps(hz)
+            recorder.capture(viewer)
+        return True
+
+    return on_step
+
+
+def _reset_headless_gl_event_loop() -> None:
+    """Clear pyglet's global exit flag before opening another headless GL viewer."""
+    try:
+        import pyglet
+    except ImportError:
+        return
+    pyglet.app.event_loop.has_exit = False
+
+
+def _viewer_allows_snapshot_capture(viewer: object) -> bool:
+    """Headless snapshot replays ignore pyglet's stale ``has_exit`` flag."""
+    renderer = getattr(viewer, "renderer", None)
+    if bool(getattr(renderer, "headless", False)):
+        return True
+    if hasattr(viewer, "is_running"):
+        return bool(viewer.is_running())
+    return True
+
+
+def _open_headless_gl_viewer() -> object:
+    _reset_headless_gl_event_loop()
+    return newton.viewer.ViewerGL(headless=True)
+
+
+def record_cma_snapshot_video(
+    sample: CmaSnapshotSample,
+    *,
+    output_dir: Path,
+    replay_context: Any,
+    scoring: YoungsModulusScoringConfig,
+    dataset_dir: Path | str,
+    num_directions: int,
+    direction_indices: tuple[int, ...] | None,
+    max_envs_per_batch: int,
+    seed: int | None,
+    include_excluded: bool,
+    fail_fast: bool,
+    action_dim: int,
+    show_pull_direction: bool,
+    control_hz: float,
+    open_viewer: Any = _open_headless_gl_viewer,
+) -> Path:
+    """Replay one CMA sample under a headless GL viewer and write an MP4."""
+    snapshot_seed = int(seed if seed is not None else 0)
+    chosen_direction = choose_random_snapshot_direction(
+        direction_indices,
+        seed=snapshot_seed,
+        generation_index=int(sample.generation_index),
+    )
+    path = cma_snapshot_video_path(
+        output_dir, sample, direction_idx=chosen_direction
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = candidates_from_log10_vector(sample.log10_vector)
+    viewer = open_viewer()
+    recorder = GlVideoRecorder(path)
+    try:
+        require_gl_frame_capture(viewer)
+        camera_to_base = load_snapshot_camera_to_base(
+            dataset_dir,
+            int(sample.structure_idx),
+            chosen_direction,
+        )
+        on_step = make_snapshot_on_step(
+            viewer,
+            control_hz=float(control_hz),
+            recorder=recorder,
+            show_pull_direction=bool(show_pull_direction),
+            camera_to_base_4x4=camera_to_base,
+        )
+        spec = make_cma_wave_evaluation_spec(
+            dataset_dir=dataset_dir,
+            structures=[(int(sample.structure_idx), (candidate,))],
+            wave_kind="snapshot_video",
+            scoring=scoring,
+            replay_context=replay_context,
+            num_directions=int(num_directions),
+            direction_indices=(chosen_direction,),
+            max_envs_per_batch=int(max_envs_per_batch),
+            seed=seed,
+            include_excluded=bool(include_excluded),
+            fail_fast=bool(fail_fast),
+            action_dim=int(action_dim),
+            multi_structure_batch=True,
+            on_step=on_step,
+        )
+        execute_cma_wave_evaluation(spec)
+        if recorder.frame_count <= 0:
+            raise RuntimeError(f"snapshot video wrote 0 frames ({path})")
+    finally:
+        recorder.close()
+        if hasattr(viewer, "close"):
+            viewer.close()
+    return path
+
+
+def cma_should_reexec(result: dict[str, Any], args: argparse.Namespace) -> bool:
+    if not bool(result.get("exit_nonzero")):
+        return False
+    if str(result.get("command_status")) not in {"failed", "global_error"}:
+        return False
+    max_restarts = int(getattr(args, "max_process_restarts", 10))
+    attempt = int(getattr(args, "cma_process_attempt", 0))
+    return max_restarts > 0 and attempt < max_restarts
+
+
+def _cma_entry_script() -> Path:
+    return Path(__file__).resolve()
+
+
+def _cma_repo_root() -> Path:
+    return _cma_entry_script().parents[2]
+
+
+def _cma_cli_argv_tail(argv: list[str]) -> list[str]:
+    """Recover CMA CLI tokens from argv (wrapper scripts, ``python -c``, etc.)."""
+    script = _cma_entry_script()
+    script_name = script.name
+    for index, arg in enumerate(argv):
+        if arg == "-c":
+            continue
+        try:
+            if arg.endswith(".py") and Path(arg).resolve() == script:
+                return list(argv[index + 1 :])
+        except OSError:
+            pass
+        if arg == script_name or arg.endswith(f"/{script_name}"):
+            return list(argv[index + 1 :])
+    for index, arg in enumerate(argv):
+        if arg.startswith("--"):
+            return list(argv[index:])
+    return []
+
+
+def cma_reexec_argv(argv: list[str], args: argparse.Namespace) -> list[str]:
+    """Build argv for ``os.execv`` after a restartable CMA failure."""
+    attempt = int(getattr(args, "cma_process_attempt", 0)) + 1
+    script = str(_cma_entry_script())
+    skip_next = False
+    cli_tail: list[str] = []
+    for arg in _cma_cli_argv_tail(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--overwrite":
+            continue
+        if arg == "--cma-process-attempt":
+            skip_next = True
+            continue
+        if arg.startswith("--cma-process-attempt="):
+            continue
+        cli_tail.append(arg)
+    if "--resume" not in cli_tail:
+        cli_tail.append("--resume")
+    cli_tail.extend(["--cma-process-attempt", str(attempt)])
+
+    uv_executable = shutil.which("uv")
+    if uv_executable is not None:
+        return [
+            uv_executable,
+            "run",
+            "--directory",
+            str(_cma_repo_root()),
+            "python",
+            script,
+            *cli_tail,
+        ]
+    return [sys.executable, script, *cli_tail]
+
+
 def _run(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
@@ -745,11 +1341,22 @@ def _run(
     viewer: object,
 ) -> dict[str, Any]:
     output_dir = Path(args.output)
-    if output_dir.exists() and any(output_dir.iterdir()) and not bool(args.overwrite):
+    resume = bool(getattr(args, "resume", False))
+    if (
+        output_dir.exists()
+        and any(output_dir.iterdir())
+        and not bool(args.overwrite)
+        and not resume
+    ):
         raise SystemExit(
             f"output directory {output_dir} is non-empty; pass --overwrite to continue"
         )
     output_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = output_dir / CMA_OPTIMIZER_CHECKPOINT_FILENAME
+    if resume and not checkpoint_path.is_file():
+        raise SystemExit(
+            f"--resume requested but checkpoint not found: {checkpoint_path}"
+        )
 
     device = args.device
     if device == "cuda":
@@ -770,9 +1377,12 @@ def _run(
         base_seed = int(args.cma_seed)
     else:
         base_seed = int(search["cma_seed"])
-    max_generations = int(search["max_generations"])
+    if getattr(args, "max_generations", None) is not None:
+        max_generations = int(args.max_generations)
+    else:
+        max_generations = int(search["max_generations"])
     if max_generations < 1:
-        raise SystemExit("CMA_SEARCH_PARAMS['max_generations'] must be >= 1")
+        raise SystemExit("max_generations must be >= 1")
     population_size = search["population_size"]
     if population_size is not None:
         population_size = int(population_size)
@@ -789,7 +1399,7 @@ def _run(
     if not structure_indices:
         raise SystemExit("No structure indices to evaluate.")
 
-    if bool(args.overwrite):
+    if bool(args.overwrite) and not resume:
         _clear_cma_owned_artifacts(
             output_dir, structure_indices=list(structure_indices)
         )
@@ -914,6 +1524,7 @@ def _run(
         if mode == "vic_pose"
         else None,
         episode_meta=episode_meta if mode == "vic_pose" else None,
+        enable_self_collisions=bool(getattr(args, "enable_self_collision", False)),
     )
     scoring = YoungsModulusScoringConfig(
         use_median=args.use_median is True,
@@ -922,7 +1533,9 @@ def _run(
         n_holds=_resolve_n_holds(dataset, collection),
         n_directions=int(num_directions),
         device=device,
-        hold_aggregation=getattr(args, "hold_aggregation", None),
+        hold_aggregation=getattr(args, "hold_aggregation", "none"),
+        include_delta=bool(getattr(args, "include_delta", False)),
+        categorical_weight=float(getattr(args, "categorical_weight", 30.0)),
     )
 
     derive_structure_cma_seeds(base_seed=base_seed, structure_indices=structure_indices)
@@ -990,8 +1603,13 @@ def _run(
         "replay_candidate_evaluations": 0,
         "final_mean_evaluations": 0,
         "physical_env_slots": 0,
-        "scalar_retries": 0,
     }
+    if resume:
+        checkpoint = load_cma_optimizer_checkpoint(checkpoint_path)
+        restored_counters = apply_cma_checkpoint_to_states(states, checkpoint)
+        for key, value in restored_counters.items():
+            counters[key] = int(value)
+
     timing: dict[str, Any] = {}
     command_started = time.perf_counter()
     command_status = "running"
@@ -1023,9 +1641,10 @@ def _run(
             population_size=population_size,
             search_bounds_log10=search_bounds_log10,
             force_magnitude_weight=float(
-                getattr(args, "force_magnitude_weight", 100.0)
+                getattr(args, "force_magnitude_weight", 0.0)
             ),
             isolated_eval_waves=bool(use_isolated_eval_waves),
+            wave_max_attempts=int(getattr(args, "wave_max_attempts", DEFAULT_WAVE_MAX_ATTEMPTS)),
         )
         _write_cmaes_report_atomic(report_path, payload)
 
@@ -1046,6 +1665,7 @@ def _run(
             "val_direction_indices": val_direction_indices,
             "states": states,
             "exit_nonzero": True,
+            "command_status": "global_error",
         }
 
     show_pull_direction = bool(args.show_pull_direction) and graphical
@@ -1133,14 +1753,93 @@ def _run(
             batch = spawn_isolated_cma_wave_evaluation(
                 spec,
                 output_dir=output_dir,
+                max_attempts=int(
+                    getattr(args, "wave_max_attempts", DEFAULT_WAVE_MAX_ATTEMPTS)
+                ),
             )
         else:
             batch = execute_cma_wave_evaluation(spec)
         _accumulate_wave_counters(batch, structure_list, str(wave_kind))
         return batch
 
+    snapshot_interval = int(getattr(args, "snapshot_video_every", 0) or 0)
+    last_snapshot_generation: int | None = None
+    snapshot_seed = int(base_seed if replay_seed is None else replay_seed)
+
     def on_progress(progress_states) -> None:
+        nonlocal last_snapshot_generation
         write_report(status="running")
+        dump_cma_optimizer_checkpoint(
+            checkpoint_path,
+            progress_states,
+            counters=counters,
+        )
+        completed = max(
+            (int(state.completed_generations) for state in progress_states.values()),
+            default=0,
+        )
+        latest_generation = max(
+            (
+                int(state.generations[-1].generation_index)
+                for state in progress_states.values()
+                if getattr(state, "generations", None)
+            ),
+            default=-1,
+        )
+        if should_record_cma_snapshot_video(
+            snapshot_interval, latest_generation, last_snapshot_generation
+        ):
+            sample = choose_random_cma_snapshot_sample(
+                progress_states, seed=snapshot_seed
+            )
+            if sample is not None:
+                try:
+                    snapshot_direction_indices = resolve_cma_snapshot_direction_indices(
+                        fit_direction_indices,
+                        dataset=dataset,
+                        structure_idx=int(sample.structure_idx),
+                        num_directions=int(num_directions),
+                        include_excluded=bool(args.include_excluded),
+                    )
+                    video_path = spawn_isolated_cma_snapshot_video(
+                        CmaSnapshotVideoJob(
+                            structure_idx=int(sample.structure_idx),
+                            generation_index=int(sample.generation_index),
+                            candidate_index=int(sample.candidate_index),
+                            log10_vector=tuple(
+                                float(v) for v in sample.log10_vector
+                            ),
+                            fitness=sample.fitness,
+                            output_dir=output_dir,
+                            replay_context=replay_context,
+                            scoring=scoring,
+                            dataset_dir=Path(args.dataset).resolve(),
+                            num_directions=int(num_directions),
+                            direction_indices=snapshot_direction_indices,
+                            max_envs_per_batch=int(args.max_envs_per_batch),
+                            seed=replay_seed,
+                            include_excluded=bool(args.include_excluded),
+                            fail_fast=bool(args.fail_fast),
+                            action_dim=int(action_dim),
+                            show_pull_direction=bool(show_pull_direction),
+                            control_hz=float(control_hz),
+                        ),
+                        output_dir=output_dir,
+                    )
+                    last_snapshot_generation = int(sample.generation_index)
+                    print(
+                        "snapshot video "
+                        f"gen={sample.generation_index} "
+                        f"structure={sample.structure_idx} "
+                        f"sample={sample.candidate_index} "
+                        f"path={video_path}",
+                        file=sys.stderr,
+                    )
+                except Exception as exc:
+                    print(
+                        f"warning: snapshot video failed at generation {latest_generation}: {exc}",
+                        file=sys.stderr,
+                    )
         if bool(args.fail_fast) and any(
             state.status == "failed" for state in progress_states.values()
         ):
@@ -1166,7 +1865,7 @@ def _run(
             evaluate_fn=evaluate_fn,
             on_progress=on_progress,
             force_magnitude_weight=float(
-                getattr(args, "force_magnitude_weight", 100.0)
+                getattr(args, "force_magnitude_weight", 0.0)
             ),
         )
         timing.update(dict(fit_result.timing or {}))
@@ -1183,6 +1882,7 @@ def _run(
             "val_direction_indices": val_direction_indices,
             "states": states,
             "exit_nonzero": True,
+            "command_status": "cancelled",
         }
     except Exception as exc:
         exit_nonzero = True
@@ -1196,6 +1896,7 @@ def _run(
             "val_direction_indices": val_direction_indices,
             "states": states,
             "exit_nonzero": True,
+            "command_status": "global_error",
         }
 
     for structure_idx, state in states.items():
@@ -1313,6 +2014,7 @@ def _run(
         "fitted_structure_indices": fitted,
         "failed_structure_indices": failed,
         "exit_nonzero": bool(exit_nonzero),
+        "command_status": command_status,
     }
 
 
@@ -1325,6 +2027,9 @@ def main() -> None:
     viewer, args = newton.examples.init(parser=parser)
     try:
         result = _run(args, parser, viewer=viewer)
+        if cma_should_reexec(result, args):
+            reexec_argv = cma_reexec_argv(sys.argv, args)
+            os.execv(reexec_argv[0], reexec_argv)
         if result.get("exit_nonzero"):
             raise SystemExit(1)
     finally:

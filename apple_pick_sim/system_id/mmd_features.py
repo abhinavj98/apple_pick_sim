@@ -33,9 +33,9 @@ STATE_VECTOR_FIELDS: tuple[str, ...] = (
 
 _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     # ft_wrist F
-    0.5,
-    0.5,
-    0.5,
+    0.1,
+    0.1,
+    0.1,
     # ft_wrist τ
     1.0,
     1.0,
@@ -49,11 +49,11 @@ _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     0.02,
     0.02,
     # tcp_pos
-    0.05,
-    0.05,
-    0.05,
+    0.005,
+    0.005,
+    0.005,
 )
-WOODY_START_PHYS_SCALE = 0.05
+WOODY_START_PHYS_SCALE = 0.005
 BEND_ANGLE_PHYS_SCALE = 0.05
 
 
@@ -78,17 +78,32 @@ STATE_VECTOR_PHYS_SCALE: tuple[float, ...] = tuple(
 )
 
 
-def transition_feature_scale(n_features: int, *, n_junctions: int = 2) -> np.ndarray:
-    """Return divisor vector for [s, Δs, trailing one-hots]."""
+def transition_feature_scale(
+    n_features: int,
+    *,
+    n_junctions: int = 2,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
+) -> np.ndarray:
+    """Return divisor vector for [s, (Δs,) trailing one-hots]."""
     state = state_vector_phys_scale(n_junctions)
     state_dim = int(state.size)
-    if n_features < 2 * state_dim:
+    n_blocks = 2 if bool(include_delta) else 1
+    min_features = n_blocks * state_dim
+    if n_features < min_features:
         raise ValueError(
-            f"transition features width {n_features} < 2*state_dim={2 * state_dim} "
-            f"(n_junctions={int(n_junctions)})"
+            f"transition features width {n_features} < {n_blocks}*state_dim="
+            f"{min_features} (n_junctions={int(n_junctions)}, "
+            f"include_delta={bool(include_delta)})"
         )
-    n_extra = int(n_features) - 2 * state_dim
-    return np.concatenate([state, state, np.ones(n_extra, dtype=np.float64)])
+    weight = float(categorical_weight)
+    if not np.isfinite(weight) or weight <= 0.0:
+        raise ValueError(
+            f"categorical_weight must be finite and positive, got {categorical_weight!r}"
+        )
+    n_extra = int(n_features) - min_features
+    extra = np.full(n_extra, 1.0 / weight, dtype=np.float64)
+    return np.concatenate([state] * n_blocks + [extra])
 
 
 def scored_ft_wrist(arrays: Mapping[str, Any]) -> Any:
@@ -587,6 +602,7 @@ def combine_transition_features(
     dir_id_onehot: bool = False,
     n_directions: int | None = None,
     hold_reduce: str | None = None,
+    include_delta: bool = True,
 ) -> dict[int, np.ndarray]:
     """Concatenate hold-only transition features keyed by excitation direction."""
     parts: dict[int, list[np.ndarray]] = {}
@@ -599,6 +615,7 @@ def combine_transition_features(
             dir_id_onehot=dir_id_onehot,
             n_directions=n_directions,
             hold_reduce=hold_reduce,
+            include_delta=include_delta,
         ).items():
             parts.setdefault(direction, []).append(features)
     return {
@@ -617,13 +634,16 @@ def build_transition_features_by_direction(
     dir_id_onehot: bool = False,
     n_directions: int | None = None,
     hold_reduce: str | None = None,
+    include_delta: bool = True,
 ) -> dict[int, np.ndarray]:
     """Build hold-only transition feature rows keyed by excitation direction.
 
     ``hold_reduce="median"|"mean"`` emits one row per consecutive hold pair
-    using the reduced hold state ``[s_i, s_{i+1}-s_i]``. ``use_median=True``
+    using the reduced hold state ``[s_i, s_{i+1}-s_i]`` when ``include_delta``
+    is true, or one level row per retained hold when false. ``use_median=True``
     is an alias for ``hold_reduce="median"``. ``none`` / ``use_median=False``
-    emits frame→frame transitions on full hold segments.
+    emits frame→frame transitions on full hold segments, or one level row per
+    stable hold frame when ``include_delta=False``.
     """
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
@@ -692,47 +712,14 @@ def build_transition_features_by_direction(
                 if resolved_n_holds is not None
                 else max(len(reduced), 1)
             )
-            for i in range(len(reduced) - 1):
-                current = reduced[i]
-                delta = reduced[i + 1] - current
-                row = np.concatenate([current, delta]).astype(np.float32)
-                if hold_id_onehot:
-                    row = np.concatenate(
-                        [row, _one_hot_hold_id(hold_ids[i], n_holds=n_holds_dir)]
-                    )
-                if dir_id_onehot:
-                    assert resolved_n_directions is not None
-                    row = np.concatenate(
-                        [
-                            row,
-                            _one_hot_dir_id(
-                                direction, n_directions=resolved_n_directions
-                            ),
-                        ]
-                    )
-                rows.append(row)
-        else:
-            n_holds_dir = (
-                int(resolved_n_holds)
-                if resolved_n_holds is not None
-                else max(len(segments), 1)
-            )
-            for hold_i, segment in enumerate(segments):
-                kept = _stable_masked_segment(segment, stable)
-                if kept.size < 2:
-                    continue
-                for start_idx, end_idx in zip(kept[:-1], kept[1:], strict=True):
-                    current = state[int(start_idx)]
-                    delta = state[int(end_idx)] - current
+            if include_delta:
+                for i in range(len(reduced) - 1):
+                    current = reduced[i]
+                    delta = reduced[i + 1] - current
                     row = np.concatenate([current, delta]).astype(np.float32)
                     if hold_id_onehot:
-                        if "hold_number" in arrays:
-                            hn = int(np.asarray(arrays["hold_number"])[int(start_idx)])
-                            hid = hn if hn >= 0 else hold_i
-                        else:
-                            hid = hold_i
                         row = np.concatenate(
-                            [row, _one_hot_hold_id(hid, n_holds=n_holds_dir)]
+                            [row, _one_hot_hold_id(hold_ids[i], n_holds=n_holds_dir)]
                         )
                     if dir_id_onehot:
                         assert resolved_n_directions is not None
@@ -745,6 +732,84 @@ def build_transition_features_by_direction(
                             ]
                         )
                     rows.append(row)
+            else:
+                for i, current in enumerate(reduced):
+                    row = np.asarray(current, dtype=np.float32)
+                    if hold_id_onehot:
+                        row = np.concatenate(
+                            [row, _one_hot_hold_id(hold_ids[i], n_holds=n_holds_dir)]
+                        )
+                    if dir_id_onehot:
+                        assert resolved_n_directions is not None
+                        row = np.concatenate(
+                            [
+                                row,
+                                _one_hot_dir_id(
+                                    direction, n_directions=resolved_n_directions
+                                ),
+                            ]
+                        )
+                    rows.append(row)
+        else:
+            n_holds_dir = (
+                int(resolved_n_holds)
+                if resolved_n_holds is not None
+                else max(len(segments), 1)
+            )
+            for hold_i, segment in enumerate(segments):
+                kept = _stable_masked_segment(segment, stable)
+                if include_delta:
+                    if kept.size < 2:
+                        continue
+                    for start_idx, end_idx in zip(kept[:-1], kept[1:], strict=True):
+                        current = state[int(start_idx)]
+                        delta = state[int(end_idx)] - current
+                        row = np.concatenate([current, delta]).astype(np.float32)
+                        if hold_id_onehot:
+                            if "hold_number" in arrays:
+                                hn = int(np.asarray(arrays["hold_number"])[int(start_idx)])
+                                hid = hn if hn >= 0 else hold_i
+                            else:
+                                hid = hold_i
+                            row = np.concatenate(
+                                [row, _one_hot_hold_id(hid, n_holds=n_holds_dir)]
+                            )
+                        if dir_id_onehot:
+                            assert resolved_n_directions is not None
+                            row = np.concatenate(
+                                [
+                                    row,
+                                    _one_hot_dir_id(
+                                        direction, n_directions=resolved_n_directions
+                                    ),
+                                ]
+                            )
+                        rows.append(row)
+                else:
+                    if kept.size < 1:
+                        continue
+                    for frame_idx in kept:
+                        row = np.asarray(state[int(frame_idx)], dtype=np.float32)
+                        if hold_id_onehot:
+                            if "hold_number" in arrays:
+                                hn = int(np.asarray(arrays["hold_number"])[int(frame_idx)])
+                                hid = hn if hn >= 0 else hold_i
+                            else:
+                                hid = hold_i
+                            row = np.concatenate(
+                                [row, _one_hot_hold_id(hid, n_holds=n_holds_dir)]
+                            )
+                        if dir_id_onehot:
+                            assert resolved_n_directions is not None
+                            row = np.concatenate(
+                                [
+                                    row,
+                                    _one_hot_dir_id(
+                                        direction, n_directions=resolved_n_directions
+                                    ),
+                                ]
+                            )
+                        rows.append(row)
         if rows:
             arr = np.stack(rows, axis=0).astype(np.float32, copy=False)
             if direction in out:

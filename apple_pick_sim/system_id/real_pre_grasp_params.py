@@ -12,7 +12,10 @@ from typing import Any
 import numpy as np
 import pyarrow.parquet as pq
 
-from apple_pick_sim.fruiting_system.params import FruitingSystemParams, load_ranges
+from apple_pick_sim.fruiting_system.params import (
+    FruitingSystemParams,
+    load_ranges,
+)
 from apple_pick_sim.system_id.real_to_batched_sysid import (
     build_fruiting_params_from_real,
     range_midpoint,
@@ -20,6 +23,10 @@ from apple_pick_sim.system_id.real_to_batched_sysid import (
 
 _ZERO_EPS = 1e-12
 _BEND_EPS = 1e-3
+# Catalog gimbal: spur clocks about the primary; stem leans about fruiting→robot.
+# Proxy world: primary +X, robot reach +Y, hang −Z. Fruiting→robot is −Y.
+_WORLD_DOWN = (0.0, 0.0, -1.0)
+_FRUITING_TO_ROBOT = (0.0, -1.0, 0.0)
 
 
 def load_dataset_metadata(path: str | Path) -> dict[str, Any]:
@@ -101,6 +108,102 @@ def primary_direction_from_fixture(fixture_path: str | Path) -> tuple[float, flo
     az = range_midpoint(primary["azimuth_deg"])
     el = range_midpoint(primary["elevation_deg"])
     return _direction_from_angles(az, el)
+
+
+def _optional_manual_angle_deg(block: dict[str, Any], key: str) -> float | None:
+    raw = block.get(key)
+    if raw is None:
+        return None
+    angle = float(raw)
+    if not math.isfinite(angle):
+        raise ValueError(f"{key} must be finite, got {raw!r}")
+    return angle
+
+
+def _unit3(vec: np.ndarray | tuple[float, float, float], *, field: str) -> np.ndarray:
+    arr = np.asarray(vec, dtype=np.float64).reshape(3)
+    n = float(np.linalg.norm(arr))
+    if n < _ZERO_EPS:
+        raise ValueError(f"{field}: zero-length vector")
+    return arr / n
+
+
+def _rotate_about_axis(
+    vec: np.ndarray,
+    axis: np.ndarray | tuple[float, float, float],
+    angle_deg: float,
+) -> np.ndarray:
+    """Right-hand Rodrigues rotation of ``vec`` about ``axis`` by ``angle_deg``."""
+    k = _unit3(axis, field="rotation_axis")
+    v = np.asarray(vec, dtype=np.float64).reshape(3)
+    theta = math.radians(float(angle_deg))
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    return v * cos_t + np.cross(k, v) * sin_t + k * float(np.dot(k, v)) * (1.0 - cos_t)
+
+
+def _spur_rest_direction(primary_dir: np.ndarray) -> np.ndarray:
+    """Horizontal T-junction rest: ⟂ primary, toward robot reach (+Y when primary is +X)."""
+    down = np.asarray(_WORLD_DOWN, dtype=np.float64)
+    rest = np.cross(primary_dir, down)
+    if float(np.linalg.norm(rest)) < 1e-6:
+        rest = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        rest = rest - primary_dir * float(np.dot(rest, primary_dir))
+    return _unit3(rest, field="spur_rest_direction")
+
+
+def rod_directions_from_manual_catalog_angles(
+    primary_dir: tuple[float, float, float],
+    *,
+    spur_angle_deg: float,
+    stem_angle_deg: float,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Catalog junction angles → unit spur/stem directions.
+
+    ``manual_spur_angle_deg`` clocks the T-junction spur about the **primary**
+    axis (proxy +X). Rest is horizontal toward robot reach (+Y); −90° hangs
+    toward −Z. ``manual_stem_angle_deg`` then leans the stem about
+    **fruiting→robot** (proxy −Y), not world Z. Right-hand +60° after a 90°
+    hang yields stem ``(sin 60, 0, −cos 60)``.
+    """
+    primary = _unit3(primary_dir, field="primary_dir")
+    rest = _spur_rest_direction(primary)
+    spur = _rotate_about_axis(rest, primary, -float(spur_angle_deg))
+    stem = _rotate_about_axis(spur, _FRUITING_TO_ROBOT, float(stem_angle_deg))
+    spur_u = _unit3(spur, field="spur_direction")
+    stem_u = _unit3(stem, field="stem_direction")
+    return (
+        (float(spur_u[0]), float(spur_u[1]), float(spur_u[2])),
+        (float(stem_u[0]), float(stem_u[1]), float(stem_u[2])),
+    )
+
+
+def _resolve_rod_directions(
+    *,
+    primary_dir: tuple[float, float, float],
+    parts: dict[str, Any],
+    chord_spur_dir: tuple[float, float, float],
+    chord_stem_dir: tuple[float, float, float],
+) -> tuple[tuple[float, float, float], tuple[float, float, float], str]:
+    spur_block = parts.get("spur")
+    stem_block = parts.get("stem")
+    if not isinstance(spur_block, dict) or not isinstance(stem_block, dict):
+        return chord_spur_dir, chord_stem_dir, "woody_chords"
+    spur_angle = _optional_manual_angle_deg(spur_block, "manual_spur_angle_deg")
+    stem_angle = _optional_manual_angle_deg(stem_block, "manual_stem_angle_deg")
+    if spur_angle is None and stem_angle is None:
+        return chord_spur_dir, chord_stem_dir, "woody_chords"
+    if spur_angle is None or stem_angle is None:
+        raise ValueError(
+            "manual catalog angles require both manual_spur_angle_deg and "
+            "manual_stem_angle_deg in pre_grasp_geometry.parts"
+        )
+    spur_dir, stem_dir = rod_directions_from_manual_catalog_angles(
+        primary_dir,
+        spur_angle_deg=spur_angle,
+        stem_angle_deg=stem_angle,
+    )
+    return spur_dir, stem_dir, "manual_catalog_angles"
 
 
 @dataclass(frozen=True)
@@ -211,6 +314,14 @@ def map_pre_grasp_geometry(
 
     spur_dir = _unit(spur_end - spur_start_surface, field="spur_direction")
     stem_dir = _unit(apple_pos - spur_end, field="stem_direction")
+    chord_spur_dir = spur_dir
+    chord_stem_dir = stem_dir
+    spur_dir, stem_dir, direction_source = _resolve_rod_directions(
+        primary_dir=primary_dir,
+        parts=parts,
+        chord_spur_dir=chord_spur_dir,
+        chord_stem_dir=chord_stem_dir,
+    )
 
     primary_r = float(parts["primary"]["radius_m"])
     fruiting_base = surface_to_centerline(
@@ -303,6 +414,9 @@ def map_pre_grasp_geometry(
         },
         "apple_pos_vs_chord_end_m": apple_vs_chord.tolist(),
         "apple_pos_vs_chord_end_norm_m": float(np.linalg.norm(apple_vs_chord)),
+        "rod_direction_source": direction_source,
+        "chord_spur_direction": list(chord_spur_dir),
+        "chord_stem_direction": list(chord_stem_dir),
         "spur_direction": list(spur_dir),
         "stem_direction": list(stem_dir),
         "spur_start_surface": [float(spur_start_surface[0]), float(spur_start_surface[1]), float(spur_start_surface[2])],
@@ -312,6 +426,20 @@ def map_pre_grasp_geometry(
         "pre_grasp_snapshot_source": snap_source,
         "rod_density": rod_density_diag,
     }
+    spur_u = np.asarray(spur_dir, dtype=np.float64)
+    stem_u = np.asarray(stem_dir, dtype=np.float64)
+    chord_spur_u = np.asarray(chord_spur_dir, dtype=np.float64)
+    chord_stem_u = np.asarray(chord_stem_dir, dtype=np.float64)
+    diagnostics["built_spur_stem_angle_deg"] = math.degrees(
+        math.acos(float(np.clip(np.dot(spur_u, stem_u), -1.0, 1.0)))
+    )
+    diagnostics["chord_spur_stem_angle_deg"] = math.degrees(
+        math.acos(float(np.clip(np.dot(chord_spur_u, chord_stem_u), -1.0, 1.0)))
+    )
+    spur_block = parts.get("spur") if isinstance(parts.get("spur"), dict) else {}
+    stem_block = parts.get("stem") if isinstance(parts.get("stem"), dict) else {}
+    diagnostics["manual_spur_angle_deg"] = spur_block.get("manual_spur_angle_deg")
+    diagnostics["manual_stem_angle_deg"] = stem_block.get("manual_stem_angle_deg")
 
     return PreGraspMappedGeometry(
         fruiting_base_pos=fruiting_base,
@@ -348,6 +476,24 @@ def format_pre_grasp_diagnostics(diagnostics: dict[str, Any]) -> str:
             f"{diagnostics['apple_pos_vs_chord_end_norm_m']:.6e} m"
         ),
     ]
+    source = diagnostics.get("rod_direction_source")
+    lines.extend(
+        [
+            "connection angles:",
+            (
+                f"  source={source}  "
+                f"manual_spur_angle_deg={diagnostics.get('manual_spur_angle_deg')}  "
+                f"manual_stem_angle_deg={diagnostics.get('manual_stem_angle_deg')}"
+            ),
+            (
+                f"  built spur–stem angle="
+                f"{float(diagnostics.get('built_spur_stem_angle_deg', float('nan'))):.1f}°  "
+                f"chord spur–stem angle="
+                f"{float(diagnostics.get('chord_spur_stem_angle_deg', float('nan'))):.1f}°"
+            ),
+            "  axes: spur about primary, stem about fruiting→robot (−Y)",
+        ]
+    )
     return "\n".join(lines)
 
 

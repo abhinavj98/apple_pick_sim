@@ -446,7 +446,7 @@ damping-responsive; don't spend a damping sweep chasing `branch_path>nominal`.
 | `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD` | `0.0` (Newton ``SolverVBD`` default) | `apple_pick_sim/fruiting_system/build.py` |
 | `rigid_joint_linear_ke` / `rigid_joint_angular_ke` | `1e5` (Newton default, not overridden) | `newton/newton/_src/solvers/vbd/solver_vbd.py` |
 | `rigid_joint_*_k_start` | `1e8` / `1e6` passed but **inert** (ramping disabled) | `make_fruiting_solver_vbd` |
-| VBD `iterations` | 25 | `make_fruiting_solver_vbd` |
+| VBD `iterations` | 50 | `make_fruiting_solver_vbd` |
 | `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` (batched config) | uniform `0.0` per role (`support`, `primary_spur`, `spur_stem`, `stem_apple`; Newton default via `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD`) | `batched_heterogeneous_config.py` |
 | `_DEFAULT_JOINT_LINEAR_KD_OVERRIDES` (batched config) | uniform `0.0` per role (`support`, `primary_spur`, `spur_stem`, `stem_apple`; Newton default via `FRUITING_VBD_RIGID_JOINT_LINEAR_KD`) | `batched_heterogeneous_config.py` |
 | `EXAMPLE_JOINT_*_KD_OVERRIDES` (Python fallback) | uniform `0.3` per role | `batched_heterogeneous_config.py` (used when ranges omit `sim_build`) |

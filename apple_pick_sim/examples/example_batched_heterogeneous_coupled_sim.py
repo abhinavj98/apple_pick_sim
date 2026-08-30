@@ -243,8 +243,8 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--settle-substeps",
         type=int,
-        default=5000,
-        help="VBD substeps before runtime (default: 5000).",
+        default=2000,
+        help="VBD substeps before runtime (default: 2000).",
     )
     parser.add_argument(
         "--settle-gravity-ramp",
@@ -255,11 +255,11 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--settle-quiet-every",
         type=int,
-        default=300,
+        default=100,
         metavar="N",
         help=(
             "Zero all fruiting-system body twists every N VBD settle substeps "
-            "(device-side; default: 300)."
+            "(device-side; default: 100)."
         ),
     )
     parser.add_argument(

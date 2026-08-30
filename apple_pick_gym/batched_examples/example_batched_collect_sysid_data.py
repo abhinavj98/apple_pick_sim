@@ -67,9 +67,9 @@ from apple_pick_sim.system_id.trajectory_store import phase_to_int
 CONTROL_HZ = 30.0
 SUB_DT = 1.0 / 1800.0
 ENV_SPACING = (2.0, 2.0, 2.0)
-SETTLE_SUBSTEPS = 5000
+SETTLE_SUBSTEPS = 2000
 SETTLE_GRAVITY_RAMP = False
-SETTLE_QUIET_EVERY: int | None = 300
+SETTLE_QUIET_EVERY: int | None = 100
 VIC_GAINS = ImpedanceGains(
     linear_k=200.0,
     linear_d=10.0,
@@ -331,7 +331,7 @@ def _make_parser() -> argparse.ArgumentParser:
         metavar="N",
         help=(
             "Zero all fruiting-system body twists every N VBD settle substeps "
-            "(device-side; default: 300)."
+            "(device-side; default: 100)."
         ),
     )
     return p

@@ -72,7 +72,7 @@ from apple_pick_sim.system_id.real_post_grasp_plan import (
     post_grasp_plan_from_metadata,
 )
 
-SETTLE_QUIET_EVERY: int | None = 300
+SETTLE_QUIET_EVERY: int | None = 100
 Phase = Literal["long_settle", "short_settle", "run"]
 
 
@@ -89,7 +89,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--settle-substeps",
         type=int,
-        default=5000,
+        default=2000,
         help="VBD substeps for visible free settle before grasp (rendered in the viewer).",
     )
     parser.add_argument(

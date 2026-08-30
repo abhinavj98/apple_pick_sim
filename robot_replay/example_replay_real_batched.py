@@ -85,8 +85,8 @@ _DEFAULT_FIXTURE = Path(
     "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json"
 )
 # Match example_view_pre_grasp_settle.py defaults.
-_SETTLE_SUBSTEPS = 5000
-_SETTLE_QUIET_EVERY: int | None = 300
+_SETTLE_SUBSTEPS = 2000
+_SETTLE_QUIET_EVERY: int | None = 100
 _SETTLE_GRAVITY_RAMP = False
 _POST_GRASP_SETTLE_SUBSTEPS = 500
 _CONTROL_HZ_FALLBACK = 15.0

@@ -360,9 +360,9 @@ def stack_recorded_actions_for_sources(
 
 
 def teardown_sim(sim: BatchedHeterogeneousCoupledSim | None) -> None:
+    wp.synchronize()
     del sim
     gc.collect()
-    wp.synchronize()
 
 
 def teardown_env(env: Any | None) -> None:
@@ -370,8 +370,12 @@ def teardown_env(env: Any | None) -> None:
         close = getattr(env, "close", None)
         if callable(close):
             close()
-    gc.collect()
+        else:
+            wp.synchronize()
+            gc.collect()
+            return
     wp.synchronize()
+    gc.collect()
 
 
 def run_rebuild_cycle(
@@ -836,7 +840,7 @@ def make_parser() -> argparse.ArgumentParser:
         help="Reset/init loops after each rebuild (rebuild-replay mode only).",
     )
     p.add_argument("--device", default=None)
-    p.add_argument("--settle-substeps", type=int, default=5000)
+    p.add_argument("--settle-substeps", type=int, default=2000)
     p.add_argument(
         "--post-grasp-settle-substeps",
         type=int,

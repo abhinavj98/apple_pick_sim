@@ -25,6 +25,48 @@ def test_sample_params_defaults_to_t_junction():
     assert params.topology == fs.TOPOLOGY_T_JUNCTION
     assert params.spur_attach_fraction == pytest.approx(0.5)
     assert params.spur_surface_offset is True
+    assert params.stem_surface_offset is True
+
+
+def test_t_junction_stem_surface_offset_shifts_stem_anchor_by_spur_radius():
+    from apple_pick_sim.fruiting_system.build import _rod_tip_surface_offset_world
+
+    fs = _import_fs()
+    ranges = fs.load_ranges(PROXY_PATH)
+    params_on = fs.sample_params(ranges, seed=0)
+    params_off = fs.sample_params({**ranges, "stem_surface_offset": False}, seed=0)
+    assert params_on.stem_surface_offset is True
+    assert params_off.stem_surface_offset is False
+    scene_on = fs.generate_scene(
+        ranges, seed=0, base_pos=BASE_POS, device="cpu", enable_self_collisions=False
+    )
+    scene_off = fs.generate_scene(
+        {**ranges, "stem_surface_offset": False},
+        seed=0,
+        base_pos=BASE_POS,
+        device="cpu",
+        enable_self_collisions=False,
+    )
+
+    def _stem_anchor(scene):
+        _, child_anchors = fs.fixed_joint_anchors_world(
+            scene.model,
+            scene.state_0.body_q,
+            scene.fruiting_fixed_joints,
+        )
+        labels = [lab for _, lab in scene.fruiting_fixed_joints]
+        stem_i = labels.index("joint_spur_stem")
+        return child_anchors[stem_i * 3 : (stem_i + 1) * 3]
+
+    stem_on = np.asarray(_stem_anchor(scene_on), dtype=np.float64)
+    stem_off = np.asarray(_stem_anchor(scene_off), dtype=np.float64)
+    assert params_on.spur is not None and params_on.stem is not None
+    offset = np.array(
+        _rod_tip_surface_offset_world(params_on.stem.direction, params_on.spur.radius),
+        dtype=np.float64,
+    )
+    assert np.linalg.norm(offset) > 1e-6
+    np.testing.assert_allclose(stem_on - stem_off, offset, atol=1e-3)
 
 
 def test_t_junction_spur_surface_offset_false_legacy_centerline():

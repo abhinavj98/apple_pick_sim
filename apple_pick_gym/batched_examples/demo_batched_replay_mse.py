@@ -52,7 +52,7 @@ _MAX_STEPS = 30
 _N_RANDOM_STIFFNESS = 3
 _HOLD = int(PHASE_TO_INT["hold"])
 _ROD_SEGMENTS: tuple[str, ...] = ("primary", "secondary", "spur", "stem")
-_SETTLE_SUBSTEPS = 5000
+_SETTLE_SUBSTEPS = 2000
 _TRIAL_SEEDS: tuple[int, ...] = (_SEED, 7, 123)
 
 

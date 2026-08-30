@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+import traceback
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable, Protocol
 
@@ -567,12 +568,10 @@ def replay_multi_structure_candidate_blocks(
             if fail_fast:
                 raise
             failed_chunk_indices.append(chunk_idx)
+            detail = f"chunk {chunk_idx}: {exc}\n{traceback.format_exc()}"
             failed_now = {slot.key.structure_idx for slot in slots}
             for structure_idx in failed_now:
-                failed_structures.setdefault(
-                    structure_idx,
-                    f"chunk {chunk_idx}: {exc}",
-                )
+                failed_structures.setdefault(structure_idx, detail)
             replay_by_key = {
                 key: arrays
                 for key, arrays in replay_by_key.items()
@@ -580,6 +579,10 @@ def replay_multi_structure_candidate_blocks(
             }
         finally:
             if env is not None:
+                try:
+                    _synchronize_device()
+                except Exception:
+                    pass
                 env.close()
 
     surviving_planned_keys = {

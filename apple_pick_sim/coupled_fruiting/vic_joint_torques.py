@@ -22,6 +22,48 @@ from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
 
 _N_ARM_DOF = 7
 _TORQUE_CLAMP = 100000.0
+
+
+def mass_matrix_with_armature(
+    mass_matrix: np.ndarray,
+    armature: np.ndarray,
+) -> np.ndarray:
+    """Return ``M + diag(armature)`` for the leading arm DOFs.
+
+    ``newton.eval_mass_matrix`` is body inertia only; reflected motor inertia must
+    be added so operational-space ``Λ = (J M⁻¹ Jᵀ)⁻¹`` matches MuJoCo.
+    """
+    M = np.asarray(mass_matrix, dtype=np.float64)
+    arm = np.asarray(armature, dtype=np.float64).reshape(-1)
+    n = int(arm.shape[0])
+    if M.shape[-1] < n or M.shape[-2] < n:
+        raise ValueError(f"mass matrix {M.shape} is smaller than armature length {n}")
+    out = np.array(M, dtype=np.float64, copy=True)
+    if out.ndim == 2:
+        out[:n, :n] += np.diag(arm)
+        return out
+    if out.ndim == 3:
+        out[:, :n, :n] += np.diag(arm)
+        return out
+    raise ValueError(f"mass matrix must be 2-D or 3-D, got shape {out.shape}")
+
+
+def _mass_matrix_with_model_armature_torch(
+    torch: Any,
+    mass_matrix: Any,
+    model: Any,
+    *,
+    num_arm_dofs: int = _N_ARM_DOF,
+):
+    """Add ``model.joint_armature[:num_arm_dofs]`` onto a torch mass matrix."""
+    if getattr(model, "joint_armature", None) is None:
+        return mass_matrix
+    arm = torch.as_tensor(
+        model.joint_armature.numpy().reshape(-1)[:num_arm_dofs],
+        device=mass_matrix.device,
+        dtype=mass_matrix.dtype,
+    )
+    return mass_matrix + torch.diag(arm)
 _TORCH_INSTALL_HINT = (
     "PyTorch is required for VIC joint torques. "
     "Install from newton/: uv sync --extra torch-cu12"
@@ -213,6 +255,7 @@ def launch_apply_vic_joint_torques(
     M_th = wp.to_torch(scene.vic_jt_H_buf)[art_idx, :_N_ARM_DOF, :_N_ARM_DOF].to(
         device=torch_device, dtype=torch.float64
     )
+    M_th = _mass_matrix_with_model_armature_torch(torch, M_th, model)
     q_th = wp.to_torch(state.joint_q)[:_N_ARM_DOF].to(device=torch_device, dtype=torch.float64)
     qd_th = wp.to_torch(state.joint_qd)[:_N_ARM_DOF].to(device=torch_device, dtype=torch.float64)
     default_q_th = wp.to_torch(scene.vic_jt_default_dof_pos).reshape(-1)[:_N_ARM_DOF].to(

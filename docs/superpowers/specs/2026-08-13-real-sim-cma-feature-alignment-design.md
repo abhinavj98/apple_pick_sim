@@ -21,8 +21,8 @@ GT bags come from convert (`apple_pick_sim/system_id/real_to_batched_sysid.py`).
 | Topic | Fact |
 | ----- | ---- |
 | Sim `ft_wrist` | World-frame spatial wrench, env-on-robot, reduced to `/ee/tcp` (tip). Gym copies `coupling_forces_cache`. MuJoCo `body_f[tcp]` is that transported wrench. Real F/T is **not** injected into MuJoCo. |
-| Real parquet `ft_wrist` | Logger: `O_F_ext_hat_K` (base, robot-on-env) → bias → EMA → `R.T @ wrench` (base→EE) → **negate**. Rotate both F and τ. On `s01-d01`, `EE_T_K = I` so K = EE; `F_T_EE` has identity R and `T_z = 0.180` m. |
-| Hold `cos(F, pull)` | Sim ≈ −0.95. Real as-stored ≈ +0.67. After `R(tcp) @ F` ≈ −0.65 (sign matches **without** a second negate). |
+| Real parquet `ft_wrist` | **Current collections** (`final_data_correct_torque/`, e.g. s09): world-frame env-on-robot wrench at TCP (force and torque about TCP) after collection-time frame correction; compiled EMA−EMA with unloaded replay **without apple**. Older logger path: `O_F_ext_hat_K` → bias → EMA → EE frame → negate; convert rotates with `R(tcp)` only when source is not already world/TCP. |
+| Hold `cos(F, pull)` | After correct world/TCP alignment, real hold force is anti-parallel to pull (≈ −0.8 on s09 upward dirs). Early s01 alignment work used EE-as-stored ≈ +0.67 before world rotate. |
 | USD tool length | Cylinder 180 mm (`EE_CYLINDER_HALF_HEIGHT = 0.09`). Old 140 mm / `0.1034` panda-hand default is stale vs this recording. |
 | `F_x_Cee` | Tool **mass COM** in flange F, **not** the wrench point. Do not use 0.077 m as an `ft_wrist` convert offset. |
 | Sim woody start/end | Parent/child anchors of the **same FIXED joint** (gap ~µm–0.8 mm), not rod chords. |

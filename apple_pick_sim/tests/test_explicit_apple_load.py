@@ -46,10 +46,10 @@ _SETTLE_WELD_BUILD_KW = dict(
 _GRAVITY = (0.0, 0.0, -9.81)
 
 
-def test_apple_support_force_world_opposes_gravity():
+def test_apple_support_force_world_matches_apple_weight():
     m = 0.2
     f = apple_support_force_world(m, _GRAVITY)
-    np.testing.assert_allclose(f, [0.0, 0.0, m * 9.81], rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(f, [0.0, 0.0, -m * 9.81], rtol=1e-12, atol=1e-12)
 
 
 def test_apple_support_force_zero_mass_returns_zero():
@@ -206,8 +206,8 @@ def test_stem_harvest_explicit_adds_force_and_torque():
 
     w_off = out_off.numpy().reshape(-1, 6)[tcp]
     w_on = out_on.numpy().reshape(-1, 6)[tcp]
-    np.testing.assert_allclose(w_on[:3] - w_off[:3], -f_exp, rtol=0.02, atol=0.02)
-    np.testing.assert_allclose(w_on[3:] - w_off[3:], -tau_exp, rtol=0.02, atol=0.05)
+    np.testing.assert_allclose(w_on[:3] - w_off[:3], f_exp, rtol=0.02, atol=0.02)
+    np.testing.assert_allclose(w_on[3:] - w_off[3:], tau_exp, rtol=0.02, atol=0.05)
 
 
 @pytest.mark.slow
@@ -337,8 +337,8 @@ def test_coupled_substep_explicit_flag_delta_matches_explicit_wrench():
     delta_f = w_on[:3] - w_off[:3]
     expected_mg = float(np.linalg.norm(f_exp))
     assert expected_mg > 0.5
-    assert float(delta_f[2]) > 0.4 * expected_mg, (
-        f"explicit-on should add child-side +m·g support on TCP: "
+    assert float(delta_f[2]) < -0.4 * expected_mg, (
+        f"explicit-on should add env-on-robot m·g payload on TCP: "
         f"ΔFz={delta_f[2]:.2f}, m·g≈{expected_mg:.2f}"
     )
     np.testing.assert_allclose(
@@ -352,7 +352,7 @@ def test_coupled_substep_explicit_flag_delta_matches_explicit_wrench():
 @requires_fr3
 @pytest.mark.slow
 def test_settle_weld_hold_explicit_support_matches_mg():
-    """Quiet settle→weld + hold: stem-harvest explicit term adds ≈ child-side ``m·g`` on TCP."""
+    """Quiet settle→weld + hold: stem-harvest explicit term adds ≈ env-on-robot ``m·g`` on TCP."""
     import apple_pick_sim.coupled_fruiting as cf
     from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 
@@ -425,4 +425,4 @@ def test_settle_weld_hold_explicit_support_matches_mg():
     delta = out_on.numpy().reshape(-1, 6)[tcp, :3] - out_off.numpy().reshape(-1, 6)[tcp, :3]
     f_exp, _ = _explicit_apple_wrench_for_scene(scene)
     np.testing.assert_allclose(delta, f_exp, rtol=0.05, atol=0.15)
-    assert float(delta[2]) > 0.5 * float(f_exp[2])
+    assert float(delta[2]) < 0.5 * float(f_exp[2])

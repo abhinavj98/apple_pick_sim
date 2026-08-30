@@ -25,8 +25,8 @@ from apple_pick_sim.system_id.batched_digital_twin_init import (
 )
 
 # Match example_view_pre_grasp_settle.py / example_replay_real_batched defaults.
-_SETTLE_SUBSTEPS = 5000
-_SETTLE_QUIET_EVERY: int | None = 300
+_SETTLE_SUBSTEPS = 2000
+_SETTLE_QUIET_EVERY: int | None = 100
 _SETTLE_GRAVITY_RAMP = False
 _POST_GRASP_SETTLE_SUBSTEPS = 500
 _DEFAULT_CONTROLLER_MODE = "vic_pose"
@@ -159,6 +159,7 @@ def real_replay_sim_config(
     controller_mode: str = _DEFAULT_CONTROLLER_MODE,
     control_hz: float | None = None,
     reuse_replicated_mujoco: bool = False,
+    enable_self_collisions: bool = False,
 ) -> BatchedHeterogeneousCoupledSimConfig:
     """Gym FR3+VIC config with fixture sim_build; episode fruiting_base_pos."""
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=num_envs)
@@ -205,6 +206,7 @@ def real_replay_sim_config(
             settle_gravity_ramp=bool(settle_gravity_ramp),
             post_grasp_settle_substeps=int(post_grasp_settle_substeps),
             fruiting_base_pos=fruiting_base_pos,
+            enable_self_collisions=bool(enable_self_collisions),
         ),
         controller=controller,
         fruiting_system=dataclasses.replace(
@@ -238,6 +240,7 @@ def make_real_replay_build_env_fn(
     controller_mode: str = _DEFAULT_CONTROLLER_MODE,
     control_hz: float | None = None,
     reuse_replicated_mujoco: bool = False,
+    enable_self_collisions: bool = False,
 ) -> Callable[..., ApplePickBatchedSysIdEnv]:
     def build_env_fn(
         *,
@@ -271,6 +274,7 @@ def make_real_replay_build_env_fn(
             controller_mode=controller_mode,
             control_hz=control_hz,
             reuse_replicated_mujoco=reuse_replicated_mujoco,
+            enable_self_collisions=enable_self_collisions,
         )
         robot_updates: dict[str, Any] = {"gripper": grippers[0]}
         if per_env_episode_meta is not None:

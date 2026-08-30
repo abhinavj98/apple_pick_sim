@@ -1525,7 +1525,6 @@ def test_run_fused_default_preserves_requested_order_and_rebinds_each_chunk_mode
                 build_seconds=0.1,
                 replay_seconds=0.2,
             ),
-            retried_structures=(),
             prepared_structures=2,
             scoring_seconds=0.3,
             total_seconds=0.6,

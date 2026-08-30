@@ -273,7 +273,6 @@ def test_generation_wave_routes_by_structure_and_candidate_order():
             evaluations=evals,
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     wave = cmaes.run_cma_generation_wave(
@@ -320,7 +319,6 @@ def test_generation_wave_fails_structure_on_missing_or_duplicate_candidate_index
             evaluations={int(idx): evaluation},
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     wave = cmaes.run_cma_generation_wave(
@@ -363,7 +361,6 @@ def test_generation_wave_isolates_structure_local_errors_and_tells_peers():
             evaluations=evals,
             errors=errors,
             replay_diagnostics=None,
-            retried_structures=(1,),
         )
 
     wave = cmaes.run_cma_generation_wave(
@@ -418,7 +415,6 @@ def test_generation_wave_records_ask_and_post_tell_distributions_separately():
             evaluations={int(idx): _evaluation(int(idx), list(cands), [2.0, 1.0])},
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     wave = cmaes.run_cma_generation_wave(
@@ -492,7 +488,6 @@ def test_generation_wave_all_invalid_reasks_zero_still_fails():
             },
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     wave = cmaes.run_cma_generation_wave(
@@ -535,7 +530,6 @@ def test_generation_wave_all_invalid_reasks_then_recovers():
             },
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     wave = cmaes.run_cma_generation_wave(
@@ -584,7 +578,6 @@ def test_generation_wave_all_invalid_exhausted_uses_flat_penalty_tell():
             },
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     wave = cmaes.run_cma_generation_wave(
@@ -652,7 +645,6 @@ def test_generation_wave_real_pycma_all_invalid_reasks_then_tell():
             },
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     wave = cmaes.run_cma_generation_wave(
@@ -718,7 +710,6 @@ def test_generation_wave_real_pycma_all_invalid_exhausted_flat_tell():
             },
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     wave = cmaes.run_cma_generation_wave(
@@ -787,7 +778,6 @@ def test_fit_passes_explicit_wave_kind_generation_then_final_mean():
             evaluations=evals,
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     cmaes.fit_youngs_modulus_structures(
@@ -855,7 +845,6 @@ def test_fit_youngs_modulus_structures_stops_independently_and_scores_final_mean
                 evaluations=evals,
                 errors={},
                 replay_diagnostics=None,
-                retried_structures=(),
             )
         wave_calls.append(idxs)
         evals = {
@@ -868,13 +857,11 @@ def test_fit_youngs_modulus_structures_stops_independently_and_scores_final_mean
                 evaluations={0: evals[0], 1: evals[1]},
                 errors={2: "peer failed"},
                 replay_diagnostics=None,
-                retried_structures=(2,),
             )
         return cmaes.YoungsModulusBatchEvaluation(
             evaluations=evals,
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     result = cmaes.fit_youngs_modulus_structures(
@@ -965,7 +952,6 @@ def test_fit_uses_xfavorite_not_mean_or_xbest():
             evaluations=evals,
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     cmaes.fit_youngs_modulus_structures(
@@ -1034,7 +1020,6 @@ def test_real_pycma_multi_bowl_moves_toward_distinct_optima():
             evaluations=evals,
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     result = cmaes.fit_youngs_modulus_structures(
@@ -1095,7 +1080,6 @@ def test_fit_emits_on_progress_after_init_wave_and_final():
             evaluations=evals,
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     cmaes.fit_youngs_modulus_structures(
@@ -1340,8 +1324,10 @@ def test_wave_through_evaluator_routes_sparse_direction_ids(monkeypatch):
     assert state.optimizer.told
 
 
-def test_wave_through_evaluator_compat_fallback_and_fused_retry(monkeypatch):
-    """Compat mismatch scalar-falls-back; fused failure retries only affected."""
+def test_wave_through_evaluator_fusion_incompat_raises_and_chunk_failure_records_error(
+    monkeypatch,
+):
+    """Fusion incompatibility raises; fused chunk failure records error, no retry."""
     from apple_pick_gym.batched_envs import batched_sysid_multi_replay as multi
     from apple_pick_sim.fruiting_system import params as fs
     from apple_pick_sim.tests.conftest import RANGES_FIXTURE
@@ -1365,7 +1351,6 @@ def test_wave_through_evaluator_compat_fallback_and_fused_retry(monkeypatch):
     }
     base_params = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=4)
 
-    # First wave: fusion incompatible -> full scalar fallback.
     monkeypatch.setattr(
         cmaes,
         "prepare_youngs_modulus_structure",
@@ -1381,15 +1366,11 @@ def test_wave_through_evaluator_compat_fallback_and_fused_retry(monkeypatch):
         "build_replay_candidate_blocks",
         MagicMock(side_effect=multi.ReplayFusionIncompatible("topology mismatch")),
     )
-    scalar_calls: list[int] = []
-
-    def fake_scalar(**kwargs):
-        idx = int(kwargs["structure_idx"])
-        scalar_calls.append(idx)
-        cands = list(kwargs["candidates"])
-        return _evaluation(idx, cands, [0.5] * len(cands))
-
-    monkeypatch.setattr(cmaes, "evaluate_youngs_modulus_candidates", fake_scalar)
+    monkeypatch.setattr(
+        cmaes,
+        "evaluate_youngs_modulus_candidates",
+        MagicMock(side_effect=AssertionError("scalar retry must not run")),
+    )
 
     def evaluate_fn(*, structures, **_kwargs):
         return cmaes.evaluate_youngs_modulus_structures(
@@ -1400,21 +1381,22 @@ def test_wave_through_evaluator_compat_fallback_and_fused_retry(monkeypatch):
             scoring=cmaes.YoungsModulusScoringConfig(n_directions=2),
         )
 
-    wave = cmaes.run_cma_generation_wave(
-        states,
-        evaluate_fn=evaluate_fn,
-        generation_index=0,
-    )
-    assert set(wave.records) == {4, 1}
-    assert sorted(scalar_calls) == [1, 4]
-    assert states[4].optimizer.told and states[1].optimizer.told
+    with pytest.raises(
+        multi.ReplayFusionIncompatible,
+        match=r"topology mismatch|--no-multi-structure-batch",
+    ):
+        cmaes.run_cma_generation_wave(
+            states,
+            evaluate_fn=evaluate_fn,
+            generation_index=0,
+        )
 
-    # Second scenario: fused runtime failure retries only structure 4.
-    scalar_calls.clear()
     for state in states.values():
         state.optimizer.told.clear()
         state.generations.clear()
         state.completed_generations = 0
+        state.status = "running"
+        state.failure = None
 
     monkeypatch.setattr(
         cmaes,
@@ -1442,7 +1424,13 @@ def test_wave_through_evaluator_compat_fallback_and_fused_retry(monkeypatch):
                 replay_by_key[slot.key] = {"obs": {}}
         return multi.MultiStructureReplayOutcome(
             replay_by_key=replay_by_key,
-            failed_structures={4: "chunk 0: synthetic failure"},
+            failed_structures={
+                4: (
+                    "chunk 0: synthetic failure\n"
+                    "Traceback (most recent call last):\n"
+                    "RuntimeError: synthetic failure\n"
+                )
+            },
             diagnostics=multi.MultiStructureReplayDiagnostics(
                 candidate_blocks=len(blocks),
                 flattened_envs=sum(len(b.slots) for b in blocks),
@@ -1474,9 +1462,12 @@ def test_wave_through_evaluator_compat_fallback_and_fused_retry(monkeypatch):
         evaluate_fn=evaluate_fn,
         generation_index=1,
     )
-    assert set(wave2.records) == {4, 1}
-    assert scalar_calls == [4]
-    assert states[4].optimizer.told and states[1].optimizer.told
+    assert set(wave2.records) == {1}
+    assert states[4].status == "failed"
+    assert "synthetic failure" in str(states[4].failure)
+    assert "Traceback" in str(states[4].failure)
+    assert states[1].optimizer.told
+    assert not states[4].optimizer.told
 
 
 def test_wave_through_evaluator_respects_chunk_boundaries(monkeypatch):
@@ -1642,7 +1633,6 @@ def test_structure_report_snapshot_includes_required_fields_and_counters():
         replay_candidate_evaluations=9,
         final_mean_evaluations=1,
         physical_env_slots=12,
-        scalar_retries=2,
     )
     assert snapshot["status"] == "fitted"
     assert snapshot["structure_idx"] == 0
@@ -1651,7 +1641,6 @@ def test_structure_report_snapshot_includes_required_fields_and_counters():
     assert snapshot["replay_candidate_evaluations"] == 9
     assert snapshot["final_mean_evaluations"] == 1
     assert snapshot["physical_env_slots"] == 12
-    assert snapshot["scalar_retries"] == 2
     assert snapshot["bounds"] is None
     assert snapshot["final_mean"]["log10_e"] == [7.0, 6.0, 5.0]
     assert snapshot["best_sample"]["fitness"] == 1.25
@@ -1842,7 +1831,6 @@ def test_fit_records_wave_and_total_timing():
             evaluations=evals,
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     result = cmaes.fit_youngs_modulus_structures(
@@ -2059,7 +2047,6 @@ def test_ask_structure_conversion_yields_support_kp_candidates_via_wave():
             evaluations={int(idx): _evaluation(int(idx), list(cands), [1.0])},
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     cmaes.run_cma_generation_wave(
@@ -2097,7 +2084,6 @@ def test_evaluate_final_means_uses_candidates_from_log10_vector():
             evaluations={int(idx): _evaluation(int(idx), list(cands), [0.1] * len(cands))},
             errors={},
             replay_diagnostics=None,
-            retried_structures=(),
         )
 
     cmaes.fit_youngs_modulus_structures(
@@ -2136,3 +2122,109 @@ def test_structure_report_snapshot_final_mean_and_gt_use_support_kp_fields():
     )
     assert snapshot["gt"]["e_pa"] == pytest.approx([1.0e4, 1.0e9, 1.0e8])
     json.dumps(cmaes.to_strict_jsonable(snapshot), allow_nan=False)
+
+
+def _make_pycma_state(*, structure_idx: int = 0, population_size: int = 4) -> cmaes.StructureCmaState:
+    bounds = _bounds()
+    es, seed, _rng = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_sigma_log10=0.2,
+        base_seed=0,
+        structure_idx=structure_idx,
+        population_size=population_size,
+    )
+    return cmaes.StructureCmaState(
+        structure_idx=structure_idx,
+        optimizer=es,
+        bounds=bounds,
+        effective_seed=seed,
+        population_size=int(es.popsize),
+    )
+
+
+def test_cma_optimizer_checkpoint_round_trip_preserves_optimizer(tmp_path):
+    state = _make_pycma_state()
+    samples = state.optimizer.ask()
+    fitness = [float(i) for i in range(len(samples))]
+    state.optimizer.tell(samples, fitness)
+    state.completed_generations = 1
+    state.optimizer_samples_told = len(fitness)
+    sigma_before = float(state.optimizer.sigma)
+    countiter_before = int(state.optimizer.countiter)
+
+    path = tmp_path / "cma_optimizer_checkpoint.pkl"
+    cmaes.dump_cma_optimizer_checkpoint(path, {0: state}, counters={"replay": 3})
+    loaded = cmaes.load_cma_optimizer_checkpoint(path)
+    restored = _make_pycma_state()
+    cmaes.apply_cma_checkpoint_to_states({0: restored}, loaded)
+
+    assert restored.completed_generations == 1
+    assert restored.optimizer_samples_told == len(fitness)
+    assert int(restored.optimizer.countiter) == countiter_before
+    assert float(restored.optimizer.sigma) == pytest.approx(sigma_before)
+    next_samples = restored.optimizer.ask()
+    assert len(next_samples) == state.population_size
+    assert loaded["counters"]["replay"] == 3
+
+
+def test_fit_resumes_from_checkpoint_for_remaining_generations():
+    state = _make_pycma_state(population_size=4)
+    wave_count = {"n": 0}
+
+    def evaluate_fn(*, structures, wave_kind="generation", **_kwargs):
+        if str(wave_kind) == "generation":
+            wave_count["n"] += 1
+        idx, cands = structures[0]
+        scores = [
+            _score(i, cand, 1.0 + i)
+            for i, cand in enumerate(cands)
+        ]
+        return cmaes.YoungsModulusBatchEvaluation(
+            evaluations={
+                int(idx): cmaes.YoungsModulusEvaluation(
+                    structure_idx=int(idx),
+                    gt_candidate=cmaes.SupportKpYoungsCandidate(1e4, 1e7, 1e6),
+                    fixed_secondary_e_pa=None,
+                    direction_indices=(0,),
+                    scores=scores,
+                    replay_episodes=[],
+                    applied_params=[],
+                )
+            },
+            errors={},
+            replay_diagnostics=None,
+        )
+
+    for generation_index in range(2):
+        cmaes.run_cma_generation_wave(
+            {0: state},
+            evaluate_fn=evaluate_fn,
+            generation_index=generation_index,
+        )
+    assert state.completed_generations == 2
+    assert wave_count["n"] == 2
+
+    resumed = _make_pycma_state(population_size=4)
+    checkpoint = cmaes.build_cma_optimizer_checkpoint({0: state}, counters={})
+    cmaes.apply_cma_checkpoint_to_states({0: resumed}, checkpoint)
+    wave_count["n"] = 0
+
+    cmaes.fit_youngs_modulus_structures(
+        {0: resumed},
+        max_generations=3,
+        evaluate_fn=evaluate_fn,
+    )
+    assert resumed.completed_generations == 3
+    assert wave_count["n"] == 1
+
+
+def test_checkpoint_persists_failed_status_as_active():
+    state = _make_pycma_state()
+    samples = state.optimizer.ask()
+    state.optimizer.tell(samples, [1.0] * len(samples))
+    state.completed_generations = 1
+    state.status = "failed"
+    state.failure = cmaes.CmaGenerationFailure("generation_evaluation", "boom")
+
+    checkpoint = cmaes.build_cma_optimizer_checkpoint({0: state}, counters={})
+    assert checkpoint["structures"][0].status == "active"

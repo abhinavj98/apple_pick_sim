@@ -4,11 +4,11 @@
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-19 |
+| Last reviewed | 2026-08-27 |
 | Code owners | `apple_pick_sim/system_id/mmd_features.py`, `apple_pick_sim/system_id/mmd.py`, `apple_pick_sim/system_id/wasserstein.py`, `apple_pick_sim/system_id/batched_trajectory_store.py`, `apple_pick_sim/system_id/real_to_batched_sysid.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H4 `docs/handbook-real-replay.md` (convert must emit this contract); H5 `docs/handbook-youngs-cma.md` (grid/CMA scores it); H2 `docs/handbook-variable-impedance.md` (action semantics only) |
-| Archive specs | [One-structure multi-dir holdout](superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md) — Implemented (gates/one-hot; Task 9 science gate failed on torque); [Real/sim CMA feature alignment](superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md) — Implemented; [fixed-scale normalization](superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md) — Implemented; [median-hold features](superpowers/specs/2026-07-14-median-hold-features-design.md) — Implemented; [batched MMD grid](superpowers/specs/2026-07-06-batched-sysid-mmd-grid-design.md) — Historical; [MMD grid diagnostic](superpowers/specs/2026-06-22-mmd-grid-diagnostic-design.md) — Historical; [batched collection](superpowers/specs/2026-07-04-batched-sysid-collection-design.md) — Historical; [dataset dashboard](superpowers/specs/2026-06-22-sysid-dashboard-design.md) — Historical |
+| Archive specs | [Stiffness level bags](superpowers/specs/2026-08-26-force-anchored-level-bags-design.md) — Implemented (`include_delta`, `categorical_weight`; defaults remain `[s, Δs]`); [One-structure multi-dir holdout](superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md) — Implemented (gates/one-hot; Task 9 science gate failed on torque); [Real/sim CMA feature alignment](superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md) — Implemented; [fixed-scale normalization](superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md) — Implemented; [median-hold features](superpowers/specs/2026-07-14-median-hold-features-design.md) — Implemented; [batched MMD grid](superpowers/specs/2026-07-06-batched-sysid-mmd-grid-design.md) — Historical; [MMD grid diagnostic](superpowers/specs/2026-06-22-mmd-grid-diagnostic-design.md) — Historical; [batched collection](superpowers/specs/2026-07-04-batched-sysid-collection-design.md) — Historical; [dataset dashboard](superpowers/specs/2026-06-22-sysid-dashboard-design.md) — Historical |
 
 This handbook is the canonical contract for `batched_sysid_v1` bags and the
 features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
@@ -17,16 +17,19 @@ features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
 >
 > Real compiled bags already isolate plant load as EMA−EMA:
 > `ft_wrist` is loaded EMA minus the unloaded same-motion replay EMA.
-> Convert that compiled column (do not subtract `ft_wrist_raw − ft_wrist_baseline`
-> again). Convert keeps world-rotated `ft_wrist` as an unfiltered 30 Hz
-> block-mean and writes a separate `ft_wrist_lpf` series (zero-phase
-> Butterworth, default 10 Hz, then the same block-mean). Scoring uses
-> `ft_wrist_lpf` when present. Never convert an uncorrected `*_robot.parquet`.
+> The unloaded replay is **without the apple**; apple weight therefore remains
+> in the tared signal. Convert that compiled column (do not subtract
+> `ft_wrist_raw − ft_wrist_baseline` again). Convert keeps world-rotated
+> `ft_wrist` as an unfiltered 30 Hz block-mean and writes a separate
+> `ft_wrist_lpf` series (zero-phase Butterworth, default 10 Hz, then the same
+> block-mean). Scoring uses `ft_wrist_lpf` when present. Never convert an
+> uncorrected `*_robot.parquet`.
 >
 > Sim `ft_wrist` is already the plant TCP wrench. Gym copies
 > `coupling_forces_cache` (`tcp_coupling_force`): stem-apple harvest plus
-> optional explicit apple weight. EE gravity, tool inertia, and VIC effort do
-> **not** enter that 6-vector on the `vic` / `vic_pose` path
+> optional explicit apple payload (`m_apple * g`, env-on-robot). EE gravity,
+> tool inertia, and VIC effort do **not** enter that 6-vector on the `vic` /
+> `vic_pose` path
 > (`vic_use_joint_torques=True`; controller wrenches go to `joint_f`). A
 > robot-only replay therefore reports `ft_wrist = 0`. Subtracting a simulated
 > baseline is a no-op today and must not be added “for parity.” Do not copy
@@ -157,6 +160,11 @@ with the same geometry:
    \(F_W=R_{W,TCP}F_{EE}\) and
    \(\tau_W=R_{W,TCP}\tau_{EE}\). Conversion applies this to `ft_wrist` and
    `raw_ft_wrist`, without another sign flip or lever-arm transport.
+   **Current real collections** (e.g. `robot_replay/final_data_correct_torque/s09`)
+   already store F/T in the correct world frame at TCP, env-on-robot, with force
+   and torque about TCP — the same contract as sim `ft_wrist`. Convert only
+   rotates when the source is still EE-frame; do **not** pass
+   `--transport-torque-to-tcp` on those datasets (it would mis-align torque).
    World `ft_wrist` is then block-mean downsampled unfiltered. Convert also
    writes `ft_wrist_lpf`: the same world wrench after a 10 Hz `filtfilt`, then
    the same block-mean to `collection.control_hz`. Scoring
@@ -199,37 +207,51 @@ For one `J=2` state half,
 
 | State block | Scale per component |
 | ----------- | ------------------- |
-| F/T force | 2 N |
-| F/T torque | 0.5 N·m |
+| F/T force | 0.5 N |
+| F/T torque | 1.0 N·m |
 | TCP linear velocity | 0.02 m/s |
 | TCP angular velocity | 0.02 rad/s |
-| TCP position | 0.005 m |
-| Woody start XYZ | 0.005 m |
+| TCP position | 0.05 m |
+| Woody start XYZ | 0.05 m |
 | Bending angle | 0.05 rad |
 
-`transition_feature_scale` repeats this table for both \(s\) and \(\Delta s\).
-Trailing hold/direction one-hots have mean zero and scale one, so their raw
-0/1 values pass through. The `NormalizationStats.std` attribute is a
-compatibility name: it stores these fixed divisors, not GT standard deviation.
-Callers must pass the bag's junction count so additional physical columns are
-not mistaken for categorical extras.
+`transition_feature_scale` repeats this table once per physical block:
+two copies when `include_delta=True` (`[s, Δs]`), one copy when
+`include_delta=False` (levels). Trailing hold/direction one-hots have mean
+zero and scale `1 / categorical_weight` (default `categorical_weight=1`, so
+scale 1). Raising `categorical_weight` to 30 makes crossing a hold or
+direction one-hot cost `2w² = 1800` under `SINKHORN_P=2`, which is the
+stiffness-pass anchoring used with pooled directions. The
+`NormalizationStats.std` attribute is a compatibility name: it stores these
+fixed divisors, not GT standard deviation. Callers must pass the bag's
+junction count so additional physical columns are not mistaken for
+categorical extras. Score-time `include_delta` and `categorical_weight` must
+match the values used to prepare GT context; a mismatch raises
+`ValueError` (`include_delta mismatch` / `categorical_weight mismatch`).
 
-## 6. Transition bags
+## 6. Transition bags and level bags
 
-`mmd_features.build_transition_features_by_direction` creates hold-only rows
+`mmd_features.build_transition_features_by_direction` creates hold-only rows.
+Default `include_delta=True` emits transitions
 
 \[
 v=[s,\Delta s]
 \]
 
-and optionally appends source-hold and direction one-hots.
+and optionally appends source-hold and direction one-hots. With
+`include_delta=False` each row is the state level `[s]` plus the same
+one-hots (no \(\Delta s\)).
 
-- **Frame-to-frame (`use_median=False`)**: within each contiguous full hold,
-  use consecutive retained frames. `stable=False` removes a sample but does
-  not split the hold, so a transition can bridge dropped frames.
+- **Frame-to-frame (`use_median=False` / `hold_reduce="none"`)**: within each
+  contiguous full hold, use consecutive retained frames when
+  `include_delta=True`. `stable=False` removes a sample but does not split
+  the hold, so a transition can bridge dropped frames. With
+  `include_delta=False`, every stable hold frame emits one level row,
+  including the last frame of each hold (no off-by-one zip).
 - **Hold-to-hold median (`use_median=True` / `hold_reduce="median"`)**: compute
   one state median from stable frames in each full hold, then emit
-  `[s_i, s_{i+1}-s_i]` for consecutive retained holds.
+  `[s_i, s_{i+1}-s_i]` for consecutive retained holds when `include_delta=True`,
+  or one level row per retained hold when `include_delta=False`.
 - **Hold-to-hold mean (`hold_reduce="mean"`)**: same as median but uses the
   arithmetic mean across stable hold frames. This is the default for the
   `example_youngs_modulus_cmaes.py` CMA path (set via `--hold-aggregation mean`)
@@ -237,7 +259,21 @@ and optionally appends source-hold and direction one-hots.
   `--use-median` (deprecated alias). Each generation report `raw_scores` entry
   carries `mean_hold_force_err_n`, `mean_hold_torque_err_nm`,
   `mean_hold_woody_start_m`, and `mean_hold_woody_bend_rad` fields computed using
-  the same per-hold mean states as Sinkhorn to guarantee consistency.
+  the same per-hold mean states (diagnostic path; independent of Sinkhorn
+  `include_delta`).
+
+**Stiffness opt-in (2026-08-26).** For quasi-static Young's modulus matching,
+use all stable hold frames as level bags with anchored categoricals and pooled
+directions:
+
+```text
+--hold-aggregation none --no-include-delta --categorical-weight 30 --pool-directions
+```
+
+Do not use hold-mean level rows for that pass: a hold mean mixes settling
+transient with plateau and, once categoricals are anchored, Sinkhorn
+degenerates to paired hold-mean MSE. `pool_directions` remains the default
+and is safe only with a large `categorical_weight`.
 
 There is no latter-half burn-in in these feature builders. Quasi-static
 diagnostic windows elsewhere are a different layer.
@@ -389,11 +425,14 @@ Key tests:
 
 - `apple_pick_sim/tests/test_mmd_features.py` — exact state order and width
   (no scored `apple_pos`), CMA chords, no required woody end, 19D action
-  support, stable masks, median-hold rows, and one-hot placement.
+  support, stable masks, median-hold rows, one-hot placement, and level bags
+  (`include_delta=False`).
 - `apple_pick_sim/tests/test_mmd.py` — GT-only mean, fixed divisors,
-  non-centered one-hots, variable junction counts, and diagnostic MMD.
+  non-centered one-hots, `include_delta` / `categorical_weight` scale,
+  variable junction counts, and diagnostic MMD.
 - `apple_pick_sim/tests/test_wasserstein.py` — per-direction and pooled
-  contexts, completeness, singleton bags, and direction one-hots.
+  contexts, completeness, singleton bags, direction one-hots, and
+  `include_delta` / `categorical_weight` contract mismatches.
 - `apple_pick_sim/tests/test_holdout_gates.py` — seed-17 split, factor-of-3
   magnitude, Pearson ≥ 0.5, zero-variance deferral, signed \(F_\parallel\),
   first-hold \(x_{\mathrm{hold0}}\).

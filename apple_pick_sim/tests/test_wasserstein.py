@@ -146,6 +146,18 @@ def test_feature_kwargs_forward_hold_reduce_mean():
     )
     assert kwargs["hold_reduce"] == "mean"
     assert kwargs["use_median"] is False
+    assert "categorical_weight" not in kwargs
+    assert kwargs["include_delta"] is True
+    with pytest.raises(TypeError):
+        wasserstein._feature_kwargs(
+            use_median=False,
+            hold_id_onehot=False,
+            n_holds=5,
+            dir_id_onehot=False,
+            n_directions=8,
+            hold_reduce="mean",
+            categorical_weight=30.0,
+        )
 
 
 def test_complete_score_single_transition_bags_are_low_sample_and_finite():
@@ -737,6 +749,85 @@ def test_sinkhorn_mse_spearman_excludes_disqualified():
         disqualified=[False, False, True],
     )
     assert out.spearman == pytest.approx(1.0)
+
+
+def test_sinkhorn_singleton_grows_with_categorical_weight_squared():
+    from apple_pick_sim.system_id.mmd_features import (
+        STATE_VECTOR_PHYS_SCALE,
+        transition_feature_scale,
+    )
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n_dir = 3
+    n_features = state_dim + n_dir
+    base = np.zeros(n_features, dtype=np.float64)
+    base[-n_dir:] = [1.0, 0.0, 0.0]
+    alt = base.copy()
+    alt[-n_dir:] = [0.0, 1.0, 0.0]
+
+    def _singleton_cost(weight: float) -> float:
+        scale = transition_feature_scale(
+            n_features, include_delta=False, categorical_weight=weight
+        )
+        x = (base / scale).reshape(1, -1)
+        y = (alt / scale).reshape(1, -1)
+        return float(sinkhorn_distance(x, y, device="cpu"))
+
+    low = _singleton_cost(1.0)
+    high = _singleton_cost(10.0)
+    assert high == pytest.approx(100.0 * low, rel=1e-6)
+
+
+def test_complete_score_raises_on_include_delta_contract_mismatch():
+    gt = [_two_hold_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        hold_reduce="none",
+        include_delta=False,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+    )
+    with pytest.raises(ValueError, match="include_delta mismatch"):
+        score_candidate_wasserstein_complete(
+            candidate_index=0,
+            stiffnesses={"primary_e_pa": 1.0},
+            gt_context=context,
+            replay_observations=gt,
+            device="cpu",
+            hold_reduce="none",
+            include_delta=True,
+            hold_id_onehot=True,
+            n_holds=2,
+            n_directions=1,
+        )
+
+
+def test_complete_score_raises_on_categorical_weight_contract_mismatch():
+    gt = [_two_hold_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        use_median=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+        categorical_weight=1.0,
+    )
+    with pytest.raises(ValueError, match="categorical_weight mismatch"):
+        score_candidate_wasserstein_complete(
+            candidate_index=0,
+            stiffnesses={"primary_e_pa": 1.0},
+            gt_context=context,
+            replay_observations=gt,
+            device="cpu",
+            use_median=True,
+            hold_id_onehot=True,
+            n_holds=2,
+            n_directions=1,
+            categorical_weight=30.0,
+        )
 
 
 def test_near_constant_gt_column_does_not_explode_sinkhorn():

@@ -1193,7 +1193,7 @@ def test_fix_to_apple_tcp_harvest_applies_stem_coupling_gain():
     f_with_explicit = _stem_force_with_explicit_apple_weight(scene, stem_raw[:3])
     np.testing.assert_allclose(
         tcp_w[:3],
-        -f_with_explicit * under_relax_gain,
+        f_with_explicit * under_relax_gain,
         rtol=0.03,
         atol=0.5,
     )

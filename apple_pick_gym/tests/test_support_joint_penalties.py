@@ -14,7 +14,7 @@ _SIM_TESTS_DIR = _TESTS_DIR.parent.parent / "apple_pick_sim" / "tests"
 if str(_SIM_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SIM_TESTS_DIR))
 
-from conftest import COUPLED_SCENE_KW, requires_fr3  # noqa: E402
+from apple_pick_sim.tests.conftest import COUPLED_SCENE_KW, requires_fr3  # noqa: E402
 from apple_pick_gym.batched_envs.support_joint_penalties import (  # noqa: E402
     SUPPORT_JOINT_ZETA_FALLBACK,
     apply_per_env_support_joint_penalties,

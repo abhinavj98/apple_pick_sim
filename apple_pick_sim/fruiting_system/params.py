@@ -24,6 +24,7 @@ ALLOWED_TOPOLOGIES = frozenset({TOPOLOGY_T_JUNCTION, TOPOLOGY_LINEAR_CHAIN})
 DEFAULT_TOPOLOGY = TOPOLOGY_T_JUNCTION
 DEFAULT_SPUR_ATTACH_FRACTION = 0.5
 DEFAULT_SPUR_SURFACE_OFFSET = True
+DEFAULT_STEM_SURFACE_OFFSET = True
 OVERLAP_DIRECTION_THRESHOLD: float = 0.75
 REAL_WORLD_PROXY_VARIANCE_FIXTURE = "fruiting_system_ranges_real_world_proxy_variance.json"
 
@@ -82,6 +83,7 @@ class FruitingSystemParams:
     topology: str = DEFAULT_TOPOLOGY
     spur_attach_fraction: float = DEFAULT_SPUR_ATTACH_FRACTION
     spur_surface_offset: bool = DEFAULT_SPUR_SURFACE_OFFSET
+    stem_surface_offset: bool = DEFAULT_STEM_SURFACE_OFFSET
 
 
 FRUITING_SYSTEM_PARAMS_SCHEMA = "fruiting_system_params_v2"
@@ -275,6 +277,7 @@ def fruiting_params_to_dict(params: FruitingSystemParams) -> dict[str, Any]:
         "topology": params.topology,
         "spur_attach_fraction": float(params.spur_attach_fraction),
         "spur_surface_offset": bool(params.spur_surface_offset),
+        "stem_surface_offset": bool(params.stem_surface_offset),
     }
 
 
@@ -356,6 +359,7 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
         row.get("spur_attach_fraction", DEFAULT_SPUR_ATTACH_FRACTION)
     )
     spur_surface_offset = bool(row.get("spur_surface_offset", False))
+    stem_surface_offset = bool(row.get("stem_surface_offset", False))
     apple_quat_raw = row.get("apple_quat_xyzw")
     apple_quat_xyzw: tuple[float, float, float, float] | None = None
     if apple_quat_raw is not None:
@@ -378,6 +382,7 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
         topology=topology,
         spur_attach_fraction=spur_attach_fraction,
         spur_surface_offset=spur_surface_offset,
+        stem_surface_offset=stem_surface_offset,
     )
     if not any((params.primary, params.secondary, params.spur, params.stem)):
         raise ValueError("at least one rod segment must be present in fruiting params")
@@ -884,6 +889,7 @@ def sample_params(
     topology = _topology_from_ranges(ranges)
     spur_attach_fraction = _spur_attach_fraction_from_ranges(ranges)
     spur_surface_offset = _spur_surface_offset_from_ranges(ranges)
+    stem_surface_offset = _stem_surface_offset_from_ranges(ranges)
 
     return FruitingSystemParams(
         primary=primary,
@@ -895,6 +901,7 @@ def sample_params(
         topology=topology,
         spur_attach_fraction=spur_attach_fraction,
         spur_surface_offset=spur_surface_offset,
+        stem_surface_offset=stem_surface_offset,
     )
 
 
@@ -1001,6 +1008,7 @@ def _fix_topology(
         topology=topo.topology,
         spur_attach_fraction=topo.spur_attach_fraction,
         spur_surface_offset=topo.spur_surface_offset,
+        stem_surface_offset=topo.stem_surface_offset,
     )
 
 
@@ -1076,6 +1084,7 @@ def copy_fruiting_params(params: FruitingSystemParams) -> FruitingSystemParams:
         topology=params.topology,
         spur_attach_fraction=params.spur_attach_fraction,
         spur_surface_offset=params.spur_surface_offset,
+        stem_surface_offset=params.stem_surface_offset,
     )
 
 
@@ -1279,6 +1288,7 @@ def params_fingerprint(params: FruitingSystemParams) -> dict:
         "topology": params.topology,
         "spur_attach_fraction": round(params.spur_attach_fraction, 9),
         "spur_surface_offset": params.spur_surface_offset,
+        "stem_surface_offset": params.stem_surface_offset,
     }
 
 
@@ -1305,6 +1315,13 @@ def _spur_surface_offset_from_ranges(ranges: dict) -> bool:
     raw = ranges.get("spur_surface_offset", DEFAULT_SPUR_SURFACE_OFFSET)
     if not isinstance(raw, bool):
         raise ValueError(f"spur_surface_offset must be a boolean, got {raw!r}")
+    return raw
+
+
+def _stem_surface_offset_from_ranges(ranges: dict) -> bool:
+    raw = ranges.get("stem_surface_offset", DEFAULT_STEM_SURFACE_OFFSET)
+    if not isinstance(raw, bool):
+        raise ValueError(f"stem_surface_offset must be a boolean, got {raw!r}")
     return raw
 
 
@@ -1506,6 +1523,11 @@ def _validate_ranges(data: dict) -> None:
     if "spur_surface_offset" in data and not isinstance(data["spur_surface_offset"], bool):
         raise ValueError(
             f"spur_surface_offset must be a boolean, got {data['spur_surface_offset']!r}"
+        )
+
+    if "stem_surface_offset" in data and not isinstance(data["stem_surface_offset"], bool):
+        raise ValueError(
+            f"stem_surface_offset must be a boolean, got {data['stem_surface_offset']!r}"
         )
 
     if "sim_build" in data:

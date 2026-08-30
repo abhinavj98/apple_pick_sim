@@ -13,6 +13,7 @@ import newton
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
     _N_ARM_DOF,
+    _mass_matrix_with_model_armature_torch,
     _require_torch,
     find_tcp_link_idx,
 )
@@ -311,6 +312,7 @@ def launch_apply_vic_joint_torques_batched(
     M_th = wp.to_torch(scene.vic_jt_H_buf)[:num_envs, :_N_ARM_DOF, :_N_ARM_DOF].to(
         device=torch_device, dtype=torch.float64
     )
+    M_th = _mass_matrix_with_model_armature_torch(torch, M_th, model)
 
     q_flat = wp.to_torch(state.joint_q).to(device=torch_device, dtype=torch.float64)
     qd_flat = wp.to_torch(state.joint_qd).to(device=torch_device, dtype=torch.float64)

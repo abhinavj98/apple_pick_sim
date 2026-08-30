@@ -37,7 +37,11 @@ from apple_pick_sim.fruiting_system import load_ranges
 from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
 
 WORKER_MODULE = "apple_pick_gym.batched_envs.cma_wave_evaluation_worker"
+SNAPSHOT_VIDEO_WORKER_MODULE = (
+    "apple_pick_gym.batched_envs.cma_snapshot_video_worker"
+)
 _SIGSEGV_EXIT_CODES = frozenset({-11, 139, 245})
+DEFAULT_WAVE_MAX_ATTEMPTS = 5
 
 
 def reuse_replicated_mujoco_for_cma(*, isolated_eval_waves: bool) -> bool:
@@ -64,6 +68,7 @@ class CmaReplayContext:
     bootstrap_joint_q: tuple[float, ...] | None = None
     episode_meta: dict[str, Any] | None = None
     reuse_replicated_mujoco: bool = False
+    enable_self_collisions: bool = False
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,38 @@ class CmaWaveEvaluationSpec:
     action_dim: int
     multi_structure_batch: bool
     on_step: Callable[..., bool] | None = field(default=None, compare=False, hash=False)
+
+
+@dataclass(frozen=True)
+class CmaSnapshotVideoJob:
+    """Pickled job for one CMA snapshot MP4 (fresh GL process per clip)."""
+
+    structure_idx: int
+    generation_index: int
+    candidate_index: int
+    log10_vector: tuple[float, float, float]
+    fitness: float | None
+    output_dir: Path
+    replay_context: CmaReplayContext
+    scoring: YoungsModulusScoringConfig
+    dataset_dir: Path
+    num_directions: int
+    direction_indices: tuple[int, ...] | None
+    max_envs_per_batch: int
+    seed: int | None
+    include_excluded: bool
+    fail_fast: bool
+    action_dim: int
+    show_pull_direction: bool
+    control_hz: float
+
+
+@dataclass(frozen=True)
+class CmaSnapshotVideoResult:
+    """Pickled worker result; ``frame_count`` must be > 0."""
+
+    path: Path
+    frame_count: int
 
 
 def build_cma_replay_artifacts(
@@ -126,6 +163,7 @@ def build_cma_replay_artifacts(
             controller_mode="vic_pose",
             control_hz=float(context.control_hz),
             reuse_replicated_mujoco=bool(context.reuse_replicated_mujoco),
+            enable_self_collisions=bool(context.enable_self_collisions),
         )
         replay_sim_config = real_replay_sim_config(
             num_envs=1,
@@ -140,6 +178,7 @@ def build_cma_replay_artifacts(
             controller_mode="vic_pose",
             control_hz=float(context.control_hz),
             reuse_replicated_mujoco=bool(context.reuse_replicated_mujoco),
+            enable_self_collisions=bool(context.enable_self_collisions),
         )
         return build_env_fn, replay_sim_config
 
@@ -158,6 +197,16 @@ def build_cma_replay_artifacts(
         reuse_replicated_mujoco=bool(context.reuse_replicated_mujoco),
         **settle_config,
     )
+    if context.enable_self_collisions:
+        import dataclasses
+
+        replay_sim_config = dataclasses.replace(
+            replay_sim_config,
+            scene=dataclasses.replace(
+                replay_sim_config.scene,
+                enable_self_collisions=True,
+            ),
+        )
     return build_env_fn, replay_sim_config
 
 
@@ -175,6 +224,7 @@ def build_cma_replay_context_from_cli(
     bootstrap_joint_q: tuple[float, ...] | None = None,
     episode_meta: Mapping[str, Any] | None = None,
     reuse_replicated_mujoco: bool = False,
+    enable_self_collisions: bool = False,
 ) -> CmaReplayContext:
     """Construct replay context from CMA CLI ``_run`` settle/build inputs."""
     settle_substeps = settle_config.get("settle_substeps")
@@ -199,6 +249,7 @@ def build_cma_replay_context_from_cli(
         bootstrap_joint_q=bootstrap_joint_q,
         episode_meta=None if episode_meta is None else dict(episode_meta),
         reuse_replicated_mujoco=bool(reuse_replicated_mujoco),
+        enable_self_collisions=bool(enable_self_collisions),
     )
 
 
@@ -305,7 +356,6 @@ def execute_cma_wave_evaluation(spec: CmaWaveEvaluationSpec) -> YoungsModulusBat
         evaluations=evaluations,
         errors=errors,
         replay_diagnostics=None,
-        retried_structures=(),
         prepared_structures=len(evaluations),
         physical_slots_by_structure=physical_slots_by_structure,
     )
@@ -321,23 +371,35 @@ def _wave_jobs_dir(output_dir: Path | None) -> Path:
     return Path(tempfile.mkdtemp(prefix="cma_wave_jobs_"))
 
 
-def spawn_isolated_cma_wave_evaluation(
+def _worker_failure_detail(
+    *,
+    completed: subprocess.CompletedProcess[str],
+    job_path: Path,
+) -> str:
+    stderr_tail = (completed.stderr or "").strip()[-2000:]
+    if int(completed.returncode) in _SIGSEGV_EXIT_CODES:
+        return f"worker segfault (SIGSEGV); job={job_path}"
+    return (
+        f"worker exit {completed.returncode}; job={job_path}; "
+        f"stderr={stderr_tail!r}"
+    )
+
+
+def _run_isolated_cma_wave_once(
     spec: CmaWaveEvaluationSpec,
     *,
-    output_dir: Path | str | None = None,
-    spawn_fn: Callable[..., subprocess.CompletedProcess[str]] | None = None,
-    timeout_s: float | None = None,
+    jobs_dir: Path,
+    spawn_fn: Callable[..., subprocess.CompletedProcess[str]],
+    timeout_s: float | None,
 ) -> YoungsModulusBatchEvaluation:
-    """Spawn a worker subprocess, execute the wave, and return the pickled batch."""
-    jobs_dir = _wave_jobs_dir(None if output_dir is None else Path(output_dir))
+    """Spawn one worker subprocess and return the pickled batch."""
     token = uuid.uuid4().hex
     job_path = jobs_dir / f"job_{token}.pkl"
     result_path = jobs_dir / f"result_{token}.pkl"
-    runner = spawn_fn or subprocess.run
     try:
         with job_path.open("wb") as handle:
             pickle.dump(spec, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        completed = runner(
+        completed = spawn_fn(
             [
                 sys.executable,
                 "-m",
@@ -351,28 +413,131 @@ def spawn_isolated_cma_wave_evaluation(
             check=False,
         )
         if completed.returncode != 0:
-            stderr_tail = (completed.stderr or "").strip()[-2000:]
-            if int(completed.returncode) in _SIGSEGV_EXIT_CODES:
-                detail = f"worker segfault (SIGSEGV); job={job_path}"
-            else:
-                detail = (
-                    f"worker exit {completed.returncode}; job={job_path}; "
-                    f"stderr={stderr_tail!r}"
-                )
-            raise CmaGenerationFailure("generation_evaluation", detail)
+            raise CmaGenerationFailure(
+                "generation_evaluation",
+                _worker_failure_detail(completed=completed, job_path=job_path),
+            )
         if not result_path.is_file():
             raise CmaGenerationFailure(
                 "generation_evaluation",
                 f"worker produced no result file; job={job_path}",
             )
-        with result_path.open("rb") as handle:
-            batch = pickle.load(handle)
+        try:
+            with result_path.open("rb") as handle:
+                batch = pickle.load(handle)
+        except (pickle.UnpicklingError, EOFError, OSError) as exc:
+            raise CmaGenerationFailure(
+                "generation_evaluation",
+                f"worker result unreadable; job={job_path}: {exc}",
+            ) from exc
         if not isinstance(batch, YoungsModulusBatchEvaluation):
             raise CmaGenerationFailure(
                 "generation_evaluation",
                 f"worker returned unexpected type {type(batch)!r}",
             )
         return batch
+    finally:
+        job_path.unlink(missing_ok=True)
+        result_path.unlink(missing_ok=True)
+
+
+def spawn_isolated_cma_wave_evaluation(
+    spec: CmaWaveEvaluationSpec,
+    *,
+    output_dir: Path | str | None = None,
+    spawn_fn: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    timeout_s: float | None = None,
+    max_attempts: int = DEFAULT_WAVE_MAX_ATTEMPTS,
+) -> YoungsModulusBatchEvaluation:
+    """Spawn a worker subprocess, execute the wave, and return the pickled batch."""
+    attempts = int(max_attempts)
+    if attempts < 1:
+        raise ValueError(f"max_attempts must be >= 1, got {max_attempts!r}")
+    jobs_dir = _wave_jobs_dir(None if output_dir is None else Path(output_dir))
+    runner = spawn_fn or subprocess.run
+    for attempt in range(1, attempts + 1):
+        try:
+            return _run_isolated_cma_wave_once(
+                spec,
+                jobs_dir=jobs_dir,
+                spawn_fn=runner,
+                timeout_s=timeout_s,
+            )
+        except CmaGenerationFailure as exc:
+            if attempt >= attempts:
+                raise CmaGenerationFailure(
+                    exc.stage,
+                    f"{exc.message} (failed after {attempts} attempt(s))",
+                ) from exc
+            print(
+                f"warning: isolated CMA wave {spec.wave_kind!r} failed on attempt "
+                f"{attempt}/{attempts}: {exc.message}; retrying",
+                file=sys.stderr,
+            )
+    raise CmaGenerationFailure(
+        "generation_evaluation",
+        f"worker failed after {attempts} attempt(s)",
+    )
+
+
+def spawn_isolated_cma_snapshot_video(
+    job: CmaSnapshotVideoJob,
+    *,
+    output_dir: Path | str | None = None,
+    spawn_fn: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    timeout_s: float | None = None,
+) -> Path:
+    """Spawn a worker subprocess that records one snapshot MP4 and returns its path.
+
+    Each snapshot gets a fresh process (and GL context). Reusing ViewerGL in the
+    CMA parent after ``close()`` leaves pyglet/CUDA-GL in a state where later
+    captures write 0 frames.
+    """
+    jobs_dir = _wave_jobs_dir(None if output_dir is None else Path(output_dir))
+    runner = spawn_fn or subprocess.run
+    token = uuid.uuid4().hex
+    job_path = jobs_dir / f"snapshot_job_{token}.pkl"
+    result_path = jobs_dir / f"snapshot_result_{token}.pkl"
+    try:
+        with job_path.open("wb") as handle:
+            pickle.dump(job, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        completed = runner(
+            [
+                sys.executable,
+                "-m",
+                SNAPSHOT_VIDEO_WORKER_MODULE,
+                str(job_path.resolve()),
+                str(result_path.resolve()),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+        if int(completed.returncode) != 0:
+            stderr_tail = (completed.stderr or "").strip()[-2000:]
+            raise RuntimeError(
+                "snapshot video worker failed "
+                f"(exit {completed.returncode}); stderr={stderr_tail!r}"
+            )
+        if not result_path.is_file():
+            raise RuntimeError(
+                f"snapshot video worker produced no result file; job={job_path}"
+            )
+        try:
+            with result_path.open("rb") as handle:
+                result = pickle.load(handle)
+        except (pickle.UnpicklingError, EOFError, OSError) as exc:
+            raise RuntimeError(
+                f"snapshot video worker result unreadable; job={job_path}: {exc}"
+            ) from exc
+        if not isinstance(result, CmaSnapshotVideoResult):
+            raise RuntimeError(
+                f"snapshot video worker returned unexpected type {type(result)!r}"
+            )
+        if int(result.frame_count) <= 0:
+            raise RuntimeError(f"snapshot video wrote 0 frames ({result.path})")
+        return Path(result.path)
     finally:
         job_path.unlink(missing_ok=True)
         result_path.unlink(missing_ok=True)
@@ -394,6 +559,7 @@ def wrap_isolated_cma_evaluate_fn(
     output_dir: Path | str,
     on_step: Callable[..., bool] | None = None,
     spawn_fn: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    max_attempts: int = DEFAULT_WAVE_MAX_ATTEMPTS,
     counter_callback: Callable[
         [YoungsModulusBatchEvaluation, list[tuple[int, tuple[Any, ...]]], str],
         None,
@@ -432,6 +598,7 @@ def wrap_isolated_cma_evaluate_fn(
             spec,
             output_dir=output_dir,
             spawn_fn=spawn_fn,
+            max_attempts=int(max_attempts),
         )
         if counter_callback is not None:
             counter_callback(batch, structure_list, str(wave_kind))

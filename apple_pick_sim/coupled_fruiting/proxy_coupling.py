@@ -433,9 +433,9 @@ def _limit_and_write_tcp_stem_wrench_kernel(
         if use_explicit_apple_weight != 0 and apple_mass_kg > 0.0:
             g = gravity
             f_apple_weight = wp.vec3(
-                -apple_mass_kg * g[0],
-                -apple_mass_kg * g[1],
-                -apple_mass_kg * g[2],
+                apple_mass_kg * g[0],
+                apple_mass_kg * g[1],
+                apple_mass_kg * g[2],
             )
             f_total_tcp = f_total_tcp + f_apple_weight
             tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_apple_weight)
@@ -506,7 +506,7 @@ def _batched_limit_and_write_tcp_stem_wrench_kernel(
         if use_explicit_apple_weight[i] != 0 and apple_mass_kg[i] > 0.0:
             g = gravity
             m = apple_mass_kg[i]
-            f_apple_weight = wp.vec3(-m * g[0], -m * g[1], -m * g[2])
+            f_apple_weight = wp.vec3(m * g[0], m * g[1], m * g[2])
             f_total_tcp = f_total_tcp + f_apple_weight
             tau_total_tcp = tau_total_tcp + wp.cross(r_tcp_to_apple_com, f_apple_weight)
 

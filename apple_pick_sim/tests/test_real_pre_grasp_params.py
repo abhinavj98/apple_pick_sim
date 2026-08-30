@@ -11,11 +11,13 @@ from apple_pick_sim.fruiting_system.params import fruiting_params_to_dict
 from apple_pick_sim.system_id.real_pre_grasp_params import (
     PreGraspMappedGeometry,
     coerce_xyz,
+    format_pre_grasp_diagnostics,
     fruiting_params_from_pre_grasp_meta,
     fruiting_params_from_pre_grasp_parquet,
     load_dataset_metadata,
     map_pre_grasp_geometry,
     primary_direction_from_fixture,
+    rod_directions_from_manual_catalog_angles,
     surface_to_centerline,
 )
 
@@ -84,6 +86,67 @@ def _synthetic_pre_grasp_meta() -> dict:
     }
 
 
+def test_rod_directions_from_manual_catalog_angles_clock_then_lean():
+    """90° about primary +X hangs the spur; 60° about fruiting→robot (−Y) leans the stem."""
+    spur_dir, stem_dir = rod_directions_from_manual_catalog_angles(
+        PRIMARY_DIR,
+        spur_angle_deg=90.0,
+        stem_angle_deg=60.0,
+    )
+    np.testing.assert_allclose(spur_dir, (0.0, 0.0, -1.0), atol=1e-9)
+    sin60, cos60 = math.sin(math.radians(60.0)), math.cos(math.radians(60.0))
+    np.testing.assert_allclose(stem_dir, (sin60, 0.0, -cos60), atol=1e-9)
+    spur_u = np.asarray(spur_dir, dtype=np.float64)
+    stem_u = np.asarray(stem_dir, dtype=np.float64)
+    angle_deg = math.degrees(
+        math.acos(float(np.clip(np.dot(spur_u, stem_u), -1.0, 1.0)))
+    )
+    assert angle_deg == pytest.approx(60.0, abs=1e-6)
+    assert float(np.linalg.norm(spur_u - stem_u)) > 0.5
+
+
+def test_rod_directions_zero_stem_angle_stays_on_spur():
+    spur_dir, stem_dir = rod_directions_from_manual_catalog_angles(
+        PRIMARY_DIR,
+        spur_angle_deg=90.0,
+        stem_angle_deg=0.0,
+    )
+    np.testing.assert_allclose(spur_dir, stem_dir, atol=1e-9)
+    np.testing.assert_allclose(spur_dir, (0.0, 0.0, -1.0), atol=1e-9)
+
+
+def test_map_pre_grasp_uses_manual_catalog_angles_for_directions():
+    meta = _synthetic_pre_grasp_meta()
+    meta["pre_grasp_geometry"]["parts"]["spur"]["manual_spur_angle_deg"] = 90.0
+    meta["pre_grasp_geometry"]["parts"]["stem"]["manual_stem_angle_deg"] = 60.0
+    mapped = map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
+    spur_dir, stem_dir = rod_directions_from_manual_catalog_angles(
+        PRIMARY_DIR,
+        spur_angle_deg=90.0,
+        stem_angle_deg=60.0,
+    )
+    np.testing.assert_allclose(mapped.spur_direction, spur_dir, atol=1e-9)
+    np.testing.assert_allclose(mapped.stem_direction, stem_dir, atol=1e-9)
+    assert mapped.diagnostics["rod_direction_source"] == "manual_catalog_angles"
+    chord_spur = np.array(mapped.diagnostics["chord_spur_direction"], dtype=np.float64)
+    chord_stem = np.array(mapped.diagnostics["chord_stem_direction"], dtype=np.float64)
+    assert float(np.linalg.norm(chord_spur - np.array(mapped.spur_direction))) > 0.01
+    assert float(np.linalg.norm(chord_stem - np.array(mapped.stem_direction))) > 0.01
+
+
+def test_format_pre_grasp_diagnostics_reports_connection_angles():
+    meta = _synthetic_pre_grasp_meta()
+    meta["pre_grasp_geometry"]["parts"]["spur"]["manual_spur_angle_deg"] = 90.0
+    meta["pre_grasp_geometry"]["parts"]["stem"]["manual_stem_angle_deg"] = 60.0
+    mapped = map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
+    text = format_pre_grasp_diagnostics(mapped.diagnostics)
+    assert "connection angles:" in text
+    assert "manual_spur_angle_deg=90" in text
+    assert "manual_stem_angle_deg=60" in text
+    assert "built spur–stem angle=60.0°" in text
+    assert "axes: spur about primary, stem about fruiting→robot (−Y)" in text
+
+
 def test_map_pre_grasp_branch_is_fruiting_base_pos():
     mapped = map_pre_grasp_geometry(_synthetic_pre_grasp_meta(), primary_dir=PRIMARY_DIR)
     assert isinstance(mapped, PreGraspMappedGeometry)
@@ -105,6 +168,7 @@ def test_map_pre_grasp_branch_is_fruiting_base_pos():
     assert mapped.apple_radius_m == pytest.approx(0.04)
     assert mapped.apple_density_kg_m3 == pytest.approx(650.0)
     assert mapped.diagnostics.get("rod_density", {}).get("spur") is None
+    assert mapped.diagnostics["rod_direction_source"] == "woody_chords"
     assert "spur_length_error" in mapped.diagnostics
     # Stem chord = ‖spur_end − apple_CoM‖ − apple_radius (CoM is sphere center).
     spur_to_com = float(np.linalg.norm(np.array([0.05, 0.0, -0.13]) - np.array([0.02, 0.0, -0.10])))
@@ -302,10 +366,16 @@ def test_surface_to_centerline_perpendicular_spur():
     np.testing.assert_allclose(center, (0.0, 0.0, 0.02), atol=1e-9)
 
 
-@pytest.mark.parametrize("parquet", [Path("robot_replay/s00-d00.parquet")])
-def test_s00_d00_pre_grasp_params_smoke(parquet: Path):
+@pytest.mark.parametrize(
+    "parquet",
+    [
+        Path("robot_replay/s00-d00.parquet"),
+        Path("robot_replay/final_data_correct_torque/s09/s09-d00.parquet"),
+    ],
+)
+def test_real_pre_grasp_params_smoke(parquet: Path):
     if not parquet.is_file():
-        pytest.skip("missing robot_replay/s00-d00.parquet")
+        pytest.skip(f"missing {parquet}")
     meta = load_dataset_metadata(parquet)
     assert "pre_grasp_geometry" in meta
     params, base, diagnostics = fruiting_params_from_pre_grasp_parquet(
@@ -314,6 +384,19 @@ def test_s00_d00_pre_grasp_params_smoke(parquet: Path):
     assert params.primary is not None
     assert all(math.isfinite(x) for x in base)
     assert "spur_chord_length_m" in diagnostics
+    parts = meta["pre_grasp_geometry"]["parts"]
+    if parts.get("spur", {}).get("manual_spur_angle_deg") is not None:
+        assert diagnostics["rod_direction_source"] == "manual_catalog_angles"
+        spur_dir, stem_dir = rod_directions_from_manual_catalog_angles(
+            PRIMARY_DIR,
+            spur_angle_deg=float(parts["spur"]["manual_spur_angle_deg"]),
+            stem_angle_deg=float(parts["stem"]["manual_stem_angle_deg"]),
+        )
+        np.testing.assert_allclose(params.spur.direction, spur_dir, atol=1e-6)
+        np.testing.assert_allclose(params.stem.direction, stem_dir, atol=1e-6)
+        assert diagnostics["built_spur_stem_angle_deg"] == pytest.approx(
+            float(parts["stem"]["manual_stem_angle_deg"]), abs=1e-4
+        )
     pre = meta["pre_grasp_geometry"]
     if isinstance(pre.get("rest_snapshot_during_run"), dict) and (
         "woody_part_start_pos" in pre["rest_snapshot_during_run"]

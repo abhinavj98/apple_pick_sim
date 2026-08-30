@@ -601,11 +601,52 @@ def test_replay_multi_structure_prunes_only_failed_structures_and_discards_parti
         fail_fast=False,
     )
 
-    assert outcome.failed_structures == {4: "chunk 1: synthetic failure"}
+    detail = outcome.failed_structures[4]
+    assert detail.startswith("chunk 1: synthetic failure")
+    assert "Traceback (most recent call last)" in detail
+    assert "RuntimeError: synthetic failure" in detail
     assert all(key.structure_idx != 4 for key in outcome.replay_by_key)
     assert multi.ReplaySlotKey(1, 0, 0) in outcome.replay_by_key
     assert outcome.diagnostics.failed_chunk_indices == (1,)
     assert build_count == 3
+
+
+def test_replay_multi_structure_synchronizes_before_close_on_failure(
+    monkeypatch,
+    _fake_replay_runtime,
+):
+    """Failure path must drain Warp before tearing down the env."""
+    order: list[str] = []
+    monkeypatch.setattr(
+        multi,
+        "_synchronize_device",
+        lambda: order.append("sync"),
+        raising=False,
+    )
+    blocks = multi.build_replay_candidate_blocks((_request(4),))
+
+    class _FailingEnv(_FakeEnv):
+        def close(self):
+            order.append("close")
+            super().close()
+
+        def step(self, actions):
+            raise RuntimeError("synthetic step failure")
+
+    def build_env_fn(**kwargs):
+        env = _FailingEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    outcome = multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        fail_fast=False,
+    )
+    assert 4 in outcome.failed_structures
+    assert "Traceback" in outcome.failed_structures[4]
+    assert order == ["sync", "sync", "close"]
 
 
 def test_replay_multi_structure_fail_fast_reraises_original_exception(
@@ -683,7 +724,7 @@ def test_replay_multi_structure_synchronizes_before_stopping_gpu_timers(
         build_env_fn=build_env_fn,
     )
 
-    assert synchronizations == ["sync", "sync"]
+    assert synchronizations == ["sync", "sync", "sync"]
 
 
 def test_build_replay_candidate_blocks_copies_support_kp_from_candidate():
@@ -834,7 +875,7 @@ def test_replay_multi_structure_support_kp_sets_solver_arrays_per_env(
     if str(_SIM_TESTS_DIR) not in sys.path:
         sys.path.insert(0, str(_SIM_TESTS_DIR))
 
-    from conftest import COUPLED_SCENE_KW  # noqa: E402
+    from apple_pick_sim.tests.conftest import COUPLED_SCENE_KW  # noqa: E402
     from apple_pick_sim.coupled_fruiting import CoupledFruitingScene  # noqa: E402
     from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout  # noqa: E402
     from apple_pick_sim.coupled_fruiting.batched_build import (  # noqa: E402

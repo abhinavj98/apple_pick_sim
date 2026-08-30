@@ -659,3 +659,87 @@ def test_transition_features_exclude_pre_weld_row_after_strip():
     assert by_direction
     for features in by_direction.values():
         assert not np.any(features[:, :6] == -999.0)
+
+
+def test_level_bags_emit_one_row_per_stable_hold_frame():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    arrays["stable"] = np.ones(8, dtype=bool)
+
+    by_direction = build_transition_features_by_direction(
+        arrays,
+        hold_reduce="none",
+        include_delta=False,
+        hold_id_onehot=True,
+        n_holds=2,
+        dir_id_onehot=True,
+        n_directions=1,
+    )
+    state = build_state_matrix(arrays)
+    state_dim = int(state.shape[1])
+    rows = by_direction[0]
+    assert rows.shape == (6, state_dim + 2 + 1)
+    expected_indices = [1, 2, 3, 5, 6, 7]
+    hold_onehots = [
+        np.array([1.0, 0.0], dtype=np.float32),
+        np.array([1.0, 0.0], dtype=np.float32),
+        np.array([1.0, 0.0], dtype=np.float32),
+        np.array([0.0, 1.0], dtype=np.float32),
+        np.array([0.0, 1.0], dtype=np.float32),
+        np.array([0.0, 1.0], dtype=np.float32),
+    ]
+    for row_i, frame_idx in enumerate(expected_indices):
+        expected = np.concatenate(
+            [
+                state[int(frame_idx)],
+                hold_onehots[row_i],
+                np.array([1.0], dtype=np.float32),
+            ]
+        ).astype(np.float32)
+        np.testing.assert_allclose(rows[row_i], expected, rtol=1e-5)
+
+
+def test_level_bags_exclude_unstable_frames():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    arrays["stable"] = np.array(
+        [True, True, False, True, True, True, True, True], dtype=bool
+    )
+
+    by_direction = build_transition_features_by_direction(
+        arrays, hold_reduce="none", include_delta=False
+    )
+    assert by_direction[0].shape[0] == 5
+
+
+def test_level_bags_single_frame_hold_contributes_one_row():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 0, 1, 1, 1, 0, 0], dtype=np.int8)
+
+    level_rows = build_transition_features_by_direction(
+        arrays, hold_reduce="none", include_delta=False
+    )
+    delta_rows = build_transition_features_by_direction(
+        arrays, hold_reduce="none", include_delta=True
+    )
+    assert level_rows[0].shape[0] == 4
+    assert delta_rows[0].shape[0] == 2
+
+
+def test_level_bags_mean_hold_reduce_emits_one_row_per_hold():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+
+    rows = build_transition_features_by_direction(
+        arrays, hold_reduce="mean", include_delta=False
+    )
+    state = build_state_matrix(arrays)
+    mean0 = np.mean(state[[1, 2, 3]], axis=0)
+    mean1 = np.mean(state[[5, 6, 7]], axis=0)
+    assert rows[0].shape == (2, state.shape[1])
+    np.testing.assert_allclose(rows[0][0], mean0.astype(np.float32), rtol=1e-5)
+    np.testing.assert_allclose(rows[0][1], mean1.astype(np.float32), rtol=1e-5)

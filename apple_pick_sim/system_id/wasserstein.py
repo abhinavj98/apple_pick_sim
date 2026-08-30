@@ -26,6 +26,8 @@ class WassersteinDirectionContext:
 
     gt_norm: np.ndarray
     stats: NormalizationStats
+    include_delta: bool = True
+    categorical_weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,8 @@ class WassersteinScoringContext:
 
     pooled: WassersteinDirectionContext
     per_direction: dict[int, WassersteinDirectionContext]
+    include_delta: bool = True
+    categorical_weight: float = 1.0
 
     @property
     def expected_directions(self) -> tuple[int, ...]:
@@ -142,6 +146,7 @@ def _feature_kwargs(
     dir_id_onehot: bool,
     n_directions: int | None,
     hold_reduce: str | None = None,
+    include_delta: bool = True,
 ) -> dict[str, Any]:
     return {
         "use_median": bool(use_median),
@@ -150,6 +155,43 @@ def _feature_kwargs(
         "dir_id_onehot": bool(dir_id_onehot),
         "n_directions": n_directions,
         "hold_reduce": hold_reduce,
+        "include_delta": bool(include_delta),
+    }
+
+
+def _assert_normalization_contract(
+    *,
+    prepared_include_delta: bool,
+    prepared_categorical_weight: float,
+    include_delta: bool,
+    categorical_weight: float,
+) -> None:
+    if bool(include_delta) != bool(prepared_include_delta):
+        raise ValueError(
+            "include_delta mismatch: "
+            f"prepared={bool(prepared_include_delta)} score={bool(include_delta)}"
+        )
+    prepared_w = float(prepared_categorical_weight)
+    score_w = float(categorical_weight)
+    if not np.isfinite(score_w) or abs(score_w - prepared_w) > 1.0e-9 * max(
+        1.0, abs(prepared_w)
+    ):
+        raise ValueError(
+            "categorical_weight mismatch: "
+            f"prepared={prepared_w} score={score_w}"
+        )
+
+
+def _normalization_kwargs(
+    *,
+    n_junctions: int,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
+) -> dict[str, Any]:
+    return {
+        "n_junctions": int(n_junctions),
+        "include_delta": bool(include_delta),
+        "categorical_weight": float(categorical_weight),
     }
 
 
@@ -172,6 +214,8 @@ def prepare_gt_wasserstein_context(
     pool_directions: bool = False,
     n_directions: int | None = None,
     hold_reduce: str | None = None,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
 ) -> dict[int, WassersteinDirectionContext]:
     """Fit GT normalization from recorded transition bags (per-dir or pooled)."""
     dir_id_onehot = bool(pool_directions)
@@ -184,6 +228,7 @@ def prepare_gt_wasserstein_context(
             dir_id_onehot=dir_id_onehot,
             n_directions=n_directions,
             hold_reduce=hold_reduce,
+            include_delta=include_delta,
         ),
     )
     if pool_directions:
@@ -192,11 +237,21 @@ def prepare_gt_wasserstein_context(
         raise ValueError("No valid hold-only GT transition features were found.")
 
     n_junctions = n_junctions_from_episodes(recorded_episodes)
+    norm_kwargs = _normalization_kwargs(
+        n_junctions=n_junctions,
+        include_delta=include_delta,
+        categorical_weight=categorical_weight,
+    )
     context: dict[int, WassersteinDirectionContext] = {}
     for direction, gt_features in gt_by_direction.items():
-        stats = fit_gt_normalization(gt_features, n_junctions=n_junctions)
+        stats = fit_gt_normalization(gt_features, **norm_kwargs)
         gt_norm = apply_normalization(gt_features, stats)
-        context[int(direction)] = WassersteinDirectionContext(gt_norm=gt_norm, stats=stats)
+        context[int(direction)] = WassersteinDirectionContext(
+            gt_norm=gt_norm,
+            stats=stats,
+            include_delta=bool(include_delta),
+            categorical_weight=float(categorical_weight),
+        )
     return context
 
 
@@ -213,8 +268,18 @@ def score_candidate_wasserstein(
     pool_directions: bool = False,
     n_directions: int | None = None,
     hold_reduce: str | None = None,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
 ) -> WassersteinCandidateResult:
     """Score one replayed candidate against precomputed GT Wasserstein context."""
+    if gt_context:
+        first = next(iter(gt_context.values()))
+        _assert_normalization_contract(
+            prepared_include_delta=first.include_delta,
+            prepared_categorical_weight=first.categorical_weight,
+            include_delta=include_delta,
+            categorical_weight=categorical_weight,
+        )
     dir_id_onehot = bool(pool_directions)
     candidate_by_direction = combine_transition_features(
         replay_observations,
@@ -225,6 +290,7 @@ def score_candidate_wasserstein(
             dir_id_onehot=dir_id_onehot,
             n_directions=n_directions,
             hold_reduce=hold_reduce,
+            include_delta=include_delta,
         ),
     )
     if pool_directions:
@@ -300,6 +366,8 @@ def prepare_gt_wasserstein_scoring_context(
     pool_directions: bool = True,
     n_directions: int | None = None,
     hold_reduce: str | None = None,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
 ) -> WassersteinScoringContext:
     """Build pooled fitness GT and independently normalized per-direction diagnostics.
 
@@ -317,18 +385,27 @@ def prepare_gt_wasserstein_scoring_context(
             dir_id_onehot=False,
             n_directions=n_directions,
             hold_reduce=hold_reduce,
+            include_delta=include_delta,
         ),
     )
     if not per_direction_features:
         raise ValueError("No valid hold-only GT transition features were found.")
 
     n_junctions = n_junctions_from_episodes(recorded_episodes)
+    norm_kwargs = _normalization_kwargs(
+        n_junctions=n_junctions,
+        include_delta=include_delta,
+        categorical_weight=categorical_weight,
+    )
     per_direction: dict[int, WassersteinDirectionContext] = {}
     for direction, gt_features in per_direction_features.items():
-        stats = fit_gt_normalization(gt_features, n_junctions=n_junctions)
+        stats = fit_gt_normalization(gt_features, **norm_kwargs)
         gt_norm = apply_normalization(gt_features, stats)
         per_direction[int(direction)] = WassersteinDirectionContext(
-            gt_norm=gt_norm, stats=stats
+            gt_norm=gt_norm,
+            stats=stats,
+            include_delta=bool(include_delta),
+            categorical_weight=float(categorical_weight),
         )
 
     # Pooled fitness bag always uses fixed-width physical-direction one-hot
@@ -342,18 +419,26 @@ def prepare_gt_wasserstein_scoring_context(
             dir_id_onehot=True,
             n_directions=n_directions,
             hold_reduce=hold_reduce,
+            include_delta=include_delta,
         ),
     )
     pooled_features = _pool_by_direction(pooled_source)
     if not pooled_features:
         raise ValueError("No valid hold-only GT transition features were found.")
     pooled_raw = pooled_features[POOLED_DIRECTION_KEY]
-    pooled_stats = fit_gt_normalization(pooled_raw, n_junctions=n_junctions)
+    pooled_stats = fit_gt_normalization(pooled_raw, **norm_kwargs)
     pooled = WassersteinDirectionContext(
         gt_norm=apply_normalization(pooled_raw, pooled_stats),
         stats=pooled_stats,
+        include_delta=bool(include_delta),
+        categorical_weight=float(categorical_weight),
     )
-    return WassersteinScoringContext(pooled=pooled, per_direction=per_direction)
+    return WassersteinScoringContext(
+        pooled=pooled,
+        per_direction=per_direction,
+        include_delta=bool(include_delta),
+        categorical_weight=float(categorical_weight),
+    )
 
 
 def score_candidate_wasserstein_complete(
@@ -369,8 +454,16 @@ def score_candidate_wasserstein_complete(
     pool_directions: bool = True,
     n_directions: int | None = None,
     hold_reduce: str | None = None,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
 ) -> WassersteinCandidateResult:
     """Score a candidate with pooled fitness and physical-direction diagnostics."""
+    _assert_normalization_contract(
+        prepared_include_delta=gt_context.include_delta,
+        prepared_categorical_weight=gt_context.categorical_weight,
+        include_delta=include_delta,
+        categorical_weight=categorical_weight,
+    )
     candidate_per_direction = combine_transition_features(
         replay_observations,
         **_feature_kwargs(
@@ -380,6 +473,7 @@ def score_candidate_wasserstein_complete(
             dir_id_onehot=False,
             n_directions=n_directions,
             hold_reduce=hold_reduce,
+            include_delta=include_delta,
         ),
     )
 
@@ -439,6 +533,7 @@ def score_candidate_wasserstein_complete(
                 dir_id_onehot=True,
                 n_directions=n_directions,
                 hold_reduce=hold_reduce,
+                include_delta=include_delta,
             ),
         )
         # Restrict to expected physical directions before pooling.

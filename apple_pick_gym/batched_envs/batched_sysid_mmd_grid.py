@@ -1578,6 +1578,13 @@ def replay_batched_sysid_structure(
     replay_seed = _resolve_replay_seed(dataset, seed)
     structure_meta = dataset.load_episode_metadata(int(structure_idx), int(dirs[0]))
     collection = dataset.manifest.get("collection", {})
+    if dataset_declares_vic_pose(collection, structure_meta) and d > 1:
+        raise ValueError(
+            "scalar replay_batched_sysid_structure cannot evaluate multi-direction "
+            "vic_pose datasets: it does not pass per_env_episode_meta, so every "
+            "direction would share direction 0's weld pose and bootstrap joints. "
+            "Use the fused multi-structure path (default) or pass a single direction."
+        )
     replay_gripper = (
         gripper_proxy_for_real_batched_replay(structure_meta)
         if dataset_declares_vic_pose(collection, structure_meta)
@@ -1670,6 +1677,12 @@ def replay_batched_sysid_structure(
             )
             disable_ctrl.update(hard_blowup_mask(step_report))
     finally:
+        try:
+            import warp as wp
+
+            wp.synchronize()
+        except Exception:
+            pass
         env.close()
 
     if any(int(n) < n_frames for n in recorded_n_frames_per_env):

@@ -83,8 +83,7 @@ class YoungsModulusCandidate(NamedTuple):
 
         Only ``primary``, ``spur``, and ``stem`` are updated when present on
         ``base``. ``secondary`` (and any other fields) are left unchanged.
-        Geometry and ``damping_ratio`` are frozen; axial stretch overrides on
-        the base rod are preserved when they differ from beam theory.
+        Geometry and ``damping_ratio`` are frozen; axial ``youngs_modulus_pa`` unchanged.
         """
         out = base
         for segment, value in (
@@ -93,7 +92,7 @@ class YoungsModulusCandidate(NamedTuple):
             ("stem", self.stem),
         ):
             if getattr(base, segment) is not None:
-                out = fs.set_rod_youngs_modulus(out, segment, float(value))
+                out = fs.set_rod_flexural_modulus(out, segment, float(value))
         return out
 
     def short_label(self) -> str:
@@ -140,9 +139,9 @@ def log10_e_from_params(params: FruitingSystemParams) -> tuple[float, float, flo
             "params must include primary, spur, and stem rods for log10_e_from_params"
         )
     return (
-        math.log10(float(params.primary.youngs_modulus_pa)),
-        math.log10(float(params.spur.youngs_modulus_pa)),
-        math.log10(float(params.stem.youngs_modulus_pa)),
+        math.log10(float(params.primary.flexural_modulus_pa)),
+        math.log10(float(params.spur.flexural_modulus_pa)),
+        math.log10(float(params.stem.flexural_modulus_pa)),
     )
 
 
@@ -155,9 +154,9 @@ def youngs_modulus_candidate_from_params(
             "params must include primary, spur, and stem rods"
         )
     return YoungsModulusCandidate(
-        primary=float(params.primary.youngs_modulus_pa),
-        spur=float(params.spur.youngs_modulus_pa),
-        stem=float(params.stem.youngs_modulus_pa),
+        primary=float(params.primary.flexural_modulus_pa),
+        spur=float(params.spur.flexural_modulus_pa),
+        stem=float(params.stem.flexural_modulus_pa),
     )
 
 
@@ -170,11 +169,18 @@ def _candidate_stiffness_diagnostics(candidate: Any) -> dict[str, float]:
     """
     support_kp = getattr(candidate, "support_kp", None)
     if support_kp is not None:
-        return {
+        diag = {
             "support_kp": float(support_kp),
             "spur_e_pa": float(candidate.spur),
             "stem_e_pa": float(candidate.stem),
         }
+        spur_youngs = getattr(candidate, "spur_youngs", None)
+        stem_youngs = getattr(candidate, "stem_youngs", None)
+        if spur_youngs is not None:
+            diag["spur_youngs_e_pa"] = float(spur_youngs)
+        if stem_youngs is not None:
+            diag["stem_youngs_e_pa"] = float(stem_youngs)
+        return diag
     return {
         "primary_e_pa": float(candidate.primary),
         "spur_e_pa": float(candidate.spur),
@@ -216,14 +222,16 @@ def maybe_include_gt_candidate(
 
 
 class SupportKpYoungsCandidate(NamedTuple):
-    """One sys-ID candidate: support joint k_p plus spur/stem Young's modulus (Pa)."""
+    """One sys-ID candidate: support k_p plus spur/stem flexural and axial moduli (Pa)."""
 
     support_kp: float
     spur: float
     stem: float
+    spur_youngs: float | None = None
+    stem_youngs: float | None = None
 
     def apply_to(self, base: FruitingSystemParams) -> FruitingSystemParams:
-        """Return a copy with spur/stem ``E`` re-derived into VBD knobs.
+        """Return a copy with spur/stem flexural (and optional axial) moduli re-derived.
 
         Primary (and secondary) material is left unchanged. ``support_kp`` is
         not applied here — fused replay patches support joints per env.
@@ -234,7 +242,11 @@ class SupportKpYoungsCandidate(NamedTuple):
             ("stem", self.stem),
         ):
             if getattr(base, segment) is not None:
-                out = fs.set_rod_youngs_modulus(out, segment, float(value))
+                out = fs.set_rod_flexural_modulus(out, segment, float(value))
+        if self.spur_youngs is not None and base.spur is not None:
+            out = fs.set_rod_youngs_modulus(out, "spur", float(self.spur_youngs))
+        if self.stem_youngs is not None and base.stem is not None:
+            out = fs.set_rod_youngs_modulus(out, "stem", float(self.stem_youngs))
         return out
 
     def short_label(self) -> str:
@@ -264,26 +276,47 @@ def iter_support_kp_youngs_candidates(
 def candidates_from_log10_vector(
     log10_vector: Sequence[float],
 ) -> SupportKpYoungsCandidate:
-    """Map ``log10([k_p_support, E_spur, E_stem])`` to a physical candidate."""
-    if len(log10_vector) != 3:
+    """Map log10 phenotype to a physical candidate.
+
+    Length 3: ``(k_p, E_flex_spur, E_flex_stem)`` with axial moduli unchanged.
+    Length 5: adds ``(E_youngs_spur, E_youngs_stem)``.
+    """
+    n = len(log10_vector)
+    if n not in (3, 5):
         raise ValueError(
-            f"log10_vector must have length 3, got {len(log10_vector)}"
+            f"log10_vector must have length 3 or 5, got {n}"
         )
+    spur_youngs = None
+    stem_youngs = None
+    if n == 5:
+        spur_youngs = 10.0 ** float(log10_vector[3])
+        stem_youngs = 10.0 ** float(log10_vector[4])
     return SupportKpYoungsCandidate(
         support_kp=10.0 ** float(log10_vector[0]),
         spur=10.0 ** float(log10_vector[1]),
         stem=10.0 ** float(log10_vector[2]),
+        spur_youngs=spur_youngs,
+        stem_youngs=stem_youngs,
     )
 
 
 def log10_vector_from_candidate(
     candidate: SupportKpYoungsCandidate,
-) -> tuple[float, float, float]:
-    """Extract ``log10([k_p_support, E_spur, E_stem])``."""
-    return (
+) -> tuple[float, ...]:
+    """Extract log10 phenotype; 5-tuple when axial moduli are set."""
+    base = (
         math.log10(float(candidate.support_kp)),
         math.log10(float(candidate.spur)),
         math.log10(float(candidate.stem)),
+    )
+    if candidate.spur_youngs is None and candidate.stem_youngs is None:
+        return base
+    if candidate.spur_youngs is None or candidate.stem_youngs is None:
+        raise ValueError("partial axial moduli on SupportKpYoungsCandidate")
+    return (
+        *base,
+        math.log10(float(candidate.spur_youngs)),
+        math.log10(float(candidate.stem_youngs)),
     )
 
 
@@ -333,8 +366,10 @@ def gt_support_kp_youngs_candidate_from_structure(
         )
     return SupportKpYoungsCandidate(
         support_kp=gt_support_kp_from_dataset(dataset),
-        spur=float(params.spur.youngs_modulus_pa),
-        stem=float(params.stem.youngs_modulus_pa),
+        spur=float(params.spur.flexural_modulus_pa),
+        stem=float(params.stem.flexural_modulus_pa),
+        spur_youngs=float(params.spur.youngs_modulus_pa),
+        stem_youngs=float(params.stem.youngs_modulus_pa),
     )
 
 
@@ -397,19 +432,19 @@ def _require_positive_finite_number(value: Any, *, field: str) -> float:
 def _segment_youngs_bounds(ranges: Mapping[str, Any], segment: str) -> SegmentYoungsModulusBounds:
     segment_payload = ranges.get(segment)
     if not isinstance(segment_payload, Mapping):
-        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
-    youngs = segment_payload.get("youngs_modulus_pa")
+        raise ValueError(f"{segment} flexural_modulus_pa bounds are missing")
+    youngs = segment_payload.get("flexural_modulus_pa")
     if not isinstance(youngs, Mapping):
-        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+        raise ValueError(f"{segment} flexural_modulus_pa bounds are missing")
     if "min" not in youngs or "max" not in youngs:
-        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+        raise ValueError(f"{segment} flexural_modulus_pa bounds are missing")
     if youngs.get("min") is None or youngs.get("max") is None:
-        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+        raise ValueError(f"{segment} flexural_modulus_pa bounds are missing")
     physical_min = _require_positive_finite_number(
-        youngs["min"], field=f"{segment}.youngs_modulus_pa.min"
+        youngs["min"], field=f"{segment}.flexural_modulus_pa.min"
     )
     physical_max = _require_positive_finite_number(
-        youngs["max"], field=f"{segment}.youngs_modulus_pa.max"
+        youngs["max"], field=f"{segment}.flexural_modulus_pa.max"
     )
     if physical_min >= physical_max:
         raise ValueError(
@@ -520,38 +555,71 @@ def clamp_optimizer_sigma(optimizer: Any, *, max_sigma_log10: float | None) -> N
 def resolve_initial_mean_log10(
     spec: Any,
     bounds: YoungsModulusCmaBounds,
-) -> tuple[float, float, float]:
-    """Resolve CMA start mean in log10-E coordinates.
+    *,
+    phenotype_dim: int = 3,
+) -> tuple[float, ...]:
+    """Resolve CMA start mean in log10 coordinates.
 
-    ``\"bounds_midpoint\"`` (or ``None``) uses fixture midpoints. Otherwise
-    ``spec`` must be a length-3 finite numeric sequence (fixture box is not a
-    search constraint unless ``search_bounds_log10`` is configured).
+    ``\"bounds_midpoint\"`` (or ``None``) uses fixture midpoints (3D). Otherwise
+    ``spec`` must be a length-``phenotype_dim`` finite numeric sequence.
     """
     if spec is None or spec == "bounds_midpoint":
-        return bounds.log10_midpoint
+        mid = bounds.log10_midpoint
+        if phenotype_dim == 3:
+            return mid
+        if phenotype_dim == 5:
+            return (mid[0], mid[1], mid[2], mid[1], mid[2])
+        if phenotype_dim == 4:
+            return (mid[1], mid[2], mid[1], mid[2])
+        raise ValueError(
+            f"bounds_midpoint initial mean supports phenotype_dim 3, 4, or 5, got {phenotype_dim}"
+        )
     try:
         values = tuple(float(v) for v in spec)
     except TypeError as exc:
         raise ValueError(
-            "initial_mean_log10 must be 'bounds_midpoint' or a length-3 sequence"
+            f"initial_mean_log10 must be 'bounds_midpoint' or a length-{phenotype_dim} sequence"
         ) from exc
-    if len(values) != 3:
+    if len(values) != phenotype_dim:
         raise ValueError(
-            f"initial_mean_log10 must have length 3, got {len(values)}"
+            f"initial_mean_log10 must have length {phenotype_dim}, got {len(values)}"
         )
     if not all(math.isfinite(v) for v in values):
         raise ValueError("initial_mean_log10 must be finite")
-    return values  # type: ignore[return-value]
+    return values
+
+
+_DEGENERATE_BOUND_EPS = 1e-9
+
+
+def _expand_degenerate_search_bounds_log10(
+    lower: Sequence[float],
+    upper: Sequence[float],
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Allow lower==upper (fixed phenotype); pycma requires strict lower < upper."""
+    lo_list = [float(v) for v in lower]
+    hi_list = [float(v) for v in upper]
+    if len(lo_list) != len(hi_list):
+        raise ValueError("search bounds lower/upper length mismatch")
+    for i, (lo, hi) in enumerate(zip(lo_list, hi_list, strict=True)):
+        if lo >= hi:
+            if math.isclose(lo, hi, rel_tol=0.0, abs_tol=1e-12):
+                mid = lo
+                lo_list[i] = mid - _DEGENERATE_BOUND_EPS
+                hi_list[i] = mid + _DEGENERATE_BOUND_EPS
+            else:
+                raise ValueError("search_bounds_log10 requires lower < upper per axis")
+    return tuple(lo_list), tuple(hi_list)
 
 
 def normalize_search_bounds_log10(
     spec: Any,
-) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+) -> tuple[tuple[float, ...], tuple[float, ...]] | None:
     """Parse CMA search box; ``None`` means unbounded (no pycma clipping).
 
     Accepted forms:
     - ``None`` → unbounded
-    - ``{"lower": [p,s,t], "upper": [p,s,t]}`` in log10-E
+    - ``{"lower": [...], "upper": [...]}`` in log10 (length 3 or 5)
     """
     if spec is None:
         return None
@@ -566,20 +634,17 @@ def normalize_search_bounds_log10(
         upper = tuple(float(v) for v in spec["upper"])
     except TypeError as exc:
         raise ValueError(
-            "search_bounds_log10 lower/upper must be length-3 sequences"
+            "search_bounds_log10 lower/upper must be length-3 or length-5 sequences"
         ) from exc
-    if len(lower) != 3 or len(upper) != 3:
-        raise ValueError("search_bounds_log10 lower/upper must have length 3")
+    if len(lower) not in (3, 4, 5) or len(upper) != len(lower):
+        raise ValueError("search_bounds_log10 lower/upper must have length 3, 4, or 5")
     if not all(math.isfinite(v) for v in (*lower, *upper)):
         raise ValueError("search_bounds_log10 lower/upper must be finite")
-    for lo, hi in zip(lower, upper, strict=True):
-        if lo >= hi:
-            raise ValueError("search_bounds_log10 requires lower < upper per axis")
-    return lower, upper  # type: ignore[return-value]
+    return _expand_degenerate_search_bounds_log10(lower, upper)
 
 
 def search_bounds_report_payload(
-    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None,
 ) -> dict[str, Any] | None:
     """JSON fragment for active CMA search bounds; ``None`` when unbounded."""
@@ -640,7 +705,7 @@ def build_pycma_options(
     *,
     randn: Callable[..., Any],
     population_size: int | None = None,
-    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None = None,
     max_sigma_log10: float | None = None,
 ) -> dict[str, Any]:
@@ -669,7 +734,7 @@ def create_structure_cma_optimizer(
     base_seed: int,
     structure_idx: int,
     population_size: int | None = None,
-    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None = None,
     max_sigma_log10: float | None = None,
 ) -> tuple[cma.CMAEvolutionStrategy, int, np.random.Generator]:
@@ -681,6 +746,9 @@ def create_structure_cma_optimizer(
     mean = resolve_initial_mean_log10(
         "bounds_midpoint" if initial_mean_log10 is None else initial_mean_log10,
         bounds,
+        phenotype_dim=(
+            len(search_bounds_log10[0]) if search_bounds_log10 is not None else 3
+        ),
     )
     effective_seed = derive_structure_cma_seed(int(base_seed), int(structure_idx))
     rng = np.random.default_rng(effective_seed)
@@ -707,8 +775,9 @@ class YoungsModulusScoringConfig:
     n_directions: int | None = None
     device: str | None = None
     hold_aggregation: str | None = "none"
-    include_delta: bool = False
-    categorical_weight: float = 30.0
+    include_delta: bool = True
+    categorical_weight: float = 100.0
+    delta_weight: float = 1.0
 
 
 def _hold_reduce_from_scoring(scoring: YoungsModulusScoringConfig) -> str | None:
@@ -730,6 +799,7 @@ def _wasserstein_kwargs_from_scoring(
         "hold_reduce": _hold_reduce_from_scoring(scoring),
         "include_delta": bool(scoring.include_delta),
         "categorical_weight": float(scoring.categorical_weight),
+        "delta_weight": float(scoring.delta_weight),
     }
 
 
@@ -1437,6 +1507,7 @@ class StructureCmaState:
     final_evaluation: YoungsModulusEvaluation | None = None
     gt_candidate: YoungsModulusCandidate | None = None
     artifact_errors: list[str] = field(default_factory=list)
+    generation_artifacts: list[dict[str, Any]] = field(default_factory=list)
     # Active CMA box; None means unbounded (report bounds JSON null).
     search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]] | None = (
         None
@@ -1478,21 +1549,24 @@ def _validate_ask_population(
     *,
     population_size: int,
     bounds: YoungsModulusCmaBounds,
-    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None = None,
-) -> tuple[tuple[float, float, float], ...]:
+) -> tuple[tuple[float, ...], ...]:
     del bounds  # fixture ranges are not the search box unless search_bounds_log10 is set
+    phenotype_dim = (
+        len(search_bounds_log10[0]) if search_bounds_log10 is not None else 3
+    )
     if len(samples) != int(population_size):
         raise CmaGenerationFailure(
             "generation_evaluation",
             f"ask population size {len(samples)} != {population_size}",
         )
-    parsed: list[tuple[float, float, float]] = []
+    parsed: list[tuple[float, ...]] = []
     for sample in samples:
-        if len(sample) != 3:
+        if len(sample) != phenotype_dim:
             raise CmaGenerationFailure(
                 "generation_evaluation",
-                f"ask sample must have length 3, got {len(sample)}",
+                f"ask sample must have length {phenotype_dim}, got {len(sample)}",
             )
         values = tuple(float(v) for v in sample)
         if not all(math.isfinite(v) for v in values):
@@ -1502,13 +1576,17 @@ def _validate_ask_population(
             )
         if search_bounds_log10 is not None:
             lower, upper = search_bounds_log10
-            for value, lo, hi in zip(values, lower, upper, strict=True):
-                if value < lo - 1e-9 or value > hi + 1e-9:
+            values_list = list(values)
+            for j, (lo, hi) in enumerate(zip(lower, upper, strict=True)):
+                if hi - lo <= 2.0 * _DEGENERATE_BOUND_EPS:
+                    values_list[j] = 0.5 * (lo + hi)
+                elif values_list[j] < lo - 1e-9 or values_list[j] > hi + 1e-9:
                     raise CmaGenerationFailure(
                         "generation_evaluation",
                         "ask sample outside search bounds",
                     )
-        parsed.append(values)  # type: ignore[arg-type]
+            values = tuple(values_list)
+        parsed.append(values)
     return tuple(parsed)
 
 
@@ -1963,16 +2041,16 @@ class YoungsModulusCmaFitResult:
     timing: dict[str, Any] = field(default_factory=dict)
 
 
-def snapshot_xfavorite_log10(optimizer: Any) -> tuple[float, float, float]:
+def snapshot_xfavorite_log10(optimizer: Any) -> tuple[float, ...]:
     """Snapshot pycma's bounded phenotype mean (``result.xfavorite``)."""
     result = getattr(optimizer, "result", None)
     favorite = getattr(result, "xfavorite", None)
     if favorite is None:
         raise ValueError("optimizer.result.xfavorite is unavailable")
     values = tuple(float(v) for v in favorite)
-    if len(values) != 3:
-        raise ValueError(f"xfavorite must have length 3, got {len(values)}")
-    return values  # type: ignore[return-value]
+    if len(values) not in (3, 4, 5):
+        raise ValueError(f"xfavorite must have length 3, 4, or 5, got {len(values)}")
+    return values
 
 
 def optimizer_covariance_diagnostics(optimizer: Any) -> dict[str, Any]:
@@ -2235,6 +2313,7 @@ def fit_youngs_modulus_structures(
     max_generations: int,
     evaluate_fn: Callable[..., YoungsModulusBatchEvaluation],
     on_progress: Callable[[Mapping[int, StructureCmaState]], None] | None = None,
+    on_generation_wave: Callable[[CmaGenerationWaveResult], None] | None = None,
     force_magnitude_weight: float = 0.0,
 ) -> YoungsModulusCmaFitResult:
     """Coordinate synchronized waves until active optimizers stop, then score means."""
@@ -2283,6 +2362,8 @@ def fit_youngs_modulus_structures(
             if idx in wave.failures:
                 continue
             _apply_stop_transition(state, max_generations=max_generations)
+        if on_generation_wave is not None and wave.records:
+            on_generation_wave(wave)
         if on_progress is not None:
             on_progress(ordered)
 
@@ -2541,6 +2622,7 @@ def structure_cma_report_snapshot(
         "covariance": covariance,
         "failure": failure,
         "artifact_errors": list(state.artifact_errors),
+        "generation_artifacts": list(state.generation_artifacts),
     }
 
 

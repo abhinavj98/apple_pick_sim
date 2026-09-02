@@ -40,6 +40,9 @@ def _arrays_for_steps(*, steps: int, shift: float = 0.0) -> dict:
         "tcp_velocity": np.hstack([base + 10.0 + i for i in range(6)]).astype(np.float32),
         "action": np.hstack([base + 20.0 + i for i in range(6)]).astype(np.float32),
         "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
+        "tcp_quat": np.tile(
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (steps, 1)
+        ),
         "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
         "woody_part_start_pos": woody_start,
         "excitation_direction": np.tile(
@@ -827,6 +830,32 @@ def test_complete_score_raises_on_categorical_weight_contract_mismatch():
             n_holds=2,
             n_directions=1,
             categorical_weight=30.0,
+        )
+
+
+def test_complete_score_raises_on_delta_weight_contract_mismatch():
+    gt = [_two_hold_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        use_median=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+        delta_weight=0.2,
+    )
+    with pytest.raises(ValueError, match="delta_weight mismatch"):
+        score_candidate_wasserstein_complete(
+            candidate_index=0,
+            stiffnesses={"primary_e_pa": 1.0},
+            gt_context=context,
+            replay_observations=gt,
+            device="cpu",
+            use_median=True,
+            hold_id_onehot=True,
+            n_holds=2,
+            n_directions=1,
+            delta_weight=1.0,
         )
 
 

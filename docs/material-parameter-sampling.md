@@ -4,7 +4,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Last updated** | 2026-07-23 |
+| **Last updated** | 2026-08-30 |
 | **Roadmap slice** | [V].2.1.3 |
 | **Owner** | Abhinav |
 
@@ -14,11 +14,13 @@ Rod parameters split into three roles:
 
 | Role | Fixture keys | Tuned for |
 | ---- | ------------ | --------- |
-| **Bend** | `youngs_modulus_pa`, `damping_ratio` | Real wood / peduncle bending (sys-ID / literature) |
-| **Stretch** | `vbd_stretch_force` (`max_force_n`, `damping_ratio`) | Soft axial spring from expected max load (\(k=F_{\max}/(0.05 L_{\mathrm{seg}})\)); not beam \(EA/L\) |
+| **Bend** | `flexural_modulus_pa`, `damping_ratio` | Real wood / peduncle bending (sys-ID / literature) |
+| **Stretch (axial)** | `youngs_modulus_pa`, shared `damping_ratio` | Beam \(EA/L_{\mathrm{seg}}\) axial stiffness from sampled axial \(E\) |
 | **Joints** | `sim_build.joint_damping_ratio` (etc.) | Numerical weld settle — see `docs/damping-tuning.md` |
 
-Replace **independent** sampling of VBD rod knobs (`bend_stiffness`, `stretch_stiffness`, `bend_damping`) with sampling of **material** bend properties **Young's modulus** \(E\) [Pa] and **damping ratio** \(\zeta\) [–], then **derive** bend stiffness/damping from geometry at sample time. Axial stretch is optionally overridden by a force budget (`vbd_stretch_force`) instead of \(E A / L_{\mathrm{seg}}\).
+Sample **flexural** \(E_{\mathrm{flex}}\) and **axial** \(E_{\mathrm{ax}}\) (`youngs_modulus_pa`) independently per segment, plus one **`damping_ratio`** \(\zeta\) that drives both bend and stretch damping at `sample_params` time. Derive VBD knobs from geometry; do not sample raw `bend_stiffness` / `stretch_stiffness` bands in range JSON.
+
+Legacy **`vbd_stretch_force`** max-load budgets are **rejected** by `load_ranges` (removed from shipped fixtures). The helper `stretch_knobs_from_max_force` remains for unit tests only.
 
 Geometry (`length`, `radius`, `density`, directions, `num_segments`) continues to be sampled (or fixed) as today. The VBD build path in `apple_pick_sim/fruiting_system/build.py` consumes derived `RodParams` stiffness/damping fields — only the **sampler** and **range JSON contract** change.
 
@@ -40,8 +42,9 @@ Sampling \(E\) and \(\zeta\) keeps domain randomization and calibration tied to 
 
 | Key | Unit | Meaning |
 | --- | ---- | ------- |
-| `youngs_modulus_pa` | Pa | Young's modulus \(E\) |
-| `damping_ratio` | – | Modal damping ratio \(\zeta\) (fraction of critical) |
+| `flexural_modulus_pa` | Pa | Flexural / bend Young's modulus \(E_{\mathrm{flex}}\) |
+| `youngs_modulus_pa` | Pa | Axial Young's modulus \(E_{\mathrm{ax}}\) (stretch \(EA/L_{\mathrm{seg}}\)) |
+| `damping_ratio` | – | Modal damping ratio \(\zeta\) (fraction of critical; shared bend + stretch) |
 
 **Unchanged** (still sampled or fixed per segment): `num_segments`, `length`, `radius`, `density`, angle keys (`azimuth_deg`, `elevation_deg`, deltas).
 
@@ -59,42 +62,18 @@ Default constitutive mapping (segment-local):
 
 | VBD field | Formula | Units |
 | --------- | ------- | ----- |
-| `stretch_stiffness` | \(E A / L_{\mathrm{seg}}\) | N/m |
+| `stretch_stiffness` | \(E_{\mathrm{ax}} A / L_{\mathrm{seg}}\) | N/m |
 | `stretch_damping` | \(2 \zeta \sqrt{k_{\mathrm{stretch}}\, m_{\mathrm{seg}}}\) | N·s/m |
-| `bend_stiffness` | \(E I / L_{\mathrm{seg}}\) | N·m/rad |
+| `bend_stiffness` | \(E_{\mathrm{flex}} I / L_{\mathrm{seg}}\) | N·m/rad |
 | `bend_damping` | \(2 \zeta \sqrt{k_{\mathrm{bend}}\, J_{\mathrm{seg}}}\) | N·m·s/rad |
 
-\(J_{\mathrm{seg}}\) is the solid-cylinder segment moment of inertia about a transverse axis through the midpoint, making `bend_damping` dimensionally consistent. A single \(\zeta\) governs both axial and bending modes **unless** `vbd_stretch_force` overrides axial knobs (below).
+\(J_{\mathrm{seg}}\) is the solid-cylinder segment moment of inertia about a transverse axis through the midpoint. One sampled \(\zeta\) governs both axial and bending damping.
 
-### Optional `vbd_stretch_force` override (max-load axial budget)
+`rod_params_from_material(flexural_modulus_pa, youngs_modulus_pa, damping_ratio, …)` is the canonical builder. **`set_rod_flexural_modulus`** retargets bend only; **`set_rod_youngs_modulus`** retargets axial stretch only.
 
-Wood is treated as **axially stiff under expected pick loads** (up to stem break /
-detach scale). Soft AVBD stretch is a linear spring, not a hard length constraint:
-size \(k\) so extension at design force \(F_{\max}\) stays within
-\(\delta = 0.05\,L_{\mathrm{seg}}\). Bend DR stays on material keys
-(`youngs_modulus_pa`, bend `damping_ratio`); joint settle uses
-`sim_build.joint_damping_ratio` — see `docs/damping-tuning.md` (three-layer policy).
+### Rejected legacy keys
 
-```json
-"vbd_stretch_force": {
-  "max_force_n": 35.0,
-  "damping_ratio": 1.0
-}
-```
-
-At `sample_params` time (and range midpoints):
-
-\[
-\delta = 0.05\, L_{\mathrm{seg}},\qquad
-k_{\mathrm{stretch}} = F_{\max}/\delta,\qquad
-c_{\mathrm{stretch}} = 2\,\zeta_{\mathrm{stretch}}\sqrt{k_{\mathrm{stretch}}\, m_{\mathrm{seg}}}
-\]
-
-**Meaning of \(F_{\max}\):** design load for the extension budget (e.g. ~35 N where
-the apple would leave the stem). Loads below \(F_{\max}\) still stretch linearly
-(\(\delta(F)\approx F/k\)); this is not a yield switch.
-
-Per rod segment, optional. When present, both keys are required (strictly positive). Legacy `vbd_stretch_fixed` (`stretch_stiffness` / `stretch_damping`) is rejected. `youngs_modulus_pa` and bend `damping_ratio` still drive `bend_stiffness` / `bend_damping`. See `fruiting_system_ranges_real_world_proxy_variance.json` and `stretch_knobs_from_max_force` in `apple_pick_sim/fruiting_system/params.py`.
+`load_ranges` rejects `vbd_stretch_force`, legacy `vbd_stretch_fixed`, and direct VBD stiffness bands. Shipped fixtures duplicate pre-split \(E\) bands onto both modulus keys (axial may be retuned independently later).
 
 ### Optional top-level `sim_build` (VIC + joint overrides)
 
@@ -109,38 +88,33 @@ Ranges JSON may include an optional **file-level** (not per-segment) `sim_build`
     "angular_d": 3.0
   },
   "joint_damping_ratio": 1.0,
-  "joint_angular_kp_overrides": { "support": 10000.0 },
-  "joint_linear_kp_overrides": { "support": 10000.0 }
+  "joint_angular_kp_overrides": { "support": 1000.0 },
+  "joint_linear_kp_overrides": { "support": 1000.0 }
 }
 ```
 
 - **Optional:** omit the key entirely; `load_ranges` still succeeds. `parse_sim_build(ranges)` returns `None`.
-- **When present:** `vic_gains` (all four keys) is required. Prefer **`joint_damping_ratio`** (ζ ≥ 0; critical at 1, >1 overdamped) to derive absolute kd at build (`kd = ζ·2·√(k·I/m)`); absolute `joint_*_kd_overrides` remain supported but are **mutually exclusive** with `joint_damping_ratio`. Joint roles are `support`, `primary_spur`, `spur_stem`, `stem_apple`.
+- **When present:** `vic_gains` (all four keys) is required. Prefer **`joint_damping_ratio`** (ζ ≥ 0; critical at 1, >1 overdamped) to derive absolute kd at build (`kd = ζ·2·√(k·I/m)`); absolute `joint_*_kd_overrides` remain supported but are **mutually exclusive** with `joint_damping_ratio`. Joint roles are `support`, `primary_spur`, `spur_stem`, `stem_apple`. Support **angular** \(k_p\) is overwritten from linear as \(\tfrac{3}{4} L_{\mathrm{dowel}}^{2} k_{\mathrm{lin}}\) (`docs/handbook-youngs-cma.md`, `docs/damping-tuning.md`).
 - **Canonical ship:** `fruiting_system_ranges_real_world_proxy_variance.json`. Consumed by `example_batched_heterogeneous_coupled_sim.py`, `example_batched_collect_sysid_data.py`, and `example_batched_sysid_mmd_grid.py` (Python `EXAMPLE_JOINT_*` / VIC constants remain fallbacks when `sim_build` is absent).
 - **API:** `parse_sim_build` in `apple_pick_sim/fruiting_system/params.py`. Tuning notes: `docs/damping-tuning.md`. Design: `docs/specs/2026-07-10-fixture-sim-build-knobs-design.md`.
 
 ### Tier constraints
 
-When both **primary** and **secondary** are enabled, enforce **`primary.youngs_modulus_pa >= secondary.youngs_modulus_pa`** (replaces the current `primary.bend_stiffness >= secondary.bend_stiffness` check on derived values).
+When both **primary** and **secondary** are enabled, enforce **`primary.flexural_modulus_pa >= secondary.flexural_modulus_pa`** (replaces the current `primary.bend_stiffness >= secondary.bend_stiffness` check on derived values). No ordering constraint on axial `youngs_modulus_pa`.
 
 ### Serialization
 
-- Bump `FRUITING_SYSTEM_PARAMS_SCHEMA` to `fruiting_system_params_v2`.
-- Store sampled **`youngs_modulus_pa`** and **`damping_ratio`** on each `RodParams` row in episode metadata (in addition to derived VBD scalars for replay fidelity).
-- `params_fingerprint` adds `*_youngs_modulus_pa` and `*_damping_ratio` fields.
-
-### Episode metadata (v1 read-only)
-
-- New episodes serialize as `fruiting_system_params_v2` with `youngs_modulus_pa` and `damping_ratio`.
-- `fruiting_params_from_dict` still reads **v1** Parquet metadata (derived stiffness only); \(E\) and \(\zeta\) are back-computed from geometry + VBD scalars.
-- Range JSON **rejects** legacy `bend_stiffness` / `stretch_stiffness` / `bend_damping` keys.
+- Current schema: `fruiting_system_params_v3` with both `flexural_modulus_pa` and `youngs_modulus_pa` per rod row.
+- v2 read: legacy `youngs_modulus_pa` → flexural; axial back-computed from stored `stretch_stiffness`.
+- v1 read-only: derived stiffness only; moduli back-computed where possible.
+- `params_fingerprint` adds `*_flexural_modulus_pa` and `*_youngs_modulus_pa` (axial meaning).
 
 ## Code map
 
 | Module | Change |
 | ------ | ------ |
-| `apple_pick_sim/fruiting_system/params.py` | `RodParams` + `sample_params` / `_validate_ranges`; `rod_params_from_material(E, ζ, geometry)` helper |
-| `apple_pick_sim/fixtures/*.json` | Replace stiffness/damping bands with `youngs_modulus_pa` / `damping_ratio` bands |
+| `apple_pick_sim/fruiting_system/params.py` | `RodParams.flexural_modulus_pa` + axial `youngs_modulus_pa`; `sample_params` / `_validate_ranges`; `rod_params_from_material(E_flex, E_ax, ζ, geometry)`; split setters |
+| `apple_pick_sim/fixtures/*.json` | Both modulus keys + `damping_ratio` bands (shipped fixtures duplicate bands at migration) |
 | `apple_pick_sim/fruiting_system/build.py` | **No change** — still passes derived `RodParams` into `add_rod` |
 | `apple_pick_gym/examples/run_system_identification.py` | Follow-up: grid over \(E\) or derived stiffness (legacy CLI flags remain until [S]) |
 

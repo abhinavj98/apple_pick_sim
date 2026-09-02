@@ -75,6 +75,7 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): batched envs/collection/grid, `batched_sysid_cmaes.py` (Young's candidates, scoring, CMA-ES orchestration), `batched_sysid_multi_replay.py` (stable fused scheduling), stability/soft-disable/exclusion, `sysid_gate_report.py`, `youngs_modulus_gate_report.py` (ranking), `youngs_modulus_cmaes_gate_report.py` (CMA integrity) |
 | `apple_pick_gym/batched_examples/` | Parallel collect/grid examples plus `example_youngs_modulus_sys_id.py` (dataset-driven fused E-grid) and `example_youngs_modulus_cmaes.py` (separate CMA-ES fit) |
 | `apple_pick_gym/grid_viz_*.py` | Plotly / table / report helpers for batched stiffness-grid ranking (incl. paired-hold woody MSE) |
+| `apple_pick_gym/viz/` | CMA persist wrench plots (`cma_force_plots.py`: real vs sim Fx/Fy/Fz and Tx/Ty/Tz from `structure_XXX/generations`) |
 | `scripts/` | Staged sys-ID helpers: `collect_and_rank_sysid_gt.sh`, `gate_sysid_gt_sinkhorn.sh`, `gate_youngs_modulus_sysid.sh` (multi-seed ranking gate), `gate_youngs_modulus_cmaes.sh` (multi-seed CMA integrity gate) |
 | `robot_replay/` | Real-robot sys-ID episodes + convert CLI; pre-grasp rebuild / post-grasp weld contract in `README.md` (woody via `rest_snapshot_during_run`) |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |

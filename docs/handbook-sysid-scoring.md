@@ -8,7 +8,7 @@
 | Code owners | `apple_pick_sim/system_id/mmd_features.py`, `apple_pick_sim/system_id/mmd.py`, `apple_pick_sim/system_id/wasserstein.py`, `apple_pick_sim/system_id/batched_trajectory_store.py`, `apple_pick_sim/system_id/real_to_batched_sysid.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H4 `docs/handbook-real-replay.md` (convert must emit this contract); H5 `docs/handbook-youngs-cma.md` (grid/CMA scores it); H2 `docs/handbook-variable-impedance.md` (action semantics only) |
-| Archive specs | [Stiffness level bags](superpowers/specs/2026-08-26-force-anchored-level-bags-design.md) — Implemented (`include_delta`, `categorical_weight`; defaults remain `[s, Δs]`); [One-structure multi-dir holdout](superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md) — Implemented (gates/one-hot; Task 9 science gate failed on torque); [Real/sim CMA feature alignment](superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md) — Implemented; [fixed-scale normalization](superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md) — Implemented; [median-hold features](superpowers/specs/2026-07-14-median-hold-features-design.md) — Implemented; [batched MMD grid](superpowers/specs/2026-07-06-batched-sysid-mmd-grid-design.md) — Historical; [MMD grid diagnostic](superpowers/specs/2026-06-22-mmd-grid-diagnostic-design.md) — Historical; [batched collection](superpowers/specs/2026-07-04-batched-sysid-collection-design.md) — Historical; [dataset dashboard](superpowers/specs/2026-06-22-sysid-dashboard-design.md) — Historical |
+| Archive specs | [TCP rotvec + delta scoring](superpowers/specs/2026-08-31-tcp-rotvec-delta-scoring-design.md) — Implemented; [Stiffness level bags](superpowers/specs/2026-08-26-force-anchored-level-bags-design.md) — Implemented (`include_delta`, `categorical_weight`; defaults remain `[s, Δs]`); [One-structure multi-dir holdout](superpowers/specs/2026-08-17-one-structure-multidir-holdout-cmaes-design.md) — Implemented (gates/one-hot; Task 9 science gate failed on torque); [Real/sim CMA feature alignment](superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md) — Implemented; [fixed-scale normalization](superpowers/specs/2026-08-14-sinkhorn-fixed-scale-normalization-design.md) — Implemented; [median-hold features](superpowers/specs/2026-07-14-median-hold-features-design.md) — Implemented; [batched MMD grid](superpowers/specs/2026-07-06-batched-sysid-mmd-grid-design.md) — Historical; [MMD grid diagnostic](superpowers/specs/2026-06-22-mmd-grid-diagnostic-design.md) — Historical; [batched collection](superpowers/specs/2026-07-04-batched-sysid-collection-design.md) — Historical; [dataset dashboard](superpowers/specs/2026-06-22-sysid-dashboard-design.md) — Historical |
 
 This handbook is the canonical contract for `batched_sysid_v1` bags and the
 features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
@@ -50,7 +50,7 @@ storage or scoring semantics.
 | ----- | ------- | ------------------ |
 | **Runtime obs** | Gym or scene observation dictionaries produced while simulation runs. | May include debug/rebuild fields such as `woody_part_end_pos`; see `docs/gym-observation-contract.md`. |
 | **Bag** | Arrays loaded from a `batched_sysid_v1` episode Parquet plus episode metadata. | Carries replay inputs, including 6D or 19D `action`; trajectory frames do not carry woody ends. |
-| **Score vector** | Numeric columns assembled by `mmd_features.build_state_matrix` and its transition builders. | Uses `STATE_VECTOR_FIELDS`; `action`, `apple_pos`, quaternions, joints, raw F/T, and woody ends are not scored. `apple_pos` remains in the bag for bend-chord geometry. |
+| **Score vector** | Numeric columns assembled by `mmd_features.build_state_matrix` and its transition builders. | Uses `STATE_VECTOR_FIELDS`; `action`, `apple_pos`, `apple_quat`, joints, raw F/T, and woody ends are not scored. `apple_pos` remains in the bag for bend-chord geometry. TCP orientation enters via frame-0 relative `tcp_rotvec` (from bag `tcp_quat`). |
 
 H2 owns the meaning of a 6D `vic` action versus a 19D `vic_pose_v1` action.
 H4 owns real-log conversion. H5 owns candidate selection. This handbook owns
@@ -125,17 +125,18 @@ column solely so digital-twin initialization can address the pre-weld row.
 
 `mmd_features.STATE_VECTOR_FIELDS` fixes score-time order. For the production
 CMA pair `J=2`, `mmd_features.CMA_WOODY_JUNCTIONS` is
-`("primary_spur", "spur_stem")` and the state width is 23:
+`("primary_spur", "spur_stem")` and the state width is 26:
 
 | Offset | Field | Dimensions | Meaning |
 | ------ | ----- | ---------- | ------- |
 | 0:6 | `ft_wrist` | 6 | World-frame force then torque, env-on-robot, about TCP. Real GT uses `ft_wrist_lpf` when that column is present; candidate replay always uses live `ft_wrist`. |
 | 6:12 | `tcp_velocity` | 6 | Linear then angular TCP velocity |
 | 12:15 | `tcp_pos` | 3 | TCP world position |
-| 15:21 | `woody_part_start_pos` | `3J=6` | Starts flattened in `junction_names` order |
-| 21:23 | `woody_bending_angles` | `J=2` | Rest-relative spur then stem chord angles |
+| 15:18 | `tcp_rotvec` | 3 | Frame-0 relative axis-angle from bag `tcp_quat` xyzw (\(\phi=\log(q_0^{-1}q_t)\), hemisphere-aligned) |
+| 18:24 | `woody_part_start_pos` | `3J=6` | Starts flattened in `junction_names` order |
+| 24:26 | `woody_bending_angles` | `J=2` | Rest-relative spur then stem chord angles |
 
-In general, \(D_s = 15 + 4J\). `apple_pos` stays in the bag (and in
+In general, \(D_s = 18 + 4J\). `apple_pos` stays in the bag (and in
 `REQUIRED_ARRAY_KEYS`) so bend chords can use the Apple tag, but it is not a
 scored state column. For the CMA pair the bending chords are:
 
@@ -208,13 +209,14 @@ For one `J=2` state half,
 
 | State block | Scale per component |
 | ----------- | ------------------- |
-| F/T force | 0.5 N |
+| F/T force | 1.5 N |
 | F/T torque | 1.0 N·m |
 | TCP linear velocity | 0.02 m/s |
 | TCP angular velocity | 0.02 rad/s |
-| TCP position | 0.05 m |
-| Woody start XYZ | 0.05 m |
-| Bending angle | 0.05 rad |
+| TCP position | 0.005 m |
+| TCP rotvec | 0.05 rad |
+| Woody start XYZ | 0.001 m |
+| Bending angle | 0.01 rad |
 
 `transition_feature_scale` repeats this table once per physical block:
 two copies when `include_delta=True` (`[s, Δs]`), one copy when
@@ -268,8 +270,10 @@ use all stable hold frames as level bags with anchored categoricals and pooled
 directions:
 
 ```text
---hold-aggregation none --no-include-delta --categorical-weight 30 --pool-directions
+--hold-aggregation none --no-include-delta --categorical-weight 100 --pool-directions
 ```
+
+Default CMA (2026-08-31) uses `--include-delta` instead for 30 Hz `[s, Δs]` rows.
 
 Do not use hold-mean level rows for that pass: a hold mean mixes settling
 transient with plateau and, once categoricals are anchored, Sinkhorn

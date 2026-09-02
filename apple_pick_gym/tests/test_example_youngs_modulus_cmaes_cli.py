@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import importlib.util
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -104,9 +105,18 @@ def _load_grid_module():
 
 def _valid_ranges_dict() -> dict:
     return {
-        "primary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
-        "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
-        "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+        "primary": {
+            "flexural_modulus_pa": {"min": 1.0e7, "max": 1.0e9},
+            "youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e9},
+        },
+        "spur": {
+            "flexural_modulus_pa": {"min": 1.0e6, "max": 1.0e8},
+            "youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8},
+        },
+        "stem": {
+            "flexural_modulus_pa": {"min": 1.0e5, "max": 1.0e7},
+            "youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7},
+        },
     }
 
 
@@ -168,17 +178,29 @@ def _synthetic_recorded_episode(*, direction: int) -> dict:
     hold_idx = np.where(phase == 1)[0]
     for j, idx in enumerate(hold_idx):
         tcp[idx, 2] = 1.0 + 0.05 * j
+    junction_names = ["primary_spur", "spur_stem"]
+    woody = {
+        name: np.tile(np.array([0.1 * (i + 1), 0.2, 0.3], dtype=np.float32), (n, 1))
+        for i, name in enumerate(junction_names)
+    }
     return {
         "action": np.zeros((n, 6), dtype=np.float32),
         "phase": phase,
         "dir_idx": np.full(n, int(direction), dtype=np.int32),
+        "step_idx": np.arange(n, dtype=np.int32),
+        "stable": np.ones(n, dtype=bool),
         "ft_wrist": ft,
         "ft_wrist_lpf": ft.copy(),
         "tcp_pos": tcp,
+        "tcp_velocity": np.zeros((n, 6), dtype=np.float32),
+        "tcp_quat": np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (n, 1)),
         "apple_pos": tcp + 0.1,
+        "junction_names": junction_names,
+        "woody_part_start_pos": woody,
         "excitation_direction": np.tile(
             np.array([0.0, 0.0, 1.0], dtype=np.float32), (n, 1)
         ),
+        "excitation_type": np.zeros(n, dtype=np.int8),
     }
 
 
@@ -203,21 +225,29 @@ def test_cma_search_params_dict_is_sole_search_truth_source():
         "cma_seed",
         "max_sigma_log10",
     }
-    # Vector is (log10 support_kp, log10 E_spur, log10 E_stem). Support k_p
-    # uses an absolute safety box [2, 6] (never fixture primary-E bands);
-    # spur/stem keep the [8, 11] box; mean sits at each axis midpoint.
-    assert params["initial_mean_log10"] == [4.0, 9.5, 9.5]
+    # Vector is (log10 support_kp, log10 E_flex_spur, log10 E_flex_stem,
+    # log10 E_youngs_spur, log10 E_youngs_stem). Support k_p uses an absolute
+    # safety box [2, 6]; spur/stem flexural and axial share the 10 kPa–50 GPa box.
+    e_lo = module._LOG10_10KPA
+    e_hi = module._LOG10_50GPA
+    e_mid = e_lo + 0.5 * (e_hi - e_lo)
+    assert params["initial_mean_log10"] == pytest.approx(
+        [4.0, e_mid, e_mid, e_mid, e_mid]
+    )
     assert params["initial_sigma_log10"] == 0.2
     assert params["population_size"] == 20
     assert params["max_generations"] == 20
     assert params["cma_seed"] == 56
     assert params["max_sigma_log10"] == 0.5
     assert params["search_bounds_log10"] == {
-        "lower": [2.0, 8.0, 8.0],
-        "upper": [6.0, 11.0, 11.0],
+        "lower": [2.0, e_lo, e_lo, e_lo, e_lo],
+        "upper": [6.0, e_hi, e_hi, e_hi, e_hi],
     }
     normalized = cmaes.normalize_search_bounds_log10(params["search_bounds_log10"])
-    assert normalized == ((2.0, 8.0, 8.0), (6.0, 11.0, 11.0))
+    assert normalized == (
+        (2.0, e_lo, e_lo, e_lo, e_lo),
+        (6.0, e_hi, e_hi, e_hi, e_hi),
+    )
 
 
 def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
@@ -305,16 +335,21 @@ def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
     )
     module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
     assert create_calls
+    e_lo = module._LOG10_10KPA
+    e_hi = module._LOG10_50GPA
+    e_mid = e_lo + 0.5 * (e_hi - e_lo)
     assert create_calls[0]["search_bounds_log10"] == (
-        (2.0, 8.0, 8.0),
-        (6.0, 11.0, 11.0),
+        (2.0, e_lo, e_lo, e_lo, e_lo),
+        (6.0, e_hi, e_hi, e_hi, e_hi),
     )
-    assert create_calls[0]["initial_mean_log10"] == pytest.approx([4.0, 9.5, 9.5])
+    assert create_calls[0]["initial_mean_log10"] == pytest.approx(
+        [4.0, e_mid, e_mid, e_mid, e_mid]
+    )
     assert create_calls[0]["max_sigma_log10"] == 0.5
     report = json.loads((output_dir / "cmaes_report.json").read_text(encoding="utf-8"))
     assert report["cma"]["search_bounds_log10"] == {
-        "lower": [2.0, 8.0, 8.0],
-        "upper": [6.0, 11.0, 11.0],
+        "lower": [2.0, e_lo, e_lo, e_lo, e_lo],
+        "upper": [6.0, e_hi, e_hi, e_hi, e_hi],
     }
 
 
@@ -551,12 +586,14 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
     assert args.multi_structure_batch is True
     assert args.fail_fast is False
     assert args.use_median is None
-    assert args.hold_aggregation == "none"
+    assert args.hold_aggregation == "mean"
     assert args.hold_id_onehot is True
     assert args.pool_directions is True
-    assert args.include_delta is False
-    assert args.categorical_weight == pytest.approx(30.0)
+    assert args.include_delta is True
+    assert args.categorical_weight == pytest.approx(100.0)
+    assert args.delta_weight == pytest.approx(1.0)
     assert args.force_magnitude_weight == pytest.approx(0.0)
+    assert args.persist_generation_replays is True
     assert args.isolated_eval_waves is True
     assert args.wave_max_attempts == 5
     with pytest.raises(SystemExit):
@@ -646,7 +683,7 @@ def test_build_cmaes_report_records_level_bag_scoring_flags():
     scoring = cmaes.YoungsModulusScoringConfig(
         hold_aggregation="none",
         include_delta=False,
-        categorical_weight=30.0,
+        categorical_weight=100.0,
     )
     payload = module._build_cmaes_report_payload(
         {},
@@ -664,7 +701,7 @@ def test_build_cmaes_report_records_level_bag_scoring_flags():
         isolated_eval_waves=True,
     )
     assert payload["scoring"]["include_delta"] is False
-    assert payload["scoring"]["categorical_weight"] == pytest.approx(30.0)
+    assert payload["scoring"]["categorical_weight"] == pytest.approx(100.0)
     assert payload["scoring"]["hold_aggregation"] == "none"
     assert payload["scoring"]["wave_max_attempts"] == 5
 
@@ -790,6 +827,9 @@ def test_clear_cma_owned_artifacts_removes_report_temp_and_selected_overlays(tmp
     selected = output_dir / "structure_001"
     selected.mkdir()
     (selected / "youngs_modulus_overlay.html").write_text("old", encoding="utf-8")
+    generations = selected / "generations" / "gen_00" / "best"
+    generations.mkdir(parents=True)
+    (generations / "features.html").write_text("old", encoding="utf-8")
     holdout = selected / "holdout"
     holdout.mkdir()
     (holdout / "direction_000.html").write_text("old", encoding="utf-8")
@@ -809,6 +849,7 @@ def test_clear_cma_owned_artifacts_removes_report_temp_and_selected_overlays(tmp
     assert not (output_dir / ".holdout_report.json.9.tmp").exists()
     assert keep.read_text(encoding="utf-8") == "keep"
     assert not (selected / "youngs_modulus_overlay.html").exists()
+    assert not (selected / "generations").exists()
     assert not (holdout / "direction_000.html").exists()
     assert (selected / "other.txt").exists()
     assert (other / "youngs_modulus_overlay.html").exists()
@@ -1724,7 +1765,7 @@ def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(monkeypatch, tmp_pa
     assert "gt_diagnostics" not in report["structures"]["0"]
 
 
-def test_run_vic_pose_lowers_spur_stem_search_floor(monkeypatch, tmp_path):
+def test_run_vic_pose_real_search_uses_kp_and_wide_e_bounds(monkeypatch, tmp_path):
     module = _load_module()
     output_dir = tmp_path / "cma_out"
     ranges_path = tmp_path / "ranges.json"
@@ -1822,11 +1863,20 @@ def test_run_vic_pose_lowers_spur_stem_search_floor(monkeypatch, tmp_path):
         viewer="null",
     )
     module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
-    assert create_calls[0]["search_bounds_log10"] == (
-        (2.0, 7.0, 7.0),
-        (6.0, 11.0, 11.0),
+    kp_lo = math.log10(200.0)
+    kp_hi = math.log10(1.0e3)
+    kp_init = math.log10(1.0e3)
+    e_lo = module._LOG10_100KPA
+    e_hi = module._LOG10_10GPA
+    lo, hi = create_calls[0]["search_bounds_log10"]
+    assert lo[0] == pytest.approx(kp_lo)
+    assert hi[0] == pytest.approx(kp_hi)
+    assert lo[1:] == (e_lo, e_lo, e_lo, e_lo)
+    assert hi[1:] == (e_hi, e_hi, e_hi, e_hi)
+    assert create_calls[0]["initial_mean_log10"][0] == pytest.approx(kp_init)
+    assert create_calls[0]["initial_mean_log10"][1:] == pytest.approx(
+        module._REAL_CMA_MEAN_LOG10[1:]
     )
-    assert create_calls[0]["initial_mean_log10"] == pytest.approx([4.0, 8.0, 8.0])
 
 
 def test_run_rejects_multiple_structures_for_vic_pose(monkeypatch, tmp_path):
@@ -2080,7 +2130,11 @@ def _holdout_run_stub(monkeypatch, module, *, dataset: MagicMock, tmp_path: Path
             sinkhorn = 0.1
             if dirs == (0, 1, 3) and len(candidates) == 1:
                 cand_log10 = _candidate_log10(candidates[0])
-                baseline = tuple(module.CMA_SEARCH_PARAMS["initial_mean_log10"])
+                baseline = _candidate_log10(
+                    cmaes.candidates_from_log10_vector(
+                        tuple(module._REAL_CMA_MEAN_LOG10)
+                    )
+                )
                 sinkhorn = 2.0 if cand_log10 == baseline else 1.0
             evaluations[int(structure_idx)] = _evaluation(
                 int(structure_idx),
@@ -2597,6 +2651,7 @@ def _holdout_args(output_dir: Path) -> SimpleNamespace:
         settle_quiet_every=None,
         show_pull_direction=False,
         viewer="null",
+        write_match_metrics=True,
     )
 
 
@@ -2616,11 +2671,13 @@ def test_run_holdout_evaluates_baseline_and_fitted_on_val_only(monkeypatch, tmp_
         if c.get("direction_indices") == (0, 1, 3)
     ]
     assert len(val_calls) == 2
-    baseline = (4.0, 8.0, 8.0)
+    baseline = _candidate_log10(
+        cmaes.candidates_from_log10_vector(tuple(module._REAL_CMA_MEAN_LOG10))
+    )
     seen_log10 = {
         _candidate_log10(c["structures"][0][1][0]) for c in val_calls
     }
-    assert _candidate_log10(cmaes.candidates_from_log10_vector(baseline)) in seen_log10
+    assert baseline in seen_log10
     assert _candidate_log10(cmaes.candidates_from_log10_vector((4.0, 9.0, 9.0))) in seen_log10
 
 
@@ -2682,6 +2739,32 @@ def test_run_writes_holdout_report_with_val_overlays(monkeypatch, tmp_path):
         assert Path(path).is_file()
         assert "holdout/direction_" in path
         assert path != str(train_overlay)
+
+    metrics_path = output_dir / "match_metrics.json"
+    assert metrics_path.is_file()
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert "directions" in metrics
+    holdout_dir = output_dir / "structure_000" / "holdout"
+    for side in ("baseline", "fitted"):
+        for direction in (0, 1, 3):
+            npz = holdout_dir / side / f"dir_{direction:02d}.npz"
+            assert npz.is_file(), f"missing {npz}"
+
+
+def test_run_skips_match_metrics_json_when_disabled(monkeypatch, tmp_path):
+    module = _load_module()
+    ranges_path = tmp_path / "ranges.json"
+    ranges_path.write_text(json.dumps(_valid_ranges_dict()), encoding="utf-8")
+    dataset = _eight_dir_vic_pose_dataset(ranges_path=ranges_path)
+    _, output_dir, _ = _holdout_run_stub(
+        monkeypatch, module, dataset=dataset, tmp_path=tmp_path
+    )
+    args = _holdout_args(output_dir)
+    args.write_match_metrics = False
+    module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+    assert not (output_dir / "match_metrics.json").exists()
+    holdout_dir = output_dir / "structure_000" / "holdout"
+    assert (holdout_dir / "baseline" / "dir_00.npz").is_file()
 
 
 def test_run_skips_holdout_report_when_fit_failed(monkeypatch, tmp_path):
@@ -3014,7 +3097,7 @@ def test_parser_exposes_snapshot_video_interval(monkeypatch):
     monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
     parser = module._make_parser()
     args = parser.parse_args(["--dataset", "/tmp/gt", "--output", "/tmp/cma"])
-    assert args.snapshot_video_every == 0
+    assert args.snapshot_video_every == 1
     every = parser.parse_args(
         [
             "--dataset",

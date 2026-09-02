@@ -31,16 +31,17 @@ def test_fit_gt_normalization_uses_fixed_physical_scale_not_gt_std():
     scale = transition_feature_scale(n)
     np.testing.assert_allclose(stats.std, scale)
     np.testing.assert_allclose(stats.mean[0], 3.0)
-    # Candidate residual 3 N on Fx → 3/0.5 = 6 after apply, not 3/std(GT)=3/sqrt(6)
+    # Candidate residual 3 N on Fx → 3/1.5 = 2 after apply, not 3/std(GT)=3/sqrt(6)
     cand = np.zeros((1, n), dtype=np.float64)
     cand[0, 0] = 6.0  # 3 N above GT mean
     out = apply_normalization(cand, stats)
-    assert out[0, 0] == pytest.approx(3.0 / 0.5)
-    assert STATE_VECTOR_PHYS_SCALE[0] == pytest.approx(0.5)
+    assert out[0, 0] == pytest.approx(3.0 / 1.5)
+    assert STATE_VECTOR_PHYS_SCALE[0] == pytest.approx(1.5)
     np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[3:6], 1.0)
-    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[12:15], 0.05)
-    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[15:21], 0.05)
-    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[21:23], 0.05)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[12:15], 0.005)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[15:18], 0.05)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[18:24], 0.001)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[24:26], 0.01)
 
 
 def test_near_zero_gt_velocity_does_not_explode_candidate_residual():
@@ -79,8 +80,8 @@ def test_trailing_onehot_is_not_mean_centered():
 
 
 def _state_dim_for_junctions(n_junctions: int) -> int:
-    # ft(6)+vel(6)+tcp(3)+woody(3J)+bend(J)
-    return 15 + 4 * int(n_junctions)
+    # ft(6)+vel(6)+tcp(3)+rotvec(3)+woody(3J)+bend(J)
+    return 18 + 4 * int(n_junctions)
 
 
 def test_fit_gt_normalization_scales_one_junction_woody_and_bend():
@@ -93,15 +94,16 @@ def test_fit_gt_normalization_scales_one_junction_woody_and_bend():
     stats = fit_gt_normalization(gt, n_junctions=n_junctions)
 
     assert stats.std.shape == (n,)
-    np.testing.assert_allclose(stats.std[0], 0.5)
-    np.testing.assert_allclose(stats.std[12:15], 0.05)  # tcp_pos
-    np.testing.assert_allclose(stats.std[15:18], 0.05)  # woody_start
-    assert stats.std[18] == pytest.approx(0.05)
+    np.testing.assert_allclose(stats.std[0], 1.5)
+    np.testing.assert_allclose(stats.std[12:15], 0.005)  # tcp_pos
+    np.testing.assert_allclose(stats.std[15:18], 0.05)  # tcp_rotvec
+    np.testing.assert_allclose(stats.std[18:21], 0.001)  # woody_start
+    assert stats.std[21] == pytest.approx(0.01)
     np.testing.assert_allclose(stats.std[state_dim : state_dim + 6], stats.std[:6])
     cand = np.zeros((1, n), dtype=np.float64)
     cand[0, 0] = 6.0
     out = apply_normalization(cand, stats)
-    assert out[0, 0] == pytest.approx(3.0 / 0.5)
+    assert out[0, 0] == pytest.approx(3.0 / 1.5)
 
 
 def test_fit_gt_normalization_does_not_treat_extra_junctions_as_onehots():
@@ -112,14 +114,14 @@ def test_fit_gt_normalization_does_not_treat_extra_junctions_as_onehots():
 
     stats = fit_gt_normalization(gt, n_junctions=n_junctions)
 
-    woody0 = 15
+    woody0 = 18
     last_bend = state_dim - 1
-    np.testing.assert_allclose(stats.std[woody0 : woody0 + 9], 0.05)
-    np.testing.assert_allclose(stats.std[woody0 + 9 : state_dim], 0.05)
+    np.testing.assert_allclose(stats.std[woody0 : woody0 + 9], 0.001)
+    np.testing.assert_allclose(stats.std[woody0 + 9 : state_dim], 0.01)
     np.testing.assert_allclose(stats.mean[last_bend], 0.4)
-    np.testing.assert_allclose(stats.std[last_bend], 0.05)
+    np.testing.assert_allclose(stats.std[last_bend], 0.01)
     np.testing.assert_allclose(stats.mean[state_dim + last_bend], 0.4)
-    np.testing.assert_allclose(stats.std[state_dim + last_bend], 0.05)
+    np.testing.assert_allclose(stats.std[state_dim + last_bend], 0.01)
 
 
 def test_transition_feature_scale_accepts_single_block_when_include_delta_false():
@@ -152,6 +154,32 @@ def test_categorical_weight_scales_trailing_onehots_only():
     scale = transition_feature_scale(n, categorical_weight=10.0)
     np.testing.assert_allclose(scale[: 2 * state_dim], transition_feature_scale(n)[: 2 * state_dim])
     np.testing.assert_allclose(scale[-n_extra:], 0.1)
+
+
+def test_delta_weight_inflates_delta_block_scales_only():
+    from apple_pick_sim.system_id.mmd_features import (
+        STATE_VECTOR_PHYS_SCALE,
+        transition_feature_scale,
+    )
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n = 2 * state_dim
+    level = transition_feature_scale(n)[:state_dim]
+    scale = transition_feature_scale(n, delta_weight=0.2)
+    np.testing.assert_allclose(scale[:state_dim], level)
+    np.testing.assert_allclose(scale[state_dim:], level / 0.2)
+
+
+def test_fit_gt_normalization_honors_delta_weight():
+    from apple_pick_sim.system_id.mmd_features import STATE_VECTOR_PHYS_SCALE
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    gt = np.zeros((4, 2 * state_dim), dtype=np.float64)
+    gt[:, 0] = [0.0, 1.0, 2.0, 3.0]
+    gt[:, state_dim] = [0.0, 0.2, 0.4, 0.6]
+
+    stats = fit_gt_normalization(gt, delta_weight=0.2)
+    np.testing.assert_allclose(stats.std[:state_dim], stats.std[state_dim:] * 0.2)
 
 
 def test_fit_gt_normalization_include_delta_false_zeros_mean_after_one_block():

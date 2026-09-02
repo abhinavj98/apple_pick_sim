@@ -8,7 +8,7 @@ including the 6D twist controller (`vic`) and 19D absolute-pose controller
 
 | Field | Value |
 | --- | --- |
-| Last reviewed | 2026-08-14 |
+| Last reviewed | 2026-08-31 |
 | Code owners | `apple_pick_sim/robot/fr3_robot/controllers/ee_impedance*.py`; `apple_pick_sim/coupled_fruiting/vic_wrench.py`; `apple_pick_sim/coupled_fruiting/vic_joint_torques*.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md`; H4 `docs/handbook-real-replay.md`; H5 `docs/handbook-youngs-cma.md` |
@@ -39,14 +39,27 @@ the two actuation paths:
 | Kinematic/direct control | Coupling cache is zeroed; MuJoCo does not integrate the stem load | Direct joint target update |
 
 In joint-torque mode, `vic_joint_torques.py` and
-`vic_joint_torques_batched.py` implement
+`vic_joint_torques_batched.py` implement the collection OSC map. With
+`ControllerConfig.sep_ori=False` (twist `vic` default) the task map is the
+coupled operational-space form
 
 \[
 \tau_{\mathrm{task}} = J^\mathsf{T}\Lambda w,\qquad
-\Lambda=(J M^{-1}J^\mathsf{T}+\lambda I)^{-1},
+\Lambda=(J M^{-1}J^\mathsf{T}+\lambda I)^{-1}.
 \]
 
-plus a dynamically consistent null-space term. Joint 7's null-space target is
+With `sep_ori=True` (real `vic_pose` replay via `real_replay_sim_config`)
+translation still goes through full \(\Lambda\) with the rotation wrench zeroed,
+and rotation is applied without \(\Lambda\):
+
+\[
+\tau_{\mathrm{task}} = J^\mathsf{T}\Lambda\begin{bmatrix}f\\0\end{bmatrix}
++ J_{\mathrm{rot}}^\mathsf{T}\tau.
+\]
+
+Null space still uses full \(\Lambda\). Defaults are `kp_null=10`,
+`kd_null=6.3246`. Real replay sets `kd_null=15` to match
+`apple_pullto_static` / `config.yaml`. Joint 7's null-space target is
 forced to 0 rad. Joint position/velocity gains are zeroed by
 `fr3_robot.configure_vic_joint_torques_arm`, so MuJoCo position actuators do not
 compete with VIC. The coupling load remains an external TCP body wrench.

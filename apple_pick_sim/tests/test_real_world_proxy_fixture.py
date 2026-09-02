@@ -89,11 +89,12 @@ def test_variance_sim_build_knobs(variance_ranges):
     assert sb.vic_gains.angular_k == pytest.approx(10.0)
     assert sb.vic_gains.angular_d == pytest.approx(3.0)
     # Joint weld damping via ζ (kd = ζ·2·√(k·I)/√(k·m)); mutually exclusive with absolute kd maps.
-    assert sb.joint_damping_ratio == pytest.approx(0.5)
+    assert sb.joint_damping_ratio == pytest.approx(1.0)
     assert sb.joint_angular_kd_overrides == {}
     assert sb.joint_linear_kd_overrides == {}
-    assert sb.joint_angular_kp_overrides == {"support": 10000.0}
-    assert sb.joint_linear_kp_overrides == {"support": 10000.0}
+    assert sb.joint_angular_kp_overrides == {"support": 1000.0}
+    assert sb.joint_linear_kp_overrides == {"support": 1000.0}
+    assert sb.joint_roll_kp_overrides == {"support": 3.0}
 
 
 def test_nominal_has_no_sim_build(nominal_ranges):
@@ -103,10 +104,10 @@ def test_nominal_has_no_sim_build(nominal_ranges):
 
 def test_variance_stiffness_ordering(variance_ranges):
     """Primary is wood-scale; stem min is peduncle-scale; spur may reach wood max."""
-    primary = variance_ranges["primary"]["youngs_modulus_pa"]
-    spur = variance_ranges["spur"]["youngs_modulus_pa"]
-    stem = variance_ranges["stem"]["youngs_modulus_pa"]
-    assert primary["min"] == pytest.approx(5.0e9, rel=0.01)
+    primary = variance_ranges["primary"]["flexural_modulus_pa"]
+    spur = variance_ranges["spur"]["flexural_modulus_pa"]
+    stem = variance_ranges["stem"]["flexural_modulus_pa"]
+    assert primary["min"] == pytest.approx(5.0e10, rel=0.01)
     assert stem["min"] < 1.5e9  # peduncle-like floor
     assert spur["min"] < primary["min"]
     assert stem["min"] < primary["min"]
@@ -124,69 +125,28 @@ def _variance_segment_midpoint(row: dict) -> tuple[float, float, float, int]:
     )
 
 
-def test_variance_vbd_stretch_force_derives_at_midpoint(variance_ranges):
-    """Axial k/c from max_force_n + ζ_stretch at midpoint geometry."""
-    import math
-
-    from apple_pick_sim.fruiting_system.params import stretch_knobs_from_max_force
-
-    zeta_by_seg = {"primary": 1.0, "spur": 1.5, "stem": 3.0}
-    for seg, zeta in zeta_by_seg.items():
+def test_variance_dual_modulus_bands_match(variance_ranges):
+    """Both moduli bands duplicate the pre-split youngs_modulus_pa values."""
+    for seg in ("primary", "spur", "stem"):
         row = variance_ranges[seg]
-        force = row["vbd_stretch_force"]
-        assert float(force["max_force_n"]) == pytest.approx(35.0)
-        assert float(force["damping_ratio"]) == pytest.approx(zeta)
-        length, radius, density, num_segments = _variance_segment_midpoint(row)
-        k_exp, c_exp = stretch_knobs_from_max_force(
-            float(force["max_force_n"]),
-            float(force["damping_ratio"]),
-            length,
-            radius,
-            density,
-            num_segments,
-        )
-        # Spot-check δ = 0.05 L_seg policy.
-        l_seg = length / num_segments
-        assert k_exp == pytest.approx(35.0 / (0.05 * l_seg))
-        assert c_exp == pytest.approx(
-            2.0 * zeta * math.sqrt(k_exp * density * math.pi * radius**2 * l_seg)
-        )
+        assert row["flexural_modulus_pa"] == row["youngs_modulus_pa"]
+        assert "vbd_stretch_force" not in row
 
 
-def test_variance_stretch_force_decoupled_from_bend_e(variance_ranges):
-    """Axial force policy is independent of bend youngs_modulus_pa bands."""
-    for seg in ("spur", "stem"):
-        row = variance_ranges[seg]
-        f_max = float(row["vbd_stretch_force"]["max_force_n"])
-        e_lo = float(row["youngs_modulus_pa"]["min"])
-        e_hi = float(row["youngs_modulus_pa"]["max"])
-        assert f_max > 0.0
-        assert f_max != pytest.approx(e_lo)
-        assert f_max != pytest.approx(e_hi)
-
-
-def test_sample_params_variance_stretch_matches_force_policy(variance_ranges):
-    """sample_params derives stretch knobs from vbd_stretch_force + geometry."""
-    from apple_pick_sim.fruiting_system.params import (
-        sample_params,
-        stretch_knobs_from_max_force,
-    )
+def test_sample_params_variance_stretch_from_beam_ea_over_l(variance_ranges):
+    """sample_params derives stretch from axial youngs_modulus_pa (beam EA/L)."""
+    from apple_pick_sim.fruiting_system.params import sample_params
 
     params = sample_params(variance_ranges, seed=7)
     for seg in ("primary", "spur", "stem"):
         rod = getattr(params, seg)
         assert rod is not None
-        force = variance_ranges[seg]["vbd_stretch_force"]
-        k_exp, c_exp = stretch_knobs_from_max_force(
-            float(force["max_force_n"]),
-            float(force["damping_ratio"]),
-            rod.length,
-            rod.radius,
-            rod.density,
-            rod.num_segments,
-        )
+        import math
+
+        area = math.pi * rod.radius**2
+        l_seg = rod.length / rod.num_segments
+        k_exp = rod.youngs_modulus_pa * area / l_seg
         assert rod.stretch_stiffness == pytest.approx(k_exp)
-        assert rod.stretch_damping == pytest.approx(c_exp)
 
 
 def test_variance_youngs_modulus_tip_stiffness_at_midpoint_geometry(variance_ranges):
@@ -202,18 +162,18 @@ def test_variance_youngs_modulus_tip_stiffness_at_midpoint_geometry(variance_ran
     def _mid(band: dict) -> float:
         return 0.5 * (float(band["min"]) + float(band["max"]))
 
-    # Regenerated from fixture geometry + E (wood/peduncle literature bands).
+    # Regenerated from fixture geometry + flexural E bands.
     tiers = {
-        "primary": (70422.0, 70422.0),
-        "spur": (25144.0, 502872.0),
-        "stem": (1150.0, 7191.0),
+        "primary": (704218.0, 704218.0),
+        "spur": (2514.0, 10057.0),
+        "stem": (36.0, 144.0),
     }
     for seg, (k_lo, k_hi) in tiers.items():
         row = variance_ranges[seg]
         length = _mid(row["length"])
         radius = _mid(row["radius"])
-        e_lo = float(row["youngs_modulus_pa"]["min"])
-        e_hi = float(row["youngs_modulus_pa"]["max"])
+        e_lo = float(row["flexural_modulus_pa"]["min"])
+        e_hi = float(row["flexural_modulus_pa"]["max"])
         assert _k_tip(e_lo, length, radius) == pytest.approx(k_lo, rel=0.01)
         assert _k_tip(e_hi, length, radius) == pytest.approx(k_hi, rel=0.01)
 

@@ -308,7 +308,7 @@ def test_joint_damping_overrides_applied_on_final_scene(ranges, per_env_params):
 @requires_fr3
 def test_joint_kd_does_not_scale_with_stem_youngs_modulus(ranges):
     """Absolute weld kd is independent of rod E (constant weld ζ policy)."""
-    from apple_pick_sim.fruiting_system import set_rod_youngs_modulus
+    from apple_pick_sim.fruiting_system import set_rod_flexural_modulus
 
     del ranges  # T-junction fixture owns support joints
     t_junction_ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
@@ -317,7 +317,7 @@ def test_joint_kd_does_not_scale_with_stem_youngs_modulus(ranges):
     )
     # 10× stem E must not change applied weld kd.
     stem_e0 = float(t_params[0].stem.youngs_modulus_pa)
-    t_stiff = [set_rod_youngs_modulus(p, "stem", 10.0 * stem_e0) for p in t_params]
+    t_stiff = [set_rod_flexural_modulus(p, "stem", 10.0 * stem_e0) for p in t_params]
     angular_overrides = {"stem_apple": 4.0, "support": 9.0}
     linear_overrides = {"stem_apple": 5.0, "support": 11.0}
     cfg = dataclasses.replace(
@@ -560,6 +560,8 @@ def test_kp_overrides_applied_before_settle(ranges, per_env_params, monkeypatch)
     monkeypatch.setattr(build_module, "_run_vbd_settle", _capture_settle)
     angular_kp = {"support": 2.0e4}
     linear_kp = {"support": 3.0e4}
+    assert params[0].primary is not None
+    expected_angular = 0.75 * (params[0].primary.length ** 2) * 3.0e4
     cfg = dataclasses.replace(
         _vbd_only_config(settle_substeps=2),
         fruiting_system=dataclasses.replace(
@@ -570,7 +572,7 @@ def test_kp_overrides_applied_before_settle(ranges, per_env_params, monkeypatch)
     )
     build_batched_heterogeneous_scene(cfg, params, t_junction_ranges)
     assert len(support_angular_at_settle) == 1
-    assert support_angular_at_settle[0] == pytest.approx(2.0e4)
+    assert support_angular_at_settle[0] == pytest.approx(expected_angular)
     assert len(support_linear_at_settle) == 1
     assert support_linear_at_settle[0] == pytest.approx(3.0e4)
 
@@ -593,13 +595,15 @@ def test_kp_overrides_on_result_and_applied():
         ),
     )
     result = build_batched_heterogeneous_scene(cfg, params, t_junction_ranges)
-    assert result.joint_angular_kp_overrides == angular_kp
+    assert params[0].primary is not None
+    expected_angular = {"support": 0.75 * (params[0].primary.length ** 2) * 3.0e4}
+    assert result.joint_angular_kp_overrides == expected_angular
     assert result.joint_linear_kp_overrides == linear_kp
     j_support = next(
         j for j, lab in result.scene.cable.fruiting_fixed_joints if "primary_support_left" in lab
     )
     solver = result.scene.cable.solver
-    assert _angular_kp_at_joint(solver, j_support) == pytest.approx(2.0e4)
+    assert _angular_kp_at_joint(solver, j_support) == pytest.approx(expected_angular["support"])
     assert _linear_kp_at_joint(solver, j_support) == pytest.approx(3.0e4)
 
 

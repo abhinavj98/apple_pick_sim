@@ -1,8 +1,8 @@
-"""Dataset-driven support-k_p + Young's-modulus CMA-ES fit entry point.
+"""Dataset-driven support-k_p + flexural/axial-modulus CMA-ES fit entry point.
 
-Fits a 3-vector ``(support_kp, E_spur, E_stem)`` — support joint k_p (shared
-angular+linear; support zeta from dataset ``joint_damping_ratio``) is free while
-spur/stem Young's modulus stay free;
+Fits a 5-vector ``(support_kp, E_flex_spur, E_flex_stem, E_youngs_spur, E_youngs_stem)``.
+Support joint k_p (shared angular+linear; support zeta from dataset ``joint_damping_ratio``)
+is free while spur/stem flexural and axial moduli stay free;
 primary E is fixed from ground truth. Runs one independent bounded pycma
 optimizer per selected structure, advances active optimizers in synchronized
 generation waves through fused structure x population x direction replay,
@@ -99,6 +99,7 @@ from apple_pick_gym.batched_envs.real_batched_replay_build import (
     make_real_replay_build_env_fn,
     real_replay_sim_config,
 )
+from apple_pick_gym.cma_generation_persist import persist_cma_generation_wave_batch
 from apple_pick_gym.youngs_modulus_cmaes_viz import write_cmaes_visualization_bundle
 from apple_pick_gym.youngs_modulus_overlay_viz import (
     overlay_episodes_from_replay_evaluation,
@@ -129,7 +130,8 @@ make_grid_on_step = _grid.make_grid_on_step
 ViewerCancelled = SysIdReplayCancelled
 
 # Sole source of truth for CMA search knobs (edit here; not exposed on CLI).
-# initial_mean_log10: start mean in log10 [support_kp, E_spur, E_stem], or
+# initial_mean_log10: start mean in log10 [support_kp, E_flex_spur, E_flex_stem,
+# E_youngs_spur, E_youngs_stem], or "bounds_midpoint" (3D grid only).
 # "bounds_midpoint" to derive midpoints from the loaded fixture (spur/stem)
 # plus the absolute support_kp safety box.
 # search_bounds_log10: None = unbounded search; or
@@ -137,19 +139,56 @@ ViewerCancelled = SysIdReplayCancelled
 # Support k_p: absolute safety box (not a per-structure DR quantity / fixture
 # ε-band) — 100 .. 1e6 N/m or N*m/rad (log10 2-6). Spur/stem E: absolute
 # 0.1-100 GPa (log10 8-11), same box as before. Init from the search box
-# midpoint, never from ground truth. Sim-sim box is 0.1–100 GPa; real vic_pose
-# uses spur/stem 10 MPa–100 GPa (log10 7–11) via _effective_search_bounds_log10.
-_CMA_SEARCH_LOG10_LOWER = [2.0, 8.0, 8.0]  # support_kp 1e2, spur/stem 0.1 GPa
-_CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 11.0]  # support_kp 1e6, spur/stem 100 GPa
+# midpoint, never from ground truth. Sim-sim box is 10 kPa–50 GPa; real vic_pose
+# uses spur 10 MPa–1 GPa and stem 1–100 MPa via _effective_search_bounds_log10.
+# Spur/stem flex + axial E band: 10 kPa – 50 GPa (log10 Pa).
+_LOG10_10KPA = math.log10(10.0e3)
+_LOG10_100KPA = math.log10(100.0e3)
+_LOG10_10GPA = math.log10(10.0e9)
+_LOG10_50GPA = math.log10(50.0e9)
+_LOG10_10MPA = math.log10(10.0e6)
+_LOG10_100MPA = math.log10(100.0e6)
+_LOG10_1GPA = math.log10(1.0e9)
+_LOG10_1MPA = math.log10(1.0e6)
+_LOG10_200_PER_M = math.log10(200.0)
+_LOG10_500_PER_M = math.log10(500.0)
+_LOG10_1KN_PER_M = math.log10(1.0e3)
+# Kept for tests that import the old 2–6 kN/m / 500–1500 N/m / 1–4 kN/m names.
+_LOG10_4KN_PER_M = math.log10(4.0e3)
+_LOG10_2KN_PER_M = math.log10(2.0e3)
+_LOG10_6KN_PER_M = math.log10(6.0e3)
+_LOG10_1500_PER_M = math.log10(1500.0)
+_LOG10_1E6_PER_M = 6.0
+_CMA_SEARCH_LOG10_LOWER = [2.0, _LOG10_10KPA, _LOG10_10KPA, _LOG10_10MPA, _LOG10_10MPA]
+_CMA_SEARCH_LOG10_UPPER = [6.0, _LOG10_50GPA, _LOG10_50GPA, _LOG10_50GPA, _LOG10_50GPA]
 
 
-_REAL_CMA_SEARCH_LOG10_LOWER = [2.0, 8.0, 6.0]  # support_kp 1e2, spur/stem 10 MPa
-_REAL_CMA_SEARCH_LOG10_UPPER = [6.0, 11.0, 8.0]  # support_kp 1e6, spur/stem 100 GPa
-_CMA_MEAN_LOG10 = [_CMA_SEARCH_LOG10_LOWER[i] + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i]) for i in range(3)]
+# Real vic_pose: support kp 200–1000 N/m; init 1000 N/m; moduli 100 kPa–10 GPa, init 100 MPa.
+_REAL_CMA_SEARCH_LOG10_LOWER = [
+    _LOG10_500_PER_M,
+    _LOG10_100KPA,
+    _LOG10_100KPA,
+    _LOG10_100KPA,
+    _LOG10_100KPA,
+]
+_REAL_CMA_SEARCH_LOG10_UPPER = [
+    _LOG10_4KN_PER_M,
+    _LOG10_10GPA,
+    _LOG10_10GPA,
+    _LOG10_10GPA,
+    _LOG10_10GPA,
+]
+_CMA_MEAN_LOG10 = [
+    _CMA_SEARCH_LOG10_LOWER[i]
+    + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i])
+    for i in range(5)
+]
 _REAL_CMA_MEAN_LOG10 = [
-    _REAL_CMA_SEARCH_LOG10_LOWER[i]
-    + 0.5 * (_REAL_CMA_SEARCH_LOG10_UPPER[i] - _REAL_CMA_SEARCH_LOG10_LOWER[i])
-    for i in range(3)
+    _LOG10_1KN_PER_M,
+    _LOG10_100MPA,
+    _LOG10_100MPA,
+    _LOG10_100MPA,
+    _LOG10_100MPA,
 ]
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),
@@ -169,11 +208,13 @@ def _effective_search_bounds_log10(
     mode: str,
     search: dict[str, Any],
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
-    """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose uses spur/stem 10 MPa–100 GPa."""
+    """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose uses ``_REAL_CMA_SEARCH_*``."""
     if mode == "vic_pose":
-        return (
-            tuple(float(x) for x in _REAL_CMA_SEARCH_LOG10_LOWER),
-            tuple(float(x) for x in _REAL_CMA_SEARCH_LOG10_UPPER),
+        return normalize_search_bounds_log10(
+            {
+                "lower": list(_REAL_CMA_SEARCH_LOG10_LOWER),
+                "upper": list(_REAL_CMA_SEARCH_LOG10_UPPER),
+            }
         )
     raw = search.get("search_bounds_log10")
     return normalize_search_bounds_log10(raw)
@@ -186,7 +227,14 @@ def _effective_initial_mean_log10(
 ) -> list[float]:
     """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose starts 1.5 decades softer in E."""
     raw = _REAL_CMA_MEAN_LOG10 if mode == "vic_pose" else search["initial_mean_log10"]
-    return list(resolve_initial_mean_log10(raw, bounds))
+    search_bounds = _effective_search_bounds_log10(mode, search)
+    if search_bounds is not None:
+        dim = len(search_bounds[0])
+    elif raw is None or raw == "bounds_midpoint":
+        dim = 3
+    else:
+        dim = len(raw)
+    return list(resolve_initial_mean_log10(raw, bounds, phenotype_dim=dim))
 
 
 def _require_ft_wrist_lpf_per_structure(
@@ -400,9 +448,14 @@ def _clear_cma_owned_artifacts(
     holdout_report = output_dir / "holdout_report.json"
     if holdout_report.exists():
         holdout_report.unlink()
+    match_metrics_report = output_dir / "match_metrics.json"
+    if match_metrics_report.exists():
+        match_metrics_report.unlink()
     for path in output_dir.glob(".cmaes_report.json.*.tmp"):
         path.unlink(missing_ok=True)
     for path in output_dir.glob(".holdout_report.json.*.tmp"):
+        path.unlink(missing_ok=True)
+    for path in output_dir.glob(".match_metrics.json.*.tmp"):
         path.unlink(missing_ok=True)
     videos_dir = output_dir / "videos"
     if videos_dir.is_dir():
@@ -421,8 +474,17 @@ def _clear_cma_owned_artifacts(
         if holdout_dir.is_dir():
             for overlay_path in holdout_dir.glob("direction_*.html"):
                 overlay_path.unlink(missing_ok=True)
+            for side_dir in holdout_dir.glob("*"):
+                if side_dir.is_dir():
+                    for npz_path in side_dir.glob("dir_*.npz"):
+                        npz_path.unlink(missing_ok=True)
+                    if not any(side_dir.iterdir()):
+                        side_dir.rmdir()
             if not any(holdout_dir.iterdir()):
                 holdout_dir.rmdir()
+        generations_dir = structure_dir / "generations"
+        if generations_dir.is_dir():
+            shutil.rmtree(generations_dir)
 
 
 def _write_cmaes_report_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -555,6 +617,7 @@ def _build_cmaes_report_payload(
             "device": scoring.device,
             "include_delta": bool(scoring.include_delta),
             "categorical_weight": float(scoring.categorical_weight),
+            "delta_weight": float(scoring.delta_weight),
             "force_magnitude_weight": float(force_magnitude_weight),
             "isolated_eval_waves": bool(isolated_eval_waves),
             "wave_max_attempts": int(wave_max_attempts),
@@ -716,6 +779,15 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Explicit validation direction indices (requires --direction-indices).",
     )
     p.add_argument(
+        "--write-match-metrics",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "When holdout mode is active, write match_metrics.json with "
+            "time-series match stats on val directions (default: on)."
+        ),
+    )
+    p.add_argument(
         "--use-median",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -724,10 +796,11 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--hold-aggregation",
         choices=["median", "mean", "none"],
-        default="none",
+        default="mean",
         help=(
-            "Hold state aggregation for Sinkhorn scoring. Default: none "
-            "(quasi-static level bags; use mean/median for legacy transition rows)."
+            "Hold state aggregation for Sinkhorn scoring. Default: mean "
+            "(arithmetic mean of stable hold frames before Δs rows; use none "
+            "for quasi-static level bags)."
         ),
     )
     p.add_argument(
@@ -742,20 +815,32 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--include-delta",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help=(
-            "Append the Δs half to each scored transition row. Default: off "
-            "(level bags; pass --include-delta for legacy [s, Δs] rows)."
+            "Append the Δs half to each scored transition row. Default: on "
+            "(30 Hz [s, Δs] with hold-aggregation none; pass --no-include-delta "
+            "for level bags)."
+        ),
+    )
+    p.add_argument(
+        "--delta-weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Relative weight of the Δs block in Sinkhorn normalization (0, 1]. "
+            "Lower values down-weight frame deltas vs levels. Default: 1.0 "
+            "(full weight for mean-hold transition bags; use 0.2 with "
+            "hold-aggregation none)."
         ),
     )
     p.add_argument(
         "--categorical-weight",
         type=float,
-        default=30.0,
+        default=100.0,
         help=(
             "Reciprocal scale for hold/direction one-hot columns in Sinkhorn "
             "normalization (higher anchors per-hold/per-direction transport). "
-            "Default: 30."
+            "Default: 100."
         ),
     )
     p.add_argument(
@@ -800,6 +885,22 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Enable fruiting cable self-collisions during CMA replay (default: off).",
     )
     p.add_argument(
+        "--persist-generation-replays",
+        dest="persist_generation_replays",
+        action="store_true",
+        default=True,
+        help=(
+            "After each generation, persist sparse best/mean/worst_force "
+            "trajectory bags and STATE_VECTOR feature HTML (default: on)."
+        ),
+    )
+    p.add_argument(
+        "--no-persist-generation-replays",
+        dest="persist_generation_replays",
+        action="store_false",
+        help="Skip per-generation trajectory persist.",
+    )
+    p.add_argument(
         "--overwrite",
         action="store_true",
         help="Allow writing into an existing output directory.",
@@ -835,11 +936,12 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--snapshot-video-every",
         type=_nonnegative_int,
-        default=0,
+        default=1,
         help=(
             "Replay one random CMA sample to MP4 every N completed generations "
             "(0 disables; videos land in <output>/videos/). Each clip runs in "
-            "a fresh headless GL subprocess so later generations keep recording."
+            "a fresh headless GL subprocess so later generations keep recording. "
+            "Default: 1."
         ),
     )
     p.add_argument("--settle-substeps", type=int, default=None)
@@ -1368,7 +1470,6 @@ def _run(
     ranges = load_ranges(str(ranges_path))
     bounds = extract_support_kp_youngs_modulus_cma_bounds(ranges)
     search = CMA_SEARCH_PARAMS
-    initial_mean = resolve_initial_mean_log10(search["initial_mean_log10"], bounds)
     initial_sigma = validate_initial_sigma_log10(float(search["initial_sigma_log10"]))
     max_sigma = validate_max_sigma_log10(search.get("max_sigma_log10"))
     if max_sigma is not None and max_sigma < initial_sigma:
@@ -1533,9 +1634,10 @@ def _run(
         n_holds=_resolve_n_holds(dataset, collection),
         n_directions=int(num_directions),
         device=device,
-        hold_aggregation=getattr(args, "hold_aggregation", "none"),
-        include_delta=bool(getattr(args, "include_delta", False)),
-        categorical_weight=float(getattr(args, "categorical_weight", 30.0)),
+        hold_aggregation=getattr(args, "hold_aggregation", "mean"),
+        include_delta=bool(getattr(args, "include_delta", True)),
+        categorical_weight=float(getattr(args, "categorical_weight", 100.0)),
+        delta_weight=float(getattr(args, "delta_weight", 1.0)),
     )
 
     derive_structure_cma_seeds(base_seed=base_seed, structure_indices=structure_indices)
@@ -1762,9 +1864,38 @@ def _run(
         _accumulate_wave_counters(batch, structure_list, str(wave_kind))
         return batch
 
-    snapshot_interval = int(getattr(args, "snapshot_video_every", 0) or 0)
+    snapshot_interval = int(getattr(args, "snapshot_video_every", 1) or 0)
     last_snapshot_generation: int | None = None
     snapshot_seed = int(base_seed if replay_seed is None else replay_seed)
+    persist_generation_replays = bool(
+        getattr(args, "persist_generation_replays", True)
+    )
+
+    def on_generation_wave(wave) -> None:
+        if not persist_generation_replays or not wave.records:
+            return
+        try:
+            summaries = persist_cma_generation_wave_batch(
+                output_dir=output_dir,
+                wave_records=wave.records,
+                batch_evaluation=wave.batch_evaluation,
+                dataset=dataset,
+                num_directions=int(num_directions),
+                include_excluded=bool(args.include_excluded),
+                persist=True,
+            )
+            for structure_idx, entries in summaries.items():
+                state = states[int(structure_idx)]
+                state.generation_artifacts.extend(entries)
+                for entry in entries:
+                    for err in entry.get("errors") or []:
+                        state.artifact_errors.append(str(err))
+        except Exception as exc:
+            for structure_idx in wave.records:
+                gen_idx = int(wave.records[int(structure_idx)].generation_index)
+                states[int(structure_idx)].artifact_errors.append(
+                    f"generation persist gen {gen_idx}: {exc}"
+                )
 
     def on_progress(progress_states) -> None:
         nonlocal last_snapshot_generation
@@ -1864,6 +1995,7 @@ def _run(
             max_generations=int(max_generations),
             evaluate_fn=evaluate_fn,
             on_progress=on_progress,
+            on_generation_wave=on_generation_wave,
             force_magnitude_weight=float(
                 getattr(args, "force_magnitude_weight", 0.0)
             ),
@@ -1967,6 +2099,9 @@ def _run(
                     num_directions=int(num_directions),
                     include_excluded=bool(args.include_excluded),
                     evaluate_val=evaluate_val,
+                    write_match_metrics=bool(args.write_match_metrics),
+                    dataset_path=str(args.dataset),
+                    cma_seed=int(base_seed),
                 )
             except Exception as exc:
                 exit_nonzero = True

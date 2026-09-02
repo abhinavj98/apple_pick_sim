@@ -246,7 +246,7 @@ Physical proxy targets (spring constant at branch joint):
 | High | 711 | 736 |
 
 **Fixture policy:** **continuous tier bands** in variance JSON, not three separate
-preset files. Map proxy **210 – 736 N/m** onto **`youngs_modulus_pa`** min/max at
+preset files. Map proxy **210 – 736 N/m** onto **`flexural_modulus_pa`** min/max at
 nominal primary geometry (see `docs/material-parameter-sampling.md`); legacy
 `primary.bend_stiffness` bands are deprecated.
 
@@ -262,7 +262,7 @@ numerical stability guard for domain randomization, is shipped — see
 
 ### Spur stiffness
 
-Vary spur **`youngs_modulus_pa`** (and \(\zeta\)) in the variance fixture (short
+Vary spur **`flexural_modulus_pa`** (and \(\zeta\)) in the variance fixture (short
 segment, compliant shoot). Exact N/m mapping is TBD; keep order-of-magnitude below
 primary and above stem unless sys-ID dictates otherwise.
 
@@ -293,11 +293,11 @@ Document in code comments and tests when the torsion API lands.
 
 `fruiting_system_ranges_real_world_proxy_variance.json` should randomize:
 
-- Primary **`youngs_modulus_pa`** and **`damping_ratio`** (branch tier band → \(E\))
+- Primary **`flexural_modulus_pa`**, **`youngs_modulus_pa`** (axial; duplicated flex bands at migration → beam \(EA/L\) stretch), and **`damping_ratio`**
 - Spur length
 - Spur yaw / roll off the nominal **−Z** hang (`elevation_delta_deg`, `lateral_delta_deg`)
-- Spur **`youngs_modulus_pa`** / **`damping_ratio`**
-- Stem material (\(\zeta\), \(E\); pending torsion API; interim bend-derived range allowed)
+- Spur **`flexural_modulus_pa`** / **`damping_ratio`**
+- Stem material (\(\zeta\), flexural + axial \(E\); pending torsion API; interim bend-derived range allowed)
 - Apple `radius` and `density` (see placeholders)
 
 Material sampling contract: `docs/material-parameter-sampling.md`.

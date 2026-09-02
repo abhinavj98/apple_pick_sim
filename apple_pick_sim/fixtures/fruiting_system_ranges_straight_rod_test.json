@@ -45,6 +45,10 @@
     "damping_ratio": {
       "min": 154.92541157,
       "max": 383.42083184
+    },
+    "flexural_modulus_pa": {
+      "min": 18862808.070151,
+      "max": 37725616.140301
     }
   },
   "secondary": {
@@ -79,6 +83,10 @@
     "damping_ratio": {
       "min": 578.22931151,
       "max": 1308.3835752
+    },
+    "flexural_modulus_pa": {
+      "min": 23025888.757508,
+      "max": 46051777.515016
     }
   },
   "spur": {
@@ -113,6 +121,10 @@
     "damping_ratio": {
       "min": 269.73421254,
       "max": 710.81206208
+    },
+    "flexural_modulus_pa": {
+      "min": 3819718.634205,
+      "max": 9549296.585514
     }
   },
   "stem": {
@@ -147,6 +159,10 @@
     "damping_ratio": {
       "min": 110.98989256,
       "max": 248.18094457
+    },
+    "flexural_modulus_pa": {
+      "min": 129313391.262165,
+      "max": 161641739.077706
     }
   },
   "apple": {

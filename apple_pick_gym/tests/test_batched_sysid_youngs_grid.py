@@ -41,6 +41,9 @@ def _dummy_recorded_episode(*, direction_idx: int = 0, n_frames: int = 8) -> dic
         "ft_wrist": np.zeros((n_frames, 6), dtype=np.float32),
         "tcp_velocity": np.zeros((n_frames, 6), dtype=np.float32),
         "tcp_pos": np.zeros((n_frames, 3), dtype=np.float32),
+        "tcp_quat": np.tile(
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (n_frames, 1)
+        ),
         "apple_pos": np.zeros((n_frames, 3), dtype=np.float32),
         "woody_part_start_pos": {
             "joint_a": np.zeros((n_frames, 3), dtype=np.float32),
@@ -380,8 +383,8 @@ def test_evaluator_uses_source_direction_width_for_sparse_ids(
     assert replay_call["num_directions"] == 2
     assert gt_context_calls[0]["n_directions"] == expected_scoring_n_directions
     assert gt_context_calls[0]["pool_directions"] is pool_directions
-    assert gt_context_calls[0]["include_delta"] is False
-    assert gt_context_calls[0]["categorical_weight"] == pytest.approx(30.0)
+    assert gt_context_calls[0]["include_delta"] is True
+    assert gt_context_calls[0]["categorical_weight"] == pytest.approx(100.0)
     assert score_calls[0]["n_directions"] == expected_scoring_n_directions
     assert score_calls[0]["pool_directions"] is pool_directions
 

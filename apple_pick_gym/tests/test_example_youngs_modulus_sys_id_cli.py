@@ -48,15 +48,16 @@ def test_build_sim_config_forwards_joint_damping_ratio_from_default_fixture():
     ranges = load_ranges(default_ranges_fixture_path())
     sb = parse_sim_build(ranges)
     assert sb is not None
-    assert sb.joint_damping_ratio == pytest.approx(0.5)
+    assert sb.joint_damping_ratio == pytest.approx(1.0)
     assert sb.joint_angular_kd_overrides == {}
     assert sb.joint_linear_kd_overrides == {}
 
     cfg = module.build_sim_config(num_envs=2, ranges=ranges)
-    assert cfg.fruiting_system.joint_damping_ratio == pytest.approx(0.5)
+    assert cfg.fruiting_system.joint_damping_ratio == pytest.approx(1.0)
     assert cfg.fruiting_system.joint_angular_kd_overrides == {}
     assert cfg.fruiting_system.joint_linear_kd_overrides == {}
     assert cfg.fruiting_system.joint_angular_kp_overrides == sb.joint_angular_kp_overrides
+    assert cfg.fruiting_system.joint_roll_kp_overrides == sb.joint_roll_kp_overrides
 
 
 def test_build_env_closure_forwards_per_env_grippers_and_rejects_scalar_conflict(

@@ -17,9 +17,9 @@ from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 def _bounds() -> cmaes.YoungsModulusCmaBounds:
     return cmaes.extract_youngs_modulus_cma_bounds(
         {
-            "primary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
-            "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
-            "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+            "primary": {"flexural_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
+            "spur": {"flexural_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+            "stem": {"flexural_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
         }
     )
 
@@ -285,8 +285,8 @@ def test_generation_wave_routes_by_structure_and_candidate_order():
     assert seen["structures"][0][0] == 0
     assert seen["structures"][1][0] == 5
     assert seen["structures"][0][1] == [
-        (10 ** 7.0, 10 ** 6.0, 10 ** 5.0),
-        (10 ** 7.1, 10 ** 6.1, 10 ** 5.1),
+        (10 ** 7.0, 10 ** 6.0, 10 ** 5.0, None, None),
+        (10 ** 7.1, 10 ** 6.1, 10 ** 5.1, None, None),
     ]
     # tell receives original sample objects in original order
     told0_samples, told0_fit = state0.optimizer.told[0]
@@ -827,7 +827,7 @@ def test_fit_youngs_modulus_structures_stops_independently_and_scores_final_mean
         if all(len(list(cands)) == 1 for _, cands in structures):
             final_calls.append(
                 [
-                    (int(i), tuple(float(x) for x in cands[0]))
+                    (int(i), cmaes.log10_vector_from_candidate(cands[0]))
                     for i, cands in structures
                 ]
             )
@@ -967,9 +967,9 @@ def test_real_pycma_multi_bowl_moves_toward_distinct_optima():
     """Generic ask/tell mechanics: ``_ask_structure`` now yields SupportKpYoungsCandidate."""
     bounds = cmaes.extract_youngs_modulus_cma_bounds(
         {
-            "primary": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e10}},
-            "spur": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e9}},
-            "stem": {"youngs_modulus_pa": {"min": 1.0e4, "max": 1.0e8}},
+            "primary": {"flexural_modulus_pa": {"min": 1.0e6, "max": 1.0e10}},
+            "spur": {"flexural_modulus_pa": {"min": 1.0e5, "max": 1.0e9}},
+            "stem": {"flexural_modulus_pa": {"min": 1.0e4, "max": 1.0e8}},
         }
     )
     targets = {
@@ -1984,9 +1984,9 @@ def test_extract_support_kp_youngs_modulus_cma_bounds_uses_absolute_box_not_fixt
     ranges = {
         # Deliberately different from the [2, 6] support_kp default so a bug
         # that reads fixture "primary" bounds would be caught.
-        "primary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
-        "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
-        "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+        "primary": {"flexural_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
+        "spur": {"flexural_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+        "stem": {"flexural_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
     }
     bounds = cmaes.extract_support_kp_youngs_modulus_cma_bounds(ranges)
     assert bounds.log10_lower == pytest.approx((2.0, 6.0, 5.0))
@@ -2000,8 +2000,8 @@ def test_extract_support_kp_youngs_modulus_cma_bounds_uses_absolute_box_not_fixt
 
 def test_extract_support_kp_youngs_modulus_cma_bounds_custom_box():
     ranges = {
-        "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
-        "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+        "spur": {"flexural_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+        "stem": {"flexural_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
     }
     bounds = cmaes.extract_support_kp_youngs_modulus_cma_bounds(
         ranges, support_kp_log10_lower=1.0, support_kp_log10_upper=3.0
@@ -2014,8 +2014,8 @@ def test_extract_support_kp_youngs_modulus_cma_bounds_rejects_inverted_box():
     with pytest.raises(ValueError, match="log10_min < log10_max"):
         cmaes.extract_support_kp_youngs_modulus_cma_bounds(
             {
-                "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
-                "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+                "spur": {"flexural_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+                "stem": {"flexural_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
             },
             support_kp_log10_lower=6.0,
             support_kp_log10_upper=2.0,
@@ -2026,8 +2026,8 @@ def test_ask_structure_conversion_yields_support_kp_candidates_via_wave():
     """Production ask/tell boundary uses candidates_from_log10_vector, not _e."""
     bounds = cmaes.extract_support_kp_youngs_modulus_cma_bounds(
         {
-            "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
-            "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+            "spur": {"flexural_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+            "stem": {"flexural_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
         }
     )
     samples = [[4.0, 9.0, 8.5]]

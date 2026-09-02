@@ -243,16 +243,32 @@ def test_hetero_welded_payload_masses_follow_per_env_apples_when_inertia_off():
     layout = scene.layout
     assert layout is not None
     assert layout.template_mj_apple_payload_body is not None
+    from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import apple_com_in_tcp_frame
+
     masses = scene.robot_model.body_mass.numpy()
     coms = scene.robot_model.body_com.numpy()
+    inertias = scene.robot_model.body_inertia.numpy()
+    offsets = scene.per_world_proxy_offsets
+    assert offsets is not None
+    for w, params_w in enumerate((p0, p1)):
+        payload_i = int(layout.mj_apple_payload_body_indices[w])
+        apple_i = int(layout.apple_body_indices[w])
+        m = float(masses[payload_i])
+        assert m == pytest.approx(float(scene.cable.model.body_mass.numpy()[apple_i]))
+        r = float(params_w.apple_radius)
+        assert float(inertias[payload_i][0, 0]) == pytest.approx(0.4 * m * r * r, rel=1e-5, abs=1e-10)
+        np.testing.assert_allclose(
+            coms[payload_i],
+            apple_com_in_tcp_frame(offsets[w]),
+            rtol=1e-5,
+            atol=1e-6,
+        )
     m0 = float(masses[layout.mj_apple_payload_body_indices[0]])
     m1 = float(masses[layout.mj_apple_payload_body_indices[1]])
-    assert m0 == pytest.approx(float(scene.cable.model.body_mass.numpy()[layout.apple_body_indices[0]]))
-    assert m1 == pytest.approx(float(scene.cable.model.body_mass.numpy()[layout.apple_body_indices[1]]))
     assert m0 != pytest.approx(m1)
-    c0 = float(np.linalg.norm(coms[layout.mj_apple_payload_body_indices[0]]))
-    c1 = float(np.linalg.norm(coms[layout.mj_apple_payload_body_indices[1]]))
-    assert c0 != pytest.approx(c1, abs=1e-6) or float(p0.apple_radius) != float(p1.apple_radius)
+    c0 = coms[layout.mj_apple_payload_body_indices[0]]
+    c1 = coms[layout.mj_apple_payload_body_indices[1]]
+    assert not np.allclose(c0, c1, rtol=1e-5, atol=1e-6)
 
 
 def _payload_inertia_diag(scene) -> np.ndarray:

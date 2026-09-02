@@ -53,6 +53,9 @@ def _median_hold_episode(*, direction_idx: int, n_holds: int = 2) -> dict:
         "ft_wrist": np.zeros((n_frames, 6), dtype=np.float32),
         "tcp_velocity": np.zeros((n_frames, 6), dtype=np.float32),
         "tcp_pos": np.zeros((n_frames, 3), dtype=np.float32),
+        "tcp_quat": np.tile(
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (n_frames, 1)
+        ),
         "apple_pos": np.zeros((n_frames, 3), dtype=np.float32),
         "woody_part_start_pos": woody_start,
         "stable": np.ones(n_frames, dtype=bool),

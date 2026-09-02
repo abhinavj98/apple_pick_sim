@@ -375,6 +375,7 @@ def configure_vic_joint_torques_arm(
     kp_null: float = 10.0,
     kd_null: float = 6.3246,
     singularity_damping: float = 0.0,
+    sep_ori: bool = False,
     vic_joint_damping: float = FR3_DEFAULT_VIC_JOINT_DAMPING,
 ) -> None:
     """One-shot setup for post-grasp VIC via ``control.joint_f`` (J^T Λ wrench mapping)."""
@@ -400,6 +401,7 @@ def configure_vic_joint_torques_arm(
             kp_null=kp_null,
             kd_null=kd_null,
             singularity_damping=singularity_damping,
+            sep_ori=sep_ori,
         )
 
 
@@ -415,6 +417,7 @@ def configure_vic_joint_torques_arm_batched(
     kp_null: float = 10.0,
     kd_null: float = 6.3246,
     singularity_damping: float = 0.0,
+    sep_ori: bool = False,
     vic_joint_damping: float = FR3_DEFAULT_VIC_JOINT_DAMPING,
 ) -> None:
     """One-shot batched VIC setup: zero PD, ``joint_f`` for all worlds, batched J/H buffers."""
@@ -454,6 +457,7 @@ def configure_vic_joint_torques_arm_batched(
         kp_null=kp_null,
         kd_null=kd_null,
         singularity_damping=singularity_damping,
+        sep_ori=sep_ori,
     )
 
 

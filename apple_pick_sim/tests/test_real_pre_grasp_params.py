@@ -332,8 +332,9 @@ def test_fruiting_params_from_pre_grasp_meta():
     assert params.apple_density == pytest.approx(650.0)
     assert params.apple_quat_xyzw is None
     blob = fruiting_params_to_dict(params)
-    assert blob["schema"] == "fruiting_system_params_v2"
+    assert blob["schema"] == "fruiting_system_params_v3"
     assert blob.get("apple_quat_xyzw") is None
+    assert "flexural_modulus_pa" in blob["primary"]
     assert "youngs_modulus_pa" in blob["primary"]
     assert "spur_length_rel_error" in diagnostics
 

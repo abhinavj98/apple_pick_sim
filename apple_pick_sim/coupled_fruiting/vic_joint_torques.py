@@ -22,6 +22,8 @@ from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
 
 _N_ARM_DOF = 7
 _TORQUE_CLAMP = 100000.0
+_DEFAULT_KP_NULL = 10.0
+_DEFAULT_KD_NULL = 6.3246
 
 
 def mass_matrix_with_armature(
@@ -101,6 +103,24 @@ def find_tcp_link_idx(model: newton.Model, tcp_body_index: int, *, art_idx: int 
     raise ValueError(f"tcp body {tcp} not found in articulation {art_idx}")
 
 
+def _task_torque_numpy(
+    *,
+    task_wrench: np.ndarray,
+    jacobian: np.ndarray,
+    jacobian_T: np.ndarray,
+    m_task_full: np.ndarray,
+    sep_ori: bool,
+) -> np.ndarray:
+    """Map a 6-vector wrench to joint torques; ``sep_ori`` matches real OSC."""
+    if sep_ori:
+        wrench_pos_only = np.zeros(6, dtype=np.float64)
+        wrench_pos_only[:3] = task_wrench[:3]
+        tau_pos = jacobian_T @ m_task_full @ wrench_pos_only
+        tau_rot = jacobian[3:6, :].T @ task_wrench[3:6]
+        return tau_pos + tau_rot
+    return jacobian_T @ m_task_full @ task_wrench
+
+
 def compute_joint_torques_from_wrench_numpy(
     task_wrench: np.ndarray,
     jacobian: np.ndarray,
@@ -108,9 +128,10 @@ def compute_joint_torques_from_wrench_numpy(
     joint_pos: np.ndarray,
     joint_vel: np.ndarray,
     default_dof_pos: np.ndarray,
-    kp_null: float = 10.0,
-    kd_null: float = 6.3246,
+    kp_null: float = _DEFAULT_KP_NULL,
+    kd_null: float = _DEFAULT_KD_NULL,
     singularity_damping: float = 0.0,
+    sep_ori: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """CPU reference for ``J^T Λ wrench`` with null-space compensation."""
     task_wrench = np.asarray(task_wrench, dtype=np.float64).reshape(6)
@@ -128,7 +149,13 @@ def compute_joint_torques_from_wrench_numpy(
     if singularity_damping > 0.0:
         JMJ_full = JMJ_full + singularity_damping * np.eye(6)
     M_task_full = np.linalg.inv(JMJ_full)
-    jt_torque = jacobian_T @ M_task_full @ task_wrench
+    jt_torque = _task_torque_numpy(
+        task_wrench=task_wrench,
+        jacobian=jacobian,
+        jacobian_T=jacobian_T,
+        m_task_full=M_task_full,
+        sep_ori=sep_ori,
+    )
 
     J_inv = M_task_full @ jacobian @ M_inv
     dist = default_dof_pos - joint_pos
@@ -149,9 +176,10 @@ def compute_joint_torques_from_wrench_torch(
     joint_vel,
     default_dof_pos,
     *,
-    kp_null: float = 10.0,
-    kd_null: float = 6.3246,
+    kp_null: float = _DEFAULT_KP_NULL,
+    kd_null: float = _DEFAULT_KD_NULL,
     singularity_damping: float = 0.0,
+    sep_ori: bool = False,
     dtype=None,
 ):
     """PyTorch ``J^T Λ wrench`` with null-space compensation (mirrors NumPy reference)."""
@@ -174,7 +202,14 @@ def compute_joint_torques_from_wrench_torch(
     if singularity_damping > 0.0:
         JMJ_full = JMJ_full + singularity_damping * torch.eye(6, device=JMJ_full.device, dtype=dtype)
     M_task_full = torch.linalg.inv(JMJ_full)
-    jt_torque = jacobian_T @ M_task_full @ task_wrench
+    if sep_ori:
+        wrench_pos_only = torch.zeros(6, device=task_wrench.device, dtype=dtype)
+        wrench_pos_only[:3] = task_wrench[:3]
+        tau_pos = jacobian_T @ M_task_full @ wrench_pos_only
+        tau_rot = jacobian[3:6, :].T @ task_wrench[3:6]
+        jt_torque = tau_pos + tau_rot
+    else:
+        jt_torque = jacobian_T @ M_task_full @ task_wrench
 
     J_inv = M_task_full @ jacobian @ M_inv
     dist = default_dof_pos - joint_pos
@@ -194,9 +229,10 @@ def allocate_vic_joint_torque_buffers(
     *,
     tcp_body_index: int,
     art_idx: int = 0,
-    kp_null: float = 10.0,
-    kd_null: float = 6.3246,
+    kp_null: float = _DEFAULT_KP_NULL,
+    kd_null: float = _DEFAULT_KD_NULL,
     singularity_damping: float = 0.0,
+    sep_ori: bool = False,
 ) -> None:
     """Pre-allocate Jacobian/mass buffers on ``scene`` for per-substep reuse."""
     dev = model.device
@@ -212,6 +248,7 @@ def allocate_vic_joint_torque_buffers(
     scene.vic_jt_kp_null = float(kp_null)
     scene.vic_jt_kd_null = float(kd_null)
     scene.vic_jt_singularity_damping = float(singularity_damping)
+    scene.vic_jt_sep_ori = bool(sep_ori)
 
 
 def launch_apply_vic_joint_torques(
@@ -282,9 +319,10 @@ def launch_apply_vic_joint_torques(
         joint_pos=q_th,
         joint_vel=qd_th,
         default_dof_pos=default_q_th,
-        kp_null=float(getattr(scene, "vic_jt_kp_null", 10.0)),
-        kd_null=float(getattr(scene, "vic_jt_kd_null", 6.3246)),
+        kp_null=float(getattr(scene, "vic_jt_kp_null", _DEFAULT_KP_NULL)),
+        kd_null=float(getattr(scene, "vic_jt_kd_null", _DEFAULT_KD_NULL)),
         singularity_damping=float(getattr(scene, "vic_jt_singularity_damping", 0.0)),
+        sep_ori=bool(getattr(scene, "vic_jt_sep_ori", False)),
     )
 
     joint_f_th = wp.to_torch(control.joint_f)

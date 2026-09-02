@@ -27,15 +27,16 @@ STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "ft_wrist",
     "tcp_velocity",
     "tcp_pos",
+    "tcp_rotvec",
     "woody_part_start_pos",
     "woody_bending_angles",
 )
 
 _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     # ft_wrist F
-    0.1,
-    0.1,
-    0.1,
+    1.0,
+    1.0,
+    1.0,
     # ft_wrist τ
     1.0,
     1.0,
@@ -52,9 +53,14 @@ _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     0.005,
     0.005,
     0.005,
+    # tcp_rotvec (rad)
+    0.05,
+    0.05,
+    0.05,
 )
-WOODY_START_PHYS_SCALE = 0.005
-BEND_ANGLE_PHYS_SCALE = 0.05
+WOODY_START_PHYS_SCALE = 0.001
+BEND_ANGLE_PHYS_SCALE = 0.01
+TCP_ROTVEC_PHYS_SCALE = 0.05
 
 
 def state_vector_phys_scale(n_junctions: int) -> np.ndarray:
@@ -84,8 +90,13 @@ def transition_feature_scale(
     n_junctions: int = 2,
     include_delta: bool = True,
     categorical_weight: float = 1.0,
+    delta_weight: float = 1.0,
 ) -> np.ndarray:
-    """Return divisor vector for [s, (Δs,) trailing one-hots]."""
+    """Return divisor vector for [s, (Δs,) trailing one-hots].
+
+    ``delta_weight`` in ``(0, 1]`` down-weights the Δs block in Sinkhorn ground
+    cost by dividing delta columns by ``state_scale / delta_weight``.
+    """
     state = state_vector_phys_scale(n_junctions)
     state_dim = int(state.size)
     n_blocks = 2 if bool(include_delta) else 1
@@ -96,14 +107,22 @@ def transition_feature_scale(
             f"{min_features} (n_junctions={int(n_junctions)}, "
             f"include_delta={bool(include_delta)})"
         )
-    weight = float(categorical_weight)
-    if not np.isfinite(weight) or weight <= 0.0:
+    cat_weight = float(categorical_weight)
+    if not np.isfinite(cat_weight) or cat_weight <= 0.0:
         raise ValueError(
             f"categorical_weight must be finite and positive, got {categorical_weight!r}"
         )
     n_extra = int(n_features) - min_features
-    extra = np.full(n_extra, 1.0 / weight, dtype=np.float64)
-    return np.concatenate([state] * n_blocks + [extra])
+    extra = np.full(n_extra, 1.0 / cat_weight, dtype=np.float64)
+    if n_blocks == 1:
+        return np.concatenate([state, extra])
+    delta_w = float(delta_weight)
+    if not np.isfinite(delta_w) or delta_w <= 0.0:
+        raise ValueError(
+            f"delta_weight must be finite and positive, got {delta_weight!r}"
+        )
+    delta_scale = state / delta_w
+    return np.concatenate([state, delta_scale, extra])
 
 
 def scored_ft_wrist(arrays: Mapping[str, Any]) -> Any:
@@ -139,6 +158,7 @@ REQUIRED_ARRAY_KEYS: tuple[str, ...] = (
     "tcp_velocity",
     "action",
     "tcp_pos",
+    "tcp_quat",
     "apple_pos",
     "woody_part_start_pos",
     "excitation_direction",
@@ -171,11 +191,12 @@ class ReplayObservationCollector:
             self._action_dim = int(recorded_action.shape[1])
         else:
             self._action_dim = 6
-        self._rows: dict[str, list[np.ndarray | int]] = {
+        self._rows: dict[str, list[np.ndarray | int | float]] = {
             "action": [],
             "ft_wrist": [],
             "tcp_velocity": [],
             "tcp_pos": [],
+            "tcp_quat": [],
             "apple_pos": [],
             "phase": [],
             "dir_idx": [],
@@ -184,6 +205,9 @@ class ReplayObservationCollector:
             "stable": [],
             "hold_number": [],
         }
+        self._record_sim_time = "sim_time" in recorded
+        if self._record_sim_time:
+            self._rows["sim_time"] = []
         self._woody_start: dict[str, list[np.ndarray]] = {
             name: [] for name in self._junction_names
         }
@@ -215,7 +239,7 @@ class ReplayObservationCollector:
                 f"frame_idx={frame_idx} out of range for recorded episode "
                 f"with {n_frames} frames"
             )
-        for key in ("ft_wrist", "tcp_velocity", "tcp_pos", "apple_pos", "woody_start"):
+        for key in ("ft_wrist", "tcp_velocity", "tcp_pos", "tcp_quat", "apple_pos", "woody_start"):
             if key not in obs:
                 raise KeyError(f"missing replay observation field: {key}")
 
@@ -232,6 +256,9 @@ class ReplayObservationCollector:
         )
         self._rows["tcp_pos"].append(
             np.array(obs["tcp_pos"], dtype=np.float32, copy=True).reshape(3)
+        )
+        self._rows["tcp_quat"].append(
+            np.array(obs["tcp_quat"], dtype=np.float32, copy=True).reshape(4)
         )
         self._rows["apple_pos"].append(
             np.array(obs["apple_pos"], dtype=np.float32, copy=True).reshape(3)
@@ -260,15 +287,20 @@ class ReplayObservationCollector:
         ).items():
             self._woody_start[name].append(np.array(pos, dtype=np.float32, copy=True))
         self._rows["stable"].append(bool(stable))
+        if self._record_sim_time:
+            self._rows["sim_time"].append(
+                float(self._recorded_row("sim_time", frame_idx))
+            )
 
     def to_arrays(self) -> dict[str, Any]:
         """Return collected observations as arrays compatible with feature builders."""
 
-        return {
+        out: dict[str, Any] = {
             "action": np.stack(self._rows["action"], axis=0).astype(np.float32),
             "ft_wrist": np.stack(self._rows["ft_wrist"], axis=0).astype(np.float32),
             "tcp_velocity": np.stack(self._rows["tcp_velocity"], axis=0).astype(np.float32),
             "tcp_pos": np.stack(self._rows["tcp_pos"], axis=0).astype(np.float32),
+            "tcp_quat": np.stack(self._rows["tcp_quat"], axis=0).astype(np.float32),
             "apple_pos": np.stack(self._rows["apple_pos"], axis=0).astype(np.float32),
             "phase": np.asarray(self._rows["phase"], dtype=np.int8),
             "dir_idx": np.asarray(self._rows["dir_idx"], dtype=np.int32),
@@ -284,6 +316,9 @@ class ReplayObservationCollector:
             },
             "junction_names": list(self._junction_names),
         }
+        if self._record_sim_time:
+            out["sim_time"] = np.asarray(self._rows["sim_time"], dtype=np.float64)
+        return out
 
 
 def _require_keys(arrays: Mapping[str, Any], keys: tuple[str, ...]) -> None:
@@ -346,6 +381,7 @@ def replay_obs_dict_from_sysid_numpy(
         "ft_wrist": np.asarray(sysid_obs["ft_wrist"], dtype=np.float32).reshape(6),
         "tcp_velocity": np.asarray(sysid_obs["tcp_velocity"], dtype=np.float32).reshape(6),
         "tcp_pos": np.asarray(sysid_obs["tcp_pos"], dtype=np.float32).reshape(3),
+        "tcp_quat": np.asarray(sysid_obs["tcp_quat"], dtype=np.float32).reshape(4),
         "apple_pos": np.asarray(sysid_obs["apple_pos"], dtype=np.float32).reshape(3),
         "woody_start": flatten_woody_positions(
             sysid_obs["woody_part_start_pos"],
@@ -421,6 +457,76 @@ def _bending_chords(
     ]
 
 
+def _normalize_quat_xyzw(quat: np.ndarray) -> np.ndarray:
+    """Return unit quaternion(s) in xyzw layout; zero norm maps to identity."""
+    arr = np.asarray(quat, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, 4)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    out = np.zeros_like(arr)
+    valid = norms.reshape(-1) > 0.0
+    if np.any(valid):
+        out[valid] = arr[valid] / norms[valid]
+    out[~valid, 3] = 1.0
+    return out
+
+
+def _quat_conj_xyzw(quat: np.ndarray) -> np.ndarray:
+    out = np.asarray(quat, dtype=np.float64).copy()
+    out[..., :3] *= -1.0
+    return out
+
+
+def _quat_mul_xyzw(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Hamilton product for xyzw quaternions with broadcasting on the leading axis."""
+    l = np.asarray(left, dtype=np.float64)
+    r = np.asarray(right, dtype=np.float64)
+    x1, y1, z1, w1 = l[..., 0], l[..., 1], l[..., 2], l[..., 3]
+    x2, y2, z2, w2 = r[..., 0], r[..., 1], r[..., 2], r[..., 3]
+    return np.stack(
+        [
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        ],
+        axis=-1,
+    )
+
+
+def _rotvec_from_unit_quat_xyzw(quat: np.ndarray) -> np.ndarray:
+    """Axis-angle 3-vector from a unit xyzw quaternion (shortest path, w >= 0)."""
+    q = np.asarray(quat, dtype=np.float64)
+    flip = q[..., 3] < 0.0
+    q = q.copy()
+    q[flip] *= -1.0
+    vec = q[..., :3]
+    w = np.clip(q[..., 3], -1.0, 1.0)
+    vec_norm = np.linalg.norm(vec, axis=-1)
+    angle = 2.0 * np.arctan2(vec_norm, w)
+    out = np.zeros(vec.shape, dtype=np.float64)
+    small = vec_norm > 1e-12
+    if np.any(small):
+        scale = angle[small] / vec_norm[small]
+        out[small] = vec[small] * scale[:, np.newaxis]
+    return out
+
+
+def build_tcp_rotvec(quat_xyzw: Any) -> np.ndarray:
+    """Frame-0-relative TCP rotation vectors from bag ``tcp_quat`` xyzw rows."""
+    quats = _normalize_quat_xyzw(np.asarray(quat_xyzw, dtype=np.float64))
+    if quats.shape[0] == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    q0 = quats[0:1]
+    aligned = quats.copy()
+    dots = np.sum(quats * q0, axis=1, keepdims=True)
+    aligned = np.where(dots < 0.0, -aligned, aligned)
+    q_rel = _quat_mul_xyzw(_quat_conj_xyzw(q0), aligned)
+    rotvec = _rotvec_from_unit_quat_xyzw(q_rel)
+    rotvec[0, :] = 0.0
+    return rotvec.astype(np.float32, copy=False)
+
+
 def build_bending_angles(
     arrays: Mapping[str, Any],
     *,
@@ -477,6 +583,7 @@ def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
         _as_2d(scored_ft_wrist(arrays), name="ft_wrist", n_frames=n_frames),
         _as_2d(arrays["tcp_velocity"], name="tcp_velocity", n_frames=n_frames),
         _as_2d(arrays["tcp_pos"], name="tcp_pos", n_frames=n_frames),
+        build_tcp_rotvec(arrays["tcp_quat"]),
         _stack_woody(
             arrays["woody_part_start_pos"],
             n_frames=n_frames,
@@ -867,8 +974,8 @@ def mean_hold_block_errors(
         return empty
 
     n_junctions = len([str(n) for n in real["junction_names"]])
-    woody0 = 15
-    bend0 = 15 + 3 * n_junctions
+    woody0 = len(_STATE_VECTOR_PREFIX_PHYS_SCALE)
+    bend0 = woody0 + 3 * n_junctions
 
     def _woody_starts(row: np.ndarray) -> np.ndarray:
         return np.asarray(row[woody0:bend0], dtype=np.float64).reshape(n_junctions, 3)

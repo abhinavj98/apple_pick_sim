@@ -13,12 +13,16 @@ from apple_pick_sim.fruiting_system import (
     set_fruiting_joint_linear_kd_batched,
     set_fruiting_joint_linear_kp_batched,
 )
-from apple_pick_sim.fruiting_system.joint_kd_scaling import joint_kd_from_damping_ratio
+from apple_pick_sim.fruiting_system.joint_kd_scaling import (
+    SUPPORT_ANGULAR_KP_LENGTH_FACTOR,
+    joint_kd_from_damping_ratio,
+    support_angular_kp_from_linear,
+)
 
 # Used only when dataset ``collection.sim_config.joint_damping_ratio`` is absent.
 # Prefer dataset ζ so replay support kd matches collect-time weld damping.
-SUPPORT_JOINT_ZETA_FALLBACK: float = 0.5
-# Back-compat alias (was hardcoded 1.0; that broke GT-vs-GT when collect used 0.5).
+SUPPORT_JOINT_ZETA_FALLBACK: float = 1.0
+# Back-compat alias (was hardcoded 1.0; keep equal to the variance fixture ζ).
 SUPPORT_JOINT_ZETA: float = SUPPORT_JOINT_ZETA_FALLBACK
 
 
@@ -72,26 +76,53 @@ def _validate_support_kp_per_env(
     return tuple(validated)
 
 
+def _validate_dowel_length_per_env(
+    dowel_length_m_per_env: Sequence[float],
+    *,
+    num_envs: int,
+) -> tuple[float, ...]:
+    if len(dowel_length_m_per_env) != int(num_envs):
+        raise ValueError(
+            f"dowel_length_m_per_env length ({len(dowel_length_m_per_env)}) must "
+            f"match num_envs ({num_envs})"
+        )
+    validated: list[float] = []
+    for raw in dowel_length_m_per_env:
+        support_angular_kp_from_linear(1.0, raw)
+        validated.append(float(raw))
+    return tuple(validated)
+
+
 def apply_per_env_support_joint_penalties(
     scene: CoupledFruitingScene,
     support_kp_per_env: Sequence[float],
     *,
     num_envs: int,
     joints_per_world: int,
+    dowel_length_m_per_env: Sequence[float],
     zeta: float = SUPPORT_JOINT_ZETA_FALLBACK,
 ) -> None:
-    """Set per-env support angular/linear kp and critical-damping kd (ζ via ``zeta``).
+    """Set per-env support angular/linear kp and kd (ζ via ``zeta``).
 
-    Non-support roles retain their build-time penalty values. Callers should pass
+    ``support_kp_per_env`` is linear (N/m). Angular kp is
+    ``(3/4) * L**2 * k_lin`` with ``L`` from
+    ``dowel_length_m_per_env`` (primary length). Non-support roles retain
+    build-time penalty values. Callers should pass
     ``zeta=support_joint_zeta_from_dataset(dataset)`` for collect/replay parity.
     """
     kp_per_env = _validate_support_kp_per_env(support_kp_per_env, num_envs=num_envs)
+    lengths = _validate_dowel_length_per_env(
+        dowel_length_m_per_env, num_envs=num_envs
+    )
     layout = scene.layout
     if layout is None:
         raise ValueError("scene.layout is required for per-env support joint penalties")
 
     cable = scene.cable
-    per_env_ang_kp = [{"support": kp} for kp in kp_per_env]
+    per_env_ang_kp = [
+        {"support": support_angular_kp_from_linear(kp, length)}
+        for kp, length in zip(kp_per_env, lengths, strict=True)
+    ]
     per_env_lin_kp = [{"support": kp} for kp in kp_per_env]
 
     set_fruiting_joint_angular_kp_batched(
@@ -118,7 +149,7 @@ def apply_per_env_support_joint_penalties(
 
     per_env_ang_kd: list[dict[str, float]] = []
     per_env_lin_kd: list[dict[str, float]] = []
-    for w, kp in enumerate(kp_per_env):
+    for w, (kp, length) in enumerate(zip(kp_per_env, lengths, strict=True)):
         ang_kd, lin_kd = joint_kd_from_damping_ratio(
             zeta=zeta,
             roles=("support",),
@@ -126,7 +157,9 @@ def apply_per_env_support_joint_penalties(
             body_mass=body_mass,
             body_inertia=body_inertia,
             joint_child=joint_child,
-            angular_kp_by_role={"support": kp},
+            angular_kp_by_role={
+                "support": support_angular_kp_from_linear(kp, length)
+            },
             linear_kp_by_role={"support": kp},
             body_offset=int(w) * bodies_per_world,
         )

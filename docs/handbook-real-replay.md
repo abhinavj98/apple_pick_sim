@@ -8,7 +8,7 @@ Sequencing, ranking acceptance, and CMA status belong in `docs/ROADMAP.md`.
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-27 |
+| Last reviewed | 2026-09-01 |
 | Code owners | `robot_replay/`; `apple_pick_sim/system_id/real_to_batched_sysid.py`; `apple_pick_sim/system_id/real_pre_grasp_params.py`; `apple_pick_sim/system_id/batched_digital_twin_init.py`; `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md`; H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H5 `docs/handbook-youngs-cma.md` |
@@ -216,8 +216,12 @@ The two geometry blocks have different jobs:
 
 1. **Pre-grasp** is the non-bending construction reference. The native mapping
    prefers `pre_grasp_geometry.rest_snapshot_during_run`, falls back to legacy
-   `snapshot`, derives `fruiting_base_pos`, and rebuilds the plant. The apple's
-   pre-grasp orientation seeds the free settle. When
+   `snapshot`, derives `fruiting_base_pos`, and rebuilds the plant. On current
+   `final_data_correct_torque` s04/s05 trees, `parts.stem.length_m` is the
+   caliper catalog minus 5 mm (s04 15→10 mm, s05 13→8 mm) and
+   `parts.stem.radius_m` is 0.9 mm; originals stay on
+   `catalog_length_m_original` / `catalog_radius_m_original`.
+   The apple's pre-grasp orientation seeds the free settle. When
    `parts.spur.manual_spur_angle_deg` and `parts.stem.manual_stem_angle_deg`
    are both set, rod directions come from those catalog connection angles
    (not woody marker chords). See [Checking connection angles](#checking-connection-angles).
@@ -312,7 +316,9 @@ catalog details.
 constructs the shared real builder, and calls
 `batched_sysid_mmd_grid.replay_batched_sysid_structure`. Its default is
 `--controller-mode vic_pose`, so each 19D row directly commands absolute target
-pose and anisotropic gains as defined by H2.
+pose and anisotropic gains as defined by H2. The shared builder also matches
+the real collection OSC: `sep_ori=True` (rotation without \(\Lambda\)) and
+`kd_null=15`. Twist `vic` keeps the coupled \(\Lambda\) map and `kd_null=6.3246`.
 
 Legacy `--controller-mode vic` is valid only for a true 6D twist-compatible
 dataset. `--allow-wrench-as-twist` exists for old format/GL smoke and represents
@@ -341,8 +347,9 @@ replay and optimization callers on the same initialization path:
 
 - `dataset_declares_vic_pose` detects 19D metadata;
 - metadata helpers load base position, open-loop joints, and control rate;
-- `real_replay_sim_config` selects FR3 coupled stepping and the requested
-  action dimension; and
+- `real_replay_sim_config` selects FR3 coupled stepping, the requested
+  action dimension, and for `vic_pose` the collection OSC (`sep_ori=True`,
+  `kd_null=15`); and
 - `make_real_replay_build_env_fn` creates `ApplePickBatchedSysIdEnv`, disables
   the settle cache, supplies per-environment candidate params/grippers, and
   applies the logged post-grasp SE(3) with the batched layout. Env construct

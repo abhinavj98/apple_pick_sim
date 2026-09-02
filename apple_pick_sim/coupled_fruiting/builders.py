@@ -299,7 +299,7 @@ def _assemble_coupled_robot_scene(
     init_robot_mujoco_step_buffers(scene)
     if explicit_apple_inertia:
         wp.copy(scene.robot_tcp_qd_prev, scene.robot_state_0.body_qd)
-    else:
+    elif layout is None or int(getattr(layout, "num_envs", 1)) <= 1:
         apply_mujoco_apple_payload_inertias(scene)
     return scene
 
@@ -673,6 +673,8 @@ def build_heterogeneous_coupled_fruiting_fr3(
     )
     scene.per_env_params = params
     scene.per_world_proxy_offsets = per_world_offsets
+    if not scene.stem_harvest_explicit_apple_inertia:
+        apply_mujoco_apple_payload_inertias(scene)
     _maybe_prepare_batched_stem_harvest(scene)
     newton.eval_fk(
         robot_model,

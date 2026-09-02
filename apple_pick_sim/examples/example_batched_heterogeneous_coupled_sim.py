@@ -58,6 +58,10 @@ from apple_pick_sim.fruiting_system import (
     parse_sim_build,
     sample_heterogeneous_params_list,
 )
+from apple_pick_sim.fruiting_system.joint_kd_scaling import (
+    map_support_angular_kp_overrides,
+    primary_length_midpoint_m,
+)
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.sim_device import resolve_sim_device
@@ -82,9 +86,11 @@ def _resolve_sim_build_knobs(ranges: dict) -> tuple[
     dict[str, float],
     dict[str, float],
     dict[str, float],
+    dict[str, float],
     float | None,
 ]:
     sb = parse_sim_build(ranges)
+    dowel_length_m = primary_length_midpoint_m(ranges)
     if sb is None:
         return (
             ImpedanceGains(
@@ -95,8 +101,13 @@ def _resolve_sim_build_knobs(ranges: dict) -> tuple[
             ),
             dict(JOINT_ANGULAR_KD_OVERRIDES),
             dict(JOINT_LINEAR_KD_OVERRIDES),
-            dict(JOINT_ANGULAR_KP_OVERRIDES),
+            map_support_angular_kp_overrides(
+                dict(JOINT_ANGULAR_KP_OVERRIDES),
+                dict(JOINT_LINEAR_KP_OVERRIDES),
+                dowel_length_m=dowel_length_m,
+            ),
             dict(JOINT_LINEAR_KP_OVERRIDES),
+            {},
             None,
         )
     return (
@@ -108,8 +119,13 @@ def _resolve_sim_build_knobs(ranges: dict) -> tuple[
         ),
         dict(sb.joint_angular_kd_overrides),
         dict(sb.joint_linear_kd_overrides),
-        dict(sb.joint_angular_kp_overrides),
+        map_support_angular_kp_overrides(
+            dict(sb.joint_angular_kp_overrides),
+            dict(sb.joint_linear_kp_overrides),
+            dowel_length_m=dowel_length_m,
+        ),
         dict(sb.joint_linear_kp_overrides),
+        dict(sb.joint_roll_kp_overrides),
         sb.joint_damping_ratio,
     )
 
@@ -356,6 +372,7 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
         joint_linear_kd,
         joint_angular_kp,
         joint_linear_kp,
+        joint_roll_kp,
         joint_damping_ratio,
     ) = _resolve_sim_build_knobs(ranges)
     vic_gains = ImpedanceGains(
@@ -419,6 +436,7 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
             joint_linear_kd_overrides=joint_linear_kd,
             joint_angular_kp_overrides=joint_angular_kp,
             joint_linear_kp_overrides=joint_linear_kp,
+            joint_roll_kp_overrides=joint_roll_kp,
             joint_damping_ratio=joint_damping_ratio,
         ),
         settle_diagnostics=SettleDiagnosticsConfig() if settle_substeps > 0 else None,

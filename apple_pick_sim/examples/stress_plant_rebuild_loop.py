@@ -68,8 +68,9 @@ from apple_pick_sim.fruiting_system import (
     default_ranges_fixture_path,
     load_ranges,
     sample_heterogeneous_params_list,
-    set_rod_youngs_modulus,
+    set_rod_flexural_modulus,
 )
+from apple_pick_sim.fruiting_system.joint_kd_scaling import support_dowel_length_m
 from apple_pick_sim.sim_device import resolve_sim_device
 from apple_pick_sim.system_id import ReplayEpisodeSource
 from apple_pick_sim.system_id.batched_digital_twin_init import (
@@ -238,8 +239,8 @@ def make_params_list_from_candidates(
     params_list: list[FruitingSystemParams] = []
     support_kps: list[float] = []
     for candidate in candidates:
-        params = set_rod_youngs_modulus(base_params, "spur", candidate.spur_pa)
-        params = set_rod_youngs_modulus(params, "stem", candidate.stem_pa)
+        params = set_rod_flexural_modulus(base_params, "spur", candidate.spur_pa)
+        params = set_rod_flexural_modulus(params, "stem", candidate.stem_pa)
         params_list.append(params)
         support_kps.append(float(candidate.support_kp))
     return params_list, support_kps
@@ -412,6 +413,9 @@ def run_rebuild_cycle(
             support_kps,
             num_envs=sim.layout.num_envs,
             joints_per_world=sim.layout.joints_per_world,
+            dowel_length_m_per_env=[
+                support_dowel_length_m(p) for p in params_list
+            ],
         )
     build_s = time.perf_counter() - t0
     cache = process_replicated_robot_cache()
@@ -568,6 +572,9 @@ def build_replay_reset_setup(
             support_kps,
             num_envs=env._sim.layout.num_envs,
             joints_per_world=env._sim.layout.joints_per_world,
+            dowel_length_m_per_env=[
+                support_dowel_length_m(p) for p in params_list
+            ],
         )
     build_s = time.perf_counter() - t0
 

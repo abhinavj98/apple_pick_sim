@@ -28,16 +28,18 @@ def test_support_kp_candidate_apply_to_leaves_primary_e_unchanged():
 
     base = _base_primary_spur_stem()
     assert base.primary is not None and base.spur is not None
-    e0 = base.primary.youngs_modulus_pa
+    e0 = base.primary.flexural_modulus_pa
+    y0_spur = base.spur.youngs_modulus_pa
     out = cmaes.SupportKpYoungsCandidate(
         support_kp=5e3, spur=1e8, stem=1e7
     ).apply_to(base)
     assert out.primary is not None
-    assert out.primary.youngs_modulus_pa == pytest.approx(e0)
+    assert out.primary.flexural_modulus_pa == pytest.approx(e0)
     assert out.spur is not None
-    assert out.spur.youngs_modulus_pa == pytest.approx(1e8)
+    assert out.spur.flexural_modulus_pa == pytest.approx(1e8)
+    assert out.spur.youngs_modulus_pa == pytest.approx(y0_spur)
     assert out.stem is not None
-    assert out.stem.youngs_modulus_pa == pytest.approx(1e7)
+    assert out.stem.flexural_modulus_pa == pytest.approx(1e7)
 
 
 def test_candidates_from_log10_vector_round_trip():
@@ -54,7 +56,7 @@ def test_candidates_from_log10_vector_round_trip():
 def test_candidates_from_log10_vector_rejects_wrong_length():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
-    with pytest.raises(ValueError, match="3"):
+    with pytest.raises(ValueError, match="3 or 5"):
         cmaes.candidates_from_log10_vector((4.0, 9.0))
 
 
@@ -127,8 +129,10 @@ def test_gt_support_kp_youngs_candidate_from_structure(monkeypatch):
     candidate = cmaes.gt_support_kp_youngs_candidate_from_structure(dataset, 2)
     assert candidate == cmaes.SupportKpYoungsCandidate(
         support_kp=5.0e3,
-        spur=gt_params.spur.youngs_modulus_pa,
-        stem=gt_params.stem.youngs_modulus_pa,
+        spur=gt_params.spur.flexural_modulus_pa,
+        stem=gt_params.stem.flexural_modulus_pa,
+        spur_youngs=gt_params.spur.youngs_modulus_pa,
+        stem_youngs=gt_params.stem.youngs_modulus_pa,
     )
 
 
@@ -181,10 +185,12 @@ def test_support_kp_apply_to_sets_spur_stem_e_leaves_primary_secondary_unchanged
 
     assert out.secondary is not None
     assert out.primary is not None and out.spur is not None and out.stem is not None
-    assert out.primary.youngs_modulus_pa == pytest.approx(base_primary.youngs_modulus_pa)
+    assert out.primary.flexural_modulus_pa == pytest.approx(base_primary.flexural_modulus_pa)
     assert out.primary.damping_ratio == pytest.approx(base_primary.damping_ratio)
     assert out.primary.bend_stiffness == pytest.approx(base_primary.bend_stiffness)
-    assert out.secondary.youngs_modulus_pa == pytest.approx(base_secondary.youngs_modulus_pa)
+    assert out.secondary.flexural_modulus_pa == pytest.approx(
+        base_secondary.flexural_modulus_pa
+    )
     assert out.secondary.damping_ratio == pytest.approx(base_secondary.damping_ratio)
     assert out.secondary.length == pytest.approx(base_secondary.length)
     assert out.secondary.radius == pytest.approx(base_secondary.radius)
@@ -198,7 +204,8 @@ def test_support_kp_apply_to_sets_spur_stem_e_leaves_primary_secondary_unchanged
         (out.spur, e_sp, base.spur),
         (out.stem, e_st, base.stem),
     ):
-        assert rod.youngs_modulus_pa == pytest.approx(e_new)
+        assert rod.flexural_modulus_pa == pytest.approx(e_new)
+        assert rod.youngs_modulus_pa == pytest.approx(base_rod.youngs_modulus_pa)
         assert rod.damping_ratio == pytest.approx(base_rod.damping_ratio)
         assert rod.length == pytest.approx(base_rod.length)
         assert rod.radius == pytest.approx(base_rod.radius)
@@ -207,6 +214,7 @@ def test_support_kp_apply_to_sets_spur_stem_e_leaves_primary_secondary_unchanged
         assert rod.direction == base_rod.direction
         expected = fs.rod_params_from_material(
             e_new,
+            base_rod.youngs_modulus_pa,
             base_rod.damping_ratio,
             base_rod.length,
             base_rod.radius,
@@ -216,69 +224,46 @@ def test_support_kp_apply_to_sets_spur_stem_e_leaves_primary_secondary_unchanged
         )
         assert rod.bend_stiffness == pytest.approx(expected.bend_stiffness)
         assert rod.bend_damping == pytest.approx(expected.bend_damping)
+        assert rod.stretch_stiffness == pytest.approx(base_rod.stretch_stiffness)
 
 
-def test_apply_to_preserves_fixed_axial_stretch_overrides():
+def test_support_kp_apply_to_5d_sets_axial_moduli():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
-    fixed_k, fixed_c = 5.0e5, 30.0
-    primary = fs.rod_params_from_material(
-        youngs_modulus_pa=1.0e7,
-        damping_ratio=0.05,
-        length=0.20,
-        radius=0.01,
-        density=300.0,
-        num_segments=4,
-        direction=(1.0, 0.0, 0.0),
-        stretch_stiffness=fixed_k,
-        stretch_damping=fixed_c,
-    )
-    spur = fs.rod_params_from_material(
-        youngs_modulus_pa=5.0e6,
-        damping_ratio=0.04,
-        length=0.08,
-        radius=0.006,
-        density=280.0,
-        num_segments=3,
-        direction=(0.0, 0.0, -1.0),
-        stretch_stiffness=fixed_k,
-        stretch_damping=fixed_c,
-    )
-    stem = fs.rod_params_from_material(
-        youngs_modulus_pa=2.0e6,
-        damping_ratio=0.03,
-        length=0.04,
-        radius=0.004,
-        density=250.0,
-        num_segments=2,
-        direction=(0.0, 0.0, -1.0),
-        stretch_stiffness=fixed_k,
-        stretch_damping=fixed_c,
-    )
-    base = fs.FruitingSystemParams(
-        primary=primary,
-        secondary=None,
-        spur=spur,
-        stem=stem,
-        apple_radius=0.04,
-        apple_density=800.0,
-    )
+    base = _base_primary_spur_stem()
+    y_sp, y_st = 3.0e8, 2.0e8
+    out = cmaes.SupportKpYoungsCandidate(
+        support_kp=5e3,
+        spur=1e8,
+        stem=1e7,
+        spur_youngs=y_sp,
+        stem_youngs=y_st,
+    ).apply_to(base)
+    assert out.spur.youngs_modulus_pa == pytest.approx(y_sp)
+    assert out.stem.youngs_modulus_pa == pytest.approx(y_st)
+    x = (4.0, 9.0, 8.5, math.log10(y_sp), math.log10(y_st))
+    c = cmaes.candidates_from_log10_vector(x)
+    assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_apply_to_preserves_axial_when_3d_candidate():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _base_primary_spur_stem()
+    k_spur = base.spur.stretch_stiffness
     out = cmaes.SupportKpYoungsCandidate(
         support_kp=1.0e4, spur=6.0e6, stem=3.0e6
     ).apply_to(base)
-    assert out.primary is not None and out.spur is not None and out.stem is not None
-    assert out.primary.stretch_stiffness == pytest.approx(fixed_k)
-    assert out.primary.stretch_damping == pytest.approx(fixed_c)
-    for rod in (out.spur, out.stem):
-        assert rod.stretch_stiffness == pytest.approx(fixed_k)
-        assert rod.stretch_damping == pytest.approx(fixed_c)
+    assert out.spur.stretch_stiffness == pytest.approx(k_spur)
+    assert out.stem.stretch_stiffness == pytest.approx(base.stem.stretch_stiffness)
 
 
 def test_log10_e_from_params_requires_primary_spur_stem():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
     rod = fs.rod_params_from_material(
-        youngs_modulus_pa=1.0e7,
+        1.0e7,
+        1.0e7,
         damping_ratio=0.05,
         length=0.10,
         radius=0.01,
@@ -298,7 +283,7 @@ def test_log10_e_from_params_requires_primary_spur_stem():
         cmaes.log10_e_from_params(base)
 
 
-def test_set_rod_youngs_modulus_rederives_and_preserves_zeta():
+def test_set_rod_youngs_modulus_rederives_stretch_and_preserves_flexural():
     base = _base_primary_spur_stem()
     assert base.primary is not None
     old_zeta = base.primary.damping_ratio
@@ -306,8 +291,10 @@ def test_set_rod_youngs_modulus_rederives_and_preserves_zeta():
     out = fs.set_rod_youngs_modulus(base, "primary", e_new)
     assert out.primary is not None
     assert out.primary.youngs_modulus_pa == pytest.approx(e_new)
+    assert out.primary.flexural_modulus_pa == pytest.approx(base.primary.flexural_modulus_pa)
     assert out.primary.damping_ratio == pytest.approx(old_zeta)
     expected = fs.rod_params_from_material(
+        base.primary.flexural_modulus_pa,
         e_new,
         old_zeta,
         base.primary.length,
@@ -316,8 +303,7 @@ def test_set_rod_youngs_modulus_rederives_and_preserves_zeta():
         base.primary.num_segments,
         base.primary.direction,
     )
-    # Without fixed stretch on fixture sample, bend (and beam stretch) follow E.
-    assert out.primary.bend_stiffness == pytest.approx(expected.bend_stiffness)
+    assert out.primary.stretch_stiffness == pytest.approx(expected.stretch_stiffness)
 
 
 def test_candidates_from_log10_e_rejects_wrong_length():
@@ -336,9 +322,9 @@ def test_gt_candidate_reads_lossless_structure_params(monkeypatch):
     candidate = cmaes.gt_youngs_modulus_candidate_from_structure(object(), 3)
 
     assert candidate == cmaes.YoungsModulusCandidate(
-        primary=gt_params.primary.youngs_modulus_pa,
-        spur=gt_params.spur.youngs_modulus_pa,
-        stem=gt_params.stem.youngs_modulus_pa,
+        primary=gt_params.primary.flexural_modulus_pa,
+        spur=gt_params.spur.flexural_modulus_pa,
+        stem=gt_params.stem.flexural_modulus_pa,
     )
     assert gt_params.secondary is not None
 
@@ -361,10 +347,10 @@ def test_maybe_include_gt_candidate_is_configurable_and_deduplicates_in_log_spac
 
 def _valid_youngs_ranges() -> dict:
     return {
-        "primary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
-        "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
-        "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
-        "secondary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e8}},
+        "primary": {"flexural_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
+        "spur": {"flexural_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+        "stem": {"flexural_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+        "secondary": {"flexural_modulus_pa": {"min": 1.0e7, "max": 1.0e8}},
     }
 
 
@@ -407,22 +393,22 @@ def test_extract_youngs_modulus_cma_bounds_from_fixture_paths():
 @pytest.mark.parametrize(
     "mutate,match",
     [
-        (lambda r: r["primary"].pop("youngs_modulus_pa"), "primary"),
-        (lambda r: r["spur"]["youngs_modulus_pa"].pop("min"), "spur"),
-        (lambda r: r["stem"]["youngs_modulus_pa"].__setitem__("max", None), "stem"),
-        (lambda r: r["primary"]["youngs_modulus_pa"].__setitem__("min", "bad"), "primary"),
-        (lambda r: r["spur"]["youngs_modulus_pa"].__setitem__("min", float("nan")), "spur"),
-        (lambda r: r["stem"]["youngs_modulus_pa"].__setitem__("max", float("inf")), "stem"),
-        (lambda r: r["primary"]["youngs_modulus_pa"].__setitem__("min", 0.0), "primary"),
-        (lambda r: r["spur"]["youngs_modulus_pa"].__setitem__("min", -1.0), "spur"),
+        (lambda r: r["primary"].pop("flexural_modulus_pa"), "primary"),
+        (lambda r: r["spur"]["flexural_modulus_pa"].pop("min"), "spur"),
+        (lambda r: r["stem"]["flexural_modulus_pa"].__setitem__("max", None), "stem"),
+        (lambda r: r["primary"]["flexural_modulus_pa"].__setitem__("min", "bad"), "primary"),
+        (lambda r: r["spur"]["flexural_modulus_pa"].__setitem__("min", float("nan")), "spur"),
+        (lambda r: r["stem"]["flexural_modulus_pa"].__setitem__("max", float("inf")), "stem"),
+        (lambda r: r["primary"]["flexural_modulus_pa"].__setitem__("min", 0.0), "primary"),
+        (lambda r: r["spur"]["flexural_modulus_pa"].__setitem__("min", -1.0), "spur"),
         (
-            lambda r: r["stem"]["youngs_modulus_pa"].__setitem__("min", 1.0e7)
-            or r["stem"]["youngs_modulus_pa"].__setitem__("max", 1.0e7),
+            lambda r: r["stem"]["flexural_modulus_pa"].__setitem__("min", 1.0e7)
+            or r["stem"]["flexural_modulus_pa"].__setitem__("max", 1.0e7),
             "stem",
         ),
         (
-            lambda r: r["primary"]["youngs_modulus_pa"].__setitem__("min", 1.0e9)
-            or r["primary"]["youngs_modulus_pa"].__setitem__("max", 1.0e7),
+            lambda r: r["primary"]["flexural_modulus_pa"].__setitem__("min", 1.0e9)
+            or r["primary"]["flexural_modulus_pa"].__setitem__("max", 1.0e7),
             "primary",
         ),
     ],
@@ -656,9 +642,9 @@ def test_sigma_exploration_is_not_clipped_to_fixture_bounds():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
     narrow = {
-        "primary": {"youngs_modulus_pa": {"min": 1.0e8, "max": 2.0e8}},
-        "spur": {"youngs_modulus_pa": {"min": 1.0e7, "max": 2.0e7}},
-        "stem": {"youngs_modulus_pa": {"min": 1.0e6, "max": 2.0e6}},
+        "primary": {"flexural_modulus_pa": {"min": 1.0e8, "max": 2.0e8}},
+        "spur": {"flexural_modulus_pa": {"min": 1.0e7, "max": 2.0e7}},
+        "stem": {"flexural_modulus_pa": {"min": 1.0e6, "max": 2.0e6}},
     }
     bounds = cmaes.extract_youngs_modulus_cma_bounds(narrow)
     for seg in (bounds.primary, bounds.spur, bounds.stem):

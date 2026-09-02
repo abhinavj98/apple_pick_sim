@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from apple_pick_sim.fruiting_system.build import (
+    apply_fruiting_support_roll_penalties,
     make_fruiting_solver_vbd,
     set_fruiting_joint_angular_kd,
     set_fruiting_joint_angular_kd_batched,
@@ -12,6 +13,8 @@ from apple_pick_sim.fruiting_system.build import (
     set_fruiting_joint_linear_kd_batched,
     set_fruiting_joint_linear_kp,
     set_fruiting_joint_linear_kp_batched,
+    set_fruiting_joint_roll_kp,
+    set_fruiting_joint_roll_kp_batched,
 )
 from apple_pick_sim.fruiting_system.coupled import (
     CoupledCableScene,
@@ -21,6 +24,7 @@ from apple_pick_sim.fruiting_system.coupled import (
 from apple_pick_sim.fruiting_system.params import (
     FRUITING_SYSTEM_PARAMS_SCHEMA,
     FRUITING_SYSTEM_PARAMS_SCHEMA_V1,
+    FRUITING_SYSTEM_PARAMS_SCHEMA_V2,
     FruitingSystemParams,
     FixtureArgs,
     GripperProxyConfig,
@@ -51,6 +55,7 @@ from apple_pick_sim.fruiting_system.params import (
     sample_params,
     sample_params_no_overlap,
     set_rod_bend_stiffness,
+    set_rod_flexural_modulus,
     set_rod_youngs_modulus,
     stretch_knobs_from_max_force,
     TOPOLOGY_LINEAR_CHAIN,
@@ -77,6 +82,7 @@ from apple_pick_sim.vbd_fixed_joint_wrenches import (
 __all__ = [
     "FRUITING_SYSTEM_PARAMS_SCHEMA",
     "FRUITING_SYSTEM_PARAMS_SCHEMA_V1",
+    "FRUITING_SYSTEM_PARAMS_SCHEMA_V2",
     "CoupledCableScene",
     "FruitingSystemParams",
     "FruitingSystemScene",
@@ -107,6 +113,7 @@ __all__ = [
     "iter_fruiting_fixed_joint_indices",
     "default_ranges_fixture_path",
     "load_ranges",
+    "apply_fruiting_support_roll_penalties",
     "make_fruiting_solver_vbd",
     "set_fruiting_joint_angular_kd",
     "set_fruiting_joint_angular_kd_batched",
@@ -116,6 +123,8 @@ __all__ = [
     "set_fruiting_joint_linear_kd_batched",
     "set_fruiting_joint_linear_kp",
     "set_fruiting_joint_linear_kp_batched",
+    "set_fruiting_joint_roll_kp",
+    "set_fruiting_joint_roll_kp_batched",
     "measure_fruiting_forces",
     "params_fingerprint",
     "parse_fixture_args",
@@ -126,6 +135,7 @@ __all__ = [
     "rod_params_from_material",
     "rod_params_from_vbd_targets",
     "set_rod_bend_stiffness",
+    "set_rod_flexural_modulus",
     "set_rod_youngs_modulus",
     "stretch_knobs_from_max_force",
     "TOPOLOGY_LINEAR_CHAIN",

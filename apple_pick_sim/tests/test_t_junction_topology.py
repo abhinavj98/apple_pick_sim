@@ -118,6 +118,78 @@ def test_linear_chain_fixture_opt_in():
     assert params.topology == fs.TOPOLOGY_LINEAR_CHAIN
 
 
+def _hard_slots(solver, joint_index: int) -> tuple[int, int]:
+    import newton
+
+    jc = solver.joint_constraint_start.numpy()
+    hard = solver.joint_is_hard.numpy()
+    c0 = int(jc[joint_index])
+    return (
+        int(hard[c0 + newton.solvers.SolverVBD.JointSlot.LINEAR]),
+        int(hard[c0 + newton.solvers.SolverVBD.JointSlot.ANGULAR]),
+    )
+
+
+def test_t_junction_world_supports_are_revolute_about_primary():
+    """World clamps are revolutes about the primary axis so T-roll is a separate DOF."""
+    import newton
+
+    fs = _import_fs()
+    ranges = fs.load_ranges(PROXY_PATH)
+    params = fs.sample_params(ranges, seed=0)
+    scene = fs.generate_scene(
+        ranges, seed=0, base_pos=BASE_POS, device="cpu", enable_self_collisions=False
+    )
+    jt = scene.model.joint_type.numpy()
+    jqd = scene.model.joint_qd_start.numpy()
+    joint_axis = scene.model.joint_axis.numpy().reshape(-1, 3)
+    by_label = {lab: j for j, lab in scene.fruiting_fixed_joints}
+    primary_dir = np.asarray(params.primary.direction, dtype=np.float64)
+    primary_dir /= np.linalg.norm(primary_dir)
+
+    for lab in ("joint_primary_support_left", "joint_primary_support_right"):
+        j = by_label[lab]
+        assert int(jt[j]) == int(newton.JointType.REVOLUTE), f"{lab} should be REVOLUTE"
+        dof = int(jqd[j])
+        axis = joint_axis[dof]
+        np.testing.assert_allclose(axis, primary_dir, atol=1e-4)
+
+
+def test_t_junction_world_supports_are_soft_vbd_joints():
+    """World clamps are penalty-only so support k_p is kθ, not augmented-Lagrangian."""
+    import newton
+
+    fs = _import_fs()
+    ranges = fs.load_ranges(PROXY_PATH)
+    scene = fs.generate_scene(
+        ranges, seed=0, base_pos=BASE_POS, device="cpu", enable_self_collisions=False
+    )
+    assert hasattr(scene.model, "vbd")
+    assert hasattr(scene.model.vbd, "joint_is_hard")
+
+    by_label = {lab: j for j, lab in scene.fruiting_fixed_joints}
+    for lab in ("joint_primary_support_left", "joint_primary_support_right"):
+        lin, ang = _hard_slots(scene.solver, by_label[lab])
+        assert (lin, ang) == (0, 0), f"{lab} should be soft (got lin={lin} ang={ang})"
+
+    for lab in ("joint_primary_spur", "joint_spur_stem", "joint_stem_apple"):
+        lin, ang = _hard_slots(scene.solver, by_label[lab])
+        assert (lin, ang) == (1, 1), f"{lab} should stay hard (got lin={lin} ang={ang})"
+
+    cable = [
+        j
+        for j in range(int(scene.model.joint_count))
+        if int(scene.model.joint_type.numpy()[j]) == int(newton.JointType.CABLE)
+    ]
+    assert cable
+    hard = scene.solver.joint_is_hard.numpy()
+    jc = scene.solver.joint_constraint_start.numpy()
+    for j in cable[:3]:
+        c0 = int(jc[j])
+        assert int(hard[c0]) == 0
+        assert int(hard[c0 + 1]) == 0
+
+
 def test_t_junction_fixed_joint_labels():
     fs = _import_fs()
     ranges = fs.load_ranges(PROXY_PATH)
@@ -132,6 +204,7 @@ def test_t_junction_fixed_joint_labels():
         "joint_spur_stem",
         "joint_stem_apple",
     }
+    assert list(scene.fruiting_fixed_joints) == fs.iter_fixed_joint_indices(scene.model)
 
 
 def test_t_junction_primary_endpoint_has_mass():

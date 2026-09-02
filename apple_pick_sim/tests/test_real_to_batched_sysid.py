@@ -118,15 +118,15 @@ def test_build_fruiting_params_uses_measured_geometry_and_fixture_materials():
     )
     assert params.apple_radius == 0.055
     assert params.primary.density == range_midpoint(ranges["primary"]["density"])
-    assert params.primary.youngs_modulus_pa == range_midpoint(
-        ranges["primary"]["youngs_modulus_pa"]
+    assert params.primary.flexural_modulus_pa == range_midpoint(
+        ranges["primary"]["flexural_modulus_pa"]
     )
     assert params.spur_surface_offset is True
 
 
-def test_build_fruiting_params_applies_vbd_stretch_force_not_beam_ea_over_l():
-    """Real converter must honor fixture vbd_stretch_force (same as sample_params)."""
-    from apple_pick_sim.fruiting_system.params import stretch_knobs_from_max_force
+def test_build_fruiting_params_uses_beam_ea_over_l_for_stretch():
+    """Real converter derives stretch from axial youngs_modulus_pa (beam EA/L)."""
+    import math
 
     ranges = load_ranges(VARIANCE)
     directions = {
@@ -134,7 +134,6 @@ def test_build_fruiting_params_applies_vbd_stretch_force_not_beam_ea_over_l():
         "spur": (0.0, 0.0, -1.0),
         "stem": (0.0, 0.0, -1.0),
     }
-    # Short measured stem (real proxy scale) makes beam EA/L diverge sharply from F_max budget.
     rod_geometry = {
         "primary": {"length_m": 0.827, "radius_m": 0.0125, "density_kg_m3": 660.0},
         "spur": {"length_m": 0.12, "radius_m": 0.0025, "density_kg_m3": 1200.0},
@@ -154,24 +153,10 @@ def test_build_fruiting_params_applies_vbd_stretch_force_not_beam_ea_over_l():
         ("spur", params.spur),
         ("stem", params.stem),
     ):
-        force = ranges[name]["vbd_stretch_force"]
-        k_exp, c_exp = stretch_knobs_from_max_force(
-            float(force["max_force_n"]),
-            float(force["damping_ratio"]),
-            float(rod.length),
-            float(rod.radius),
-            float(rod.density),
-            int(rod.num_segments),
-        )
-        assert rod.stretch_stiffness == pytest.approx(k_exp, rel=1e-9)
-        assert rod.stretch_damping == pytest.approx(c_exp, rel=1e-9)
-        # Sanity: must not silently fall back to beam EA/L on this geometry.
-        import math
-
         a = math.pi * float(rod.radius) ** 2
         l_seg = float(rod.length) / int(rod.num_segments)
         k_beam = float(rod.youngs_modulus_pa) * a / l_seg
-        assert abs(rod.stretch_stiffness - k_beam) / k_beam > 0.1
+        assert rod.stretch_stiffness == pytest.approx(k_beam, rel=1e-9)
 
 
 def test_build_fruiting_params_honors_spur_attach_fraction_from_fixture(tmp_path: Path):
@@ -566,7 +551,9 @@ def test_build_episode_metadata_from_real(tmp_path: Path):
         "stem": float(params.stem.radius),
     }
     assert meta["initial_robot_joint_q"] == [0.1 * j for j in range(7)]
-    assert meta["fruiting_system_params"]["schema"] == "fruiting_system_params_v2"
+    assert meta["fruiting_system_params"]["schema"] == "fruiting_system_params_v3"
+    assert "flexural_modulus_pa" in meta["fruiting_system_params"]["primary"]
+    assert "youngs_modulus_pa" in meta["fruiting_system_params"]["primary"]
     assert meta["fruiting_system_params"]["topology"] == "t_junction"
 
 

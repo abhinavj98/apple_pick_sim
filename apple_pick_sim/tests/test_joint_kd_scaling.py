@@ -77,3 +77,35 @@ def test_joint_kd_from_damping_ratio_skips_unmatched_roles():
     )
     assert set(ang) == {"stem_apple"}
     assert set(lin) == {"stem_apple"}
+
+
+def test_support_angular_kp_from_linear_uses_three_quarters_dowel_length_squared():
+    from apple_pick_sim.fruiting_system.joint_kd_scaling import (
+        SUPPORT_ANGULAR_KP_LENGTH_FACTOR,
+        map_support_angular_kp_overrides,
+        support_angular_kp_from_linear,
+    )
+
+    assert SUPPORT_ANGULAR_KP_LENGTH_FACTOR == pytest.approx(0.75)
+    assert support_angular_kp_from_linear(500.0, 0.4) == pytest.approx(
+        0.75 * (0.4**2) * 500.0
+    )
+    assert map_support_angular_kp_overrides(
+        {"support": 10000.0},
+        {"support": 10000.0},
+        dowel_length_m=0.4,
+    )["support"] == pytest.approx(0.75 * (0.4**2) * 10000.0)
+    assert map_support_angular_kp_overrides(
+        {"spur_stem": 1.0e5},
+        {},
+        dowel_length_m=0.4,
+    ) == {"spur_stem": 1.0e5}
+
+
+def test_support_angular_kp_from_linear_rejects_nonpositive_dowel_length():
+    from apple_pick_sim.fruiting_system.joint_kd_scaling import (
+        support_angular_kp_from_linear,
+    )
+
+    with pytest.raises(ValueError, match="dowel_length"):
+        support_angular_kp_from_linear(1000.0, 0.0)

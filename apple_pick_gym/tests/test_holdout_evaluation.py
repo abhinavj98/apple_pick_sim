@@ -16,7 +16,9 @@ from apple_pick_gym.batched_envs.holdout_evaluation import (
     direction_verification,
     holdout_gate_failures,
     write_holdout_report,
+    write_match_metrics_file,
 )
+from apple_pick_sim.system_id.match_metrics import build_match_metrics_report
 
 
 def _episode_with_holds(
@@ -435,3 +437,68 @@ def test_holdout_gate_failures_names_gate_and_direction():
     failures = holdout_gate_failures(report)
     assert "val_sinkhorn_improved" in failures[0]
     assert any("force_magnitude_ok" in msg and "3" in msg for msg in failures)
+
+
+def _episode_for_match_metrics(*, direction: int = 0) -> dict:
+    ep = _episode_with_holds()
+    n = int(ep["phase"].shape[0])
+    ep = dict(ep)
+    ep["dir_idx"] = np.full(n, int(direction), dtype=np.int32)
+    ep["step_idx"] = np.arange(n, dtype=np.int32)
+    ep["stable"] = np.ones(n, dtype=bool)
+    ep["junction_names"] = ["primary_spur", "spur_stem"]
+    ep["woody_part_start_pos"] = {
+        "primary_spur": np.tile(np.array([0.1, 0.2, 0.3], dtype=np.float32), (n, 1)),
+        "spur_stem": np.tile(np.array([0.4, 0.5, 0.6], dtype=np.float32), (n, 1)),
+    }
+    return ep
+
+
+def test_build_match_metrics_report_schema():
+    real0 = _episode_for_match_metrics(direction=0)
+    real3 = _episode_for_match_metrics(direction=3)
+    fitted0 = _episode_for_match_metrics(direction=0)
+    fitted3 = _episode_for_match_metrics(direction=3)
+    report = build_match_metrics_report(
+        tree="s04",
+        cma_seed=56,
+        train_direction_indices=[1, 2, 4, 5, 6, 7],
+        val_direction_indices=[0, 3],
+        baseline_log10=[2.3, 8.0, 8.0, 8.0, 8.0],
+        fitted_log10=[2.4, 8.1, 8.1, 8.1, 8.1],
+        recorded_val={0: real0, 3: real3},
+        baseline_replay_by_direction=[fitted0, fitted3],
+        fitted_replay_by_direction=[fitted0, fitted3],
+        val_direction_order=[0, 3],
+    )
+    assert report["tree"] == "s04"
+    assert report["cma_seed"] == 56
+    for direction in ("0", "3"):
+        for window in ("full", "hold"):
+            for side in ("baseline", "fitted"):
+                block = report["directions"][direction][window][side]
+                assert set(block.keys()) == {"force", "torque", "woody"}
+                assert set(block["force"].keys()) == {"fx", "fy", "fz", "combined"}
+                assert set(block["torque"].keys()) == {"tx", "ty", "tz", "combined"}
+                assert set(block["woody"].keys()) == {"primary_spur", "spur_stem"}
+                assert block["force"]["fx"]["mse"] == pytest.approx(0.0)
+
+
+def test_write_match_metrics_file_is_atomic(tmp_path: Path):
+    report = build_match_metrics_report(
+        tree="s04",
+        cma_seed=56,
+        train_direction_indices=[1],
+        val_direction_indices=[0],
+        baseline_log10=[2.3, 8.0, 8.0, 8.0, 8.0],
+        fitted_log10=[2.4, 8.1, 8.1, 8.1, 8.1],
+        recorded_val={0: _episode_for_match_metrics(direction=0)},
+        baseline_replay_by_direction=[_episode_for_match_metrics(direction=0)],
+        fitted_replay_by_direction=[_episode_for_match_metrics(direction=0)],
+        val_direction_order=[0],
+    )
+    out = write_match_metrics_file(tmp_path, report)
+    assert out == tmp_path / "match_metrics.json"
+    assert out.is_file()
+    loaded = json.loads(out.read_text(encoding="utf-8"))
+    assert loaded["tree"] == "s04"

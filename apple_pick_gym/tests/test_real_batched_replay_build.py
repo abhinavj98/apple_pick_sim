@@ -294,12 +294,39 @@ def test_real_replay_sim_config_applies_vic_pose_and_control_hz():
     )
     assert cfg.controller.mode == "vic_pose"
     assert cfg.controller.action_dim == 19
+    assert cfg.controller.sep_ori is True
+    assert cfg.controller.kd_null == pytest.approx(15.0)
+    assert cfg.controller.kp_null == pytest.approx(10.0)
     assert cfg.robot.per_env_ik is False
     assert cfg.robot.bootstrap_joint_q == q
     assert cfg.scene.fruiting_base_pos == (0.117, 0.787, 0.577)
     assert cfg.scene.post_grasp_settle_substeps == 500
     assert cfg.runtime.control_hz == pytest.approx(15.0)
     assert cfg.robot.reuse_replicated_mujoco is False
+
+
+def test_real_replay_sim_config_vic_keeps_coupled_lambda_and_default_kd_null():
+    if not _VARIANCE.is_file():
+        pytest.skip(f"missing {_VARIANCE}")
+
+    from apple_pick_gym.batched_envs.real_batched_replay_build import (
+        real_replay_sim_config,
+    )
+
+    ranges = load_ranges(_VARIANCE)
+    cfg = real_replay_sim_config(
+        num_envs=1,
+        topology_seed=0,
+        fruiting_base_pos=(0.117, 0.787, 0.577),
+        ranges=ranges,
+        bootstrap_joint_q=(0.1, 0.2, 0.3, -1.0, 0.0, 1.5, -0.5),
+        controller_mode="vic",
+        control_hz=15.0,
+    )
+    assert cfg.controller.mode == "vic"
+    assert cfg.controller.sep_ori is False
+    assert cfg.controller.kd_null == pytest.approx(6.3246)
+    assert cfg.controller.kp_null == pytest.approx(10.0)
 
 
 def test_real_replay_sim_config_enable_self_collisions():

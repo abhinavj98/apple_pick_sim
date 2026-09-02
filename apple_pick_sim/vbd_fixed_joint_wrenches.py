@@ -28,20 +28,27 @@ class FixedJointWrenchRecord:
 
 
 def iter_fixed_joint_indices(model: newton.Model) -> list[tuple[int, str]]:
-    """Return ``(joint_index, label)`` for joints whose label starts with ``joint_`` and type is FIXED.
+    """Return ``(joint_index, label)`` for fruiting weld/readout joints.
+
+    Includes world-parent ``FIXED`` joints and world-parent ``REVOLUTE`` supports
+    (T-junction ``primary_support_*``) whose labels start with ``joint_``.
 
     Prefer :func:`apple_pick_sim.fruiting_system.iter_fruiting_fixed_joint_indices` for
     scenes built by :func:`~apple_pick_sim.fruiting_system.generate_scene`, which uses
     explicit joint metadata instead of this heuristic.
     """
     jt = model.joint_type.numpy()
+    jparent = model.joint_parent.numpy()
     out: list[tuple[int, str]] = []
     for j, label in enumerate(model.joint_label):
         if not label.startswith("joint_"):
             continue
-        if int(jt[j]) != int(newton.JointType.FIXED):
+        joint_type = int(jt[j])
+        if joint_type == int(newton.JointType.FIXED):
+            out.append((j, label))
             continue
-        out.append((j, label))
+        if joint_type == int(newton.JointType.REVOLUTE) and int(jparent[j]) < 0:
+            out.append((j, label))
     return out
 
 

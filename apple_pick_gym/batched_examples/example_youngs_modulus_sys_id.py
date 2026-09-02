@@ -391,6 +391,7 @@ def _resolve_sim_build_knobs(ranges: dict) -> tuple[
     dict[str, float],
     dict[str, float],
     dict[str, float],
+    dict[str, float],
     float | None,
 ]:
     sb = parse_sim_build(ranges)
@@ -401,6 +402,7 @@ def _resolve_sim_build_knobs(ranges: dict) -> tuple[
             dict(JOINT_LINEAR_KD_OVERRIDES),
             dict(JOINT_ANGULAR_KP_OVERRIDES),
             dict(JOINT_LINEAR_KP_OVERRIDES),
+            {},
             None,
         )
     return (
@@ -414,6 +416,7 @@ def _resolve_sim_build_knobs(ranges: dict) -> tuple[
         dict(sb.joint_linear_kd_overrides),
         dict(sb.joint_angular_kp_overrides),
         dict(sb.joint_linear_kp_overrides),
+        dict(sb.joint_roll_kp_overrides),
         sb.joint_damping_ratio,
     )
 
@@ -436,6 +439,7 @@ def build_sim_config(
         joint_linear_kd,
         joint_angular_kp,
         joint_linear_kp,
+        joint_roll_kp,
         joint_damping_ratio,
     ) = _resolve_sim_build_knobs(ranges)
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=int(num_envs))
@@ -467,6 +471,7 @@ def build_sim_config(
             joint_linear_kd_overrides=joint_linear_kd,
             joint_angular_kp_overrides=joint_angular_kp,
             joint_linear_kp_overrides=joint_linear_kp,
+            joint_roll_kp_overrides=joint_roll_kp,
             joint_damping_ratio=joint_damping_ratio,
         ),
         robot=dataclasses.replace(

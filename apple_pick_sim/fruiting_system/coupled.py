@@ -19,11 +19,13 @@ from apple_pick_sim.fruiting_system.build import (
     _finalize_fruiting_builder,
     _new_fruiting_builder,
     _scene_states_from_model,
+    apply_fruiting_support_roll_penalties,
 )
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     GripperProxyConfig,
     TOPOLOGY_T_JUNCTION,
+    parse_sim_build,
     resolve_fruiting_base_pos,
     sample_params,
 )
@@ -106,6 +108,7 @@ def _populate_coupled_cable_builder(
     *,
     gripper_proxy: GripperProxyConfig,
     robot_base_pos: tuple[float, float, float] | None = None,
+    support_roll_kp: float = 0.0,
 ) -> CoupledCablePopulateResult:
     """Add fruiting chain + gripper proxy to ``builder`` (no ``finalize``)."""
     artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
@@ -119,7 +122,9 @@ def _populate_coupled_cable_builder(
         )
     )
     if params.topology == TOPOLOGY_T_JUNCTION:
-        _attach_t_junction_world_supports(builder, artifacts)
+        _attach_t_junction_world_supports(
+            builder, artifacts, support_roll_kp=support_roll_kp
+        )
     return CoupledCablePopulateResult(
         artifacts=artifacts,
         proxy_body=proxy_body,
@@ -180,6 +185,12 @@ def generate_coupled_cable_scene(
 
     resolved_params = params if params is not None else sample_params(ranges, seed, omit=omit)
     proxy_cfg = gripper_proxy if gripper_proxy is not None else GripperProxyConfig()
+    sb = parse_sim_build(ranges)
+    support_roll_kp = 0.0
+    joint_damping_ratio = None
+    if sb is not None:
+        support_roll_kp = float(sb.joint_roll_kp_overrides.get("support", 0.0))
+        joint_damping_ratio = sb.joint_damping_ratio
     return _build_coupled_cable_scene(
         resolved_params,
         base_pos=resolve_fruiting_base_pos(ranges, (0.5, 0.5, 0.5), override=base_pos),
@@ -187,6 +198,8 @@ def generate_coupled_cable_scene(
         enable_self_collisions=enable_self_collisions,
         gripper_proxy=proxy_cfg,
         robot_base_pos=robot_base_pos,
+        support_roll_kp=support_roll_kp,
+        joint_damping_ratio=joint_damping_ratio,
     )
 
 def geometry_fingerprint_coupled(scene: CoupledCableScene) -> dict:
@@ -204,6 +217,8 @@ def _align_coupled_scene_chain_from_reference(
     base_pos: tuple[float, float, float],
     device: str,
     enable_self_collisions: bool,
+    support_roll_kp: float = 0.0,
+    joint_damping_ratio: float | None = None,
 ) -> None:
     """Match P0 chain ``body_q`` / ``joint_q`` on the coupled model (proxy DOFs unchanged).
 
@@ -217,6 +232,8 @@ def _align_coupled_scene_chain_from_reference(
         base_pos,
         device,
         enable_self_collisions=enable_self_collisions,
+        support_roll_kp=support_roll_kp,
+        joint_damping_ratio=joint_damping_ratio,
     )
     n = ref.model.body_count
     ref_bq = ref.state_0.body_q.numpy().reshape(-1, 7)
@@ -249,6 +266,8 @@ def _build_coupled_cable_scene(
     enable_self_collisions: bool,
     gripper_proxy: GripperProxyConfig,
     robot_base_pos: tuple[float, float, float] | None = None,
+    support_roll_kp: float = 0.0,
+    joint_damping_ratio: float | None = None,
 ) -> CoupledCableScene:
     builder = _new_fruiting_builder()
     populated = _populate_coupled_cable_builder(
@@ -257,6 +276,7 @@ def _build_coupled_cable_scene(
         base_pos,
         gripper_proxy=gripper_proxy,
         robot_base_pos=robot_base_pos,
+        support_roll_kp=support_roll_kp,
     )
     artifacts = populated.artifacts
     proxy_body = populated.proxy_body
@@ -279,6 +299,14 @@ def _build_coupled_cable_scene(
         prescribe_body_vbd_on_model(model, artifacts.apple_body, proxy_body)
     artifacts.fruiting_fixed_joints.sort(key=lambda p: p[0])
     state_0, state_1, control, solver = _scene_states_from_model(model)
+    if support_roll_kp > 0.0:
+        apply_fruiting_support_roll_penalties(
+            solver,
+            model,
+            artifacts.fruiting_fixed_joints,
+            {"support": float(support_roll_kp)},
+            joint_damping_ratio=joint_damping_ratio,
+        )
 
     scene = CoupledCableScene(
         model=model,
@@ -307,5 +335,7 @@ def _build_coupled_cable_scene(
         base_pos=base_pos,
         device=device,
         enable_self_collisions=enable_self_collisions,
+        support_roll_kp=support_roll_kp,
+        joint_damping_ratio=joint_damping_ratio,
     )
     return scene

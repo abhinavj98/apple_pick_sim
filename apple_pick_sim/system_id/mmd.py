@@ -31,6 +31,7 @@ def fit_gt_normalization(
     n_junctions: int = 2,
     include_delta: bool = True,
     categorical_weight: float = 1.0,
+    delta_weight: float = 1.0,
 ) -> NormalizationStats:
     """Fit GT mean; use fixed physical scales as divisors.
 
@@ -53,6 +54,7 @@ def fit_gt_normalization(
         n_junctions=n_junctions,
         include_delta=include_delta,
         categorical_weight=categorical_weight,
+        delta_weight=delta_weight,
     )
     state_dim = int(state_vector_phys_scale(n_junctions).size)
     n_blocks = 2 if bool(include_delta) else 1

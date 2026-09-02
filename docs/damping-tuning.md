@@ -4,7 +4,7 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Last updated** | 2026-07-23 |
+| **Last updated** | 2026-08-30 |
 | **Roadmap slice** | [V].2.1.3 (material-parameter sampling) / settle stability |
 | **Owner** | Abhinav |
 
@@ -16,19 +16,18 @@ layer to fix problems that belong to another.
 
 | Layer | Where | What you set | What it means |
 | ----- | ----- | ------------ | ------------- |
-| **Bend (real values)** | `CABLE` bend | `youngs_modulus_pa` \(E\), bend `damping_ratio` \(\zeta\) | Literature / sys-ID wood–peduncle bending. \(k_{\mathrm{bend}}=EI/L_{\mathrm{seg}}\), \(c_{\mathrm{bend}}=2\zeta\sqrt{k_{\mathrm{bend}} J_{\mathrm{seg}}}\). This is the CEM / hardware-transfer knob. |
+| **Bend (real values)** | `CABLE` bend | `flexural_modulus_pa` \(E_{\mathrm{flex}}\), `damping_ratio` \(\zeta\) | Literature / sys-ID wood–peduncle bending. \(k_{\mathrm{bend}}=E_{\mathrm{flex}}I/L_{\mathrm{seg}}\), \(c_{\mathrm{bend}}=2\zeta\sqrt{k_{\mathrm{bend}} J_{\mathrm{seg}}}\). CMA/grid spur/stem axes search flexural \(E\). |
 | **Joints (stability)** | `FIXED` welds | `sim_build.joint_damping_ratio` (or per-role `kd` / `kp`) | Damps discrete support / rod↔rod / stem→apple / proxy welds so VBD settles. **Not** wood viscosity. Support \(k_p\) is also a **sys-ID target** (batched Young's grid/CMA); during that path support \(k_d\) uses the **same** `joint_damping_ratio` recorded in the dataset (collect/replay parity) — see `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md`. |
-| **Stretch (max load)** | `CABLE` stretch | `vbd_stretch_force.max_force_n` \(F_{\max}\), `damping_ratio` \(\zeta_{\mathrm{stretch}}\) | Soft axial spring sized so extension at \(F_{\max}\) stays within \(\delta=0.05\,L_{\mathrm{seg}}\): \(k=F_{\max}/\delta\). Decoupled from bend \(E\). |
+| **Stretch (axial beam)** | `CABLE` stretch | `youngs_modulus_pa` \(E_{\mathrm{ax}}\), shared `damping_ratio` \(\zeta\) | Beam \(k_{\mathrm{stretch}}=E_{\mathrm{ax}}A/L_{\mathrm{seg}}\), \(c_{\mathrm{stretch}}=2\zeta\sqrt{k_{\mathrm{stretch}} m_{\mathrm{seg}}}\). Optional 5D CMA axes duplicate flexural search boxes for spur/stem axial \(E\). |
 
 Canonical fixture: `apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json`
-(\(E\) from wood/peduncle bands, bend \(\zeta=0.3\), \(F_{\max}=35\,\mathrm{N}\) ≈ stem break /
-detach scale, joint \(\zeta\) in `sim_build`).
+(\(E_{\mathrm{flex}}\) and \(E_{\mathrm{ax}}\) from wood/peduncle bands — duplicated at migration — bend/stretch share \(\zeta=0.3\), joint \(\zeta\) in `sim_build`). **`vbd_stretch_force` is no longer a range JSON contract.**
 
 ```mermaid
 flowchart TB
   bend["Bend: E, zeta_bend\nreal wood / peduncle"]
   joints["FIXED joints: kd from joint_damping_ratio\nsettle stability only"]
-  stretch["Stretch: F_max, zeta_stretch\nk = F_max / 0.05 L_seg"]
+  stretch["Stretch: E_ax, zeta\nk = E_ax A / L_seg"]
   bend --> cableBend["CABLE bend ke/kd"]
   stretch --> cableStretch["CABLE stretch ke/kd"]
   joints --> fixedWelds["FIXED penalty kd"]
@@ -40,65 +39,39 @@ flowchart TB
 - Cranking stretch \(\zeta\) to kill axial ring adds \(k_d/\Delta t\) virtual stiffness and can make AVBD worse when \(\omega_n\cdot\Delta t\) is already large — prefer smaller \(k\) (larger \(\delta\) or lower \(F_{\max}\)) or smaller \(\Delta t\).
 - Soft stretch is **not** a hard "no extension until \(F_{\max}\)" switch; it is a linear spring with \(\delta(F)\approx F/k\). \(F_{\max}\) is the design load for the extension budget (e.g. force at which the apple would detach), not a yield threshold inside the solver.
 
-## 1. Cable bend — real material values (`youngs_modulus_pa`, `damping_ratio`)
+## 1. Cable bend — real material values (`flexural_modulus_pa`, `damping_ratio`)
 
 Set per rod segment (`primary`, `spur`, `stem`) in the range JSON. Consumed by
-`apple_pick_sim/fruiting_system/params.py::rod_params_from_material`:
+`apple_pick_sim/fruiting_system/params.py::rod_params_from_material` (flexural slot):
 
 \[
-k_{\text{bend}} = E I / L_{\text{seg}},\qquad
+k_{\text{bend}} = E_{\text{flex}} I / L_{\text{seg}},\qquad
 c_{\text{bend}} = 2\zeta\sqrt{k_{\text{bend}} \cdot J_{\text{seg}}}
 \]
 
-(see `docs/material-parameter-sampling.md`). Written into `RodParams.bend_stiffness` /
-`bend_damping` → `builder.add_rod(...)` → `model.joint_target_ke/kd` on `CABLE` bend.
+(see `docs/material-parameter-sampling.md`). Sys-ID setters use **`set_rod_flexural_modulus`** for bend-only retargeting.
 
-**Current fixture** uses bend `damping_ratio: 0.3` (wood-like) and \(E\) bands from
+**Current fixture** uses bend `damping_ratio: 0.3` (wood-like) and \(E_{\mathrm{flex}}\) bands from
 wood/peduncle literature / proxy tip-stiffness mapping — **not** inflated for settle.
-Sys-ID / CMA-ES targets these bend parameters.
+Sys-ID / CMA-ES flexural axes target these bend parameters.
 
 **Known limitation — soft segments can't reach meaningful absolute damping via ζ
 alone.** Because \(c_{\text{bend}} \propto \sqrt{k_{\text{bend}}}\), and spur/stem
 `k_bend` can be small, even modest ζ yields tiny `c_bend`. **Do not chase settle-time
 by raising bend ζ past a wood-plausible value**; use joint `kd` for weld settle.
 
-When `vbd_stretch_force` is present, segment `damping_ratio` drives **bend only**;
-axial damping uses `vbd_stretch_force.damping_ratio`.
+## 2. Cable stretch — axial beam (`youngs_modulus_pa`, shared `damping_ratio`)
 
-## 2. Cable stretch — max-load budget (`vbd_stretch_force`)
-
-Wood/pedicel tissue is treated as **axially stiff under expected pick loads**. Soft
-AVBD cannot enforce a hard length constraint, so we size a soft spring from a max
-force and an extension fraction of segment length:
+Axial stretch uses the **axial** modulus key (`youngs_modulus_pa`) and the same segment \(\zeta\):
 
 \[
-\delta = 0.05\, L_{\text{seg}},\qquad
-k_{\text{stretch}} = F_{\max} / \delta,\qquad
-c_{\text{stretch}} = 2\,\zeta_{\text{stretch}}\sqrt{k_{\text{stretch}}\, m_{\text{seg}}}
+k_{\text{stretch}} = E_{\text{ax}} A / L_{\text{seg}},\qquad
+c_{\text{stretch}} = 2\,\zeta\sqrt{k_{\text{stretch}}\, m_{\text{seg}}}
 \]
 
-(`stretch_knobs_from_max_force` in `params.py`; constant
-`VBD_STRETCH_EXTENSION_FRACTION = 0.05`).
+Sys-ID setters use **`set_rod_youngs_modulus`** for stretch-only retargeting. Shipped variance fixtures duplicate flexural bands onto axial \(E\) at migration (beam \(EA/L\) — often much stiffer than the old 35 N max-load budget). Monitor AVBD stability if replay smoke regresses.
 
-```json
-"vbd_stretch_force": {
-  "max_force_n": 35.0,
-  "damping_ratio": 1.0
-}
-```
-
-**Intent:** under loads up to \(F_{\max}\) (e.g. ~35 N stem break / detach scale),
-axial extension stays on the order of \(\delta\) (linear: half force → half
-extension). Beyond that, the apple is assumed to leave the stem anyway — stretch
-need not model post-break compliance.
-
-**Not beam theory:** bend \(E\) does **not** set \(k_{\text{stretch}}\) when this
-block is present (beam \(EA/L_{\text{seg}}\) with GPa-scale \(E\) is usually too
-stiff for soft AVBD). Check \(\omega_n\cdot\Delta t=\sqrt{k/m_{\text{seg}}}\,\Delta t\);
-spur/stem often exceed the ~0.3–0.6 guideline — raise \(\zeta_{\text{stretch}}\) only
-cautiously (it also increases \(K_{\text{eff}}=k+k_d/\Delta t\)).
-
-Full contract: `docs/material-parameter-sampling.md` (§ `vbd_stretch_force`).
+Legacy **`vbd_stretch_force`** max-load sizing is **not** loaded from range JSON anymore (`stretch_knobs_from_max_force` remains a test helper).
 
 ## 3. FIXED-joint damping (`rigid_joint_*_kd`) — numerical stability
 
@@ -189,7 +162,15 @@ follow-up cleanup (remove the misleading kwargs, or actually enable ramping with
 
 Preferred fixture path: set **`sim_build.joint_damping_ratio`** (ζ ≥ 0; critical at 1,
 >1 overdamped) and
-optional `joint_*_kp_overrides`. At build time
+optional `joint_*_kp_overrides`. Support **angular** \(k_p\) is not copied from the
+JSON angular slot: when linear `"support"` is set,
+
+\[
+k_{\mathrm{ang}} = \tfrac{3}{4}\, L_{\mathrm{dowel}}^{2}\, k_{\mathrm{lin}}
+\]
+
+with \(L_{\mathrm{dowel}}\) the primary rod length (`params.primary.length`; config
+snapshots use the fixture length midpoint). Then
 `joint_kd_from_damping_ratio` expands
 
 \[
@@ -439,19 +420,19 @@ damping-responsive; don't spend a damping sweep chasing `branch_path>nominal`.
 
 | Item | Value | Location |
 | ---- | ----- | -------- |
-| `damping_ratio` (primary/spur/stem) | fixed `0.3` (JSON band) | `fruiting_system_ranges_real_world_proxy_variance.json` |
-| `vbd_stretch_force` (primary) | `max_force_n=35`, \(\zeta_{\mathrm{stretch}}=1\); \(k=F/(0.05 L_{\mathrm{seg}})\) | same fixture |
-| `vbd_stretch_force` (spur/stem) | same \(F=35\); spur \(\zeta=1.5\), stem \(\zeta=3\) | same fixture |
+| `damping_ratio` (primary/spur/stem) | fixed `0.3` (JSON band; shared bend + stretch) | `fruiting_system_ranges_real_world_proxy_variance.json` |
+| Axial stretch | beam \(E_{\mathrm{ax}} A/L_{\mathrm{seg}}\) from `youngs_modulus_pa` (duplicated flex bands at migration) | same fixture |
 | `FRUITING_VBD_RIGID_JOINT_LINEAR_KD` | `0.0` (Newton ``SolverVBD`` default) | `apple_pick_sim/fruiting_system/build.py` |
 | `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD` | `0.0` (Newton ``SolverVBD`` default) | `apple_pick_sim/fruiting_system/build.py` |
 | `rigid_joint_linear_ke` / `rigid_joint_angular_ke` | `1e5` (Newton default, not overridden) | `newton/newton/_src/solvers/vbd/solver_vbd.py` |
 | `rigid_joint_*_k_start` | `1e8` / `1e6` passed but **inert** (ramping disabled) | `make_fruiting_solver_vbd` |
-| VBD `iterations` | 50 | `make_fruiting_solver_vbd` |
+| VBD `iterations` | 30 | `make_fruiting_solver_vbd` |
 | `_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES` (batched config) | uniform `0.0` per role (`support`, `primary_spur`, `spur_stem`, `stem_apple`; Newton default via `FRUITING_VBD_RIGID_JOINT_ANGULAR_KD`) | `batched_heterogeneous_config.py` |
 | `_DEFAULT_JOINT_LINEAR_KD_OVERRIDES` (batched config) | uniform `0.0` per role (`support`, `primary_spur`, `spur_stem`, `stem_apple`; Newton default via `FRUITING_VBD_RIGID_JOINT_LINEAR_KD`) | `batched_heterogeneous_config.py` |
 | `EXAMPLE_JOINT_*_KD_OVERRIDES` (Python fallback) | uniform `0.3` per role | `batched_heterogeneous_config.py` (used when ranges omit `sim_build`) |
 | `EXAMPLE_JOINT_*_KP_OVERRIDES` (Python fallback) | `"support": 2000.0` angular + linear | `batched_heterogeneous_config.py` |
-| `sim_build` VIC + joint (canonical variance) | VIC `100/20/10/3`; `joint_damping_ratio: 0.5`; kp `"support": 10000` | `fruiting_system_ranges_real_world_proxy_variance.json` via `parse_sim_build` |
+| `sim_build` VIC + joint (canonical variance) | VIC `100/20/10/3`; `joint_damping_ratio: 1.0` (critical); linear kp `"support": 1000`; angular \(k=\tfrac{3}{4}L^{2}k_{\mathrm{lin}}\) with \(L=\) primary length (fixture midpoint \(0.35\,\mathrm{m}\) → \(91.875\,\mathrm{N\cdot m/rad}\) on the config snapshot; per-env apply uses that env's \(L\)) | fixture JSON + `map_support_angular_kp_overrides` |
+| T-junction world-support VBD mode | soft revolute about primary (`vbd:joint_is_hard=0` on `primary_support_*`); pitch/yaw on penalty slot 1; T-roll on `target_ke` + slot 2 from `joint_roll_kp_overrides`; other FIXED stay hard | `_connect_world_to_rod_*` + `_attach_t_junction_world_supports` in `build.py` |
 | `joint_*_kp_overrides` (batched config default) | empty dict | `batched_heterogeneous_config.py` (`FruitingSystemConfig`) |
 
 Update this table when any of these values change so it stays a reliable snapshot.
@@ -461,7 +442,7 @@ Update this table when any of these values change so it stays a reliable snapsho
 | Module | Role |
 | ------ | ---- |
 | `apple_pick_sim/fruiting_system/params.py` | `RodParams`, `rod_params_from_material` — derives `bend_damping`/`stretch_damping` from `(E, ζ, geometry)`; `parse_sim_build` / `joint_damping_ratio` |
-| `apple_pick_sim/fruiting_system/joint_kd_scaling.py` | `joint_kd_from_damping_ratio` (absolute ζ→kd; no E scale) |
+| `apple_pick_sim/fruiting_system/joint_kd_scaling.py` | `support_angular_kp_from_linear` (\(\tfrac{3}{4}L^{2}k_{\mathrm{lin}}\)); `joint_kd_from_damping_ratio` (absolute ζ→kd; no E scale) |
 | `apple_pick_sim/fruiting_system/build.py` | `FRUITING_VBD_RIGID_JOINT_{LINEAR,ANGULAR}_KD`, `make_fruiting_solver_vbd`, `set_fruiting_joint_angular_kd`, `set_fruiting_joint_angular_kd_batched`, `set_fruiting_joint_angular_kp`, `set_fruiting_joint_angular_kp_batched`, `set_fruiting_joint_linear_kp`, `set_fruiting_joint_linear_kp_batched`, `fruiting_fixed_joints` |
 | `newton/newton/_src/solvers/vbd/solver_vbd.py` | `SolverVBD._init_joint_penalty_k` (global kd/k → per-constraint-slot arrays), `joint_penalty_kd`, `joint_penalty_k`, `joint_constraint_start` |
 | `newton/newton/_src/solvers/vbd/rigid_vbd_kernels.py` | `evaluate_linear_constraint_force_hessian` / `evaluate_angular_constraint_force_hessian` — where `kd` enters the AVBD force/Hessian |
@@ -474,6 +455,8 @@ Update this table when any of these values change so it stays a reliable snapsho
 | ---- | ------ |
 | `apple_pick_sim/tests/test_wrench_equilibrium.py` (see "NOTE ON JOINT DAMPING") | Documents why joint `kd` is kept small relative to `rigid_joint_*_k_start ~ 1e8`; equilibrium wrench checks are sensitive to joint damping magnitude |
 | `apple_pick_sim/tests/test_fruiting_system.py` | `test_set_fruiting_joint_angular_kd_*`, `test_set_fruiting_joint_angular_kp_*` — single-world per-joint angular kd/kp patching |
+| `apple_pick_sim/tests/test_t_junction_topology.py` | `test_t_junction_world_supports_are_soft_vbd_joints` — world clamps soft, other FIXED hard |
+| `apple_pick_gym/tests/test_support_joint_penalties.py` | per-env support kp/kd apply; batched supports stay soft |
 | `apple_pick_sim/tests/test_heterogeneous_coupled_fruiting.py` | `test_set_fruiting_joint_angular_kd_batched_*`, `test_set_fruiting_joint_angular_kp_batched_*` — batched all-env kernel patch |
 | `apple_pick_sim/tests/test_settle_ke_decay.py` | KE envelope decay analysis correctness |
 | `apple_pick_sim/tests/test_sweep_settle_weld_stability.py` | Settle-duration sweep → stability rate after settle/weld/hold |

@@ -1,42 +1,140 @@
 {
   "_comment": "Stability-tuned real-world bench proxy. youngs_modulus_pa bands re-derived from cantilever tip-stiffness k=3EI/L^3 at each segment's nominal (midpoint) geometry, mapped from proxy branch tiers: primary 210-736 N/m, spur 0.2-0.6 N/m (compliant shoot), stem 0.05-0.5 N/m (interim until torsion API). See docs/material-parameter-sampling.md and docs/real-world-proxy.md.",
   "args": {
-    "fruiting_base_pos": [0.0, 0.5, 0.95],
-    "robot_base_pos": [0.0, 0.0, 0.0]
+    "fruiting_base_pos": [
+      0.0,
+      0.5,
+      0.95
+    ],
+    "robot_base_pos": [
+      0.0,
+      0.0,
+      0.0
+    ]
   },
   "primary": {
-    "num_segments": {"min": 2, "max": 4},
-    "length": {"min": 0.1, "max": 0.2},
-    "radius": {"min": 0.012, "max": 0.025},
-    "density": {"min": 300.0, "max": 500.0},
-    "azimuth_deg": {"min": 0.0, "max": 0.0},
-    "elevation_deg": {"min": 0.0, "max": 0.0},
-    "youngs_modulus_pa": {"min": 2568000.0, "max": 9000229.0},
-    "damping_ratio": {"min": 0.05, "max": 0.12}
+    "num_segments": {
+      "min": 2,
+      "max": 4
+    },
+    "length": {
+      "min": 0.1,
+      "max": 0.2
+    },
+    "radius": {
+      "min": 0.012,
+      "max": 0.025
+    },
+    "density": {
+      "min": 300.0,
+      "max": 500.0
+    },
+    "azimuth_deg": {
+      "min": 0.0,
+      "max": 0.0
+    },
+    "elevation_deg": {
+      "min": 0.0,
+      "max": 0.0
+    },
+    "youngs_modulus_pa": {
+      "min": 2568000.0,
+      "max": 9000229.0
+    },
+    "damping_ratio": {
+      "min": 0.05,
+      "max": 0.12
+    },
+    "flexural_modulus_pa": {
+      "min": 2568000.0,
+      "max": 9000229.0
+    }
   },
   "secondary": null,
   "spur": {
-    "num_segments": {"min": 4, "max": 6},
-    "length": {"min": 0.01, "max": 0.1},
-    "radius": {"min": 0.006, "max": 0.014},
-    "density": {"min": 200.0, "max": 400.0},
-    "elevation_delta_deg": {"min": -90.0, "max": -90.0},
-    "lateral_delta_deg": {"min": 0.0, "max": 0.0},
-    "youngs_modulus_pa": {"min": 1412.0, "max": 4237.0},
-    "damping_ratio": {"min": 0.05, "max": 0.15}
+    "num_segments": {
+      "min": 4,
+      "max": 6
+    },
+    "length": {
+      "min": 0.01,
+      "max": 0.1
+    },
+    "radius": {
+      "min": 0.006,
+      "max": 0.014
+    },
+    "density": {
+      "min": 200.0,
+      "max": 400.0
+    },
+    "elevation_delta_deg": {
+      "min": -90.0,
+      "max": -90.0
+    },
+    "lateral_delta_deg": {
+      "min": 0.0,
+      "max": 0.0
+    },
+    "youngs_modulus_pa": {
+      "min": 1412.0,
+      "max": 4237.0
+    },
+    "damping_ratio": {
+      "min": 0.05,
+      "max": 0.15
+    },
+    "flexural_modulus_pa": {
+      "min": 1412.0,
+      "max": 4237.0
+    }
   },
   "stem": {
-    "num_segments": {"min": 4, "max": 6},
-    "length": {"min": 0.01, "max": 0.02},
-    "radius": {"min": 0.003, "max": 0.008},
-    "density": {"min": 150.0, "max": 300.0},
-    "elevation_delta_deg": {"min": 65.0, "max": 65.0},
-    "lateral_delta_deg": {"min": 0.0, "max": 0.0},
-    "youngs_modulus_pa": {"min": 78.0, "max": 783.0},
-    "damping_ratio": {"min": 0.08, "max": 0.2}
+    "num_segments": {
+      "min": 4,
+      "max": 6
+    },
+    "length": {
+      "min": 0.01,
+      "max": 0.02
+    },
+    "radius": {
+      "min": 0.003,
+      "max": 0.008
+    },
+    "density": {
+      "min": 150.0,
+      "max": 300.0
+    },
+    "elevation_delta_deg": {
+      "min": 65.0,
+      "max": 65.0
+    },
+    "lateral_delta_deg": {
+      "min": 0.0,
+      "max": 0.0
+    },
+    "youngs_modulus_pa": {
+      "min": 78.0,
+      "max": 783.0
+    },
+    "damping_ratio": {
+      "min": 0.08,
+      "max": 0.2
+    },
+    "flexural_modulus_pa": {
+      "min": 78.0,
+      "max": 783.0
+    }
   },
   "apple": {
-    "radius": {"min": 0.04, "max": 0.08},
-    "density": {"min": 700.0, "max": 700.0}
+    "radius": {
+      "min": 0.04,
+      "max": 0.08
+    },
+    "density": {
+      "min": 700.0,
+      "max": 700.0
+    }
   }
 }

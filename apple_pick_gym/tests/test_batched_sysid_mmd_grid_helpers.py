@@ -659,6 +659,7 @@ def _sysid_numpy_obs_for_frame(*, frame_idx: int, junction_names: list[str]) -> 
         "ft_wrist": np.full(6, 100.0 + frame_idx, dtype=np.float32),
         "tcp_velocity": np.full(6, 200.0 + frame_idx, dtype=np.float32),
         "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32) + frame_idx,
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32) + frame_idx,
         "woody_part_start_pos": {
             name: np.array([10.0, 11.0, 12.0], dtype=np.float32) + frame_idx
@@ -944,6 +945,9 @@ def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None, sh
         "tcp_velocity": np.hstack([base + 10.0 + i for i in range(6)]).astype(np.float32),
         "action": np.hstack([base + 20.0 + i for i in range(6)]).astype(np.float32),
         "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
+        "tcp_quat": np.tile(
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (steps, 1)
+        ),
         "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
         "woody_part_start_pos": woody_start,
         "woody_part_end_pos": woody_end,

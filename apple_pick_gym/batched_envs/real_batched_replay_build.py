@@ -30,6 +30,10 @@ _SETTLE_QUIET_EVERY: int | None = 100
 _SETTLE_GRAVITY_RAMP = False
 _POST_GRASP_SETTLE_SUBSTEPS = 500
 _DEFAULT_CONTROLLER_MODE = "vic_pose"
+# Match apple_pullto_static OSC: sep_ori rotation map + null-space Kd=15.
+_REAL_OSC_KP_NULL = 10.0
+_REAL_OSC_KD_NULL = 15.0
+_REAL_OSC_SEP_ORI = True
 
 
 def dataset_declares_vic_pose(
@@ -178,6 +182,13 @@ def real_replay_sim_config(
         linear_speed=1.0,
         angular_speed=1.0,
     )
+    if controller_mode == "vic_pose":
+        controller = dataclasses.replace(
+            controller,
+            kp_null=_REAL_OSC_KP_NULL,
+            kd_null=_REAL_OSC_KD_NULL,
+            sep_ori=_REAL_OSC_SEP_ORI,
+        )
     if vic_gains is not None:
         controller = dataclasses.replace(controller, vic_gains=vic_gains)
     runtime = gym_cfg.runtime

@@ -10,6 +10,7 @@ from apple_pick_sim.system_id.mmd_features import (
     STATE_VECTOR_PHYS_SCALE,
     build_bending_angles,
     build_state_matrix,
+    build_tcp_rotvec,
     build_transition_features_by_direction,
     cma_woody_junctions_from_env,
     combine_transition_features,
@@ -55,6 +56,9 @@ def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None) ->
         ),
         "action": np.hstack([base + 20.0 + i for i in range(6)]).astype(np.float32),
         "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
+        "tcp_quat": np.tile(
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (steps, 1)
+        ),
         "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
         "woody_part_start_pos": woody_start,
         "excitation_direction": np.tile(
@@ -133,6 +137,10 @@ def test_build_state_matrix_uses_exact_feature_order():
             30.0,
             31.0,
             32.0,
+            # tcp_rotvec (frame-0 relative; identity quat → zeros)
+            0.0,
+            0.0,
+            0.0,
             # woody starts in junction_names order: joint_b then joint_a
             200.0,
             201.0,
@@ -155,6 +163,43 @@ def test_build_state_matrix_prefers_ft_wrist_lpf_when_present():
     arrays["ft_wrist_lpf"] = np.full((1, 6), 7.0, dtype=np.float32)
     state = build_state_matrix(arrays)
     np.testing.assert_allclose(state[0, :6], [7.0] * 6)
+
+
+def test_build_tcp_rotvec_identity_is_zero():
+    quats = np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (3, 1))
+    rotvec = build_tcp_rotvec(quats)
+    assert rotvec.shape == (3, 3)
+    np.testing.assert_allclose(rotvec, 0.0)
+
+
+def test_build_tcp_rotvec_90deg_about_z():
+    half = np.sqrt(0.5)
+    quats = np.array(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, half, half],
+            [0.0, 0.0, half, half],
+        ],
+        dtype=np.float64,
+    )
+    rotvec = build_tcp_rotvec(quats)
+    np.testing.assert_allclose(rotvec[0], 0.0, atol=1e-6)
+    np.testing.assert_allclose(rotvec[1], [0.0, 0.0, np.pi / 2], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(rotvec[2], [0.0, 0.0, np.pi / 2], rtol=1e-5, atol=1e-5)
+
+
+def test_build_tcp_rotvec_q_and_neg_q_match():
+    half = np.sqrt(0.5)
+    q = np.array([0.0, 0.0, half, half], dtype=np.float64)
+    rot_pos = build_tcp_rotvec(np.stack([np.array([0.0, 0.0, 0.0, 1.0]), q]))
+    rot_neg = build_tcp_rotvec(np.stack([np.array([0.0, 0.0, 0.0, 1.0]), -q]))
+    np.testing.assert_allclose(rot_pos[1], rot_neg[1], rtol=1e-5, atol=1e-5)
+
+
+def test_build_tcp_rotvec_zero_norm_quat_is_identity():
+    quats = np.array([[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]], dtype=np.float64)
+    rotvec = build_tcp_rotvec(quats)
+    np.testing.assert_allclose(rotvec, 0.0, atol=1e-6)
 
 
 def test_state_vector_phys_scale_length_matches_two_junction_state_matrix():
@@ -199,6 +244,7 @@ def test_replay_obs_dict_from_sysid_numpy_flattens_woody():
         "ft_wrist": np.arange(6, dtype=np.float32),
         "tcp_velocity": np.arange(6, 12, dtype=np.float32),
         "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32),
         "woody_part_start_pos": {
             "joint_b": np.array([7.0, 8.0, 9.0], dtype=np.float32),
@@ -221,6 +267,7 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
         "ft_wrist": recorded["ft_wrist"][frame_idx],
         "tcp_velocity": recorded["tcp_velocity"][frame_idx],
         "tcp_pos": recorded["tcp_pos"][frame_idx],
+        "tcp_quat": recorded["tcp_quat"][frame_idx],
         "apple_pos": recorded["apple_pos"][frame_idx],
         "woody_part_start_pos": {
             name: recorded["woody_part_start_pos"][name][frame_idx]
@@ -234,6 +281,7 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
         "ft_wrist": sysid_obs["ft_wrist"],
         "tcp_velocity": sysid_obs["tcp_velocity"],
         "tcp_pos": sysid_obs["tcp_pos"],
+        "tcp_quat": sysid_obs["tcp_quat"],
         "apple_pos": sysid_obs["apple_pos"],
         "woody_start": flatten_woody_positions(
             recorded["woody_part_start_pos"],
@@ -256,6 +304,29 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
     assert "woody_part_end_pos" not in adapted_arrays
 
 
+def test_replay_observation_collector_copies_sim_time_from_recorded():
+    recorded = _arrays_for_steps(steps=3, junction_names=["joint_a"])
+    recorded["phase"] = np.array([0, 1, 1], dtype=np.int8)
+    recorded["dir_idx"] = np.array([0, 0, 0], dtype=np.int32)
+    recorded["sim_time"] = np.array([0.0, 1.0 / 30.0, 2.0 / 30.0], dtype=np.float64)
+    collector = ReplayObservationCollector(recorded)
+    obs = {
+        "ft_wrist": np.arange(6, dtype=np.float32),
+        "tcp_velocity": np.arange(6, dtype=np.float32),
+        "tcp_pos": np.zeros(3, dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "apple_pos": np.zeros(3, dtype=np.float32),
+        "woody_start": np.zeros(3, dtype=np.float32),
+    }
+    collector.record(obs, frame_idx=1)
+    collector.record(obs, frame_idx=2)
+    arrays = collector.to_arrays()
+    np.testing.assert_allclose(
+        arrays["sim_time"],
+        recorded["sim_time"][1:3],
+    )
+
+
 def test_replay_observation_collector_stable_column():
     recorded = _arrays_for_steps(steps=2, junction_names=["joint_a", "joint_b"])
     recorded["phase"] = np.array([0, 1], dtype=np.int8)
@@ -265,6 +336,7 @@ def test_replay_observation_collector_stable_column():
         "ft_wrist": np.arange(6, dtype=np.float32) + 1000.0,
         "tcp_velocity": np.arange(6, dtype=np.float32) + 2000.0,
         "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32),
         "woody_start": np.array([10.0, 11.0, 12.0, 20.0, 21.0, 22.0], dtype=np.float32),
     }
@@ -282,6 +354,7 @@ def test_replay_observation_collector_oob_frame_raises():
         "ft_wrist": np.arange(6, dtype=np.float32),
         "tcp_velocity": np.arange(6, dtype=np.float32),
         "tcp_pos": np.zeros(3, dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.zeros(3, dtype=np.float32),
         "woody_start": np.zeros(3, dtype=np.float32),
     }
@@ -301,13 +374,17 @@ def test_replay_observation_collector_record_requires_woody_start_not_end():
         "ft_wrist": np.arange(6, dtype=np.float32),
         "tcp_velocity": np.arange(6, dtype=np.float32),
         "tcp_pos": np.zeros(3, dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.zeros(3, dtype=np.float32),
     }
     with pytest.raises(KeyError, match="woody_start"):
         collector.record(dict(base_obs), frame_idx=0)
 
     # Succeeds without woody_end.
-    collector.record({**base_obs, "woody_start": np.zeros(3, dtype=np.float32)}, frame_idx=0)
+    collector.record(
+        {**base_obs, "woody_start": np.zeros(3, dtype=np.float32), "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)},
+        frame_idx=0,
+    )
     assert collector.n_rows == 1
 
 
@@ -460,6 +537,7 @@ def test_replay_observation_collector_supports_19d_vic_pose_actions():
         "ft_wrist": np.arange(6, dtype=np.float32),
         "tcp_velocity": np.arange(6, dtype=np.float32),
         "tcp_pos": np.zeros(3, dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.zeros(3, dtype=np.float32),
         "woody_start": np.zeros(3, dtype=np.float32),
     }
@@ -479,6 +557,7 @@ def test_replay_observation_collector_builds_dataset_shaped_arrays():
         "ft_wrist": np.arange(6, dtype=np.float32) + 1000.0,
         "tcp_velocity": np.arange(6, dtype=np.float32) + 2000.0,
         "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32),
         "woody_start": np.array(
             [10.0, 11.0, 12.0, 20.0, 21.0, 22.0], dtype=np.float32

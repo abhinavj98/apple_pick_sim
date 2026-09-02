@@ -9,7 +9,7 @@ the next real-data acceptance work belong in `docs/ROADMAP.md`.
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-08-26 |
+| Last reviewed | 2026-09-01 |
 | Code owners | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py`; `apple_pick_gym/batched_envs/cma_wave_evaluation.py`; `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H4 `docs/handbook-real-replay.md` |
@@ -27,32 +27,63 @@ Related boundaries:
 
 ## 1. Phenotype
 
-The current fitted candidate is
+**Cartesian grid (3D):** unchanged diagnostic axes
 
 \[
-\theta =
+\theta_{\mathrm{grid}} =
 \left(
 \log_{10} k_p^{\mathrm{support}},
-\log_{10} E_\mathrm{spur},
-\log_{10} E_\mathrm{stem}
+\log_{10} E_{\mathrm{flex,spur}},
+\log_{10} E_{\mathrm{flex,stem}}
 \right).
 \]
 
-`batched_sysid_cmaes.SupportKpYoungsCandidate` stores the corresponding
-physical values `(support_kp, spur, stem)`. The single support value is applied
-to both left and right primary support joints and to both angular and linear
-\(k_p\) slots. This is one pragmatic search knob; it is not a claim that the
-angular and linear units are dimensionally identical.
+`iter_support_kp_youngs_candidates` and `candidates_from_log10_vector` length-3
+samples set flexural spur/stem \(E\) only; axial moduli stay at the structure baseline.
 
-`SupportKpYoungsCandidate.apply_to` changes spur and stem \(E\) through
-`fruiting_system.set_rod_youngs_modulus`. Fused replay separately applies the
+**CMA-ES (5D):**
+
+\[
+\theta_{\mathrm{CMA}} =
+\left(
+\log_{10} k_p^{\mathrm{support}},
+\log_{10} E_{\mathrm{flex,spur}},
+\log_{10} E_{\mathrm{flex,stem}},
+\log_{10} E_{\mathrm{ax,spur}},
+\log_{10} E_{\mathrm{ax,stem}}
+\right).
+\]
+
+`SupportKpYoungsCandidate` stores `(support_kp, spur, stem)` as **flexural** moduli
+plus optional `(spur_youngs, stem_youngs)` axial moduli. Length-5 `candidates_from_log10_vector`
+maps all five axes; length-3 leaves axial slots `None`.
+
+`SupportKpYoungsCandidate.apply_to` uses **`set_rod_flexural_modulus`** on spur/stem,
+then **`set_rod_youngs_modulus`** when axial slots are set. Fused replay separately applies the
 per-environment support penalties through
 `apply_per_env_support_joint_penalties`. Support \(k_d\) is derived using the
 dataset's support-joint damping ratio and each child body's mass/inertia.
+T-junction world clamps (`primary_support_left/right`) are authored **soft**
+revolute hinges about the primary axis (VBD penalty-only, `vbd:joint_is_hard=0`).
+Linear \(k_p\) and pitch/yaw angular \(k_p=\tfrac{3}{4}L^2 k_{\mathrm{lin}}\) use
+penalty slots 0–1; T-roll uses fixture `sim_build.joint_roll_kp_overrides.support`
+as revolute drive `target_ke` (N·m/rad per clamp, not CMA). Other rod welds stay hard `FIXED`.
+Build-time and CMA-apply support pitch/yaw angular \(k_p\) is
+
+\[
+k_{\mathrm{ang}} = \tfrac{3}{4}\, L_{\mathrm{dowel}}^{2}\, k_{\mathrm{lin}},
+\]
+
+with \(L_{\mathrm{dowel}}\) the **primary rod length** (metres) between the T-junction
+world clamps. CMA searches only linear \(k_{\mathrm{lin}}\) (N/m); both clamps get this
+\(k_{\mathrm{ang}}\) (N·m/rad). Config-level snapshots that do not yet have a sampled
+env use the fixture `primary.length` midpoint. Per-env apply uses that env's
+`params.primary.length`. (Fixture JSON may still list the same number for angular
+and linear slots; the map overwrites angular.)
 
 The following remain fixed:
 
-- primary and secondary Young's modulus;
+- primary and secondary **flexural** moduli (and axial unless explicitly searched);
 - support-joint damping ratio;
 - non-support fixed-joint penalties;
 - geometry, topology, density, apple parameters, and other structure state.
@@ -139,16 +170,15 @@ unchanged.
 
 | Knob | Default |
 | ---- | ------- |
-| Coordinates | `log10([support_kp, E_spur, E_stem])` |
-| Initial mean | `[4.0, 9.5, 9.5]` sim-sim; real `vic_pose` `[4.0, 8.0, 8.0]` (100 MPa) |
+| Coordinates | `log10([support_kp, E_flex_spur, E_flex_stem, E_ax_spur, E_ax_stem])` (CMA); grid uses first three only |
+| Initial mean | `[4.0, 9.5, 9.5, 9.5, 9.5]` sim-sim; real `vic_pose` `[log10(500), 8.0, 8.0, 8.0, 8.0]` (\(500\,\mathrm{N/m}\), \(100\,\mathrm{MPa}\)) |
 | Initial sigma | `0.2` decade; real/sim `max_sigma_log10=0.5` (pycma `maxstd` + post-`tell` σ clamp) |
-| Population | `15` |
-| Maximum generations | `10` |
+| Population | `20` |
+| Maximum generations | `20` |
 | CMA base seed | `56` |
-| Bounds | sim-sim lower `[2,8,8]`, upper `[6,11,11]`; real `vic_pose` `[2,7,7]`–`[6,11,11]` (10 MPa–100 GPa) |
+| Bounds | sim-sim lower `[2, 4.0, 4.0, 7.0, 7.0]`, upper `[6, 10.7, 10.7, 10.7, 10.7]` (kp \(10^2\)–\(10^6\) N/m, flex \(10\,\mathrm{kPa}\)–\(50\,\mathrm{GPa}\), axial \(10\,\mathrm{MPa}\)–\(50\,\mathrm{GPa}\)); real `vic_pose` kp \(200\)–\(1000\,\mathrm{N/m}\), all four \(E\) \(100\,\mathrm{kPa}\)–\(10\,\mathrm{GPa}\) |
 
-The support box is \(10^2\)–\(10^6\); spur/stem \(E\) each use
-\(10^8\)–\(10^{11}\) Pa. `"bounds_midpoint"` initialization is also supported.
+The sim-sim support box is \(10^2\)–\(10^6\,\mathrm{N/m}\); real `vic_pose` support \(k_p\) is \(200\)–\(1000\,\mathrm{N/m}\) (init \(500\,\mathrm{N/m}\)). `"bounds_midpoint"` initialization extends fixture spur/stem midpoints to 5D by duplicating flexural midpoints onto axial slots when a 5D search box is active. Grid `"bounds_midpoint"` remains 3D.
 The ranges fixture remains required for replay `sim_build` settings, but its
 narrow material ranges are not the default CMA safety box.
 
@@ -185,10 +215,10 @@ owned by H3:
 - exclusion of `action` from the score vector; and
 - per-direction diagnostic versus pooled optimizer fitness.
 
-**CMA default hold aggregation (2026-08-27):** `--hold-aggregation none`
-(quasi-static level bags; every stable hold frame is a row). Legacy transition
-bags use `--hold-aggregation mean` (arithmetic mean of stable hold frames before
-emitting `[s_i, s_{i+1}-s_i]` rows). The deprecated `--use-median` flag and
+**CMA default hold aggregation (2026-09-02):** `--hold-aggregation mean`
+(arithmetic mean of stable hold frames before emitting `[s_i, s_{i+1}-s_i]` rows).
+Use `--hold-aggregation none` for quasi-static level bags (every stable hold frame
+is a row). The deprecated `--use-median` flag and
 `YoungsModulusScoringConfig.use_median=True` both override to median when
 `hold_aggregation` is not set explicitly.
 Each generation `raw_scores` entry carries `mean_hold_force_err_n`,
@@ -197,8 +227,10 @@ Each generation `raw_scores` entry carries `mean_hold_force_err_n`,
 The `score_summary` dict adds `eligible_mean_hold_*` / `best_eligible_mean_hold_*`
 across non-disqualified candidates.
 
-**Stiffness defaults (2026-08-27):** `--hold-aggregation none --no-include-delta
---categorical-weight 30` with pooled directions (default). Legacy transition bags:
+**Stiffness defaults (2026-09-02):** `--hold-aggregation mean --include-delta
+--delta-weight 1 --categorical-weight 100` with pooled directions (default).
+Level-bag pass: `--hold-aggregation none --no-include-delta --delta-weight 0.2`.
+Legacy transition bags:
 `--hold-aggregation mean --include-delta --categorical-weight 1`. Recorded under
 `scoring.hold_aggregation`, `scoring.include_delta`, and `scoring.categorical_weight`
 in `cmaes_report.json`.
@@ -213,6 +245,20 @@ in `cmaes_report.json`. This is optimizer fitness only; holdout
 
 See `docs/handbook-sysid-scoring.md`. Do not infer the current objective from
 historical MMD grid or primary-\(E\) design documents.
+
+**Generation force and torque plots.** After `--persist-generation-replays`, plot
+real vs sim Fx/Fy/Fz and Tx/Ty/Tz (PNG + optional HTML) from
+`structure_XXX/generations/gen_YY/best`.
+Sim traces default to a 5 Hz zero-phase Butterworth (plot-only; `--sim-lpf-hz 0`
+disables):
+
+```bash
+uv run python -m apple_pick_gym.viz.cma_force_plots \
+  --run tmp/cma_5d_rotvec_delta_20gen \
+  --manifest tmp/real_batched_s09_k_frame/manifest.json
+```
+
+Output is `structure_XXX/force_plots/gen_YY/` plus an index README.
 
 ## 5. Real-data path and status boundary
 
@@ -442,6 +488,7 @@ the ranking policy; the second validates CMA fit integrity.
 | Holdout split, report, val overlays, exit on gate fail | `apple_pick_sim/system_id/holdout_gates.py`; `apple_pick_gym/batched_envs/holdout_evaluation.py` |
 | Shared real replay build | `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
 | Ranking and CMA gates | `apple_pick_gym/batched_envs/youngs_modulus_gate_report.py`; `youngs_modulus_cmaes_gate_report.py`; `scripts/gate_youngs_modulus_*.sh` |
+| Persisted-bag force/torque time series | `apple_pick_gym/viz/cma_force_plots.py` |
 
 Focused grid/controller-mode checks:
 
@@ -465,7 +512,8 @@ uv run --env-file pytest.env python -m pytest -p no:launch_testing \
   apple_pick_gym/tests/test_holdout_evaluation.py \
   apple_pick_sim/tests/test_holdout_gates.py \
   apple_pick_gym/tests/test_youngs_modulus_cmaes_gate_report.py \
-  apple_pick_gym/tests/test_gate_youngs_modulus_cmaes_script.py -q
+  apple_pick_gym/tests/test_gate_youngs_modulus_cmaes_script.py \
+  apple_pick_gym/tests/test_cma_force_plots.py -q
 ```
 
 The multi-replay module imports simulation fixtures by the bare name

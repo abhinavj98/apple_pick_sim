@@ -206,6 +206,113 @@ def test_initialize_batched_env_from_episode_sources_routes_each_world(monkeypat
     ]
 
 
+def _patch_episode_source_side_effects(monkeypatch) -> None:
+    import newton
+
+    monkeypatch.setattr(newton, "eval_fk", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "apple_pick_sim.system_id.batched_digital_twin_init.init_robot_mujoco_step_buffers",
+        lambda scene: None,
+    )
+    monkeypatch.setattr(
+        "apple_pick_sim.system_id.batched_digital_twin_init.fr3_robot."
+        "hold_mujoco_actuator_targets_at_state",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "apple_pick_sim.system_id.batched_digital_twin_init.fr3_robot.EEVelocity",
+        lambda: object(),
+    )
+
+
+def test_initialize_batched_env_sets_vic_target_from_first_vic_pose_action(
+    monkeypatch,
+):
+    """Grasp joints/TCP stay on metadata; VIC target is action[0] pose (wxyz→xyzw)."""
+    from unittest.mock import MagicMock
+
+    _patch_episode_source_side_effects(monkeypatch)
+    env = _mock_episode_sources_env()
+    c = float(np.cos(np.pi / 4.0))
+    grasp_q = np.arange(7, dtype=np.float32)
+    grasp_tcp = np.array([0.02, 0.66, 0.40], dtype=np.float32)
+    grasp_quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    pull_pos = np.array([0.02, 0.65, 0.40], dtype=np.float32)
+    pull_wxyz = np.array([c, 0.0, 0.0, c], dtype=np.float32)
+    action = np.concatenate(
+        [pull_pos, pull_wxyz, np.full(6, 100.0, dtype=np.float32), np.full(6, 20.0, dtype=np.float32)]
+    ).astype(np.float32)
+
+    dataset = MagicMock()
+    dataset.load_episode_obs_arrays.return_value = {
+        "excitation_direction": np.asarray([[0.0, 1.0, 0.0]], dtype=np.float32),
+        "robot_joint_q": np.full((1, 7), 99.0, dtype=np.float32),
+        "tcp_pos": np.full((1, 3), 7.0, dtype=np.float32),
+        "tcp_quat": np.full((1, 4), 8.0, dtype=np.float32),
+        "action": action.reshape(1, 19),
+        "step_idx": np.asarray([0], dtype=np.int32),
+    }
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "initial_robot_joint_q": grasp_q.tolist(),
+        "initial_tcp_pos": grasp_tcp.tolist(),
+        "initial_tcp_quat": grasp_quat_xyzw.tolist(),
+    }
+    sources = (
+        ReplayEpisodeSource(structure_idx=0, direction_idx=0),
+        ReplayEpisodeSource(structure_idx=0, direction_idx=1),
+    )
+
+    initialize_batched_env_from_episode_sources(env, dataset, sources)
+
+    for target in (env._sim.scene.robot_state_0, env._sim.scene.robot_model):
+        np.testing.assert_allclose(target.joint_q.value.reshape(2, 7), [grasp_q, grasp_q])
+    np.testing.assert_allclose(
+        env._sim.scene.vic_controller._target_pos_wp.value, [pull_pos, pull_pos]
+    )
+    np.testing.assert_allclose(
+        env._sim.scene.vic_controller._target_rot_wp.value,
+        [[0.0, 0.0, c, c], [0.0, 0.0, c, c]],
+    )
+
+
+def test_initialize_batched_env_keeps_initial_tcp_when_action_is_twist(
+    monkeypatch,
+):
+    """6D twist actions are not pose targets; VIC still uses ``initial_tcp_*``."""
+    from unittest.mock import MagicMock
+
+    _patch_episode_source_side_effects(monkeypatch)
+    env = _mock_episode_sources_env()
+    grasp_tcp = np.array([0.1, 0.2, 0.3], dtype=np.float32)
+    grasp_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    dataset = MagicMock()
+    dataset.load_episode_obs_arrays.return_value = {
+        "excitation_direction": np.asarray([[0.0, 1.0, 0.0]], dtype=np.float32),
+        "robot_joint_q": np.zeros((1, 7), dtype=np.float32),
+        "tcp_pos": np.full((1, 3), 9.0, dtype=np.float32),
+        "tcp_quat": np.full((1, 4), 8.0, dtype=np.float32),
+        "action": np.ones((1, 6), dtype=np.float32),
+        "step_idx": np.asarray([0], dtype=np.int32),
+    }
+    dataset.load_episode_metadata.return_value = {
+        "initial_robot_joint_q": [0.0] * 7,
+        "initial_tcp_pos": grasp_tcp.tolist(),
+        "initial_tcp_quat": grasp_quat.tolist(),
+    }
+    sources = (
+        ReplayEpisodeSource(0, 0),
+        ReplayEpisodeSource(0, 1),
+    )
+    initialize_batched_env_from_episode_sources(env, dataset, sources)
+    np.testing.assert_allclose(
+        env._sim.scene.vic_controller._target_pos_wp.value, [grasp_tcp, grasp_tcp]
+    )
+    np.testing.assert_allclose(
+        env._sim.scene.vic_controller._target_rot_wp.value, [grasp_quat, grasp_quat]
+    )
+
+
 def test_initialize_batched_env_from_episode_sources_rejects_wrong_source_count():
     env = _mock_episode_sources_env()
 

@@ -35,6 +35,7 @@ class RodParams:
     num_segments: int
     length: float
     radius: float
+    flexural_modulus_pa: float
     youngs_modulus_pa: float
     damping_ratio: float
     bend_stiffness: float
@@ -86,7 +87,8 @@ class FruitingSystemParams:
     stem_surface_offset: bool = DEFAULT_STEM_SURFACE_OFFSET
 
 
-FRUITING_SYSTEM_PARAMS_SCHEMA = "fruiting_system_params_v2"
+FRUITING_SYSTEM_PARAMS_SCHEMA = "fruiting_system_params_v3"
+FRUITING_SYSTEM_PARAMS_SCHEMA_V2 = "fruiting_system_params_v2"
 FRUITING_SYSTEM_PARAMS_SCHEMA_V1 = "fruiting_system_params_v1"
 
 
@@ -120,7 +122,7 @@ def stretch_knobs_from_max_force(
     """Derive axial VBD ``(stretch_stiffness, stretch_damping)`` from force budget.
 
     Uses ``k = F_max / (extension_fraction * L_seg)`` and
-    ``c = 2 ζ_stretch √(k m_seg)``. Bend knobs stay on ``youngs_modulus_pa``.
+    ``c = 2 ζ_stretch √(k m_seg)``. Unit-test helper only; range JSON uses beam ``EA/L``.
     """
     if float(max_force_n) <= 0.0:
         raise ValueError("max_force_n must be positive")
@@ -139,6 +141,7 @@ def stretch_knobs_from_max_force(
 
 
 def rod_params_from_material(
+    flexural_modulus_pa: float,
     youngs_modulus_pa: float,
     damping_ratio: float,
     length: float,
@@ -153,10 +156,12 @@ def rod_params_from_material(
     """Build :class:`RodParams` from material properties and geometry.
 
     Derives VBD stiffness/damping from circular-rod beam theory (see
-    ``docs/material-parameter-sampling.md``). Optional ``stretch_stiffness`` and
-    ``stretch_damping`` override the axial knobs (e.g. from JSON ``vbd_stretch_force``);
-    bend knobs always follow sampled ``youngs_modulus_pa`` and ``damping_ratio``.
+    ``docs/material-parameter-sampling.md``). ``flexural_modulus_pa`` drives bend;
+    ``youngs_modulus_pa`` drives axial stretch. One ``damping_ratio`` governs both.
+    Optional ``stretch_stiffness`` / ``stretch_damping`` override axial knobs (tests only).
     """
+    if flexural_modulus_pa <= 0.0:
+        raise ValueError("flexural_modulus_pa must be positive")
     if youngs_modulus_pa <= 0.0:
         raise ValueError("youngs_modulus_pa must be positive")
     if damping_ratio < 0.0:
@@ -165,19 +170,21 @@ def rod_params_from_material(
     area, inertia, l_seg, m_seg, j_seg = _segment_material_geometry(
         radius, length, n, density
     )
-    e = float(youngs_modulus_pa)
+    e_flex = float(flexural_modulus_pa)
+    e_axial = float(youngs_modulus_pa)
     zeta = float(damping_ratio)
-    bend_stiffness = e * inertia / l_seg
+    bend_stiffness = e_flex * inertia / l_seg
     if stretch_stiffness is None:
-        stretch_stiffness = e * area / l_seg
+        stretch_stiffness = e_axial * area / l_seg
     if stretch_damping is None:
         stretch_damping = 2.0 * zeta * math.sqrt(stretch_stiffness * m_seg)
-    bend_damping = 2.0 * zeta * math.sqrt(bend_stiffness * j_seg) 
+    bend_damping = 2.0 * zeta * math.sqrt(bend_stiffness * j_seg)
     return RodParams(
         num_segments=n,
         length=float(length),
         radius=float(radius),
-        youngs_modulus_pa=e,
+        flexural_modulus_pa=e_flex,
+        youngs_modulus_pa=e_axial,
         damping_ratio=zeta,
         bend_stiffness=bend_stiffness,
         bend_damping=bend_damping,
@@ -202,14 +209,15 @@ def rod_params_from_vbd_targets(
 ) -> RodParams:
     """Build :class:`RodParams` from explicit VBD targets (tests, legacy tooling).
 
-    Back-computes ``youngs_modulus_pa`` and ``damping_ratio`` for storage; preserves
-    the supplied bend/stretch stiffness and damping values exactly.
+    Back-computes ``flexural_modulus_pa``, ``youngs_modulus_pa``, and ``damping_ratio`` for
+    storage; preserves the supplied bend/stretch stiffness and damping values exactly.
     """
     n = max(2, int(num_segments))
     area, inertia, l_seg, m_seg, j_seg = _segment_material_geometry(
         radius, length, n, density
     )
-    e = bend_stiffness * l_seg / inertia if inertia > 0.0 else 0.0
+    e_flex = bend_stiffness * l_seg / inertia if inertia > 0.0 else 0.0
+    e_axial = stretch_stiffness * l_seg / area if area > 0.0 else 0.0
     zeta = (
         bend_damping / (2.0 * math.sqrt(bend_stiffness * j_seg))
         if bend_stiffness > 0.0 and j_seg > 0.0
@@ -221,7 +229,8 @@ def rod_params_from_vbd_targets(
         num_segments=n,
         length=float(length),
         radius=float(radius),
-        youngs_modulus_pa=e,
+        flexural_modulus_pa=e_flex,
+        youngs_modulus_pa=e_axial,
         damping_ratio=zeta,
         bend_stiffness=float(bend_stiffness),
         bend_damping=float(bend_damping),
@@ -248,6 +257,7 @@ def _rod_params_to_row(rod: RodParams | None) -> dict[str, Any] | None:
         "num_segments": int(rod.num_segments),
         "length": float(rod.length),
         "radius": float(rod.radius),
+        "flexural_modulus_pa": float(rod.flexural_modulus_pa),
         "youngs_modulus_pa": float(rod.youngs_modulus_pa),
         "damping_ratio": float(rod.damping_ratio),
         "bend_stiffness": float(rod.bend_stiffness),
@@ -292,8 +302,10 @@ def _expect_mapping(value: Any, *, field: str) -> dict[str, Any]:
     return value
 
 
-def _infer_material_from_vbd_row(row: dict[str, Any]) -> tuple[float, float, float]:
-    """Back-compute ``(E, zeta, stretch_damping)`` from stored VBD scalars (v1 episodes)."""
+def _infer_material_from_vbd_row(
+    row: dict[str, Any], *, schema: str
+) -> tuple[float, float, float, float]:
+    """Back-compute ``(E_flex, E_axial, zeta, stretch_damping)`` from stored VBD scalars."""
     n = max(2, int(row["num_segments"]))
     r = float(row["radius"])
     length = float(row["length"])
@@ -301,35 +313,46 @@ def _infer_material_from_vbd_row(row: dict[str, Any]) -> tuple[float, float, flo
     bend_stiffness = float(row["bend_stiffness"])
     bend_damping = float(row["bend_damping"])
     stretch_stiffness = float(row["stretch_stiffness"])
-    if "youngs_modulus_pa" in row and "damping_ratio" in row:
-        e = float(row["youngs_modulus_pa"])
+    area, inertia, l_seg, m_seg, j_seg = _segment_material_geometry(r, length, n, rho)
+    if schema == FRUITING_SYSTEM_PARAMS_SCHEMA:
+        if "flexural_modulus_pa" not in row:
+            raise ValueError("flexural_modulus_pa required for fruiting_system_params_v3")
+        e_flex = float(row["flexural_modulus_pa"])
+        e_axial = float(row["youngs_modulus_pa"])
         zeta = float(row["damping_ratio"])
         stretch_damping = float(row.get("stretch_damping", 0.0))
-        return e, zeta, stretch_damping
-    area, inertia, l_seg, m_seg, j_seg = _segment_material_geometry(r, length, n, rho)
-    e = bend_stiffness * l_seg / inertia if inertia > 0.0 else 0.0
+        return e_flex, e_axial, zeta, stretch_damping
+    if schema == FRUITING_SYSTEM_PARAMS_SCHEMA_V2 and "youngs_modulus_pa" in row:
+        e_flex = float(row["youngs_modulus_pa"])
+        zeta = float(row["damping_ratio"])
+        e_axial = stretch_stiffness * l_seg / area if area > 0.0 else 0.0
+        stretch_damping = float(row.get("stretch_damping", 0.0))
+        return e_flex, e_axial, zeta, stretch_damping
+    e_flex = bend_stiffness * l_seg / inertia if inertia > 0.0 else 0.0
+    e_axial = stretch_stiffness * l_seg / area if area > 0.0 else 0.0
     zeta = (
         bend_damping / (2.0 * math.sqrt(bend_stiffness * j_seg))
         if bend_stiffness > 0.0 and j_seg > 0.0
         else 0.0
     )
     stretch_damping = float(row.get("stretch_damping", 2.0 * zeta * math.sqrt(stretch_stiffness * m_seg)))
-    return e, zeta, stretch_damping
+    return e_flex, e_axial, zeta, stretch_damping
 
 
-def _rod_params_from_row(value: Any, *, field: str) -> RodParams | None:
+def _rod_params_from_row(value: Any, *, field: str, schema: str) -> RodParams | None:
     if value is None:
         return None
     row = _expect_mapping(value, field=field)
     direction = row.get("direction")
     if not isinstance(direction, (list, tuple)) or len(direction) != 3:
         raise ValueError(f"{field}.direction must be [x, y, z]")
-    e, zeta, stretch_damping = _infer_material_from_vbd_row(row)
+    e_flex, e_axial, zeta, stretch_damping = _infer_material_from_vbd_row(row, schema=schema)
     return RodParams(
         num_segments=int(row["num_segments"]),
         length=float(row["length"]),
         radius=float(row["radius"]),
-        youngs_modulus_pa=e,
+        flexural_modulus_pa=e_flex,
+        youngs_modulus_pa=e_axial,
         damping_ratio=zeta,
         bend_stiffness=float(row["bend_stiffness"]),
         bend_damping=float(row["bend_damping"]),
@@ -344,10 +367,15 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
     """Deserialize :func:`fruiting_params_to_dict` output."""
     row = _expect_mapping(data, field="fruiting_system_params")
     schema = row.get("schema")
-    if schema not in (FRUITING_SYSTEM_PARAMS_SCHEMA, FRUITING_SYSTEM_PARAMS_SCHEMA_V1):
+    if schema not in (
+        FRUITING_SYSTEM_PARAMS_SCHEMA,
+        FRUITING_SYSTEM_PARAMS_SCHEMA_V2,
+        FRUITING_SYSTEM_PARAMS_SCHEMA_V1,
+    ):
         raise ValueError(
             f"unsupported fruiting params schema {schema!r}; "
-            f"expected {FRUITING_SYSTEM_PARAMS_SCHEMA!r} or "
+            f"expected {FRUITING_SYSTEM_PARAMS_SCHEMA!r}, "
+            f"{FRUITING_SYSTEM_PARAMS_SCHEMA_V2!r}, or "
             f"{FRUITING_SYSTEM_PARAMS_SCHEMA_V1!r}"
         )
     topology = row.get("topology", DEFAULT_TOPOLOGY)
@@ -372,10 +400,10 @@ def fruiting_params_from_dict(data: dict[str, Any]) -> FruitingSystemParams:
             float(apple_quat_raw[3]),
         )
     params = FruitingSystemParams(
-        primary=_rod_params_from_row(row.get("primary"), field="primary"),
-        secondary=_rod_params_from_row(row.get("secondary"), field="secondary"),
-        spur=_rod_params_from_row(row.get("spur"), field="spur"),
-        stem=_rod_params_from_row(row.get("stem"), field="stem"),
+        primary=_rod_params_from_row(row.get("primary"), field="primary", schema=schema),
+        secondary=_rod_params_from_row(row.get("secondary"), field="secondary", schema=schema),
+        spur=_rod_params_from_row(row.get("spur"), field="spur", schema=schema),
+        stem=_rod_params_from_row(row.get("stem"), field="stem", schema=schema),
         apple_radius=None if row.get("apple_radius") is None else float(row["apple_radius"]),
         apple_density=None if row.get("apple_density") is None else float(row["apple_density"]),
         apple_quat_xyzw=apple_quat_xyzw,
@@ -474,6 +502,7 @@ _SIM_BUILD_ALLOWED_KEYS = frozenset(
         "joint_linear_kd_overrides",
         "joint_angular_kp_overrides",
         "joint_linear_kp_overrides",
+        "joint_roll_kp_overrides",
     }
 )
 _VIC_GAIN_KEYS = ("linear_k", "linear_d", "angular_k", "angular_d")
@@ -498,6 +527,7 @@ class SimBuildConfig:
     joint_linear_kd_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     joint_angular_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     joint_linear_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
+    joint_roll_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     joint_damping_ratio: float | None = None
 
 
@@ -622,6 +652,9 @@ def parse_sim_build(ranges: dict) -> SimBuildConfig | None:
         joint_linear_kp_overrides=_coerce_joint_overrides(
             block.get("joint_linear_kp_overrides"), field="joint_linear_kp_overrides"
         ),
+        joint_roll_kp_overrides=_coerce_joint_overrides(
+            block.get("joint_roll_kp_overrides"), field="joint_roll_kp_overrides"
+        ),
         joint_damping_ratio=_coerce_joint_damping_ratio(block.get("joint_damping_ratio")),
     )
 
@@ -726,7 +759,7 @@ def sample_params(
     ``null``).
 
     When both **primary** and **secondary** are enabled, enforces
-    ``primary.youngs_modulus_pa >= secondary.youngs_modulus_pa``.
+    ``primary.flexural_modulus_pa >= secondary.flexural_modulus_pa``.
 
     Args:
         ranges: Range dict as returned by :func:`load_ranges`.
@@ -762,6 +795,7 @@ def sample_params(
         primary_density = _s(pr, "density")
         primary_n = max(2, _si(pr, "num_segments"))
         primary = rod_params_from_material(
+            _s(pr, "flexural_modulus_pa"),
             _s(pr, "youngs_modulus_pa"),
             _s(pr, "damping_ratio"),
             primary_length,
@@ -769,13 +803,6 @@ def sample_params(
             primary_density,
             primary_n,
             primary_dir,
-            **_stretch_kw_from_seg_ranges(
-                pr,
-                length=primary_length,
-                radius=primary_radius,
-                density=primary_density,
-                num_segments=primary_n,
-            ),
         )
         parent_dir = primary.direction
 
@@ -784,14 +811,14 @@ def sample_params(
     if sr is not None and "secondary" not in omit_set:
         if primary is not None:
             secondary_e_max = min(
-                sr["youngs_modulus_pa"]["max"], primary.youngs_modulus_pa
+                sr["flexural_modulus_pa"]["max"], primary.flexural_modulus_pa
             )
-            secondary_e_min = min(sr["youngs_modulus_pa"]["min"], secondary_e_max)
-            secondary_e = float(rng.uniform(secondary_e_min, secondary_e_max))
+            secondary_e_min = min(sr["flexural_modulus_pa"]["min"], secondary_e_max)
+            secondary_e_flex = float(rng.uniform(secondary_e_min, secondary_e_max))
         else:
-            secondary_e = float(
+            secondary_e_flex = float(
                 rng.uniform(
-                    sr["youngs_modulus_pa"]["min"], sr["youngs_modulus_pa"]["max"]
+                    sr["flexural_modulus_pa"]["min"], sr["flexural_modulus_pa"]["max"]
                 )
             )
         secondary_el_delta = _s(sr, "elevation_delta_deg")
@@ -802,20 +829,14 @@ def sample_params(
         secondary_density = _s(sr, "density")
         secondary_n = max(2, _si(sr, "num_segments"))
         secondary = rod_params_from_material(
-            secondary_e,
+            secondary_e_flex,
+            _s(sr, "youngs_modulus_pa"),
             _s(sr, "damping_ratio"),
             secondary_length,
             secondary_radius,
             secondary_density,
             secondary_n,
             secondary_dir,
-            **_stretch_kw_from_seg_ranges(
-                sr,
-                length=secondary_length,
-                radius=secondary_radius,
-                density=secondary_density,
-                num_segments=secondary_n,
-            ),
         )
         parent_dir = secondary.direction
 
@@ -830,6 +851,7 @@ def sample_params(
         spur_density = _s(spr, "density")
         spur_n = max(2, _si(spr, "num_segments"))
         spur = rod_params_from_material(
+            _s(spr, "flexural_modulus_pa"),
             _s(spr, "youngs_modulus_pa"),
             _s(spr, "damping_ratio"),
             spur_length,
@@ -837,13 +859,6 @@ def sample_params(
             spur_density,
             spur_n,
             spur_dir,
-            **_stretch_kw_from_seg_ranges(
-                spr,
-                length=spur_length,
-                radius=spur_radius,
-                density=spur_density,
-                num_segments=spur_n,
-            ),
         )
         parent_dir = spur.direction
 
@@ -858,6 +873,7 @@ def sample_params(
         stem_density = _s(stem_r, "density")
         stem_n = max(2, _si(stem_r, "num_segments"))
         stem = rod_params_from_material(
+            _s(stem_r, "flexural_modulus_pa"),
             _s(stem_r, "youngs_modulus_pa"),
             _s(stem_r, "damping_ratio"),
             stem_length,
@@ -865,13 +881,6 @@ def sample_params(
             stem_density,
             stem_n,
             stem_dir,
-            **_stretch_kw_from_seg_ranges(
-                stem_r,
-                length=stem_length,
-                radius=stem_radius,
-                density=stem_density,
-                num_segments=stem_n,
-            ),
         )
 
     apple_radius: float | None = None
@@ -1158,7 +1167,7 @@ def set_rod_bend_stiffness(
     )
     k = float(bend_stiffness)
     new_bend_damping = 2.0 * rod.damping_ratio * math.sqrt(k * j_seg)
-    new_youngs_modulus_pa = k * l_seg / inertia if inertia > 0.0 else 0.0
+    new_flexural_modulus_pa = k * l_seg / inertia if inertia > 0.0 else 0.0
     setattr(
         out,
         segment,
@@ -1166,15 +1175,32 @@ def set_rod_bend_stiffness(
             rod,
             bend_stiffness=k,
             bend_damping=new_bend_damping,
-            youngs_modulus_pa=new_youngs_modulus_pa,
+            flexural_modulus_pa=new_flexural_modulus_pa,
         ),
     )
     return out
 
 
-def _rod_has_fixed_axial_stretch(rod: RodParams, *, rel_tol: float = 1e-5) -> bool:
-    """True when stored stretch knobs differ from beam-theory stretch at current ``E``."""
-    beam = rod_params_from_material(
+def set_rod_flexural_modulus(
+    params: FruitingSystemParams,
+    segment: str,
+    flexural_modulus_pa: float,
+) -> FruitingSystemParams:
+    """Return a copy with absolute flexural (bend) modulus on one rod segment.
+
+    Re-derives bend knobs via :func:`rod_params_from_material`. Freezes geometry,
+    ``damping_ratio``, and axial ``youngs_modulus_pa`` / stretch knobs.
+    """
+    if flexural_modulus_pa <= 0.0:
+        raise ValueError("flexural_modulus_pa must be positive")
+    if segment not in ("primary", "secondary", "spur", "stem"):
+        raise ValueError(f"Unknown segment {segment!r}")
+    out = copy_fruiting_params(params)
+    rod = getattr(out, segment)
+    if rod is None:
+        raise ValueError(f"Segment {segment!r} is disabled in params")
+    new_rod = rod_params_from_material(
+        float(flexural_modulus_pa),
         rod.youngs_modulus_pa,
         rod.damping_ratio,
         rod.length,
@@ -1182,21 +1208,11 @@ def _rod_has_fixed_axial_stretch(rod: RodParams, *, rel_tol: float = 1e-5) -> bo
         rod.density,
         rod.num_segments,
         rod.direction,
+        stretch_stiffness=float(rod.stretch_stiffness),
+        stretch_damping=float(rod.stretch_damping),
     )
-    return not (
-        math.isclose(
-            rod.stretch_stiffness,
-            beam.stretch_stiffness,
-            rel_tol=rel_tol,
-            abs_tol=1e-9,
-        )
-        and math.isclose(
-            rod.stretch_damping,
-            beam.stretch_damping,
-            rel_tol=rel_tol,
-            abs_tol=1e-9,
-        )
-    )
+    setattr(out, segment, new_rod)
+    return out
 
 
 def set_rod_youngs_modulus(
@@ -1204,12 +1220,10 @@ def set_rod_youngs_modulus(
     segment: str,
     youngs_modulus_pa: float,
 ) -> FruitingSystemParams:
-    """Return a copy with absolute Young's modulus on one rod segment.
+    """Return a copy with absolute axial Young's modulus on one rod segment.
 
-    Re-derives bend (and, when stretch was beam-consistent, stretch) via
-    :func:`rod_params_from_material`. Freezes geometry and ``damping_ratio``.
-    If the base rod's axial stretch differs from beam theory (e.g. fixture
-    ``vbd_stretch_force``), those stretch knobs are preserved.
+    Re-derives stretch knobs via :func:`rod_params_from_material`. Freezes geometry,
+    ``damping_ratio``, and flexural ``flexural_modulus_pa`` / bend knobs.
     """
     if youngs_modulus_pa <= 0.0:
         raise ValueError("youngs_modulus_pa must be positive")
@@ -1219,13 +1233,8 @@ def set_rod_youngs_modulus(
     rod = getattr(out, segment)
     if rod is None:
         raise ValueError(f"Segment {segment!r} is disabled in params")
-    stretch_kw: dict[str, float] = {}
-    if _rod_has_fixed_axial_stretch(rod):
-        stretch_kw = {
-            "stretch_stiffness": float(rod.stretch_stiffness),
-            "stretch_damping": float(rod.stretch_damping),
-        }
     new_rod = rod_params_from_material(
+        rod.flexural_modulus_pa,
         float(youngs_modulus_pa),
         rod.damping_ratio,
         rod.length,
@@ -1233,7 +1242,8 @@ def set_rod_youngs_modulus(
         rod.density,
         rod.num_segments,
         rod.direction,
-        **stretch_kw,
+        stretch_stiffness=None,
+        stretch_damping=None,
     )
     setattr(out, segment, new_rod)
     return out
@@ -1259,19 +1269,23 @@ def params_fingerprint(params: FruitingSystemParams) -> dict:
         "primary_num_segments": None if p is None else p.num_segments,
         "primary_length": None if p is None else round(p.length, 9),
         "primary_radius": None if p is None else round(p.radius, 9),
+        "primary_flexural_modulus_pa": None if p is None else round(p.flexural_modulus_pa, 6),
         "primary_youngs_modulus_pa": None if p is None else round(p.youngs_modulus_pa, 6),
         "primary_damping_ratio": None if p is None else round(p.damping_ratio, 8),
         "secondary_num_segments": None if s is None else s.num_segments,
         "secondary_length": None if s is None else round(s.length, 9),
         "secondary_radius": None if s is None else round(s.radius, 9),
+        "secondary_flexural_modulus_pa": None if s is None else round(s.flexural_modulus_pa, 6),
         "secondary_youngs_modulus_pa": None if s is None else round(s.youngs_modulus_pa, 6),
         "secondary_damping_ratio": None if s is None else round(s.damping_ratio, 8),
         "spur_num_segments": None if sp is None else sp.num_segments,
         "spur_length": None if sp is None else round(sp.length, 9),
+        "spur_flexural_modulus_pa": None if sp is None else round(sp.flexural_modulus_pa, 6),
         "spur_youngs_modulus_pa": None if sp is None else round(sp.youngs_modulus_pa, 6),
         "spur_damping_ratio": None if sp is None else round(sp.damping_ratio, 8),
         "stem_num_segments": None if st is None else st.num_segments,
         "stem_length": None if st is None else round(st.length, 9),
+        "stem_flexural_modulus_pa": None if st is None else round(st.flexural_modulus_pa, 6),
         "stem_youngs_modulus_pa": None if st is None else round(st.youngs_modulus_pa, 6),
         "stem_damping_ratio": None if st is None else round(st.damping_ratio, 8),
         "apple_radius": None if params.apple_radius is None else round(params.apple_radius, 9),
@@ -1434,6 +1448,7 @@ def _validate_ranges(data: dict) -> None:
         "num_segments",
         "length",
         "radius",
+        "flexural_modulus_pa",
         "youngs_modulus_pa",
         "damping_ratio",
         "density",
@@ -1448,7 +1463,17 @@ def _validate_ranges(data: dict) -> None:
         if legacy:
             raise ValueError(
                 f"Segment '{seg}' uses deprecated keys {sorted(legacy)}; "
-                "use youngs_modulus_pa and damping_ratio instead"
+                "use flexural_modulus_pa, youngs_modulus_pa, and damping_ratio instead"
+            )
+        if "vbd_stretch_force" in seg_data:
+            raise ValueError(
+                f"Segment '{seg}' uses removed key vbd_stretch_force; "
+                "use flexural_modulus_pa and youngs_modulus_pa instead"
+            )
+        if "vbd_stretch_fixed" in seg_data:
+            raise ValueError(
+                f"Segment '{seg}' uses removed key vbd_stretch_fixed; "
+                "use flexural_modulus_pa and youngs_modulus_pa instead"
             )
         for key in rod_required:
             if key not in seg_data:
@@ -1460,8 +1485,6 @@ def _validate_ranges(data: dict) -> None:
                 raise ValueError(
                     f"Range {seg}.{key}: min ({rng['min']}) > max ({rng['max']})"
                 )
-
-        _validate_vbd_stretch_force(seg, seg_data)
 
         if seg == "primary":
             for key in ("azimuth_deg", "elevation_deg"):

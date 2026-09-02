@@ -18,6 +18,7 @@ from apple_pick_sim.fruiting_system.build import (
     _finalize_fruiting_builder,
     _new_fruiting_builder,
     _scene_states_from_model,
+    apply_fruiting_support_roll_penalties,
     make_fruiting_solver_vbd,
 )
 from apple_pick_sim.fruiting_system.params import (
@@ -26,6 +27,7 @@ from apple_pick_sim.fruiting_system.params import (
     TOPOLOGY_T_JUNCTION,
     load_ranges,
     params_fingerprint,
+    parse_sim_build,
     resolve_fruiting_base_pos,
     sample_params,
 )
@@ -105,11 +107,19 @@ def generate_scene(
     device = resolve_sim_device(device)
 
     params = sample_params(ranges, seed, omit=omit)
+    sb = parse_sim_build(ranges)
+    support_roll_kp = 0.0
+    joint_damping_ratio = None
+    if sb is not None:
+        support_roll_kp = float(sb.joint_roll_kp_overrides.get("support", 0.0))
+        joint_damping_ratio = sb.joint_damping_ratio
     return _build_scene(
         params,
         base_pos=resolve_fruiting_base_pos(ranges, (0.0, 0.0, 3.0), override=base_pos),
         device=device,
         enable_self_collisions=enable_self_collisions,
+        support_roll_kp=support_roll_kp,
+        joint_damping_ratio=joint_damping_ratio,
     )
 
 
@@ -278,17 +288,29 @@ def _build_scene(
     device: str,
     *,
     enable_self_collisions: bool = False,
+    support_roll_kp: float = 0.0,
+    joint_damping_ratio: float | None = None,
 ) -> FruitingSystemScene:
     """Build a Newton ModelBuilder scene from sampled params."""
     builder = _new_fruiting_builder()
     artifacts = _build_fruiting_chain_into_builder(builder, params, base_pos)
     if params.topology == TOPOLOGY_T_JUNCTION:
-        _attach_t_junction_world_supports(builder, artifacts)
+        _attach_t_junction_world_supports(
+            builder, artifacts, support_roll_kp=support_roll_kp
+        )
     model = _finalize_fruiting_builder(
         builder, artifacts, device=device, enable_self_collisions=enable_self_collisions
     )
     artifacts.fruiting_fixed_joints.sort(key=lambda p: p[0])
     state_0, state_1, control, solver = _scene_states_from_model(model)
+    if support_roll_kp > 0.0:
+        apply_fruiting_support_roll_penalties(
+            solver,
+            model,
+            artifacts.fruiting_fixed_joints,
+            {"support": float(support_roll_kp)},
+            joint_damping_ratio=joint_damping_ratio,
+        )
 
     return FruitingSystemScene(
         model=model,

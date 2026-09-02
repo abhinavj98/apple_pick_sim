@@ -23,6 +23,7 @@ from apple_pick_gym.batched_envs.support_joint_penalties import (
     apply_per_env_support_joint_penalties,
     support_joint_zeta_from_dataset,
 )
+from apple_pick_sim.fruiting_system.joint_kd_scaling import support_dowel_length_m
 from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
@@ -495,6 +496,9 @@ def replay_multi_structure_candidate_blocks(
                     [slot.support_kp for slot in slots],
                     num_envs=env._sim.layout.num_envs,
                     joints_per_world=env._sim.layout.joints_per_world,
+                    dowel_length_m_per_env=[
+                        support_dowel_length_m(slot.params) for slot in slots
+                    ],
                     zeta=support_joint_zeta_from_dataset(dataset),
                 )
 

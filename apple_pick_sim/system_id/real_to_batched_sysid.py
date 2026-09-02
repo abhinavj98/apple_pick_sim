@@ -25,7 +25,6 @@ from apple_pick_sim.fruiting_system.params import (
     _spur_attach_fraction_from_ranges,
     _spur_surface_offset_from_ranges,
     _stem_surface_offset_from_ranges,
-    _stretch_kw_from_seg_ranges,
     fruiting_params_to_dict,
     load_ranges,
     params_fingerprint,
@@ -187,8 +186,7 @@ def build_fruiting_params_from_real(
     When ``use_parts_density`` is True, each rod's ``density_kg_m3`` (and optional
     ``apple_density_kg_m3``) come from ``rod_geometry`` / the apple override;
     Young's modulus, bend damping ratio, and ``num_segments`` still use fixture
-    midpoints. Axial stretch uses fixture ``vbd_stretch_force`` on the measured
-    geometry (same helper as :func:`~apple_pick_sim.fruiting_system.params.sample_params`).
+    midpoints. Both moduli use fixture midpoints on the measured geometry.
     """
     ranges = load_ranges(ranges_path)
     rods: dict[str, Any] = {}
@@ -211,6 +209,7 @@ def build_fruiting_params_from_real(
         radius = float(geo["radius_m"])
         num_segments = int(round(range_midpoint(seg["num_segments"])))
         rods[name] = rod_params_from_material(
+            range_midpoint(seg["flexural_modulus_pa"]),
             range_midpoint(seg["youngs_modulus_pa"]),
             range_midpoint(seg["damping_ratio"]),
             length,
@@ -218,13 +217,6 @@ def build_fruiting_params_from_real(
             density,
             num_segments,
             directions[name],
-            **_stretch_kw_from_seg_ranges(
-                seg,
-                length=length,
-                radius=radius,
-                density=density,
-                num_segments=num_segments,
-            ),
         )
     apple_r = (
         float(apple_radius_m)

@@ -36,6 +36,11 @@ from apple_pick_sim.system_id.holdout_gates import (
     tcp_displacement_along_pull,
     trend_pearson_ok,
 )
+from apple_pick_gym.cma_generation_persist import build_direction_state_npz
+from apple_pick_sim.system_id.match_metrics import (
+    build_match_metrics_report,
+    tree_label_from_dataset_path,
+)
 from apple_pick_sim.system_id.mmd_features import iter_kept_hold_segments, scored_ft_wrist
 
 _METRIC_FLOAT_KEYS = (
@@ -408,6 +413,46 @@ def write_holdout_report(output_dir: Path, report: Mapping[str, Any]) -> Path:
     return path
 
 
+def write_match_metrics_file(output_dir: Path, report: Mapping[str, Any]) -> Path:
+    """Write ``match_metrics.json`` atomically next to ``cmaes_report.json``."""
+    path = Path(output_dir) / "match_metrics.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    strict = to_strict_jsonable(report)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(strict, indent=2, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+    return path
+
+
+def write_val_holdout_npz(
+    *,
+    output_dir: Path,
+    structure_idx: int,
+    val_direction_indices: Sequence[int],
+    recorded_by_direction: Mapping[int, Mapping[str, Any]],
+    replay_by_direction: Sequence[Mapping[str, Any]],
+    side: str,
+) -> None:
+    """Persist val-direction state npz bags under ``holdout/{side}/``."""
+    holdout_dir = (
+        Path(output_dir) / f"structure_{int(structure_idx):03d}" / "holdout" / str(side)
+    )
+    holdout_dir.mkdir(parents=True, exist_ok=True)
+    for local_i, direction in enumerate(val_direction_indices):
+        direction = int(direction)
+        real = ensure_dir_idx(recorded_by_direction[direction], direction)
+        sim = ensure_dir_idx(replay_by_direction[local_i], direction)
+        arrays = build_direction_state_npz(real=real, sim=sim)
+        np.savez_compressed(holdout_dir / f"dir_{direction:02d}.npz", **arrays)
+
+
 def train_eligible_means_from_state(state: StructureCmaState) -> list[float]:
     """Eligible-mean Sinkhorn series from CMA generation records."""
     means: list[float] = []
@@ -555,6 +600,9 @@ def run_holdout_evaluation(
     num_directions: int,
     include_excluded: bool,
     evaluate_val: Callable[[Sequence[float], Sequence[int]], YoungsModulusBatchEvaluation],
+    write_match_metrics: bool = True,
+    dataset_path: str | Path | None = None,
+    cma_seed: int | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Evaluate val baseline/fitted, build report, write overlays; return failures."""
     if state.final_evaluation is None:
@@ -634,6 +682,44 @@ def run_holdout_evaluation(
         metadata_by_direction=metadata_val,
         fitted_log10=fitted_log10,
     )
+
+    baseline_replay = val_baseline_eval.replay_episodes[0]
+    fitted_replay = val_fitted_eval.replay_episodes[0]
+    for side, replay_eps in (("baseline", baseline_replay), ("fitted", fitted_replay)):
+        try:
+            write_val_holdout_npz(
+                output_dir=output_dir,
+                structure_idx=int(structure_idx),
+                val_direction_indices=val_direction_indices,
+                recorded_by_direction=recorded_val,
+                replay_by_direction=replay_eps,
+                side=side,
+            )
+        except Exception as exc:
+            state.artifact_errors.append(f"holdout npz ({side}): {exc}")
+
+    if write_match_metrics:
+        try:
+            tree = (
+                tree_label_from_dataset_path(dataset_path)
+                if dataset_path is not None
+                else "unknown"
+            )
+            match_report = build_match_metrics_report(
+                tree=tree,
+                cma_seed=cma_seed,
+                train_direction_indices=train_direction_indices,
+                val_direction_indices=val_direction_indices,
+                baseline_log10=baseline_log10,
+                fitted_log10=fitted_log10,
+                recorded_val=recorded_val,
+                baseline_replay_by_direction=baseline_replay,
+                fitted_replay_by_direction=fitted_replay,
+                val_direction_order=val_direction_indices,
+            )
+            write_match_metrics_file(output_dir, match_report)
+        except Exception as exc:
+            state.artifact_errors.append(f"match_metrics: {exc}")
 
     report = build_holdout_report(
         structure_idx=int(structure_idx),

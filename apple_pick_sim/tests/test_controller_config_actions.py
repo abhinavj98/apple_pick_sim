@@ -19,6 +19,13 @@ def _require_torch():
     return torch
 
 
+def test_controller_config_null_space_defaults_keep_twist_osc():
+    ctrl = ControllerConfig()
+    assert ctrl.sep_ori is False
+    assert ctrl.kp_null == pytest.approx(10.0)
+    assert ctrl.kd_null == pytest.approx(6.3246)
+
+
 def test_expected_action_shape():
     ctrl = ControllerConfig(action_dim=6)
     assert ctrl.expected_action_shape(4) == (4, 6)

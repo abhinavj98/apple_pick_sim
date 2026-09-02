@@ -212,6 +212,7 @@ def test_download_batched_replay_obs_numpy_matches_per_env_sysid_export():
         np.testing.assert_allclose(row["ft_wrist"], per_env["ft_wrist"])
         np.testing.assert_allclose(row["tcp_velocity"], per_env["tcp_velocity"])
         np.testing.assert_allclose(row["tcp_pos"], per_env["tcp_pos"])
+        np.testing.assert_allclose(row["tcp_quat"], per_env["tcp_quat"])
         np.testing.assert_allclose(row["apple_pos"], per_env["apple_pos"])
         np.testing.assert_allclose(
             row["woody_start"],

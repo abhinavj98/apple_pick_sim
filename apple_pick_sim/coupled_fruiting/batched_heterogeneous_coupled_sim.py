@@ -256,6 +256,9 @@ class BatchedHeterogeneousCoupledSim:
             self._scene.mj_solver,
             scene=self._scene,
             layout=self._scene.layout,
+            kp_null=float(self._config.controller.kp_null),
+            kd_null=float(self._config.controller.kd_null),
+            sep_ori=bool(self._config.controller.sep_ori),
         )
         self._scene.vic_joint_torques_configured = True
         vic.sync_target_from_state(self._scene.robot_state_0)

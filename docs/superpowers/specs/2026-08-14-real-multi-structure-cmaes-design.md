@@ -142,7 +142,7 @@ must be written at convert time:
 | Field | Why | Consequence if missing |
 | --- | --- | --- |
 | `collection.n_holds` | Fixes the hold one-hot width | See below — silent feature-width mismatch |
-| `collection.sim_config` | `support_joint_zeta_from_dataset` reads `sim_config.joint_damping_ratio` for the support \(k_d = \zeta \cdot 2\sqrt{kI}\) that pairs with the free \(k_p\) dimension | Falls back to `SUPPORT_JOINT_ZETA_FALLBACK = 0.5`; equals the fixture value today, so latent rather than broken |
+| `collection.sim_config` | `support_joint_zeta_from_dataset` reads `sim_config.joint_damping_ratio` for the support \(k_d = \zeta \cdot 2\sqrt{kI}\) that pairs with the free \(k_p\) dimension | Falls back to `SUPPORT_JOINT_ZETA_FALLBACK` (matches the proxy variance fixture ζ) |
 | `collection.topology_seed` | Scene DR seed | Grid defaults to `collection.seed` (0), CMA hardcodes 42 — the two CLIs disagree |
 
 Write the **whole** `sim_config` block through `sim_config_to_manifest_dict`,

@@ -758,7 +758,9 @@ def test_replay_multi_structure_applies_support_kp_before_reset(
     apply_calls: list[dict[str, Any]] = []
     event_order: list[str] = []
 
-    def fake_apply(scene, support_kp_per_env, *, num_envs, joints_per_world, zeta):
+    def fake_apply(
+        scene, support_kp_per_env, *, num_envs, joints_per_world, zeta, **_kwargs
+    ):
         apply_calls.append(
             {
                 "scene": scene,
@@ -972,8 +974,16 @@ def test_replay_multi_structure_support_kp_sets_solver_arrays_per_env(
 
     env = _fake_replay_runtime.built[0]
     assert env.kp_before_reset is not None
-    assert env.kp_before_reset[0] == pytest.approx(1.0e3)
-    assert env.kp_before_reset[1] == pytest.approx(2.0e4)
+    from apple_pick_gym.batched_envs.support_joint_penalties import (
+        support_angular_kp_from_linear,
+    )
+
+    assert env.kp_before_reset[0] == pytest.approx(
+        support_angular_kp_from_linear(1.0e3, params.primary.length)
+    )
+    assert env.kp_before_reset[1] == pytest.approx(
+        support_angular_kp_from_linear(2.0e4, params.primary.length)
+    )
 
 
 def test_real_build_env_fn_advertises_per_env_meta():

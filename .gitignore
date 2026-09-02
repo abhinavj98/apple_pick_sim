@@ -58,3 +58,4 @@ robot_replay/*.png
 robot_replay/s*-d*.json
 !apple_pick_sim/tests/fixtures/**/*.parquet
 robot_replay/**/*.parquet
+robot_replay/final_data_correct_torque/

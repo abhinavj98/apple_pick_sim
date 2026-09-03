@@ -13,7 +13,7 @@ at weld (true ``weld_proxy_offset_in_apple_frame``).
 
 Settle defaults match ``example_view_pre_grasp_settle.py``:
 ``--settle-substeps 5000``, ``--settle-quiet-every 300``,
-``--post-grasp-settle-substeps 500``.
+``--post-grasp-settle-substeps 2000``.
 
 With ``--viewer gl``, renders trajectory frames after off-screen rebuild/settle
 (same minimal ``on_step`` pattern as ``example_batched_sysid_mmd_grid.py``).
@@ -35,8 +35,8 @@ Example (after export)::
 
     uv run python robot_replay/example_replay_real_batched.py \\
       --dataset /tmp/real_batched_s02_d00 --viewer gl --max-frames 0 \\
-      --settle-substeps 5000 --settle-quiet-every 300 \\
-      --post-grasp-settle-substeps 500 \\
+      --direction-idx 0 --settle-substeps 5000 --settle-quiet-every 300 \\
+      --post-grasp-settle-substeps 2000 \\
       --print-woody-forces 5
 
 Headless MP4 (requires ``imageio-ffmpeg`` via ``uv sync --extra gym``)::
@@ -64,6 +64,8 @@ from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     replay_batched_sysid_structure,
 )
 from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    DEFAULT_POST_GRASP_SETTLE_SUBSTEPS as _POST_GRASP_SETTLE_SUBSTEPS,
+    DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS as _SETTLE_SUBSTEPS,
     bootstrap_joint_q_from_episode_metadata,
     check_action_semantics,
     control_hz_from_episode_metadata,
@@ -84,11 +86,8 @@ from robot_replay.gl_video_recorder import GlVideoRecorder  # noqa: E402
 _DEFAULT_FIXTURE = Path(
     "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json"
 )
-# Match example_view_pre_grasp_settle.py defaults.
-_SETTLE_SUBSTEPS = 2000
 _SETTLE_QUIET_EVERY: int | None = 100
 _SETTLE_GRAVITY_RAMP = False
-_POST_GRASP_SETTLE_SUBSTEPS = 500
 _CONTROL_HZ_FALLBACK = 15.0
 _DEFAULT_CONTROLLER_MODE = "vic_pose"
 
@@ -268,6 +267,15 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Ranges fixture (default: dataset collection.ranges_path or variance fixture).",
     )
     p.add_argument("--structure-idx", type=int, default=0)
+    p.add_argument(
+        "--direction-idx",
+        type=int,
+        default=0,
+        help=(
+            "Disk direction to replay (default: 0). "
+            "Multi-direction vic_pose bags must pin one pull."
+        ),
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
         "--max-frames",
@@ -368,8 +376,9 @@ def _run(
 
     ranges = load_ranges(ranges_path)
     structure_idx = int(args.structure_idx)
+    direction_idx = int(args.direction_idx)
     try:
-        episode_meta = dataset.load_episode_metadata(structure_idx, 0)
+        episode_meta = dataset.load_episode_metadata(structure_idx, direction_idx)
         fruiting_base_pos = fruiting_base_pos_from_episode_metadata(episode_meta)
         bootstrap_joint_q = bootstrap_joint_q_from_episode_metadata(episode_meta)
         control_hz = control_hz_from_episode_metadata(
@@ -428,6 +437,7 @@ def _run(
         structure_idx=structure_idx,
         candidates=candidates,
         num_directions=1,
+        direction_indices=(direction_idx,),
         seed=seed,
         build_env_fn=make_real_replay_build_env_fn(**build_kwargs),
         replay_sim_config=real_replay_sim_config(**sim_kwargs),

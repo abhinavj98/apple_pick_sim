@@ -92,7 +92,7 @@ The physical bench holds the branch at **both ends**; the spur and apple hang fr
 ```
 
 Real-episode catalog connection angles (`manual_spur_angle_deg` about primary
-+X, `manual_stem_angle_deg` about fruiting→robot −Y) override woody chords
++X, `manual_stem_angle_deg` about robot→fruiting +Y) override woody chords
 when both are present. How to check: `docs/handbook-real-replay.md`
 § Checking connection angles.
 

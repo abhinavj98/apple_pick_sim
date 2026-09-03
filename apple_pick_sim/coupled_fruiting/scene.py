@@ -43,7 +43,6 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
 DEFAULT_STEM_COUPLING_GAIN: float = 1.0
 DEFAULT_STEM_FORCE_CAP_N: float = 40.0
 DEFAULT_STEM_TORQUE_CAP_NM: float = 10.0
-222
 DEFAULT_MUJOCO_SOLVER_KWARGS: dict[str, Any] = {
     "solver": "newton",
     "integrator": "implicitfast",
@@ -121,9 +120,9 @@ def _mujoco_robot_substep_prefix(scene: Any, dt: float) -> None:
                 getattr(scene, "layout", None) is not None
                 and getattr(scene, "vic_target_positions_wp", None) is not None
             ):
-                apply_vic_joint_torques_batched_to_scene(scene)
+                apply_vic_joint_torques_batched_to_scene(scene, dt=float(dt))
             else:
-                apply_vic_joint_torques_to_scene(scene)
+                apply_vic_joint_torques_to_scene(scene, dt=float(dt))
         else:
             apply_vic_to_coupling_cache(scene)
         if scene.force_debug is not None:
@@ -354,6 +353,41 @@ def _harvest_coupling_wrenches(
         )
     if scene.force_debug is not None:
         scene.force_debug.record_harvested_from_scene(scene)
+
+
+def seed_lagged_coupling_from_rest_harvest(scene: Any, dt: float) -> None:
+    """Fill ``proxy_forces`` / ``coupling_forces_cache`` with a rest stem harvest.
+
+    After weld/bootstrap and gym snapshot restore the lag buffers must not stay
+    zero: the first MuJoCo substep would otherwise apply an empty wrench. At a
+    quiet post-grasp pose this seed is stem gather with ``body_q_prev = body_q``
+    (so ``Ċ ≈ 0``) plus optional explicit apple weight ``mg``.
+
+    Free-proxy scenes (no stem–apple joint) keep the historical zero fill.
+    """
+    if scene.proxy_forces is None:
+        return
+    if scene.stem_apple_joint_index is None:
+        scene.proxy_forces.zero_()
+        if scene.coupling_forces_cache is not None:
+            scene.coupling_forces_cache.zero_()
+        return
+
+    cable = scene.cable
+    # Rest kinematics: gather with Ċ≈0; inertia term uses qd_prev = qd.
+    wp.copy(cable.state_1.body_q, cable.state_0.body_q)
+    if scene.robot_tcp_qd_prev is not None and scene.robot_state_0 is not None:
+        wp.copy(scene.robot_tcp_qd_prev, scene.robot_state_0.body_qd)
+
+    _harvest_coupling_wrenches(
+        scene,
+        None,
+        float(dt),
+        harvest_registry=scene.proxy_registry,
+        cable=cable,
+    )
+    if scene.coupling_forces_cache is not None:
+        wp.copy(scene.coupling_forces_cache, scene.proxy_forces)
 
 
 def _sync_single_proxy_after_mujoco(scene: CoupledFruitingScene, dt: float) -> None:

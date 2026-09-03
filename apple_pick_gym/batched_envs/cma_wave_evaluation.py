@@ -23,6 +23,8 @@ from apple_pick_gym.batched_envs.batched_sysid_multi_replay import (
     SysIdReplayCancelled,
 )
 from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    CMA_POST_GRASP_SETTLE_SUBSTEPS,
+    CMA_PRE_GRASP_SETTLE_SUBSTEPS,
     make_real_replay_build_env_fn,
     real_replay_sim_config,
 )
@@ -132,7 +134,13 @@ def build_cma_replay_artifacts(
     ranges_path = Path(context.ranges_path)
     loaded_ranges = ranges if ranges is not None else load_ranges(str(ranges_path))
     settle_substeps = (
-        SETTLE_SUBSTEPS if context.settle_substeps is None else int(context.settle_substeps)
+        (
+            CMA_PRE_GRASP_SETTLE_SUBSTEPS
+            if context.mode == "vic_pose"
+            else SETTLE_SUBSTEPS
+        )
+        if context.settle_substeps is None
+        else int(context.settle_substeps)
     )
     settle_config = {
         "settle_substeps": settle_substeps,
@@ -218,7 +226,7 @@ def build_cma_replay_context_from_cli(
     control_hz: float,
     device: str | None,
     settle_config: Mapping[str, Any],
-    post_grasp_settle_substeps: int = 500,
+    post_grasp_settle_substeps: int = CMA_POST_GRASP_SETTLE_SUBSTEPS,
     real_topology_seed: int | None = None,
     fruiting_base_pos: tuple[float, float, float] | None = None,
     bootstrap_joint_q: tuple[float, ...] | None = None,

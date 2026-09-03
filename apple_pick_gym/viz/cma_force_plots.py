@@ -15,11 +15,14 @@ from apple_pick_sim.system_id.trajectory_store import PHASE_TO_INT
 _HOLD = int(PHASE_TO_INT["hold"])
 _FORCE_LABELS = ("Fx", "Fy", "Fz")
 _TORQUE_LABELS = ("Tx", "Ty", "Tz")
+_POS_LABELS = ("x", "y", "z")
 _COLORS_REAL = ("#2563eb", "#1d4ed8", "#1e40af")
 _COLORS_SIM = ("#dc2626", "#b91c1c", "#991b1b")
 _DEFAULT_SIM_LPF_HZ = 5.0
 _FORCE_NORM_KEY = "per_direction_mean_hold_force_norm_n"
 _TORQUE_NORM_KEY = "per_direction_mean_hold_torque_norm_nm"
+_WOODY_ERR_KEY = "per_direction_mean_hold_woody_start_m"
+_WRENCH_COL_END = 6
 
 
 def list_persisted_generations(structure_dir: Path) -> list[int]:
@@ -78,8 +81,19 @@ def _hold_spans(time: np.ndarray, phase: np.ndarray) -> list[tuple[float, float]
     return spans
 
 
+def list_direction_indices(role_dir: Path) -> list[int]:
+    """Return sorted direction indices from ``dir_XX.npz`` bags in ``role_dir``."""
+    out: list[int] = []
+    for path in Path(role_dir).glob("dir_*.npz"):
+        try:
+            out.append(int(path.stem.split("_", 1)[1]))
+        except (IndexError, ValueError):
+            continue
+    return sorted(out)
+
+
 def _n_directions_in_role(role_dir: Path) -> int:
-    return len(sorted(role_dir.glob("dir_*.npz")))
+    return len(list_direction_indices(role_dir))
 
 
 def _sample_hz_from_time(time: np.ndarray) -> float | None:
@@ -111,9 +125,16 @@ def lowpass_sim_force(
     return zero_phase_lowpass(x, source_hz=source_hz, cutoff_hz=float(cutoff_hz))
 
 
+def _hold_mask(phase_r: np.ndarray, n: int) -> np.ndarray:
+    hold = np.asarray(phase_r, dtype=np.int8)[:n] == _HOLD
+    if not np.any(hold):
+        return np.ones(n, dtype=bool)
+    return hold
+
+
 def _mean_hold_norm(
     meta: Mapping[str, Any],
-    key: str,
+    key: str | None,
     direction: int,
     rs: np.ndarray,
     ss: np.ndarray,
@@ -122,16 +143,38 @@ def _mean_hold_norm(
     col0: int,
 ) -> tuple[float, float]:
     """Return (real, sim) mean-hold vector-norm from metadata, else from the bag."""
-    block = meta.get(key)
-    entry = block.get(str(direction)) if isinstance(block, Mapping) else None
-    if isinstance(entry, Mapping) and "real" in entry and "sim" in entry:
-        return float(entry["real"]), float(entry["sim"])
-    hold = np.asarray(phase_r, dtype=np.int8) == _HOLD
-    if not np.any(hold):
-        hold = np.ones(int(rs.shape[0]), dtype=bool)
-    real = float(np.linalg.norm(rs[hold, col0 : col0 + 3], axis=1).mean())
-    sim = float(np.linalg.norm(ss[hold, col0 : col0 + 3], axis=1).mean())
+    if key is not None:
+        block = meta.get(key)
+        entry = block.get(str(direction)) if isinstance(block, Mapping) else None
+        if isinstance(entry, Mapping) and "real" in entry and "sim" in entry:
+            return float(entry["real"]), float(entry["sim"])
+    n = min(int(rs.shape[0]), int(ss.shape[0]))
+    hold = _hold_mask(phase_r, n)
+    real = float(np.linalg.norm(rs[:n][hold, col0 : col0 + 3], axis=1).mean())
+    sim = float(np.linalg.norm(ss[:n][hold, col0 : col0 + 3], axis=1).mean())
     return real, sim
+
+
+def _mean_hold_abs_err(
+    rs: np.ndarray,
+    ss: np.ndarray,
+    phase_r: np.ndarray,
+    *,
+    col0: int,
+) -> float:
+    """Mean-hold ‖sim − real‖ over XYZ columns starting at ``col0``."""
+    n = min(int(rs.shape[0]), int(ss.shape[0]))
+    hold = _hold_mask(phase_r, n)
+    diff = ss[:n][hold, col0 : col0 + 3] - rs[:n][hold, col0 : col0 + 3]
+    return float(np.linalg.norm(diff, axis=1).mean())
+
+
+def _disp_mag(state: np.ndarray, col0: int) -> np.ndarray:
+    """‖p(t) − p[0]‖ for XYZ columns starting at ``col0``."""
+    p = np.asarray(state[:, col0 : col0 + 3], dtype=np.float64)
+    if p.shape[0] == 0:
+        return np.zeros((0,), dtype=np.float64)
+    return np.linalg.norm(p - p[0:1], axis=1)
 
 
 def _pooled_sim_real_ratio(norms: Any) -> float:
@@ -153,13 +196,22 @@ def _load_dir_arrays(
     tr = np.asarray(z["sim_time_real"], dtype=np.float64)
     ts = np.asarray(z["sim_time_sim"], dtype=np.float64)
     rs = np.asarray(z["real_state"], dtype=np.float64)
-    ss = np.asarray(z["sim_state"], dtype=np.float64)
+    ss = np.asarray(z["sim_state"], dtype=np.float64).copy()
     phase_r = np.asarray(z["phase_real"], dtype=np.int8)
-    ss = lowpass_sim_force(ss, ts, cutoff_hz=sim_lpf_hz)
+    # Plot-only LPF is for wrench chatter; leave TCP/woody (and other) columns raw.
+    n_wrench = min(_WRENCH_COL_END, int(ss.shape[1]))
+    if n_wrench > 0:
+        ss[:, :n_wrench] = lowpass_sim_force(
+            ss[:, :n_wrench], ts, cutoff_hz=sim_lpf_hz
+        )
     return tr, ts, rs, ss, phase_r
 
 
-_WRENCH_KINDS: tuple[tuple[str, tuple[str, str, str], int, str, str, str, str], ...] = (
+# stem, labels, col0, unit, norm_key, stacked_name, kind_word, apply_lpf_note, use_displacement
+_PLOT_KINDS: tuple[
+    tuple[str, tuple[str, str, str], int, str, str | None, str, str, bool, bool],
+    ...,
+] = (
     (
         "force",
         _FORCE_LABELS,
@@ -168,6 +220,8 @@ _WRENCH_KINDS: tuple[tuple[str, tuple[str, str, str], int, str, str, str, str], 
         _FORCE_NORM_KEY,
         "|F|",
         "force",
+        True,
+        False,
     ),
     (
         "torque",
@@ -177,6 +231,41 @@ _WRENCH_KINDS: tuple[tuple[str, tuple[str, str, str], int, str, str, str, str], 
         _TORQUE_NORM_KEY,
         "|τ|",
         "torque",
+        True,
+        False,
+    ),
+    (
+        "tcp",
+        _POS_LABELS,
+        12,
+        "m",
+        None,
+        "‖Δtcp‖",
+        "TCP position",
+        False,
+        True,
+    ),
+    (
+        "woody_primary_spur",
+        _POS_LABELS,
+        18,
+        "m",
+        None,
+        "‖Δwoody‖",
+        "woody primary_spur",
+        False,
+        True,
+    ),
+    (
+        "woody_spur_stem",
+        _POS_LABELS,
+        21,
+        "m",
+        None,
+        "‖Δwoody‖",
+        "woody spur_stem",
+        False,
+        True,
     ),
 )
 
@@ -185,39 +274,102 @@ def write_generation_force_plots(
     role_dir: Path,
     out_dir: Path,
     *,
-    gen: int,
+    gen: int | None = None,
     run_name: str,
+    label: str | None = None,
     pull: Mapping[int, tuple[float, float, float]] | None = None,
     n_directions: int | None = None,
     write_html: bool = True,
     sim_lpf_hz: float | None = _DEFAULT_SIM_LPF_HZ,
 ) -> dict[str, Any]:
-    """Write per-direction force and torque plots for one persisted role."""
+    """Write per-direction force/torque/TCP/woody plots for one persisted role."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     role_dir = Path(role_dir)
-    meta = json.loads((role_dir / "metadata.json").read_text(encoding="utf-8"))
+    meta_path = role_dir / "metadata.json"
+    if meta_path.is_file():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    else:
+        meta = {}
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     pull = dict(pull or {})
-    n_dirs = int(n_directions) if n_directions is not None else _n_directions_in_role(role_dir)
+    if n_directions is not None:
+        directions = list(range(int(n_directions)))
+    else:
+        directions = list_direction_indices(role_dir)
+    n_dirs = len(directions)
+    if n_dirs == 0:
+        raise FileNotFoundError(f"no dir_*.npz bags under {role_dir}")
     lpf_note = f" sim LPF {float(sim_lpf_hz):.0f} Hz" if sim_lpf_hz and float(sim_lpf_hz) > 0 else ""
+    if label is None:
+        if gen is None:
+            label = "best"
+        else:
+            label = f"gen {int(gen)} best"
+    sinkhorn = meta.get("aggregate_sinkhorn")
+    cand = meta.get("candidate_index")
+    meta_bits = []
+    if sinkhorn is not None:
+        meta_bits.append(f"Sinkhorn={float(sinkhorn):.1f}")
+    if cand is not None:
+        meta_bits.append(f"cand {cand}")
+    meta_suffix = f" ({', '.join(meta_bits)})" if meta_bits else ""
 
-    for stem, labels, col0, unit, norm_key, stacked_name, kind_word in _WRENCH_KINDS:
-        for d in range(n_dirs):
+    # Peek state width so wrench-only bags skip TCP/woody kinds.
+    _tr0, _ts0, rs0, _ss0, _p0 = _load_dir_arrays(
+        role_dir, directions[0], sim_lpf_hz=sim_lpf_hz
+    )
+    state_dim = int(rs0.shape[1])
+    written_stems: list[str] = []
+
+    for (
+        stem,
+        labels,
+        col0,
+        unit,
+        norm_key,
+        stacked_name,
+        kind_word,
+        apply_lpf_note,
+        use_displacement,
+    ) in _PLOT_KINDS:
+        if state_dim < int(col0) + 3:
+            continue
+        written_stems.append(stem)
+        title_lpf = lpf_note if apply_lpf_note else ""
+
+        for d in directions:
             tr, ts, rs, ss, phase_r = _load_dir_arrays(role_dir, d, sim_lpf_hz=sim_lpf_hz)
-            real_n, sim_n = _mean_hold_norm(meta, norm_key, d, rs, ss, phase_r, col0=col0)
-            ratio = sim_n / real_n if real_n > 1e-9 else float("nan")
             pull_txt = _fmt_pull(pull, d)
             title_pull = f" pull {pull_txt}" if pull_txt else ""
+            if use_displacement:
+                err = _mean_hold_abs_err(rs, ss, phase_r, col0=col0)
+                woody_meta = meta.get(_WOODY_ERR_KEY)
+                meta_err = None
+                if stem.startswith("woody_") and isinstance(woody_meta, Mapping):
+                    raw = woody_meta.get(str(d))
+                    if raw is not None:
+                        meta_err = float(raw)
+                title_extra = f"mean-hold ‖sim−real‖={err:.4f}{unit}"
+                if meta_err is not None:
+                    title_extra += f" (meta woody={meta_err:.4f}{unit})"
+            else:
+                real_n, sim_n = _mean_hold_norm(
+                    meta, norm_key, d, rs, ss, phase_r, col0=col0
+                )
+                ratio = sim_n / real_n if real_n > 1e-9 else float("nan")
+                title_extra = (
+                    f"mean-hold {stacked_name}: "
+                    f"real={real_n:.2f}{unit} sim={sim_n:.2f}{unit} ({ratio:.2f}x)"
+                )
 
             fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
             fig.suptitle(
-                f"gen {gen} best d{d}{title_pull}{lpf_note}  |  mean-hold {stacked_name}: "
-                f"real={real_n:.2f}{unit} sim={sim_n:.2f}{unit} ({ratio:.2f}x)",
+                f"{label} d{d}{title_pull}{title_lpf}  |  {title_extra}",
                 fontsize=11,
             )
             for i, ax in enumerate(axes):
@@ -251,19 +403,25 @@ def write_generation_force_plots(
         fig, axes = plt.subplots(n_dirs, 1, figsize=(10, max(3.0, 2.5 * n_dirs)), sharex=True)
         if n_dirs == 1:
             axes = [axes]
-        for d in range(n_dirs):
+        for row_i, d in enumerate(directions):
             tr, ts, rs, ss, _phase_r = _load_dir_arrays(role_dir, d, sim_lpf_hz=sim_lpf_hz)
-            ax = axes[d]
+            ax = axes[row_i]
+            if use_displacement:
+                y_real = _disp_mag(rs, col0)
+                y_sim = _disp_mag(ss, col0)
+            else:
+                y_real = np.linalg.norm(rs[:, col0 : col0 + 3], axis=1)
+                y_sim = np.linalg.norm(ss[:, col0 : col0 + 3], axis=1)
             ax.plot(
                 tr,
-                np.linalg.norm(rs[:, col0 : col0 + 3], axis=1),
+                y_real,
                 color="#2563eb",
                 lw=1.5,
                 label=f"real {stacked_name}",
             )
             ax.plot(
                 ts,
-                np.linalg.norm(ss[:, col0 : col0 + 3], axis=1),
+                y_sim,
                 color="#dc2626",
                 lw=1.5,
                 ls="--",
@@ -273,12 +431,11 @@ def write_generation_force_plots(
             pull_txt = _fmt_pull(pull, d)
             ax.set_title(f"d{d} {pull_txt}".rstrip(), fontsize=9, loc="left")
             ax.grid(True, alpha=0.3)
-            if d == 0:
+            if row_i == 0:
                 ax.legend(loc="upper right", fontsize=8)
         axes[-1].set_xlabel("time [s]")
         fig.suptitle(
-            f"Real vs sim {kind_word} — gen {gen} best (Sinkhorn={meta['aggregate_sinkhorn']:.1f}, "
-            f"cand {meta['candidate_index']}){lpf_note}",
+            f"Real vs sim {kind_word} — {label}{meta_suffix}{title_lpf}",
             fontsize=12,
         )
         fig.tight_layout(rect=[0, 0, 1, 0.98])
@@ -290,13 +447,21 @@ def write_generation_force_plots(
                 import plotly.graph_objects as go
                 from plotly.subplots import make_subplots
 
-                for d in range(n_dirs):
+                for d in directions:
                     tr, ts, rs, ss, phase_r = _load_dir_arrays(
                         role_dir, d, sim_lpf_hz=sim_lpf_hz
                     )
-                    real_n, sim_n = _mean_hold_norm(
-                        meta, norm_key, d, rs, ss, phase_r, col0=col0
-                    )
+                    if use_displacement:
+                        err = _mean_hold_abs_err(rs, ss, phase_r, col0=col0)
+                        title_extra = f" — mean-hold ‖sim−real‖={err:.4f}{unit}"
+                    else:
+                        real_n, sim_n = _mean_hold_norm(
+                            meta, norm_key, d, rs, ss, phase_r, col0=col0
+                        )
+                        title_extra = (
+                            f" — mean-hold {stacked_name} "
+                            f"real={real_n:.2f}{unit} sim={sim_n:.2f}{unit}"
+                        )
                     fig = make_subplots(
                         rows=3,
                         cols=1,
@@ -332,13 +497,10 @@ def write_generation_force_plots(
                     pull_txt = _fmt_pull(pull, d)
                     fig.update_layout(
                         title=(
-                            f"gen {gen} d{d}"
+                            f"{label} d{d}"
                             + (f" pull {pull_txt}" if pull_txt else "")
-                            + (
-                                f" — mean-hold {stacked_name} "
-                                f"real={real_n:.2f}{unit} sim={sim_n:.2f}{unit}"
-                            )
-                            + lpf_note
+                            + title_extra
+                            + title_lpf
                         ),
                         height=700,
                         width=950,
@@ -351,21 +513,100 @@ def write_generation_force_plots(
             except ImportError:
                 pass
 
+    sinkhorn_txt = (
+        f"(Sinkhorn={float(sinkhorn):.2f}, cand {cand})"
+        if sinkhorn is not None and cand is not None
+        else meta_suffix.strip()
+    )
+    png_lines = "\n".join(
+        f"- [all_directions_{stem}.png](all_directions_{stem}.png)" for stem in written_stems
+    )
+    dir_bits = " / ".join(f"dir_XX_{stem}.png" for stem in written_stems)
+    html_bits = ", ".join(f"dir_XX_{stem}.html" for stem in written_stems)
     (out_dir / "README.md").write_text(
         (
-            "# Force and torque time series — real vs sim\n\n"
-            f"Run: `{run_name}`, gen {gen} best "
-            f"(Sinkhorn={meta['aggregate_sinkhorn']:.2f}, cand {meta['candidate_index']})"
-            f"{lpf_note}\n\n"
+            "# Force, torque, TCP, and woody time series — real vs sim\n\n"
+            f"Run: `{run_name}`, {label} {sinkhorn_txt}"
+            f"{lpf_note} (wrench only)\n\n"
             "**PNG (open in editor):**\n"
-            "- [all_directions_force.png](all_directions_force.png)\n"
-            "- [all_directions_torque.png](all_directions_torque.png)\n"
-            "- dir_00_force.png / dir_00_torque.png …\n\n"
-            "**HTML (offline, no CDN):** dir_XX_force.html, dir_XX_torque.html\n"
+            f"{png_lines}\n"
+            f"- {dir_bits} …\n\n"
+            f"**HTML (offline, no CDN):** {html_bits}\n"
         ),
         encoding="utf-8",
     )
     return meta
+
+
+def write_holdout_force_plots(
+    run_dir: Path,
+    *,
+    structure_idx: int = 0,
+    sides: Sequence[str] = ("fitted", "baseline"),
+    manifest_path: Path | None = None,
+    write_html: bool = True,
+    sim_lpf_hz: float | None = _DEFAULT_SIM_LPF_HZ,
+) -> Path:
+    """Write ``structure_XXX/force_plots/holdout/{fitted,baseline}/`` from val bags."""
+    run_dir = Path(run_dir)
+    struct = run_dir / f"structure_{int(structure_idx):03d}"
+    holdout_root = struct / "holdout"
+    plots_root = struct / "force_plots" / "holdout"
+    if not holdout_root.is_dir():
+        raise FileNotFoundError(f"no holdout directory under {holdout_root}")
+
+    pull: dict[int, tuple[float, float, float]] = {}
+    manifest = manifest_path
+    if manifest is None:
+        sibling = run_dir / "manifest.json"
+        if sibling.is_file():
+            manifest = sibling
+    if manifest is not None:
+        pull = pull_directions_from_manifest(manifest)
+
+    index_lines = [
+        "# Holdout force, torque, TCP, and woody plots",
+        "",
+        f"Run: `{run_dir.name}`",
+        "",
+    ]
+    if sim_lpf_hz and float(sim_lpf_hz) > 0:
+        index_lines.append(
+            f"Sim wrench traces: {float(sim_lpf_hz):.0f} Hz zero-phase LPF (plot-only)."
+        )
+        index_lines.append("")
+
+    wrote_any = False
+    for side in sides:
+        role_dir = holdout_root / str(side)
+        if not role_dir.is_dir() or not list_direction_indices(role_dir):
+            continue
+        wrote_any = True
+        write_generation_force_plots(
+            role_dir,
+            plots_root / str(side),
+            gen=None,
+            run_name=run_dir.name,
+            label=f"holdout {side}",
+            pull=pull,
+            write_html=write_html,
+            sim_lpf_hz=sim_lpf_hz,
+        )
+        side_dir = plots_root / str(side)
+        bits = [
+            f"[{side} force]({side}/all_directions_force.png)",
+            f"[torque]({side}/all_directions_torque.png)",
+        ]
+        if (side_dir / "all_directions_tcp.png").is_file():
+            bits.append(f"[tcp]({side}/all_directions_tcp.png)")
+        if (side_dir / "all_directions_woody_primary_spur.png").is_file():
+            bits.append(f"[woody]({side}/all_directions_woody_primary_spur.png)")
+        index_lines.append("- " + " · ".join(bits))
+    if not wrote_any:
+        raise FileNotFoundError(f"no holdout dir_*.npz bags under {holdout_root}")
+    plots_root.mkdir(parents=True, exist_ok=True)
+    (plots_root / "README.md").write_text("\n".join(index_lines) + "\n", encoding="utf-8")
+    return plots_root
 
 
 def write_run_force_plots(
@@ -396,13 +637,15 @@ def write_run_force_plots(
         pull = pull_directions_from_manifest(manifest)
 
     index_lines = [
-        "# Force and torque plots — all generations",
+        "# Force, torque, TCP, and woody plots — all generations",
         "",
         f"Run: `{run_dir.name}`",
         "",
     ]
     if sim_lpf_hz and float(sim_lpf_hz) > 0:
-        index_lines.append(f"Sim traces: {float(sim_lpf_hz):.0f} Hz zero-phase LPF (plot-only).")
+        index_lines.append(
+            f"Sim wrench traces: {float(sim_lpf_hz):.0f} Hz zero-phase LPF (plot-only)."
+        )
         index_lines.append("")
     for gen in gens:
         role_dir = struct / f"generations/gen_{gen:02d}" / role
@@ -421,10 +664,19 @@ def write_run_force_plots(
         f_ratio = _pooled_sim_real_ratio(meta.get(_FORCE_NORM_KEY))
         t_ratio = _pooled_sim_real_ratio(meta.get(_TORQUE_NORM_KEY))
         tau_txt = f", |τ| sim/real={t_ratio:.2f}x" if t_ratio == t_ratio else ""
+        gen_dir = plots_root / f"gen_{gen:02d}"
+        bits = [
+            f"[gen {gen:02d} force](gen_{gen:02d}/all_directions_force.png)",
+            f"[torque](gen_{gen:02d}/all_directions_torque.png)",
+        ]
+        if (gen_dir / "all_directions_tcp.png").is_file():
+            bits.append(f"[tcp](gen_{gen:02d}/all_directions_tcp.png)")
+        if (gen_dir / "all_directions_woody_primary_spur.png").is_file():
+            bits.append(f"[woody](gen_{gen:02d}/all_directions_woody_primary_spur.png)")
         index_lines.append(
-            f"- [gen {gen:02d} force](gen_{gen:02d}/all_directions_force.png) · "
-            f"[torque](gen_{gen:02d}/all_directions_torque.png) — "
-            f"Sinkhorn={meta['aggregate_sinkhorn']:.1f}, |F| sim/real={f_ratio:.2f}x"
+            "- "
+            + " · ".join(bits)
+            + f" — Sinkhorn={meta['aggregate_sinkhorn']:.1f}, |F| sim/real={f_ratio:.2f}x"
             f"{tau_txt}"
         )
     plots_root.mkdir(parents=True, exist_ok=True)
@@ -434,16 +686,24 @@ def write_run_force_plots(
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Plot real vs sim Fx/Fy/Fz and Tx/Ty/Tz from persisted CMA generation bags."
+        description=(
+            "Plot real vs sim Fx/Fy/Fz, Tx/Ty/Tz, TCP XYZ, and woody-start XYZ "
+            "from persisted CMA bags."
+        )
     )
     p.add_argument(
         "--run",
         type=Path,
         required=True,
-        help="CMA output directory (contains structure_XXX/generations).",
+        help="CMA output directory (contains structure_XXX/generations or holdout).",
     )
     p.add_argument("--structure-idx", type=int, default=0)
     p.add_argument("--role", default="best", help="Persisted role folder (default: best).")
+    p.add_argument(
+        "--holdout",
+        action="store_true",
+        help="Plot structure_XXX/holdout/{fitted,baseline} instead of generation bags.",
+    )
     p.add_argument(
         "--manifest",
         type=Path,
@@ -459,21 +719,33 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sim-lpf-hz",
         type=float,
         default=_DEFAULT_SIM_LPF_HZ,
-        help="Zero-phase Butterworth cutoff on sim wrench traces (default: 5). 0 disables.",
+        help=(
+            "Zero-phase Butterworth cutoff on sim wrench columns only "
+            "(default: 5). 0 disables. TCP/woody stay raw."
+        ),
     )
     return p
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    write_run_force_plots(
-        args.run,
-        structure_idx=int(args.structure_idx),
-        role=str(args.role),
-        manifest_path=args.manifest,
-        write_html=not bool(args.no_html),
-        sim_lpf_hz=float(args.sim_lpf_hz),
-    )
+    if bool(args.holdout):
+        write_holdout_force_plots(
+            args.run,
+            structure_idx=int(args.structure_idx),
+            manifest_path=args.manifest,
+            write_html=not bool(args.no_html),
+            sim_lpf_hz=float(args.sim_lpf_hz),
+        )
+    else:
+        write_run_force_plots(
+            args.run,
+            structure_idx=int(args.structure_idx),
+            role=str(args.role),
+            manifest_path=args.manifest,
+            write_html=not bool(args.no_html),
+            sim_lpf_hz=float(args.sim_lpf_hz),
+        )
     return 0
 
 

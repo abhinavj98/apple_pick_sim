@@ -164,19 +164,13 @@ def build_batched_heterogeneous_scene(
         )
 
     def _apply_post_grasp_settle(welded: Any) -> tuple[list[SettleStabilityReport], list[SettleKeDecayReport]]:
-        if post_grasp_settle_substeps <= 0:
-            return [], []
-        post_stab, post_ke = _run_vbd_settle(
+        return apply_post_grasp_vbd_settle(
             welded,
             config=config,
             per_env_params=params,
             substeps=post_grasp_settle_substeps,
-            sim_dt=sim_dt,
             viewer=viewer,
-            collect_diagnostics=collect_diag,
         )
-        _rebootstrap_fr3_after_post_grasp_settle(welded, config=config)
-        return post_stab, post_ke
 
     angular_kd_overrides = dict(config.fruiting_system.joint_angular_kd_overrides)
     linear_kd_overrides = dict(config.fruiting_system.joint_linear_kd_overrides)
@@ -874,6 +868,36 @@ def _run_vbd_settle(
         ke_decay_reports = recorder.reports(config=diag.ke_analysis)
     quiet_all_cable_bodies(scene.cable)
     return stability_reports, ke_decay_reports
+
+
+def apply_post_grasp_vbd_settle(
+    scene: CoupledFruitingScene,
+    *,
+    config: BatchedHeterogeneousCoupledSimConfig,
+    per_env_params: tuple[FruitingSystemParams, ...],
+    substeps: int | None = None,
+    viewer: Any | None = None,
+) -> tuple[list[SettleStabilityReport], list[SettleKeDecayReport]]:
+    """Run welded VBD settle after post-grasp SE(3), then rebootstrap FR3."""
+    n = (
+        int(config.scene.post_grasp_settle_substeps)
+        if substeps is None
+        else int(substeps)
+    )
+    if n <= 0:
+        return [], []
+    collect_diag = config.settle_diagnostics is not None
+    post_stab, post_ke = _run_vbd_settle(
+        scene,
+        config=config,
+        per_env_params=per_env_params,
+        substeps=n,
+        sim_dt=float(config.runtime.sub_dt),
+        viewer=viewer,
+        collect_diagnostics=collect_diag,
+    )
+    _rebootstrap_fr3_after_post_grasp_settle(scene, config=config)
+    return post_stab, post_ke
 
 
 def _maybe_render_settle(

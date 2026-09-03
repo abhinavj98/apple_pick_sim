@@ -867,10 +867,10 @@ def _manifest_sim_config_from_fixture(
         ),
         scene=dataclasses.replace(
             gym_cfg.scene,
-            settle_substeps=2000,
+            settle_substeps=5000,
             settle_quiet_every=100,
             settle_gravity_ramp=False,
-            post_grasp_settle_substeps=500,
+            post_grasp_settle_substeps=2000,
             fruiting_base_pos=fruiting_base_pos,
         ),
         controller=controller,

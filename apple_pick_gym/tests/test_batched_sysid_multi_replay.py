@@ -1152,6 +1152,48 @@ def test_drive_tensor_pads_short_directions_with_last_action(
     assert not np.allclose(drive[1, 3:], 0.0)
 
 
+def test_replay_records_reset_obs_before_first_action(monkeypatch, _fake_replay_runtime):
+    """Frame 0 is the post-reset grasp; action[0] is applied after that row."""
+    collectors: list[Any] = []
+
+    class OrderCollectors:
+        def __init__(self, num_envs, recorded_by_env):
+            assert num_envs == len(recorded_by_env)
+            self.recorded = list(recorded_by_env)
+            self.n_actions_at_record: list[int] = []
+            collectors.append(self)
+
+        def record_all_envs_step(self, env, *, frame_idx, **_kwargs):
+            del frame_idx
+            self.n_actions_at_record.append(len(env.actions))
+
+        def to_arrays(self, env_idx):
+            del env_idx
+            n = len(self.n_actions_at_record)
+            return {"ft_wrist": np.zeros((n, 1), dtype=np.float32)}
+
+    monkeypatch.setattr(multi, "BatchedSysIdReplayCollectors", OrderCollectors, raising=False)
+    request = _request(4, candidates=(_Candidate(40.0),), frames=3, action_dim=6)
+    blocks = multi.build_replay_candidate_blocks((request,))
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    env = _fake_replay_runtime.built[0]
+    assert collectors[0].n_actions_at_record[0] == 0
+    assert collectors[0].n_actions_at_record == list(range(3))
+    assert len(env.actions) == 3
+
+
 def test_replay_arrays_truncate_to_recorded_length(monkeypatch, _fake_replay_runtime):
     _patch_horizon_collectors(monkeypatch, pad_sentinel=_PADDED_FRAME_SENTINEL)
     request = _unequal_length_request()

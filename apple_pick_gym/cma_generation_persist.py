@@ -194,6 +194,43 @@ def build_direction_state_npz(
     }
 
 
+def _xy_subplot_axis_refs(row: int, col: int, n_cols: int) -> tuple[str, str]:
+    """Plotly xref/yref for an xy cell in a row-major ``make_subplots`` grid."""
+    idx = (int(row) - 1) * int(n_cols) + int(col)
+    xref = "x" if idx == 1 else f"x{idx}"
+    yref = "y domain" if idx == 1 else f"y{idx} domain"
+    return xref, yref
+
+
+def _add_phase_band_to_subplot(
+    fig: Any,
+    *,
+    row: int,
+    col: int,
+    n_cols: int,
+    t0: float,
+    t1: float,
+    color: str,
+) -> None:
+    """Draw one hold/move band without ``add_vrect`` (unsafe with table subplots)."""
+    if not (math.isfinite(t0) and math.isfinite(t1)) or float(t1) <= float(t0):
+        return
+    xref, yref = _xy_subplot_axis_refs(row, col, n_cols)
+    fig.add_shape(
+        type="rect",
+        xref=xref,
+        yref=yref,
+        x0=float(t0),
+        x1=float(t1),
+        y0=0.0,
+        y1=1.0,
+        fillcolor=color,
+        opacity=0.2,
+        line_width=0,
+        layer="below",
+    )
+
+
 def _phase_intervals(
     time: np.ndarray, phase: np.ndarray, code: int
 ) -> list[tuple[float, float]]:
@@ -348,20 +385,20 @@ def make_generation_features_figure(
                     col=col_i,
                 )
 
-            sample_phase = phase_real if phase_real.size else phase_sim
-            sample_time = t_real if t_real.size else t_sim
-            for code, color in ((_MOVE, "LightSkyBlue"), (_HOLD, "NavajoWhite")):
-                for t0, t1 in _phase_intervals(sample_time, sample_phase, code):
-                    fig.add_vrect(
-                        x0=t0,
-                        x1=t1,
-                        fillcolor=color,
-                        opacity=0.2,
-                        line_width=0,
-                        row=row_i,
-                        col=col_i,
-                        layer="below",
-                    )
+            if col_i == 1:
+                sample_phase = phase_real if phase_real.size else phase_sim
+                sample_time = t_real if t_real.size else t_sim
+                for code, color in ((_MOVE, "LightSkyBlue"), (_HOLD, "NavajoWhite")):
+                    for t0, t1 in _phase_intervals(sample_time, sample_phase, code):
+                        _add_phase_band_to_subplot(
+                            fig,
+                            row=row_i,
+                            col=col_i,
+                            n_cols=n_cols,
+                            t0=t0,
+                            t1=t1,
+                            color=color,
+                        )
 
     headers, table_rows = _block_table_rows(per_direction, dirs)
     cell_values = (

@@ -259,7 +259,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--settle-substeps",
         type=int,
-        default=2000,
+        default=5000,
         help="VBD substeps before runtime (default: 2000).",
     )
     parser.add_argument(

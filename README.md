@@ -432,12 +432,14 @@ uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
 uv run python robot_replay/example_replay_real_batched.py \
   --dataset tmp/real_batched_s09_d00 \
   --viewer null --max-frames 24 \
+  --direction-idx 0 \
   --settle-substeps 80 --post-grasp-settle-substeps 0
 
 # 3) GL: full episode after off-screen settle (defaults match pre-grasp settle viewer)
 uv run python robot_replay/example_replay_real_batched.py \
   --dataset tmp/real_batched_s09_d00 \
   --viewer gl --max-frames 0 \
+  --direction-idx 0 \
   --settle-substeps 5000 --settle-quiet-every 300 \
   --post-grasp-settle-substeps 500
 ```

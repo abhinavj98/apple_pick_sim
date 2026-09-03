@@ -1,6 +1,6 @@
 # GPU coupling architecture and optimization
 
-**Last updated:** 2026-07-27 (co-teleport / explicit-flag cache; FR3-only builders)
+**Last updated:** 2026-09-03 (VIC joint-torque slew on-device Torch clamp)
 
 **Scope note:** Single-env sections below describe the original coupled picking path. For the **multi-env batched heterogeneous** GPU hot path (`BatchedHeterogeneousCoupledSim`), see H1 `docs/handbook-coupled-simulation.md`, `docs/heterogeneous-batched-vectorization-audit.md`, and design spec `docs/superpowers/specs/2026-07-03-batched-gpu-hot-path-design.md`.
 
@@ -80,6 +80,7 @@ Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → 
 |----------|-----------|--------|
 | `coupled_substep` | `wp.clone(body_qd)` | **Fixed** — pooled `qd_synced` + `wp.copy` |
 | `harvest_stem_tension_for_tcp` | Full-buffer `.numpy()` + NumPy limit | **Fixed** — device gather + Warp limit kernel |
+| `apply_joint_torque_slew_to_scene` | Per-substep `.numpy()` / `assign` on `joint_f` | **Fixed** — in-place Torch clamp on `wp.to_torch` views |
 | `DEFAULT_MUJOCO_SOLVER_KWARGS` | `use_mujoco_cpu` | **Default `False`** in solver kwargs; builders resolve to MuJoCo CPU on CPU Warp devices and MuJoCo Warp on CUDA unless explicitly overridden |
 | `CouplingForceDebugRecorder` | `.numpy()` | Debug only (unchanged) |
 | FR3 teleop / IK | Host `joint_q` / keyboard | Frame-rate path (acceptable) |

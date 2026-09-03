@@ -20,12 +20,12 @@
       "angular_k": 10.0,
       "angular_d": 3.0
     },
-    "joint_damping_ratio": 1.0,
+    "joint_damping_ratio": 0.3,
     "joint_angular_kp_overrides": {
-      "support": 1000.0
+      "support": 10000.0
     },
     "joint_linear_kp_overrides": {
-      "support": 1000.0
+      "support": 10000.0
     },
     "joint_roll_kp_overrides": {
       "support": 3.0
@@ -57,16 +57,16 @@
       "max": 0.0
     },
     "youngs_modulus_pa": {
-      "min": 50000000000.3,
-      "max": 50000000000.8
+      "min": 5000000000.3,
+      "max": 5000000000.8
     },
     "damping_ratio": {
       "min": 0.3,
       "max": 0.3
     },
     "flexural_modulus_pa": {
-      "min": 50000000000.3,
-      "max": 50000000000.8
+      "min": 500000000.3,
+      "max": 500000000.8
     }
   },
   "secondary": null,
@@ -110,8 +110,8 @@
   },
   "stem": {
     "num_segments": {
-      "min": 8,
-      "max": 8
+      "min": 6,
+      "max": 6
     },
     "length": {
       "min": 0.03,

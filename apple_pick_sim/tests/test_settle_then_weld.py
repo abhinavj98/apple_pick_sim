@@ -75,6 +75,38 @@ def _make_settle_then_weld(cf, fs, ranges, seed: int, *, settle_substeps: int):
     raise last_exc  # type: ignore[misc]
 
 
+def test_settle_then_weld_seeds_lagged_proxy_forces_with_stem_plus_mg():
+    """After settle→weld+bootstrap, lag buffers hold rest stem+mg (not zeros)."""
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    welded, _settled = _make_settle_then_weld(cf, fs, ranges, 2, settle_substeps=40)
+    tcp = welded.tcp_body_index
+    w = welded.proxy_forces.numpy().reshape(-1, 6)[tcp]
+    cache = welded.coupling_forces_cache.numpy().reshape(-1, 6)[tcp]
+    expected_mg = float(welded.apple_mass_kg) * 9.81
+    assert expected_mg > 0.5
+    assert float(np.linalg.norm(w[:3])) >= 0.5 * expected_mg
+    np.testing.assert_allclose(cache, w, rtol=1e-5, atol=1e-5)
+
+
+def test_first_coupled_substep_applies_rest_seed():
+    """First MuJoCo substep applies the rest seed already in ``proxy_forces``."""
+    import apple_pick_sim.coupled_fruiting as cf
+    import apple_pick_sim.fruiting_system as fs
+
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    welded, _settled = _make_settle_then_weld(cf, fs, ranges, 2, settle_substeps=40)
+    tcp = welded.tcp_body_index
+    seed = welded.proxy_forces.numpy().reshape(-1, 6)[tcp].copy()
+    assert float(np.linalg.norm(seed[:3])) > 0.5
+
+    welded.coupled_substep(SUB_DT)
+    cache = welded.coupling_forces_cache.numpy().reshape(-1, 6)[tcp]
+    np.testing.assert_allclose(cache, seed, rtol=1e-4, atol=1e-4)
+
+
 def test_settle_then_weld_quiet_start_bounds_first_harvest_wrench():
     """After settle-then-weld + direct-joint hold, stem harvest stays within default caps."""
     import apple_pick_sim.coupled_fruiting as cf

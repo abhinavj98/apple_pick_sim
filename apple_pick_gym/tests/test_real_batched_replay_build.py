@@ -137,22 +137,33 @@ def test_make_real_replay_build_env_fn_applies_post_grasp_with_layout(monkeypatc
     cable = object()
     layout = object()
     apply_calls: list[dict] = []
+    call_order: list[str] = []
 
     class _FakeEnv:
-        def __init__(self, **_kwargs):
+        def __init__(self, **kwargs):
+            sim_config = kwargs.get("sim_config")
+            assert sim_config is not None
+            assert sim_config.scene.post_grasp_settle_substeps == 0
+            call_order.append("construct")
             self._sim = SimpleNamespace(
                 scene=SimpleNamespace(cable=cable, layout=layout),
-                capture_episode_snapshot=lambda: None,
+                config=sim_config,
+                per_env_params=(None, None),
+                capture_episode_snapshot=lambda: call_order.append("snapshot"),
             )
 
+    def _apply_se3(actual_cable, meta, **kwargs):
+        call_order.append("se3")
+        apply_calls.append({"cable": actual_cable, "meta": meta, **kwargs})
+
+    def _post_settle(scene, *, config, per_env_params, substeps=None, viewer=None):
+        call_order.append("post_grasp_settle")
+        assert substeps == 2000
+        return [], []
+
     monkeypatch.setattr(build, "ApplePickBatchedSysIdEnv", _FakeEnv)
-    monkeypatch.setattr(
-        build,
-        "apply_logged_post_grasp_se3_to_cable",
-        lambda actual_cable, meta, **kwargs: apply_calls.append(
-            {"cable": actual_cable, "meta": meta, **kwargs}
-        ),
-    )
+    monkeypatch.setattr(build, "apply_logged_post_grasp_se3_to_cable", _apply_se3)
+    monkeypatch.setattr(build, "apply_post_grasp_vbd_settle", _post_settle)
     meta = {
         "initial_apple_pos": [0.1, 0.2, 0.3],
         "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
@@ -166,31 +177,47 @@ def test_make_real_replay_build_env_fn_applies_post_grasp_with_layout(monkeypatc
         fruiting_base_pos=(0.0, 0.5, 0.95),
         episode_meta=meta,
         controller_mode="vic_pose",
+        post_grasp_settle_substeps=2000,
     )
 
     fn(num_envs=2, per_env_params=[None, None], max_episode_steps=4)
 
     assert apply_calls == [{"cable": cable, "meta": meta, "layout": layout}]
+    assert call_order == ["construct", "se3", "post_grasp_settle", "snapshot"]
 
 
 def test_make_real_replay_build_env_fn_recaptures_snapshot_after_post_grasp_se3(
     monkeypatch,
 ):
-    """Fused replay reset() restores the env-init snapshot.
+    """Fused replay reset() restores the post-SE(3) post-settle snapshot.
 
-    Logged SE(3) is applied after that capture. Recapture after the write so
-    restore keeps the grasped apple pose, not the pre-grasp weld.
+    Construct snapshots the pre-grasp weld. Factory applies logged SE(3),
+    runs post-grasp VBD settle, then recaptures so restore keeps the relaxed
+    grasp pose, not the construct-time pre-grasp weld.
     """
     from apple_pick_gym.batched_envs import real_batched_replay_build as build
 
     logged_pos = [0.11, 0.22, 0.33]
+    settled_pos = [0.12, 0.23, 0.34]
     pre_grasp_pos = [9.0, 9.0, 9.0]
 
     class _FakeSim:
         def __init__(self):
+            from apple_pick_gym.batched_envs.real_batched_replay_build import (
+                real_replay_sim_config,
+            )
+
             self.apple_pos = list(pre_grasp_pos)
             self._snapshot = None
             self.scene = SimpleNamespace(cable=object(), layout=object())
+            self.config = real_replay_sim_config(
+                num_envs=1,
+                topology_seed=0,
+                fruiting_base_pos=(0.0, 0.5, 0.95),
+                ranges=load_ranges(_VARIANCE),
+                post_grasp_settle_substeps=0,
+            )
+            self.per_env_params = (None,)
 
         def capture_episode_snapshot(self):
             self._snapshot = list(self.apple_pos)
@@ -201,7 +228,10 @@ def test_make_real_replay_build_env_fn_recaptures_snapshot_after_post_grasp_se3(
     class _FakeEnv:
         last = None
 
-        def __init__(self, **_kwargs):
+        def __init__(self, **kwargs):
+            sim_config = kwargs.get("sim_config")
+            assert sim_config is not None
+            assert sim_config.scene.post_grasp_settle_substeps == 0
             self._sim = _FakeSim()
             self._sim.capture_episode_snapshot()
             type(self).last = self
@@ -211,8 +241,14 @@ def test_make_real_replay_build_env_fn_recaptures_snapshot_after_post_grasp_se3(
         assert env is not None
         env._sim.apple_pos = list(logged_pos)
 
+    def _post_settle(scene, *, config, per_env_params, substeps=None, viewer=None):
+        env = _FakeEnv.last
+        assert env is not None
+        env._sim.apple_pos = list(settled_pos)
+
     monkeypatch.setattr(build, "ApplePickBatchedSysIdEnv", _FakeEnv)
     monkeypatch.setattr(build, "apply_logged_post_grasp_se3_to_cable", _apply)
+    monkeypatch.setattr(build, "apply_post_grasp_vbd_settle", _post_settle)
     meta = {
         "initial_apple_pos": logged_pos,
         "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
@@ -229,7 +265,7 @@ def test_make_real_replay_build_env_fn_recaptures_snapshot_after_post_grasp_se3(
     )
     env = fn(num_envs=1, per_env_params=[None], max_episode_steps=4)
     env._sim.restore_episode_snapshot()
-    assert env._sim.apple_pos == logged_pos
+    assert env._sim.apple_pos == settled_pos
 
 
 def test_bootstrap_joint_q_from_episode_metadata():
@@ -300,7 +336,7 @@ def test_real_replay_sim_config_applies_vic_pose_and_control_hz():
     assert cfg.robot.per_env_ik is False
     assert cfg.robot.bootstrap_joint_q == q
     assert cfg.scene.fruiting_base_pos == (0.117, 0.787, 0.577)
-    assert cfg.scene.post_grasp_settle_substeps == 500
+    assert cfg.scene.post_grasp_settle_substeps == 2000
     assert cfg.runtime.control_hz == pytest.approx(15.0)
     assert cfg.robot.reuse_replicated_mujoco is False
 

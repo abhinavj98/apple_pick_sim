@@ -246,11 +246,12 @@ in `cmaes_report.json`. This is optimizer fitness only; holdout
 See `docs/handbook-sysid-scoring.md`. Do not infer the current objective from
 historical MMD grid or primary-\(E\) design documents.
 
-**Generation force and torque plots.** After `--persist-generation-replays`, plot
-real vs sim Fx/Fy/Fz and Tx/Ty/Tz (PNG + optional HTML) from
+**Generation force, torque, TCP, and woody plots.** After
+`--persist-generation-replays`, plot real vs sim Fx/Fy/Fz, Tx/Ty/Tz, TCP XYZ,
+and woody-start XYZ for `primary_spur` / `spur_stem` (PNG + optional HTML) from
 `structure_XXX/generations/gen_YY/best`.
-Sim traces default to a 5 Hz zero-phase Butterworth (plot-only; `--sim-lpf-hz 0`
-disables):
+Sim **wrench** traces default to a 5 Hz zero-phase Butterworth (plot-only;
+`--sim-lpf-hz 0` disables). TCP and woody positions are not filtered:
 
 ```bash
 uv run python -m apple_pick_gym.viz.cma_force_plots \
@@ -488,7 +489,7 @@ the ranking policy; the second validates CMA fit integrity.
 | Holdout split, report, val overlays, exit on gate fail | `apple_pick_sim/system_id/holdout_gates.py`; `apple_pick_gym/batched_envs/holdout_evaluation.py` |
 | Shared real replay build | `apple_pick_gym/batched_envs/real_batched_replay_build.py` |
 | Ranking and CMA gates | `apple_pick_gym/batched_envs/youngs_modulus_gate_report.py`; `youngs_modulus_cmaes_gate_report.py`; `scripts/gate_youngs_modulus_*.sh` |
-| Persisted-bag force/torque time series | `apple_pick_gym/viz/cma_force_plots.py` |
+| Persisted-bag force/torque/TCP/woody time series | `apple_pick_gym/viz/cma_force_plots.py` |
 
 Focused grid/controller-mode checks:
 

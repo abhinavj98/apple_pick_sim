@@ -535,6 +535,33 @@ def test_coupling_forces_cache_is_value_snapshot():
     np.testing.assert_allclose(cache_after[:3], [5.0, -3.0, 1.0], rtol=1e-5, atol=1e-5)
 
 
+def test_seed_lagged_coupling_from_rest_harvest_writes_stem_plus_mg():
+    """Rest seed fills TCP ``proxy_forces`` / cache with stem gather + explicit mg."""
+    from apple_pick_sim.coupled_fruiting.scene import seed_lagged_coupling_from_rest_harvest
+
+    cf = _import_cf()
+    fs = _import_fs()
+    scene = _build_welded_coupled_for_stem_tests(
+        cf,
+        fs,
+        seed=21,
+        stem_coupling_gain=1.0,
+        stem_force_cap_N=None,
+        stem_torque_cap_Nm=None,
+    )
+    scene.proxy_forces.zero_()
+    scene.coupling_forces_cache.zero_()
+    seed_lagged_coupling_from_rest_harvest(scene, SUB_DT)
+
+    tcp = scene.tcp_body_index
+    w = scene.proxy_forces.numpy().reshape(-1, 6)[tcp]
+    cache = scene.coupling_forces_cache.numpy().reshape(-1, 6)[tcp]
+    expected_mg = float(scene.apple_mass_kg) * _GRAVITY_MS2
+    assert expected_mg > 0.5
+    assert float(np.linalg.norm(w[:3])) >= 0.5 * expected_mg
+    np.testing.assert_allclose(cache, w, rtol=1e-5, atol=1e-5)
+
+
 def test_coupled_substep_lag_one_step():
     """Harvest at step N is applied from cache at step N+1, not the same substep."""
     cf = _import_cf()

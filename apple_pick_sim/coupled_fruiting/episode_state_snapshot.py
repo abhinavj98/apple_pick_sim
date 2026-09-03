@@ -8,11 +8,16 @@ from typing import Any
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.proxy_coupling import sync_solver_body_q_prev_from_state
-from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
+from apple_pick_sim.coupled_fruiting.scene import (
+    init_robot_mujoco_step_buffers,
+    seed_lagged_coupling_from_rest_harvest,
+)
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance_batched import (
     Fr3BatchedEEImpedanceController,
 )
+
+_DEFAULT_COUPLING_SEED_DT = 1.0 / 1800.0
 
 
 def _clone_wp_array(arr: wp.array | None) -> wp.array | None:
@@ -124,7 +129,9 @@ class EpisodeStateSnapshot:
             ee_ctrl.stage_targets_to_scene(scene)
 
         scene.vic_target_twist = fr3_robot.EEVelocity()
-        if scene.proxy_forces is not None:
-            scene.proxy_forces.zero_()
-        if scene.coupling_forces_cache is not None:
-            scene.coupling_forces_cache.zero_()
+        cfg = getattr(sim, "_config", None)
+        if cfg is not None:
+            seed_dt = float(cfg.runtime.sub_dt)
+        else:
+            seed_dt = _DEFAULT_COUPLING_SEED_DT
+        seed_lagged_coupling_from_rest_harvest(scene, seed_dt)

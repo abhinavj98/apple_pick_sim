@@ -60,6 +60,14 @@ the exact lagged value used by MuJoCo so proxy velocity correction can avoid
 double integration. `align_proxy_body_q_prev_for_vbd` aligns VBD history after
 the kinematic pose overwrite.
 
+After weld/bootstrap and gym snapshot restore, the \(n=-1\) lag buffer is
+**not** left at zeros: `seed_lagged_coupling_from_rest_harvest` fills
+`proxy_forces` (and copies into `coupling_forces_cache`) with a rest stem
+harvest — stem–apple gather at \(\dot C \approx 0\) plus optional explicit
+apple weight \(mg\) — so the first MuJoCo substep already applies the hold
+load. The one-substep lag contract is unchanged; only the initial buffer
+changes from empty to rest stem+mg.
+
 With an apple, harvest reads the stem–apple fixed-joint reaction. Without an
 apple, the fallback reconstructs proxy reaction from its VBD velocity change.
 `ProxyBodyRegistry` and `BatchedEnvLayout` map each robot TCP to the matching

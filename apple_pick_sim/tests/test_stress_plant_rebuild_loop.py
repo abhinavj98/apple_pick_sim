@@ -43,8 +43,8 @@ def test_parser_defaults_reuse_mujoco_on():
     assert args.cycles == 10
     assert args.mode == "rebuild"
     assert args.reuse_replicated_mujoco is True
-    assert args.settle_substeps == 2000
-    assert args.post_grasp_settle_substeps == 500
+    assert args.settle_substeps == 5000
+    assert args.post_grasp_settle_substeps == 2000
     assert args.params_seed == 0
     assert args.replay_steps == 0
     assert args.structure_idx == 0

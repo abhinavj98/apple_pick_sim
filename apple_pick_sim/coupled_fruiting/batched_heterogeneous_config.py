@@ -133,13 +133,13 @@ class SceneSettleCollisionConfig:
     """Fruiting placement, VBD settle, and AVBD collision policy."""
 
     fruiting_base_pos: tuple[float, float, float] | None = None
-    settle_substeps: int = 2000
+    settle_substeps: int = 6000
     settle_gravity_ramp: bool = False
     settle_quiet_every: int | None = 100
     settle_max_speed_m_s: float = 0.05
     # Extra VBD settle on the welded scene after seed_fix_to_apple (0 = skip).
     # Matches plant-only ``--post-grasp-settle-substeps`` in example_view_pre_grasp_settle.
-    post_grasp_settle_substeps: int = 0
+    post_grasp_settle_substeps: int = 2000
     enable_self_collisions: bool = False
     enable_apple_woody_collisions: bool = True
     enable_proxy_woody_collisions: bool = True
@@ -206,6 +206,8 @@ class ControllerConfig:
     kp_null: float = 10.0
     kd_null: float = 6.3246
     sep_ori: bool = False
+    # Continuous_Force_RL: 0.2 N·m per 1 ms. 0 disables slew (algebraic tests).
+    joint_torque_slew_nm_s: float = 200.0
 
     def expected_action_shape(self, num_envs: int) -> tuple[int, int]:
         """Return ``(num_envs, action_dim)``."""
@@ -332,6 +334,12 @@ class BatchedHeterogeneousCoupledSimConfig:
 
         if self.robot.kind != "fr3":
             raise ValueError(f"robot.kind must be 'fr3', got {self.robot.kind!r}")
+
+        if float(self.controller.joint_torque_slew_nm_s) < 0.0:
+            raise ValueError(
+                "controller.joint_torque_slew_nm_s must be >= 0, "
+                f"got {self.controller.joint_torque_slew_nm_s}"
+            )
 
         if self.controller.mode == "vic":
             if self.robot.step_mode != "coupled":

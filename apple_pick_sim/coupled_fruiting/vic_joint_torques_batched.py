@@ -17,6 +17,7 @@ from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
     _N_ARM_DOF,
     _mass_matrix_with_model_armature_torch,
     _require_torch,
+    apply_joint_torque_slew_to_scene,
     find_tcp_link_idx,
 )
 from apple_pick_sim.coupled_fruiting.vic_wrench import (
@@ -198,10 +199,18 @@ def allocate_vic_joint_torque_buffers_batched(
     scene.vic_jt_default_dof_pos_batched = wp.array(
         np.stack(default_rows, axis=0), dtype=float, device=dev
     )
+    # Re-configure / plant rebuild zeros hysteresis; next slew ramps from 0.
+    scene.vic_jt_sent_tau = wp.zeros((num_envs, _N_ARM_DOF), dtype=float, device=dev)
     scene.vic_jt_kp_null = float(kp_null)
     scene.vic_jt_kd_null = float(kd_null)
     scene.vic_jt_singularity_damping = float(singularity_damping)
     scene.vic_jt_sep_ori = bool(sep_ori)
+    if not hasattr(scene, "vic_jt_torque_slew_nm_s"):
+        from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
+            DEFAULT_JOINT_TORQUE_SLEW_NM_S,
+        )
+
+        scene.vic_jt_torque_slew_nm_s = float(DEFAULT_JOINT_TORQUE_SLEW_NM_S)
 
 
 def _resolve_batched_vic_desired_twists(scene: Any, num_envs: int, dev: Any):
@@ -357,7 +366,7 @@ def launch_apply_vic_joint_torques_batched(
     joint_f_th[:, :_N_ARM_DOF] = tau.to(dtype=joint_f_th.dtype)
 
 
-def apply_vic_joint_torques_batched_to_scene(scene: Any) -> None:
+def apply_vic_joint_torques_batched_to_scene(scene: Any, *, dt: float | None = None) -> None:
     """Write batched VIC joint torques when controller and per-env targets are configured."""
     if getattr(scene, "vic_controller", None) is None:
         return
@@ -369,3 +378,5 @@ def apply_vic_joint_torques_batched_to_scene(scene: Any) -> None:
         scene,
         gains=getattr(scene, "vic_gains", None),
     )
+    if dt is not None:
+        apply_joint_torque_slew_to_scene(scene, dt=float(dt))

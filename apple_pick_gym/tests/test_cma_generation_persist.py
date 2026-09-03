@@ -142,6 +142,56 @@ def test_build_direction_state_npz_aligns_sim_time_to_real_when_missing():
     np.testing.assert_allclose(arrays["sim_time_sim"], real["sim_time"])
 
 
+def test_add_phase_band_skips_non_finite_and_zero_width_intervals():
+    from apple_pick_gym.cma_generation_persist import _add_phase_band_to_subplot
+
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(rows=1, cols=1)
+    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1]), row=1, col=1)
+    before = len(fig.layout.shapes or ())
+    _add_phase_band_to_subplot(
+        fig, row=1, col=1, n_cols=1, t0=float("nan"), t1=1.0, color="NavajoWhite"
+    )
+    _add_phase_band_to_subplot(
+        fig, row=1, col=1, n_cols=1, t0=1.0, t1=1.0, color="NavajoWhite"
+    )
+    _add_phase_band_to_subplot(
+        fig, row=1, col=1, n_cols=1, t0=0.0, t1=1.0, color="NavajoWhite"
+    )
+    after = len(fig.layout.shapes or ())
+    assert after - before == 1
+
+
+def test_make_generation_features_figure_mixed_table_and_many_directions():
+    """Regression: add_vrect on xy+table subplots can segfault; use add_shape."""
+    per_dir = {}
+    for direction in range(8):
+        real = _episode(n=260, direction=direction, ft_scale=1.0 + 0.1 * direction)
+        phase = np.zeros(260, dtype=np.int8)
+        for i in range(260):
+            phase[i] = 2 if (i // 30) % 2 == 0 else 1
+        real["phase"] = phase
+        sim = dict(real)
+        sim["ft_wrist"] = real["ft_wrist"] * 0.8
+        sim["ft_wrist_lpf"] = real["ft_wrist_lpf"] * 0.8
+        arrays = build_direction_state_npz(real=real, sim=sim)
+        per_dir[direction] = {
+            **arrays,
+            "block_errors": {},
+            "sinkhorn": 100.0,
+            "force_ratio": 2.0,
+        }
+    fig = make_generation_features_figure(
+        per_direction=per_dir,
+        direction_indices=tuple(range(8)),
+        title="mixed-table",
+    )
+    assert any(getattr(t, "type", None) == "table" for t in fig.data)
+    assert len(fig.layout.shapes or ()) > 0
+
+
 def test_make_generation_features_figure_trace_counts():
     real = _episode(n=3, direction=2)
     sim = _episode(n=3, direction=2)

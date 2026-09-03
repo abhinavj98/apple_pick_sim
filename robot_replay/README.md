@@ -77,12 +77,17 @@ phase copy the last sample of each 33 ms window. CMA/grid Sinkhorn scores
 
 ## Replay
 
+`--direction-idx` (default 0) selects one disk pull. Pass it on a
+multi-direction folder dataset (`tmp/real_batched_s09`, eight dirs); the
+scalar vic_pose path cannot share weld pose across pulls.
+
 Short headless smoke:
 
 ```bash
 uv run python robot_replay/example_replay_real_batched.py \
   --dataset /tmp/real_batched_s09_d00 \
   --viewer null --max-frames 24 \
+  --direction-idx 0 \
   --settle-substeps 80 \
   --post-grasp-settle-substeps 0
 ```
@@ -93,6 +98,7 @@ Full GL replay:
 uv run python robot_replay/example_replay_real_batched.py \
   --dataset /tmp/real_batched_s09_d00 \
   --viewer gl --max-frames 0 \
+  --direction-idx 0 \
   --settle-substeps 5000 \
   --settle-quiet-every 300 \
   --post-grasp-settle-substeps 500

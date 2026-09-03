@@ -23,10 +23,10 @@ from apple_pick_sim.system_id.real_to_batched_sysid import (
 
 _ZERO_EPS = 1e-12
 _BEND_EPS = 1e-3
-# Catalog gimbal: spur clocks about the primary; stem leans about fruiting→robot.
-# Proxy world: primary +X, robot reach +Y, hang −Z. Fruiting→robot is −Y.
+# Catalog gimbal: spur clocks about the primary; stem leans about robot→fruiting.
+# Proxy world: primary +X, robot reach +Y, hang −Z. Robot→fruiting is +Y.
 _WORLD_DOWN = (0.0, 0.0, -1.0)
-_FRUITING_TO_ROBOT = (0.0, -1.0, 0.0)
+_ROBOT_TO_FRUITING = (0.0, 1.0, 0.0)
 
 
 def load_dataset_metadata(path: str | Path) -> dict[str, Any]:
@@ -163,13 +163,13 @@ def rod_directions_from_manual_catalog_angles(
     ``manual_spur_angle_deg`` clocks the T-junction spur about the **primary**
     axis (proxy +X). Rest is horizontal toward robot reach (+Y); −90° hangs
     toward −Z. ``manual_stem_angle_deg`` then leans the stem about
-    **fruiting→robot** (proxy −Y), not world Z. Right-hand +60° after a 90°
-    hang yields stem ``(sin 60, 0, −cos 60)``.
+    **robot→fruiting** (proxy +Y), not world Z. Right-hand +60° after a 90°
+    hang yields stem ``(−sin 60, 0, −cos 60)`` (lean toward −X in XZ).
     """
     primary = _unit3(primary_dir, field="primary_dir")
     rest = _spur_rest_direction(primary)
     spur = _rotate_about_axis(rest, primary, -float(spur_angle_deg))
-    stem = _rotate_about_axis(spur, _FRUITING_TO_ROBOT, float(stem_angle_deg))
+    stem = _rotate_about_axis(spur, _ROBOT_TO_FRUITING, float(stem_angle_deg))
     spur_u = _unit3(spur, field="spur_direction")
     stem_u = _unit3(stem, field="stem_direction")
     return (
@@ -491,7 +491,7 @@ def format_pre_grasp_diagnostics(diagnostics: dict[str, Any]) -> str:
                 f"chord spur–stem angle="
                 f"{float(diagnostics.get('chord_spur_stem_angle_deg', float('nan'))):.1f}°"
             ),
-            "  axes: spur about primary, stem about fruiting→robot (−Y)",
+            "  axes: spur about primary, stem about robot→fruiting (+Y)",
         ]
     )
     return "\n".join(lines)

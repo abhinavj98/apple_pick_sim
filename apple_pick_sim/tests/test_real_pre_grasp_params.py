@@ -87,7 +87,7 @@ def _synthetic_pre_grasp_meta() -> dict:
 
 
 def test_rod_directions_from_manual_catalog_angles_clock_then_lean():
-    """90° about primary +X hangs the spur; 60° about fruiting→robot (−Y) leans the stem."""
+    """90° about primary +X hangs the spur; 60° about robot→fruiting (+Y) leans the stem."""
     spur_dir, stem_dir = rod_directions_from_manual_catalog_angles(
         PRIMARY_DIR,
         spur_angle_deg=90.0,
@@ -95,7 +95,8 @@ def test_rod_directions_from_manual_catalog_angles_clock_then_lean():
     )
     np.testing.assert_allclose(spur_dir, (0.0, 0.0, -1.0), atol=1e-9)
     sin60, cos60 = math.sin(math.radians(60.0)), math.cos(math.radians(60.0))
-    np.testing.assert_allclose(stem_dir, (sin60, 0.0, -cos60), atol=1e-9)
+    np.testing.assert_allclose(stem_dir, (-sin60, 0.0, -cos60), atol=1e-9)
+    assert stem_dir[0] < 0.0, "stem should lean toward −X in the XZ plane"
     spur_u = np.asarray(spur_dir, dtype=np.float64)
     stem_u = np.asarray(stem_dir, dtype=np.float64)
     angle_deg = math.degrees(
@@ -144,7 +145,7 @@ def test_format_pre_grasp_diagnostics_reports_connection_angles():
     assert "manual_spur_angle_deg=90" in text
     assert "manual_stem_angle_deg=60" in text
     assert "built spur–stem angle=60.0°" in text
-    assert "axes: spur about primary, stem about fruiting→robot (−Y)" in text
+    assert "axes: spur about primary, stem about robot→fruiting (+Y)" in text
 
 
 def test_map_pre_grasp_branch_is_fruiting_base_pos():

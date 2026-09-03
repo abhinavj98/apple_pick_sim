@@ -105,43 +105,6 @@ def _frame_array_at_step(
     return np.asarray(arr[row], dtype=np.float32).reshape(-1)[:size]
 
 
-def _vic_pose_action_row(
-    arrays: Mapping[str, Any],
-    *,
-    step_idx: int = FIRST_TRAJECTORY_STEP_IDX,
-) -> np.ndarray | None:
-    """Return one 19D ``vic_pose_v1`` action row, or ``None`` if not pose-packed."""
-    value = arrays.get("action")
-    if value is None:
-        return None
-    arr = np.asarray(value, dtype=np.float32)
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-    if arr.ndim != 2 or int(arr.shape[1]) != 19:
-        return None
-    row = frame_index_for_step(arrays, step_idx, fallback=0)
-    row = min(max(int(row), 0), int(arr.shape[0]) - 1)
-    return arr[row].reshape(-1)
-
-
-def _vic_target_pos_quat_xyzw_from_pose_action(
-    action_row: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Unpack ``[pos(3), quat_wxyz(4), ...]`` into Warp-native pos + quat xyzw."""
-    row = np.asarray(action_row, dtype=np.float32).reshape(-1)
-    if row.size < 7:
-        raise ValueError(f"vic_pose action row must have at least 7 values, got {row.size}")
-    pos = row[:3].copy()
-    quat_wxyz = row[3:7].copy()
-    norm = float(np.linalg.norm(quat_wxyz))
-    if norm < 1.0e-9:
-        quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-    else:
-        quat_wxyz = quat_wxyz / np.float32(norm)
-        quat_xyzw = quat_wxyz[[1, 2, 3, 0]]
-    return pos, quat_xyzw
-
-
 def _frame_array_or_meta(
     arrays: dict[str, Any],
     meta: dict[str, Any],
@@ -467,11 +430,11 @@ def initialize_batched_env_from_episode_sources(
 ) -> None:
     """Apply each world's pre-weld state from its explicit dataset episode.
 
-    Joints stay on episode metadata (``initial_robot_joint_q``), i.e. grasp.
-    For 19D ``vic_pose_v1`` bags, the VIC target is the first trajectory action
-    pose so the first logged step does not jump the command from grasp TCP to
-    the already-commanded pull.  Twist / 6D bags still seed the target from
-    ``initial_tcp_*`` (else first-frame TCP).
+    Joints and the VIC target stay on episode metadata (``initial_robot_joint_q``,
+    ``initial_tcp_pos``, ``initial_tcp_quat``): the grasp after settle. Converted
+    real bags already put the first 1 cm command in ``action[0]`` while frame-0
+    TCP/force are still unloaded; seeding the target from that action would open
+    a pose error before replay records row 0.
     """
     source_list = tuple(sources)
     if len(source_list) != int(env.num_envs):
@@ -537,24 +500,16 @@ def initialize_batched_env_from_episode_sources(
                 legacy_default_row[6] = 0.0
 
         if target_pos is not None and target_rot is not None:
-            pose_action = _vic_pose_action_row(arrays)
-            tcp_pos: np.ndarray | None = None
-            tcp_quat: np.ndarray | None = None
-            if pose_action is not None:
-                tcp_pos, tcp_quat = _vic_target_pos_quat_xyzw_from_pose_action(
-                    pose_action
+            tcp_pos = _array_or_none(meta.get("initial_tcp_pos"), 3)
+            if tcp_pos is None:
+                tcp_pos = _frame_array_at_step(
+                    arrays, "tcp_pos", FIRST_TRAJECTORY_STEP_IDX, 3
                 )
-            else:
-                tcp_pos = _array_or_none(meta.get("initial_tcp_pos"), 3)
-                if tcp_pos is None:
-                    tcp_pos = _frame_array_at_step(
-                        arrays, "tcp_pos", FIRST_TRAJECTORY_STEP_IDX, 3
-                    )
-                tcp_quat = _array_or_none(meta.get("initial_tcp_quat"), 4)
-                if tcp_quat is None:
-                    tcp_quat = _frame_array_at_step(
-                        arrays, "tcp_quat", FIRST_TRAJECTORY_STEP_IDX, 4
-                    )
+            tcp_quat = _array_or_none(meta.get("initial_tcp_quat"), 4)
+            if tcp_quat is None:
+                tcp_quat = _frame_array_at_step(
+                    arrays, "tcp_quat", FIRST_TRAJECTORY_STEP_IDX, 4
+                )
             if tcp_pos is not None and tcp_quat is not None:
                 target_pos[env_idx] = tcp_pos
                 target_rot[env_idx] = tcp_quat

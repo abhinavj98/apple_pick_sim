@@ -55,7 +55,7 @@ Logs without `info["obs_schema"]` should be treated as pre-v1 replay layout.
 
 ## Observation-only replay subset
 
-M3.0.3 uses a reset-time subset of the observation contract to initialize replay without privileged simulator arrays. Collection stores these reset values in episode metadata separately from per-step Parquet frames, whose frame 0 is the observation after action 0. For real-world collection, these fields must be sensor-derived or calibration-derived in the same world frame used by the simulator:
+M3.0.3 uses a reset-time subset of the observation contract to initialize replay without privileged simulator arrays. Collection stores these reset values in episode metadata separately from per-step Parquet frames. **Sim-collect** frame 0 is the observation after action 0. **Converted real** frame 0 is still at grasp (command already 1 cm, force unloaded); real replay therefore records the post-reset observation as frame 0 and applies `action[0]` afterward. For real-world collection, these fields must be sensor-derived or calibration-derived in the same world frame used by the simulator:
 
 | Field | Why replay needs it |
 |-------|---------------------|

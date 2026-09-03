@@ -16,9 +16,9 @@ Proxy world: primary \(+\mathrm{X}\), robot reach \(+\mathrm{Y}\), hang
    (\(+\mathrm{Y}\) when primary is \(+\mathrm{X}\)).
 2. Clock the spur about the **primary** by \(-\theta_{\mathrm{spur}}\)
    (right-hand). \(\theta_{\mathrm{spur}}=90^\circ\) hangs to \(-\mathrm{Z}\).
-3. Lean the stem about **fruiting→robot** (\(-\mathrm{Y}\)) by
+3. Lean the stem about **robot→fruiting** (\(+\mathrm{Y}\)) by
    \(+\theta_{\mathrm{stem}}\). \(\theta_{\mathrm{stem}}=60^\circ\) after a
-   90° hang yields \((\sin 60,\, 0,\, -\cos 60)\).
+   90° hang yields \((-\sin 60,\, 0,\, -\cos 60)\) (toward \(-\mathrm{X}\) in XZ).
 
 World \(Z\) is gravity. After a vertical hang, a rotation about world \(Z\)
 cannot produce a 60° stem.

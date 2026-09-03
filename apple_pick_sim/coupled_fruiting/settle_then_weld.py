@@ -31,12 +31,24 @@ from apple_pick_sim.coupled_fruiting.batched_build import (
 )
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
-from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
+from apple_pick_sim.coupled_fruiting.scene import (
+    init_robot_mujoco_step_buffers,
+    seed_lagged_coupling_from_rest_harvest,
+)
 from apple_pick_sim.coupled_fruiting.settle_seed_device import (
     align_batched_proxy_poses_device,
     copy_cable_state_device,
     zero_all_body_qd_device,
 )
+
+# Default coupling substep used when seeding lag buffers after bootstrap (matches
+# RuntimeConfig.sub_dt). Rest harvest is Ċ≈0 so the exact dt is secondary.
+_DEFAULT_COUPLING_SEED_DT = 1.0 / 1800.0
+
+
+def _seed_or_clear_lagged_coupling(scene: Any, *, dt: float = _DEFAULT_COUPLING_SEED_DT) -> None:
+    """Fill lag buffers with rest stem+mg (welded) or zeros (free proxy)."""
+    seed_lagged_coupling_from_rest_harvest(scene, float(dt))
 
 
 def _proxy_world_pose_from_apple(
@@ -301,10 +313,7 @@ def apply_open_loop_fr3_joint_q(scene: Any, joint_q: Sequence[float]) -> None:
     fr3_robot.init_mujoco_actuator_targets_from_model(
         scene.robot_model, scene.robot_control
     )
-    if scene.proxy_forces is not None:
-        scene.proxy_forces.zero_()
-    if scene.coupling_forces_cache is not None:
-        scene.coupling_forces_cache.zero_()
+    _seed_or_clear_lagged_coupling(scene)
 
 
 def _padded_joint_q_row(joint_q: Sequence[float], coord_per: int) -> np.ndarray:
@@ -368,10 +377,7 @@ def apply_open_loop_fr3_joint_q_per_world(
     fr3_robot.init_mujoco_actuator_targets_from_model(
         scene.robot_model, scene.robot_control
     )
-    if scene.proxy_forces is not None:
-        scene.proxy_forces.zero_()
-    if scene.coupling_forces_cache is not None:
-        scene.coupling_forces_cache.zero_()
+    _seed_or_clear_lagged_coupling(scene)
 
 
 def _bootstrap_tcp_at_fixed_origin(
@@ -480,10 +486,7 @@ def _bootstrap_tcp_at_fixed_origin(
     fr3_robot.init_mujoco_actuator_targets_from_model(
         scene.robot_model, scene.robot_control
     )
-    if scene.proxy_forces is not None:
-        scene.proxy_forces.zero_()
-    if scene.coupling_forces_cache is not None:
-        scene.coupling_forces_cache.zero_()
+    _seed_or_clear_lagged_coupling(scene)
 
 
 def _proxy_targets_world_from_cable(
@@ -747,7 +750,4 @@ def seed_fix_to_apple_from_settled(
     fr3_robot.init_mujoco_actuator_targets_from_model(
         welded_scene.robot_model, welded_scene.robot_control
     )
-    if welded_scene.proxy_forces is not None:
-        welded_scene.proxy_forces.zero_()
-    if welded_scene.coupling_forces_cache is not None:
-        welded_scene.coupling_forces_cache.zero_()
+    _seed_or_clear_lagged_coupling(welded_scene)

@@ -8,7 +8,7 @@ including the 6D twist controller (`vic`) and 19D absolute-pose controller
 
 | Field | Value |
 | --- | --- |
-| Last reviewed | 2026-08-31 |
+| Last reviewed | 2026-09-03 |
 | Code owners | `apple_pick_sim/robot/fr3_robot/controllers/ee_impedance*.py`; `apple_pick_sim/coupled_fruiting/vic_wrench.py`; `apple_pick_sim/coupled_fruiting/vic_joint_torques*.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md`; H4 `docs/handbook-real-replay.md`; H5 `docs/handbook-youngs-cma.md` |
@@ -63,6 +63,30 @@ Null space still uses full \(\Lambda\). Defaults are `kp_null=10`,
 forced to 0 rad. Joint position/velocity gains are zeroed by
 `fr3_robot.configure_vic_joint_torques_arm`, so MuJoCo position actuators do not
 compete with VIC. The coupling load remains an external TCP body wrench.
+
+After OSC, the **sent** arm torque written to `control.joint_f` is
+rate-limited at `ControllerConfig.joint_torque_slew_nm_s` (default
+**200 N·m/s**, matching Continuous_Force_RL `_MAX_TORQUE_DELTA = 0.2` N·m
+per 1 ms). Each MuJoCo substep clips
+
+\[
+\tau_{\mathrm{sent}}
+=\mathrm{clip}\bigl(\tau_{\mathrm{osc}},\,
+\tau_{\mathrm{prev}}\pm \dot{\tau}_{\max}\Delta t\bigr),
+\qquad
+\dot{\tau}_{\max}=200\,\mathrm{N{\cdot}m/s}.
+\]
+
+`vic_jt_sent_tau` holds \(\tau_{\mathrm{prev}}\) (zeros at VIC configure;
+re-configure / plant rebuild resets hysteresis and ramps from 0 again).
+`apply_joint_torque_slew_to_scene` applies this as an in-place Torch clamp on
+`wp.to_torch` views of `joint_f` / `vic_jt_sent_tau` (no per-substep NumPy
+round-trip). NumPy `slew_joint_torques` remains the reference law for tests.
+Set the rate to `0` to disable (algebraic OSC unit tests call
+`launch_apply_vic_joint_torques*` and never go through this clip). MuJoCo
+still only integrates `joint_f`; there is no MJCF actuator filter for this
+law. **Existing CMA / Young's modulus fits were identified without slew**
+and should be re-run before comparing to pre-slew Sinkhorn numbers.
 
 The plant-only invariant matters: harvest functions write only the transferred
 plant wrench to `proxy_forces`; they must not feed the controller's applied
@@ -227,6 +251,7 @@ ROADMAP's FD-mode discussion for current sequencing.
 | Isotropic and anisotropic wrench laws | `apple_pick_sim/coupled_fruiting/vic_wrench.py` — `compute_vic_spatial_wrench*` |
 | Single-env task-wrench-to-torque path | `apple_pick_sim/coupled_fruiting/vic_joint_torques.py` |
 | Batched wrench kernel and torques | `apple_pick_sim/coupled_fruiting/vic_joint_torques_batched.py` |
+| Joint-torque slew (200 N·m/s default) | `vic_joint_torques.slew_joint_torques`, `apply_joint_torque_slew_to_scene`; `ControllerConfig.joint_torque_slew_nm_s` |
 | Mode/action validation | `apple_pick_sim/coupled_fruiting/batched_heterogeneous_config.py` — `ControllerConfig`, `BatchedHeterogeneousCoupledSimConfig.validate` |
 | Action dispatch | `apple_pick_sim/coupled_fruiting/batched_heterogeneous_coupled_sim.py` — `_run_fr3_teleop_from_actions` |
 | Dynamic substep and current stem caps | `apple_pick_sim/coupled_fruiting/scene.py` — `_mujoco_robot_substep_prefix`, `DEFAULT_STEM_*` |
@@ -246,6 +271,10 @@ Key regression coverage:
   fallback/order conversion, and gain staging.
 - `apple_pick_sim/tests/test_batched_heterogeneous_coupled_sim.py::test_vic_pose_step_moves_tcp_toward_target`
   — 19D end-to-end motion.
+- `apple_pick_sim/tests/test_joint_torque_slew.py` — 200 N·m/s ramp law,
+  per-joint independence (not shared-scale), rate-0 identity, batched
+  independence, gripper untouched, scene Torch apply vs NumPy reference,
+  and `apply_vic_*_to_scene(..., dt=)` wiring.
 - `apple_pick_gym/tests/test_env_disable_controller.py` — pose-row freeze and
   6D twist zeroing.
 
@@ -253,6 +282,7 @@ Focused fast checks:
 
 ```bash
 uv run --env-file pytest.env python -m pytest \
+  apple_pick_sim/tests/test_joint_torque_slew.py \
   apple_pick_sim/tests/test_vic_wrench_aniso.py \
   apple_pick_gym/tests/test_env_disable_controller.py \
   -q -p no:launch_testing

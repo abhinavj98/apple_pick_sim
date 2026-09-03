@@ -225,19 +225,24 @@ def _patch_episode_source_side_effects(monkeypatch) -> None:
     )
 
 
-def test_initialize_batched_env_sets_vic_target_from_first_vic_pose_action(
+def test_initialize_batched_env_keeps_grasp_tcp_when_vic_pose_action_is_already_pulled(
     monkeypatch,
 ):
-    """Grasp joints/TCP stay on metadata; VIC target is action[0] pose (wxyz→xyzw)."""
+    """Joints and VIC target stay on grasp metadata, not the first 1 cm pull pose.
+
+    Converted real frame 0 still has TCP at grasp; ``action[0]`` is already the
+    1 cm target. Seeding VIC from that action opens a pose error before replay
+    records the first row.
+    """
     from unittest.mock import MagicMock
 
     _patch_episode_source_side_effects(monkeypatch)
     env = _mock_episode_sources_env()
-    c = float(np.cos(np.pi / 4.0))
     grasp_q = np.arange(7, dtype=np.float32)
     grasp_tcp = np.array([0.02, 0.66, 0.40], dtype=np.float32)
     grasp_quat_xyzw = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
     pull_pos = np.array([0.02, 0.65, 0.40], dtype=np.float32)
+    c = float(np.cos(np.pi / 4.0))
     pull_wxyz = np.array([c, 0.0, 0.0, c], dtype=np.float32)
     action = np.concatenate(
         [pull_pos, pull_wxyz, np.full(6, 100.0, dtype=np.float32), np.full(6, 20.0, dtype=np.float32)]
@@ -268,11 +273,11 @@ def test_initialize_batched_env_sets_vic_target_from_first_vic_pose_action(
     for target in (env._sim.scene.robot_state_0, env._sim.scene.robot_model):
         np.testing.assert_allclose(target.joint_q.value.reshape(2, 7), [grasp_q, grasp_q])
     np.testing.assert_allclose(
-        env._sim.scene.vic_controller._target_pos_wp.value, [pull_pos, pull_pos]
+        env._sim.scene.vic_controller._target_pos_wp.value, [grasp_tcp, grasp_tcp]
     )
     np.testing.assert_allclose(
         env._sim.scene.vic_controller._target_rot_wp.value,
-        [[0.0, 0.0, c, c], [0.0, 0.0, c, c]],
+        [grasp_quat_xyzw, grasp_quat_xyzw],
     )
 
 

@@ -37,6 +37,73 @@ def test_parser_accepts_viewer_gl_and_null():
     assert null.viewer == "null"
 
 
+def test_parser_accepts_direction_idx():
+    mod = _load_replay()
+    p = mod._make_parser()
+    default = p.parse_args(["--dataset", "/tmp/ds"])
+    assert default.direction_idx == 0
+    args = p.parse_args(["--dataset", "/tmp/ds", "--direction-idx", "3"])
+    assert args.direction_idx == 3
+
+
+def test_run_loads_and_replays_requested_direction(monkeypatch):
+    """Scalar vic_pose replay must pin one disk direction (not all usable dirs)."""
+    if not _VARIANCE.is_file():
+        pytest.skip(f"missing {_VARIANCE}")
+
+    mod = _load_replay()
+    captured: dict = {}
+    episode_meta = {
+        "fruiting_base_pos": [0.1, 0.2, 0.3],
+        "initial_robot_joint_q": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        "control_hz": 30.0,
+        "camera_to_base_4x4": None,
+        "action_compatible_with_vic_twist": False,
+        "direction_idx": 3,
+    }
+
+    class FakeDataset:
+        def __init__(self, path):
+            del path
+            self.manifest = {
+                "collection": {
+                    "action_dim": 19,
+                    "action_layout": "vic_pose_v1",
+                    "ranges_path": str(_VARIANCE),
+                }
+            }
+
+        def load_episode_metadata(self, structure_idx, direction_idx):
+            captured["loaded"] = (int(structure_idx), int(direction_idx))
+            return dict(episode_meta)
+
+    collectors = MagicMock()
+    collectors.to_arrays.return_value = {
+        "tcp_pos": [[0.0, 0.0, 0.0], [0.05, 0.0, 0.0]],
+    }
+
+    def fake_replay(**kwargs):
+        captured["replay_kwargs"] = kwargs
+        return collectors
+
+    monkeypatch.setattr(mod, "BatchedSysIdDataset", FakeDataset)
+    monkeypatch.setattr(mod, "check_action_semantics", lambda **_k: None)
+    monkeypatch.setattr(
+        mod, "gt_bend_stiffness_candidate_from_structure", lambda *_a, **_k: object()
+    )
+    monkeypatch.setattr(mod, "make_real_replay_build_env_fn", lambda **_k: (lambda **__: None))
+    monkeypatch.setattr(mod, "real_replay_sim_config", lambda **_k: object())
+    monkeypatch.setattr(mod, "replay_batched_sysid_structure", fake_replay)
+
+    args = mod._make_parser().parse_args(
+        ["--dataset", "/tmp/ds", "--direction-idx", "3", "--viewer", "null"]
+    )
+    assert mod._run(args, SimpleNamespace()) == 0
+    assert captured["loaded"] == (0, 3)
+    assert captured["replay_kwargs"]["direction_indices"] == (3,)
+    assert captured["replay_kwargs"]["num_directions"] == 1
+
+
 def test_parser_accepts_allow_wrench_as_twist():
     mod = _load_replay()
     p = mod._make_parser()
@@ -87,14 +154,14 @@ def test_action_semantics_allows_legacy_6d_hatch_and_vic_pose_mode():
 
 
 def test_parser_settle_defaults_match_pre_grasp_settle_viewer():
-    """Defaults align with example_view_pre_grasp_settle (2000 / quiet 100 / post 500)."""
+    """Defaults align with real replay build (5000 / quiet 100 / post 2000)."""
     mod = _load_replay()
     p = mod._make_parser()
     args = p.parse_args(["--dataset", "/tmp/ds", "--viewer", "null"])
-    assert args.settle_substeps == 2000
+    assert args.settle_substeps == 5000
     assert args.settle_quiet_every == 100
     assert args.settle_gravity_ramp is False
-    assert args.post_grasp_settle_substeps == 500
+    assert args.post_grasp_settle_substeps == 2000
 
 
 def test_sim_config_applies_settle_quiet_post_grasp_and_substeps():

@@ -41,8 +41,9 @@ compiled real parquet(s)
   → batched_sysid_v1 dataset (episodes/s00_dNN)
   → rebuild pre-grasp digital twin
   → free settle
-  → per-direction logged post-grasp apple/TCP weld, gripper, arm joints
-  → optional welded settle
+  → per-direction logged post-grasp apple/TCP weld (gripper, arm joints)
+  → logged post-grasp SE(3) teleport
+  → welded post-grasp VBD settle
   → replay converted 19D vic_pose actions (pad last action; truncate before features)
   → grid/ranking/CMA (H5 and ROADMAP)
 ```
@@ -225,25 +226,38 @@ The two geometry blocks have different jobs:
    `parts.spur.manual_spur_angle_deg` and `parts.stem.manual_stem_angle_deg`
    are both set, rod directions come from those catalog connection angles
    (not woody marker chords). See [Checking connection angles](#checking-connection-angles).
-2. **Post-grasp** is the measured grasped state. After free settle, replay
-   places the apple at its logged post-grasp SE(3) and places the proxy from the
-   logged apple-to-TCP transform. It must not be used to rebuild rods from bent
-   post-grasp chords.
+2. **Post-grasp** is the measured grasped state. After free settle and weld seed,
+   replay **teleports** the apple to its logged post-grasp SE(3) and places the
+   proxy from the logged apple-to-TCP transform (`apply_logged_post_grasp_se3_to_cable`).
+   Woody rods stay at the pre-grasp settled pose; only apple and proxy move. It must
+   not be used to rebuild rods from bent post-grasp chords.
 
 `batched_digital_twin_init.gripper_proxy_for_real_batched_replay` computes
 \(X_{\text{apple}}^{-1}X_{\text{TCP}}\) from the converted initial apple/TCP
-poses. `apply_logged_post_grasp_se3_to_cable` then writes the logged apple pose,
+poses. `apply_logged_post_grasp_se3_to_cable` writes the logged apple pose,
 realigns the proxy, zeros their twists, synchronizes both cable states, aligns
-VBD history, and updates rest state. It is called after the normal
-settle→weld seed so the free settle still starts from pre-grasp geometry.
-`ApplePickBatchedBaseEnv` snapshots physics at the end of construct, before
-that write. `make_real_replay_build_env_fn` recaptures after SE(3) so the
-fused/scalar `reset()` restore keeps the grasped apple/proxy pose.
+VBD history, and updates rest state. It runs after the normal settle→weld seed
+so free settle still starts from pre-grasp geometry.
+
+**Factory order** (`make_real_replay_build_env_fn`):
+
+1. Env construct: free settle → weld seed with `post_grasp_settle_substeps=0`
+   (no welded settle on the pre-grasp hang).
+2. Logged post-grasp SE(3) teleport.
+3. `apply_post_grasp_vbd_settle` (default 2000 VBD substeps; CMA uses the same
+   count via `CMA_POST_GRASP_SETTLE_SUBSTEPS`).
+4. `capture_episode_snapshot` so fused/scalar `reset()` restores the relaxed
+   grasp, not the construct-time pre-grasp weld.
+
+`real_replay_sim_config` still reports the intended post-grasp count (2000) for
+callers and docs; only the env-build config zeros construct-time welded settle.
+See `apple_pick_gym/tests/test_real_batched_replay_build.py` for order tests.
 
 `example_replay_real_batched.py` uses free-settle defaults of 5000 VBD
-substeps with twists quieted every 300 substeps, followed by 500 welded
-post-grasp settle substeps. Shorter values are useful for CI smoke tests, but
-they are not equivalent settling evidence.
+substeps with twists quieted every 100 substeps, followed by 2000 welded
+post-grasp settle substeps (after the logged grasp SE(3) in the shared factory).
+CMA vic_pose replay uses 6000 pre-grasp / 2000 post-grasp. Shorter values are
+useful for CI smoke tests, but they are not equivalent settling evidence.
 
 ### Checking connection angles
 
@@ -259,7 +273,7 @@ Proxy world: primary **+X**, robot reach **+Y**, hang **−Z**. Fruiting→robot
 | Catalog field | Rotation axis | Rest / result |
 |---------------|---------------|----------------|
 | `manual_spur_angle_deg` | primary (proxy +X) | Rest = +Y (horizontal T). **90°** hangs to −Z. |
-| `manual_stem_angle_deg` | fruiting→robot (proxy −Y) | Applied **after** the spur hang. **60°** leans the stem in the XZ plane to `(sin 60, 0, −cos 60)`. |
+| `manual_stem_angle_deg` | robot→fruiting (proxy +Y) | Applied **after** the spur hang. **60°** leans the stem in the XZ plane to `(−sin 60, 0, −cos 60)` (toward −X). |
 
 World **Z** is gravity. After a 90° hang the spur already lies on −Z, so a
 rotation about world Z cannot produce a 60° stem. The old sequential elevation
@@ -282,8 +296,8 @@ path (`_deflect_direction`) did that and collapsed spur and stem to collinear
    - `built spur–stem angle` equals the stem catalog angle (90/60 → **60.0°**)
    - `chord spur–stem angle` may differ (s09 chords are ~5°); that is expected
 
-2. In GL, the spur should hang down and the stem should lean **along the
-   primary** (X), not toward the robot (Y).
+2. In GL, the spur should hang down and the stem should lean **away from the
+   robot** along the primary (toward −X), not toward +Y.
 
 3. Unit check:
 
@@ -314,9 +328,21 @@ catalog details.
 
 `robot_replay/example_replay_real_batched.py` loads the converted dataset,
 constructs the shared real builder, and calls
-`batched_sysid_mmd_grid.replay_batched_sysid_structure`. Its default is
+`batched_sysid_mmd_grid.replay_batched_sysid_structure`. `--direction-idx`
+(default 0) pins a single disk pull so the scalar vic_pose path does not
+share direction 0's weld pose across a multi-direction bag. Its default is
 `--controller-mode vic_pose`, so each 19D row directly commands absolute target
-pose and anisotropic gains as defined by H2. The shared builder also matches
+pose and anisotropic gains as defined by H2.
+
+Replay records **before** each `env.step`. Converted real frame 0 is still the
+grasp: `action[0]` already holds the first 1 cm target, but TCP and wrist force
+have not loaded. Logging after the first control period would dump a 1 cm
+pose-error wrench into that row. Init keeps the VIC target on
+`initial_tcp_*` (same as settle/`reset`); `action[0]` is applied after frame 0
+is recorded. Sim-collect bags still store frame 0 as the observation after
+action 0; that contract is collection-only.
+
+The shared builder also matches
 the real collection OSC: `sep_ori=True` (rotation without \(\Lambda\)) and
 `kd_null=15`. Twist `vic` keeps the coupled \(\Lambda\) map and `kd_null=6.3246`.
 
@@ -351,10 +377,10 @@ replay and optimization callers on the same initialization path:
   action dimension, and for `vic_pose` the collection OSC (`sep_ori=True`,
   `kd_null=15`); and
 - `make_real_replay_build_env_fn` creates `ApplePickBatchedSysIdEnv`, disables
-  the settle cache, supplies per-environment candidate params/grippers, and
-  applies the logged post-grasp SE(3) with the batched layout. Env construct
-  snapshots physics before that write; the builder recaptures afterward so
-  the fused/scalar `reset()` restore keeps the grasped apple/proxy pose.
+  the settle cache, supplies per-environment candidate params/grippers, applies
+  logged post-grasp SE(3), runs `apply_post_grasp_vbd_settle`, then snapshots.
+  Construct uses `post_grasp_settle_substeps=0`; welded settle runs only after
+  the grasp teleport so the first replay step is not a stretch impulse.
 
 The Young's grid can opt into this builder from real dataset metadata. That
 plumbing being present is not the same as accepting its ranking. Trusted
@@ -403,6 +429,7 @@ here.
 | Pre-grasp rod geometry, `mass_kg` → density | `apple_pick_sim/system_id/real_pre_grasp_params.py` — `map_pre_grasp_geometry`, `fruiting_params_from_pre_grasp_meta` |
 | F/T, woody, hold, camera conversion | same module — `world_wrench_from_ee_logged`, `tag_poses_to_cma_woody`, `_scalar_hold_number`, `camera_to_base_4x4_from_dataset_metadata`, `zero_phase_lowpass`, `zero_phase_lowpass_with_status`, `block_mean_downsample` |
 | Twin init and logged weld pose | `apple_pick_sim/system_id/batched_digital_twin_init.py` — `gripper_proxy_for_real_batched_replay`, `apply_logged_post_grasp_se3_to_cable` (optional `per_env_meta`) |
+| Post-grasp VBD settle after SE(3) | `apple_pick_sim/coupled_fruiting/batched_heterogeneous_build.py` — `apply_post_grasp_vbd_settle` |
 | Per-world open-loop joints | `apple_pick_sim/coupled_fruiting/settle_then_weld.py` — `apply_open_loop_fr3_joint_q_per_world` |
 | Shared gym build path | `apple_pick_gym/batched_envs/real_batched_replay_build.py` — `real_replay_sim_config`, `make_real_replay_build_env_fn` (`wants_per_env_meta`) |
 | Multi-direction replay slots, last-action pad, truncate | `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py` — `ReplaySlot.episode_meta`, `_pad_actions_with_last`, `_truncate_replay_arrays` |
@@ -420,14 +447,15 @@ Key regression coverage:
   `topology_seed`), and 1×1 `s00_d00` regression.
 - `apple_pick_sim/tests/test_real_pre_grasp_params.py` — Branch T-junction,
   rest-snapshot preference, rod `mass_kg` → density override, and catalog
-  connection angles (spur about primary, stem about fruiting→robot).
+  connection angles (spur about primary, stem about robot→fruiting +Y).
 - `apple_pick_sim/tests/test_batched_digital_twin_init.py` — twin initialization
   and post-grasp SE(3), including per-env logged poses.
 - `apple_pick_sim/tests/test_open_loop_joint_bootstrap.py` — per-world
   `joint_q` (no broadcast).
 - `apple_pick_gym/tests/test_real_batched_replay_build.py` — shared builder,
-  per-env grippers, batched logged-pose application, and snapshot recapture
-  after post-grasp SE(3) so `reset()` keeps the grasped pose.
+  per-env grippers, construct `post_grasp_settle_substeps=0`, SE(3) then
+  `apply_post_grasp_vbd_settle` then snapshot so `reset()` keeps the relaxed
+  grasp pose.
 - `apple_pick_gym/tests/test_batched_sysid_multi_replay.py` — distinct
   per-direction weld/gripper metadata, last-action drive padding, and
   truncate-before-features.
@@ -457,7 +485,7 @@ uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
   --dataset-out /tmp/real_batched_s09_d00 --overwrite
 uv run python robot_replay/example_replay_real_batched.py \
   --dataset /tmp/real_batched_s09_d00 --viewer null --max-frames 24 \
-  --settle-substeps 80 --post-grasp-settle-substeps 0
+  --direction-idx 0 --settle-substeps 80 --post-grasp-settle-substeps 0
 ```
 
 The smoke proves conversion/build/19D drive, not ranking quality. Folder
@@ -470,5 +498,14 @@ uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
 ```
 
 Expect `collection.num_structures=1`, `num_directions=8`, `control_hz=30`,
-`n_holds=4`, and `episodes/s00_d00` … `s00_d07`. Holdout CMA on that bag is
+`n_holds=4`, and `episodes/s00_d00` … `s00_d07`. Replay one pull with
+`--direction-idx` (scalar vic_pose cannot share weld pose across dirs):
+
+```bash
+uv run python robot_replay/example_replay_real_batched.py \
+  --dataset tmp/real_batched_s09 --viewer gl --max-frames 40 \
+  --direction-idx 0 --settle-substeps 5000 --post-grasp-settle-substeps 500
+```
+
+Holdout CMA on that bag is
 H5 / `docs/ROADMAP.md` (Task 9 science gate failed on val torque).

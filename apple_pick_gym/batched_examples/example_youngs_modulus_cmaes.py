@@ -91,6 +91,8 @@ from apple_pick_gym.batched_envs.cma_wave_evaluation import (
     spawn_isolated_cma_wave_evaluation,
 )
 from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    CMA_POST_GRASP_SETTLE_SUBSTEPS,
+    CMA_PRE_GRASP_SETTLE_SUBSTEPS,
     bootstrap_joint_q_from_episode_metadata,
     check_action_semantics,
     control_hz_from_episode_metadata,
@@ -148,6 +150,7 @@ _LOG10_10GPA = math.log10(10.0e9)
 _LOG10_50GPA = math.log10(50.0e9)
 _LOG10_10MPA = math.log10(10.0e6)
 _LOG10_100MPA = math.log10(100.0e6)
+_LOG10_500MPA = math.log10(500.0e6)
 _LOG10_1GPA = math.log10(1.0e9)
 _LOG10_1MPA = math.log10(1.0e6)
 _LOG10_200_PER_M = math.log10(200.0)
@@ -164,12 +167,19 @@ _CMA_SEARCH_LOG10_UPPER = [6.0, _LOG10_50GPA, _LOG10_50GPA, _LOG10_50GPA, _LOG10
 
 
 # Real vic_pose: support kp 200–1000 N/m; init 1000 N/m; moduli 100 kPa–10 GPa, init 100 MPa.
+# _REAL_CMA_SEARCH_LOG10_LOWER: [
+#   support_kp_log10,
+#   spur_E_flex_log10,
+#   stem_E_flex_log10,
+#   spur_E_youngs_log10,
+#   stem_E_youngs_log10
+# ]
 _REAL_CMA_SEARCH_LOG10_LOWER = [
-    _LOG10_500_PER_M,
-    _LOG10_100KPA,
-    _LOG10_100KPA,
-    _LOG10_100KPA,
-    _LOG10_100KPA,
+    _LOG10_500_PER_M,    # support_kp_log10
+    _LOG10_100KPA,       # spur_E_flex_log10
+    _LOG10_100KPA,       # stem_E_flex_log10
+    _LOG10_100KPA,       # spur_E_youngs_log10
+    _LOG10_100KPA,       # stem_E_youngs_log10
 ]
 _REAL_CMA_SEARCH_LOG10_UPPER = [
     _LOG10_4KN_PER_M,
@@ -184,9 +194,9 @@ _CMA_MEAN_LOG10 = [
     for i in range(5)
 ]
 _REAL_CMA_MEAN_LOG10 = [
-    _LOG10_1KN_PER_M,
+    _LOG10_2KN_PER_M,
     _LOG10_100MPA,
-    _LOG10_100MPA,
+    _LOG10_500MPA,
     _LOG10_100MPA,
     _LOG10_100MPA,
 ]
@@ -1573,10 +1583,11 @@ def _run(
             topology_seed=real_topology_seed,
             fruiting_base_pos=fruiting_base_pos,
             episode_meta=episode_meta,
-            settle_substeps=settle_config.get("settle_substeps") or SETTLE_SUBSTEPS,
+            settle_substeps=settle_config.get("settle_substeps")
+            or CMA_PRE_GRASP_SETTLE_SUBSTEPS,
             settle_quiet_every=settle_config.get("settle_quiet_every"),
             settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
-            post_grasp_settle_substeps=500,
+            post_grasp_settle_substeps=CMA_POST_GRASP_SETTLE_SUBSTEPS,
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode="vic_pose",
             control_hz=control_hz,
@@ -1586,10 +1597,11 @@ def _run(
             topology_seed=real_topology_seed,
             fruiting_base_pos=fruiting_base_pos,
             ranges=ranges,
-            settle_substeps=settle_config.get("settle_substeps") or SETTLE_SUBSTEPS,
+            settle_substeps=settle_config.get("settle_substeps")
+            or CMA_PRE_GRASP_SETTLE_SUBSTEPS,
             settle_quiet_every=settle_config.get("settle_quiet_every"),
             settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
-            post_grasp_settle_substeps=500,
+            post_grasp_settle_substeps=CMA_POST_GRASP_SETTLE_SUBSTEPS,
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode="vic_pose",
             control_hz=control_hz,
@@ -1612,7 +1624,7 @@ def _run(
         control_hz=float(control_hz),
         device=device,
         settle_config=settle_config,
-        post_grasp_settle_substeps=500,
+        post_grasp_settle_substeps=CMA_POST_GRASP_SETTLE_SUBSTEPS,
         real_topology_seed=int(
             collection.get("topology_seed", collection.get("seed", 0))
         )

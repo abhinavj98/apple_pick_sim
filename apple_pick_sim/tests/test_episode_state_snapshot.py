@@ -140,3 +140,63 @@ def test_restore_without_capture_raises():
     )
     with pytest.raises(RuntimeError, match="snapshot"):
         sim.restore_episode_snapshot()
+
+
+def _welded_vic_config(*, num_envs: int = _NUM_ENVS) -> BatchedHeterogeneousCoupledSimConfig:
+    """Welded batched config so lag seeding applies on snapshot restore."""
+    return dataclasses.replace(
+        BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=num_envs),
+        robot=RobotConfig(
+            kind="fr3",
+            step_mode="coupled",
+            fix_to_apple=True,
+            skip_ik_bootstrap=True,
+            defer_template_robot_bootstrap=True,
+            per_env_ik=False,
+        ),
+        scene=SceneSettleCollisionConfig(settle_substeps=8),
+        controller=ControllerConfig(mode="vic"),
+        domain_randomization=dataclasses.replace(
+            BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=num_envs).domain_randomization,
+            topology_seed=21,
+        ),
+        obs=ObsConfig(allocate_buffers=True),
+    )
+
+
+@requires_fr3
+def test_snapshot_restore_reseeds_lagged_proxy_forces():
+    """``restore()`` re-harvests rest stem+mg into lag buffers (does not leave zeros)."""
+    torch = _require_torch()
+    ranges = load_ranges(RANGES_FIXTURE)
+    params = sample_heterogeneous_params_list(
+        ranges, topology_seed=21, num_envs=_NUM_ENVS
+    )
+    sim = BatchedHeterogeneousCoupledSim(
+        _welded_vic_config(),
+        params,
+        ranges,
+        use_settle_cache=False,
+    )
+    assert sim.scene.stem_apple_joint_index is not None
+    snapshot = EpisodeStateSnapshot.capture(sim)
+
+    actions = torch.zeros((_NUM_ENVS, 6), dtype=torch.float32, device=sim.device)
+    actions[0, 0] = 0.05
+    for _ in range(2):
+        sim.step(actions)
+
+    # Corrupt lag buffers so restore must re-seed (not leave zeros or stale values).
+    sim.scene.proxy_forces.zero_()
+    sim.scene.coupling_forces_cache.zero_()
+
+    snapshot.restore(sim)
+    layout = sim.layout
+    assert layout is not None
+    expected_mg = float(sim.scene.apple_mass_kg) * 9.81
+    assert expected_mg > 0.5
+    for tcp_idx in layout.tcp_body_indices:
+        w = sim.scene.proxy_forces.numpy().reshape(-1, 6)[int(tcp_idx)]
+        cache = sim.scene.coupling_forces_cache.numpy().reshape(-1, 6)[int(tcp_idx)]
+        assert float(np.linalg.norm(w[:3])) >= 0.5 * expected_mg
+        np.testing.assert_allclose(cache, w, rtol=1e-5, atol=1e-5)

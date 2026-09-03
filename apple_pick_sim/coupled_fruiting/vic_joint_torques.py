@@ -24,6 +24,38 @@ _N_ARM_DOF = 7
 _TORQUE_CLAMP = 100000.0
 _DEFAULT_KP_NULL = 10.0
 _DEFAULT_KD_NULL = 6.3246
+# Continuous_Force_RL pro_robot_interface: 0.2 N·m per 1 ms → 200 N·m/s.
+DEFAULT_JOINT_TORQUE_SLEW_NM_S = 200.0
+
+
+def slew_joint_torques(
+    tau_osc: np.ndarray,
+    tau_prev: np.ndarray,
+    *,
+    dt: float,
+    rate_nm_s: float,
+) -> np.ndarray:
+    """Clip OSC torques toward ``tau_prev`` at ``rate_nm_s`` (N·m/s).
+
+    Matches Continuous_Force_RL ``_MAX_TORQUE_DELTA`` per control tick:
+    ``dtau_max = rate_nm_s * dt``. ``rate_nm_s == 0`` is identity; negative
+    rates raise. Supports shape ``(7,)`` or ``(num_envs, 7)``.
+    """
+    if float(dt) <= 0.0:
+        raise ValueError(f"dt must be positive, got {dt}")
+    rate = float(rate_nm_s)
+    if rate < 0.0:
+        raise ValueError(f"rate_nm_s must be >= 0, got {rate_nm_s}")
+    osc = np.asarray(tau_osc, dtype=np.float64)
+    prev = np.asarray(tau_prev, dtype=np.float64)
+    if osc.shape != prev.shape:
+        raise ValueError(f"tau_osc shape {osc.shape} != tau_prev shape {prev.shape}")
+    if rate == 0.0:
+        return np.array(osc, dtype=np.float64, copy=True)
+    dtau_max = rate * float(dt)
+    delta = osc - prev
+    clipped = np.clip(delta, -dtau_max, dtau_max)
+    return prev + clipped
 
 
 def mass_matrix_with_armature(
@@ -245,10 +277,14 @@ def allocate_vic_joint_torque_buffers(
     default_q = model.joint_q.numpy().reshape(-1)[:_N_ARM_DOF].astype(np.float32).copy()
     default_q[6] = 0.0
     scene.vic_jt_default_dof_pos = wp.array(default_q, dtype=float, device=dev)
+    # Re-configure / plant rebuild zeros hysteresis; next slew ramps from 0.
+    scene.vic_jt_sent_tau = wp.zeros(_N_ARM_DOF, dtype=float, device=dev)
     scene.vic_jt_kp_null = float(kp_null)
     scene.vic_jt_kd_null = float(kd_null)
     scene.vic_jt_singularity_damping = float(singularity_damping)
     scene.vic_jt_sep_ori = bool(sep_ori)
+    if not hasattr(scene, "vic_jt_torque_slew_nm_s"):
+        scene.vic_jt_torque_slew_nm_s = float(DEFAULT_JOINT_TORQUE_SLEW_NM_S)
 
 
 def launch_apply_vic_joint_torques(
@@ -329,7 +365,50 @@ def launch_apply_vic_joint_torques(
     joint_f_th.reshape(-1)[:_N_ARM_DOF] = tau.to(dtype=joint_f_th.dtype)
 
 
-def apply_vic_joint_torques_to_scene(scene: Any) -> None:
+def apply_joint_torque_slew_to_scene(scene: Any, *, dt: float) -> None:
+    """Rate-limit ``control.joint_f`` arm DOFs in-place using ``vic_jt_sent_tau``.
+
+    Torch clamp on ``wp.to_torch`` views (no per-substep host round-trip).
+    ``rate == 0`` is a no-op; negative rate or non-positive ``dt`` raise.
+    Missing buffers are a no-op. Updates ``vic_jt_sent_tau``.
+    """
+    if float(dt) <= 0.0:
+        raise ValueError(f"dt must be positive, got {dt}")
+    rate = float(getattr(scene, "vic_jt_torque_slew_nm_s", DEFAULT_JOINT_TORQUE_SLEW_NM_S))
+    if rate < 0.0:
+        raise ValueError(f"rate_nm_s must be >= 0, got {rate}")
+    if rate == 0.0:
+        return
+    control = getattr(scene, "robot_control", None)
+    sent = getattr(scene, "vic_jt_sent_tau", None)
+    if control is None or control.joint_f is None or sent is None:
+        return
+    _require_torch()
+    layout = getattr(scene, "layout", None)
+    dtau_max = rate * float(dt)
+    if layout is not None:
+        num_envs = int(getattr(scene, "vic_jt_num_envs", layout.num_envs))
+        dof_per = int(layout.joint_dof_count_per_world)
+        joint_f_th = wp.to_torch(control.joint_f).reshape(num_envs, dof_per)
+        osc = joint_f_th[:, :_N_ARM_DOF]
+        sent_th = wp.to_torch(sent).reshape(num_envs, _N_ARM_DOF)
+        prev = sent_th.to(dtype=osc.dtype)
+        delta = (osc - prev).clamp(-dtau_max, dtau_max)
+        tau_sent = prev + delta
+        osc.copy_(tau_sent)
+        sent_th.copy_(tau_sent.to(dtype=sent_th.dtype))
+        return
+    joint_f_th = wp.to_torch(control.joint_f).reshape(-1)
+    osc = joint_f_th[:_N_ARM_DOF]
+    sent_th = wp.to_torch(sent).reshape(-1)
+    prev = sent_th[:_N_ARM_DOF].to(dtype=osc.dtype)
+    delta = (osc - prev).clamp(-dtau_max, dtau_max)
+    tau_sent = prev + delta
+    osc.copy_(tau_sent)
+    sent_th[:_N_ARM_DOF].copy_(tau_sent.to(dtype=sent_th.dtype))
+
+
+def apply_vic_joint_torques_to_scene(scene: Any, *, dt: float | None = None) -> None:
     """Write VIC joint torques when ``vic_controller`` and targets are configured."""
     if getattr(scene, "vic_controller", None) is None:
         return
@@ -343,3 +422,5 @@ def apply_vic_joint_torques_to_scene(scene: Any) -> None:
         target_twist=target_twist,
         gains=getattr(scene, "vic_gains", None),
     )
+    if dt is not None:
+        apply_joint_torque_slew_to_scene(scene, dt=float(dt))

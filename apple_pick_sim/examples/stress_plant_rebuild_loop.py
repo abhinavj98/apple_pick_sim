@@ -19,7 +19,7 @@ CMA-like hybrid (10 rebuild waves × 100 resets each)::
     uv run python apple_pick_sim/examples/stress_plant_rebuild_loop.py \\
       --mode rebuild-replay --dataset tmp/real_batched_s09_k_frame \\
       --num-envs 100 --cycles 10 --resets-per-wave 100 --reuse-replicated-mujoco \\
-      --post-grasp-settle-substeps 500
+      --post-grasp-settle-substeps 2000
 """
 
 from __future__ import annotations
@@ -44,6 +44,8 @@ from apple_pick_gym.batched_envs.obs_torch import (
     download_batched_replay_obs_numpy,
 )
 from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
+    DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS,
     bootstrap_joint_q_from_episode_metadata,
     control_hz_from_episode_metadata,
     dataset_declares_vic_pose,
@@ -847,12 +849,12 @@ def make_parser() -> argparse.ArgumentParser:
         help="Reset/init loops after each rebuild (rebuild-replay mode only).",
     )
     p.add_argument("--device", default=None)
-    p.add_argument("--settle-substeps", type=int, default=2000)
+    p.add_argument("--settle-substeps", type=int, default=DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS)
     p.add_argument(
         "--post-grasp-settle-substeps",
         type=int,
-        default=500,
-        help="Welded post-grasp VBD settle after FR3 bootstrap (CMA default: 500; 0 = skip).",
+        default=DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
+        help="Welded post-grasp VBD settle after FR3 bootstrap (CMA default: 2000; 0 = skip).",
     )
     p.add_argument("--topology-seed", type=int, default=42)
     p.add_argument("--ranges-path", type=Path, default=None)

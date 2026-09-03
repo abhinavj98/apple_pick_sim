@@ -18,17 +18,25 @@ from apple_pick_sim.fruiting_system.params import (
     GripperProxyConfig,
     parse_sim_build,
 )
+from apple_pick_sim.coupled_fruiting.batched_heterogeneous_build import (
+    apply_post_grasp_vbd_settle,
+)
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     apply_logged_post_grasp_se3_to_cable,
     gripper_proxy_for_real_batched_replay,
 )
 
-# Match example_view_pre_grasp_settle.py / example_replay_real_batched defaults.
-_SETTLE_SUBSTEPS = 2000
+# Canonical real-replay VBD settle defaults (pre-grasp free settle / post-grasp welded).
+DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS = 5000
+DEFAULT_POST_GRASP_SETTLE_SUBSTEPS = 2000
+# CMA vic_pose replay uses longer pre-grasp settle than standalone real replay.
+CMA_PRE_GRASP_SETTLE_SUBSTEPS = 6000
+CMA_POST_GRASP_SETTLE_SUBSTEPS = DEFAULT_POST_GRASP_SETTLE_SUBSTEPS
+_SETTLE_SUBSTEPS = DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS
 _SETTLE_QUIET_EVERY: int | None = 100
 _SETTLE_GRAVITY_RAMP = False
-_POST_GRASP_SETTLE_SUBSTEPS = 500
+_POST_GRASP_SETTLE_SUBSTEPS = DEFAULT_POST_GRASP_SETTLE_SUBSTEPS
 _DEFAULT_CONTROLLER_MODE = "vic_pose"
 # Match apple_pullto_static OSC: sep_ori rotation map + null-space Kd=15.
 _REAL_OSC_KP_NULL = 10.0
@@ -272,6 +280,7 @@ def make_real_replay_build_env_fn(
             real_g = gripper_proxy_for_real_batched_replay(dict(episode_meta))
             grippers = [real_g] * int(num_envs)
 
+        post_grasp_n = int(post_grasp_settle_substeps)
         sim_config = real_replay_sim_config(
             num_envs=num_envs,
             topology_seed=topology_seed,
@@ -280,7 +289,7 @@ def make_real_replay_build_env_fn(
             settle_substeps=settle_substeps,
             settle_quiet_every=settle_quiet_every,
             settle_gravity_ramp=settle_gravity_ramp,
-            post_grasp_settle_substeps=post_grasp_settle_substeps,
+            post_grasp_settle_substeps=0,
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode=controller_mode,
             control_hz=control_hz,
@@ -323,9 +332,21 @@ def make_real_replay_build_env_fn(
                 apply_logged_post_grasp_se3_to_cable(
                     cable, dict(episode_meta), layout=layout
                 )
-            # Env __init__ snapshots settle→weld *before* this write.
-            # Fused/scalar replay always reset() next; recapture so restore
-            # keeps the logged grasp, not the pre-grasp weld.
+            settle_config = dataclasses.replace(
+                env._sim.config,
+                scene=dataclasses.replace(
+                    env._sim.config.scene,
+                    post_grasp_settle_substeps=post_grasp_n,
+                ),
+            )
+            apply_post_grasp_vbd_settle(
+                scene,
+                config=settle_config,
+                per_env_params=env._sim.per_env_params,
+                substeps=post_grasp_n,
+            )
+            # Construct snapshots settle→weld before SE(3). Recapture after
+            # teleport + post-grasp settle so reset() keeps the relaxed grasp.
             env._sim.capture_episode_snapshot()
         return env
 

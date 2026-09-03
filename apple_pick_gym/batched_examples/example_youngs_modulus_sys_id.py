@@ -61,6 +61,8 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     maybe_include_gt_candidate,
 )
 from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
+    DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS,
     bootstrap_joint_q_from_episode_metadata,
     check_action_semantics,
     control_hz_from_episode_metadata,
@@ -978,10 +980,11 @@ def _run(
             topology_seed=real_topology_seed,
             fruiting_base_pos=fruiting_base_pos,
             episode_meta=episode_meta,
-            settle_substeps=settle_config.get("settle_substeps") or SETTLE_SUBSTEPS,
+            settle_substeps=settle_config.get("settle_substeps")
+            or DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS,
             settle_quiet_every=settle_config.get("settle_quiet_every"),
             settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
-            post_grasp_settle_substeps=500,
+            post_grasp_settle_substeps=DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode="vic_pose",
             control_hz=control_hz,
@@ -991,10 +994,11 @@ def _run(
             topology_seed=real_topology_seed,
             fruiting_base_pos=fruiting_base_pos,
             ranges=ranges,
-            settle_substeps=settle_config.get("settle_substeps") or SETTLE_SUBSTEPS,
+            settle_substeps=settle_config.get("settle_substeps")
+            or DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS,
             settle_quiet_every=settle_config.get("settle_quiet_every"),
             settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
-            post_grasp_settle_substeps=500,
+            post_grasp_settle_substeps=DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode="vic_pose",
             control_hz=control_hz,

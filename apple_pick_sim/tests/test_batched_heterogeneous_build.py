@@ -719,7 +719,13 @@ def test_post_grasp_settle_zero_skips_second_settle(ranges, monkeypatch):
     params = sample_heterogeneous_params_list(
         ranges, topology_seed=_PARITY_SEED, num_envs=_NUM_ENVS
     )
-    cfg = _fr3_settle_weld_config(settle_substeps=4)
+    cfg = dataclasses.replace(
+        _fr3_settle_weld_config(settle_substeps=4),
+        scene=dataclasses.replace(
+            _fr3_settle_weld_config(settle_substeps=4).scene,
+            post_grasp_settle_substeps=0,
+        ),
+    )
     assert cfg.scene.post_grasp_settle_substeps == 0
     build_batched_heterogeneous_scene(cfg, params, ranges)
     assert settle_calls == [4]

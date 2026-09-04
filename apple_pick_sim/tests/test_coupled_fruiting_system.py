@@ -977,6 +977,7 @@ def _stem_apple_wrench_from_scene(scene, *, dt: float) -> np.ndarray:
         body_q_prev=cable.state_1.body_q,
         dt=dt,
         joint_pairs=[(stem_j, "stem_apple")],
+        include_penalty_damping=False,
     )
     assert len(records) == 1, "expected exactly one stem_apple joint record"
     rec = records[0]

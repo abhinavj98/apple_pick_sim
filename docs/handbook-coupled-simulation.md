@@ -182,7 +182,12 @@ claim them as shipped.
 
 Spatial coupling buffers use world-frame `[linear, angular]` values in N and
 N·m. The implemented stem-harvest sign is the **child-side** fixed-joint
-reaction written to `proxy_forces[tcp]` **without negation**. Welded builds add
+reaction written to `proxy_forces[tcp]` **without negation**. Stem harvest gather
+uses `include_penalty_damping=False`: the wrench written to `proxy_forces[tcp]`
+(and lagged into `body_f` / gym `ft_wrist`) is \(kC+\lambda\) plus explicit apple
+\(mg\) (and optional inertia), **not** the AVBD penalty-weld \(k_d\dot C\). VBD
+still uses `joint_penalty_kd` in the solve. Debug / woody
+`gather_joint_wrench_child_com_device` defaults keep damping on. Welded builds add
 the env-on-robot apple payload term `m_apple * gravity` and its moment about the
 TCP before gain and caps (with `g=(0,0,-9.81)`, downward weight on the robot).
 Free builds keep that explicit term off to avoid double-counting VBD gravity.

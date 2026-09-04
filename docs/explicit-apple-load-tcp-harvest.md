@@ -68,7 +68,7 @@ under the env-on-robot payload convention above.
 |--------|------|
 | `explicit_load.apple_support_force_world` | Env-on-robot payload \(m\mathbf{g}\) (name is historical) |
 | `explicit_load.explicit_apple_wrench_for_stem_harvest` | Payload force + torque about TCP |
-| `proxy_coupling.harvest_stem_tension_for_tcp` / `harvest_batched_stem_tension` | Gather + payload → TCP (same sign as stem write) |
+| `proxy_coupling.harvest_stem_tension_for_tcp` / `harvest_batched_stem_tension` | Gather (`include_penalty_damping=False`) + payload → TCP (same sign as stem write) |
 
 **CUDA graphs:** explicit apple load is computed on device inside the stem harvest
 kernel (no `body_q.numpy()` / `body_mass.numpy()` per substep).

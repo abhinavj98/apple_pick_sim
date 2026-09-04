@@ -671,6 +671,7 @@ def harvest_batched_stem_tension(
         control=cable_model.control(clone_variables=False),
         out_f=out_f,
         out_t=out_t,
+        include_penalty_damping=False,
     )
     g = gravity if gravity is not None else wp.vec3(0.0, 0.0, -9.81)
     robot_bq = robot_body_q if robot_body_q is not None else body_q_post
@@ -850,6 +851,7 @@ def _harvest_stem_tension_for_tcp_cpu(
         body_q_prev=body_q_prev,
         dt=dt,
         joint_pairs=[(stem_apple_joint_index, "_stem_apple")],
+        include_penalty_damping=False,
     )
 
     n = out_robot_wrenches.shape[0]
@@ -977,6 +979,7 @@ def harvest_stem_tension_for_tcp(
         joint_indices=[stem_apple_joint_index],
         dt=dt,
         control=cable_model.control(clone_variables=False),
+        include_penalty_damping=False,
     )
     g = gravity if gravity is not None else wp.vec3(0.0, 0.0, -9.81)
     use_explicit = 0

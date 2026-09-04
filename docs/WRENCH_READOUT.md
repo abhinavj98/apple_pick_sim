@@ -17,8 +17,11 @@ wrenches = fixed_joint_wrenches_child_com_vbd(
     body_q_prev=q_prev,              # pre-step transforms (same macro-step)
     dt=sim_dt,
     joint_pairs=list(scene.fruiting_fixed_joints),  # explicit fruiting joints (recommended)
+    # include_penalty_damping=True  # default: debug / woody readout includes kd * dC/dt
 )
 # Or omit joint_pairs to fall back to iter_fixed_joint_indices(model) (label heuristic).
+# Stem TCP harvest passes include_penalty_damping=False so ft_wrist / body_f omit
+# the AVBD penalty-weld damper (VBD still solves with joint_penalty_kd).
 ```
 
 Each element is a `FixedJointWrenchRecord` with two fields:

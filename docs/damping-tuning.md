@@ -36,6 +36,9 @@ flowchart TB
 **Do not conflate:**
 
 - Raising bend \(\zeta\) past a wood-plausible band will not fix weld jitter — use joint `kd`.
+- Fixture weld \(k_d\) remains the VBD constraint damper; stem TCP harvest /
+  `ft_wrist` omit penalty \(k_d\dot C\) (`include_penalty_damping=False`) so the
+  arm does not feel residual glue rate as plant load.
 - Cranking stretch \(\zeta\) to kill axial ring adds \(k_d/\Delta t\) virtual stiffness and can make AVBD worse when \(\omega_n\cdot\Delta t\) is already large — prefer smaller \(k\) (larger \(\delta\) or lower \(F_{\max}\)) or smaller \(\Delta t\).
 - Soft stretch is **not** a hard "no extension until \(F_{\max}\)" switch; it is a linear spring with \(\delta(F)\approx F/k\). \(F_{\max}\) is the design load for the extension budget (e.g. force at which the apple would detach), not a yield threshold inside the solver.
 

@@ -895,6 +895,16 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Enable fruiting cable self-collisions during CMA replay (default: off).",
     )
     p.add_argument(
+        "--dynamic-apple",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Real vic_pose replay: keep the apple VBD-dynamic and harvest TCP from the "
+            "proxy↔apple weld (default: on). Pass --no-dynamic-apple for stem harvest. "
+            "Ignored for sim-sim twist vic."
+        ),
+    )
+    p.add_argument(
         "--persist-generation-replays",
         dest="persist_generation_replays",
         action="store_true",
@@ -1567,6 +1577,7 @@ def _run(
         raise SystemExit(f"CMA_SEARCH_PARAMS['search_bounds_log10']: {exc}") from exc
 
     settle_config = _settle_config_kwargs(args=args)
+    dynamic_apple = bool(getattr(args, "dynamic_apple", True))
     if mode == "vic_pose":
         control_hz = control_hz_from_episode_metadata(
             episode_meta,
@@ -1591,6 +1602,7 @@ def _run(
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode="vic_pose",
             control_hz=control_hz,
+            dynamic_apple=dynamic_apple,
         )
         replay_sim_config = real_replay_sim_config(
             num_envs=1,
@@ -1605,6 +1617,7 @@ def _run(
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode="vic_pose",
             control_hz=control_hz,
+            dynamic_apple=dynamic_apple,
         )
     else:
         build_env_fn = _make_build_env_fn(
@@ -1638,6 +1651,7 @@ def _run(
         else None,
         episode_meta=episode_meta if mode == "vic_pose" else None,
         enable_self_collisions=bool(getattr(args, "enable_self_collision", False)),
+        dynamic_apple=dynamic_apple,
     )
     scoring = YoungsModulusScoringConfig(
         use_median=args.use_median is True,

@@ -296,7 +296,10 @@ def _build_coupled_cable_scene(
         from apple_pick_sim.fruiting_system.build import prescribe_body_vbd_on_model
 
         assert artifacts.apple_body is not None
-        prescribe_body_vbd_on_model(model, artifacts.apple_body, proxy_body)
+        if bool(getattr(gripper_proxy, "dynamic_apple", False)):
+            prescribe_body_vbd_on_model(model, proxy_body)
+        else:
+            prescribe_body_vbd_on_model(model, artifacts.apple_body, proxy_body)
     artifacts.fruiting_fixed_joints.sort(key=lambda p: p[0])
     state_0, state_1, control, solver = _scene_states_from_model(model)
     if support_roll_kp > 0.0:

@@ -97,6 +97,37 @@ def test_collision_parser_defaults():
     assert cfg_off.scene.enable_proxy_woody_collisions is False
 
 
+def test_dynamic_apple_parser_default_off():
+    from example_batched_heterogeneous_coupled_sim import _config_from_args  # noqa: E402
+
+    args = _make_parser().parse_args([])
+    assert args.dynamic_apple is False
+    args._resolved_seed = 42
+    cfg = _config_from_args(args)
+    assert cfg.robot.gripper.dynamic_apple is False
+    assert cfg.fruiting_system.tcp_harvest_source == "stem"
+
+
+def test_dynamic_apple_parser_enables_weld_harvest():
+    from example_batched_heterogeneous_coupled_sim import _config_from_args  # noqa: E402
+
+    args = _make_parser().parse_args(["--dynamic-apple"])
+    assert args.dynamic_apple is True
+    args._resolved_seed = 42
+    cfg = _config_from_args(args)
+    assert cfg.robot.fix_to_apple is True
+    assert cfg.robot.gripper.dynamic_apple is True
+    assert cfg.fruiting_system.tcp_harvest_source == "weld"
+
+
+def test_dynamic_apple_requires_fix_to_apple():
+    from example_batched_heterogeneous_coupled_sim import _config_from_args  # noqa: E402
+
+    args = _make_parser().parse_args(["--dynamic-apple", "--no-fix-to-apple"])
+    with pytest.raises(SystemExit, match="dynamic-apple"):
+        _config_from_args(args)
+
+
 def test_config_from_args_matches_defaults_without_cli_overrides():
     from apple_pick_sim.fruiting_system import default_ranges_fixture_path, load_ranges
     from example_batched_heterogeneous_coupled_sim import (  # noqa: E402

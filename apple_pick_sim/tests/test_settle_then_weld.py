@@ -181,31 +181,7 @@ def test_quiet_all_cable_bodies_before_seed_zeros_welded_chain_twists():
     import apple_pick_sim.fruiting_system as fs
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    settled = build_coupled_fruiting_fr3(
-        ranges,
-        2,
-        vbd_only=True,
-        **_BUILD_KW,
-        gripper_proxy=fs.GripperProxyConfig(
-            mass=fr3_robot.EE_MASS_KG,
-            fix_to_apple=False,
-        ),
-    )
-    cf.settle_vbd_substeps(settled, substeps=30, dt=SUB_DT)
-    cf.quiet_all_cable_bodies(settled.cable)
-    welded = build_coupled_fruiting_fr3(
-        ranges,
-        2,
-        **_BUILD_KW,
-        skip_ik_bootstrap=True,
-        gripper_proxy=fs.GripperProxyConfig(
-            mass=fr3_robot.EE_MASS_KG,
-            fix_to_apple=True,
-        ),
-    )
-    cf.seed_fix_to_apple_from_settled(
-        welded_scene=welded, settled_scene=settled, quiet_apple_proxy=True
-    )
+    welded, _settled = _make_settle_then_weld(cf, fs, ranges, 2, settle_substeps=30)
     n = int(welded.cable.model.body_count)
     bqd = welded.cable.state_0.body_qd.numpy().reshape(n, 6)
     np.testing.assert_allclose(bqd, 0.0, atol=1e-9)
@@ -262,7 +238,14 @@ def test_seed_syncs_model_body_q_rest_to_settled_state():
     np.testing.assert_allclose(model_bq, bq, rtol=1e-6, atol=1e-6)
 
 
-def test_seed_bootstrap_clears_proxy_forces():
+def test_seed_bootstrap_seeds_lagged_coupling_from_rest_harvest():
+    """After settle→weld seed, lag buffers hold a rest stem harvest (not leftover fill).
+
+    ``_bootstrap_tcp_at_fixed_origin`` calls ``_seed_or_clear_lagged_coupling``, which
+    writes a quiet stem gather (+ optional explicit ``m·g``) into ``proxy_forces`` so the
+    first MuJoCo substep is not an empty wrench. The pre-seed ``fill_`` values must not
+    survive.
+    """
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
 
@@ -303,8 +286,19 @@ def test_seed_bootstrap_clears_proxy_forces():
     else:
         raise last_exc  # type: ignore[misc]
     assert welded is not None
-    assert bool(np.allclose(welded.proxy_forces.numpy(), 0.0, atol=1e-9))
-    assert bool(np.allclose(welded.coupling_forces_cache.numpy(), 0.0, atol=1e-9))
+    forces = welded.proxy_forces.numpy().reshape(-1, 6)
+    cache = welded.coupling_forces_cache.numpy().reshape(-1, 6)
+    tcp = int(welded.tcp_body_index)
+    # Pre-seed fill values must be gone.
+    assert not np.allclose(forces, 1.0, atol=1e-6)
+    assert not np.allclose(cache, 2.0, atol=1e-6)
+    # Rest harvest lands on the TCP slot and is nonzero for a hanging apple.
+    assert float(np.linalg.norm(forces[tcp, :3])) > 0.5
+    np.testing.assert_allclose(cache[tcp], forces[tcp], rtol=1e-5, atol=1e-5)
+    # Non-TCP bodies stay cleared.
+    mask = np.ones(forces.shape[0], dtype=bool)
+    mask[tcp] = False
+    assert bool(np.allclose(forces[mask], 0.0, atol=1e-6))
 
 
 def test_seed_raises_when_settled_proxy_unreachable_from_specified_origin():

@@ -318,6 +318,16 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--dynamic-apple",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Keep the apple VBD-dynamic under fix-to-apple and harvest TCP wrench from the "
+            "proxy↔apple FIXED weld (default: on; pass --no-dynamic-apple for prescribed "
+            "apple + stem harvest)."
+        ),
+    )
+    p.add_argument(
         "--controller-mode",
         choices=["vic", "vic_pose"],
         default=_DEFAULT_CONTROLLER_MODE,
@@ -417,6 +427,7 @@ def _run(
         bootstrap_joint_q=bootstrap_joint_q,
         controller_mode=controller_mode,
         control_hz=control_hz,
+        dynamic_apple=bool(args.dynamic_apple),
     )
     sim_kwargs = dict(
         num_envs=1,
@@ -430,6 +441,7 @@ def _run(
         bootstrap_joint_q=bootstrap_joint_q,
         controller_mode=controller_mode,
         control_hz=control_hz,
+        dynamic_apple=bool(args.dynamic_apple),
     )
 
     collectors = replay_batched_sysid_structure(

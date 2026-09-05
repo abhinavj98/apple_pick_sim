@@ -803,6 +803,218 @@ def prepare_batched_stem_harvest_arrays(scene: Any, layout: Any) -> None:
         scene.co_teleport_grasp_offsets_wp = None
 
 
+@wp.kernel
+def _limit_and_write_tcp_weld_wrench_kernel(
+    wrenches: wp.array(dtype=wp.spatial_vector),
+    tcp_index: int,
+    force_raw: wp.array(dtype=wp.vec3),
+    torque_raw: wp.array(dtype=wp.vec3),
+    coupling_gain: float,
+    force_cap_N: float,
+    torque_cap_Nm: float,
+    use_force_cap: int,
+    use_torque_cap: int,
+):
+    """Write proxy↔apple weld child wrench (on the proxy) into TCP ``body_f``.
+
+    No explicit apple weight/inertia: the dynamic apple's load already flows through
+    the weld. Child-side sign matches the stem path.
+    """
+    f_total = force_raw[0] * coupling_gain
+    tau_total = torque_raw[0] * coupling_gain
+    if use_force_cap != 0 and force_cap_N > 0.0:
+        fn = wp.length(f_total)
+        if fn > force_cap_N:
+            f_total = f_total * (force_cap_N / fn)
+    if use_torque_cap != 0 and torque_cap_Nm > 0.0:
+        tn = wp.length(tau_total)
+        if tn > torque_cap_Nm:
+            tau_total = tau_total * (torque_cap_Nm / tn)
+    wrenches[tcp_index] = wp.spatial_vector(
+        f_total[0], f_total[1], f_total[2],
+        tau_total[0], tau_total[1], tau_total[2],
+    )
+
+
+@wp.kernel
+def _batched_limit_and_write_tcp_weld_wrench_kernel(
+    wrenches: wp.array(dtype=wp.spatial_vector),
+    tcp_indices: wp.array(dtype=int),
+    force_raw: wp.array(dtype=wp.vec3),
+    torque_raw: wp.array(dtype=wp.vec3),
+    coupling_gain: float,
+    force_cap_N: float,
+    torque_cap_Nm: float,
+    use_force_cap: int,
+    use_torque_cap: int,
+):
+    i = wp.tid()
+    tcp_index = tcp_indices[i]
+    f_total = force_raw[i] * coupling_gain
+    tau_total = torque_raw[i] * coupling_gain
+    if use_force_cap != 0 and force_cap_N > 0.0:
+        fn = wp.length(f_total)
+        if fn > force_cap_N:
+            f_total = f_total * (force_cap_N / fn)
+    if use_torque_cap != 0 and torque_cap_Nm > 0.0:
+        tn = wp.length(tau_total)
+        if tn > torque_cap_Nm:
+            tau_total = tau_total * (torque_cap_Nm / tn)
+    wrenches[tcp_index] = wp.spatial_vector(
+        f_total[0], f_total[1], f_total[2],
+        tau_total[0], tau_total[1], tau_total[2],
+    )
+
+
+def prepare_batched_weld_harvest_arrays(scene: Any, layout: Any) -> None:
+    """Cache per-env proxy↔apple weld joint indices for TCP harvest."""
+    if layout is None or int(layout.num_envs) < 2:
+        return
+    cable = scene.cable
+    tpl_weld = getattr(cable, "gripper_proxy_apple_joint", None)
+    if tpl_weld is None:
+        return
+    dev = str(cable.model.device)
+    n = int(layout.num_envs)
+    weld_joints = [layout.joint_index(w, int(tpl_weld)) for w in range(n)]
+    scene.weld_harvest_joint_indices_wp = wp.array(weld_joints, dtype=int, device=dev)
+    scene.weld_harvest_tcp_indices_wp = wp.array(
+        list(layout.tcp_body_indices), dtype=int, device=dev
+    )
+    if scene.stem_harvest_wrench_f_scratch is None:
+        scene.stem_harvest_wrench_f_scratch = wp.zeros(n, dtype=wp.vec3, device=dev)
+        scene.stem_harvest_wrench_t_scratch = wp.zeros(n, dtype=wp.vec3, device=dev)
+
+
+def harvest_weld_tension_for_tcp(
+    *,
+    cable_model,
+    cable_solver,
+    body_q_post: wp.array,
+    body_q_prev: wp.array,
+    dt: float,
+    weld_joint_index: int,
+    tcp_body_index: int,
+    out_robot_wrenches: wp.array,
+    coupling_gain: float = 1.0,
+    force_cap_N: float | None = None,
+    torque_cap_Nm: float | None = None,
+    clear_wrenches: bool = True,
+    joint_indices_wp: wp.array | None = None,
+) -> None:
+    """Write the proxy↔apple FIXED-joint wrench (on the proxy child) into TCP ``body_f``.
+
+    Used when the apple is dynamic and the proxy is prescribed: apple weight and
+    inertia flow through the weld, so no explicit ``m·g`` term is added.
+
+    Prefer a cached ``joint_indices_wp`` (length-1) from the scene so the hot path
+    does not allocate a device array every substep.
+    """
+    from apple_pick_sim.vbd_fixed_joint_wrenches import gather_joint_wrench_child_com_device
+
+    dev = out_robot_wrenches.device
+    if clear_wrenches:
+        wp.launch(
+            _zero_all_wrenches_kernel,
+            dim=int(out_robot_wrenches.shape[0]),
+            inputs=[out_robot_wrenches],
+            device=dev,
+        )
+    joint_idx = joint_indices_wp
+    if joint_idx is None:
+        joint_idx = wp.array([int(weld_joint_index)], dtype=int, device=dev)
+    out_f, out_t = gather_joint_wrench_child_com_device(
+        cable_model,
+        cable_solver,
+        body_q=body_q_post,
+        body_q_prev=body_q_prev,
+        joint_indices=joint_idx,
+        dt=dt,
+        control=cable_model.control(clone_variables=False),
+        include_penalty_damping=False,
+    )
+    f_cap = float(force_cap_N) if force_cap_N is not None else 0.0
+    t_cap = float(torque_cap_Nm) if torque_cap_Nm is not None else 0.0
+    wp.launch(
+        _limit_and_write_tcp_weld_wrench_kernel,
+        dim=1,
+        inputs=[
+            out_robot_wrenches,
+            int(tcp_body_index),
+            out_f,
+            out_t,
+            float(coupling_gain),
+            f_cap,
+            t_cap,
+            1 if force_cap_N is not None and force_cap_N > 0.0 else 0,
+            1 if torque_cap_Nm is not None and torque_cap_Nm > 0.0 else 0,
+        ],
+        device=dev,
+    )
+
+
+def harvest_batched_weld_tension(
+    *,
+    weld_joint_indices_wp: wp.array,
+    tcp_indices_wp: wp.array,
+    cable_model,
+    cable_solver,
+    body_q_post: wp.array,
+    body_q_prev: wp.array,
+    dt: float,
+    out_robot_wrenches: wp.array,
+    coupling_gain: float = 1.0,
+    force_cap_N: float | None = None,
+    torque_cap_Nm: float | None = None,
+    device: str | None = None,
+    out_f: wp.array | None = None,
+    out_t: wp.array | None = None,
+) -> None:
+    """Batched weld harvest: gather proxy↔apple FIXED wrenches and write to each TCP."""
+    from apple_pick_sim.vbd_fixed_joint_wrenches import gather_joint_wrench_child_com_device
+
+    dev = device if device is not None else str(out_robot_wrenches.device)
+    n = int(tcp_indices_wp.shape[0])
+    if n == 0:
+        return
+    wp.launch(
+        _zero_all_wrenches_kernel,
+        dim=int(out_robot_wrenches.shape[0]),
+        inputs=[out_robot_wrenches],
+        device=dev,
+    )
+    out_f, out_t = gather_joint_wrench_child_com_device(
+        cable_model,
+        cable_solver,
+        body_q=body_q_post,
+        body_q_prev=body_q_prev,
+        joint_indices=weld_joint_indices_wp,
+        dt=dt,
+        control=cable_model.control(clone_variables=False),
+        out_f=out_f,
+        out_t=out_t,
+        include_penalty_damping=False,
+    )
+    f_cap = float(force_cap_N) if force_cap_N is not None else 0.0
+    t_cap = float(torque_cap_Nm) if torque_cap_Nm is not None else 0.0
+    wp.launch(
+        _batched_limit_and_write_tcp_weld_wrench_kernel,
+        dim=n,
+        inputs=[
+            out_robot_wrenches,
+            tcp_indices_wp,
+            out_f,
+            out_t,
+            float(coupling_gain),
+            f_cap,
+            t_cap,
+            1 if force_cap_N is not None and force_cap_N > 0.0 else 0,
+            1 if torque_cap_Nm is not None and torque_cap_Nm > 0.0 else 0,
+        ],
+        device=dev,
+    )
+
+
 def _harvest_stem_tension_for_tcp_cpu(
     *,
     cable_model,

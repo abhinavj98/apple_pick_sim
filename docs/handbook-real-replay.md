@@ -381,6 +381,10 @@ replay and optimization callers on the same initialization path:
   logged post-grasp SE(3), runs `apply_post_grasp_vbd_settle`, then snapshots.
   Construct uses `post_grasp_settle_substeps=0`; welded settle runs only after
   the grasp teleport so the first replay step is not a stretch impulse.
+- **Dynamic apple (default on):** `real_replay_sim_config` /
+  `make_real_replay_build_env_fn` default `dynamic_apple=True` (weld TCP harvest).
+  CLIs expose `--dynamic-apple` / `--no-dynamic-apple`; CMA isolated waves carry
+  the flag on `CmaReplayContext`.
 
 The Young's grid can opt into this builder from real dataset metadata. That
 plumbing being present is not the same as accepting its ranking. Trusted

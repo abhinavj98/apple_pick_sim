@@ -48,6 +48,7 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     ProxyBodyRegistry,
     eval_fk_cable_state_0,
     prepare_batched_stem_harvest_arrays,
+    prepare_batched_weld_harvest_arrays,
 )
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.batched_build import (
@@ -120,10 +121,19 @@ def _resolve_stem_harvest_explicit_apple_inertia(
                 "supported: VBD already integrates apple mass; explicit inertia "
                 "double-counts fruit load at the TCP."
             )
+        if gripper_proxy is not None and bool(getattr(gripper_proxy, "dynamic_apple", False)):
+            raise ValueError(
+                "stem_harvest_explicit_apple_inertia=True with dynamic_apple=True "
+                "double-counts fruit inertia at the TCP."
+            )
         return True
     if override is False:
         return False
-    return bool(gripper_proxy is not None and gripper_proxy.fix_to_apple)
+    return bool(
+        gripper_proxy is not None
+        and gripper_proxy.fix_to_apple
+        and not bool(getattr(gripper_proxy, "dynamic_apple", False))
+    )
 
 
 def _resolve_stem_harvest_explicit_apple_weight(
@@ -139,10 +149,59 @@ def _resolve_stem_harvest_explicit_apple_weight(
                 "supported: VBD already integrates apple gravity; explicit correction "
                 "double-counts apple weight at the TCP."
             )
+        if gripper_proxy is not None and bool(getattr(gripper_proxy, "dynamic_apple", False)):
+            raise ValueError(
+                "stem_harvest_explicit_apple_weight=True with dynamic_apple=True "
+                "double-counts apple weight at the TCP."
+            )
         return True
     if override is False:
         return False
-    return bool(gripper_proxy is not None and gripper_proxy.fix_to_apple)
+    return bool(
+        gripper_proxy is not None
+        and gripper_proxy.fix_to_apple
+        and not bool(getattr(gripper_proxy, "dynamic_apple", False))
+    )
+
+
+def _resolve_tcp_harvest_source(
+    gripper_proxy: GripperProxyConfig | None,
+    *,
+    override: str | None = None,
+) -> str:
+    """Resolve TCP harvest source: ``\"stem\"`` (default) or ``\"weld\"``.
+
+    ``dynamic_apple=True`` always resolves to ``\"weld\"`` (and rejects an
+    explicit ``\"stem\"`` override): the apple's weight must flow through the
+    proxy↔apple FIXED joint rather than an explicit ``m·g`` correction on the
+    stem path. ``\"weld\"`` also requires ``fix_to_apple``.
+    """
+    dynamic_apple = bool(
+        gripper_proxy is not None and getattr(gripper_proxy, "dynamic_apple", False)
+    )
+    if override is None:
+        source = "weld" if dynamic_apple else "stem"
+    else:
+        source = str(override)
+    if source not in ("stem", "weld"):
+        raise ValueError(f"tcp_harvest_source must be 'stem' or 'weld', got {source!r}")
+    if source == "stem" and dynamic_apple:
+        raise ValueError(
+            "tcp_harvest_source='stem' is incompatible with "
+            "GripperProxyConfig(dynamic_apple=True); use 'weld' (or omit the "
+            "override so it auto-selects)"
+        )
+    if source == "weld":
+        if gripper_proxy is None or not gripper_proxy.fix_to_apple:
+            raise ValueError(
+                "tcp_harvest_source='weld' requires GripperProxyConfig(fix_to_apple=True)"
+            )
+        if not dynamic_apple:
+            raise ValueError(
+                "tcp_harvest_source='weld' requires GripperProxyConfig(dynamic_apple=True); "
+                "harvesting the weld of a prescribed apple is not meaningful"
+            )
+    return source
 
 
 def _robot_root_xform(
@@ -178,9 +237,13 @@ def _fr3_root_world_pos(
 
 
 def _maybe_prepare_batched_stem_harvest(scene: CoupledFruitingScene) -> None:
-    """Cache batched stem-harvest arrays when the scene has multiple welded envs."""
+    """Cache batched stem/weld-harvest arrays when the scene has multiple welded envs."""
     layout = getattr(scene, "layout", None)
-    if layout is not None and int(layout.num_envs) > 1 and scene.stem_apple_joint_index is not None:
+    if layout is None or int(layout.num_envs) <= 1:
+        return
+    if getattr(scene, "tcp_harvest_source", "stem") == "weld":
+        prepare_batched_weld_harvest_arrays(scene, layout)
+    elif scene.stem_apple_joint_index is not None:
         prepare_batched_stem_harvest_arrays(scene, layout)
 
 
@@ -205,6 +268,7 @@ def _assemble_coupled_robot_scene(
     skip_ik_bootstrap: bool = False,
     stem_harvest_explicit_apple_weight: bool | None = None,
     stem_harvest_explicit_apple_inertia: bool | None = None,
+    tcp_harvest_source: str | None = None,
     proxy_registry: ProxyBodyRegistry | None = None,
     layout: BatchedEnvLayout | None = None,
     env_spacing: tuple[float, float, float] | None = None,
@@ -253,13 +317,24 @@ def _assemble_coupled_robot_scene(
         _find_stem_apple_joint(cable) if cable.apple_body is not None else None
     )
     grip_cfg = cable.gripper_proxy_config
+    harvest_source = _resolve_tcp_harvest_source(
+        grip_cfg,
+        override=tcp_harvest_source,
+    )
+    # Weld harvest already carries apple weight/inertia; never add the explicit terms.
+    weight_override = (
+        False if harvest_source == "weld" else stem_harvest_explicit_apple_weight
+    )
+    inertia_override = (
+        False if harvest_source == "weld" else stem_harvest_explicit_apple_inertia
+    )
     explicit_apple_weight = _resolve_stem_harvest_explicit_apple_weight(
         grip_cfg,
-        override=stem_harvest_explicit_apple_weight,
+        override=weight_override,
     )
     explicit_apple_inertia = _resolve_stem_harvest_explicit_apple_inertia(
         grip_cfg,
-        override=stem_harvest_explicit_apple_inertia,
+        override=inertia_override,
     )
     robot_tcp_qd_prev = wp.empty_like(robot_state_0.body_qd)
 
@@ -285,6 +360,7 @@ def _assemble_coupled_robot_scene(
         stem_coupling_gain=stem_coupling_gain,
         stem_force_cap_N=stem_force_cap_N,
         stem_torque_cap_Nm=stem_torque_cap_Nm,
+        tcp_harvest_source=harvest_source,
         apple_mass_kg=_cached_apple_mass_kg(cable),
         apple_inertia_kgm2=_cached_apple_inertia_kgm2(cable),
         mj_apple_payload_body_index=resolve_apple_payload_body_index(robot_model),
@@ -331,6 +407,7 @@ def build_coupled_fruiting_fr3(
     skip_ik_bootstrap: bool = False,
     stem_harvest_explicit_apple_weight: bool | None = None,
     stem_harvest_explicit_apple_inertia: bool | None = None,
+    tcp_harvest_source: str | None = None,
 ) -> CoupledFruitingScene:
     """Build cable + FR3 arm scene; IK-bootstrap TCP to gripper proxy at construction."""
     if vbd_only and mujoco_only:
@@ -433,6 +510,7 @@ def build_coupled_fruiting_fr3(
         skip_ik_bootstrap=skip_ik_bootstrap,
         stem_harvest_explicit_apple_weight=stem_harvest_explicit_apple_weight,
         stem_harvest_explicit_apple_inertia=stem_harvest_explicit_apple_inertia,
+        tcp_harvest_source=tcp_harvest_source,
     )
     scene.fr3_root_world_pos = _fr3_root_world_pos(
         ranges,
@@ -472,6 +550,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
     reuse_replicated_mujoco: bool = False,
     stem_harvest_explicit_apple_weight: bool | None = None,
     stem_harvest_explicit_apple_inertia: bool | None = None,
+    tcp_harvest_source: str | None = None,
 ) -> CoupledFruitingScene:
     """Build heterogeneous FR3 coupled scenes via ``add_world`` (uniform topology)."""
     if not fr3_robot.fr3_assets_available():
@@ -670,6 +749,7 @@ def build_heterogeneous_coupled_fruiting_fr3(
         ik_template_robot_model=tpl_robot_model,
         stem_harvest_explicit_apple_weight=stem_harvest_explicit_apple_weight,
         stem_harvest_explicit_apple_inertia=stem_harvest_explicit_apple_inertia,
+        tcp_harvest_source=tcp_harvest_source,
     )
     scene.per_env_params = params
     scene.per_world_proxy_offsets = per_world_offsets

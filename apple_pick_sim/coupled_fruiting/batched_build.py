@@ -98,11 +98,15 @@ def build_replicated_coupled_cable_scene(
 
         tpl_apple = template_cable.apple_body
         tpl_proxy = template_cable.gripper_proxy_body
+        dynamic_apple = bool(
+            getattr(template_cable.gripper_proxy_config, "dynamic_apple", False)
+        )
         if tpl_apple is not None and tpl_proxy is not None:
             prescribed: list[int] = []
             for w in range(num_envs):
                 off = w * bodies_per_world
-                prescribed.append(off + int(tpl_apple))
+                if not dynamic_apple:
+                    prescribed.append(off + int(tpl_apple))
                 prescribed.append(off + int(tpl_proxy))
             prescribe_body_vbd_on_model(model, *prescribed)
 
@@ -248,10 +252,12 @@ def build_heterogeneous_coupled_cable_scene(
     if configs[0].fix_to_apple and tpl.artifacts.apple_body is not None:
         from apple_pick_sim.fruiting_system.build import prescribe_body_vbd_on_model
 
+        dynamic_apple = bool(getattr(configs[0], "dynamic_apple", False))
         prescribed: list[int] = []
         for w in range(num_envs):
             off = w * bodies_per_world
-            prescribed.append(off + int(tpl.artifacts.apple_body))
+            if not dynamic_apple:
+                prescribed.append(off + int(tpl.artifacts.apple_body))
             prescribed.append(off + int(tpl.proxy_body))
         prescribe_body_vbd_on_model(model, *prescribed)
 

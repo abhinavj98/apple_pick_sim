@@ -655,6 +655,16 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Replay controller mode (default: infer vic_pose from dataset, else vic).",
     )
     p.add_argument(
+        "--dynamic-apple",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Real vic_pose replay: keep the apple VBD-dynamic and harvest TCP from the "
+            "proxy↔apple weld (default: on). Pass --no-dynamic-apple for stem harvest. "
+            "Ignored for sim-sim twist vic."
+        ),
+    )
+    p.add_argument(
         "--support-kp-values",
         type=str,
         default=None,
@@ -958,6 +968,7 @@ def _run(
         replay_seed = int(collection["seed"])
 
     settle_config = _settle_config_kwargs(args=args)
+    dynamic_apple = bool(getattr(args, "dynamic_apple", True))
     if mode == "vic_pose":
         if bool(args.include_gt_candidate):
             print(
@@ -988,6 +999,7 @@ def _run(
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode="vic_pose",
             control_hz=control_hz,
+            dynamic_apple=dynamic_apple,
         )
         replay_sim_config = real_replay_sim_config(
             num_envs=1,
@@ -1002,6 +1014,7 @@ def _run(
             bootstrap_joint_q=bootstrap_joint_q,
             controller_mode="vic_pose",
             control_hz=control_hz,
+            dynamic_apple=dynamic_apple,
         )
         include_gt = False
     else:

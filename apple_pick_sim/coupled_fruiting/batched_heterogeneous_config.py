@@ -171,6 +171,8 @@ class FruitingSystemConfig:
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM
     stem_harvest_explicit_apple_weight: bool = False
+    tcp_harvest_source: str = "stem"
+    """``\"stem\"`` (default) or ``\"weld\"`` (requires ``GripperProxyConfig.dynamic_apple``)."""
     joint_angular_kd_overrides: dict[str, float] = dataclasses.field(
         default_factory=lambda: dict(_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES)
     )

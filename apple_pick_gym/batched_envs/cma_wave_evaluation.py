@@ -71,6 +71,7 @@ class CmaReplayContext:
     episode_meta: dict[str, Any] | None = None
     reuse_replicated_mujoco: bool = False
     enable_self_collisions: bool = False
+    dynamic_apple: bool = True
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,7 @@ def build_cma_replay_artifacts(
             control_hz=float(context.control_hz),
             reuse_replicated_mujoco=bool(context.reuse_replicated_mujoco),
             enable_self_collisions=bool(context.enable_self_collisions),
+            dynamic_apple=bool(context.dynamic_apple),
         )
         replay_sim_config = real_replay_sim_config(
             num_envs=1,
@@ -187,6 +189,7 @@ def build_cma_replay_artifacts(
             control_hz=float(context.control_hz),
             reuse_replicated_mujoco=bool(context.reuse_replicated_mujoco),
             enable_self_collisions=bool(context.enable_self_collisions),
+            dynamic_apple=bool(context.dynamic_apple),
         )
         return build_env_fn, replay_sim_config
 
@@ -233,6 +236,7 @@ def build_cma_replay_context_from_cli(
     episode_meta: Mapping[str, Any] | None = None,
     reuse_replicated_mujoco: bool = False,
     enable_self_collisions: bool = False,
+    dynamic_apple: bool = True,
 ) -> CmaReplayContext:
     """Construct replay context from CMA CLI ``_run`` settle/build inputs."""
     settle_substeps = settle_config.get("settle_substeps")
@@ -258,6 +262,7 @@ def build_cma_replay_context_from_cli(
         episode_meta=None if episode_meta is None else dict(episode_meta),
         reuse_replicated_mujoco=bool(reuse_replicated_mujoco),
         enable_self_collisions=bool(enable_self_collisions),
+        dynamic_apple=bool(dynamic_apple),
     )
 
 

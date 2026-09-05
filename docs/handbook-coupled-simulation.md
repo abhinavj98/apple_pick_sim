@@ -192,6 +192,16 @@ the env-on-robot apple payload term `m_apple * gravity` and its moment about the
 TCP before gain and caps (with `g=(0,0,-9.81)`, downward weight on the robot).
 Free builds keep that explicit term off to avoid double-counting VBD gravity.
 
+**Dynamic apple + weld harvest.** With `GripperProxyConfig(dynamic_apple=True)`
+(and `fix_to_apple=True`), the apple keeps finite `inv_mass` under the
+proxy↔apple FIXED joint while only the proxy is prescribed; coupling does **not**
+co-teleport the apple with the TCP. `_resolve_tcp_harvest_source` auto-selects
+`tcp_harvest_source="weld"` (an explicit `"stem"` override raises). TCP /
+`ft_wrist` then read the **child-side** weld reaction (proxy), also with
+`include_penalty_damping=False` and with explicit apple `mg` / inertia forced
+off — weight and inertia already flow through the weld. Stem harvest remains
+the default for prescribed-apple (`dynamic_apple=False`) builds.
+
 The code defaults are:
 
 - `DEFAULT_STEM_COUPLING_GAIN = 1.0`;

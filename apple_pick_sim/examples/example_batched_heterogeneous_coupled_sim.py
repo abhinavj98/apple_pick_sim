@@ -257,6 +257,16 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Settle-then-weld (default: on). Use --no-fix-to-apple for velocity-delta harvest.",
     )
     parser.add_argument(
+        "--dynamic-apple",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Keep the apple VBD-dynamic under fix-to-apple and harvest TCP wrench from the "
+            "proxy↔apple FIXED weld (default: off; prescribed apple + stem harvest). "
+            "Requires --fix-to-apple."
+        ),
+    )
+    parser.add_argument(
         "--settle-substeps",
         type=int,
         default=5000,
@@ -361,6 +371,9 @@ def _make_parser() -> argparse.ArgumentParser:
 def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSimConfig:
     step_mode = _resolve_step_mode(args)
     fix_to_apple = bool(args.fix_to_apple)
+    dynamic_apple = bool(args.dynamic_apple)
+    if dynamic_apple and not fix_to_apple:
+        raise SystemExit("--dynamic-apple requires --fix-to-apple (not --no-fix-to-apple).")
     settle_substeps = int(args.settle_substeps)
     viz = _viz_settings_from_args(args)
 
@@ -406,6 +419,10 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
             base.robot,
             step_mode="vbd_only" if step_mode == "vbd" else "coupled",
             fix_to_apple=fix_to_apple,
+            gripper=dataclasses.replace(
+                base.robot.gripper,
+                dynamic_apple=dynamic_apple,
+            ),
         ),
         scene=dataclasses.replace(
             base.scene,
@@ -438,6 +455,7 @@ def _config_from_args(args: argparse.Namespace) -> BatchedHeterogeneousCoupledSi
             joint_linear_kp_overrides=joint_linear_kp,
             joint_roll_kp_overrides=joint_roll_kp,
             joint_damping_ratio=joint_damping_ratio,
+            tcp_harvest_source="weld" if dynamic_apple else "stem",
         ),
         settle_diagnostics=SettleDiagnosticsConfig() if settle_substeps > 0 else None,
         obs=(
@@ -469,14 +487,21 @@ def _print_startup(
     if print_per_env_params_flag:
         print_per_env_params(per_env_params)
     fix_to_apple = config.robot.fix_to_apple
-    coupling_label = (
-        "stem-harvest / settle-then-weld"
-        if fix_to_apple and step_mode != "vbd_only"
-        else "velocity-delta"
-        if not fix_to_apple
-        else "ignored with --only-vbd"
+    dynamic_apple = bool(config.robot.gripper.dynamic_apple)
+    if fix_to_apple and step_mode != "vbd_only":
+        coupling_label = (
+            "weld-harvest / dynamic apple"
+            if dynamic_apple
+            else "stem-harvest / settle-then-weld"
+        )
+    elif not fix_to_apple:
+        coupling_label = "velocity-delta"
+    else:
+        coupling_label = "ignored with --only-vbd"
+    print(
+        f"Gripper proxy fix_to_apple={fix_to_apple} "
+        f"dynamic_apple={dynamic_apple} ({coupling_label} coupling)."
     )
-    print(f"Gripper proxy fix_to_apple={fix_to_apple} ({coupling_label} coupling).")
     scene = config.scene
     print(
         "AVBD cable collisions: "

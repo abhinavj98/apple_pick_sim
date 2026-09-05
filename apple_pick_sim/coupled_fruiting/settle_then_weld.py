@@ -690,8 +690,12 @@ def seed_fix_to_apple_from_settled(
         bq_w[proxy, :3] = proxy_pos
         bq_w[proxy, 3:] = proxy_quat
         if quiet_apple_proxy:
-            bqd_w[apple] = 0.0
             bqd_w[proxy] = 0.0
+            dynamic_apple = bool(
+                getattr(getattr(cable_w, "gripper_proxy_config", None), "dynamic_apple", False)
+            )
+            if not dynamic_apple:
+                bqd_w[apple] = 0.0
         cable_w.state_0.body_q.assign(bq_w.reshape(-1, 7))
         cable_w.state_0.body_qd.assign(bqd_w.reshape(-1, 6))
         cable_w.state_1.body_q.assign(bq_w.reshape(-1, 7))
@@ -726,9 +730,15 @@ def seed_fix_to_apple_from_settled(
             layout,
             ik_iterations=ik_bootstrap_iterations,
         )
-        from apple_pick_sim.coupled_fruiting.proxy_coupling import prepare_batched_stem_harvest_arrays
+        from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+            prepare_batched_stem_harvest_arrays,
+            prepare_batched_weld_harvest_arrays,
+        )
 
-        prepare_batched_stem_harvest_arrays(welded_scene, layout)
+        if getattr(welded_scene, "tcp_harvest_source", "stem") == "weld":
+            prepare_batched_weld_harvest_arrays(welded_scene, layout)
+        else:
+            prepare_batched_stem_harvest_arrays(welded_scene, layout)
     else:
         from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 

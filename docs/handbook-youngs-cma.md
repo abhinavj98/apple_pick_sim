@@ -290,6 +290,8 @@ Real 1×1 `vic_pose` CMA (same H4 builder as the grid):
 
 - Real 1×1 `vic_pose` datasets auto-select `make_real_replay_build_env_fn`;
   `--controller-mode` is the explicit opt-in/override.
+- Dynamic apple + weld TCP harvest is **default on** (`--dynamic-apple` /
+  `--no-dynamic-apple`); isolated eval waves inherit via `CmaReplayContext`.
 - Each selected structure's recorded bag must include convert-time
   `ft_wrist_lpf`; CMA refuses otherwise. Sinkhorn scores that column (H3);
   live candidate harvest stays unfiltered `ft_wrist`.

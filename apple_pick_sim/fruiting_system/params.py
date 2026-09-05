@@ -44,6 +44,11 @@ class RodParams:
     stretch_damping: float
     density: float
     direction: tuple[float, float, float]  # unit vector in world space
+    # Measured stretched length and the tension the rod must carry at it. When both
+    # are set, ``length`` is a derived rest length and is re-solved whenever
+    # ``youngs_modulus_pa`` changes, so the preload does not track the fitted modulus.
+    preload_chord_m: float | None = None
+    axial_preload_n: float | None = None
 
 
 _LEGACY_ROD_STIFFNESS_RANGE_KEYS = frozenset(
@@ -140,6 +145,47 @@ def stretch_knobs_from_max_force(
     return k_stretch, c_stretch
 
 
+def rest_length_for_axial_preload(
+    *,
+    chord_m: float,
+    preload_n: float,
+    youngs_modulus_pa: float,
+    radius: float,
+) -> float:
+    """Rest length whose axial tension is ``preload_n`` when stretched to ``chord_m``.
+
+    A rod held at total length ``chord_m`` carries ``EA (chord - L) / L``, so the rest
+    length that yields a prescribed tension is ``chord / (1 + preload / EA)``.
+
+    Used for the stem, whose tracked pre-grasp chord (spur end to apple centre) is the
+    *stretched* length of a stem already carrying the hanging apple.
+    """
+    if chord_m <= 0.0:
+        raise ValueError(f"chord_m must be positive, got {chord_m}")
+    if preload_n < 0.0:
+        raise ValueError(f"preload_n must be non-negative, got {preload_n}")
+    if youngs_modulus_pa <= 0.0:
+        raise ValueError(f"youngs_modulus_pa must be positive, got {youngs_modulus_pa}")
+    if radius <= 0.0:
+        raise ValueError(f"radius must be positive, got {radius}")
+    ea = float(youngs_modulus_pa) * math.pi * float(radius) ** 2
+    return float(chord_m) / (1.0 + float(preload_n) / ea)
+
+
+def axial_tension_at_length(rod: RodParams, length_m: float) -> float:
+    """Axial tension [N] carried by ``rod`` when held at total length ``length_m``.
+
+    Positive in tension, negative in compression. Independent of ``num_segments``:
+    ``k_seg = EA / l_seg`` and each of the ``n`` segments takes ``1/n`` of the
+    extension, so the chain force reduces to ``EA (length - rest) / rest``.
+    """
+    rest = float(rod.length)
+    if rest <= 0.0:
+        raise ValueError(f"rod.length must be positive, got {rest}")
+    l_seg = rest / max(2, int(rod.num_segments))
+    return float(rod.stretch_stiffness) * (float(length_m) - rest) * l_seg / rest
+
+
 def rod_params_from_material(
     flexural_modulus_pa: float,
     youngs_modulus_pa: float,
@@ -152,6 +198,8 @@ def rod_params_from_material(
     *,
     stretch_stiffness: float | None = None,
     stretch_damping: float | None = None,
+    preload_chord_m: float | None = None,
+    axial_preload_n: float | None = None,
 ) -> RodParams:
     """Build :class:`RodParams` from material properties and geometry.
 
@@ -159,6 +207,10 @@ def rod_params_from_material(
     ``docs/material-parameter-sampling.md``). ``flexural_modulus_pa`` drives bend;
     ``youngs_modulus_pa`` drives axial stretch. One ``damping_ratio`` governs both.
     Optional ``stretch_stiffness`` / ``stretch_damping`` override axial knobs (tests only).
+
+    Supplying both ``preload_chord_m`` and ``axial_preload_n`` replaces ``length`` with
+    the rest length that carries that tension at the measured chord; the pair is stored
+    on the rod so later modulus overrides can re-solve it.
     """
     if flexural_modulus_pa <= 0.0:
         raise ValueError("flexural_modulus_pa must be positive")
@@ -166,6 +218,17 @@ def rod_params_from_material(
         raise ValueError("youngs_modulus_pa must be positive")
     if damping_ratio < 0.0:
         raise ValueError("damping_ratio must be non-negative")
+    if (preload_chord_m is None) != (axial_preload_n is None):
+        raise ValueError(
+            "preload_chord_m and axial_preload_n must be supplied together"
+        )
+    if preload_chord_m is not None and axial_preload_n is not None:
+        length = rest_length_for_axial_preload(
+            chord_m=float(preload_chord_m),
+            preload_n=float(axial_preload_n),
+            youngs_modulus_pa=float(youngs_modulus_pa),
+            radius=float(radius),
+        )
     n = max(2, int(num_segments))
     area, inertia, l_seg, m_seg, j_seg = _segment_material_geometry(
         radius, length, n, density
@@ -192,6 +255,8 @@ def rod_params_from_material(
         stretch_damping=float(stretch_damping),
         density=float(density),
         direction=direction,
+        preload_chord_m=None if preload_chord_m is None else float(preload_chord_m),
+        axial_preload_n=None if axial_preload_n is None else float(axial_preload_n),
     )
 
 
@@ -253,7 +318,12 @@ def analytic_apple_mass_kg(params: FruitingSystemParams) -> float | None:
 def _rod_params_to_row(rod: RodParams | None) -> dict[str, Any] | None:
     if rod is None:
         return None
+    preload: dict[str, float] = {}
+    if rod.preload_chord_m is not None and rod.axial_preload_n is not None:
+        preload["preload_chord_m"] = float(rod.preload_chord_m)
+        preload["axial_preload_n"] = float(rod.axial_preload_n)
     return {
+        **preload,
         "num_segments": int(rod.num_segments),
         "length": float(rod.length),
         "radius": float(rod.radius),
@@ -347,6 +417,12 @@ def _rod_params_from_row(value: Any, *, field: str, schema: str) -> RodParams | 
     if not isinstance(direction, (list, tuple)) or len(direction) != 3:
         raise ValueError(f"{field}.direction must be [x, y, z]")
     e_flex, e_axial, zeta, stretch_damping = _infer_material_from_vbd_row(row, schema=schema)
+    chord = row.get("preload_chord_m")
+    preload_n = row.get("axial_preload_n")
+    if (chord is None) != (preload_n is None):
+        raise ValueError(
+            f"{field} must carry preload_chord_m and axial_preload_n together"
+        )
     return RodParams(
         num_segments=int(row["num_segments"]),
         length=float(row["length"]),
@@ -360,6 +436,8 @@ def _rod_params_from_row(value: Any, *, field: str, schema: str) -> RodParams | 
         stretch_damping=stretch_damping,
         density=float(row["density"]),
         direction=(float(direction[0]), float(direction[1]), float(direction[2])),
+        preload_chord_m=None if chord is None else float(chord),
+        axial_preload_n=None if preload_n is None else float(preload_n),
     )
 
 
@@ -447,6 +525,14 @@ class GripperProxyConfig:
 
     Default ``False``: velocity-delta harvest + proxy-only sync. Set ``True`` for stem-harvest /
     apple co-teleport (see ``example_coupled_fruiting.py --fix-to-apple``).
+    """
+    dynamic_apple: bool = False
+    """If ``True`` with ``fix_to_apple=True``, keep the apple VBD-dynamic (``inv_mass > 0``).
+
+    The proxy stays prescribed and is mirrored from the robot TCP; the apple is *not*
+    co-teleported. Requires weld-reaction TCP harvest (``tcp_harvest_source="weld"``) so
+    apple weight/inertia flow through the proxy↔apple FIXED joint rather than an
+    explicit ``m·g`` term. Default ``False`` preserves the prescribed-apple path.
     """
     robot_facing_weld: bool = False
     """If ``True`` and ``fix_to_apple=True``, weld to the apple face toward ``robot_base_pos``.
@@ -1208,6 +1294,8 @@ def set_rod_flexural_modulus(
         rod.density,
         rod.num_segments,
         rod.direction,
+        preload_chord_m=rod.preload_chord_m,
+        axial_preload_n=rod.axial_preload_n,
         stretch_stiffness=float(rod.stretch_stiffness),
         stretch_damping=float(rod.stretch_damping),
     )
@@ -1222,8 +1310,12 @@ def set_rod_youngs_modulus(
 ) -> FruitingSystemParams:
     """Return a copy with absolute axial Young's modulus on one rod segment.
 
-    Re-derives stretch knobs via :func:`rod_params_from_material`. Freezes geometry,
-    ``damping_ratio``, and flexural ``flexural_modulus_pa`` / bend knobs.
+    Re-derives stretch knobs via :func:`rod_params_from_material`. Freezes
+    ``damping_ratio`` and flexural ``flexural_modulus_pa`` / bend knobs.
+
+    Geometry is frozen too, except on a rod carrying a preload spec: there the rest
+    length is re-solved against the new modulus so the tension at the measured chord
+    stays put, rather than scaling with ``youngs_modulus_pa``.
     """
     if youngs_modulus_pa <= 0.0:
         raise ValueError("youngs_modulus_pa must be positive")
@@ -1244,6 +1336,8 @@ def set_rod_youngs_modulus(
         rod.direction,
         stretch_stiffness=None,
         stretch_damping=None,
+        preload_chord_m=rod.preload_chord_m,
+        axial_preload_n=rod.axial_preload_n,
     )
     setattr(out, segment, new_rod)
     return out

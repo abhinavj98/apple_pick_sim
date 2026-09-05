@@ -1249,6 +1249,70 @@ def test_fix_to_apple_apple_retains_body_mass():
     assert inv_m == 0.0, f"apple inv_mass should be 0 after prescribe, got {inv_m}"
 
 
+def test_dynamic_apple_keeps_inv_mass_while_proxy_is_prescribed():
+    """``dynamic_apple=True`` leaves the apple free; only the proxy is prescribed."""
+    from apple_pick_sim.fruiting_system.params import analytic_apple_mass_kg
+
+    cf = _import_cf()
+    fs = _import_fs()
+    scene = build_coupled_fr3(
+        cf,
+        fs.load_ranges(RANGES_FIXTURE),
+        45,
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True, dynamic_apple=True),
+    )
+    apple = scene.cable.apple_body
+    proxy = scene.cable.gripper_proxy_body
+    assert apple is not None and proxy is not None
+    inv_apple = float(scene.cable.model.body_inv_mass.numpy()[apple])
+    inv_proxy = float(scene.cable.model.body_inv_mass.numpy()[proxy])
+    m_exp = analytic_apple_mass_kg(scene.cable.params)
+    assert m_exp is not None and m_exp > 0.0
+    assert inv_apple == pytest.approx(1.0 / m_exp, rel=1e-5)
+    assert inv_proxy == 0.0
+    assert scene.tcp_harvest_source == "weld"
+    assert scene.stem_harvest_explicit_apple_weight is False
+    """mujoco_only sync mirrors the proxy only; the dynamic apple is not overwritten."""
+    cf = _import_cf()
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    scene = build_coupled_fr3(
+        cf,
+        ranges,
+        46,
+        mujoco_only=True,
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True, dynamic_apple=True),
+    )
+    cable = scene.cable
+    apple = cable.apple_body
+    proxy = cable.gripper_proxy_body
+    assert apple is not None and proxy is not None
+
+    apple_before = cable.state_0.body_q.numpy().reshape(-1, 7)[apple, :3].copy()
+    proxy_before = cable.state_0.body_q.numpy().reshape(-1, 7)[proxy, :3].copy()
+
+    from apple_pick_sim.robot import fr3_robot
+
+    ctrl = new_direct_controller(scene, fr3_robot)
+    apply_direct_hold(
+        scene,
+        fr3_robot,
+        ctrl,
+        velocity=fr3_robot.EEVelocity(linear=(0.08, 0.0, 0.0)),
+    )
+    run_mujoco_substeps_direct_hold(scene, fr3_robot, 30, sub_dt=1.0 / 600.0)
+
+    bq = cable.state_0.body_q.numpy().reshape(-1, 7)
+    apple_after = bq[apple, :3]
+    proxy_after = bq[proxy, :3]
+    apple_disp = float(np.linalg.norm(apple_after - apple_before))
+    proxy_disp = float(np.linalg.norm(proxy_after - proxy_before))
+    assert proxy_disp > 1e-4, f"proxy did not move: disp={proxy_disp}"
+    assert apple_disp < 1e-5, (
+        f"dynamic apple was co-teleported (disp={apple_disp}); sync must leave it alone"
+    )
+
+
 def _assert_tcp_stem_load_order_of_apple_weight(
     scene,
     tcp: int,

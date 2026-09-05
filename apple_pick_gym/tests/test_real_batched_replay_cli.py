@@ -113,6 +113,129 @@ def test_parser_accepts_allow_wrench_as_twist():
     assert default.allow_wrench_as_twist is False
 
 
+def test_parser_dynamic_apple_default_on_and_opt_out():
+    mod = _load_replay()
+    p = mod._make_parser()
+    default = p.parse_args(["--dataset", "/tmp/ds"])
+    assert default.dynamic_apple is True
+    off = p.parse_args(["--dataset", "/tmp/ds", "--no-dynamic-apple"])
+    assert off.dynamic_apple is False
+
+
+def test_run_passes_dynamic_apple_to_build_env_fn(monkeypatch):
+    if not _VARIANCE.is_file():
+        pytest.skip(f"missing {_VARIANCE}")
+
+    mod = _load_replay()
+    captured: dict = {}
+    episode_meta = {
+        "fruiting_base_pos": [0.1, 0.2, 0.3],
+        "initial_robot_joint_q": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        "control_hz": 30.0,
+        "camera_to_base_4x4": None,
+        "action_compatible_with_vic_twist": False,
+        "direction_idx": 0,
+    }
+
+    class FakeDataset:
+        def __init__(self, path):
+            del path
+            self.manifest = {
+                "collection": {
+                    "action_dim": 19,
+                    "action_layout": "vic_pose_v1",
+                    "ranges_path": str(_VARIANCE),
+                }
+            }
+
+        def load_episode_metadata(self, structure_idx, direction_idx):
+            del structure_idx, direction_idx
+            return dict(episode_meta)
+
+    collectors = MagicMock()
+    collectors.to_arrays.return_value = {
+        "tcp_pos": [[0.0, 0.0, 0.0], [0.05, 0.0, 0.0]],
+    }
+
+    def fake_make(**kwargs):
+        captured["build_kwargs"] = kwargs
+        return lambda **__: None
+
+    monkeypatch.setattr(mod, "BatchedSysIdDataset", FakeDataset)
+    monkeypatch.setattr(mod, "check_action_semantics", lambda **_k: None)
+    monkeypatch.setattr(
+        mod, "gt_bend_stiffness_candidate_from_structure", lambda *_a, **_k: object()
+    )
+    monkeypatch.setattr(mod, "make_real_replay_build_env_fn", fake_make)
+    monkeypatch.setattr(mod, "real_replay_sim_config", lambda **_k: object())
+    monkeypatch.setattr(
+        mod, "replay_batched_sysid_structure", lambda **_k: collectors
+    )
+
+    args = mod._make_parser().parse_args(
+        ["--dataset", "/tmp/ds", "--viewer", "null"]
+    )
+    assert mod._run(args, SimpleNamespace()) == 0
+    assert captured["build_kwargs"]["dynamic_apple"] is True
+
+
+def test_run_passes_no_dynamic_apple_to_build_env_fn(monkeypatch):
+    if not _VARIANCE.is_file():
+        pytest.skip(f"missing {_VARIANCE}")
+
+    mod = _load_replay()
+    captured: dict = {}
+    episode_meta = {
+        "fruiting_base_pos": [0.1, 0.2, 0.3],
+        "initial_robot_joint_q": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        "control_hz": 30.0,
+        "camera_to_base_4x4": None,
+        "action_compatible_with_vic_twist": False,
+        "direction_idx": 0,
+    }
+
+    class FakeDataset:
+        def __init__(self, path):
+            del path
+            self.manifest = {
+                "collection": {
+                    "action_dim": 19,
+                    "action_layout": "vic_pose_v1",
+                    "ranges_path": str(_VARIANCE),
+                }
+            }
+
+        def load_episode_metadata(self, structure_idx, direction_idx):
+            del structure_idx, direction_idx
+            return dict(episode_meta)
+
+    collectors = MagicMock()
+    collectors.to_arrays.return_value = {
+        "tcp_pos": [[0.0, 0.0, 0.0], [0.05, 0.0, 0.0]],
+    }
+
+    def fake_make(**kwargs):
+        captured["build_kwargs"] = kwargs
+        return lambda **__: None
+
+    monkeypatch.setattr(mod, "BatchedSysIdDataset", FakeDataset)
+    monkeypatch.setattr(mod, "check_action_semantics", lambda **_k: None)
+    monkeypatch.setattr(
+        mod, "gt_bend_stiffness_candidate_from_structure", lambda *_a, **_k: object()
+    )
+    monkeypatch.setattr(mod, "make_real_replay_build_env_fn", fake_make)
+    monkeypatch.setattr(mod, "real_replay_sim_config", lambda **_k: object())
+    monkeypatch.setattr(
+        mod, "replay_batched_sysid_structure", lambda **_k: collectors
+    )
+
+    args = mod._make_parser().parse_args(
+        ["--dataset", "/tmp/ds", "--no-dynamic-apple", "--viewer", "null"]
+    )
+    assert mod._run(args, SimpleNamespace()) == 0
+    assert captured["build_kwargs"]["dynamic_apple"] is False
+
+
 def test_allow_wrench_as_twist_rejects_pose_packed_dataset():
     """The escape hatch is legacy-6D only; 19D vic_pose datasets must fail fast."""
     mod = _load_replay()

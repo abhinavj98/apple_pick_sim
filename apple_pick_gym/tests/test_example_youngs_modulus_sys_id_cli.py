@@ -136,6 +136,16 @@ def test_parser_defaults_and_required_args(monkeypatch):
     assert args.fail_fast is False
     assert args.multi_structure_batch is True
     assert args.controller_mode is None
+    assert args.dynamic_apple is True
+    assert parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/gt",
+            "--output",
+            "/tmp/rank",
+            "--no-dynamic-apple",
+        ]
+    ).dynamic_apple is False
     assert parser.parse_args(
         [
             "--dataset",
@@ -524,7 +534,9 @@ def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(
     assert real_builder_calls[0]["control_hz"] == pytest.approx(15.0)
     assert real_builder_calls[0]["fruiting_base_pos"] == pytest.approx((1.0, 2.0, 3.0))
     assert real_builder_calls[0]["bootstrap_joint_q"] == pytest.approx((0.1, 0.2))
+    assert real_builder_calls[0]["dynamic_apple"] is True
     assert len(real_config_calls) == 1
+    assert real_config_calls[0]["dynamic_apple"] is True
     assert evaluator_calls[0]["build_env_fn"] is real_builder
     assert evaluator_calls[0]["action_dim"] == 19
     replay_config = evaluator_calls[0]["replay_sim_config"]

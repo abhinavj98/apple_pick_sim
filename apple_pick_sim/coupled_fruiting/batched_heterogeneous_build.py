@@ -37,6 +37,7 @@ from apple_pick_sim.coupled_fruiting.settle_then_weld import (
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
     prepare_batched_stem_harvest_arrays,
+    prepare_batched_weld_harvest_arrays,
     sync_model_body_q_rest_from_state,
 )
 from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
@@ -371,6 +372,7 @@ _GRIPPER_STRUCTURAL_FIELDS = (
     "box_half_extents",
     "label",
     "fix_to_apple",
+    "dynamic_apple",
 )
 
 
@@ -467,6 +469,7 @@ def _builder_kwargs(
         "stem_coupling_gain": fruiting.stem_coupling_gain,
         "stem_force_cap_N": fruiting.stem_force_cap_N,
         "stem_torque_cap_Nm": fruiting.stem_torque_cap_Nm,
+        "tcp_harvest_source": fruiting.tcp_harvest_source,
         "mujoco_solver_kwargs": dict(mujoco.solver_kwargs),
         "mujoco_use_cpu": mujoco.use_cpu,
         "skip_ik_bootstrap": robot_cfg.skip_ik_bootstrap,
@@ -779,7 +782,10 @@ def _rebootstrap_fr3_after_post_grasp_settle(
     ik_iters = config.robot.ik_bootstrap_iterations
     if config.robot.per_env_ik and layout is not None and layout.num_envs > 1:
         _bootstrap_tcp_per_env(scene, layout, ik_iterations=ik_iters)
-        prepare_batched_stem_harvest_arrays(scene, layout)
+        if getattr(scene, "tcp_harvest_source", "stem") == "weld":
+            prepare_batched_weld_harvest_arrays(scene, layout)
+        else:
+            prepare_batched_stem_harvest_arrays(scene, layout)
         return
 
     from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS

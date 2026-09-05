@@ -31,8 +31,10 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
     copy_cable_body_q_between_states,
     harvest_batched_stem_tension,
+    harvest_batched_weld_tension,
     harvest_proxy_wrenches,
     harvest_stem_tension_for_tcp,
+    harvest_weld_tension_for_tcp,
     launch_mirror_robot_to_proxy,
     launch_mirror_robot_to_proxy_and_apple,
     launch_mirror_robot_to_proxy_offset_and_apple,
@@ -247,11 +249,12 @@ def _harvest_coupling_wrenches(
     apple_body_index: int | None = None,
     grasp_offset_in_apple_frame: tuple[float, ...] | None = None,
 ) -> None:
-    """Dispatch stem FIXED-joint harvest or velocity-delta proxy harvest into ``proxy_forces``.
+    """Dispatch stem / weld FIXED-joint harvest or velocity-delta into ``proxy_forces``.
 
-    Chooses path from ``scene.stem_apple_joint_index`` (set at build when
-    ``fix_to_apple`` welds proxy to apple):
+    Path selection:
 
+    - **Weld harvest** (``tcp_harvest_source=\"weld\"``) — constraint wrench on the
+      proxy↔apple FIXED joint (child = proxy). Used with a dynamic apple.
     - **Stem harvest** — constraint wrench on stem–apple FIXED joint, transferred
       to TCP with optional explicit apple weight (:func:`harvest_stem_tension_for_tcp`).
     - **Velocity-delta** — standard M1 proxy reaction from VBD twist jump
@@ -260,8 +263,62 @@ def _harvest_coupling_wrenches(
     Called at the end of each :meth:`CoupledFruitingScene.coupled_substep`.
     Harvested wrenches feed the *next* MuJoCo substep as lagged coupling forces.
     """
-    use_stem_harvest = scene.stem_apple_joint_index is not None
-    if use_stem_harvest:
+    harvest_source = getattr(scene, "tcp_harvest_source", "stem")
+    if harvest_source == "weld":
+        weld_joint = getattr(cable, "gripper_proxy_apple_joint", None)
+        if weld_joint is None:
+            raise RuntimeError(
+                "tcp_harvest_source='weld' but cable.gripper_proxy_apple_joint is None"
+            )
+        layout = getattr(scene, "layout", None)
+        if (
+            layout is not None
+            and layout.num_envs > 1
+            and scene.weld_harvest_joint_indices_wp is not None
+        ):
+            harvest_batched_weld_tension(
+                weld_joint_indices_wp=scene.weld_harvest_joint_indices_wp,
+                tcp_indices_wp=scene.weld_harvest_tcp_indices_wp,
+                cable_model=cable.model,
+                cable_solver=cable.solver,
+                body_q_post=cable.state_0.body_q,
+                body_q_prev=cable.state_1.body_q,
+                dt=dt,
+                out_robot_wrenches=scene.proxy_forces,
+                coupling_gain=scene.stem_coupling_gain,
+                force_cap_N=scene.stem_force_cap_N,
+                torque_cap_Nm=scene.stem_torque_cap_Nm,
+                device=str(scene.proxy_forces.device),
+                out_f=scene.stem_harvest_wrench_f_scratch,
+                out_t=scene.stem_harvest_wrench_t_scratch,
+            )
+        elif layout is not None and layout.num_envs > 1:
+            raise RuntimeError(
+                "weld_harvest_joint_indices_wp is None for a batched multi-env scene; "
+                "call prepare_batched_weld_harvest_arrays(scene, layout) at build time."
+            )
+        else:
+            if scene.weld_harvest_joint_indices_wp is None:
+                scene.weld_harvest_joint_indices_wp = wp.array(
+                    [int(weld_joint)],
+                    dtype=int,
+                    device=scene.proxy_forces.device,
+                )
+            harvest_weld_tension_for_tcp(
+                cable_model=cable.model,
+                cable_solver=cable.solver,
+                body_q_post=cable.state_0.body_q,
+                body_q_prev=cable.state_1.body_q,
+                dt=dt,
+                weld_joint_index=int(weld_joint),
+                tcp_body_index=scene.tcp_body_index,
+                out_robot_wrenches=scene.proxy_forces,
+                coupling_gain=scene.stem_coupling_gain,
+                force_cap_N=scene.stem_force_cap_N,
+                torque_cap_Nm=scene.stem_torque_cap_Nm,
+                joint_indices_wp=scene.weld_harvest_joint_indices_wp,
+            )
+    elif scene.stem_apple_joint_index is not None:
         layout = getattr(scene, "layout", None)
         tpl_stem = scene.stem_apple_joint_index
         offset = cable.gripper_proxy_offset_in_apple_frame
@@ -356,14 +413,17 @@ def _harvest_coupling_wrenches(
 
 
 def seed_lagged_coupling_from_rest_harvest(scene: Any, dt: float) -> None:
-    """Fill ``proxy_forces`` / ``coupling_forces_cache`` with a rest stem harvest.
+    """Fill ``proxy_forces`` / ``coupling_forces_cache`` with a rest harvest.
 
     After weld/bootstrap and gym snapshot restore the lag buffers must not stay
     zero: the first MuJoCo substep would otherwise apply an empty wrench. At a
-    quiet post-grasp pose this seed is stem gather with ``body_q_prev = body_q``
-    (so ``Ċ ≈ 0``) plus optional explicit apple weight ``mg``.
+    quiet post-grasp pose this seed dispatches through
+    :func:`_harvest_coupling_wrenches` — stem gather or weld gather depending on
+    ``scene.tcp_harvest_source`` — with ``body_q_prev = body_q`` (so ``Ċ ≈ 0``).
+    Stem harvest may still add optional explicit apple weight ``mg``.
 
-    Free-proxy scenes (no stem–apple joint) keep the historical zero fill.
+    Free-proxy scenes (no stem–apple joint and not on the weld path) keep the
+    historical zero fill.
     """
     if scene.proxy_forces is None:
         return
@@ -409,6 +469,7 @@ def _sync_single_proxy_after_mujoco(scene: CoupledFruitingScene, dt: float) -> N
         cable.apple_body is not None
         and cable.gripper_proxy_apple_joint is not None
         and cable.gripper_proxy_offset_in_apple_frame is not None
+        and not bool(getattr(cable.gripper_proxy_config, "dynamic_apple", False))
     )
     if use_apple_sync:
         layout = getattr(scene, "layout", None)
@@ -521,6 +582,8 @@ class CoupledFruitingScene:
     stem_coupling_gain: float = DEFAULT_STEM_COUPLING_GAIN
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM
+    tcp_harvest_source: str = "stem"
+    """``\"stem\"`` (default) or ``\"weld\"`` — see :func:`_harvest_coupling_wrenches`."""
     stem_harvest_explicit_apple_weight: bool = False
     """Add env-on-robot apple payload ``m_apple * gravity`` into stem harvest (prescribed apple)."""
     stem_harvest_explicit_apple_inertia: bool = False
@@ -569,6 +632,9 @@ class CoupledFruitingScene:
     stem_harvest_use_explicit_inertia_wp: wp.array | None = None
     stem_harvest_wrench_f_scratch: wp.array | None = None
     stem_harvest_wrench_t_scratch: wp.array | None = None
+    weld_harvest_joint_indices_wp: wp.array | None = None
+    weld_harvest_tcp_indices_wp: wp.array | None = None
+    """Cached per-env proxy↔apple weld joint / TCP indices for weld harvest."""
     co_teleport_apple_ids_wp: wp.array | None = None
     co_teleport_pos_offsets_wp: wp.array | None = None
     co_teleport_grasp_offsets_wp: wp.array | None = None

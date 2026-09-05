@@ -106,6 +106,57 @@ def test_make_real_replay_build_env_fn_honors_per_env_grippers(monkeypatch):
         "apple_pick_gym.batched_envs.real_batched_replay_build.ApplePickBatchedSysIdEnv",
         _FakeEnv,
     )
+    g0 = GripperProxyConfig(weld_direction=(1.0, 0.0, 0.0))
+    g1 = GripperProxyConfig(weld_direction=(0.0, 1.0, 0.0))
+    meta = {
+        "control_hz": 15.0,
+        "fruiting_base_pos": [0.0, 0.5, 0.95],
+        "initial_robot_joint_q": [0.0] * 7,
+        "initial_apple_pos": [0.1, 0.2, 0.3],
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": [0.1, 0.15, 0.3],
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+    }
+    fn = make_real_replay_build_env_fn(
+        ranges_path=_VARIANCE,
+        ranges=load_ranges(_VARIANCE),
+        topology_seed=0,
+        fruiting_base_pos=(0.0, 0.5, 0.95),
+        episode_meta=meta,
+        bootstrap_joint_q=(0.0,) * 7,
+        controller_mode="vic_pose",
+        control_hz=15.0,
+    )
+    fn(num_envs=2, per_env_params=[None, None], max_episode_steps=4, per_env_grippers=[g0, g1])
+    grippers = captured["per_env_grippers"]
+    assert len(grippers) == 2
+    # Default dynamic_apple overlays flags but keeps per-env weld fields.
+    assert grippers[0].weld_direction == (1.0, 0.0, 0.0)
+    assert grippers[1].weld_direction == (0.0, 1.0, 0.0)
+    assert grippers[0].dynamic_apple is True and grippers[0].fix_to_apple is True
+    assert grippers[1].dynamic_apple is True and grippers[1].fix_to_apple is True
+
+
+def test_make_real_replay_build_env_fn_no_dynamic_apple_preserves_gripper_flags(
+    monkeypatch,
+):
+    from apple_pick_sim.fruiting_system.params import GripperProxyConfig
+
+    from apple_pick_gym.batched_envs.real_batched_replay_build import (
+        make_real_replay_build_env_fn,
+    )
+
+    captured = {}
+
+    class _FakeEnv:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self._sim = SimpleNamespace(scene=SimpleNamespace(cable=None, layout=None))
+
+    monkeypatch.setattr(
+        "apple_pick_gym.batched_envs.real_batched_replay_build.ApplePickBatchedSysIdEnv",
+        _FakeEnv,
+    )
     g0 = GripperProxyConfig()
     g1 = GripperProxyConfig()
     meta = {
@@ -126,6 +177,7 @@ def test_make_real_replay_build_env_fn_honors_per_env_grippers(monkeypatch):
         bootstrap_joint_q=(0.0,) * 7,
         controller_mode="vic_pose",
         control_hz=15.0,
+        dynamic_apple=False,
     )
     fn(num_envs=2, per_env_params=[None, None], max_episode_steps=4, per_env_grippers=[g0, g1])
     assert captured["per_env_grippers"] == [g0, g1]
@@ -339,6 +391,47 @@ def test_real_replay_sim_config_applies_vic_pose_and_control_hz():
     assert cfg.scene.post_grasp_settle_substeps == 2000
     assert cfg.runtime.control_hz == pytest.approx(15.0)
     assert cfg.robot.reuse_replicated_mujoco is False
+    assert cfg.robot.gripper.dynamic_apple is True
+    assert cfg.fruiting_system.tcp_harvest_source == "weld"
+
+
+def test_real_replay_sim_config_dynamic_apple_default_enables_weld_harvest():
+    if not _VARIANCE.is_file():
+        pytest.skip(f"missing {_VARIANCE}")
+
+    from apple_pick_gym.batched_envs.real_batched_replay_build import (
+        real_replay_sim_config,
+    )
+
+    ranges = load_ranges(_VARIANCE)
+    cfg = real_replay_sim_config(
+        num_envs=1,
+        topology_seed=0,
+        fruiting_base_pos=(0.117, 0.787, 0.577),
+        ranges=ranges,
+    )
+    assert cfg.robot.gripper.dynamic_apple is True
+    assert cfg.fruiting_system.tcp_harvest_source == "weld"
+
+
+def test_real_replay_sim_config_no_dynamic_apple_uses_stem_harvest():
+    if not _VARIANCE.is_file():
+        pytest.skip(f"missing {_VARIANCE}")
+
+    from apple_pick_gym.batched_envs.real_batched_replay_build import (
+        real_replay_sim_config,
+    )
+
+    ranges = load_ranges(_VARIANCE)
+    cfg = real_replay_sim_config(
+        num_envs=1,
+        topology_seed=0,
+        fruiting_base_pos=(0.117, 0.787, 0.577),
+        ranges=ranges,
+        dynamic_apple=False,
+    )
+    assert cfg.robot.gripper.dynamic_apple is False
+    assert cfg.fruiting_system.tcp_harvest_source == "stem"
 
 
 def test_real_replay_sim_config_vic_keeps_coupled_lambda_and_default_kd_null():

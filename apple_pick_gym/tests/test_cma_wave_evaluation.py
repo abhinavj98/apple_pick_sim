@@ -154,6 +154,7 @@ def test_build_cma_replay_context_vic_pose_post_grasp_settle_default(tmp_path):
         settle_config={},
     )
     assert ctx.post_grasp_settle_substeps == 2000
+    assert ctx.dynamic_apple is True
 
 
 def test_build_cma_replay_artifacts_vic_pose_pre_grasp_settle_default(tmp_path, monkeypatch):
@@ -185,6 +186,41 @@ def test_build_cma_replay_artifacts_vic_pose_pre_grasp_settle_default(tmp_path, 
     wave_mod.build_cma_replay_artifacts(ctx, ranges={})
     assert captured["settle_substeps"] == 6000
     assert captured["post_grasp_settle_substeps"] == 2000
+
+
+def test_build_cma_replay_artifacts_passes_dynamic_apple(tmp_path, monkeypatch):
+    from apple_pick_gym.batched_envs import cma_wave_evaluation as wave_mod
+
+    captured: dict[str, bool] = {}
+
+    def fake_make(**kwargs):
+        captured["build"] = bool(kwargs["dynamic_apple"])
+        return object()
+
+    def fake_config(**kwargs):
+        captured["config"] = bool(kwargs["dynamic_apple"])
+        return object()
+
+    monkeypatch.setattr(wave_mod, "make_real_replay_build_env_fn", fake_make)
+    monkeypatch.setattr(wave_mod, "real_replay_sim_config", fake_config)
+
+    ctx = CmaReplayContext(
+        mode="vic_pose",
+        ranges_path=tmp_path / "ranges.json",
+        topology_seed=0,
+        control_hz=15.0,
+        device="cpu",
+        settle_substeps=100,
+        settle_gravity_ramp=False,
+        settle_quiet_every=100,
+        post_grasp_settle_substeps=2000,
+        fruiting_base_pos=(0.0, 0.4, 0.75),
+        episode_meta={"action_layout": "vic_pose_v1", "action_dim": 19},
+        dynamic_apple=False,
+    )
+    wave_mod.build_cma_replay_artifacts(ctx, ranges={})
+    assert captured["build"] is False
+    assert captured["config"] is False
 
 
 def test_spawn_invokes_worker_module(tmp_path):

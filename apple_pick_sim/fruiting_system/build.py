@@ -827,9 +827,12 @@ def _add_gripper_proxy(
     overwritten each MuJoCo substep by ``sync_proxy_state`` (not integrated from cable
     gravity alone). With ``fix_to_apple``, a FIXED joint welds the proxy to the apple
     at the exterior pole (same placement as the free proxy, via ``parent_xform`` /
-    ``child_xform``). The apple and proxy use ``inv_mass == 0`` so VBD does not integrate
-    them; staggered coupling teleports their poses from the robot TCP each substep while
-    the stem supplies the harvested wrench.
+    ``child_xform``). By default the apple and proxy use ``inv_mass == 0`` so VBD does
+    not integrate them; staggered coupling teleports their poses from the robot TCP
+    each substep while the stem supplies the harvested wrench. With
+    ``dynamic_apple=True``, only the proxy is prescribed: the apple keeps finite
+    ``inv_mass``, is **not** co-teleported, and TCP harvest must use the proxy↔apple
+    weld reaction (``tcp_harvest_source="weld"``, auto-resolved at build).
     """
     if config.robot_facing_weld and not config.fix_to_apple:
         raise ValueError("robot_facing_weld requires fix_to_apple=True")
@@ -1028,7 +1031,10 @@ def _add_gripper_proxy(
         artifacts.fruiting_fixed_joints.append(
             (apple_fixed_joint, "joint_apple_gripper_proxy")
         )
-        _prescribe_body_vbd_integration(builder, artifacts.apple_body)
+        # Proxy is always prescribed under fix_to_apple (TCP mirror target). The apple
+        # stays dynamic when ``dynamic_apple=True`` so gravity/load sharing enter VBD.
+        if not bool(getattr(config, "dynamic_apple", False)):
+            _prescribe_body_vbd_integration(builder, artifacts.apple_body)
         _prescribe_body_vbd_integration(builder, proxy_body)
     else:
         proxy_free_joint = builder.add_joint_free(parent=-1, child=proxy_body)

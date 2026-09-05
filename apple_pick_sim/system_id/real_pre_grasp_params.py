@@ -23,6 +23,9 @@ from apple_pick_sim.system_id.real_to_batched_sysid import (
 
 _ZERO_EPS = 1e-12
 _BEND_EPS = 1e-3
+# Solved apple radius must stay physically plausible when absorbing tag slop.
+_APPLE_RADIUS_MIN_M = 0.010
+_APPLE_RADIUS_MAX_M = 0.090
 # Catalog gimbal: spur clocks about the primary; stem leans about robot→fruiting.
 # Proxy world: primary +X, robot reach +Y, hang −Z. Robot→fruiting is +Y.
 _WORLD_DOWN = (0.0, 0.0, -1.0)
@@ -365,16 +368,47 @@ def map_pre_grasp_geometry(
         }
 
     spur_chord = float(np.linalg.norm(spur_end - spur_start_surface))
-    apple_r = float(parts["apple"]["radius_m"]) if "apple" in parts else None
-    apple_d = float(parts["apple"]["density_kg_m3"]) if "apple" in parts else None
+    apple_block = parts.get("apple") if isinstance(parts.get("apple"), dict) else None
+    r_catalog = float(apple_block["radius_m"]) if apple_block is not None else None
+    rho_catalog = (
+        float(apple_block["density_kg_m3"]) if apple_block is not None else None
+    )
     # Woody Apple junction is the fruit CoM; physical stem is spur→surface.
     spur_to_com = float(np.linalg.norm(apple_pos - spur_end))
-    if apple_r is None:
-        stem_chord = spur_to_com
-    else:
-        stem_chord = spur_to_com - float(apple_r)
     spur_L = float(parts["spur"]["length_m"])
     stem_L = float(parts["stem"]["length_m"])
+
+    # Catalog stem length is ground truth; apple radius closes the measured
+    # spur→CoM chord. Density is back-solved so the apple mass stays fixed
+    # (logged mass_kg when present, else catalog volume * density).
+    apple_r: float | None = None
+    apple_d: float | None = None
+    apple_mass: float | None = None
+    apple_mass_source: str | None = None
+    if r_catalog is not None and rho_catalog is not None:
+        apple_r = spur_to_com - stem_L
+        if not (_APPLE_RADIUS_MIN_M < apple_r < _APPLE_RADIUS_MAX_M):
+            raise ValueError(
+                "solved apple_radius "
+                f"{apple_r:.6f} m is outside "
+                f"[{_APPLE_RADIUS_MIN_M}, {_APPLE_RADIUS_MAX_M}] m "
+                f"(spur_to_com={spur_to_com:.6f} m, stem_catalog={stem_L:.6f} m, "
+                f"catalog_radius={r_catalog:.6f} m)"
+            )
+        logged_mass = apple_block.get("mass_kg") if apple_block is not None else None
+        if logged_mass is not None:
+            apple_mass = float(logged_mass)
+            if apple_mass <= 0.0:
+                raise ValueError(f"parts.apple.mass_kg must be positive, got {apple_mass}")
+            apple_mass_source = "parts.mass_kg"
+        else:
+            apple_mass = (4.0 / 3.0) * math.pi * r_catalog**3 * rho_catalog
+            apple_mass_source = "catalog_radius_density"
+        apple_d = apple_mass / ((4.0 / 3.0) * math.pi * apple_r**3)
+        stem_chord = stem_L
+    else:
+        stem_chord = spur_to_com
+
     apple_vs_chord = apple_pos - apple_chord_end
     rod_geometry = {
         "primary": _geo("primary"),
@@ -382,6 +416,9 @@ def map_pre_grasp_geometry(
         "stem": _geo("stem"),
     }
 
+    # Catalog stem rest length; do not preload-shorten. Apple radius absorbs
+    # spur→CoM vs catalog-stem mismatch; axial stretch develops under gravity
+    # during pre-/post-grasp settle (natural stretch, not build-time preload).
     def _rel_err(catalog: float, measured: float) -> float:
         if abs(catalog) < _ZERO_EPS:
             return float("inf") if measured > _ZERO_EPS else 0.0
@@ -391,9 +428,18 @@ def map_pre_grasp_geometry(
         "spur_chord_length_m": spur_chord,
         "stem_spur_to_com_m": spur_to_com,
         "stem_chord_length_m": stem_chord,
-        "stem_chord_formula": "‖spur_end−apple_CoM‖−apple_radius",
+        "stem_chord_formula": (
+            "catalog_stem_length" if r_catalog is not None else "‖spur_end−apple_CoM‖"
+        ),
         "spur_catalog_length_m": spur_L,
         "stem_catalog_length_m": stem_L,
+        "stem_preload_chord_m": None,
+        "stem_axial_preload_n": None,
+        "apple_radius_solved_m": apple_r,
+        "apple_radius_catalog_m": r_catalog,
+        "apple_density_solved_kg_m3": apple_d,
+        "apple_mass_kg": apple_mass,
+        "apple_mass_source": apple_mass_source,
         "spur_length_abs_error_m": abs(spur_chord - spur_L),
         "stem_length_abs_error_m": abs(stem_chord - stem_L),
         "spur_length_rel_error": _rel_err(spur_L, spur_chord),
@@ -467,7 +513,8 @@ def format_pre_grasp_diagnostics(diagnostics: dict[str, Any]) -> str:
         (
             f"  stem: catalog={diagnostics['stem_catalog_length_m']:.4f} m  "
             f"chord={diagnostics['stem_chord_length_m']:.4f} m  "
-            f"(‖spur−CoM‖={diagnostics['stem_spur_to_com_m']:.4f} m − r)  "
+            f"(‖spur−CoM‖={diagnostics['stem_spur_to_com_m']:.4f} m, "
+            f"r_solved={diagnostics.get('apple_radius_solved_m')})  "
             f"abs_err={diagnostics['stem_length_abs_error_m']:.4f} m  "
             f"rel_err={diagnostics['stem_length_rel_error']:.3%}"
         ),

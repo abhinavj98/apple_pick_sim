@@ -7,7 +7,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from apple_pick_sim.fruiting_system.params import fruiting_params_to_dict
+from apple_pick_sim.fruiting_system.params import (
+    analytic_apple_mass_kg,
+    fruiting_params_to_dict,
+)
 from apple_pick_sim.system_id.real_pre_grasp_params import (
     PreGraspMappedGeometry,
     coerce_xyz,
@@ -166,15 +169,21 @@ def test_map_pre_grasp_branch_is_fruiting_base_pos():
     assert mapped.rod_geometry["primary"]["length_m"] == pytest.approx(0.2)
     assert mapped.rod_geometry["spur"]["radius_m"] == pytest.approx(0.0025)
     assert mapped.rod_geometry["spur"]["density_kg_m3"] == pytest.approx(1200.0)
-    assert mapped.apple_radius_m == pytest.approx(0.04)
-    assert mapped.apple_density_kg_m3 == pytest.approx(650.0)
+    # Catalog stem length is ground truth; apple radius closes the measured chord.
+    spur_to_com = float(np.linalg.norm(np.array([0.05, 0.0, -0.13]) - np.array([0.02, 0.0, -0.10])))
+    stem_L = 0.025
+    r_solved = spur_to_com - stem_L
+    catalog_mass = (4.0 / 3.0) * math.pi * (0.04**3) * 650.0
+    rho_solved = catalog_mass / ((4.0 / 3.0) * math.pi * r_solved**3)
+    assert mapped.apple_radius_m == pytest.approx(r_solved)
+    assert mapped.apple_density_kg_m3 == pytest.approx(rho_solved)
     assert mapped.diagnostics.get("rod_density", {}).get("spur") is None
     assert mapped.diagnostics["rod_direction_source"] == "woody_chords"
     assert "spur_length_error" in mapped.diagnostics
-    # Stem chord = ‖spur_end − apple_CoM‖ − apple_radius (CoM is sphere center).
-    spur_to_com = float(np.linalg.norm(np.array([0.05, 0.0, -0.13]) - np.array([0.02, 0.0, -0.10])))
     assert mapped.diagnostics["stem_spur_to_com_m"] == pytest.approx(spur_to_com)
-    assert mapped.diagnostics["stem_chord_length_m"] == pytest.approx(spur_to_com - 0.04)
+    assert mapped.diagnostics["stem_chord_length_m"] == pytest.approx(stem_L)
+    assert mapped.diagnostics["apple_radius_solved_m"] == pytest.approx(r_solved)
+    assert mapped.diagnostics["apple_radius_catalog_m"] == pytest.approx(0.04)
 
 
 def test_map_pre_grasp_overrides_spur_density_from_mass_kg():
@@ -329,8 +338,13 @@ def test_fruiting_params_from_pre_grasp_meta():
     np.testing.assert_allclose(params.stem.direction, stem_u, atol=1e-6)
     assert params.primary.length == pytest.approx(0.2)
     assert params.spur.density == pytest.approx(1200.0)
-    assert params.apple_radius == pytest.approx(0.04)
-    assert params.apple_density == pytest.approx(650.0)
+    spur_to_com = float(np.linalg.norm(np.array([0.05, 0.0, -0.13]) - np.array([0.02, 0.0, -0.10])))
+    r_solved = spur_to_com - 0.025
+    catalog_mass = (4.0 / 3.0) * math.pi * (0.04**3) * 650.0
+    rho_solved = catalog_mass / ((4.0 / 3.0) * math.pi * r_solved**3)
+    assert params.apple_radius == pytest.approx(r_solved)
+    assert params.apple_density == pytest.approx(rho_solved)
+    assert analytic_apple_mass_kg(params) == pytest.approx(catalog_mass)
     assert params.apple_quat_xyzw is None
     blob = fruiting_params_to_dict(params)
     assert blob["schema"] == "fruiting_system_params_v3"
@@ -338,6 +352,54 @@ def test_fruiting_params_from_pre_grasp_meta():
     assert "flexural_modulus_pa" in blob["primary"]
     assert "youngs_modulus_pa" in blob["primary"]
     assert "spur_length_rel_error" in diagnostics
+
+
+def test_solved_apple_radius_closes_measured_spur_to_com():
+    mapped = map_pre_grasp_geometry(_synthetic_pre_grasp_meta(), primary_dir=PRIMARY_DIR)
+    stem_L = mapped.rod_geometry["stem"]["length_m"]
+    assert mapped.apple_radius_m + stem_L == pytest.approx(
+        mapped.diagnostics["stem_spur_to_com_m"]
+    )
+    assert mapped.diagnostics["stem_chord_length_m"] == pytest.approx(stem_L)
+    assert mapped.diagnostics["stem_chord_formula"] == "catalog_stem_length"
+    assert "preload_chord_m" not in mapped.rod_geometry["stem"]
+    assert "axial_preload_n" not in mapped.rod_geometry["stem"]
+    assert mapped.diagnostics["stem_preload_chord_m"] is None
+    assert mapped.diagnostics["stem_axial_preload_n"] is None
+
+
+def test_apple_mass_is_invariant_when_radius_absorbs_slop():
+    """Logged/catalog mass must not move when radius is solved and density back-filled."""
+    meta = _synthetic_pre_grasp_meta()
+    r_cat = float(meta["pre_grasp_geometry"]["parts"]["apple"]["radius_m"])
+    rho_cat = float(meta["pre_grasp_geometry"]["parts"]["apple"]["density_kg_m3"])
+    catalog_mass = (4.0 / 3.0) * math.pi * r_cat**3 * rho_cat
+    params, _base, diagnostics = fruiting_params_from_pre_grasp_meta(
+        meta, fixture_path=VARIANCE
+    )
+    assert analytic_apple_mass_kg(params) == pytest.approx(catalog_mass)
+    assert diagnostics["apple_mass_kg"] == pytest.approx(catalog_mass)
+    assert diagnostics["apple_mass_source"] == "catalog_radius_density"
+
+
+def test_apple_mass_kg_from_parts_is_preferred_over_catalog_volume():
+    meta = _synthetic_pre_grasp_meta()
+    meta["pre_grasp_geometry"]["parts"]["apple"]["mass_kg"] = 0.25
+    mapped = map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
+    r = float(mapped.apple_radius_m)
+    assert mapped.apple_density_kg_m3 == pytest.approx(
+        0.25 / ((4.0 / 3.0) * math.pi * r**3)
+    )
+    assert mapped.diagnostics["apple_mass_kg"] == pytest.approx(0.25)
+    assert mapped.diagnostics["apple_mass_source"] == "parts.mass_kg"
+
+
+def test_out_of_band_solved_apple_radius_raises():
+    meta = _synthetic_pre_grasp_meta()
+    # Force spur_to_com ≈ stem_L so solved radius collapses near zero.
+    meta["pre_grasp_geometry"]["snapshot"]["apple_pos"] = [0.02, 0.0, -0.125]
+    with pytest.raises(ValueError, match="apple_radius"):
+        map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
 
 
 def test_fruiting_params_from_pre_grasp_meta_sets_apple_quat():

@@ -171,6 +171,8 @@ def test_prepare_batched_stem_harvest_arrays_allocates_wrench_scratch():
                 body_mass=wp.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6], dtype=float, device="cpu"),
             ),
             gripper_proxy_offset_in_apple_frame=None,
+            # prepare_batched_stem_harvest_arrays reads apple_radius for inertia.
+            params=SimpleNamespace(apple_radius=0.04),
         ),
         per_world_proxy_offsets=None,
     )

@@ -208,6 +208,8 @@ def build_fruiting_params_from_real(
         length = float(geo["length_m"])
         radius = float(geo["radius_m"])
         num_segments = int(round(range_midpoint(seg["num_segments"])))
+        preload_chord_m = geo.get("preload_chord_m")
+        axial_preload_n = geo.get("axial_preload_n")
         rods[name] = rod_params_from_material(
             range_midpoint(seg["flexural_modulus_pa"]),
             range_midpoint(seg["youngs_modulus_pa"]),
@@ -217,6 +219,8 @@ def build_fruiting_params_from_real(
             density,
             num_segments,
             directions[name],
+            preload_chord_m=None if preload_chord_m is None else float(preload_chord_m),
+            axial_preload_n=None if axial_preload_n is None else float(axial_preload_n),
         )
     apple_r = (
         float(apple_radius_m)

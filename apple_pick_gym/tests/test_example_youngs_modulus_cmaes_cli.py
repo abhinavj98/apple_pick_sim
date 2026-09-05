@@ -596,6 +596,16 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
     assert args.persist_generation_replays is True
     assert args.isolated_eval_waves is True
     assert args.wave_max_attempts == 5
+    assert args.dynamic_apple is True
+    assert parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/gt",
+            "--output",
+            "/tmp/cma",
+            "--no-dynamic-apple",
+        ]
+    ).dynamic_apple is False
     with pytest.raises(SystemExit):
         parser.parse_args(
             [
@@ -1758,6 +1768,7 @@ def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(monkeypatch, tmp_pa
     assert real_builder_calls[0]["control_hz"] == pytest.approx(15.0)
     assert real_builder_calls[0]["fruiting_base_pos"] == pytest.approx((1.0, 2.0, 3.0))
     assert real_builder_calls[0]["bootstrap_joint_q"] == pytest.approx((0.1, 0.2))
+    assert real_builder_calls[0]["dynamic_apple"] is True
     struct_kwargs = [c for c in evaluate_calls if isinstance(c, dict)]
     assert struct_kwargs[0]["build_env_fn"] is real_builder
     assert struct_kwargs[0]["action_dim"] == 19

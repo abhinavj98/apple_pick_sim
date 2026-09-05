@@ -108,6 +108,9 @@ uv run python robot_replay/example_replay_real_batched.py \
 only for a genuine legacy 6D twist dataset. A real pose-control wrench is not
 an EE twist.
 
+Dynamic apple + weld TCP harvest is **on by default**. Pass `--no-dynamic-apple`
+for the older prescribed-apple / stem-harvest path.
+
 If converted metadata contains `camera_to_base_4x4`, GL replay places the
 viewer at the recording camera translation and +Z look direction.
 

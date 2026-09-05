@@ -172,9 +172,16 @@ def real_replay_sim_config(
     control_hz: float | None = None,
     reuse_replicated_mujoco: bool = False,
     enable_self_collisions: bool = False,
+    dynamic_apple: bool = True,
 ) -> BatchedHeterogeneousCoupledSimConfig:
-    """Gym FR3+VIC config with fixture sim_build; episode fruiting_base_pos."""
+    """Gym FR3+VIC config with fixture sim_build; episode fruiting_base_pos.
+
+    ``dynamic_apple`` defaults to True: the apple stays VBD-dynamic under fix-to-apple
+    and TCP harvest uses the proxy↔apple weld reaction (``tcp_harvest_source="weld"``).
+    Pass ``False`` for prescribed apple + stem harvest.
+    """
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=num_envs)
+    harvest_source = "weld" if dynamic_apple else "stem"
     (
         vic_gains,
         joint_angular_kd,
@@ -217,6 +224,10 @@ def real_replay_sim_config(
             per_env_ik=False,
             bootstrap_joint_q=bootstrap_joint_q,
             reuse_replicated_mujoco=bool(reuse_replicated_mujoco),
+            gripper=dataclasses.replace(
+                gym_cfg.robot.gripper,
+                dynamic_apple=bool(dynamic_apple),
+            ),
         ),
         scene=dataclasses.replace(
             gym_cfg.scene,
@@ -235,6 +246,7 @@ def real_replay_sim_config(
             joint_angular_kp_overrides=joint_angular_kp,
             joint_linear_kp_overrides=joint_linear_kp,
             joint_damping_ratio=joint_damping_ratio,
+            tcp_harvest_source=harvest_source,
         ),
         domain_randomization=dataclasses.replace(
             gym_cfg.domain_randomization,
@@ -260,6 +272,7 @@ def make_real_replay_build_env_fn(
     control_hz: float | None = None,
     reuse_replicated_mujoco: bool = False,
     enable_self_collisions: bool = False,
+    dynamic_apple: bool = True,
 ) -> Callable[..., ApplePickBatchedSysIdEnv]:
     def build_env_fn(
         *,
@@ -279,6 +292,11 @@ def make_real_replay_build_env_fn(
         else:
             real_g = gripper_proxy_for_real_batched_replay(dict(episode_meta))
             grippers = [real_g] * int(num_envs)
+        if dynamic_apple:
+            grippers = [
+                dataclasses.replace(g, dynamic_apple=True, fix_to_apple=True)
+                for g in grippers
+            ]
 
         post_grasp_n = int(post_grasp_settle_substeps)
         sim_config = real_replay_sim_config(
@@ -295,6 +313,7 @@ def make_real_replay_build_env_fn(
             control_hz=control_hz,
             reuse_replicated_mujoco=reuse_replicated_mujoco,
             enable_self_collisions=enable_self_collisions,
+            dynamic_apple=dynamic_apple,
         )
         robot_updates: dict[str, Any] = {"gripper": grippers[0]}
         if per_env_episode_meta is not None:

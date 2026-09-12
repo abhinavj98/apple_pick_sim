@@ -20,6 +20,7 @@ from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
 )
 from apple_pick_gym.batched_envs.support_joint_penalties import (
     apply_per_env_support_joint_penalties,
+    apply_per_env_support_roll_penalties,
     support_joint_zeta_from_dataset,
 )
 from apple_pick_sim.fruiting_system.joint_kd_scaling import support_dowel_length_m
@@ -79,6 +80,7 @@ class ReplaySlot:
     source: ReplayEpisodeSource
     gripper: GripperProxyConfig
     support_kp: float | None = None
+    support_roll_kp: float | None = None
     episode_meta: dict | None = None
 
 
@@ -301,6 +303,7 @@ def build_replay_candidate_blocks(
         for local_candidate_idx, candidate in enumerate(request.candidates):
             params = candidate.apply_to(request.base_params)
             support_kp = getattr(candidate, "support_kp", None)
+            support_roll_kp = getattr(candidate, "support_roll_kp", None)
             slots_list: list[ReplaySlot] = []
             for direction_idx in directions:
                 if request.meta_by_direction is not None:
@@ -325,6 +328,9 @@ def build_replay_candidate_blocks(
                         gripper=slot_gripper,
                         support_kp=float(support_kp)
                         if support_kp is not None
+                        else None,
+                        support_roll_kp=float(support_roll_kp)
+                        if support_roll_kp is not None
                         else None,
                         episode_meta=env_meta,
                     )
@@ -479,6 +485,32 @@ def replay_multi_structure_candidate_blocks(
                 build_kwargs["per_env_episode_meta"] = [
                     dict(slot.episode_meta) for slot in slots
                 ]
+            support_kps = [slot.support_kp for slot in slots]
+            build_accepts_support_kp = getattr(
+                build_env_fn, "wants_support_kp_per_env", False
+            )
+            if build_accepts_support_kp and any(kp is not None for kp in support_kps):
+                if any(kp is None for kp in support_kps):
+                    raise ValueError(
+                        "support_kp must be set on every fused replay slot when "
+                        "build_env_fn.wants_support_kp_per_env is True"
+                    )
+                build_kwargs["support_kp_per_env"] = [float(kp) for kp in support_kps]
+            support_roll_kps = [slot.support_roll_kp for slot in slots]
+            build_accepts_support_roll = getattr(
+                build_env_fn, "wants_support_roll_kp_per_env", False
+            )
+            if build_accepts_support_roll and any(
+                kp is not None for kp in support_roll_kps
+            ):
+                if any(kp is None for kp in support_roll_kps):
+                    raise ValueError(
+                        "support_roll_kp must be set on every fused replay slot when "
+                        "build_env_fn.wants_support_roll_kp_per_env is True"
+                    )
+                build_kwargs["support_roll_kp_per_env"] = [
+                    float(kp) for kp in support_roll_kps
+                ]
             env = build_env_fn(
                 num_envs=len(slots),
                 per_env_params=[slot.params for slot in slots],
@@ -489,7 +521,12 @@ def replay_multi_structure_candidate_blocks(
             _synchronize_device()
             build_seconds += time.perf_counter() - build_started
 
-            if any(slot.support_kp is not None for slot in slots):
+            # Prefer build-time support kp (settles + snapshot). Late apply only
+            # for legacy build_env_fn that does not advertise settle-time support.
+            if (
+                not build_accepts_support_kp
+                and any(slot.support_kp is not None for slot in slots)
+            ):
                 apply_per_env_support_joint_penalties(
                     env._sim.scene,
                     [slot.support_kp for slot in slots],
@@ -498,6 +535,17 @@ def replay_multi_structure_candidate_blocks(
                     dowel_length_m_per_env=[
                         support_dowel_length_m(slot.params) for slot in slots
                     ],
+                    zeta=support_joint_zeta_from_dataset(dataset),
+                )
+            if (
+                not build_accepts_support_roll
+                and any(slot.support_roll_kp is not None for slot in slots)
+            ):
+                apply_per_env_support_roll_penalties(
+                    env._sim.scene,
+                    [slot.support_roll_kp for slot in slots],
+                    num_envs=env._sim.layout.num_envs,
+                    joints_per_world=env._sim.layout.joints_per_world,
                     zeta=support_joint_zeta_from_dataset(dataset),
                 )
 

@@ -340,8 +340,10 @@ Pull axis \(\hat p\) is the logged unit `pull_direction` (else first-hold
   \(\lvert\tau\rvert\) only (no parallel axis in this slice).
 - Pose: TCP displacement along pull,
   \(s = (x - x_{\mathrm{hold0}}) \cdot \hat p\) (m). \(x_{\mathrm{hold0}}\) is
-  TCP at the **first hold frame** of that direction, not episode frame 0
-  (that frame is still pull-in).
+  TCP at the **first hold frame** of that direction. After convert with the
+  default rest-hold inject, that frame is converted episode frame 0 (source
+  grasp rest). Without inject, episode frame 0 is still pull-in and
+  \(x_{\mathrm{hold0}}\) is the first true amplitude hold.
 
 **Magnitude.** Hold-frame mean \(\lvert F_\parallel\rvert\) and mean
 \(\lvert\tau\rvert\): \(\mu_{\mathrm{fit}} / \mu_{\mathrm{real}} \in [1/3, 3]\).
@@ -421,7 +423,7 @@ woody starts and ends. Those properties must not be copied into
 | `mmd_features.build_state_matrix`, `build_transition_features_by_direction`, `combine_transition_features` | State and transition rows |
 | `mmd.fit_gt_normalization`, `apply_normalization` | GT mean plus fixed physical scale |
 | `wasserstein.prepare_gt_wasserstein_scoring_context`, `score_candidate_wasserstein_complete`, `sinkhorn_distance` | Production Sinkhorn context and score |
-| `holdout_gates.magnitude_ratio_ok`, `trend_pearson_ok`, `signed_parallel_series`, `tcp_displacement_along_pull` | Holdout magnitude/trend reductions; \(x_{\mathrm{hold0}}\) = first hold frame |
+| `holdout_gates.magnitude_ratio_ok`, `trend_pearson_ok`, `signed_parallel_series`, `tcp_displacement_along_pull` | Holdout magnitude/trend reductions; \(x_{\mathrm{hold0}}\) = first hold frame (rest hold after default convert inject) |
 | `apple_pick_gym/batched_envs/holdout_evaluation.py` — `cartesian_ft_mae`, `direction_verification` | Diagnostic Cartesian MAE; torque folded into `force_magnitude_ok` |
 | `batched_trajectory_store.BatchedEpisodeWriter`, `BatchedSysIdDataset` | Batched Parquet write/load contract |
 | `real_to_batched_sysid.export_real_episode_to_batched_dataset` | Real F/T, hold, woody, and `vic_pose_v1` conversion |

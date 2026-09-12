@@ -66,7 +66,13 @@ After weld/bootstrap and gym snapshot restore, the \(n=-1\) lag buffer is
 harvest — stem–apple gather at \(\dot C \approx 0\) plus optional explicit
 apple weight \(mg\) — so the first MuJoCo substep already applies the hold
 load. The one-substep lag contract is unchanged; only the initial buffer
-changes from empty to rest stem+mg.
+changes from empty to rest stem+mg. Settle→weld seed copies settled poses
+into cable **state**, sets proxy VBD rest to
+``apple_build_rest * weld_offset`` (quiet weld FIXED kappa), and leaves
+**apple and woody** ``model.body_q`` at **welded build-time** geometry so
+stem→apple / plant preload from gravity sag remains. Post-grasp VBD settle
+re-derives AVBD lambdas on the welded solver; episode snapshots capture those
+multipliers so ``reset()`` restores the pretensioned equilibrium.
 
 With an apple, harvest reads the stem–apple fixed-joint reaction. Without an
 apple, the fallback reconstructs proxy reaction from its VBD velocity change.
@@ -211,9 +217,12 @@ The code defaults are:
 Model A remains zero-gravity. Welded FR3 builds (`GripperProxyConfig.fix_to_apple=True`)
 add a FIXED child of the TCP labeled `apple_payload` for topology/A/B. **Production
 welded builds with harvest inertia** leave this body at **mass 0**; apple weight
-and rigid-body inertia enter via stem harvest (`m g − m a`, `r×F − Iα`). Legacy A/B
-sets reflected inertia on the payload via `apply_mujoco_apple_payload_inertias` when
-`stem_harvest_explicit_apple_inertia=False`:
+and rigid-body inertia enter via stem harvest (`m g − m a`, `r×F − Iα`). **Weld
+harvest** (`tcp_harvest_source='weld'`, `dynamic_apple=True`) also leaves mass 0:
+the proxy↔apple FIXED reaction already carries apple weight, so payload mass in
+`M(q)` would double-count. Legacy A/B sets reflected inertia on the payload via
+`apply_mujoco_apple_payload_inertias` when `stem_harvest_explicit_apple_inertia=False`
+and harvest is stem:
 
 \[
 m = m_{\mathrm{AVBD\,apple}},\quad
@@ -279,16 +288,19 @@ application point and does not carry those properties.
 ### FR3 v2.1 arm inertials and dynamics (VIC configure)
 
 At `configure_vic_joint_torques_arm` / `configure_vic_joint_torques_arm_batched`,
-official [fr3v2_1](https://github.com/frankarobotics/franka_description/tree/main/robots/fr3v2_1)
-YAML under `apple_pick_sim/fixtures/franka_fr3v2_1/` overwrites Newton (and, after
+calibrated YAML under `apple_pick_sim/fixtures/franka_fr3v2_custom/`
+(inertials from official [fr3v2_1](https://github.com/frankarobotics/franka_description/tree/main/robots/fr3v2_1))
+overwrites Newton (and, after
 notify, MuJoCo) properties for **link0–7 only**:
 
 - **Link inertials** — mass, COM, full 3×3 inertia from `inertials.yaml`
 - **Armature** — `motor_inertia × gear_ratio²` per joint from `dynamics.yaml`
-- **Passive damping** — `mu_viscous` (16 N·m·s/rad) on arm DOFs; override with
+- **Passive damping** — per-joint `mu_viscous` on arm DOFs; override with
   `vic_joint_damping=0.0` to disable
+- **Joint friction** — per-joint `mu_coulomb` on arm DOFs (`joint_friction` /
+  MuJoCo `dof_frictionloss`); override with `joint_friction=0.0` to disable
 
-**Not applied:** kinematics, joint limits, series-elastic `K`/`D`, Coulomb friction,
+**Not applied:** kinematics, joint limits, series-elastic `K`/`D`,
 or the custom `/fr3/ee` and `/fr3/ee/tcp` overlay (`paths.py` measured EE mass/COM
 and inertia stay as-is). VIC still zeros MuJoCo position-actuator `joint_target_ke/kd`.
 
@@ -352,7 +364,7 @@ The default simulation device is CUDA when available; `--device cpu` and
 | `coupled_fruiting/batched_layout.py::BatchedEnvLayout` | Per-world body/joint/TCP/proxy/payload indices. |
 | `robot/fr3_robot/batched_template_ik.py::BatchedTemplateIK` | Per-env FR3 IK and scatter. |
 | `robot/fr3_robot/paths.py` | Tool geometry and measured EE mass properties. |
-| `robot/fr3_robot/fr3_v21_props.py` | Official fr3v2_1 link0–7 inertials + armature/damping at VIC configure. |
+| `robot/fr3_robot/fr3_v21_props.py` | `franka_fr3v2_custom` link0–7 inertials + armature/damping/friction at VIC configure. |
 | `system_id/real_post_grasp_plan.py` | Logged full-SE(3) post-grasp weld plan. |
 | `examples/example_batched_heterogeneous_coupled_sim.py` | Canonical thin batched CLI. |
 

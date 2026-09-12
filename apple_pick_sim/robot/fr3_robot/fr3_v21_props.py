@@ -13,7 +13,7 @@ import yaml
 import newton
 from newton.solvers import SolverMuJoCo
 
-_FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent / "fixtures" / "franka_fr3v2_1"
+_FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent / "fixtures" / "franka_fr3v2_custom"
 INERTIALS_YAML = _FIXTURES_DIR / "inertials.yaml"
 DYNAMICS_YAML = _FIXTURES_DIR / "dynamics.yaml"
 
@@ -31,7 +31,8 @@ class Fr3LinkInertial:
 @dataclass(frozen=True)
 class Fr3V21Dynamics:
     reflected_motor_inertia_kgm2: tuple[float, ...]
-    mu_viscous: float
+    mu_viscous: tuple[float, ...]
+    mu_coulomb: tuple[float, ...]
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -85,21 +86,25 @@ def parse_fr3_v21_inertials(data: dict[str, Any] | None = None) -> tuple[Fr3Link
 
 
 def parse_fr3_v21_dynamics(data: dict[str, Any] | None = None) -> Fr3V21Dynamics:
-    """Parse reflected motor inertia and ``mu_viscous`` from ``dynamics.yaml``."""
+    """Parse reflected motor inertia, ``mu_viscous``, and ``mu_coulomb`` from ``dynamics.yaml``.
+
+    Viscous damping and Coulomb friction may differ per joint (length-7 tuples).
+    """
     raw = data if data is not None else _load_yaml(DYNAMICS_YAML)
     armature: list[float] = []
     mu_values: list[float] = []
+    coulomb_values: list[float] = []
     for j in range(1, 8):
         dyn = raw[f"joint{j}"]["dynamic"]
         motor = float(dyn["motor_inertia"])
         gear = float(dyn["gear_ratio"])
         armature.append(motor * gear * gear)
         mu_values.append(float(dyn["mu_viscous"]))
-    if len(set(mu_values)) != 1:
-        raise ValueError(f"expected uniform mu_viscous across joints, got {mu_values}")
+        coulomb_values.append(float(dyn["mu_coulomb"]))
     return Fr3V21Dynamics(
         reflected_motor_inertia_kgm2=tuple(armature),
-        mu_viscous=mu_values[0],
+        mu_viscous=tuple(mu_values),
+        mu_coulomb=tuple(coulomb_values),
     )
 
 

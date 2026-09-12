@@ -94,7 +94,7 @@ def test_variance_sim_build_knobs(variance_ranges):
     assert sb.joint_linear_kd_overrides == {}
     assert sb.joint_angular_kp_overrides == {"support": 1000.0}
     assert sb.joint_linear_kp_overrides == {"support": 1000.0}
-    assert sb.joint_roll_kp_overrides == {"support": 3.0}
+    assert sb.joint_roll_kp_overrides == {"support": 0.75}
 
 
 def test_nominal_has_no_sim_build(nominal_ranges):

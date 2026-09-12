@@ -23,7 +23,11 @@ from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import (
     ImpedanceGains,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
-from apple_pick_sim.robot.fr3_robot.setup import FR3_DEFAULT_VIC_JOINT_DAMPING, FR3_REFLECTED_MOTOR_INERTIA_KGM2
+from apple_pick_sim.robot.fr3_robot.setup import (
+    FR3_DEFAULT_JOINT_FRICTION,
+    FR3_DEFAULT_VIC_JOINT_DAMPING,
+    FR3_REFLECTED_MOTOR_INERTIA_KGM2,
+)
 from apple_pick_sim.tests.conftest import (
     DEFAULT_MJ_KW,
     FRAME_DT,
@@ -69,6 +73,7 @@ def _configure_joint_torque_vic(
     scene,
     *,
     vic_joint_damping: float | None = None,
+    joint_friction: float | None = None,
 ) -> Fr3EEImpedanceController:
     scene.vic_use_joint_torques = True
     ctrl = Fr3EEImpedanceController(tcp_body_index=int(scene.tcp_body_index))
@@ -77,6 +82,8 @@ def _configure_joint_torque_vic(
     vic_kw = {}
     if vic_joint_damping is not None:
         vic_kw["vic_joint_damping"] = vic_joint_damping
+    if joint_friction is not None:
+        vic_kw["joint_friction"] = joint_friction
     fr3_robot.configure_vic_joint_torques_arm(
         scene.robot_model,
         scene.robot_state_0,
@@ -100,6 +107,19 @@ def test_configure_vic_sets_passive_joint_damping():
     else:
         mj_d = mj_solver.mjw_model.dof_damping.numpy()[0][:_N_ARM_DOF]
     np.testing.assert_allclose(mj_d, 1.5, rtol=0.0, atol=1e-6)
+
+
+def test_configure_vic_sets_joint_friction():
+    scene = _build_mujoco_only_fr3()
+    _configure_joint_torque_vic(scene, joint_friction=0.35)
+    model_f = scene.robot_model.joint_friction.numpy().reshape(-1)[:_N_ARM_DOF]
+    np.testing.assert_allclose(model_f, 0.35, rtol=0.0, atol=1e-6)
+    mj_solver = scene.mj_solver
+    if mj_solver.use_mujoco_cpu:
+        mj_f = np.asarray(mj_solver.mj_model.dof_frictionloss).reshape(-1)[:_N_ARM_DOF]
+    else:
+        mj_f = mj_solver.mjw_model.dof_frictionloss.numpy()[0][:_N_ARM_DOF]
+    np.testing.assert_allclose(mj_f, 0.35, rtol=0.0, atol=1e-6)
 
 
 def test_configure_vic_sets_fr3_reflected_motor_inertia():
@@ -145,12 +165,24 @@ def test_configure_vic_joint_damping_defaults_and_opt_out():
     scene = _build_mujoco_only_fr3()
     _configure_joint_torque_vic(scene)
     default_d = scene.robot_model.joint_damping.numpy().reshape(-1)[:_N_ARM_DOF]
-    np.testing.assert_allclose(default_d, FR3_DEFAULT_VIC_JOINT_DAMPING, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(default_d, np.asarray(FR3_DEFAULT_VIC_JOINT_DAMPING), rtol=0.0, atol=1e-6)
 
     scene2 = _build_mujoco_only_fr3()
     _configure_joint_torque_vic(scene2, vic_joint_damping=0.0)
     zero_d = scene2.robot_model.joint_damping.numpy().reshape(-1)[:_N_ARM_DOF]
     np.testing.assert_allclose(zero_d, 0.0, rtol=0.0, atol=1e-6)
+
+
+def test_configure_vic_joint_friction_defaults_and_opt_out():
+    scene = _build_mujoco_only_fr3()
+    _configure_joint_torque_vic(scene)
+    default_f = scene.robot_model.joint_friction.numpy().reshape(-1)[:_N_ARM_DOF]
+    np.testing.assert_allclose(default_f, np.asarray(FR3_DEFAULT_JOINT_FRICTION), rtol=0.0, atol=1e-6)
+
+    scene2 = _build_mujoco_only_fr3()
+    _configure_joint_torque_vic(scene2, joint_friction=0.0)
+    zero_f = scene2.robot_model.joint_friction.numpy().reshape(-1)[:_N_ARM_DOF]
+    np.testing.assert_allclose(zero_f, 0.0, rtol=0.0, atol=1e-6)
 
 
 def _eval_arm_kinematics(model, state):

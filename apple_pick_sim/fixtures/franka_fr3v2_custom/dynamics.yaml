@@ -1,0 +1,87 @@
+# Calibrated Franka FR3 / Panda Dynamic Parameters
+# Formatted for MuJoCo (frictionloss, damping, armature) and PhysX/USD (jointFriction, physics:damping)
+# Assumes FCI interface (link-side torque loop active; reflected motor inertia masked)
+
+joint1:
+  dynamic:
+    K: 7000.0             # Structural / flexspline drive stiffness (Nm/rad)
+    D: 1.0                # Drive damping
+    friction: 0.75        # Nominal joint friction (Nm)
+    mu_coulomb: 0.75      # Coulomb breakaway threshold (frictionloss / jointFriction) [Nm]
+    mu_viscous: 0.35      # Linear viscous drag (damping / physics:damping) [Nms/rad]
+    damping: 0.35         # Direct mirror for engines expecting 'damping'
+    armature: 0.0         # 0.0 due to FCI link-side active torque loop
+    motor_inertia: 0.00004206399  # Raw unscaled rotor inertia (kg·m²)
+    gear_ratio: 120.0
+
+joint2:
+  dynamic:
+    K: 7000.0
+    D: 1.0
+    friction: 0.80
+    mu_coulomb: 0.80
+    mu_viscous: 0.35
+    damping: 0.35
+    armature: 0.0
+    motor_inertia: 0.00004206399
+    gear_ratio: 120.0
+
+joint3:
+  dynamic:
+    K: 7000.0
+    D: 1.0
+    friction: 0.70
+    mu_coulomb: 0.70
+    mu_viscous: 0.30
+    damping: 0.30
+    armature: 0.0
+    motor_inertia: 0.00003211626
+    gear_ratio: 120.0
+
+joint4:
+  dynamic:
+    K: 7000.0
+    D: 1.0
+    friction: 0.70
+    mu_coulomb: 0.70
+    mu_viscous: 0.30
+    damping: 0.30
+    armature: 0.0
+    motor_inertia: 0.00003211626
+    gear_ratio: 120.0
+
+joint5:
+  dynamic:
+    K: 5000.0             # Forearm/wrist exhibits slightly higher mechanical compliance
+    D: 0.5
+    friction: 0.45
+    mu_coulomb: 0.45      # Sized down for 12 Nm continuous rating
+    mu_viscous: 0.15
+    damping: 0.15
+    armature: 0.0
+    motor_inertia: 0.00003211626
+    gear_ratio: 80.0
+
+joint6:
+  dynamic:
+    K: 5000.0
+    D: 0.5
+    friction: 0.40
+    mu_coulomb: 0.40
+    mu_viscous: 0.12
+    damping: 0.12
+    armature: 0.0
+    motor_inertia: 0.00003211626
+    gear_ratio: 80.0
+
+joint7:
+  dynamic:
+    K: 5000.0
+    D: 0.5
+    friction: 0.35
+    mu_coulomb: 0.35
+    mu_viscous: 0.10
+    damping: 0.10
+    armature: 0.0
+    motor_inertia: 0.00003211626
+    gear_ratio: 80.0

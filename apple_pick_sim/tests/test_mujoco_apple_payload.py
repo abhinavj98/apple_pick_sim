@@ -53,6 +53,25 @@ def test_solid_sphere_inertia_nonpositive_returns_zero():
     assert float(I2[0, 0]) == 0.0
 
 
+def test_apply_payload_inertias_refuses_weld_harvest():
+    """Weld harvest already carries apple weight; applying payload mass double-counts."""
+    from types import SimpleNamespace
+
+    from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import (
+        apply_mujoco_apple_payload_inertias,
+    )
+
+    scene = SimpleNamespace(
+        stem_harvest_explicit_apple_inertia=False,
+        tcp_harvest_source="weld",
+        robot_model=object(),
+        mj_solver=object(),
+        cable=object(),
+    )
+    with pytest.raises(ValueError, match="tcp_harvest_source='weld'"):
+        apply_mujoco_apple_payload_inertias(scene)
+
+
 def test_apple_com_in_tcp_frame_matches_inv_offset():
     from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import apple_com_in_tcp_frame
 

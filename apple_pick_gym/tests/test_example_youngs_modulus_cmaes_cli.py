@@ -226,27 +226,33 @@ def test_cma_search_params_dict_is_sole_search_truth_source():
         "max_sigma_log10",
     }
     # Vector is (log10 support_kp, log10 E_flex_spur, log10 E_flex_stem,
-    # log10 E_youngs_spur, log10 E_youngs_stem). Support k_p uses an absolute
-    # safety box [2, 6]; spur/stem flexural and axial share the 10 kPa–50 GPa box.
+    # log10 E_youngs_spur, log10 E_youngs_stem, log10 support_roll_kp).
+    # Support k_p uses an absolute safety box [2, 6]; spur/stem flexural and
+    # axial share the 10 kPa–50 GPa box; T-roll is 0.1–100 N·m/rad.
     e_lo = module._LOG10_10KPA
     e_hi = module._LOG10_50GPA
     e_mid = e_lo + 0.5 * (e_hi - e_lo)
+    ax_lo = module._LOG10_10MPA
+    ax_mid = ax_lo + 0.5 * (e_hi - ax_lo)
+    roll_lo = module._LOG10_ROLL_LO
+    roll_hi = module._LOG10_ROLL_HI
+    roll_mean = module._LOG10_ROLL_MEAN
     assert params["initial_mean_log10"] == pytest.approx(
-        [4.0, e_mid, e_mid, e_mid, e_mid]
+        [4.0, e_mid, e_mid, ax_mid, ax_mid, roll_mean]
     )
     assert params["initial_sigma_log10"] == 0.2
     assert params["population_size"] == 20
-    assert params["max_generations"] == 20
+    assert params["max_generations"] == 15
     assert params["cma_seed"] == 56
     assert params["max_sigma_log10"] == 0.5
     assert params["search_bounds_log10"] == {
-        "lower": [2.0, e_lo, e_lo, e_lo, e_lo],
-        "upper": [6.0, e_hi, e_hi, e_hi, e_hi],
+        "lower": [2.0, e_lo, e_lo, ax_lo, ax_lo, roll_lo],
+        "upper": [6.0, e_hi, e_hi, e_hi, e_hi, roll_hi],
     }
     normalized = cmaes.normalize_search_bounds_log10(params["search_bounds_log10"])
     assert normalized == (
-        (2.0, e_lo, e_lo, e_lo, e_lo),
-        (6.0, e_hi, e_hi, e_hi, e_hi),
+        (2.0, e_lo, e_lo, ax_lo, ax_lo, roll_lo),
+        (6.0, e_hi, e_hi, e_hi, e_hi, roll_hi),
     )
 
 
@@ -1875,15 +1881,15 @@ def test_run_vic_pose_real_search_uses_kp_and_wide_e_bounds(monkeypatch, tmp_pat
     )
     module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
     kp_lo = math.log10(200.0)
-    kp_hi = math.log10(1.0e3)
+    kp_hi = module._LOG10_4KN_PER_M
     kp_init = math.log10(1.0e3)
     e_lo = module._LOG10_100KPA
     e_hi = module._LOG10_10GPA
     lo, hi = create_calls[0]["search_bounds_log10"]
     assert lo[0] == pytest.approx(kp_lo)
     assert hi[0] == pytest.approx(kp_hi)
-    assert lo[1:] == (e_lo, e_lo, e_lo, e_lo)
-    assert hi[1:] == (e_hi, e_hi, e_hi, e_hi)
+    assert lo[1:] == (e_lo, e_lo, e_lo, e_lo, module._LOG10_ROLL_LO)
+    assert hi[1:] == (e_hi, e_hi, e_hi, e_hi, module._LOG10_ROLL_HI)
     assert create_calls[0]["initial_mean_log10"][0] == pytest.approx(kp_init)
     assert create_calls[0]["initial_mean_log10"][1:] == pytest.approx(
         module._REAL_CMA_MEAN_LOG10[1:]

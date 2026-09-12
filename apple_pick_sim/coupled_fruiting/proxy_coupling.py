@@ -1367,16 +1367,125 @@ def align_proxy_body_q_prev_for_vbd(
     sync_cable_body_q_prev_from_state(cable_scene, body_ids=proxy_body_ids)
 
 
-def sync_model_body_q_rest_from_state(cable_scene) -> None:
+def sync_model_body_q_rest_from_state(
+    cable_scene,
+    body_ids: tuple[int, ...] | wp.array | None = None,
+) -> None:
     """Copy ``state_0.body_q`` into ``model.body_q`` (VBD angular joint rest poses).
 
     SolverVBD passes ``model.body_q`` as ``body_q_rest`` when evaluating FIXED/D6
-    angular residuals (``kappa``). After settle→weld seeding we rewrite cable
-    ``state_0`` (and often align the proxy), but leave build-time ``model.body_q``
-    untouched — that leaves a large rest-relative kappa on fruiting / weld FIXED
-    joints and can yank the grasp on the first AVBD step.
+    angular residuals (``kappa``). Prefer
+    :func:`sync_weld_proxy_rest_from_apple_rest` on the settle→weld / post-grasp
+    path so woody and apple build-time rest stay frozen for plant preload.
+
+    When ``body_ids`` is omitted, every cable body is updated (full overwrite).
     """
-    wp.copy(cable_scene.model.body_q, cable_scene.state_0.body_q)
+    if body_ids is None:
+        wp.copy(cable_scene.model.body_q, cable_scene.state_0.body_q)
+        return
+    if isinstance(body_ids, wp.array):
+        ids_arr = body_ids
+    else:
+        if not body_ids:
+            return
+        dev = cable_scene.state_0.body_q.device
+        ids_arr = wp.array(tuple(int(i) for i in body_ids), dtype=int, device=dev)
+    wp.launch(
+        _align_body_q_prev_kernel,
+        dim=ids_arr.shape[0],
+        inputs=[
+            ids_arr,
+            cable_scene.state_0.body_q,
+            cable_scene.model.body_q,
+        ],
+        device=ids_arr.device,
+    )
+
+
+@wp.kernel
+def _sync_weld_proxy_rest_from_apple_rest_kernel(
+    apple_ids: wp.array(dtype=int),
+    proxy_ids: wp.array(dtype=int),
+    offsets: wp.array(dtype=wp.transform),
+    body_q_rest: wp.array(dtype=wp.transform),
+):
+    """Set ``body_q_rest[proxy] = body_q_rest[apple] * offset`` per env pair."""
+    i = wp.tid()
+    aid = apple_ids[i]
+    pid = proxy_ids[i]
+    if aid < 0 or pid < 0:
+        return
+    body_q_rest[pid] = wp.transform_multiply(body_q_rest[aid], offsets[i])
+
+
+def sync_weld_proxy_rest_from_apple_rest(
+    cable_scene,
+    *,
+    layout: Any | None = None,
+    per_env_offsets: Sequence[Sequence[float] | None] | None = None,
+) -> None:
+    """Quiet weld FIXED kappa without rewriting apple / woody ``model.body_q``.
+
+    Writes ``model.body_q[proxy] <- model.body_q[apple] * offset`` so the
+    proxy↔apple angular residual is zero at any state where the proxy was placed
+    via the same offset, while leaving the apple's as-built rest intact for the
+    stem→apple joint preload.
+
+    When ``layout`` is set, every world apple/proxy pair is updated. Otherwise a
+    single pair from ``cable_scene.apple_body`` / ``gripper_proxy_body`` is used.
+    """
+    offset_default = getattr(cable_scene, "gripper_proxy_offset_in_apple_frame", None)
+    if offset_default is None and per_env_offsets is None:
+        raise ValueError(
+            "sync_weld_proxy_rest_from_apple_rest requires "
+            "gripper_proxy_offset_in_apple_frame or per_env_offsets"
+        )
+
+    def _offset_as_transform(off: Sequence[float]) -> wp.transform:
+        return wp.transform(
+            wp.vec3(float(off[0]), float(off[1]), float(off[2])),
+            wp.quat(float(off[3]), float(off[4]), float(off[5]), float(off[6])),
+        )
+
+    if layout is not None and int(layout.num_envs) >= 1:
+        apple_list = [int(a) for a in layout.apple_body_indices]
+        proxy_list = [int(p) for p in layout.proxy_body_indices]
+        n = len(apple_list)
+        if per_env_offsets is not None and len(per_env_offsets) != n:
+            raise ValueError(
+                f"per_env_offsets length {len(per_env_offsets)} != num_envs {n}"
+            )
+        offsets_tf: list[wp.transform] = []
+        for i in range(n):
+            off = None
+            if per_env_offsets is not None:
+                off = per_env_offsets[i]
+            if off is None:
+                off = offset_default
+            if off is None:
+                raise ValueError(f"missing weld offset for env {i}")
+            offsets_tf.append(_offset_as_transform(off))
+    else:
+        apple = getattr(cable_scene, "apple_body", None)
+        proxy = getattr(cable_scene, "gripper_proxy_body", None)
+        if apple is None or proxy is None:
+            raise ValueError("cable missing apple_body or gripper_proxy_body")
+        apple_list = [int(apple)]
+        proxy_list = [int(proxy)]
+        if offset_default is None:
+            raise ValueError("cable missing gripper_proxy_offset_in_apple_frame")
+        offsets_tf = [_offset_as_transform(offset_default)]
+
+    dev = cable_scene.model.body_q.device
+    apple_wp = wp.array(apple_list, dtype=int, device=dev)
+    proxy_wp = wp.array(proxy_list, dtype=int, device=dev)
+    offsets_wp = wp.array(offsets_tf, dtype=wp.transform, device=dev)
+    wp.launch(
+        _sync_weld_proxy_rest_from_apple_rest_kernel,
+        dim=len(apple_list),
+        inputs=[apple_wp, proxy_wp, offsets_wp, cable_scene.model.body_q],
+        device=dev,
+    )
 
 
 def sync_solver_body_q_prev_from_state(

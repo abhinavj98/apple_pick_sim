@@ -331,3 +331,36 @@ def test_load_dir_arrays_lpf_only_wrench_columns(tmp_path: Path):
     np.testing.assert_allclose(ss_out[:, 6:], ss[:, 6:], atol=1e-12)
     mid = ss_out[20:-20, 0]
     assert float(np.std(mid)) < float(np.std(ss[20:-20, 0]))
+
+
+def test_load_dir_arrays_skip_first_frames(tmp_path: Path):
+    from apple_pick_gym.viz.cma_force_plots import _load_dir_arrays
+
+    role = tmp_path / "best"
+    role.mkdir(parents=True)
+    n = 50
+    t = np.arange(n, dtype=np.float64) / 30.0
+    rs = np.zeros((n, _STATE_DIM_WRENCH), dtype=np.float64)
+    ss = np.zeros((n, _STATE_DIM_WRENCH), dtype=np.float64)
+    rs[:, 0] = np.arange(n, dtype=np.float64)
+    ss[:, 0] = np.arange(n, dtype=np.float64) + 100.0
+    phase = np.full(n, _HOLD, dtype=np.int8)
+    np.savez(
+        role / "dir_00.npz",
+        sim_time_real=t,
+        sim_time_sim=t,
+        real_state=rs,
+        sim_state=ss,
+        phase_real=phase,
+    )
+    tr, ts, rs_out, ss_out, phase_out = _load_dir_arrays(
+        role, 0, sim_lpf_hz=0.0, skip_first_frames=20
+    )
+    assert tr.shape[0] == 30
+    assert ts.shape[0] == 30
+    assert rs_out.shape[0] == 30
+    assert ss_out.shape[0] == 30
+    assert phase_out.shape[0] == 30
+    np.testing.assert_allclose(tr[0], t[20])
+    np.testing.assert_allclose(rs_out[0, 0], 20.0)
+    np.testing.assert_allclose(ss_out[0, 0], 120.0)

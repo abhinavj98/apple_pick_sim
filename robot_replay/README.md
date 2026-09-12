@@ -72,7 +72,9 @@ only when the source is still EE-frame; do **not** pass
 `--transport-torque-to-tcp` on s09-style parquets. Block-mean unfiltered F/T
 and velocity to 30 Hz (`--control-hz`), and write `ft_wrist_lpf` (10 Hz
 zero-phase Butterworth, then the same block-mean; `--ft-lpf-hz`). Commands/poses/
-phase copy the last sample of each 33 ms window. CMA/grid Sinkhorn scores
+phase copy the last sample of each 33 ms window, except converted frame 0
+which defaults to source frame 0 as a rest hold (`hold_number=0`; later holds
+shift +1). Pass `--no-inject-rest-hold` to disable. CMA/grid Sinkhorn scores
 `ft_wrist_lpf` per structure.
 
 ## Replay
@@ -91,6 +93,24 @@ uv run python robot_replay/example_replay_real_batched.py \
   --settle-substeps 80 \
   --post-grasp-settle-substeps 0
 ```
+
+### Unloaded arm-only TCP wrench (diagnostic)
+
+Replay the same converted 19D `vic_pose` actions on a `mujoco_only` FR3 (no
+plant step, no apple payload) and record world-frame **env-on-robot** wrench
+about TCP from EE `body_parent_f`. Output is diagnostic only — do **not**
+subtract it from CMA `ft_wrist` (see H3).
+
+```bash
+uv run python robot_replay/example_replay_real_unloaded.py \
+  --dataset /tmp/real_batched_s09_d00 \
+  --out tmp/unloaded_tcp_wrench \
+  --direction-idx 0
+```
+
+Writes `episodes/sXX_dNN.parquet` (`ft_tcp_world` / `ft_wrist_tare`, `tcp_pos`,
+`tcp_quat`) and CMA-style `plots/dir_NN_{force,torque,tcp}.{html,png}` (overlays
+real GT `ft_wrist` / `tcp_pos` when present in the converted bag).
 
 Full GL replay:
 

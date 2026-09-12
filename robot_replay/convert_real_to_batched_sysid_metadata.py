@@ -108,6 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
             "the moment about the TCP (O_F_ext_hat_K is about the base origin)."
         ),
     )
+    parser.add_argument(
+        "--no-inject-rest-hold",
+        action="store_true",
+        help=(
+            "Do not stamp source frame 0 as hold 0 on the first converted frame "
+            "(default injects a rest hold and shifts later hold_number values +1)."
+        ),
+    )
     return parser
 
 
@@ -133,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             ft_lpf_hz=float(args.ft_lpf_hz),
             ft_lpf_order=int(args.ft_lpf_order),
             transport_torque_to_tcp=bool(args.transport_torque_to_tcp),
+            inject_rest_hold=not bool(args.no_inject_rest_hold),
         )
         if args.input_dir is not None:
             out_dir = export_real_tree_folder_to_batched_dataset(

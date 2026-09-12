@@ -32,8 +32,11 @@ from apple_pick_sim.fruiting_system.params import (
     PLACEHOLDER_EE_MASS_KG,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
-from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 from apple_pick_sim.sim_device import resolve_sim_device
+
+# Keep in sync with ``placement.IK_BOOTSTRAP_DEFAULT_ITERATIONS`` (avoid import cycle
+# via setup → coupled_fruiting → placement).
+_IK_BOOTSTRAP_DEFAULT_ITERATIONS = 128
 
 # Per-role FIXED-joint kd overrides (see docs/damping-tuning.md §3).
 # Defaults mirror ``make_fruiting_solver_vbd`` → Newton ``SolverVBD`` rigid joint kd.
@@ -116,7 +119,7 @@ class RobotConfig:
     gripper: GripperProxyConfig = dataclasses.field(default_factory=_default_gripper_proxy_config)
     robot_base_pos: tuple[float, float, float] | None = None
     per_env_ik: bool = True
-    ik_bootstrap_iterations: int = IK_BOOTSTRAP_DEFAULT_ITERATIONS
+    ik_bootstrap_iterations: int = _IK_BOOTSTRAP_DEFAULT_ITERATIONS
     skip_ik_bootstrap: bool = True
     defer_template_robot_bootstrap: bool = True
     force_batched_layout: bool = False
@@ -185,6 +188,15 @@ class FruitingSystemConfig:
     # When set, build expands ζ → absolute kd (mutually exclusive with non-empty kd maps
     # in ranges JSON). Absolute kd override dicts above are then ignored at apply time.
     joint_damping_ratio: float | None = None
+    # Per-env linear support kp (N/m). When set, replaces fixture
+    # ``joint_linear_kp_overrides["support"]`` before free/post-grasp settle so
+    # CMA candidates shape gravity equilibrium (length must match num_envs).
+    support_kp_per_env: tuple[float, ...] | None = None
+    # Per-env T-roll support kp (N·m/rad). When set, replaces fixture
+    # ``joint_roll_kp_overrides["support"]`` before free/post-grasp settle
+    # (length must match num_envs). Writes both ``joint_target_ke`` and
+    # penalty slot ``c0+2`` so ``min(penalty_k, target_ke)`` matches.
+    support_roll_kp_per_env: tuple[float, ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)

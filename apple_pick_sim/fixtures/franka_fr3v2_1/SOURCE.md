@@ -3,7 +3,7 @@
 Vendored from [frankarobotics/franka_description](https://github.com/frankarobotics/franka_description/tree/main/robots/fr3v2_1):
 
 - `inertials.yaml` — link0–7 mass, COM, inertia tensor
-- `dynamics.yaml` — joint motor inertia, gear ratio, viscous damping
+- `dynamics.yaml` — joint motor inertia, gear ratio, viscous damping (`mu_viscous`), dry friction (`mu_coulomb`)
 
 Fetched: 2026-08-27
 

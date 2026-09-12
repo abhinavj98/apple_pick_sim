@@ -114,8 +114,9 @@ def tcp_displacement_along_pull(
 ) -> np.ndarray:
     """Hold-frame signed TCP displacement: s = (x - x_hold0) · p_hat.
 
-    ``x_hold0`` is TCP at the **first hold frame** of this direction, not
-    episode frame 0 (that frame is still on the pull-in).
+    ``x_hold0`` is TCP at the **first hold frame** of this direction. After
+    default real convert (rest-hold inject), that is usually converted frame 0.
+    Without inject, episode frame 0 may still be pull-in.
     """
     segments = iter_kept_hold_segments(
         phase=phase, dir_idx=dir_idx, direction=direction, min_frames=1

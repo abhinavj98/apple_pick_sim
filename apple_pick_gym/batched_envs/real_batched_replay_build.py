@@ -10,10 +10,15 @@ from typing import Any
 import numpy as np
 
 from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
+from apple_pick_gym.batched_envs.support_joint_penalties import (
+    apply_per_env_support_joint_penalties,
+    apply_per_env_support_roll_penalties,
+)
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
     ObsConfig,
 )
+from apple_pick_sim.fruiting_system.joint_kd_scaling import support_dowel_length_m
 from apple_pick_sim.fruiting_system.params import (
     GripperProxyConfig,
     parse_sim_build,
@@ -282,6 +287,8 @@ def make_real_replay_build_env_fn(
         gripper: GripperProxyConfig | None = None,
         per_env_grippers: list[GripperProxyConfig] | None = None,
         per_env_episode_meta: Sequence[Mapping[str, Any]] | None = None,
+        support_kp_per_env: Sequence[float] | None = None,
+        support_roll_kp_per_env: Sequence[float] | None = None,
     ) -> ApplePickBatchedSysIdEnv:
         if gripper is not None and per_env_grippers is not None:
             raise ValueError("scalar gripper and per_env_grippers cannot both be provided")
@@ -315,6 +322,36 @@ def make_real_replay_build_env_fn(
             enable_self_collisions=enable_self_collisions,
             dynamic_apple=dynamic_apple,
         )
+        support_kp_tuple: tuple[float, ...] | None = None
+        if support_kp_per_env is not None:
+            support_kp_tuple = tuple(float(kp) for kp in support_kp_per_env)
+            if len(support_kp_tuple) != int(num_envs):
+                raise ValueError(
+                    f"support_kp_per_env length ({len(support_kp_tuple)}) must match "
+                    f"num_envs ({num_envs})"
+                )
+            sim_config = dataclasses.replace(
+                sim_config,
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system,
+                    support_kp_per_env=support_kp_tuple,
+                ),
+            )
+        support_roll_kp_tuple: tuple[float, ...] | None = None
+        if support_roll_kp_per_env is not None:
+            support_roll_kp_tuple = tuple(float(kp) for kp in support_roll_kp_per_env)
+            if len(support_roll_kp_tuple) != int(num_envs):
+                raise ValueError(
+                    f"support_roll_kp_per_env length ({len(support_roll_kp_tuple)}) "
+                    f"must match num_envs ({num_envs})"
+                )
+            sim_config = dataclasses.replace(
+                sim_config,
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system,
+                    support_roll_kp_per_env=support_roll_kp_tuple,
+                ),
+            )
         robot_updates: dict[str, Any] = {"gripper": grippers[0]}
         if per_env_episode_meta is not None:
             robot_updates["per_world_bootstrap_joint_q"] = tuple(
@@ -351,6 +388,30 @@ def make_real_replay_build_env_fn(
                 apply_logged_post_grasp_se3_to_cable(
                     cable, dict(episode_meta), layout=layout
                 )
+            # Weld rebuild re-applies fixture support kp/roll; restore candidate
+            # values before post-grasp settle so snapshot stores correct drives.
+            zeta = sim_config.fruiting_system.joint_damping_ratio
+            if zeta is None:
+                zeta = 1.0
+            if support_kp_tuple is not None and layout is not None:
+                apply_per_env_support_joint_penalties(
+                    scene,
+                    support_kp_tuple,
+                    num_envs=int(layout.num_envs),
+                    joints_per_world=int(layout.joints_per_world),
+                    dowel_length_m_per_env=[
+                        support_dowel_length_m(p) for p in env._sim.per_env_params
+                    ],
+                    zeta=float(zeta),
+                )
+            if support_roll_kp_tuple is not None and layout is not None:
+                apply_per_env_support_roll_penalties(
+                    scene,
+                    support_roll_kp_tuple,
+                    num_envs=int(layout.num_envs),
+                    joints_per_world=int(layout.joints_per_world),
+                    zeta=float(zeta),
+                )
             settle_config = dataclasses.replace(
                 env._sim.config,
                 scene=dataclasses.replace(
@@ -370,4 +431,6 @@ def make_real_replay_build_env_fn(
         return env
 
     build_env_fn.wants_per_env_meta = True
+    build_env_fn.wants_support_kp_per_env = True
+    build_env_fn.wants_support_roll_kp_per_env = True
     return build_env_fn

@@ -56,8 +56,36 @@ def test_candidates_from_log10_vector_round_trip():
 def test_candidates_from_log10_vector_rejects_wrong_length():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
-    with pytest.raises(ValueError, match="3 or 5"):
+    with pytest.raises(ValueError, match="3, 5, or 6"):
         cmaes.candidates_from_log10_vector((4.0, 9.0))
+
+
+def test_candidates_from_log10_vector_6d_includes_support_roll_kp():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    x = (4.0, 9.0, 8.5, 8.0, 7.5, math.log10(0.75))
+    c = cmaes.candidates_from_log10_vector(x)
+    assert c.support_kp == pytest.approx(1e4)
+    assert c.spur == pytest.approx(1e9)
+    assert c.stem == pytest.approx(10**8.5)
+    assert c.spur_youngs == pytest.approx(1e8)
+    assert c.stem_youngs == pytest.approx(10**7.5)
+    assert c.support_roll_kp == pytest.approx(0.75)
+    assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_resolve_initial_mean_log10_bounds_midpoint_dim6():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    mean = cmaes.resolve_initial_mean_log10(
+        "bounds_midpoint", bounds, phenotype_dim=6
+    )
+    assert len(mean) == 6
+    assert mean[:3] == pytest.approx(bounds.log10_midpoint)
+    assert mean[3] == pytest.approx(bounds.log10_midpoint[1])
+    assert mean[4] == pytest.approx(bounds.log10_midpoint[2])
+    assert mean[5] == pytest.approx(math.log10(0.75))
 
 
 def test_gt_support_kp_from_dataset_reads_manifest_sim_config():

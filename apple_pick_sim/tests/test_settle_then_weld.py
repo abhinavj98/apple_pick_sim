@@ -216,26 +216,81 @@ def test_seed_aligns_body_q_prev_for_apple_and_proxy():
     np.testing.assert_allclose(bqp[proxy], bq[proxy], rtol=1e-6, atol=1e-6)
 
 
-def test_seed_syncs_model_body_q_rest_to_settled_state():
-    """VBD rest (``model.body_q``) must match seeded poses after settle→weld.
+def test_seed_keeps_plant_rest_at_build_sets_proxy_rest_from_apple_rest():
+    """Settle→weld: apple+woody rest stay build-time; proxy rest = apple_rest * offset.
 
-    The welded scene is finalized at build-time geometry; seed rewrites ``state_0``
-    but must also refresh ``model.body_q`` so FIXED/D6 kappa is not measured against
-    the pre-settle rest and yank the grasp on the first AVBD step.
+    Weld FIXED kappa is quiet via relative proxy rest (not by rewriting apple rest,
+    which would zero the stem→apple bend preload). Woody hang in state shows preload.
     """
     import apple_pick_sim.coupled_fruiting as cf
     import apple_pick_sim.fruiting_system as fs
+    from apple_pick_sim.coupled_fruiting.settle_then_weld import (
+        _proxy_world_pose_from_apple,
+    )
 
     ranges = fs.load_ranges(RANGES_FIXTURE)
-    welded, _settled = _make_settle_then_weld(cf, fs, ranges, 2, settle_substeps=25)
+    last_exc: Exception | None = None
+    for try_seed in (2, 3, 4, 5):
+        try:
+            settled = build_coupled_fruiting_fr3(
+                ranges,
+                try_seed,
+                vbd_only=True,
+                **_BUILD_KW,
+                gripper_proxy=fs.GripperProxyConfig(
+                    mass=fr3_robot.EE_MASS_KG,
+                    fix_to_apple=False,
+                ),
+            )
+            cf.settle_vbd_substeps(settled, substeps=25, dt=SUB_DT)
+            cf.quiet_all_cable_bodies(settled.cable)
+            welded = build_coupled_fruiting_fr3(
+                ranges,
+                try_seed,
+                **_BUILD_KW,
+                skip_ik_bootstrap=True,
+                gripper_proxy=fs.GripperProxyConfig(
+                    mass=fr3_robot.EE_MASS_KG,
+                    fix_to_apple=True,
+                ),
+            )
+            rest_before = welded.cable.model.body_q.numpy().reshape(-1, 7).copy()
+            cf.seed_fix_to_apple_from_settled(
+                welded_scene=welded, settled_scene=settled, quiet_apple_proxy=True
+            )
+            break
+        except IKBootstrapConvergenceError as exc:
+            last_exc = exc
+            welded = None
+            rest_before = None
+    else:
+        raise last_exc  # type: ignore[misc]
+    assert welded is not None and rest_before is not None
     cable = welded.cable
-    apple = cable.apple_body
-    proxy = cable.gripper_proxy_body
-    bq = cable.state_0.body_q.numpy().reshape(-1, 7)
+    apple = int(cable.apple_body)
+    proxy = int(cable.gripper_proxy_body)
+    offset = cable.gripper_proxy_offset_in_apple_frame
     model_bq = cable.model.body_q.numpy().reshape(-1, 7)
-    np.testing.assert_allclose(model_bq[apple], bq[apple], rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(model_bq[proxy], bq[proxy], rtol=1e-6, atol=1e-6)
-    np.testing.assert_allclose(model_bq, bq, rtol=1e-6, atol=1e-6)
+    state_bq = cable.state_0.body_q.numpy().reshape(-1, 7)
+    # Apple + woody: rest unchanged from welded build-time.
+    np.testing.assert_allclose(model_bq[apple], rest_before[apple], rtol=1e-6, atol=1e-6)
+    for bid in range(model_bq.shape[0]):
+        if bid in (apple, proxy):
+            continue
+        np.testing.assert_allclose(
+            model_bq[bid], rest_before[bid], rtol=1e-6, atol=1e-6
+        )
+    # Proxy rest = apple build rest * weld offset (quiet weld kappa).
+    exp_pos, exp_quat = _proxy_world_pose_from_apple(rest_before[apple], offset)
+    np.testing.assert_allclose(model_bq[proxy, :3], exp_pos, rtol=1e-5, atol=1e-5)
+    assert abs(float(np.dot(model_bq[proxy, 3:7], exp_quat))) > 1.0 - 1e-4
+    # Settled hang left woody state away from build-time rest on at least one body.
+    woody_deltas = [
+        float(np.linalg.norm(state_bq[bid, :3] - rest_before[bid, :3]))
+        for bid in range(model_bq.shape[0])
+        if bid not in (apple, proxy)
+    ]
+    assert max(woody_deltas) > 1e-4
 
 
 def test_seed_bootstrap_seeds_lagged_coupling_from_rest_harvest():

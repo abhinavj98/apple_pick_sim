@@ -61,6 +61,7 @@ from apple_pick_sim.robot.fr3_robot.setup import (
     configure_vic_joint_torques_arm,
     configure_vic_joint_torques_arm_batched,
     configure_vic_wrench_only_arm,
+    FR3_DEFAULT_JOINT_FRICTION,
     FR3_DEFAULT_VIC_JOINT_DAMPING,
     FR3_REFLECTED_MOTOR_INERTIA_KGM2,
     hold_mujoco_actuator_targets_at_state,
@@ -74,6 +75,12 @@ from apple_pick_sim.robot.fr3_robot.setup import (
     sync_robot_gravity_to_mujoco,
     zero_mujoco_joint_pd,
 )
+from apple_pick_sim.robot.fr3_robot.tcp_parent_wrench import (
+    ee_com_world_from_body_q,
+    env_on_robot_tcp_wrench_from_ee_parent_f,
+    read_ee_parent_f_world,
+    tcp_world_wrench_from_scene,
+)
 
 __all__ = [
     "EE_COM_IN_EE_LOCAL_M",
@@ -84,6 +91,7 @@ __all__ = [
     "EE_MASS_KG",
     "EE_TCP_ORIENT_WXYZ",
     "EEVelocity",
+    "FR3_DEFAULT_JOINT_FRICTION",
     "FR3_DEFAULT_VIC_JOINT_DAMPING",
     "FR3_KEYBOARD_BINDINGS",
     "FR3_REFLECTED_MOTOR_INERTIA_KGM2",
@@ -132,4 +140,8 @@ __all__ = [
     "sync_mujoco_visual_state",
     "sync_robot_gravity_to_mujoco",
     "batched_ik_teleop_kwargs",
+    "ee_com_world_from_body_q",
+    "env_on_robot_tcp_wrench_from_ee_parent_f",
+    "read_ee_parent_f_world",
+    "tcp_world_wrench_from_scene",
 ]

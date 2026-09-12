@@ -191,6 +191,7 @@ def _load_dir_arrays(
     direction: int,
     *,
     sim_lpf_hz: float | None,
+    skip_first_frames: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     z = np.load(Path(role_dir) / f"dir_{direction:02d}.npz")
     tr = np.asarray(z["sim_time_real"], dtype=np.float64)
@@ -204,6 +205,19 @@ def _load_dir_arrays(
         ss[:, :n_wrench] = lowpass_sim_force(
             ss[:, :n_wrench], ts, cutoff_hz=sim_lpf_hz
         )
+    skip = int(skip_first_frames)
+    if skip < 0:
+        raise ValueError(f"skip_first_frames must be >= 0, got {skip}")
+    if skip > 0:
+        if skip >= int(tr.shape[0]):
+            raise ValueError(
+                f"skip_first_frames={skip} >= trajectory length {int(tr.shape[0])}"
+            )
+        tr = tr[skip:]
+        ts = ts[skip:]
+        rs = rs[skip:]
+        ss = ss[skip:]
+        phase_r = phase_r[skip:]
     return tr, ts, rs, ss, phase_r
 
 
@@ -281,6 +295,7 @@ def write_generation_force_plots(
     n_directions: int | None = None,
     write_html: bool = True,
     sim_lpf_hz: float | None = _DEFAULT_SIM_LPF_HZ,
+    skip_first_frames: int = 0,
 ) -> dict[str, Any]:
     """Write per-direction force/torque/TCP/woody plots for one persisted role."""
     import matplotlib
@@ -321,7 +336,10 @@ def write_generation_force_plots(
 
     # Peek state width so wrench-only bags skip TCP/woody kinds.
     _tr0, _ts0, rs0, _ss0, _p0 = _load_dir_arrays(
-        role_dir, directions[0], sim_lpf_hz=sim_lpf_hz
+        role_dir,
+        directions[0],
+        sim_lpf_hz=sim_lpf_hz,
+        skip_first_frames=skip_first_frames,
     )
     state_dim = int(rs0.shape[1])
     written_stems: list[str] = []
@@ -343,7 +361,12 @@ def write_generation_force_plots(
         title_lpf = lpf_note if apply_lpf_note else ""
 
         for d in directions:
-            tr, ts, rs, ss, phase_r = _load_dir_arrays(role_dir, d, sim_lpf_hz=sim_lpf_hz)
+            tr, ts, rs, ss, phase_r = _load_dir_arrays(
+                role_dir,
+                d,
+                sim_lpf_hz=sim_lpf_hz,
+                skip_first_frames=skip_first_frames,
+            )
             pull_txt = _fmt_pull(pull, d)
             title_pull = f" pull {pull_txt}" if pull_txt else ""
             if use_displacement:
@@ -404,7 +427,12 @@ def write_generation_force_plots(
         if n_dirs == 1:
             axes = [axes]
         for row_i, d in enumerate(directions):
-            tr, ts, rs, ss, _phase_r = _load_dir_arrays(role_dir, d, sim_lpf_hz=sim_lpf_hz)
+            tr, ts, rs, ss, _phase_r = _load_dir_arrays(
+                role_dir,
+                d,
+                sim_lpf_hz=sim_lpf_hz,
+                skip_first_frames=skip_first_frames,
+            )
             ax = axes[row_i]
             if use_displacement:
                 y_real = _disp_mag(rs, col0)
@@ -449,7 +477,10 @@ def write_generation_force_plots(
 
                 for d in directions:
                     tr, ts, rs, ss, phase_r = _load_dir_arrays(
-                        role_dir, d, sim_lpf_hz=sim_lpf_hz
+                        role_dir,
+                        d,
+                        sim_lpf_hz=sim_lpf_hz,
+                        skip_first_frames=skip_first_frames,
                     )
                     if use_displacement:
                         err = _mean_hold_abs_err(rs, ss, phase_r, col0=col0)
@@ -546,6 +577,7 @@ def write_holdout_force_plots(
     manifest_path: Path | None = None,
     write_html: bool = True,
     sim_lpf_hz: float | None = _DEFAULT_SIM_LPF_HZ,
+    skip_first_frames: int = 0,
 ) -> Path:
     """Write ``structure_XXX/force_plots/holdout/{fitted,baseline}/`` from val bags."""
     run_dir = Path(run_dir)
@@ -575,6 +607,9 @@ def write_holdout_force_plots(
             f"Sim wrench traces: {float(sim_lpf_hz):.0f} Hz zero-phase LPF (plot-only)."
         )
         index_lines.append("")
+    if int(skip_first_frames) > 0:
+        index_lines.append(f"Skipped first {int(skip_first_frames)} frames (plot-only).")
+        index_lines.append("")
 
     wrote_any = False
     for side in sides:
@@ -591,6 +626,7 @@ def write_holdout_force_plots(
             pull=pull,
             write_html=write_html,
             sim_lpf_hz=sim_lpf_hz,
+            skip_first_frames=skip_first_frames,
         )
         side_dir = plots_root / str(side)
         bits = [
@@ -618,6 +654,7 @@ def write_run_force_plots(
     n_directions: int | None = None,
     write_html: bool = True,
     sim_lpf_hz: float | None = _DEFAULT_SIM_LPF_HZ,
+    skip_first_frames: int = 0,
 ) -> Path:
     """Write ``structure_XXX/force_plots/gen_YY/`` for every persisted generation."""
     run_dir = Path(run_dir)
@@ -647,6 +684,9 @@ def write_run_force_plots(
             f"Sim wrench traces: {float(sim_lpf_hz):.0f} Hz zero-phase LPF (plot-only)."
         )
         index_lines.append("")
+    if int(skip_first_frames) > 0:
+        index_lines.append(f"Skipped first {int(skip_first_frames)} frames (plot-only).")
+        index_lines.append("")
     for gen in gens:
         role_dir = struct / f"generations/gen_{gen:02d}" / role
         if not (role_dir / "metadata.json").is_file():
@@ -660,6 +700,7 @@ def write_run_force_plots(
             n_directions=n_directions,
             write_html=write_html,
             sim_lpf_hz=sim_lpf_hz,
+            skip_first_frames=skip_first_frames,
         )
         f_ratio = _pooled_sim_real_ratio(meta.get(_FORCE_NORM_KEY))
         t_ratio = _pooled_sim_real_ratio(meta.get(_TORQUE_NORM_KEY))
@@ -724,6 +765,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "(default: 5). 0 disables. TCP/woody stay raw."
         ),
     )
+    p.add_argument(
+        "--skip-first-frames",
+        type=int,
+        default=0,
+        help="Drop the first N frames from each bag after LPF (plot-only; default: 0).",
+    )
     return p
 
 
@@ -736,6 +783,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest_path=args.manifest,
             write_html=not bool(args.no_html),
             sim_lpf_hz=float(args.sim_lpf_hz),
+            skip_first_frames=int(args.skip_first_frames),
         )
     else:
         write_run_force_plots(
@@ -745,6 +793,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest_path=args.manifest,
             write_html=not bool(args.no_html),
             sim_lpf_hz=float(args.sim_lpf_hz),
+            skip_first_frames=int(args.skip_first_frames),
         )
     return 0
 

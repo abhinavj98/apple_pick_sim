@@ -291,6 +291,48 @@ def test_map_pre_grasp_prefers_rest_snapshot_during_run():
     np.testing.assert_allclose(mapped.apple_quat_xyzw, (0.0, 0.0, s, s), atol=1e-6)
 
 
+def test_map_pre_grasp_fruiting_base_from_lengthened_snapshot_rods_from_rest():
+    """Base uses lengthened T; rod rebuild snapshot stays rest_snapshot_during_run."""
+    meta = _synthetic_pre_grasp_meta()
+    pre = meta["pre_grasp_geometry"]
+    rest_branch = [0.0, 0.0, 0.0]
+    rest_spur = [0.02, 0.0, -0.10]
+    rest_apple = [0.05, 0.0, -0.13]
+    pre["rest_snapshot_during_run"] = {
+        "woody_part_start_pos": rest_branch + rest_branch + rest_spur,
+        "woody_part_end_pos": rest_spur + rest_apple + rest_apple,
+        "woody_bending_angles": [0.0, 0.0, 0.0],
+        "apple_pos": rest_apple,
+    }
+    # Lengthened T is distinctly higher; spur chord parallel so radial hat matches.
+    len_branch = [0.0, 0.0, 0.016]
+    len_spur = [0.02, 0.0, -0.084]
+    len_apple = [0.05, 0.0, -0.114]
+    pre["lengthened_snapshot"] = {
+        "woody_part_start_pos": len_branch + len_branch + len_spur,
+        "woody_part_end_pos": len_spur + len_apple + len_apple,
+        "woody_bending_angles": [0.0, 0.0, 0.0],
+        "apple_pos": len_apple,
+    }
+    # Legacy snapshot still present but rest wins for rods.
+    mapped = map_pre_grasp_geometry(meta, primary_dir=PRIMARY_DIR)
+
+    len_spur_dir = np.asarray(len_spur, dtype=np.float64) - np.asarray(len_branch, dtype=np.float64)
+    len_spur_dir = tuple(float(x) for x in (len_spur_dir / np.linalg.norm(len_spur_dir)))
+    expected_base = surface_to_centerline(len_branch, len_spur_dir, PRIMARY_DIR, 0.0125)
+    np.testing.assert_allclose(mapped.fruiting_base_pos, expected_base, atol=1e-9)
+    assert mapped.diagnostics["fruiting_base_pos_snapshot"] == "lengthened_snapshot"
+    assert "lengthened_snapshot" in mapped.diagnostics["fruiting_base_pos_source"]
+    assert mapped.diagnostics["pre_grasp_snapshot_source"] == "rest_snapshot_during_run"
+
+    rest_spur_u = np.asarray(rest_spur, dtype=np.float64) - np.asarray(rest_branch, dtype=np.float64)
+    rest_spur_u /= np.linalg.norm(rest_spur_u)
+    rest_stem_u = np.asarray(rest_apple, dtype=np.float64) - np.asarray(rest_spur, dtype=np.float64)
+    rest_stem_u /= np.linalg.norm(rest_stem_u)
+    np.testing.assert_allclose(mapped.spur_direction, rest_spur_u, atol=1e-6)
+    np.testing.assert_allclose(mapped.stem_direction, rest_stem_u, atol=1e-6)
+
+
 def test_map_pre_grasp_prefers_explicit_apple_quat_xyzw():
     meta = _synthetic_pre_grasp_meta()
     snap = meta["pre_grasp_geometry"]["snapshot"]

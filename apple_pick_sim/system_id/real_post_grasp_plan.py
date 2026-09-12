@@ -11,7 +11,7 @@ import warp as wp
 
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
-    sync_model_body_q_rest_from_state,
+    sync_weld_proxy_rest_from_apple_rest,
 )
 from apple_pick_sim.coupled_fruiting.settle_then_weld import (
     _proxy_world_pose_from_apple,
@@ -421,5 +421,5 @@ def apply_post_grasp_after_settle(
     quiet_all_cable_bodies(welded)
     body_count = int(welded.model.body_count)
     align_proxy_body_q_prev_for_vbd(welded, tuple(range(body_count)))
-    sync_model_body_q_rest_from_state(welded)
+    sync_weld_proxy_rest_from_apple_rest(welded)
     return welded

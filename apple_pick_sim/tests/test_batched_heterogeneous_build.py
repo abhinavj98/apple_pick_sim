@@ -578,6 +578,100 @@ def test_kp_overrides_applied_before_settle(ranges, per_env_params, monkeypatch)
 
 
 @requires_fr3
+def test_support_kp_per_env_overrides_fixture_before_settle(monkeypatch):
+    """Per-env support_kp must replace scalar fixture kp before free VBD settle."""
+    t_junction_ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
+    params = sample_heterogeneous_params_list(
+        t_junction_ranges, topology_seed=7, num_envs=_NUM_ENVS
+    )
+    per_env_linear_at_settle: list[tuple[float, ...]] = []
+    real_settle = build_module._run_vbd_settle
+
+    def _capture_settle(scene, **kwargs):
+        layout = scene.layout
+        assert layout is not None
+        j_support = next(
+            j
+            for j, lab in scene.cable.fruiting_fixed_joints
+            if "primary_support_left" in lab
+        )
+        joints_per_world = int(layout.joints_per_world)
+        per_env_linear_at_settle.append(
+            tuple(
+                _linear_kp_at_joint(
+                    scene.cable.solver, w * joints_per_world + j_support
+                )
+                for w in range(int(layout.num_envs))
+            )
+        )
+        return real_settle(scene, **kwargs)
+
+    monkeypatch.setattr(build_module, "_run_vbd_settle", _capture_settle)
+    support_kp_per_env = (500.0, 5000.0)
+    cfg = dataclasses.replace(
+        _vbd_only_config(settle_substeps=2),
+        fruiting_system=dataclasses.replace(
+            _vbd_only_config().fruiting_system,
+            joint_angular_kp_overrides={"support": 10000.0},
+            joint_linear_kp_overrides={"support": 10000.0},
+            support_kp_per_env=support_kp_per_env,
+        ),
+    )
+    build_batched_heterogeneous_scene(cfg, params, t_junction_ranges)
+    assert per_env_linear_at_settle == [support_kp_per_env]
+
+
+@requires_fr3
+def test_support_roll_kp_per_env_overrides_fixture_before_settle(monkeypatch):
+    """Per-env support_roll_kp must replace fixture roll before free VBD settle."""
+    t_junction_ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
+    params = sample_heterogeneous_params_list(
+        t_junction_ranges, topology_seed=7, num_envs=_NUM_ENVS
+    )
+    per_env_roll_at_settle: list[tuple[float, ...]] = []
+    real_settle = build_module._run_vbd_settle
+
+    def _roll_kp_at_joint(solver, model, global_joint_index: int) -> float:
+        jqd = model.joint_qd_start.numpy()
+        dof = int(jqd[global_joint_index])
+        return float(model.joint_target_ke.numpy()[dof])
+
+    def _capture_settle(scene, **kwargs):
+        layout = scene.layout
+        assert layout is not None
+        j_support = next(
+            j
+            for j, lab in scene.cable.fruiting_fixed_joints
+            if "primary_support_left" in lab
+        )
+        joints_per_world = int(layout.joints_per_world)
+        per_env_roll_at_settle.append(
+            tuple(
+                _roll_kp_at_joint(
+                    scene.cable.solver,
+                    scene.cable.model,
+                    w * joints_per_world + j_support,
+                )
+                for w in range(int(layout.num_envs))
+            )
+        )
+        return real_settle(scene, **kwargs)
+
+    monkeypatch.setattr(build_module, "_run_vbd_settle", _capture_settle)
+    support_roll_kp_per_env = (0.5, 3.0)
+    cfg = dataclasses.replace(
+        _vbd_only_config(settle_substeps=2),
+        fruiting_system=dataclasses.replace(
+            _vbd_only_config().fruiting_system,
+            joint_roll_kp_overrides={"support": 0.75},
+            support_roll_kp_per_env=support_roll_kp_per_env,
+        ),
+    )
+    build_batched_heterogeneous_scene(cfg, params, t_junction_ranges)
+    assert per_env_roll_at_settle == [support_roll_kp_per_env]
+
+
+@requires_fr3
 def test_kp_overrides_on_result_and_applied():
     """T-junction builds apply support kp overrides to both penalty-k slots."""
     t_junction_ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
@@ -652,7 +746,7 @@ def test_post_grasp_settle_runs_second_vbd_settle_then_rebootstrap(
 
     real_run = build_module._run_vbd_settle
 
-    def _capture_settle(scene, *, config, per_env_params, substeps, sim_dt, viewer, collect_diagnostics):
+    def _capture_settle(scene, *, config, per_env_params, substeps, sim_dt, viewer, collect_diagnostics, **kwargs):
         settle_calls.append(int(substeps))
         return real_run(
             scene,
@@ -662,6 +756,7 @@ def test_post_grasp_settle_runs_second_vbd_settle_then_rebootstrap(
             sim_dt=sim_dt,
             viewer=viewer,
             collect_diagnostics=collect_diagnostics,
+            **kwargs,
         )
 
     def _capture_rebootstrap(scene, *, config):
@@ -696,7 +791,7 @@ def test_post_grasp_settle_zero_skips_second_settle(ranges, monkeypatch):
 
     real_run = build_module._run_vbd_settle
 
-    def _capture_settle(scene, *, config, per_env_params, substeps, sim_dt, viewer, collect_diagnostics):
+    def _capture_settle(scene, *, config, per_env_params, substeps, sim_dt, viewer, collect_diagnostics, **kwargs):
         settle_calls.append(int(substeps))
         return real_run(
             scene,
@@ -706,6 +801,7 @@ def test_post_grasp_settle_zero_skips_second_settle(ranges, monkeypatch):
             sim_dt=sim_dt,
             viewer=viewer,
             collect_diagnostics=collect_diagnostics,
+            **kwargs,
         )
 
     def _capture_rebootstrap(scene, *, config):
@@ -730,6 +826,64 @@ def test_post_grasp_settle_zero_skips_second_settle(ranges, monkeypatch):
     build_batched_heterogeneous_scene(cfg, params, ranges)
     assert settle_calls == [4]
     assert rebootstrap_calls == []
+
+
+@requires_fr3
+def test_post_grasp_settle_preserves_woody_and_apple_model_rest(
+    ranges, monkeypatch
+):
+    """Post-grasp settle + rebootstrap must not rewrite apple/woody model.body_q."""
+    params = sample_heterogeneous_params_list(
+        ranges, topology_seed=_PARITY_SEED, num_envs=_NUM_ENVS
+    )
+    cfg = dataclasses.replace(
+        _fr3_settle_weld_config(settle_substeps=4),
+        scene=SceneSettleCollisionConfig(
+            settle_substeps=4,
+            post_grasp_settle_substeps=3,
+            fruiting_base_pos=COUPLED_BASE_POS,
+            enable_self_collisions=COUPLED_SCENE_KW["enable_self_collisions"],
+        ),
+    )
+    # Capture rest after free settle→weld seed but before post-grasp settle by
+    # intercepting _run_vbd_settle: first call is free settle; second is post-grasp.
+    rest_before_post: list[np.ndarray] = []
+    apple_ids: list[int] = []
+    proxy_ids: list[int] = []
+    real_run = build_module._run_vbd_settle
+
+    def _capture_settle(scene, *, config, per_env_params, substeps, sim_dt, viewer, collect_diagnostics, **kwargs):
+        if len(rest_before_post) == 0 and int(substeps) == 3:
+            cable = scene.cable
+            rest_before_post.append(cable.model.body_q.numpy().reshape(-1, 7).copy())
+            apple_ids.append(int(cable.apple_body))
+            proxy_ids.append(int(cable.gripper_proxy_body))
+        return real_run(
+            scene,
+            config=config,
+            per_env_params=per_env_params,
+            substeps=substeps,
+            sim_dt=sim_dt,
+            viewer=viewer,
+            collect_diagnostics=collect_diagnostics,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(build_module, "_run_vbd_settle", _capture_settle)
+    result = build_batched_heterogeneous_scene(cfg, params, ranges)
+    assert rest_before_post, "expected post-grasp settle to run"
+    rest_after = result.scene.cable.model.body_q.numpy().reshape(-1, 7)
+    apple = apple_ids[0]
+    proxy = proxy_ids[0]
+    before = rest_before_post[0]
+    for bid in range(before.shape[0]):
+        if bid == proxy:
+            continue
+        np.testing.assert_allclose(
+            rest_after[bid], before[bid], rtol=1e-6, atol=1e-6
+        )
+    # Apple specifically must match (shared by stem and weld).
+    np.testing.assert_allclose(rest_after[apple], before[apple], rtol=1e-6, atol=1e-6)
 
 
 def test_validate_rejects_negative_post_grasp_settle_substeps():

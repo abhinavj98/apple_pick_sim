@@ -229,12 +229,14 @@ class SupportKpYoungsCandidate(NamedTuple):
     stem: float
     spur_youngs: float | None = None
     stem_youngs: float | None = None
+    support_roll_kp: float | None = None
 
     def apply_to(self, base: FruitingSystemParams) -> FruitingSystemParams:
         """Return a copy with spur/stem flexural (and optional axial) moduli re-derived.
 
-        Primary (and secondary) material is left unchanged. ``support_kp`` is
-        not applied here — fused replay patches support joints per env.
+        Primary (and secondary) material is left unchanged. ``support_kp`` and
+        ``support_roll_kp`` are not applied here — fused replay patches support
+        joints per env.
         """
         out = base
         for segment, value in (
@@ -251,11 +253,14 @@ class SupportKpYoungsCandidate(NamedTuple):
 
     def short_label(self) -> str:
         """Compact legend label."""
-        return (
-            f"log10=({math.log10(self.support_kp):.2f},"
-            f"{math.log10(self.spur):.2f},"
-            f"{math.log10(self.stem):.2f})"
-        )
+        parts = [
+            f"{math.log10(self.support_kp):.2f}",
+            f"{math.log10(self.spur):.2f}",
+            f"{math.log10(self.stem):.2f}",
+        ]
+        if self.support_roll_kp is not None:
+            parts.append(f"{math.log10(self.support_roll_kp):.2f}")
+        return f"log10=({','.join(parts)})"
 
 
 def iter_support_kp_youngs_candidates(
@@ -280,44 +285,59 @@ def candidates_from_log10_vector(
 
     Length 3: ``(k_p, E_flex_spur, E_flex_stem)`` with axial moduli unchanged.
     Length 5: adds ``(E_youngs_spur, E_youngs_stem)``.
+    Length 6: adds ``support_roll_kp`` (N·m/rad) after axial moduli.
     """
     n = len(log10_vector)
-    if n not in (3, 5):
+    if n not in (3, 5, 6):
         raise ValueError(
-            f"log10_vector must have length 3 or 5, got {n}"
+            f"log10_vector must have length 3, 5, or 6, got {n}"
         )
     spur_youngs = None
     stem_youngs = None
-    if n == 5:
+    support_roll_kp = None
+    if n >= 5:
         spur_youngs = 10.0 ** float(log10_vector[3])
         stem_youngs = 10.0 ** float(log10_vector[4])
+    if n == 6:
+        support_roll_kp = 10.0 ** float(log10_vector[5])
     return SupportKpYoungsCandidate(
         support_kp=10.0 ** float(log10_vector[0]),
         spur=10.0 ** float(log10_vector[1]),
         stem=10.0 ** float(log10_vector[2]),
         spur_youngs=spur_youngs,
         stem_youngs=stem_youngs,
+        support_roll_kp=support_roll_kp,
     )
 
 
 def log10_vector_from_candidate(
     candidate: SupportKpYoungsCandidate,
 ) -> tuple[float, ...]:
-    """Extract log10 phenotype; 5-tuple when axial moduli are set."""
+    """Extract log10 phenotype; 5-tuple when axial set; 6-tuple when roll set."""
     base = (
         math.log10(float(candidate.support_kp)),
         math.log10(float(candidate.spur)),
         math.log10(float(candidate.stem)),
     )
     if candidate.spur_youngs is None and candidate.stem_youngs is None:
+        if candidate.support_roll_kp is not None:
+            raise ValueError(
+                "support_roll_kp requires axial moduli on SupportKpYoungsCandidate"
+            )
         return base
     if candidate.spur_youngs is None or candidate.stem_youngs is None:
         raise ValueError("partial axial moduli on SupportKpYoungsCandidate")
-    return (
+    axial = (
         *base,
         math.log10(float(candidate.spur_youngs)),
         math.log10(float(candidate.stem_youngs)),
     )
+    if candidate.support_roll_kp is None:
+        return axial
+    return (*axial, math.log10(float(candidate.support_roll_kp)))
+
+
+DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT = math.log10(0.75)
 
 
 def gt_support_kp_from_dataset(dataset: BatchedSysIdDataset) -> float:
@@ -571,8 +591,18 @@ def resolve_initial_mean_log10(
             return (mid[0], mid[1], mid[2], mid[1], mid[2])
         if phenotype_dim == 4:
             return (mid[1], mid[2], mid[1], mid[2])
+        if phenotype_dim == 6:
+            return (
+                mid[0],
+                mid[1],
+                mid[2],
+                mid[1],
+                mid[2],
+                DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT,
+            )
         raise ValueError(
-            f"bounds_midpoint initial mean supports phenotype_dim 3, 4, or 5, got {phenotype_dim}"
+            "bounds_midpoint initial mean supports phenotype_dim 3, 4, 5, or 6, "
+            f"got {phenotype_dim}"
         )
     try:
         values = tuple(float(v) for v in spec)
@@ -619,7 +649,7 @@ def normalize_search_bounds_log10(
 
     Accepted forms:
     - ``None`` → unbounded
-    - ``{"lower": [...], "upper": [...]}`` in log10 (length 3 or 5)
+    - ``{"lower": [...], "upper": [...]}`` in log10 (length 3, 5, or 6)
     """
     if spec is None:
         return None
@@ -634,10 +664,12 @@ def normalize_search_bounds_log10(
         upper = tuple(float(v) for v in spec["upper"])
     except TypeError as exc:
         raise ValueError(
-            "search_bounds_log10 lower/upper must be length-3 or length-5 sequences"
+            "search_bounds_log10 lower/upper must be length-3, 5, or 6 sequences"
         ) from exc
-    if len(lower) not in (3, 4, 5) or len(upper) != len(lower):
-        raise ValueError("search_bounds_log10 lower/upper must have length 3, 4, or 5")
+    if len(lower) not in (3, 4, 5, 6) or len(upper) != len(lower):
+        raise ValueError(
+            "search_bounds_log10 lower/upper must have length 3, 4, 5, or 6"
+        )
     if not all(math.isfinite(v) for v in (*lower, *upper)):
         raise ValueError("search_bounds_log10 lower/upper must be finite")
     return _expand_degenerate_search_bounds_log10(lower, upper)
@@ -2048,8 +2080,8 @@ def snapshot_xfavorite_log10(optimizer: Any) -> tuple[float, ...]:
     if favorite is None:
         raise ValueError("optimizer.result.xfavorite is unavailable")
     values = tuple(float(v) for v in favorite)
-    if len(values) not in (3, 4, 5):
-        raise ValueError(f"xfavorite must have length 3, 4, or 5, got {len(values)}")
+    if len(values) not in (3, 4, 5, 6):
+        raise ValueError(f"xfavorite must have length 3, 4, 5, or 6, got {len(values)}")
     return values
 
 
@@ -2425,11 +2457,18 @@ def to_strict_jsonable(value: Any) -> Any:
     # NamedTuple candidate types are also Sequence; check before the
     # generic Sequence branch so they serialize as labeled objects.
     if isinstance(value, SupportKpYoungsCandidate):
-        return {
+        out = {
             "support_kp": to_strict_jsonable(value.support_kp),
             "spur": to_strict_jsonable(value.spur),
             "stem": to_strict_jsonable(value.stem),
         }
+        if value.spur_youngs is not None:
+            out["spur_youngs"] = to_strict_jsonable(value.spur_youngs)
+        if value.stem_youngs is not None:
+            out["stem_youngs"] = to_strict_jsonable(value.stem_youngs)
+        if value.support_roll_kp is not None:
+            out["support_roll_kp"] = to_strict_jsonable(value.support_roll_kp)
+        return out
     if isinstance(value, YoungsModulusCandidate):
         return {
             "primary": to_strict_jsonable(value.primary),
@@ -2448,19 +2487,23 @@ def _candidate_first_component(candidate: Any) -> float:
 
 
 def _candidate_to_e_list(candidate: Any) -> list[float]:
-    return [
+    out = [
         _candidate_first_component(candidate),
         float(candidate.spur),
         float(candidate.stem),
     ]
+    spur_y = getattr(candidate, "spur_youngs", None)
+    stem_y = getattr(candidate, "stem_youngs", None)
+    if spur_y is not None and stem_y is not None:
+        out.extend([float(spur_y), float(stem_y)])
+    roll = getattr(candidate, "support_roll_kp", None)
+    if roll is not None:
+        out.append(float(roll))
+    return out
 
 
 def _candidate_to_log10_list(candidate: Any) -> list[float]:
-    return [
-        math.log10(_candidate_first_component(candidate)),
-        math.log10(float(candidate.spur)),
-        math.log10(float(candidate.stem)),
-    ]
+    return [math.log10(v) for v in _candidate_to_e_list(candidate)]
 
 
 def evaluated_history_extrema(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,34 @@ DEFAULT_TARGET_CONTROL_HZ = 30.0
 DEFAULT_FT_LPF_CUTOFF_HZ = 10.0
 DEFAULT_FT_LPF_ORDER = 4
 _TREE_PARQUET_RE = re.compile(r"(?P<tree>s\d+)-d(?P<dir>\d+)\.parquet")
+
+# Convert-time primary T-junction lift: rest snapshot base is sagged vs lengthened.
+# Force-calibrated (not full tagged sag ~14–16 mm): light ~10 mm, heavy/apple ~14 mm.
+SAG_BASE_Z_MASS_THRESHOLD_KG = 0.25
+SAG_BASE_Z_LIGHT_M = 0.010
+SAG_BASE_Z_HEAVY_M = 0.014
+
+
+def raise_fruiting_base_pos_for_sag(
+    base_pos: tuple[float, float, float] | list[float],
+    *,
+    apple_mass_kg: float,
+) -> tuple[float, float, float]:
+    """Raise fruiting ``base_pos`` in +Z to compensate measured support sag.
+
+    Applied only during real→batched conversion so post-grasp TCP stays at the
+    logged pose while the primary T-junction sits slightly higher.
+    """
+    mass = float(apple_mass_kg)
+    if not math.isfinite(mass) or mass <= 0.0:
+        raise ValueError(f"apple_mass_kg must be finite > 0, got {mass}")
+    dz = (
+        SAG_BASE_Z_HEAVY_M
+        if mass >= SAG_BASE_Z_MASS_THRESHOLD_KG
+        else SAG_BASE_Z_LIGHT_M
+    )
+    x, y, z = (float(base_pos[0]), float(base_pos[1]), float(base_pos[2]))
+    return (x, y, z + float(dz))
 
 
 def flat_woody_to_dicts(
@@ -399,11 +428,19 @@ def build_episode_metadata_from_real(
         load_dataset_metadata,
     )
 
-    params, base_pos, _diagnostics = fruiting_params_from_pre_grasp_parquet(
+    params, base_pos, diagnostics = fruiting_params_from_pre_grasp_parquet(
         path, fixture_path=fixture
     )
     if params.apple_radius is None:
         raise ValueError("native pre-grasp params missing apple_radius")
+    apple_mass = diagnostics.get("apple_mass_kg")
+    if apple_mass is None:
+        raise ValueError(
+            "pre-grasp diagnostics missing apple_mass_kg; cannot apply sag base-Z offset"
+        )
+    base_pos = raise_fruiting_base_pos_for_sag(
+        base_pos, apple_mass_kg=float(apple_mass)
+    )
     dm = load_dataset_metadata(path)
     plan = post_grasp_plan_from_metadata(
         dm,
@@ -906,6 +943,7 @@ def _build_real_episode(
     ft_lpf_hz: float = DEFAULT_FT_LPF_CUTOFF_HZ,
     ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
     transport_torque_to_tcp: bool = False,
+    inject_rest_hold: bool = True,
 ) -> _ConvertedEpisode:
     """Convert one real parquet into trajectory + metadata (no manifest write)."""
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedEpisodeWriter
@@ -1129,37 +1167,59 @@ def _build_real_episode(
         "control_hz": float(output_hz),
         "ft_filter": dict(ft_filter),
     }
+    if inject_rest_hold:
+        episode_meta = {**episode_meta, "rest_hold_injected": True}
 
     traj = BatchedEpisodeWriter(episode_id=str(episode_meta["episode_id"]))
     junction_names = list(episode_meta["junction_names"])
+    recorded_hold_numbers: list[int] = []
     for out_i, src_i in enumerate(pick.tolist()):
+        use_rest = bool(inject_rest_hold) and out_i == 0
+        sample_i = 0 if use_rest else int(src_i)
+        if use_rest:
+            phase = "hold"
+            hold_n = 0
+            vel_row = vel_unfiltered[0]
+            ft_row = ft_unfiltered[0]
+            ft_lpf_row = ft_lpf[0]
+            raw_ft_row = raw_unfiltered[0]
+        else:
+            phase = phases[int(src_i)]
+            hold_n = int(hold_numbers[int(src_i)])
+            if inject_rest_hold and hold_n >= 0:
+                hold_n = hold_n + 1
+            vel_row = vel_out[out_i]
+            ft_row = ft_out[out_i]
+            ft_lpf_row = ft_lpf_out[out_i]
+            raw_ft_row = raw_ft_out[out_i]
+        recorded_hold_numbers.append(int(hold_n))
         obs = {
             "excitation_type": 0,
-            "excitation_direction": excitations[int(src_i)],
-            "tcp_velocity": vel_out[out_i],
-            "ft_wrist": ft_out[out_i],
-            "ft_wrist_lpf": ft_lpf_out[out_i],
-            "raw_ft_wrist": raw_ft_out[out_i],
-            "tcp_pos": tcp_pos_rows[int(src_i)],
-            "apple_pos": apple_pos_rows[int(src_i)],
-            "tcp_quat": tcp_quats[int(src_i)],
-            "apple_quat": apple_quats[int(src_i)],
-            "robot_joint_q": joint_qs[int(src_i)],
-            "woody_part_start_pos": woody_rows[int(src_i)],
+            "excitation_direction": excitations[sample_i],
+            "tcp_velocity": np.asarray(vel_row, dtype=np.float32).reshape(6),
+            "ft_wrist": np.asarray(ft_row, dtype=np.float32).reshape(6),
+            "ft_wrist_lpf": np.asarray(ft_lpf_row, dtype=np.float32).reshape(6),
+            "raw_ft_wrist": np.asarray(raw_ft_row, dtype=np.float32).reshape(6),
+            "tcp_pos": tcp_pos_rows[sample_i],
+            "apple_pos": apple_pos_rows[sample_i],
+            "tcp_quat": tcp_quats[sample_i],
+            "apple_quat": apple_quats[sample_i],
+            "robot_joint_q": joint_qs[sample_i],
+            "woody_part_start_pos": woody_rows[sample_i],
             "woody_part_force": np.zeros(0, dtype=np.float32),
         }
         traj.record_step(
-            step_idx=int(step_indices[int(src_i)]),
+            step_idx=int(step_indices[sample_i]),
             sim_time=float(out_i) / float(output_hz),
-            phase=phases[int(src_i)],
-            amplitude_m=amplitudes[int(src_i)],
-            action=actions[int(src_i)],
+            phase=phase,
+            amplitude_m=amplitudes[sample_i],
+            action=actions[sample_i],
             obs=obs,
             stable=True,
-            hold_number=hold_numbers[int(src_i)],
+            hold_number=int(hold_n),
         )
 
-    max_hold = max((int(h) for h in hold_numbers), default=-1)
+    max_hold = max((int(h) for h in recorded_hold_numbers), default=-1)
     fruiting_base = [float(x) for x in episode_meta.get("fruiting_base_pos") or [0.0, 0.0, 0.0]]
     pull_dir = episode_meta.get("pull_direction")
     return _ConvertedEpisode(
@@ -1277,6 +1337,7 @@ def export_real_episode_to_batched_dataset(
     ft_lpf_hz: float = DEFAULT_FT_LPF_CUTOFF_HZ,
     ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
     transport_torque_to_tcp: bool = False,
+    inject_rest_hold: bool = True,
 ) -> Path:
     """Write a 1×1 ``batched_sysid_v1`` dataset from one real-world parquet."""
     from apple_pick_sim.system_id.batched_trajectory_store import episode_filename
@@ -1294,6 +1355,7 @@ def export_real_episode_to_batched_dataset(
         ft_lpf_hz=ft_lpf_hz,
         ft_lpf_order=ft_lpf_order,
         transport_torque_to_tcp=transport_torque_to_tcp,
+        inject_rest_hold=inject_rest_hold,
     )
     if out.exists() and any(out.iterdir()) and not overwrite:
         raise FileExistsError(f"output_dir not empty (pass overwrite=True): {out}")
@@ -1325,6 +1387,7 @@ def export_real_tree_folder_to_batched_dataset(
     ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
     base_pos_tolerance_m: float = 5e-3,
     transport_torque_to_tcp: bool = False,
+    inject_rest_hold: bool = True,
 ) -> Path:
     """Write a 1×N ``batched_sysid_v1`` dataset from one tree folder of parquets."""
     from apple_pick_sim.system_id.batched_trajectory_store import episode_filename
@@ -1348,6 +1411,7 @@ def export_real_tree_folder_to_batched_dataset(
                 ft_lpf_hz=ft_lpf_hz,
                 ft_lpf_order=ft_lpf_order,
                 transport_torque_to_tcp=transport_torque_to_tcp,
+                inject_rest_hold=inject_rest_hold,
             )
         )
     _canonicalize_tree_geometry(converted, base_pos_tolerance_m=float(base_pos_tolerance_m))

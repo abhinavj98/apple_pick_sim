@@ -1942,13 +1942,20 @@ def set_fruiting_joint_roll_kp_batched(
     solver: newton.solvers.SolverVBD,
     model: newton.Model,
     template_fruiting_fixed_joints: Iterable[tuple[int, str]],
-    label_kp: dict[str, float],
+    label_kp: dict[str, float] | None = None,
     *,
+    label_kp_per_env: Sequence[Mapping[str, float]] | None = None,
     label_kd: dict[str, float] | None = None,
+    label_kd_per_env: Sequence[Mapping[str, float]] | None = None,
     num_envs: int,
     joints_per_world: int,
 ) -> dict[str, list[int]]:
-    """Broadcast roll drive kp/kd to every env copy of matching revolute supports."""
+    """Patch roll drive kp/kd across every env of a batched SolverVBD.
+
+    Pass either ``label_kp`` (broadcast) or ``label_kp_per_env`` (one map per
+    env). Optional ``label_kd`` / ``label_kd_per_env`` follow the same rule.
+    Dual-writes ``model.joint_target_ke`` and penalty slot ``c0+2``.
+    """
     if num_envs < 1:
         raise ValueError(f"num_envs must be >= 1, got {num_envs}.")
     if joints_per_world < 1:
@@ -1960,30 +1967,41 @@ def set_fruiting_joint_roll_kp_batched(
             f"{model.joint_count}."
         )
 
-    template_list = list(template_fruiting_fixed_joints)
-    if num_envs == 1:
-        return set_fruiting_joint_roll_kp(
-            solver,
-            model,
-            template_list,
-            label_kp,
-            label_kd=label_kd,
+    per_env_label_kp = _normalize_batched_label_kp(
+        label_kp, label_kp_per_env, num_envs=num_envs
+    )
+    per_env_label_kd: list[dict[str, float] | None]
+    if label_kd is None and label_kd_per_env is None:
+        per_env_label_kd = [None] * int(num_envs)
+    else:
+        per_env_label_kd = list(
+            _normalize_batched_label_kp(
+                label_kd, label_kd_per_env, num_envs=num_envs
+            )
         )
 
-    global_joints: list[tuple[int, str]] = []
+    template_list = list(template_fruiting_fixed_joints)
+    matched_by_key: dict[str, list[int]] = {}
     for w in range(int(num_envs)):
         offset = w * int(joints_per_world)
-        for j, lab in template_list:
-            global_joints.append((offset + j, lab))
-    matched = set_fruiting_joint_roll_kp(
-        solver,
-        model,
-        global_joints,
-        label_kp,
-        label_kd=label_kd,
-    )
+        env_joints = [(offset + j, lab) for j, lab in template_list]
+        matched = set_fruiting_joint_roll_kp(
+            solver,
+            model,
+            env_joints,
+            dict(per_env_label_kp[w]),
+            label_kd=(
+                dict(per_env_label_kd[w])
+                if per_env_label_kd[w] is not None
+                else None
+            ),
+        )
+        if w == 0:
+            matched_by_key = matched
+    if num_envs == 1:
+        return matched_by_key
     return _global_matched_joint_indices(
-        matched, num_envs=int(num_envs), joints_per_world=int(joints_per_world)
+        matched_by_key, num_envs=int(num_envs), joints_per_world=int(joints_per_world)
     )
 
 

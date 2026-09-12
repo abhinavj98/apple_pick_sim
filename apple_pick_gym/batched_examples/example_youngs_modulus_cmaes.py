@@ -161,25 +161,45 @@ _LOG10_4KN_PER_M = math.log10(4.0e3)
 _LOG10_2KN_PER_M = math.log10(2.0e3)
 _LOG10_6KN_PER_M = math.log10(6.0e3)
 _LOG10_1500_PER_M = math.log10(1500.0)
+_LOG10_200_PER_M = math.log10(200.0)
 _LOG10_1E6_PER_M = 6.0
-_CMA_SEARCH_LOG10_LOWER = [2.0, _LOG10_10KPA, _LOG10_10KPA, _LOG10_10MPA, _LOG10_10MPA]
-_CMA_SEARCH_LOG10_UPPER = [6.0, _LOG10_50GPA, _LOG10_50GPA, _LOG10_50GPA, _LOG10_50GPA]
+_LOG10_ROLL_LO = -1.0  # 0.1 N·m/rad
+_LOG10_ROLL_HI = 2.0  # 100 N·m/rad
+_LOG10_ROLL_MEAN = math.log10(0.75)  # proxy fixture
+_CMA_SEARCH_LOG10_LOWER = [
+    2.0,
+    _LOG10_10KPA,
+    _LOG10_10KPA,
+    _LOG10_10MPA,
+    _LOG10_10MPA,
+    _LOG10_ROLL_LO,
+]
+_CMA_SEARCH_LOG10_UPPER = [
+    6.0,
+    _LOG10_50GPA,
+    _LOG10_50GPA,
+    _LOG10_50GPA,
+    _LOG10_50GPA,
+    _LOG10_ROLL_HI,
+]
 
 
-# Real vic_pose: support kp 200–1000 N/m; init 1000 N/m; moduli 100 kPa–10 GPa, init 100 MPa.
+# Real vic_pose: support kp 200–4 kN/m; moduli 100 kPa–10 GPa; roll 0.1–100 N·m/rad.
 # _REAL_CMA_SEARCH_LOG10_LOWER: [
 #   support_kp_log10,
 #   spur_E_flex_log10,
 #   stem_E_flex_log10,
 #   spur_E_youngs_log10,
-#   stem_E_youngs_log10
+#   stem_E_youngs_log10,
+#   support_roll_kp_log10,
 # ]
 _REAL_CMA_SEARCH_LOG10_LOWER = [
-    _LOG10_500_PER_M,    # support_kp_log10
+    _LOG10_200_PER_M,    # support_kp_log10
     _LOG10_100KPA,       # spur_E_flex_log10
     _LOG10_100KPA,       # stem_E_flex_log10
     _LOG10_100KPA,       # spur_E_youngs_log10
     _LOG10_100KPA,       # stem_E_youngs_log10
+    _LOG10_ROLL_LO,      # support_roll_kp_log10
 ]
 _REAL_CMA_SEARCH_LOG10_UPPER = [
     _LOG10_4KN_PER_M,
@@ -187,25 +207,27 @@ _REAL_CMA_SEARCH_LOG10_UPPER = [
     _LOG10_10GPA,
     _LOG10_10GPA,
     _LOG10_10GPA,
+    _LOG10_ROLL_HI,
 ]
 _CMA_MEAN_LOG10 = [
     _CMA_SEARCH_LOG10_LOWER[i]
     + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i])
     for i in range(5)
-]
+] + [_LOG10_ROLL_MEAN]
 _REAL_CMA_MEAN_LOG10 = [
-    _LOG10_2KN_PER_M,
-    _LOG10_100MPA,
+    _LOG10_1KN_PER_M,
     _LOG10_500MPA,
-    _LOG10_100MPA,
-    _LOG10_100MPA,
+    _LOG10_500MPA,
+    _LOG10_500MPA,
+    _LOG10_500MPA,
+    _LOG10_ROLL_MEAN,
 ]
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),
     "initial_sigma_log10": 0.2,
     "max_sigma_log10": 0.5,
     "population_size": 20,
-    "max_generations": 20,
+    "max_generations": 15,
     "cma_seed": 56,
     "search_bounds_log10": {
         "lower": _CMA_SEARCH_LOG10_LOWER,

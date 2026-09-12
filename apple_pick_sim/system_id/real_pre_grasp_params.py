@@ -273,6 +273,62 @@ def select_pre_grasp_woody_snapshot(pre: dict[str, Any]) -> tuple[dict[str, Any]
     )
 
 
+def _woody_spur_start_and_chord_dir(
+    snap: dict[str, Any],
+) -> tuple[np.ndarray, tuple[float, float, float]]:
+    """Return part0 spur-start surface xyz and unit spur chord direction."""
+    start9 = np.asarray(snap["woody_part_start_pos"], dtype=np.float64).reshape(9)
+    end9 = np.asarray(snap["woody_part_end_pos"], dtype=np.float64).reshape(9)
+    spur_start = start9[0:3]
+    spur_end = end9[0:3]
+    spur_dir = _unit(spur_end - spur_start, field="spur_direction")
+    return spur_start, spur_dir
+
+
+def _fruiting_base_from_lengthened_or_rest(
+    pre: dict[str, Any],
+    *,
+    rest_spur_start_surface: np.ndarray,
+    rest_spur_dir: tuple[float, float, float],
+    primary_dir: tuple[float, float, float],
+    primary_radius_m: float,
+    rest_snapshot_source: str,
+) -> tuple[tuple[float, float, float], float, np.ndarray, str, str]:
+    """Prefer lengthened_snapshot T; else rest/snapshot spur-start centerline."""
+    lengthened = pre.get("lengthened_snapshot")
+    if _snapshot_has_woody(lengthened):
+        assert isinstance(lengthened, dict)
+        spur_start, spur_chord_dir = _woody_spur_start_and_chord_dir(lengthened)
+        fruiting_base = surface_to_centerline(
+            spur_start, spur_chord_dir, primary_dir, primary_radius_m
+        )
+        surface_to_centerline_m = float(
+            np.linalg.norm(np.asarray(spur_start, dtype=np.float64) - np.asarray(fruiting_base))
+        )
+        return (
+            fruiting_base,
+            surface_to_centerline_m,
+            spur_start,
+            "lengthened_snapshot spur_start_surface − r_primary·radial_hat",
+            "lengthened_snapshot",
+        )
+    fruiting_base = surface_to_centerline(
+        rest_spur_start_surface, rest_spur_dir, primary_dir, primary_radius_m
+    )
+    surface_to_centerline_m = float(
+        np.linalg.norm(
+            np.asarray(rest_spur_start_surface, dtype=np.float64) - np.asarray(fruiting_base)
+        )
+    )
+    return (
+        fruiting_base,
+        surface_to_centerline_m,
+        np.asarray(rest_spur_start_surface, dtype=np.float64).reshape(3),
+        "spur_start_surface − r_primary·radial_hat",
+        rest_snapshot_source,
+    )
+
+
 def map_pre_grasp_geometry(
     meta: dict[str, Any],
     *,
@@ -327,11 +383,19 @@ def map_pre_grasp_geometry(
     )
 
     primary_r = float(parts["primary"]["radius_m"])
-    fruiting_base = surface_to_centerline(
-        spur_start_surface, spur_dir, primary_dir, primary_r
-    )
-    surface_to_centerline_m = float(
-        np.linalg.norm(np.asarray(spur_start_surface, dtype=np.float64) - np.asarray(fruiting_base))
+    (
+        fruiting_base,
+        surface_to_centerline_m,
+        base_spur_start_surface,
+        fruiting_base_pos_source,
+        fruiting_base_pos_snapshot,
+    ) = _fruiting_base_from_lengthened_or_rest(
+        pre,
+        rest_spur_start_surface=spur_start_surface,
+        rest_spur_dir=spur_dir,
+        primary_dir=primary_dir,
+        primary_radius_m=primary_r,
+        rest_snapshot_source=snap_source,
     )
 
     rod_density_diag: dict[str, dict[str, Any]] = {}
@@ -465,9 +529,14 @@ def map_pre_grasp_geometry(
         "chord_stem_direction": list(chord_stem_dir),
         "spur_direction": list(spur_dir),
         "stem_direction": list(stem_dir),
-        "spur_start_surface": [float(spur_start_surface[0]), float(spur_start_surface[1]), float(spur_start_surface[2])],
+        "spur_start_surface": [
+            float(base_spur_start_surface[0]),
+            float(base_spur_start_surface[1]),
+            float(base_spur_start_surface[2]),
+        ],
         "primary_surface_to_centerline_m": surface_to_centerline_m,
-        "fruiting_base_pos_source": "spur_start_surface − r_primary·radial_hat",
+        "fruiting_base_pos_source": fruiting_base_pos_source,
+        "fruiting_base_pos_snapshot": fruiting_base_pos_snapshot,
         "fruiting_base_pos": list(fruiting_base),
         "pre_grasp_snapshot_source": snap_source,
         "rod_density": rod_density_diag,

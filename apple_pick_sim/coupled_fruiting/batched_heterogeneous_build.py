@@ -38,7 +38,6 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
     prepare_batched_stem_harvest_arrays,
     prepare_batched_weld_harvest_arrays,
-    sync_model_body_q_rest_from_state,
 )
 from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
 from apple_pick_sim.digital_twin.record import fruiting_tree_fixed_joints
@@ -179,6 +178,8 @@ def build_batched_heterogeneous_scene(
     linear_kp_overrides = dict(config.fruiting_system.joint_linear_kp_overrides)
     roll_kp_overrides = dict(config.fruiting_system.joint_roll_kp_overrides)
     joint_damping_ratio = config.fruiting_system.joint_damping_ratio
+    support_kp_per_env = config.fruiting_system.support_kp_per_env
+    support_roll_kp_per_env = config.fruiting_system.support_roll_kp_per_env
 
     if fix_to_apple and not vbd_only:
         gripper_weld = weld_grippers[0]
@@ -243,8 +244,10 @@ def build_batched_heterogeneous_scene(
                 roll_kp_overrides=roll_kp_overrides,
                 joint_damping_ratio=joint_damping_ratio,
                 per_env_params=params,
+                support_kp_per_env=support_kp_per_env,
+                support_roll_kp_per_env=support_roll_kp_per_env,
             )
-            stability_reports, ke_decay_reports = _run_vbd_settle(
+            stability_reports, ke_decay_reports, _preload = _run_vbd_settle(
                 settled,
                 config=config,
                 per_env_params=params,
@@ -303,8 +306,10 @@ def build_batched_heterogeneous_scene(
                 roll_kp_overrides=roll_kp_overrides,
                 joint_damping_ratio=joint_damping_ratio,
                 per_env_params=params,
+                support_kp_per_env=support_kp_per_env,
+                support_roll_kp_per_env=support_roll_kp_per_env,
             )
-            stability_reports, ke_decay_reports = _run_vbd_settle(
+            stability_reports, ke_decay_reports, _preload = _run_vbd_settle(
                 scene,
                 config=config,
                 per_env_params=params,
@@ -328,6 +333,8 @@ def build_batched_heterogeneous_scene(
         roll_kp_overrides=roll_kp_overrides,
         joint_damping_ratio=joint_damping_ratio,
         per_env_params=params,
+        support_kp_per_env=support_kp_per_env,
+        support_roll_kp_per_env=support_roll_kp_per_env,
     )
 
     if not collect_diag:
@@ -594,12 +601,77 @@ def _apply_joint_linear_kp_overrides(
     return dict(filtered)
 
 
+def _apply_joint_linear_kp_overrides_per_env(
+    scene: CoupledFruitingScene,
+    kp_overrides_per_env: Sequence[Mapping[str, float]],
+) -> dict[str, float]:
+    layout = scene.layout
+    if layout is None or not kp_overrides_per_env:
+        return {}
+    set_fruiting_joint_linear_kp_batched(
+        scene.cable.solver,
+        scene.cable.fruiting_fixed_joints,
+        label_kp_per_env=kp_overrides_per_env,
+        num_envs=layout.num_envs,
+        joints_per_world=layout.joints_per_world,
+    )
+    return dict(kp_overrides_per_env[0])
+
+
 def _apply_support_roll_penalties(
     scene: CoupledFruitingScene,
     roll_kp_overrides: dict[str, float],
     *,
     joint_damping_ratio: float | None = None,
+    support_roll_kp_per_env: Sequence[float] | None = None,
 ) -> dict[str, float]:
+    if support_roll_kp_per_env is not None:
+        layout = scene.layout
+        if layout is None:
+            raise ValueError("support_roll_kp_per_env requires a batched scene layout")
+        if len(support_roll_kp_per_env) != int(layout.num_envs):
+            raise ValueError(
+                f"support_roll_kp_per_env length ({len(support_roll_kp_per_env)}) "
+                f"must match num_envs ({layout.num_envs})"
+            )
+        per_env_kp = [
+            {**roll_kp_overrides, "support": float(kp)}
+            for kp in support_roll_kp_per_env
+        ]
+        cable = scene.cable
+        per_env_kd: list[dict[str, float]] | None = None
+        if joint_damping_ratio is not None:
+            from apple_pick_sim.fruiting_system.build import (
+                _roll_kd_overrides_from_damping_ratio,
+            )
+
+            model = cable.model
+            joint_child = model.joint_child.numpy()
+            body_inertia = model.body_inertia.numpy()
+            bodies_per_world = int(layout.bodies_per_world)
+            per_env_kd = []
+            for w, env_kp in enumerate(per_env_kp):
+                per_env_kd.append(
+                    _roll_kd_overrides_from_damping_ratio(
+                        cable.fruiting_fixed_joints,
+                        env_kp,
+                        zeta=float(joint_damping_ratio),
+                        joint_child=joint_child,
+                        body_inertia=body_inertia,
+                        body_offset=int(w) * bodies_per_world,
+                    )
+                )
+        set_fruiting_joint_roll_kp_batched(
+            cable.solver,
+            cable.model,
+            cable.fruiting_fixed_joints,
+            label_kp_per_env=per_env_kp,
+            label_kd_per_env=per_env_kd,
+            num_envs=int(layout.num_envs),
+            joints_per_world=int(layout.joints_per_world),
+        )
+        return dict(per_env_kp[0])
+
     if not roll_kp_overrides:
         return {}
     cable = scene.cable
@@ -637,7 +709,6 @@ def _apply_support_roll_penalties(
     )
     return dict(roll_kp_overrides)
 
-
 def _apply_joint_penalty_overrides(
     scene: CoupledFruitingScene,
     *,
@@ -648,11 +719,78 @@ def _apply_joint_penalty_overrides(
     roll_kp_overrides: dict[str, float] | None = None,
     joint_damping_ratio: float | None = None,
     per_env_params: Sequence[FruitingSystemParams] | None = None,
+    support_kp_per_env: Sequence[float] | None = None,
+    support_roll_kp_per_env: Sequence[float] | None = None,
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
     # kp first so weld stiffness is in place before kd patches.
     # Support angular k_p = (3/4) L^2 k_lin with L = primary (dowel) length.
     per_env_ang_kp: list[dict[str, float]] | None = None
-    if "support" in linear_kp_overrides:
+    per_env_lin_kp: list[dict[str, float]] | None = None
+    if support_kp_per_env is not None:
+        layout = scene.layout
+        if layout is None:
+            raise ValueError("support_kp_per_env requires a batched scene layout")
+        if per_env_params is None:
+            raise ValueError(
+                "support_kp_per_env requires per_env_params (primary dowel length)"
+            )
+        if len(support_kp_per_env) != int(layout.num_envs):
+            raise ValueError(
+                f"support_kp_per_env length ({len(support_kp_per_env)}) must match "
+                f"num_envs ({layout.num_envs})"
+            )
+        if len(per_env_params) != int(layout.num_envs):
+            raise ValueError(
+                f"per_env_params length ({len(per_env_params)}) must match "
+                f"num_envs ({layout.num_envs})"
+            )
+        per_env_lin_kp = []
+        per_env_ang_kp = []
+        for kp, params in zip(support_kp_per_env, per_env_params, strict=True):
+            lin = dict(linear_kp_overrides)
+            lin["support"] = float(kp)
+            per_env_lin_kp.append(lin)
+            per_env_ang_kp.append(
+                map_support_angular_kp_overrides(
+                    angular_kp_overrides,
+                    lin,
+                    dowel_length_m=support_dowel_length_m(params),
+                )
+            )
+        angular_kp_overrides = dict(per_env_ang_kp[0])
+        linear_kp_overrides = dict(per_env_lin_kp[0])
+        joints = list(scene.cable.fruiting_fixed_joints)
+        filtered_ang = [
+            _matching_label_overrides(joints, m) for m in per_env_ang_kp
+        ]
+        filtered_lin = [
+            _matching_label_overrides(joints, m) for m in per_env_lin_kp
+        ]
+        if filtered_ang and filtered_ang[0]:
+            applied_angular_kp = _apply_joint_angular_kp_overrides_per_env(
+                scene, filtered_ang
+            )
+            per_env_ang_kp = filtered_ang
+            angular_kp_overrides = dict(filtered_ang[0])
+        else:
+            applied_angular_kp = {}
+            per_env_ang_kp = None
+            angular_kp_overrides = _matching_label_overrides(
+                joints, angular_kp_overrides
+            )
+        if filtered_lin and filtered_lin[0]:
+            applied_linear_kp = _apply_joint_linear_kp_overrides_per_env(
+                scene, filtered_lin
+            )
+            per_env_lin_kp = filtered_lin
+            linear_kp_overrides = dict(filtered_lin[0])
+        else:
+            applied_linear_kp = {}
+            per_env_lin_kp = None
+            linear_kp_overrides = _matching_label_overrides(
+                joints, linear_kp_overrides
+            )
+    elif "support" in linear_kp_overrides:
         if per_env_params is None:
             raise ValueError(
                 "mapping support angular kp from linear kp requires per_env_params "
@@ -670,14 +808,24 @@ def _apply_joint_penalty_overrides(
         layout = scene.layout
         if layout is None:
             raise ValueError("per-env support angular kp requires a batched scene layout")
-        applied_angular_kp = _apply_joint_angular_kp_overrides_per_env(
-            scene, per_env_ang_kp
-        )
+        joints = list(scene.cable.fruiting_fixed_joints)
+        filtered_ang = [
+            _matching_label_overrides(joints, m) for m in per_env_ang_kp
+        ]
+        if filtered_ang and filtered_ang[0]:
+            applied_angular_kp = _apply_joint_angular_kp_overrides_per_env(
+                scene, filtered_ang
+            )
+            per_env_ang_kp = filtered_ang
+        else:
+            applied_angular_kp = {}
+            per_env_ang_kp = None
+        applied_linear_kp = _apply_joint_linear_kp_overrides(scene, linear_kp_overrides)
     else:
         applied_angular_kp = _apply_joint_angular_kp_overrides(
             scene, angular_kp_overrides
         )
-    applied_linear_kp = _apply_joint_linear_kp_overrides(scene, linear_kp_overrides)
+        applied_linear_kp = _apply_joint_linear_kp_overrides(scene, linear_kp_overrides)
 
     ang_kd = dict(angular_kd_overrides)
     lin_kd = dict(linear_kd_overrides)
@@ -710,6 +858,11 @@ def _apply_joint_penalty_overrides(
                     if per_env_ang_kp is not None
                     else angular_kp_overrides
                 )
+                lin_role = (
+                    per_env_lin_kp[w]
+                    if per_env_lin_kp is not None
+                    else linear_kp_overrides
+                )
                 a, l = joint_kd_from_damping_ratio(
                     zeta=float(joint_damping_ratio),
                     fruiting_fixed_joints=joints,
@@ -717,7 +870,7 @@ def _apply_joint_penalty_overrides(
                     body_inertia=body_inertia,
                     joint_child=joint_child,
                     angular_kp_by_role=ang_role,
-                    linear_kp_by_role=linear_kp_overrides,
+                    linear_kp_by_role=lin_role,
                     body_offset=int(w) * int(layout.bodies_per_world),
                 )
                 per_env_ang.append(a)
@@ -742,6 +895,7 @@ def _apply_joint_penalty_overrides(
                 scene,
                 dict(roll_kp_overrides or {}),
                 joint_damping_ratio=joint_damping_ratio,
+                support_roll_kp_per_env=support_roll_kp_per_env,
             )
             return ang_kd, lin_kd, applied_angular_kp, applied_linear_kp
 
@@ -751,6 +905,7 @@ def _apply_joint_penalty_overrides(
         scene,
         dict(roll_kp_overrides or {}),
         joint_damping_ratio=joint_damping_ratio,
+        support_roll_kp_per_env=support_roll_kp_per_env,
     )
     return applied_angular_kd, applied_linear_kd, applied_angular_kp, applied_linear_kp
 
@@ -760,11 +915,14 @@ def _rebootstrap_fr3_after_post_grasp_settle(
     *,
     config: BatchedHeterogeneousCoupledSimConfig,
 ) -> None:
-    """Re-align FR3 TCP to the cable proxy after post-grasp VBD settle."""
+    """Re-align FR3 TCP to the cable proxy after post-grasp VBD settle.
+
+    Does **not** rewrite ``model.body_q`` rest: plant pretension established
+    during post-grasp settle must survive into the episode snapshot.
+    """
     cable = scene.cable
     body_count = int(cable.model.body_count)
     align_proxy_body_q_prev_for_vbd(cable, tuple(range(body_count)))
-    sync_model_body_q_rest_from_state(cable)
 
     if config.robot.per_world_bootstrap_joint_q is not None:
         _bootstrap_tcp_at_fixed_origin(
@@ -807,10 +965,21 @@ def _run_vbd_settle(
     sim_dt: float,
     viewer: Any | None,
     collect_diagnostics: bool,
-) -> tuple[list[SettleStabilityReport], list[SettleKeDecayReport]]:
+    sample_preload: bool = False,
+) -> tuple[
+    list[SettleStabilityReport],
+    list[SettleKeDecayReport],
+    Any | None,
+]:
+    from apple_pick_sim.coupled_fruiting.post_grasp_pretension import (
+        finalize_preload_report,
+        gather_stem_and_weld_forces,
+        sample_preload_every,
+    )
+
     n = int(substeps)
     if n <= 0:
-        return [], []
+        return [], [], None
 
     scene_cfg = config.scene
     diag = config.settle_diagnostics
@@ -830,6 +999,16 @@ def _run_vbd_settle(
     render_stride = _settle_render_stride(n) if viewer is not None else 1
     viewer_state = _SettleViewerState()
 
+    preload_every = sample_preload_every(n) if sample_preload else 0
+    stem_samples: list[np.ndarray] = []
+    weld_samples: list[np.ndarray] = []
+    apple_weight = 0.0
+    if sample_preload:
+        mass = float(getattr(scene, "apple_mass_kg", 0.0) or 0.0)
+        if mass <= 0.0 and scene.cable.apple_body is not None:
+            mass = float(scene.cable.model.body_mass.numpy()[int(scene.cable.apple_body)])
+        apple_weight = mass * 9.81
+
     for substep_idx in range(n):
         apply_settle_gravity_for_substep(
             scene,
@@ -840,6 +1019,11 @@ def _run_vbd_settle(
         scene.vbd_substep(h)
         if should_quiet_cable_bodies_at_settle_substep(substep_idx + 1, quiet_every):
             quiet_all_cable_bodies(scene.cable)
+        if preload_every > 0 and (substep_idx + 1) % preload_every == 0:
+            forces = gather_stem_and_weld_forces(scene, dt=h)
+            if forces is not None:
+                stem_samples.append(forces[0])
+                weld_samples.append(forces[1])
         if recorder is not None:
             recorder.record_substep(
                 scene.cable,
@@ -858,9 +1042,19 @@ def _run_vbd_settle(
                 frame_sleep_s=_SETTLE_RENDER_FRAME_DT_S,
             )
 
+    preload_report = None
+    if sample_preload:
+        preload_report = finalize_preload_report(
+            substeps=n,
+            sample_every=preload_every,
+            stem_samples=stem_samples,
+            weld_samples=weld_samples,
+            apple_weight_N=apple_weight,
+        )
+
     if not collect_diagnostics:
         quiet_all_cable_bodies(scene.cable)
-        return [], []
+        return [], [], preload_report
 
     # Measure residual motion before the final quiet so |v|_max is meaningful.
     stability_reports = settle_stability_reports_from_cable(
@@ -873,7 +1067,7 @@ def _run_vbd_settle(
     if recorder is not None and diag is not None:
         ke_decay_reports = recorder.reports(config=diag.ke_analysis)
     quiet_all_cable_bodies(scene.cable)
-    return stability_reports, ke_decay_reports
+    return stability_reports, ke_decay_reports, preload_report
 
 
 def apply_post_grasp_vbd_settle(
@@ -884,7 +1078,22 @@ def apply_post_grasp_vbd_settle(
     substeps: int | None = None,
     viewer: Any | None = None,
 ) -> tuple[list[SettleStabilityReport], list[SettleKeDecayReport]]:
-    """Run welded VBD settle after post-grasp SE(3), then rebootstrap FR3."""
+    """Run welded VBD settle after post-grasp SE(3), then rebootstrap FR3.
+
+    Establishes plant pretension (AVBD lambdas) on the welded solver. Does not
+    rewrite ``model.body_q`` rest after settle. Re-seeds the lagged
+    coupling-force cache (``scene.proxy_forces`` / ``coupling_forces_cache``)
+    from the post-settle equilibrium so the first live coupled substep applies
+    the pretensioned reaction instead of the stale weld-time seed.
+    """
+    from apple_pick_sim.coupled_fruiting.post_grasp_pretension import (
+        warn_if_preload_not_converged,
+        warn_if_tcp_proxy_mismatch,
+    )
+    from apple_pick_sim.coupled_fruiting.scene import (
+        seed_lagged_coupling_from_rest_harvest,
+    )
+
     n = (
         int(config.scene.post_grasp_settle_substeps)
         if substeps is None
@@ -893,7 +1102,7 @@ def apply_post_grasp_vbd_settle(
     if n <= 0:
         return [], []
     collect_diag = config.settle_diagnostics is not None
-    post_stab, post_ke = _run_vbd_settle(
+    post_stab, post_ke, preload = _run_vbd_settle(
         scene,
         config=config,
         per_env_params=per_env_params,
@@ -901,8 +1110,14 @@ def apply_post_grasp_vbd_settle(
         sim_dt=float(config.runtime.sub_dt),
         viewer=viewer,
         collect_diagnostics=collect_diag,
+        sample_preload=True,
     )
+    if preload is not None:
+        warn_if_preload_not_converged(preload)
+        scene.post_grasp_preload_report = preload
     _rebootstrap_fr3_after_post_grasp_settle(scene, config=config)
+    warn_if_tcp_proxy_mismatch(scene)
+    seed_lagged_coupling_from_rest_harvest(scene, float(config.runtime.sub_dt))
     return post_stab, post_ke
 
 

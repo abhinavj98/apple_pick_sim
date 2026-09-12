@@ -536,13 +536,13 @@ def test_apply_logged_post_grasp_se3_to_cable_sets_apple_and_proxy():
     cable = _Cable()
     sync_calls: list[object] = []
 
-    def _fake_sync(c):
+    def _fake_sync(c, **_kwargs):
         sync_calls.append(c)
 
     import apple_pick_sim.system_id.batched_digital_twin_init as mod
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(mod, "sync_model_body_q_rest_from_state", _fake_sync)
+    monkeypatch.setattr(mod, "sync_weld_proxy_rest_from_apple_rest", _fake_sync)
     monkeypatch.setattr(mod, "align_proxy_body_q_prev_for_vbd", lambda *_a, **_k: None)
     try:
         apply_logged_post_grasp_se3_to_cable(
@@ -635,7 +635,7 @@ def test_apply_logged_post_grasp_se3_writes_every_layout_world():
     import apple_pick_sim.system_id.batched_digital_twin_init as mod
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(mod, "sync_model_body_q_rest_from_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(mod, "sync_weld_proxy_rest_from_apple_rest", lambda *_a, **_k: None)
     monkeypatch.setattr(mod, "align_proxy_body_q_prev_for_vbd", lambda *_a, **_k: None)
     try:
         apply_logged_post_grasp_se3_to_cable(cable, meta, layout=layout)
@@ -731,7 +731,7 @@ def test_apply_logged_post_grasp_se3_per_env_uses_each_meta():
     import apple_pick_sim.system_id.batched_digital_twin_init as mod
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(mod, "sync_model_body_q_rest_from_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(mod, "sync_weld_proxy_rest_from_apple_rest", lambda *_a, **_k: None)
     monkeypatch.setattr(mod, "align_proxy_body_q_prev_for_vbd", lambda *_a, **_k: None)
     try:
         apply_logged_post_grasp_se3_to_cable(
@@ -772,7 +772,7 @@ def test_apply_logged_post_grasp_se3_per_env_rejects_wrong_count():
     import apple_pick_sim.system_id.batched_digital_twin_init as mod
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(mod, "sync_model_body_q_rest_from_state", lambda *_a, **_k: None)
+    monkeypatch.setattr(mod, "sync_weld_proxy_rest_from_apple_rest", lambda *_a, **_k: None)
     monkeypatch.setattr(mod, "align_proxy_body_q_prev_for_vbd", lambda *_a, **_k: None)
     try:
         with pytest.raises(ValueError):

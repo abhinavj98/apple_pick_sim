@@ -238,6 +238,130 @@ def test_make_real_replay_build_env_fn_applies_post_grasp_with_layout(monkeypatc
     assert call_order == ["construct", "se3", "post_grasp_settle", "snapshot"]
 
 
+def test_make_real_replay_build_env_fn_threads_support_kp_into_sim_config(monkeypatch):
+    """Candidate support_kp_per_env must land on FruitingSystemConfig before construct."""
+    from apple_pick_gym.batched_envs import real_batched_replay_build as build
+
+    captured: dict = {}
+
+    class _FakeEnv:
+        def __init__(self, **kwargs):
+            captured["sim_config"] = kwargs["sim_config"]
+            self._sim = SimpleNamespace(
+                scene=SimpleNamespace(cable=None, layout=None),
+                config=kwargs["sim_config"],
+                per_env_params=(None, None),
+                capture_episode_snapshot=lambda: None,
+            )
+
+    monkeypatch.setattr(build, "ApplePickBatchedSysIdEnv", _FakeEnv)
+    meta = {
+        "control_hz": 15.0,
+        "fruiting_base_pos": [0.0, 0.5, 0.95],
+        "initial_robot_joint_q": [0.0] * 7,
+        "initial_apple_pos": [0.1, 0.2, 0.3],
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": [0.1, 0.15, 0.3],
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+    }
+    fn = build.make_real_replay_build_env_fn(
+        ranges_path=_VARIANCE,
+        ranges=load_ranges(_VARIANCE),
+        topology_seed=0,
+        fruiting_base_pos=(0.0, 0.5, 0.95),
+        episode_meta=meta,
+        bootstrap_joint_q=(0.0,) * 7,
+        controller_mode="vic_pose",
+        control_hz=15.0,
+    )
+    assert getattr(fn, "wants_support_kp_per_env", False) is True
+    fn(
+        num_envs=2,
+        per_env_params=[None, None],
+        max_episode_steps=4,
+        support_kp_per_env=[1.4e3, 2.0e3],
+    )
+    assert captured["sim_config"].fruiting_system.support_kp_per_env == (1.4e3, 2.0e3)
+
+
+def test_make_real_replay_build_env_fn_applies_support_kp_before_post_grasp_settle(
+    monkeypatch,
+):
+    """Welded-scene support kp must be candidate values before post-grasp settle."""
+    from apple_pick_gym.batched_envs import real_batched_replay_build as build
+
+    cable = object()
+    layout = SimpleNamespace(num_envs=2, joints_per_world=7)
+    call_order: list[str] = []
+    apply_kwargs: list[dict] = []
+
+    class _FakeEnv:
+        def __init__(self, **kwargs):
+            call_order.append("construct")
+            sim_config = kwargs["sim_config"]
+            self._sim = SimpleNamespace(
+                scene=SimpleNamespace(cable=cable, layout=layout),
+                config=sim_config,
+                per_env_params=(
+                    SimpleNamespace(primary=SimpleNamespace(length=0.8)),
+                    SimpleNamespace(primary=SimpleNamespace(length=0.8)),
+                ),
+                layout=layout,
+                capture_episode_snapshot=lambda: call_order.append("snapshot"),
+            )
+
+    def _apply_se3(*_a, **_k):
+        call_order.append("se3")
+
+    def _apply_support(scene, support_kp_per_env, **kwargs):
+        call_order.append("support_kp")
+        apply_kwargs.append(
+            {
+                "scene": scene,
+                "support_kp_per_env": tuple(support_kp_per_env),
+                **kwargs,
+            }
+        )
+
+    def _post_settle(*_a, **_k):
+        call_order.append("post_grasp_settle")
+        return [], []
+
+    monkeypatch.setattr(build, "ApplePickBatchedSysIdEnv", _FakeEnv)
+    monkeypatch.setattr(build, "apply_logged_post_grasp_se3_to_cable", _apply_se3)
+    monkeypatch.setattr(build, "apply_per_env_support_joint_penalties", _apply_support)
+    monkeypatch.setattr(build, "apply_post_grasp_vbd_settle", _post_settle)
+    meta = {
+        "initial_apple_pos": [0.1, 0.2, 0.3],
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": [0.1, 0.15, 0.3],
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+    }
+    fn = build.make_real_replay_build_env_fn(
+        ranges_path=_VARIANCE,
+        ranges=load_ranges(_VARIANCE),
+        topology_seed=0,
+        fruiting_base_pos=(0.0, 0.5, 0.95),
+        episode_meta=meta,
+        controller_mode="vic_pose",
+        post_grasp_settle_substeps=100,
+    )
+    fn(
+        num_envs=2,
+        per_env_params=[None, None],
+        max_episode_steps=4,
+        support_kp_per_env=[500.0, 5000.0],
+    )
+    assert call_order == [
+        "construct",
+        "se3",
+        "support_kp",
+        "post_grasp_settle",
+        "snapshot",
+    ]
+    assert apply_kwargs[0]["support_kp_per_env"] == (500.0, 5000.0)
+
+
 def test_make_real_replay_build_env_fn_recaptures_snapshot_after_post_grasp_se3(
     monkeypatch,
 ):

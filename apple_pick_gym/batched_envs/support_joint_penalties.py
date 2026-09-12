@@ -180,3 +180,63 @@ def apply_per_env_support_joint_penalties(
         num_envs=num_envs,
         joints_per_world=joints_per_world,
     )
+
+
+def apply_per_env_support_roll_penalties(
+    scene: CoupledFruitingScene,
+    support_roll_kp_per_env: Sequence[float],
+    *,
+    num_envs: int,
+    joints_per_world: int,
+    zeta: float = SUPPORT_JOINT_ZETA_FALLBACK,
+) -> None:
+    """Set per-env T-roll support kp/kd (dual-write target_ke + penalty slot).
+
+    ``support_roll_kp_per_env`` is revolute drive stiffness (N·m/rad). Callers
+    should pass ``zeta=support_joint_zeta_from_dataset(dataset)`` for collect
+    / replay parity.
+    """
+    from apple_pick_sim.fruiting_system import set_fruiting_joint_roll_kp_batched
+    from apple_pick_sim.fruiting_system.build import _roll_kd_overrides_from_damping_ratio
+
+    if len(support_roll_kp_per_env) != int(num_envs):
+        raise ValueError(
+            f"support_roll_kp_per_env length ({len(support_roll_kp_per_env)}) "
+            f"must match num_envs ({num_envs})"
+        )
+    layout = scene.layout
+    if layout is None:
+        raise ValueError("scene.layout is required for per-env support roll penalties")
+
+    cable = scene.cable
+    per_env_kp = [{"support": float(kp)} for kp in support_roll_kp_per_env]
+    for idx, kp in enumerate(support_roll_kp_per_env):
+        if float(kp) < 0.0:
+            raise ValueError(
+                f"support_roll_kp_per_env[{idx}] must be >= 0, got {kp!r}"
+            )
+
+    model = cable.model
+    joint_child = model.joint_child.numpy()
+    body_inertia = model.body_inertia.numpy()
+    bodies_per_world = int(layout.bodies_per_world)
+    per_env_kd = [
+        _roll_kd_overrides_from_damping_ratio(
+            cable.fruiting_fixed_joints,
+            env_kp,
+            zeta=float(zeta),
+            joint_child=joint_child,
+            body_inertia=body_inertia,
+            body_offset=int(w) * bodies_per_world,
+        )
+        for w, env_kp in enumerate(per_env_kp)
+    ]
+    set_fruiting_joint_roll_kp_batched(
+        cable.solver,
+        cable.model,
+        cable.fruiting_fixed_joints,
+        label_kp_per_env=per_env_kp,
+        label_kd_per_env=per_env_kd,
+        num_envs=int(num_envs),
+        joints_per_world=int(joints_per_world),
+    )

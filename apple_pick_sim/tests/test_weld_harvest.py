@@ -113,6 +113,32 @@ def test_build_with_weld_harvest_disables_explicit_apple_weight():
 
 
 @requires_fr3
+def test_weld_harvest_keeps_mujoco_apple_payload_mass_zero():
+    """Weld reaction already carries apple weight; MuJoCo payload must stay mass 0.
+
+    Otherwise gravity in M(q) and weld harvest F_weld≈F_stem+mg double-count mg
+    at the TCP (~apple weight downward bias on every direction).
+    """
+    fs = _import_fs()
+    scene = build_coupled_fr3(
+        _import_cf(),
+        fs.load_ranges(RANGES_FIXTURE),
+        47,
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True, dynamic_apple=True),
+        tcp_harvest_source="weld",
+        stem_force_cap_N=None,
+        stem_torque_cap_Nm=None,
+    )
+    assert scene.tcp_harvest_source == "weld"
+    assert scene.mj_apple_payload_body_index is not None
+    payload = int(scene.mj_apple_payload_body_index)
+    m_mj = float(scene.robot_model.body_mass.numpy()[payload])
+    assert m_mj == pytest.approx(0.0, abs=1e-12), (
+        f"weld harvest path must leave apple_payload mass 0, got {m_mj:.6f} kg"
+    )
+
+
+@requires_fr3
 def test_coupled_substep_uses_weld_harvest_when_configured():
     """``coupled_substep`` writes the weld reaction into ``proxy_forces`` under the flag."""
     import apple_pick_sim.coupled_fruiting as cf

@@ -200,3 +200,64 @@ def test_snapshot_restore_reseeds_lagged_proxy_forces():
         cache = sim.scene.coupling_forces_cache.numpy().reshape(-1, 6)[int(tcp_idx)]
         assert float(np.linalg.norm(w[:3])) >= 0.5 * expected_mg
         np.testing.assert_allclose(cache, w, rtol=1e-5, atol=1e-5)
+
+
+@requires_fr3
+def test_snapshot_restores_avbd_lambda_and_penalty_k():
+    """Capture/restore must round-trip SolverVBD lambda and penalty_k."""
+    ranges = load_ranges(RANGES_FIXTURE)
+    params = sample_heterogeneous_params_list(
+        ranges, topology_seed=21, num_envs=_NUM_ENVS
+    )
+    sim = BatchedHeterogeneousCoupledSim(
+        _welded_vic_config(),
+        params,
+        ranges,
+        use_settle_cache=False,
+    )
+    solver = sim.scene.cable.solver
+    assert getattr(solver, "joint_lambda_lin", None) is not None
+
+    # Mutate AVBD state, capture, mutate again, restore.
+    lam = solver.joint_lambda_lin.numpy().copy()
+    lam[:] = 1.25
+    solver.joint_lambda_lin.assign(lam)
+    k = solver.joint_penalty_k.numpy().copy()
+    k[:] = 42.0
+    solver.joint_penalty_k.assign(k)
+    c0 = solver.joint_C0_lin.numpy().copy()
+    c0[:] = 0.1
+    solver.joint_C0_lin.assign(c0)
+
+    snap = EpisodeStateSnapshot.capture(sim)
+    assert snap.joint_lambda_lin is not None
+    assert snap.joint_penalty_k is not None
+    assert snap.joint_target_ke is not None
+    assert snap.joint_target_kd is not None
+    cable_model = sim.scene.cable.model
+    ke = cable_model.joint_target_ke.numpy().copy()
+    kd = cable_model.joint_target_kd.numpy().copy()
+
+    lam2 = solver.joint_lambda_lin.numpy().copy()
+    lam2[:] = -9.0
+    solver.joint_lambda_lin.assign(lam2)
+    k2 = solver.joint_penalty_k.numpy().copy()
+    k2[:] = 1.0
+    solver.joint_penalty_k.assign(k2)
+    ke2 = ke.copy()
+    ke2[:] = 7.0
+    cable_model.joint_target_ke.assign(ke2)
+    kd2 = kd.copy()
+    kd2[:] = 3.0
+    cable_model.joint_target_kd.assign(kd2)
+
+    snap.restore(sim)
+    np.testing.assert_allclose(solver.joint_lambda_lin.numpy(), lam, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(solver.joint_penalty_k.numpy(), k, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(solver.joint_C0_lin.numpy(), c0, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(
+        cable_model.joint_target_ke.numpy(), ke, rtol=1e-6, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        cable_model.joint_target_kd.numpy(), kd, rtol=1e-6, atol=1e-6
+    )

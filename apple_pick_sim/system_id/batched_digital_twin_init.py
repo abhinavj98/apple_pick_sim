@@ -13,7 +13,7 @@ import numpy as np
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
-    sync_model_body_q_rest_from_state,
+    sync_weld_proxy_rest_from_apple_rest,
 )
 from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
 from apple_pick_sim.coupled_fruiting.settle_then_weld import _proxy_world_pose_from_apple
@@ -321,7 +321,24 @@ def apply_logged_post_grasp_se3_to_cable(
     cable.state_1.body_qd.assign(bqd)
     body_count = int(getattr(getattr(cable, "model", None), "body_count", bq.shape[0]))
     align_proxy_body_q_prev_for_vbd(cable, tuple(range(body_count)))
-    sync_model_body_q_rest_from_state(cable)
+    # Quiet weld kappa without baking the teleported hang into woody/apple rest.
+    per_env_offsets = None
+    if per_env_meta is not None and layout is not None:
+        per_env_offsets = []
+        for env_meta in per_env_meta:
+            apple_pos_i, apple_quat_i = _apple_pose_from_episode_meta(env_meta)
+            per_env_offsets.append(
+                _proxy_offset_from_episode_meta(
+                    env_meta,
+                    apple_pos=apple_pos_i,
+                    apple_quat=apple_quat_i,
+                    cable_offset=cable_offset,
+                    prefer_meta_tcp=True,
+                )
+            )
+    sync_weld_proxy_rest_from_apple_rest(
+        cable, layout=layout, per_env_offsets=per_env_offsets
+    )
 
 
 def digital_twin_obs_from_batched_episode(

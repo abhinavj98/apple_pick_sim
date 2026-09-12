@@ -231,6 +231,39 @@ def test_apply_per_env_support_joint_penalties_sets_kp_and_critical_kd():
         assert spur_kd_after == pytest.approx(spur_stem_kd_before[w])
 
 
+def test_apply_per_env_support_roll_penalties_sets_target_ke_and_penalty():
+    from apple_pick_gym.batched_envs.support_joint_penalties import (
+        apply_per_env_support_roll_penalties,
+    )
+
+    scene, _params_list = _build_support_scene()
+    cable = scene.cable
+    layout = scene.layout
+    num_envs = int(layout.num_envs)
+    joints_per_world = int(layout.joints_per_world)
+    j_support = _template_joint_by_label(
+        cable.fruiting_fixed_joints, "primary_support_left"
+    )
+    roll_kps = [0.5, 3.0]
+    apply_per_env_support_roll_penalties(
+        scene,
+        roll_kps,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+        zeta=0.3,
+    )
+    jqd = cable.model.joint_qd_start.numpy()
+    jc = cable.solver.joint_constraint_start.numpy()
+    ke = cable.model.joint_target_ke.numpy()
+    k_np = cable.solver.joint_penalty_k.numpy()
+    for w, kp in enumerate(roll_kps):
+        gj = w * joints_per_world + j_support
+        dof = int(jqd[gj])
+        c0 = int(jc[gj])
+        assert float(ke[dof]) == pytest.approx(kp)
+        assert float(k_np[c0 + 2]) == pytest.approx(kp)
+
+
 def _inertia_max(body_inertia: np.ndarray, child: int) -> float:
     mat = body_inertia[child]
     sym = 0.5 * (mat + mat.T)

@@ -14,6 +14,7 @@ from apple_pick_sim.robot.fr3_robot.fr3_v21_props import (
 )
 from apple_pick_sim.robot.fr3_robot.paths import EE_COM_IN_EE_LOCAL_M, EE_MASS_KG
 from apple_pick_sim.robot.fr3_robot.setup import (
+    FR3_DEFAULT_JOINT_FRICTION,
     FR3_DEFAULT_VIC_JOINT_DAMPING,
     FR3_REFLECTED_MOTOR_INERTIA_KGM2,
 )
@@ -34,9 +35,32 @@ def test_fr3_v21_yaml_parse_armature():
     dyn = parse_fr3_v21_dynamics()
     expected = (0.6057, 0.6057, 0.4625, 0.4625, 0.2055, 0.2055, 0.2055)
     np.testing.assert_allclose(dyn.reflected_motor_inertia_kgm2, expected, rtol=0.0, atol=1e-4)
-    assert dyn.mu_viscous == 16.0
+    np.testing.assert_allclose(
+        dyn.mu_viscous, (0.35, 0.35, 0.3, 0.3, 0.15, 0.12, 0.1), rtol=0.0, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        dyn.mu_coulomb, (0.75, 0.8, 0.7, 0.7, 0.45, 0.4, 0.35), rtol=0.0, atol=1e-6
+    )
     assert FR3_REFLECTED_MOTOR_INERTIA_KGM2 == dyn.reflected_motor_inertia_kgm2
-    assert FR3_DEFAULT_VIC_JOINT_DAMPING == 16.0
+    np.testing.assert_allclose(FR3_DEFAULT_VIC_JOINT_DAMPING, dyn.mu_viscous, rtol=0.0, atol=1e-6)
+    np.testing.assert_allclose(FR3_DEFAULT_JOINT_FRICTION, dyn.mu_coulomb, rtol=0.0, atol=1e-6)
+
+
+def test_fr3_v21_yaml_parse_accepts_nonuniform_mu():
+    raw = {
+        f"joint{j}": {
+            "dynamic": {
+                "motor_inertia": 1e-5,
+                "gear_ratio": 100.0,
+                "mu_viscous": float(j),
+                "mu_coulomb": float(j) * 0.1,
+            }
+        }
+        for j in range(1, 8)
+    }
+    dyn = parse_fr3_v21_dynamics(raw)
+    assert dyn.mu_viscous == tuple(float(j) for j in range(1, 8))
+    assert dyn.mu_coulomb == tuple(float(j) * 0.1 for j in range(1, 8))
 
 
 def test_fr3_v21_yaml_parse_link1_mass():
@@ -152,3 +176,19 @@ def test_configure_vic_ee_tcp_inertials_unchanged():
     assert tcp_mass_after == pytest.approx(0.001, abs=1e-3)
     np.testing.assert_allclose(ee_com_after, ee_com_before, rtol=0.0, atol=1e-5)
     np.testing.assert_allclose(ee_com_after, EE_COM_IN_EE_LOCAL_M, rtol=0.0, atol=1e-4)
+
+
+@requires_fr3
+def test_configure_vic_applies_fr3_v21_joint_friction():
+    from apple_pick_sim.coupled_fruiting.vic_joint_torques import _N_ARM_DOF
+
+    scene = _build_mujoco_only_fr3()
+    _configure_joint_torque_vic(scene)
+    model_f = scene.robot_model.joint_friction.numpy().reshape(-1)[:_N_ARM_DOF]
+    np.testing.assert_allclose(model_f, np.asarray(FR3_DEFAULT_JOINT_FRICTION), rtol=0.0, atol=1e-6)
+    mj_solver = scene.mj_solver
+    if mj_solver.use_mujoco_cpu:
+        mj_f = np.asarray(mj_solver.mj_model.dof_frictionloss).reshape(-1)[:_N_ARM_DOF]
+    else:
+        mj_f = mj_solver.mjw_model.dof_frictionloss.numpy()[0][:_N_ARM_DOF]
+    np.testing.assert_allclose(mj_f, np.asarray(FR3_DEFAULT_JOINT_FRICTION), rtol=0.0, atol=1e-6)

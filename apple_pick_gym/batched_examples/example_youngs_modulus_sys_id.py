@@ -557,6 +557,8 @@ def _make_build_env_fn(
         max_episode_steps: int,
         gripper=None,
         per_env_grippers=None,
+        support_kp_per_env=None,
+        support_roll_kp_per_env=None,
     ) -> ApplePickBatchedSysIdEnv:
         if gripper is not None and per_env_grippers is not None:
             raise ValueError(
@@ -573,6 +575,34 @@ def _make_build_env_fn(
             sim_config,
             runtime=dataclasses.replace(sim_config.runtime, control_hz=float(control_hz)),
         )
+        if support_kp_per_env is not None:
+            kp_tuple = tuple(float(kp) for kp in support_kp_per_env)
+            if len(kp_tuple) != int(num_envs):
+                raise ValueError(
+                    f"support_kp_per_env length ({len(kp_tuple)}) must match "
+                    f"num_envs ({num_envs})"
+                )
+            sim_config = dataclasses.replace(
+                sim_config,
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system,
+                    support_kp_per_env=kp_tuple,
+                ),
+            )
+        if support_roll_kp_per_env is not None:
+            roll_tuple = tuple(float(kp) for kp in support_roll_kp_per_env)
+            if len(roll_tuple) != int(num_envs):
+                raise ValueError(
+                    f"support_roll_kp_per_env length ({len(roll_tuple)}) must match "
+                    f"num_envs ({num_envs})"
+                )
+            sim_config = dataclasses.replace(
+                sim_config,
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system,
+                    support_roll_kp_per_env=roll_tuple,
+                ),
+            )
         if gripper is not None:
             sim_config = dataclasses.replace(
                 sim_config,
@@ -590,6 +620,8 @@ def _make_build_env_fn(
             sim_config=sim_config,
         )
 
+    build_env_fn.wants_support_kp_per_env = True
+    build_env_fn.wants_support_roll_kp_per_env = True
     return build_env_fn
 
 

@@ -834,6 +834,78 @@ def test_replay_multi_structure_applies_support_kp_before_reset(
     assert event_order == ["apply", "reset"]
 
 
+def test_replay_multi_structure_passes_support_kp_into_build_when_advertised(
+    monkeypatch,
+    _fake_replay_runtime,
+):
+    """Build-time settle path: pass support_kp_per_env and skip late apply."""
+    apply_calls: list[tuple[float, ...]] = []
+    build_kwargs_seen: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        multi,
+        "apply_per_env_support_joint_penalties",
+        lambda _scene, kp, **_kwargs: apply_calls.append(tuple(kp)),
+        raising=False,
+    )
+
+    class _Env(_FakeEnv):
+        def __init__(self, params, grippers, *, support_kp_per_env=None):
+            super().__init__(params, grippers)
+            self.support_kp_per_env = (
+                None if support_kp_per_env is None else tuple(support_kp_per_env)
+            )
+            self._snapshot_kp = self.support_kp_per_env
+            self.kp_after_reset: tuple[float, ...] | None = None
+            self._sim = SimpleNamespace(
+                scene=SimpleNamespace(label="scene"),
+                layout=SimpleNamespace(num_envs=self.num_envs, joints_per_world=7),
+            )
+
+        def reset(self, *, seed: int):
+            # Mimic episode snapshot restore of joint_penalty_k.
+            self.kp_after_reset = self._snapshot_kp
+            super().reset(seed=seed)
+
+    params = _params(4)
+    blocks = multi.build_replay_candidate_blocks(
+        (
+            _request(
+                4,
+                params=params,
+                candidates=(
+                    _Candidate(40.0, support_kp=1.0e3),
+                    _Candidate(41.0, support_kp=2.0e4),
+                ),
+                directions=(0,),
+            ),
+        )
+    )
+
+    def build_env_fn(**kwargs):
+        build_kwargs_seen.append(dict(kwargs))
+        env = _Env(
+            kwargs["per_env_params"],
+            kwargs["per_env_grippers"],
+            support_kp_per_env=kwargs.get("support_kp_per_env"),
+        )
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    build_env_fn.wants_support_kp_per_env = True
+
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    assert build_kwargs_seen[0]["support_kp_per_env"] == [1.0e3, 2.0e4]
+    assert apply_calls == []
+    assert _fake_replay_runtime.built[0].kp_after_reset == (1.0e3, 2.0e4)
+
+
 def test_replay_multi_structure_skips_support_kp_apply_when_unset(
     monkeypatch,
     _fake_replay_runtime,

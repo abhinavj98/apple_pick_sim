@@ -9,7 +9,7 @@ the next real-data acceptance work belong in `docs/ROADMAP.md`.
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-09-01 |
+| Last reviewed | 2026-09-11 |
 | Code owners | `apple_pick_gym/batched_envs/batched_sysid_cmaes.py`; `apple_pick_gym/batched_envs/cma_wave_evaluation.py`; `apple_pick_gym/batched_envs/batched_sysid_multi_replay.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_sys_id.py`; `apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` |
 | Status | Living handbook — defer sequencing to `docs/ROADMAP.md` |
 | Related handbooks | H2 `docs/handbook-variable-impedance.md`; H3 `docs/handbook-sysid-scoring.md`; H4 `docs/handbook-real-replay.md` |
@@ -41,7 +41,7 @@ Related boundaries:
 `iter_support_kp_youngs_candidates` and `candidates_from_log10_vector` length-3
 samples set flexural spur/stem \(E\) only; axial moduli stay at the structure baseline.
 
-**CMA-ES (5D):**
+**CMA-ES (6D):**
 
 \[
 \theta_{\mathrm{CMA}} =
@@ -50,24 +50,29 @@ samples set flexural spur/stem \(E\) only; axial moduli stay at the structure ba
 \log_{10} E_{\mathrm{flex,spur}},
 \log_{10} E_{\mathrm{flex,stem}},
 \log_{10} E_{\mathrm{ax,spur}},
-\log_{10} E_{\mathrm{ax,stem}}
+\log_{10} E_{\mathrm{ax,stem}},
+\log_{10} k_p^{\mathrm{support,roll}}
 \right).
 \]
 
 `SupportKpYoungsCandidate` stores `(support_kp, spur, stem)` as **flexural** moduli
-plus optional `(spur_youngs, stem_youngs)` axial moduli. Length-5 `candidates_from_log10_vector`
-maps all five axes; length-3 leaves axial slots `None`.
+plus optional `(spur_youngs, stem_youngs)` axial moduli and optional
+`support_roll_kp` (N·m/rad). Length-6 `candidates_from_log10_vector` maps all six
+axes; length-5 leaves roll `None` (fixture); length-3 leaves axial and roll `None`.
 
 `SupportKpYoungsCandidate.apply_to` uses **`set_rod_flexural_modulus`** on spur/stem,
 then **`set_rod_youngs_modulus`** when axial slots are set. Fused replay separately applies the
-per-environment support penalties through
-`apply_per_env_support_joint_penalties`. Support \(k_d\) is derived using the
-dataset's support-joint damping ratio and each child body's mass/inertia.
-T-junction world clamps (`primary_support_left/right`) are authored **soft**
-revolute hinges about the primary axis (VBD penalty-only, `vbd:joint_is_hard=0`).
-Linear \(k_p\) and pitch/yaw angular \(k_p=\tfrac{3}{4}L^2 k_{\mathrm{lin}}\) use
-penalty slots 0–1; T-roll uses fixture `sim_build.joint_roll_kp_overrides.support`
-as revolute drive `target_ke` (N·m/rad per clamp, not CMA). Other rod welds stay hard `FIXED`.
+per-environment support linear/angular penalties through
+`apply_per_env_support_joint_penalties` and T-roll through
+`apply_per_env_support_roll_penalties` / `support_roll_kp_per_env` (before settle).
+Support \(k_d\) is derived using the dataset's support-joint damping ratio and each
+child body's mass/inertia. T-junction world clamps (`primary_support_left/right`)
+are authored **soft** revolute hinges about the primary axis (VBD penalty-only,
+`vbd:joint_is_hard=0`). Linear \(k_p\) and pitch/yaw angular
+\(k_p=\tfrac{3}{4}L^2 k_{\mathrm{lin}}\) use penalty slots 0–1; T-roll writes both
+revolute drive `target_ke` and penalty slot `c0+2` so runtime
+`min(penalty_k, target_ke)` matches the candidate (episode snapshots restore both).
+Other rod welds stay hard `FIXED`.
 Build-time and CMA-apply support pitch/yaw angular \(k_p\) is
 
 \[
@@ -75,7 +80,8 @@ k_{\mathrm{ang}} = \tfrac{3}{4}\, L_{\mathrm{dowel}}^{2}\, k_{\mathrm{lin}},
 \]
 
 with \(L_{\mathrm{dowel}}\) the **primary rod length** (metres) between the T-junction
-world clamps. CMA searches only linear \(k_{\mathrm{lin}}\) (N/m); both clamps get this
+world clamps. CMA searches linear \(k_{\mathrm{lin}}\) (N/m) and T-roll
+\(k_p^{\mathrm{support,roll}}\) (N·m/rad); both clamps get the derived
 \(k_{\mathrm{ang}}\) (N·m/rad). Config-level snapshots that do not yet have a sampled
 env use the fixture `primary.length` midpoint. Per-env apply uses that env's
 `params.primary.length`. (Fixture JSON may still list the same number for angular
@@ -170,15 +176,15 @@ unchanged.
 
 | Knob | Default |
 | ---- | ------- |
-| Coordinates | `log10([support_kp, E_flex_spur, E_flex_stem, E_ax_spur, E_ax_stem])` (CMA); grid uses first three only |
-| Initial mean | `[4.0, 9.5, 9.5, 9.5, 9.5]` sim-sim; real `vic_pose` `[log10(500), 8.0, 8.0, 8.0, 8.0]` (\(500\,\mathrm{N/m}\), \(100\,\mathrm{MPa}\)) |
+| Coordinates | `log10([support_kp, E_flex_spur, E_flex_stem, E_ax_spur, E_ax_stem, support_roll_kp])` (CMA); grid uses first three only |
+| Initial mean | `[4.0, 9.5, 9.5, 9.5, 9.5, log10(0.75)]` sim-sim; real `vic_pose` `[log10(1000), 8.7, 8.7, 8.7, 8.7, log10(0.75)]` approx (see `_REAL_CMA_MEAN_LOG10`) |
 | Initial sigma | `0.2` decade; real/sim `max_sigma_log10=0.5` (pycma `maxstd` + post-`tell` σ clamp) |
 | Population | `20` |
-| Maximum generations | `20` |
+| Maximum generations | `15` |
 | CMA base seed | `56` |
-| Bounds | sim-sim lower `[2, 4.0, 4.0, 7.0, 7.0]`, upper `[6, 10.7, 10.7, 10.7, 10.7]` (kp \(10^2\)–\(10^6\) N/m, flex \(10\,\mathrm{kPa}\)–\(50\,\mathrm{GPa}\), axial \(10\,\mathrm{MPa}\)–\(50\,\mathrm{GPa}\)); real `vic_pose` kp \(200\)–\(1000\,\mathrm{N/m}\), all four \(E\) \(100\,\mathrm{kPa}\)–\(10\,\mathrm{GPa}\) |
+| Bounds | sim-sim lower `[2, 4.0, 4.0, 7.0, 7.0, -1]`, upper `[6, 10.7, 10.7, 10.7, 10.7, 2]` (kp \(10^2\)–\(10^6\) N/m, flex/axial as before, roll \(0.1\)–\(100\,\mathrm{N·m/rad}\)); real `vic_pose` kp \(200\)–\(4\,\mathrm{kN/m}\), \(E\) \(100\,\mathrm{kPa}\)–\(10\,\mathrm{GPa}\), same roll box |
 
-The sim-sim support box is \(10^2\)–\(10^6\,\mathrm{N/m}\); real `vic_pose` support \(k_p\) is \(200\)–\(1000\,\mathrm{N/m}\) (init \(500\,\mathrm{N/m}\)). `"bounds_midpoint"` initialization extends fixture spur/stem midpoints to 5D by duplicating flexural midpoints onto axial slots when a 5D search box is active. Grid `"bounds_midpoint"` remains 3D.
+The sim-sim support box is \(10^2\)–\(10^6\,\mathrm{N/m}\); real `vic_pose` support \(k_p\) is \(200\)–\(4\,\mathrm{kN/m}\) (init \(1\,\mathrm{kN/m}\)). `"bounds_midpoint"` initialization extends fixture spur/stem midpoints to 6D by duplicating flexural midpoints onto axial slots and using \(\log_{10}(0.75)\) for T-roll when a 6D search box is active. Grid `"bounds_midpoint"` remains 3D.
 The ranges fixture remains required for replay `sim_build` settings, but its
 narrow material ranges are not the default CMA safety box.
 

@@ -375,7 +375,11 @@ def _assemble_coupled_robot_scene(
     init_robot_mujoco_step_buffers(scene)
     if explicit_apple_inertia:
         wp.copy(scene.robot_tcp_qd_prev, scene.robot_state_0.body_qd)
-    elif layout is None or int(getattr(layout, "num_envs", 1)) <= 1:
+    elif harvest_source != "weld" and (
+        layout is None or int(getattr(layout, "num_envs", 1)) <= 1
+    ):
+        # Weld harvest already carries apple weight through the FIXED reaction;
+        # putting mass on apple_payload would double-count mg in M(q).
         apply_mujoco_apple_payload_inertias(scene)
     return scene
 
@@ -408,6 +412,7 @@ def build_coupled_fruiting_fr3(
     stem_harvest_explicit_apple_weight: bool | None = None,
     stem_harvest_explicit_apple_inertia: bool | None = None,
     tcp_harvest_source: str | None = None,
+    request_body_parent_f: bool = False,
 ) -> CoupledFruitingScene:
     """Build cable + FR3 arm scene; IK-bootstrap TCP to gripper proxy at construction."""
     if vbd_only and mujoco_only:
@@ -473,6 +478,7 @@ def build_coupled_fruiting_fr3(
         root_xform=root_xform,
         add_apple_payload=bool(gripper_proxy.fix_to_apple),
         mujoco_solver_kwargs=mj_kw,
+        request_body_parent_f=bool(request_body_parent_f),
     )
 
     def _bootstrap(
@@ -753,7 +759,11 @@ def build_heterogeneous_coupled_fruiting_fr3(
     )
     scene.per_env_params = params
     scene.per_world_proxy_offsets = per_world_offsets
-    if not scene.stem_harvest_explicit_apple_inertia:
+    if (
+        not scene.stem_harvest_explicit_apple_inertia
+        and getattr(scene, "tcp_harvest_source", "stem") != "weld"
+    ):
+        # Weld harvest already carries apple weight; leave apple_payload mass 0.
         apply_mujoco_apple_payload_inertias(scene)
     _maybe_prepare_batched_stem_harvest(scene)
     newton.eval_fk(

@@ -28,7 +28,7 @@
       "support": 10000.0
     },
     "joint_roll_kp_overrides": {
-      "support": 3.0
+      "support": 0.75
     }
   },
   "primary": {
@@ -37,11 +37,11 @@
       "max": 4
     },
     "length": {
-      "min": 0.3,
+      "min": 0.4,
       "max": 0.4
     },
     "radius": {
-      "min": 0.02,
+      "min": 0.025,
       "max": 0.025
     },
     "density": {
@@ -65,8 +65,8 @@
       "max": 0.3
     },
     "flexural_modulus_pa": {
-      "min": 500000000.3,
-      "max": 500000000.8
+      "min": 5000000000.3,
+      "max": 5000000000.8
     }
   },
   "secondary": null,

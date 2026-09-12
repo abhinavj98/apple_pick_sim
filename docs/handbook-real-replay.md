@@ -139,7 +139,8 @@ Manifest for the folder path:
 - `collection.num_directions = max(NN)+1` (sparse `d03`+`d05` ⇒ width 6 with
   two episode rows);
 - `env_idx = direction_idx`;
-- `collection.n_holds = max(hold_number)+1` (4 for the s09 logs);
+- `collection.n_holds = max(hold_number)+1` (5 for s04-style logs with
+  source holds 0–3 after rest-hold inject; 6 for s08/s09 with source 0–4);
 - `collection.control_hz` from `--control-hz` (default 30);
 - `collection.sim_config` via `sim_config_to_manifest_dict` built in
   `apple_pick_sim` (`controller.mode = "vic_pose"`; no gym import);
@@ -195,6 +196,13 @@ Conversion aligns real bags with H3:
   commands are not averaged. Sim harvest is not filtered. Provenance is
   `collection.ft_filter` (`column: ft_wrist_lpf`, `applied`) and episode
   `ft_filter`.
+- **Rest hold (default on):** convert stamps **source frame 0** onto converted
+  frame 0 as `phase=hold`, `hold_number=0`, using that row's poses and
+  unfiltered/LPF wrench (not the first-window last-sample / block-mean).
+  Later `hold_number` values shift by +1 so amplitude holds stay distinct
+  from the grasp rest. Episode meta gets `rest_hold_injected: true`.
+  Source `robot_replay` logs stay `pull` at row 0; pass
+  `--no-inject-rest-hold` to keep the old last-sample labeling.
 - `tag_poses_to_cma_woody` reads Branch, Spur, and Apple pose translations.
   It emits the two woody starts `primary_spur` and `spur_stem`, plus
   `apple_pos`. Trajectory bags do not carry woody ends.
@@ -217,7 +225,12 @@ The two geometry blocks have different jobs:
 
 1. **Pre-grasp** is the non-bending construction reference. The native mapping
    prefers `pre_grasp_geometry.rest_snapshot_during_run`, falls back to legacy
-   `snapshot`, derives `fruiting_base_pos`, and rebuilds the plant. On current
+   `snapshot`, for rod directions / apple rebuild. When
+   `pre_grasp_geometry.lengthened_snapshot` has woody fields, **`fruiting_base_pos`**
+   comes from that lengthened T (surface→centerline); otherwise from the rest/legacy
+   spur start. Convert then applies a mass-gated +Z sag lift
+   (`raise_fruiting_base_pos_for_sag`: light 10 mm / heavy 14 mm) on top of that
+   native base. On current
    `final_data_correct_torque` s04/s05 trees, `parts.stem.length_m` is the
    caliper catalog minus 5 mm (s04 15→10 mm, s05 13→8 mm) and
    `parts.stem.radius_m` is 0.9 mm; originals stay on
@@ -236,7 +249,8 @@ The two geometry blocks have different jobs:
 \(X_{\text{apple}}^{-1}X_{\text{TCP}}\) from the converted initial apple/TCP
 poses. `apply_logged_post_grasp_se3_to_cable` writes the logged apple pose,
 realigns the proxy, zeros their twists, synchronizes both cable states, aligns
-VBD history, and updates rest state. It runs after the normal settle→weld seed
+VBD history, and sets **proxy** rest from apple **build** rest × weld offset
+(woody/apple rest stay at build-time). It runs after the normal settle→weld seed
 so free settle still starts from pre-grasp geometry.
 
 **Factory order** (`make_real_replay_build_env_fn`):
@@ -245,9 +259,11 @@ so free settle still starts from pre-grasp geometry.
    (no welded settle on the pre-grasp hang).
 2. Logged post-grasp SE(3) teleport.
 3. `apply_post_grasp_vbd_settle` (default 2000 VBD substeps; CMA uses the same
-   count via `CMA_POST_GRASP_SETTLE_SUBSTEPS`).
-4. `capture_episode_snapshot` so fused/scalar `reset()` restores the relaxed
-   grasp, not the construct-time pre-grasp weld.
+   count via `CMA_POST_GRASP_SETTLE_SUBSTEPS`) — establishes plant pretension
+   (AVBD lambdas) on the welded solver. Rebootstrap aligns FR3 TCP only; it
+   does **not** rewrite cable `model.body_q` rest after settle.
+4. `capture_episode_snapshot` (poses + AVBD lambda/`penalty_k`/C0) so fused/scalar
+   `reset()` restores the pretensioned grasp, not the construct-time pre-grasp weld.
 
 `real_replay_sim_config` still reports the intended post-grasp count (2000) for
 callers and docs; only the env-build config zeros construct-time welded settle.
@@ -502,8 +518,9 @@ uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
 ```
 
 Expect `collection.num_structures=1`, `num_directions=8`, `control_hz=30`,
-`n_holds=4`, and `episodes/s00_d00` … `s00_d07`. Replay one pull with
-`--direction-idx` (scalar vic_pose cannot share weld pose across dirs):
+`n_holds=6` (rest hold + source holds 0–4), and `episodes/s00_d00` … `s00_d07`.
+Replay one pull with `--direction-idx` (scalar vic_pose cannot share weld pose
+across dirs):
 
 ```bash
 uv run python robot_replay/example_replay_real_batched.py \

@@ -92,6 +92,8 @@ EPISODE_METADATA_KEYS: tuple[str, ...] = (
     "action_dim",
     "action_layout",
     "ft_filter",
+    # Real→batched: source frame 0 stamped as hold 0 on converted frame 0.
+    "rest_hold_injected",
 )
 
 

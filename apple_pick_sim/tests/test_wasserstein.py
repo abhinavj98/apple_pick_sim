@@ -88,6 +88,20 @@ def _two_hold_episode(*, dir_idx: int, shift: float = 0.0, steps: int = 10) -> d
     return _episode_with_median_holds(dir_idx=dir_idx, n_holds=2, shift=shift)
 
 
+def _two_cycle_full_trajectory_episode(*, dir_idx: int, shift: float = 0.0) -> dict:
+    """Two (move_out, hold) cycles, 2 frames each, for full_trajectory scoring."""
+    phase = np.array([0, 0, 1, 1, 0, 0, 1, 1], dtype=np.int8)
+    steps = int(phase.size)
+    ep = _arrays_for_steps(steps=steps, shift=shift)
+    ep["dir_idx"] = np.full(steps, int(dir_idx), dtype=np.int32)
+    ep["phase"] = phase
+    if dir_idx != 0:
+        ep["excitation_direction"] = np.tile(
+            np.array([[1.0, 0.0, 0.0]], dtype=np.float32), (steps, 1)
+        )
+    return ep
+
+
 def _episode_without_valid_holds(*, dir_idx: int, steps: int = 10) -> dict:
     ep = _arrays_for_steps(steps=steps)
     ep["dir_idx"] = np.full(steps, int(dir_idx), dtype=np.int32)
@@ -805,6 +819,65 @@ def test_complete_score_raises_on_include_delta_contract_mismatch():
             n_holds=2,
             n_directions=1,
         )
+
+
+def test_complete_score_raises_on_full_trajectory_contract_mismatch():
+    """Scoring full_trajectory=False against a full_trajectory=True GT context must fail loudly."""
+    gt = [_two_cycle_full_trajectory_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        hold_reduce="none",
+        include_delta=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+        full_trajectory=True,
+    )
+    with pytest.raises(ValueError, match="full_trajectory mismatch"):
+        score_candidate_wasserstein_complete(
+            candidate_index=0,
+            stiffnesses={"primary_e_pa": 1.0},
+            gt_context=context,
+            replay_observations=gt,
+            device="cpu",
+            hold_reduce="none",
+            include_delta=True,
+            hold_id_onehot=True,
+            n_holds=2,
+            n_directions=1,
+            full_trajectory=False,
+        )
+
+
+def test_complete_score_full_trajectory_scores_move_out_and_hold():
+    """full_trajectory=True end-to-end: identical GT/candidate → ~0 aggregate."""
+    gt = [_two_cycle_full_trajectory_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        hold_reduce="none",
+        include_delta=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+        full_trajectory=True,
+    )
+    result = score_candidate_wasserstein_complete(
+        candidate_index=0,
+        stiffnesses={"primary_e_pa": 1.0},
+        gt_context=context,
+        replay_observations=gt,
+        device="cpu",
+        hold_reduce="none",
+        include_delta=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        n_directions=1,
+        full_trajectory=True,
+    )
+    assert result.aggregate_sinkhorn == pytest.approx(0.0, abs=1e-6)
+    assert not result.missing_directions
 
 
 def test_complete_score_raises_on_categorical_weight_contract_mismatch():

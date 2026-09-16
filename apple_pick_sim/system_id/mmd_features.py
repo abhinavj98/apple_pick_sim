@@ -7,6 +7,11 @@ from typing import Any, Literal
 
 import numpy as np
 
+from apple_pick_sim.system_id.trajectory_store import PHASE_TO_INT
+
+_MOVE_OUT_PHASE = int(PHASE_TO_INT["move_out"])
+_HOLD_PHASE = int(PHASE_TO_INT["hold"])
+
 CMA_WOODY_JUNCTIONS: tuple[str, str] = ("primary_spur", "spur_stem")
 
 
@@ -34,9 +39,9 @@ STATE_VECTOR_FIELDS: tuple[str, ...] = (
 
 _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     # ft_wrist F
-    0.3,
-    0.3,
-    0.3,
+    0.4,
+    0.4,
+    0.4,
     # ft_wrist τ
     1.0,
     1.0,
@@ -59,8 +64,8 @@ _STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
     0.05,
 )
 WOODY_START_PHYS_SCALE = 0.005
-BEND_ANGLE_PHYS_SCALE = 0.02
-TCP_ROTVEC_PHYS_SCALE = 0.05
+BEND_ANGLE_PHYS_SCALE = 0.05
+TCP_ROTVEC_PHYS_SCALE = 0.0
 
 
 def state_vector_phys_scale(n_junctions: int) -> np.ndarray:
@@ -605,12 +610,15 @@ def iter_kept_hold_segments(
     direction: int,
     stable: np.ndarray | None = None,
     min_frames: int = 1,
+    target_phase: int = _HOLD_PHASE,
 ) -> list[np.ndarray]:
-    """Return full contiguous hold index arrays for one direction (no latter-half burn-in).
+    """Return full contiguous segment index arrays for one direction (no latter-half burn-in).
 
-    Segmentation uses ``phase == 1`` and matching ``dir_idx`` only. ``stable`` is
-    accepted for API compatibility but does **not** split segments (apply it as an
-    in-hold sample mask at aggregation time instead).
+    Segmentation uses ``phase == target_phase`` (default: hold) and matching
+    ``dir_idx`` only. ``stable`` is accepted for API compatibility but does
+    **not** split segments (apply it as an in-segment sample mask at
+    aggregation time instead). Pass ``target_phase=_MOVE_OUT_PHASE`` to extract
+    the ramp segments that precede each hold instead.
     """
 
     phase = np.asarray(phase).reshape(-1)
@@ -640,9 +648,10 @@ def iter_kept_hold_segments(
             kept.append(idxs)
         current = []
 
+    target = int(target_phase)
     for frame_idx, (phase_value, dir_value) in enumerate(zip(phase, dir_idx, strict=True)):
-        is_hold = int(phase_value) == 1 and int(dir_value) == int(direction)
-        if is_hold:
+        is_kept = int(phase_value) == target and int(dir_value) == int(direction)
+        if is_kept:
             current.append(frame_idx)
             continue
         _flush()
@@ -686,6 +695,37 @@ def _one_hot_dir_id(dir_idx: int, *, n_directions: int) -> np.ndarray:
     return vec
 
 
+def _one_hot_phase_id(phase_value: int, *, n_phases: int = 2) -> np.ndarray:
+    """One-hot tag distinguishing ``move_out`` (index 0) from ``hold`` (index 1).
+
+    Uses the ``PHASE_TO_INT`` codes directly as the one-hot index, since
+    ``move_out == 0`` and ``hold == 1`` already.
+    """
+    n = int(n_phases)
+    if n <= 0:
+        raise ValueError(f"n_phases must be positive, got {n_phases!r}")
+    i = int(phase_value)
+    if i < 0 or i >= n:
+        raise ValueError(f"phase_value {i} out of range for n_phases={n}")
+    vec = np.zeros(n, dtype=np.float32)
+    vec[i] = 1.0
+    return vec
+
+
+def _resolve_hold_id(arrays: Mapping[str, Any], frame_idx: int, *, fallback: int) -> int:
+    """Return the recorded ``hold_number`` at ``frame_idx``, or ``fallback`` if unset.
+
+    Sim recordings stamp ``hold_number=-1`` on frames outside the hold phase
+    (see ``quasi_static_trajectory.QuasiStaticTrajectory.current_hold_number``),
+    so a ``move_out`` segment paired with a later hold must be resolved via
+    that hold's own frame, not its own.
+    """
+    if "hold_number" in arrays:
+        hn = int(np.asarray(arrays["hold_number"])[int(frame_idx)])
+        return hn if hn >= 0 else int(fallback)
+    return int(fallback)
+
+
 _HOLD_REDUCE_VALUES = ("none", "median", "mean")
 
 
@@ -710,8 +750,9 @@ def combine_transition_features(
     n_directions: int | None = None,
     hold_reduce: str | None = None,
     include_delta: bool = True,
+    full_trajectory: bool = False,
 ) -> dict[int, np.ndarray]:
-    """Concatenate hold-only transition features keyed by excitation direction."""
+    """Concatenate hold-only (or full move_out+hold) transition features by direction."""
     parts: dict[int, list[np.ndarray]] = {}
     for arrays in episodes:
         for direction, features in build_transition_features_by_direction(
@@ -723,6 +764,7 @@ def combine_transition_features(
             n_directions=n_directions,
             hold_reduce=hold_reduce,
             include_delta=include_delta,
+            full_trajectory=full_trajectory,
         ).items():
             parts.setdefault(direction, []).append(features)
     return {
@@ -742,8 +784,9 @@ def build_transition_features_by_direction(
     n_directions: int | None = None,
     hold_reduce: str | None = None,
     include_delta: bool = True,
+    full_trajectory: bool = False,
 ) -> dict[int, np.ndarray]:
-    """Build hold-only transition feature rows keyed by excitation direction.
+    """Build hold-only (or full move_out+hold) transition feature rows by direction.
 
     ``hold_reduce="median"|"mean"`` emits one row per consecutive hold pair
     using the reduced hold state ``[s_i, s_{i+1}-s_i]`` when ``include_delta``
@@ -751,6 +794,22 @@ def build_transition_features_by_direction(
     is an alias for ``hold_reduce="median"``. ``none`` / ``use_median=False``
     emits frame→frame transitions on full hold segments, or one level row per
     stable hold frame when ``include_delta=False``.
+
+    ``full_trajectory=True`` additionally includes each direction's
+    ``move_out`` ramp segments, each paired with the ``hold`` segment it
+    immediately precedes (``return`` and ``pre_weld`` frames stay excluded,
+    and ``move_out``/``hold`` transitions never cross a segment boundary). A
+    hold with no immediately-preceding ``move_out`` (e.g. the leading rest
+    hold ``real_to_batched_sysid.py``'s ``inject_rest_hold`` prepends before
+    the first real move) is scored hold-only; a ``move_out`` with no
+    immediately-following hold is an error. Every row gets a 2-wide one-hot
+    phase tag so the ground cost can tell ramp rows apart from hold rows
+    instead of pooling them. Each ``move_out`` segment inherits its paired
+    hold segment's resolved ``hold_id`` for ``hold_id_onehot``, since sim
+    recordings stamp ``hold_number=-1`` outside the hold phase. Requires
+    ``hold_reduce`` to resolve to ``"none"``: reducing a ramp to one
+    median/mean state discards the very signal (e.g. damping) full-trajectory
+    scoring exists to capture.
     """
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
@@ -762,6 +821,15 @@ def build_transition_features_by_direction(
     )
     if state.shape[0] != phase.size or state.shape[0] != dir_idx.size:
         raise ValueError("state, phase, and dir_idx frame counts must match")
+
+    reduce_mode = _resolve_hold_reduce(use_median=use_median, hold_reduce=hold_reduce)
+    if full_trajectory and reduce_mode != "none":
+        raise ValueError(
+            "full_trajectory=True requires hold_reduce to resolve to 'none' "
+            f"(median/mean hold reduction is incompatible with ramp scoring), "
+            f"got hold_reduce={hold_reduce!r} use_median={use_median!r} "
+            f"(resolved={reduce_mode!r})"
+        )
 
     resolved_n_holds = n_holds
     if hold_id_onehot:
@@ -790,17 +858,113 @@ def build_transition_features_by_direction(
         if len(frame_indices) == 0:
             continue
 
-        segments = iter_kept_hold_segments(
-            phase=phase,
-            dir_idx=dir_idx,
-            direction=direction,
-            min_frames=1,
-        )
         rows: list[np.ndarray] = []
-        reduce_mode = _resolve_hold_reduce(
-            use_median=use_median, hold_reduce=hold_reduce
-        )
-        if reduce_mode in ("median", "mean"):
+        if full_trajectory:
+            hold_segments = iter_kept_hold_segments(
+                phase=phase,
+                dir_idx=dir_idx,
+                direction=direction,
+                min_frames=1,
+                target_phase=_HOLD_PHASE,
+            )
+            move_segments = iter_kept_hold_segments(
+                phase=phase,
+                dir_idx=dir_idx,
+                direction=direction,
+                min_frames=1,
+                target_phase=_MOVE_OUT_PHASE,
+            )
+            # Pair each hold with the move_out segment immediately preceding it
+            # (its last frame is this hold's first frame - 1), not by list
+            # position: real-data conversion can inject a leading rest hold
+            # (see real_to_batched_sysid.py's inject_rest_hold) with no
+            # move_out before it, which would make a positional 1:1 zip
+            # under-count by one on essentially every real episode. A hold
+            # with no immediately-preceding move_out is scored hold-only. A
+            # move_out with no immediately-following hold has nowhere to
+            # attach and is an error.
+            move_by_last_frame = {int(seg[-1]): seg for seg in move_segments}
+            consumed_last_frames: set[int] = set()
+            cycles: list[tuple[np.ndarray | None, np.ndarray]] = []
+            for hold_segment in hold_segments:
+                preceding_key = int(hold_segment[0]) - 1
+                move_segment = move_by_last_frame.get(preceding_key)
+                if move_segment is not None:
+                    consumed_last_frames.add(preceding_key)
+                cycles.append((move_segment, hold_segment))
+            orphan_count = len(move_segments) - len(consumed_last_frames)
+            if orphan_count:
+                raise ValueError(
+                    "full_trajectory=True found "
+                    f"{orphan_count} move_out segment(s) for direction "
+                    f"{direction} with no immediately-following hold segment"
+                )
+            n_holds_dir = (
+                int(resolved_n_holds)
+                if resolved_n_holds is not None
+                else max(len(hold_segments), 1)
+            )
+            for cycle_i, (move_segment, hold_segment) in enumerate(cycles):
+                hold_id = _resolve_hold_id(
+                    arrays, int(hold_segment[0]), fallback=cycle_i
+                )
+                phase_segments = (
+                    ((_MOVE_OUT_PHASE, move_segment),) if move_segment is not None else ()
+                ) + ((_HOLD_PHASE, hold_segment),)
+                for phase_value, segment in phase_segments:
+                    kept = _stable_masked_segment(segment, stable)
+                    phase_onehot = _one_hot_phase_id(phase_value, n_phases=2)
+                    if include_delta:
+                        if kept.size < 2:
+                            continue
+                        for start_idx, end_idx in zip(kept[:-1], kept[1:], strict=True):
+                            current = state[int(start_idx)]
+                            delta = state[int(end_idx)] - current
+                            row = np.concatenate([current, delta]).astype(np.float32)
+                            if hold_id_onehot:
+                                row = np.concatenate(
+                                    [row, _one_hot_hold_id(hold_id, n_holds=n_holds_dir)]
+                                )
+                            if dir_id_onehot:
+                                assert resolved_n_directions is not None
+                                row = np.concatenate(
+                                    [
+                                        row,
+                                        _one_hot_dir_id(
+                                            direction, n_directions=resolved_n_directions
+                                        ),
+                                    ]
+                                )
+                            row = np.concatenate([row, phase_onehot])
+                            rows.append(row)
+                    else:
+                        if kept.size < 1:
+                            continue
+                        for frame_idx in kept:
+                            row = np.asarray(state[int(frame_idx)], dtype=np.float32)
+                            if hold_id_onehot:
+                                row = np.concatenate(
+                                    [row, _one_hot_hold_id(hold_id, n_holds=n_holds_dir)]
+                                )
+                            if dir_id_onehot:
+                                assert resolved_n_directions is not None
+                                row = np.concatenate(
+                                    [
+                                        row,
+                                        _one_hot_dir_id(
+                                            direction, n_directions=resolved_n_directions
+                                        ),
+                                    ]
+                                )
+                            row = np.concatenate([row, phase_onehot])
+                            rows.append(row)
+        elif reduce_mode in ("median", "mean"):
+            segments = iter_kept_hold_segments(
+                phase=phase,
+                dir_idx=dir_idx,
+                direction=direction,
+                min_frames=1,
+            )
             reducer = np.mean if reduce_mode == "mean" else np.median
             reduced: list[np.ndarray] = []
             hold_ids: list[int] = []
@@ -809,11 +973,7 @@ def build_transition_features_by_direction(
                 if kept.size < 1:
                     continue
                 reduced.append(reducer(state[kept], axis=0).astype(np.float32))
-                if "hold_number" in arrays:
-                    hn = int(np.asarray(arrays["hold_number"])[int(kept[0])])
-                    hold_ids.append(hn if hn >= 0 else hold_i)
-                else:
-                    hold_ids.append(hold_i)
+                hold_ids.append(_resolve_hold_id(arrays, int(kept[0]), fallback=hold_i))
             n_holds_dir = (
                 int(resolved_n_holds)
                 if resolved_n_holds is not None
@@ -858,6 +1018,12 @@ def build_transition_features_by_direction(
                         )
                     rows.append(row)
         else:
+            segments = iter_kept_hold_segments(
+                phase=phase,
+                dir_idx=dir_idx,
+                direction=direction,
+                min_frames=1,
+            )
             n_holds_dir = (
                 int(resolved_n_holds)
                 if resolved_n_holds is not None
@@ -873,11 +1039,7 @@ def build_transition_features_by_direction(
                         delta = state[int(end_idx)] - current
                         row = np.concatenate([current, delta]).astype(np.float32)
                         if hold_id_onehot:
-                            if "hold_number" in arrays:
-                                hn = int(np.asarray(arrays["hold_number"])[int(start_idx)])
-                                hid = hn if hn >= 0 else hold_i
-                            else:
-                                hid = hold_i
+                            hid = _resolve_hold_id(arrays, int(start_idx), fallback=hold_i)
                             row = np.concatenate(
                                 [row, _one_hot_hold_id(hid, n_holds=n_holds_dir)]
                             )
@@ -898,11 +1060,7 @@ def build_transition_features_by_direction(
                     for frame_idx in kept:
                         row = np.asarray(state[int(frame_idx)], dtype=np.float32)
                         if hold_id_onehot:
-                            if "hold_number" in arrays:
-                                hn = int(np.asarray(arrays["hold_number"])[int(frame_idx)])
-                                hid = hn if hn >= 0 else hold_i
-                            else:
-                                hid = hold_i
+                            hid = _resolve_hold_id(arrays, int(frame_idx), fallback=hold_i)
                             row = np.concatenate(
                                 [row, _one_hot_hold_id(hid, n_holds=n_holds_dir)]
                             )

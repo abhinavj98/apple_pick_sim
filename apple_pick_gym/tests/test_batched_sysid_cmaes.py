@@ -115,6 +115,32 @@ def _default_candidate(gt_params: fs.FruitingSystemParams) -> cmaes.YoungsModulu
     return cmaes.youngs_modulus_candidate_from_params(gt_params)
 
 
+def test_scoring_config_full_trajectory_requires_hold_reduce_none():
+    with pytest.raises(ValueError, match="hold-reduction"):
+        cmaes.YoungsModulusScoringConfig(
+            full_trajectory=True, hold_aggregation="mean"
+        )
+    with pytest.raises(ValueError, match="hold-reduction"):
+        cmaes.YoungsModulusScoringConfig(
+            full_trajectory=True, hold_aggregation=None, use_median=True
+        )
+
+
+def test_scoring_config_full_trajectory_accepts_hold_reduce_none():
+    scoring = cmaes.YoungsModulusScoringConfig(
+        full_trajectory=True, hold_aggregation="none"
+    )
+    assert scoring.full_trajectory is True
+
+
+def test_wasserstein_kwargs_from_scoring_threads_full_trajectory():
+    scoring = cmaes.YoungsModulusScoringConfig(
+        hold_aggregation="none", full_trajectory=True
+    )
+    kwargs = cmaes._wasserstein_kwargs_from_scoring(scoring, scoring_n_directions=4)
+    assert kwargs["full_trajectory"] is True
+
+
 class _StubReplayCollectors:
     """Minimal collector stub: ``direction_episodes_from_collectors`` indexing only."""
 

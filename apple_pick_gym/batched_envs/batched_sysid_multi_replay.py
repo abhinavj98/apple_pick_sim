@@ -81,6 +81,7 @@ class ReplaySlot:
     gripper: GripperProxyConfig
     support_kp: float | None = None
     support_roll_kp: float | None = None
+    support_joint_zeta: float | None = None
     episode_meta: dict | None = None
 
 
@@ -304,6 +305,7 @@ def build_replay_candidate_blocks(
             params = candidate.apply_to(request.base_params)
             support_kp = getattr(candidate, "support_kp", None)
             support_roll_kp = getattr(candidate, "support_roll_kp", None)
+            support_joint_zeta = getattr(candidate, "support_joint_zeta", None)
             slots_list: list[ReplaySlot] = []
             for direction_idx in directions:
                 if request.meta_by_direction is not None:
@@ -331,6 +333,9 @@ def build_replay_candidate_blocks(
                         else None,
                         support_roll_kp=float(support_roll_kp)
                         if support_roll_kp is not None
+                        else None,
+                        support_joint_zeta=float(support_joint_zeta)
+                        if support_joint_zeta is not None
                         else None,
                         episode_meta=env_meta,
                     )
@@ -511,6 +516,21 @@ def replay_multi_structure_candidate_blocks(
                 build_kwargs["support_roll_kp_per_env"] = [
                     float(kp) for kp in support_roll_kps
                 ]
+            support_zetas = [slot.support_joint_zeta for slot in slots]
+            build_accepts_support_zeta = getattr(
+                build_env_fn, "wants_support_zeta_per_env", False
+            )
+            if build_accepts_support_zeta and any(
+                z is not None for z in support_zetas
+            ):
+                if any(z is None for z in support_zetas):
+                    raise ValueError(
+                        "support_joint_zeta must be set on every fused replay slot when "
+                        "build_env_fn.wants_support_zeta_per_env is True"
+                    )
+                build_kwargs["support_zeta_per_env"] = [
+                    float(z) for z in support_zetas
+                ]
             env = build_env_fn(
                 num_envs=len(slots),
                 per_env_params=[slot.params for slot in slots],
@@ -520,6 +540,15 @@ def replay_multi_structure_candidate_blocks(
             )
             _synchronize_device()
             build_seconds += time.perf_counter() - build_started
+
+            def _slot_zetas_or_dataset() -> list[float]:
+                dataset_zeta = support_joint_zeta_from_dataset(dataset)
+                return [
+                    float(slot.support_joint_zeta)
+                    if slot.support_joint_zeta is not None
+                    else float(dataset_zeta)
+                    for slot in slots
+                ]
 
             # Prefer build-time support kp (settles + snapshot). Late apply only
             # for legacy build_env_fn that does not advertise settle-time support.
@@ -535,7 +564,7 @@ def replay_multi_structure_candidate_blocks(
                     dowel_length_m_per_env=[
                         support_dowel_length_m(slot.params) for slot in slots
                     ],
-                    zeta=support_joint_zeta_from_dataset(dataset),
+                    zeta_per_env=_slot_zetas_or_dataset(),
                 )
             if (
                 not build_accepts_support_roll
@@ -546,7 +575,7 @@ def replay_multi_structure_candidate_blocks(
                     [slot.support_roll_kp for slot in slots],
                     num_envs=env._sim.layout.num_envs,
                     joints_per_world=env._sim.layout.joints_per_world,
-                    zeta=support_joint_zeta_from_dataset(dataset),
+                    zeta_per_env=_slot_zetas_or_dataset(),
                 )
 
             replay_started = time.perf_counter()

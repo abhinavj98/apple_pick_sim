@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -289,6 +290,7 @@ def make_real_replay_build_env_fn(
         per_env_episode_meta: Sequence[Mapping[str, Any]] | None = None,
         support_kp_per_env: Sequence[float] | None = None,
         support_roll_kp_per_env: Sequence[float] | None = None,
+        support_zeta_per_env: Sequence[float] | None = None,
     ) -> ApplePickBatchedSysIdEnv:
         if gripper is not None and per_env_grippers is not None:
             raise ValueError("scalar gripper and per_env_grippers cannot both be provided")
@@ -352,6 +354,26 @@ def make_real_replay_build_env_fn(
                     support_roll_kp_per_env=support_roll_kp_tuple,
                 ),
             )
+        support_zeta_tuple: tuple[float, ...] | None = None
+        if support_zeta_per_env is not None:
+            support_zeta_tuple = tuple(float(z) for z in support_zeta_per_env)
+            if len(support_zeta_tuple) != int(num_envs):
+                raise ValueError(
+                    f"support_zeta_per_env length ({len(support_zeta_tuple)}) "
+                    f"must match num_envs ({num_envs})"
+                )
+            for idx, z in enumerate(support_zeta_tuple):
+                if not math.isfinite(z) or z < 0.0:
+                    raise ValueError(
+                        f"support_zeta_per_env[{idx}] must be finite and >= 0, got {z!r}"
+                    )
+            sim_config = dataclasses.replace(
+                sim_config,
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system,
+                    support_zeta_per_env=support_zeta_tuple,
+                ),
+            )
         robot_updates: dict[str, Any] = {"gripper": grippers[0]}
         if per_env_episode_meta is not None:
             robot_updates["per_world_bootstrap_joint_q"] = tuple(
@@ -393,24 +415,37 @@ def make_real_replay_build_env_fn(
             zeta = sim_config.fruiting_system.joint_damping_ratio
             if zeta is None:
                 zeta = 1.0
+            zeta_per_env = support_zeta_tuple
             if support_kp_tuple is not None and layout is not None:
+                apply_kwargs: dict[str, Any] = {
+                    "num_envs": int(layout.num_envs),
+                    "joints_per_world": int(layout.joints_per_world),
+                    "dowel_length_m_per_env": [
+                        support_dowel_length_m(p) for p in env._sim.per_env_params
+                    ],
+                }
+                if zeta_per_env is not None:
+                    apply_kwargs["zeta_per_env"] = zeta_per_env
+                else:
+                    apply_kwargs["zeta"] = float(zeta)
                 apply_per_env_support_joint_penalties(
                     scene,
                     support_kp_tuple,
-                    num_envs=int(layout.num_envs),
-                    joints_per_world=int(layout.joints_per_world),
-                    dowel_length_m_per_env=[
-                        support_dowel_length_m(p) for p in env._sim.per_env_params
-                    ],
-                    zeta=float(zeta),
+                    **apply_kwargs,
                 )
             if support_roll_kp_tuple is not None and layout is not None:
+                roll_kwargs: dict[str, Any] = {
+                    "num_envs": int(layout.num_envs),
+                    "joints_per_world": int(layout.joints_per_world),
+                }
+                if zeta_per_env is not None:
+                    roll_kwargs["zeta_per_env"] = zeta_per_env
+                else:
+                    roll_kwargs["zeta"] = float(zeta)
                 apply_per_env_support_roll_penalties(
                     scene,
                     support_roll_kp_tuple,
-                    num_envs=int(layout.num_envs),
-                    joints_per_world=int(layout.joints_per_world),
-                    zeta=float(zeta),
+                    **roll_kwargs,
                 )
             settle_config = dataclasses.replace(
                 env._sim.config,
@@ -433,4 +468,5 @@ def make_real_replay_build_env_fn(
     build_env_fn.wants_per_env_meta = True
     build_env_fn.wants_support_kp_per_env = True
     build_env_fn.wants_support_roll_kp_per_env = True
+    build_env_fn.wants_support_zeta_per_env = True
     return build_env_fn

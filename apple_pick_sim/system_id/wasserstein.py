@@ -29,6 +29,7 @@ class WassersteinDirectionContext:
     include_delta: bool = True
     categorical_weight: float = 1.0
     delta_weight: float = 1.0
+    full_trajectory: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class WassersteinScoringContext:
     include_delta: bool = True
     categorical_weight: float = 1.0
     delta_weight: float = 1.0
+    full_trajectory: bool = False
 
     @property
     def expected_directions(self) -> tuple[int, ...]:
@@ -149,6 +151,7 @@ def _feature_kwargs(
     n_directions: int | None,
     hold_reduce: str | None = None,
     include_delta: bool = True,
+    full_trajectory: bool = False,
 ) -> dict[str, Any]:
     return {
         "use_median": bool(use_median),
@@ -158,6 +161,7 @@ def _feature_kwargs(
         "n_directions": n_directions,
         "hold_reduce": hold_reduce,
         "include_delta": bool(include_delta),
+        "full_trajectory": bool(full_trajectory),
     }
 
 
@@ -169,11 +173,18 @@ def _assert_normalization_contract(
     include_delta: bool,
     categorical_weight: float,
     delta_weight: float,
+    prepared_full_trajectory: bool = False,
+    full_trajectory: bool = False,
 ) -> None:
     if bool(include_delta) != bool(prepared_include_delta):
         raise ValueError(
             "include_delta mismatch: "
             f"prepared={bool(prepared_include_delta)} score={bool(include_delta)}"
+        )
+    if bool(full_trajectory) != bool(prepared_full_trajectory):
+        raise ValueError(
+            "full_trajectory mismatch: "
+            f"prepared={bool(prepared_full_trajectory)} score={bool(full_trajectory)}"
         )
     prepared_w = float(prepared_categorical_weight)
     score_w = float(categorical_weight)
@@ -390,12 +401,14 @@ def prepare_gt_wasserstein_scoring_context(
     include_delta: bool = True,
     categorical_weight: float = 1.0,
     delta_weight: float = 1.0,
+    full_trajectory: bool = False,
 ) -> WassersteinScoringContext:
     """Build pooled fitness GT and independently normalized per-direction diagnostics.
 
     ``pool_directions`` is accepted for API symmetry with
     ``score_candidate_wasserstein_complete``; prepare always builds both the
-    pooled fitness bag and physical-direction diagnostics.
+    pooled fitness bag and physical-direction diagnostics. ``full_trajectory``
+    is documented on ``build_transition_features_by_direction``.
     """
     del pool_directions  # always build pooled + per-direction contexts
     per_direction_features = combine_transition_features(
@@ -408,6 +421,7 @@ def prepare_gt_wasserstein_scoring_context(
             n_directions=n_directions,
             hold_reduce=hold_reduce,
             include_delta=include_delta,
+            full_trajectory=full_trajectory,
         ),
     )
     if not per_direction_features:
@@ -430,6 +444,7 @@ def prepare_gt_wasserstein_scoring_context(
             include_delta=bool(include_delta),
             categorical_weight=float(categorical_weight),
             delta_weight=float(delta_weight),
+            full_trajectory=bool(full_trajectory),
         )
 
     # Pooled fitness bag always uses fixed-width physical-direction one-hot
@@ -444,6 +459,7 @@ def prepare_gt_wasserstein_scoring_context(
             n_directions=n_directions,
             hold_reduce=hold_reduce,
             include_delta=include_delta,
+            full_trajectory=full_trajectory,
         ),
     )
     pooled_features = _pool_by_direction(pooled_source)
@@ -457,6 +473,7 @@ def prepare_gt_wasserstein_scoring_context(
         include_delta=bool(include_delta),
         categorical_weight=float(categorical_weight),
         delta_weight=float(delta_weight),
+        full_trajectory=bool(full_trajectory),
     )
     return WassersteinScoringContext(
         pooled=pooled,
@@ -464,6 +481,7 @@ def prepare_gt_wasserstein_scoring_context(
         include_delta=bool(include_delta),
         categorical_weight=float(categorical_weight),
         delta_weight=float(delta_weight),
+        full_trajectory=bool(full_trajectory),
     )
 
 
@@ -483,6 +501,7 @@ def score_candidate_wasserstein_complete(
     include_delta: bool = True,
     categorical_weight: float = 1.0,
     delta_weight: float = 1.0,
+    full_trajectory: bool = False,
 ) -> WassersteinCandidateResult:
     """Score a candidate with pooled fitness and physical-direction diagnostics."""
     _assert_normalization_contract(
@@ -492,6 +511,8 @@ def score_candidate_wasserstein_complete(
         include_delta=include_delta,
         categorical_weight=categorical_weight,
         delta_weight=delta_weight,
+        prepared_full_trajectory=gt_context.full_trajectory,
+        full_trajectory=full_trajectory,
     )
     candidate_per_direction = combine_transition_features(
         replay_observations,
@@ -503,6 +524,7 @@ def score_candidate_wasserstein_complete(
             n_directions=n_directions,
             hold_reduce=hold_reduce,
             include_delta=include_delta,
+            full_trajectory=full_trajectory,
         ),
     )
 
@@ -563,6 +585,7 @@ def score_candidate_wasserstein_complete(
                 n_directions=n_directions,
                 hold_reduce=hold_reduce,
                 include_delta=include_delta,
+                full_trajectory=full_trajectory,
             ),
         )
         # Restrict to expected physical directions before pooling.

@@ -41,7 +41,7 @@ Related boundaries:
 `iter_support_kp_youngs_candidates` and `candidates_from_log10_vector` length-3
 samples set flexural spur/stem \(E\) only; axial moduli stay at the structure baseline.
 
-**CMA-ES (6D):**
+**CMA-ES (9D):**
 
 \[
 \theta_{\mathrm{CMA}} =
@@ -51,21 +51,35 @@ samples set flexural spur/stem \(E\) only; axial moduli stay at the structure ba
 \log_{10} E_{\mathrm{flex,stem}},
 \log_{10} E_{\mathrm{ax,spur}},
 \log_{10} E_{\mathrm{ax,stem}},
-\log_{10} k_p^{\mathrm{support,roll}}
+\log_{10} k_p^{\mathrm{support,roll}},
+\zeta_{\mathrm{spur}},
+\zeta_{\mathrm{stem}},
+\zeta_{\mathrm{support}}
 \right).
 \]
 
+Dims 0–5 are log10 stiffness; dims 6–8 are **linear** damping ratios in
+\([0, 1]\) (spur/stem rod \(\zeta\), support-joint \(\zeta\)). Primary rod
+damping stays fixture/base frozen.
+
 `SupportKpYoungsCandidate` stores `(support_kp, spur, stem)` as **flexural** moduli
-plus optional `(spur_youngs, stem_youngs)` axial moduli and optional
-`support_roll_kp` (N·m/rad). Length-6 `candidates_from_log10_vector` maps all six
-axes; length-5 leaves roll `None` (fixture); length-3 leaves axial and roll `None`.
+plus optional `(spur_youngs, stem_youngs)` axial moduli, optional
+`support_roll_kp` (N·m/rad), and optional spur/stem/support ζ fields.
+Length-9 `candidates_from_log10_vector` maps all nine axes; length-6 leaves ζ
+`None`; length-5 leaves roll and ζ `None`; length-3 leaves axial, roll, and ζ
+`None`.
 
 `SupportKpYoungsCandidate.apply_to` uses **`set_rod_flexural_modulus`** on spur/stem,
-then **`set_rod_youngs_modulus`** when axial slots are set. Fused replay separately applies the
+then **`set_rod_youngs_modulus`** when axial slots are set, then
+**`set_rod_damping_ratio`** when spur/stem ζ are set. Fused replay separately applies the
 per-environment support linear/angular penalties through
 `apply_per_env_support_joint_penalties` and T-roll through
-`apply_per_env_support_roll_penalties` / `support_roll_kp_per_env` (before settle).
-Support \(k_d\) is derived using the dataset's support-joint damping ratio and each
+`apply_per_env_support_roll_penalties` / `support_roll_kp_per_env` (before settle),
+using per-candidate `support_joint_zeta` when present (else the dataset
+`joint_damping_ratio`). Real `vic_pose` production builds also pass
+`support_zeta_per_env` into the weld re-apply path so snapshots capture the
+searched ζ.
+Support \(k_d\) is derived using that ζ and each
 child body's mass/inertia. T-junction world clamps (`primary_support_left/right`)
 are authored **soft** revolute hinges about the primary axis (VBD penalty-only,
 `vbd:joint_is_hard=0`). Linear \(k_p\) and pitch/yaw angular
@@ -176,15 +190,16 @@ unchanged.
 
 | Knob | Default |
 | ---- | ------- |
-| Coordinates | `log10([support_kp, E_flex_spur, E_flex_stem, E_ax_spur, E_ax_stem, support_roll_kp])` (CMA); grid uses first three only |
-| Initial mean | `[4.0, 9.5, 9.5, 9.5, 9.5, log10(0.75)]` sim-sim; real `vic_pose` `[log10(1000), 8.7, 8.7, 8.7, 8.7, log10(0.75)]` approx (see `_REAL_CMA_MEAN_LOG10`) |
-| Initial sigma | `0.2` decade; real/sim `max_sigma_log10=0.5` (pycma `maxstd` + post-`tell` σ clamp) |
+| Coordinates | mixed: `log10([support_kp, E_flex_spur, E_flex_stem, E_ax_spur, E_ax_stem, support_roll_kp])` + linear `[ζ_spur, ζ_stem, ζ_support]` in `[0, 1]` (CMA 9D); grid uses first three only |
+| Initial mean | sim-sim `[4.0, 9.5, 9.5, 9.5, 9.5, log10(0.75), 0.5, 0.5, 0.5]`; real `vic_pose` `[log10(1000), 8.7, 8.7, 8.7, 8.7, log10(0.75), 0.5, 0.5, 0.5]` approx (see `_REAL_CMA_MEAN_LOG10`) |
+| Initial sigma | `0.2`; real/sim `max_sigma_log10=0.5` (pycma `maxstd` + post-`tell` σ clamp) |
+| `cma_stds` | `[1]*6 + [0.5]*3` so initial phenotype std ≈ `sigma * cma_stds[i]`: stiffness/roll dims 0.2 decades, ζ dims 0.1 (10% of the `[0, 1]` box, not 20%) |
 | Population | `20` |
 | Maximum generations | `15` |
 | CMA base seed | `56` |
-| Bounds | sim-sim lower `[2, 4.0, 4.0, 7.0, 7.0, -1]`, upper `[6, 10.7, 10.7, 10.7, 10.7, 2]` (kp \(10^2\)–\(10^6\) N/m, flex/axial as before, roll \(0.1\)–\(100\,\mathrm{N·m/rad}\)); real `vic_pose` kp \(200\)–\(4\,\mathrm{kN/m}\), \(E\) \(100\,\mathrm{kPa}\)–\(10\,\mathrm{GPa}\), same roll box |
+| Bounds | sim-sim lower `[2, 4.0, 4.0, 7.0, 7.0, -1, 0, 0, 0]`, upper `[6, 10.7, 10.7, 10.7, 10.7, 2, 1, 1, 1]`; real `vic_pose` kp \(200\)–\(4\,\mathrm{kN/m}\), \(E\) \(100\,\mathrm{kPa}\)–\(10\,\mathrm{GPa}\), same roll + ζ `[0,1]` box |
 
-The sim-sim support box is \(10^2\)–\(10^6\,\mathrm{N/m}\); real `vic_pose` support \(k_p\) is \(200\)–\(4\,\mathrm{kN/m}\) (init \(1\,\mathrm{kN/m}\)). `"bounds_midpoint"` initialization extends fixture spur/stem midpoints to 6D by duplicating flexural midpoints onto axial slots and using \(\log_{10}(0.75)\) for T-roll when a 6D search box is active. Grid `"bounds_midpoint"` remains 3D.
+The sim-sim support box is \(10^2\)–\(10^6\,\mathrm{N/m}\); real `vic_pose` support \(k_p\) is \(200\)–\(4\,\mathrm{kN/m}\) (init \(1\,\mathrm{kN/m}\)). `"bounds_midpoint"` initialization extends fixture spur/stem midpoints to 9D by duplicating flexural midpoints onto axial slots, using \(\log_{10}(0.75)\) for T-roll, and `0.5` for the three ζ dims when a 9D search box is active. Grid `"bounds_midpoint"` remains 3D.
 The ranges fixture remains required for replay `sim_build` settings, but its
 narrow material ranges are not the default CMA safety box.
 
@@ -240,6 +255,26 @@ Legacy transition bags:
 `--hold-aggregation mean --include-delta --categorical-weight 1`. Recorded under
 `scoring.hold_aggregation`, `scoring.include_delta`, and `scoring.categorical_weight`
 in `cmaes_report.json`.
+
+**Full-trajectory scoring (2026-09-14, opt-in):** `--full-trajectory` scores each
+direction's `move_out` ramp segments alongside its `hold` segments, instead of
+hold-only. Zero-velocity holds constrain stiffness but cannot constrain damping
+(`spur_damping_ratio`, `stem_damping_ratio`, `support_joint_zeta` — see §1); the
+ramp is where damping shows up. Each `move_out` segment is paired 1:1, in order,
+with the direction's next `hold` segment and inherits that hold's `hold_number`
+for `hold_id_onehot` (sim recordings stamp `hold_number=-1` outside the hold
+phase — `quasi_static_trajectory.QuasiStaticTrajectory.current_hold_number`).
+Every row gets a 2-wide one-hot phase tag (`move_out`/`hold`) so the Sinkhorn
+ground cost never conflates a ramp transition with a hold transition. `return`
+and `pre_weld` frames stay excluded either way. Requires `--hold-aggregation
+none`: reducing a ramp to a single median/mean state discards the very signal
+full-trajectory scoring exists to capture (`YoungsModulusScoringConfig` raises
+at construction time if this is violated). Recorded under
+`scoring.full_trajectory` in `cmaes_report.json`. Default: off (hold-only,
+matches prior behavior); pooled and per-direction bags both use a single fixed
+physical-scale normalization, so with the default ~40%/60% pull/hold frame
+split on real logs the ramp is a substantial and currently unweighted share of
+the pooled fitness — there is no separate move_out/hold weight knob yet.
 
 **Force-magnitude fitness term (2026-08-24, opt-in):** eligible CMA fitness can add
 `λ · mean_d |log(sim‖F‖ / real‖F‖)|`, where ‖F‖ is

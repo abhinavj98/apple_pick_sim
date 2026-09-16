@@ -616,6 +616,28 @@ def test_set_rod_youngs_modulus_changes_stretch_only():
     assert out.primary.bend_stiffness == pytest.approx(base.primary.bend_stiffness)
 
 
+def test_set_rod_damping_ratio_updates_damping_knobs_only():
+    fs = _import_module()
+    base = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=3)
+    zeta_new = 0.25
+    assert base.spur.damping_ratio != pytest.approx(zeta_new)
+    out = fs.set_rod_damping_ratio(base, "spur", zeta_new)
+    assert out.spur.damping_ratio == pytest.approx(zeta_new)
+    assert out.spur.flexural_modulus_pa == pytest.approx(base.spur.flexural_modulus_pa)
+    assert out.spur.youngs_modulus_pa == pytest.approx(base.spur.youngs_modulus_pa)
+    assert out.spur.bend_stiffness == pytest.approx(base.spur.bend_stiffness)
+    assert out.spur.stretch_stiffness == pytest.approx(base.spur.stretch_stiffness)
+    assert out.spur.bend_damping != pytest.approx(base.spur.bend_damping)
+    assert out.spur.stretch_damping != pytest.approx(base.spur.stretch_damping)
+    # Primary unchanged; ζ=0 allowed.
+    assert out.primary.damping_ratio == pytest.approx(base.primary.damping_ratio)
+    zeroed = fs.set_rod_damping_ratio(base, "stem", 0.0)
+    assert zeroed.stem.damping_ratio == pytest.approx(0.0)
+    assert zeroed.stem.bend_damping == pytest.approx(0.0)
+    with pytest.raises(ValueError, match="damping_ratio"):
+        fs.set_rod_damping_ratio(base, "spur", -0.1)
+
+
 def test_load_ranges_rejects_vbd_stretch_force():
     fs = _import_module()
     import copy

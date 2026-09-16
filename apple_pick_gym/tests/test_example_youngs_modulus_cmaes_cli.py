@@ -224,11 +224,11 @@ def test_cma_search_params_dict_is_sole_search_truth_source():
         "max_generations",
         "cma_seed",
         "max_sigma_log10",
+        "cma_stds",
     }
     # Vector is (log10 support_kp, log10 E_flex_spur, log10 E_flex_stem,
-    # log10 E_youngs_spur, log10 E_youngs_stem, log10 support_roll_kp).
-    # Support k_p uses an absolute safety box [2, 6]; spur/stem flexural and
-    # axial share the 10 kPa–50 GPa box; T-roll is 0.1–100 N·m/rad.
+    # log10 E_youngs_spur, log10 E_youngs_stem, log10 support_roll_kp,
+    # spur_ζ, stem_ζ, support_joint_ζ). Dims 6–8 are linear in [0, 1].
     e_lo = module._LOG10_10KPA
     e_hi = module._LOG10_50GPA
     e_mid = e_lo + 0.5 * (e_hi - e_lo)
@@ -238,21 +238,22 @@ def test_cma_search_params_dict_is_sole_search_truth_source():
     roll_hi = module._LOG10_ROLL_HI
     roll_mean = module._LOG10_ROLL_MEAN
     assert params["initial_mean_log10"] == pytest.approx(
-        [4.0, e_mid, e_mid, ax_mid, ax_mid, roll_mean]
+        [4.0, e_mid, e_mid, ax_mid, ax_mid, roll_mean, 0.5, 0.5, 0.5]
     )
     assert params["initial_sigma_log10"] == 0.2
     assert params["population_size"] == 20
     assert params["max_generations"] == 15
     assert params["cma_seed"] == 56
     assert params["max_sigma_log10"] == 0.5
+    assert params["cma_stds"] == pytest.approx([1.0] * 6 + [0.5] * 3)
     assert params["search_bounds_log10"] == {
-        "lower": [2.0, e_lo, e_lo, ax_lo, ax_lo, roll_lo],
-        "upper": [6.0, e_hi, e_hi, e_hi, e_hi, roll_hi],
+        "lower": [2.0, e_lo, e_lo, ax_lo, ax_lo, roll_lo, 0.0, 0.0, 0.0],
+        "upper": [6.0, e_hi, e_hi, e_hi, e_hi, roll_hi, 1.0, 1.0, 1.0],
     }
     normalized = cmaes.normalize_search_bounds_log10(params["search_bounds_log10"])
     assert normalized == (
-        (2.0, e_lo, e_lo, ax_lo, ax_lo, roll_lo),
-        (6.0, e_hi, e_hi, e_hi, e_hi, roll_hi),
+        (2.0, e_lo, e_lo, ax_lo, ax_lo, roll_lo, 0.0, 0.0, 0.0),
+        (6.0, e_hi, e_hi, e_hi, e_hi, roll_hi, 1.0, 1.0, 1.0),
     )
 
 
@@ -344,19 +345,26 @@ def test_run_passes_shipped_search_bounds_to_optimizer(monkeypatch, tmp_path):
     e_lo = module._LOG10_10KPA
     e_hi = module._LOG10_50GPA
     e_mid = e_lo + 0.5 * (e_hi - e_lo)
+    ax_lo = module._LOG10_10MPA
+    ax_mid = ax_lo + 0.5 * (e_hi - ax_lo)
+    roll_lo = module._LOG10_ROLL_LO
+    roll_hi = module._LOG10_ROLL_HI
+    roll_mean = module._LOG10_ROLL_MEAN
     assert create_calls[0]["search_bounds_log10"] == (
-        (2.0, e_lo, e_lo, e_lo, e_lo),
-        (6.0, e_hi, e_hi, e_hi, e_hi),
+        (2.0, e_lo, e_lo, ax_lo, ax_lo, roll_lo, 0.0, 0.0, 0.0),
+        (6.0, e_hi, e_hi, e_hi, e_hi, roll_hi, 1.0, 1.0, 1.0),
     )
     assert create_calls[0]["initial_mean_log10"] == pytest.approx(
-        [4.0, e_mid, e_mid, e_mid, e_mid]
+        [4.0, e_mid, e_mid, ax_mid, ax_mid, roll_mean, 0.5, 0.5, 0.5]
     )
     assert create_calls[0]["max_sigma_log10"] == 0.5
+    assert create_calls[0]["cma_stds"] == pytest.approx([1.0] * 6 + [0.5] * 3)
     report = json.loads((output_dir / "cmaes_report.json").read_text(encoding="utf-8"))
     assert report["cma"]["search_bounds_log10"] == {
-        "lower": [2.0, e_lo, e_lo, e_lo, e_lo],
-        "upper": [6.0, e_hi, e_hi, e_hi, e_hi],
+        "lower": [2.0, e_lo, e_lo, ax_lo, ax_lo, roll_lo, 0.0, 0.0, 0.0],
+        "upper": [6.0, e_hi, e_hi, e_hi, e_hi, roll_hi, 1.0, 1.0, 1.0],
     }
+    assert report["cma"]["cma_stds"] == pytest.approx([1.0] * 6 + [0.5] * 3)
 
 
 def test_run_reads_search_knobs_from_cma_search_params_only(monkeypatch, tmp_path):
@@ -416,6 +424,7 @@ def test_run_reads_search_knobs_from_cma_search_params_only(monkeypatch, tmp_pat
             "population_size": 5,
             "max_generations": 3,
             "cma_seed": 11,
+            "cma_stds": [1.0, 1.0, 1.0],
             "search_bounds_log10": None,
         },
     )
@@ -524,6 +533,7 @@ def test_run_cli_cma_seed_overrides_cma_search_params(monkeypatch, tmp_path):
             "population_size": 5,
             "max_generations": 3,
             "cma_seed": 11,
+            "cma_stds": [1.0, 1.0, 1.0],
             "search_bounds_log10": None,
         },
     )
@@ -599,6 +609,7 @@ def test_parser_cma_defaults_and_required_args(monkeypatch):
     assert args.categorical_weight == pytest.approx(100.0)
     assert args.delta_weight == pytest.approx(1.0)
     assert args.force_magnitude_weight == pytest.approx(0.0)
+    assert args.full_trajectory is False
     assert args.persist_generation_replays is True
     assert args.isolated_eval_waves is True
     assert args.wave_max_attempts == 5
@@ -694,12 +705,39 @@ def test_parser_accepts_legacy_transition_scoring_flags(monkeypatch):
     assert args.force_magnitude_weight == pytest.approx(100.0)
 
 
+def test_parser_accepts_full_trajectory_flag(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    args = parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/gt",
+            "--output",
+            "/tmp/cma",
+            "--full-trajectory",
+            "--hold-aggregation",
+            "none",
+        ]
+    )
+    assert args.full_trajectory is True
+    assert args.hold_aggregation == "none"
+
+    default_args = parser.parse_args(
+        ["--dataset", "/tmp/gt", "--output", "/tmp/cma", "--no-full-trajectory"]
+    )
+    assert default_args.full_trajectory is False
+
+
 def test_build_cmaes_report_records_level_bag_scoring_flags():
     module = _load_module()
     scoring = cmaes.YoungsModulusScoringConfig(
         hold_aggregation="none",
         include_delta=False,
         categorical_weight=100.0,
+        full_trajectory=True,
     )
     payload = module._build_cmaes_report_payload(
         {},
@@ -719,6 +757,7 @@ def test_build_cmaes_report_records_level_bag_scoring_flags():
     assert payload["scoring"]["include_delta"] is False
     assert payload["scoring"]["categorical_weight"] == pytest.approx(100.0)
     assert payload["scoring"]["hold_aggregation"] == "none"
+    assert payload["scoring"]["full_trajectory"] is True
     assert payload["scoring"]["wave_max_attempts"] == 5
 
     custom = module._build_cmaes_report_payload(
@@ -1245,6 +1284,7 @@ def test_run_writes_initial_report_before_fit_and_progress_updates(monkeypatch, 
             "population_size": 4,
             "max_generations": 3,
             "cma_seed": 0,
+            "cma_stds": [1.0, 1.0, 1.0],
             "search_bounds_log10": None,
         },
     )
@@ -1888,12 +1928,31 @@ def test_run_vic_pose_real_search_uses_kp_and_wide_e_bounds(monkeypatch, tmp_pat
     lo, hi = create_calls[0]["search_bounds_log10"]
     assert lo[0] == pytest.approx(kp_lo)
     assert hi[0] == pytest.approx(kp_hi)
-    assert lo[1:] == (e_lo, e_lo, e_lo, e_lo, module._LOG10_ROLL_LO)
-    assert hi[1:] == (e_hi, e_hi, e_hi, e_hi, module._LOG10_ROLL_HI)
+    assert lo[1:] == (
+        e_lo,
+        e_lo,
+        e_lo,
+        e_lo,
+        module._LOG10_ROLL_LO,
+        0.0,
+        0.0,
+        0.0,
+    )
+    assert hi[1:] == (
+        e_hi,
+        e_hi,
+        e_hi,
+        e_hi,
+        module._LOG10_ROLL_HI,
+        1.0,
+        1.0,
+        1.0,
+    )
     assert create_calls[0]["initial_mean_log10"][0] == pytest.approx(kp_init)
     assert create_calls[0]["initial_mean_log10"][1:] == pytest.approx(
         module._REAL_CMA_MEAN_LOG10[1:]
     )
+    assert create_calls[0]["cma_stds"] == pytest.approx([1.0] * 6 + [0.5] * 3)
 
 
 def test_run_rejects_multiple_structures_for_vic_pose(monkeypatch, tmp_path):

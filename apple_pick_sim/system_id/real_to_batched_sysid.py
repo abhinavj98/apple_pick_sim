@@ -49,10 +49,10 @@ DEFAULT_FT_LPF_ORDER = 4
 _TREE_PARQUET_RE = re.compile(r"(?P<tree>s\d+)-d(?P<dir>\d+)\.parquet")
 
 # Convert-time primary T-junction lift: rest snapshot base is sagged vs lengthened.
-# Force-calibrated (not full tagged sag ~14–16 mm): light ~10 mm, heavy/apple ~14 mm.
+# Force-calibrated (not full tagged sag ~14–16 mm): light/heavy ~1 mm.
 SAG_BASE_Z_MASS_THRESHOLD_KG = 0.25
-SAG_BASE_Z_LIGHT_M = 0.010
-SAG_BASE_Z_HEAVY_M = 0.014
+SAG_BASE_Z_LIGHT_M = 0.001
+SAG_BASE_Z_HEAVY_M = 0.001
 
 
 def raise_fruiting_base_pos_for_sag(

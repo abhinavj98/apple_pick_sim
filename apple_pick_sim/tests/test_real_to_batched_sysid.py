@@ -33,8 +33,8 @@ def test_raise_fruiting_base_pos_for_sag_light_vs_heavy():
     heavy = raise_fruiting_base_pos_for_sag(base, apple_mass_kg=0.29)
     np.testing.assert_allclose(light, (0.1, 0.2, 0.5 + SAG_BASE_Z_LIGHT_M), atol=1e-12)
     np.testing.assert_allclose(heavy, (0.1, 0.2, 0.5 + SAG_BASE_Z_HEAVY_M), atol=1e-12)
-    assert SAG_BASE_Z_LIGHT_M == pytest.approx(0.010)
-    assert SAG_BASE_Z_HEAVY_M == pytest.approx(0.014)
+    assert SAG_BASE_Z_LIGHT_M == pytest.approx(0.001)
+    assert SAG_BASE_Z_HEAVY_M == pytest.approx(0.001)
 
 
 def test_tag_poses_to_cma_woody_maps_translations():

@@ -21,12 +21,15 @@ from apple_pick_sim.system_id.cma_bhattacharyya import (
 
 def test_resolve_phenotype_dims_excludes_e_youngs() -> None:
     idxs = resolve_phenotype_dim_indices(exclude=("E_youngs_spur", "E_youngs_stem"))
-    assert idxs == (0, 1, 2, 5)
+    assert idxs == (0, 1, 2, 5, 6, 7, 8)
     assert tuple(DEFAULT_PHENOTYPE_DIM_NAMES[i] for i in idxs) == (
         "support_kp",
         "E_flex_spur",
         "E_flex_stem",
         "support_roll_kp",
+        "spur_damping_ratio",
+        "stem_damping_ratio",
+        "support_joint_zeta",
     )
 
 

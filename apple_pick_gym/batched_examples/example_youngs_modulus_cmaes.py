@@ -1,14 +1,14 @@
 """Dataset-driven support-k_p + flexural/axial-modulus CMA-ES fit entry point.
 
-Fits a 5-vector ``(support_kp, E_flex_spur, E_flex_stem, E_youngs_spur, E_youngs_stem)``.
-Support joint k_p (shared angular+linear; support zeta from dataset ``joint_damping_ratio``)
-is free while spur/stem flexural and axial moduli stay free;
-primary E is fixed from ground truth. Runs one independent bounded pycma
-optimizer per selected structure, advances active optimizers in synchronized
-generation waves through fused structure x population x direction replay,
-then explicitly scores each stopped distribution mean. Writes
-``<output>/cmaes_report.json`` atomically and final-mean overlays at
-``structure_XXX/youngs_modulus_overlay.html``.
+Fits a 9-vector ``(support_kp, E_flex_spur, E_flex_stem, E_youngs_spur,
+E_youngs_stem, support_roll_kp, spur_damping_ratio, stem_damping_ratio,
+support_joint_zeta)``. Dims 0–5 are log10 stiffness; dims 6–8 are linear ζ in
+``[0, 1]``. Primary E and primary rod damping stay fixed from ground truth /
+fixture. Runs one independent bounded pycma optimizer per selected structure,
+advances active optimizers in synchronized generation waves through fused
+structure x population x direction replay, then explicitly scores each stopped
+distribution mean. Writes ``<output>/cmaes_report.json`` atomically and
+final-mean overlays at ``structure_XXX/youngs_modulus_overlay.html``.
 
 Run from repo root::
 
@@ -17,9 +17,9 @@ Run from repo root::
         --output /tmp/youngs_cmaes
 
 Edit ``CMA_SEARCH_PARAMS`` below to change optimizer search knobs (mean, sigma,
-population, generations, bounds). ``--cma-seed`` and ``--max-generations``
-override ``CMA_SEARCH_PARAMS["cma_seed"]`` and ``max_generations`` for
-operational runs without editing the module defaults.
+``cma_stds``, population, generations, bounds). ``--cma-seed`` and
+``--max-generations`` override ``CMA_SEARCH_PARAMS["cma_seed"]`` and
+``max_generations`` for operational runs without editing the module defaults.
 
 """
 
@@ -35,7 +35,7 @@ import sys
 import time
 from dataclasses import replace as _dc_replace
 from pathlib import Path
-from typing import Any, Callable, Mapping, NamedTuple
+from typing import Any, Callable, Mapping, NamedTuple, Sequence
 
 import newton.examples
 import newton.viewer
@@ -76,6 +76,7 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     to_strict_jsonable,
     validate_initial_sigma_log10,
     validate_max_sigma_log10,
+    validate_cma_stds,
 )
 from apple_pick_gym.batched_envs.batched_sysid_multi_replay import (
     SysIdReplayCancelled,
@@ -132,18 +133,23 @@ make_grid_on_step = _grid.make_grid_on_step
 ViewerCancelled = SysIdReplayCancelled
 
 # Sole source of truth for CMA search knobs (edit here; not exposed on CLI).
-# initial_mean_log10: start mean in log10 [support_kp, E_flex_spur, E_flex_stem,
-# E_youngs_spur, E_youngs_stem], or "bounds_midpoint" (3D grid only).
-# "bounds_midpoint" to derive midpoints from the loaded fixture (spur/stem)
-# plus the absolute support_kp safety box.
+# initial_mean_log10: start mean in mixed phenotype coords
+# [support_kp, E_flex_spur, E_flex_stem, E_youngs_spur, E_youngs_stem,
+#  support_roll_kp, spur_damping_ratio, stem_damping_ratio, support_joint_zeta]
+# (dims 0–5 log10; dims 6–8 linear ζ in [0, 1]), or "bounds_midpoint".
 # search_bounds_log10: None = unbounded search; or
-#   {"lower": [kp, s, t], "upper": [kp, s, t]} in log10.
+#   {"lower": [...], "upper": [...]} matching phenotype dim.
 # Support k_p: absolute safety box (not a per-structure DR quantity / fixture
 # ε-band) — 100 .. 1e6 N/m or N*m/rad (log10 2-6). Spur/stem E: absolute
 # 0.1-100 GPa (log10 8-11), same box as before. Init from the search box
 # midpoint, never from ground truth. Sim-sim box is 10 kPa–50 GPa; real vic_pose
 # uses spur 10 MPa–1 GPa and stem 1–100 MPa via _effective_search_bounds_log10.
 # Spur/stem flex + axial E band: 10 kPa – 50 GPa (log10 Pa).
+# Damping ratios (spur/stem/joint): linear [0, 1], init 0.5.
+# cma_stds: per-dim scale so initial phenotype std ≈ sigma * cma_stds[i]. ζ dims
+# use 0.5 (not 1.0) so their absolute std is 0.1 (10% of the [0, 1] box) rather
+# than 0.2 (20%) — comparable in box-relative terms to the log10 dims instead of
+# exploring disproportionately wide on the one dimension that's actually bounded.
 _LOG10_10KPA = math.log10(10.0e3)
 _LOG10_100KPA = math.log10(100.0e3)
 _LOG10_10GPA = math.log10(10.0e9)
@@ -161,11 +167,15 @@ _LOG10_4KN_PER_M = math.log10(4.0e3)
 _LOG10_2KN_PER_M = math.log10(2.0e3)
 _LOG10_6KN_PER_M = math.log10(6.0e3)
 _LOG10_1500_PER_M = math.log10(1500.0)
-_LOG10_200_PER_M = math.log10(200.0)
+_LOG10_100_PER_M = math.log10(100.0)
 _LOG10_1E6_PER_M = 6.0
-_LOG10_ROLL_LO = -1.0  # 0.1 N·m/rad
-_LOG10_ROLL_HI = 2.0  # 100 N·m/rad
+_LOG10_ROLL_LO = math.log10(0.5)  # 0.5 N·m/rad
+_LOG10_ROLL_HI = math.log10(2.0)  # 2 N·m/rad
 _LOG10_ROLL_MEAN = math.log10(0.75)  # proxy fixture
+_ZETA_LO = 0.0
+_ZETA_HI = 1.0
+_ZETA_MEAN = 0.5
+##DO NOT USE
 _CMA_SEARCH_LOG10_LOWER = [
     2.0,
     _LOG10_10KPA,
@@ -173,6 +183,9 @@ _CMA_SEARCH_LOG10_LOWER = [
     _LOG10_10MPA,
     _LOG10_10MPA,
     _LOG10_ROLL_LO,
+    _ZETA_LO,
+    _ZETA_LO,
+    _ZETA_LO,
 ]
 _CMA_SEARCH_LOG10_UPPER = [
     6.0,
@@ -181,25 +194,24 @@ _CMA_SEARCH_LOG10_UPPER = [
     _LOG10_50GPA,
     _LOG10_50GPA,
     _LOG10_ROLL_HI,
+    _ZETA_HI,
+    _ZETA_HI,
+    _ZETA_HI,
 ]
 
 
-# Real vic_pose: support kp 200–4 kN/m; moduli 100 kPa–10 GPa; roll 0.1–100 N·m/rad.
-# _REAL_CMA_SEARCH_LOG10_LOWER: [
-#   support_kp_log10,
-#   spur_E_flex_log10,
-#   stem_E_flex_log10,
-#   spur_E_youngs_log10,
-#   stem_E_youngs_log10,
-#   support_roll_kp_log10,
-# ]
+# Real vic_pose: support kp 200–4 kN/m; moduli 100 kPa–10 GPa; roll 0.1–100 N·m/rad;
+# ζ dims linear [0, 1].
 _REAL_CMA_SEARCH_LOG10_LOWER = [
-    _LOG10_200_PER_M,    # support_kp_log10
+    _LOG10_100_PER_M,    # support_kp_log10
     _LOG10_100KPA,       # spur_E_flex_log10
     _LOG10_100KPA,       # stem_E_flex_log10
     _LOG10_100KPA,       # spur_E_youngs_log10
     _LOG10_100KPA,       # stem_E_youngs_log10
     _LOG10_ROLL_LO,      # support_roll_kp_log10
+    _ZETA_LO,
+    _ZETA_LO,
+    _ZETA_LO,
 ]
 _REAL_CMA_SEARCH_LOG10_UPPER = [
     _LOG10_4KN_PER_M,
@@ -208,20 +220,33 @@ _REAL_CMA_SEARCH_LOG10_UPPER = [
     _LOG10_10GPA,
     _LOG10_10GPA,
     _LOG10_ROLL_HI,
+    _ZETA_HI,
+    _ZETA_HI,
+    _ZETA_HI,
 ]
 _CMA_MEAN_LOG10 = [
     _CMA_SEARCH_LOG10_LOWER[i]
     + 0.5 * (_CMA_SEARCH_LOG10_UPPER[i] - _CMA_SEARCH_LOG10_LOWER[i])
     for i in range(5)
-] + [_LOG10_ROLL_MEAN]
+] + [_LOG10_ROLL_MEAN, _ZETA_MEAN, _ZETA_MEAN, _ZETA_MEAN]
 _REAL_CMA_MEAN_LOG10 = [
-    _LOG10_1KN_PER_M,
+    _LOG10_2KN_PER_M,
     _LOG10_500MPA,
-    _LOG10_500MPA,
-    _LOG10_500MPA,
+    _LOG10_1GPA,
+    _LOG10_1GPA,
     _LOG10_500MPA,
     _LOG10_ROLL_MEAN,
+    _ZETA_MEAN,
+    _ZETA_MEAN,
+    _ZETA_MEAN,
 ]
+# ζ dims (6-8) live on an absolute [0, 1] box, not a multi-decade log10 span,
+# so cma_stds=1.0 there would give phenotype std = initial_sigma_log10 (0.2) —
+# 20% of the whole box, versus ~3-7% of box width for the log10 dims. Halve it
+# (std = 0.1, 10% of box) so ζ exploration starts comparably tight and stays
+# well clear of the [0, 1] boundary from a mean-0.5 start.
+_ZETA_CMA_STD = 0.3
+_CMA_STDS = [1.0] * 6 + [_ZETA_CMA_STD] * 3
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),
     "initial_sigma_log10": 0.2,
@@ -229,6 +254,7 @@ CMA_SEARCH_PARAMS: dict[str, Any] = {
     "population_size": 20,
     "max_generations": 15,
     "cma_seed": 56,
+    "cma_stds": list(_CMA_STDS),
     "search_bounds_log10": {
         "lower": _CMA_SEARCH_LOG10_LOWER,
         "upper": _CMA_SEARCH_LOG10_UPPER,
@@ -571,8 +597,9 @@ def _build_cmaes_report_payload(
     counter_totals: dict[str, int] | None = None,
     timing: dict[str, Any] | None = None,
     population_size: int | None = None,
-    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None = None,
+    cma_stds: Sequence[float] | None = None,
     force_magnitude_weight: float = 0.0,
     isolated_eval_waves: bool = True,
     wave_max_attempts: int = DEFAULT_WAVE_MAX_ATTEMPTS,
@@ -631,6 +658,7 @@ def _build_cmaes_report_payload(
             else float(max_sigma_log10),
             "max_generations": int(max_generations),
             "population_size": population_size,
+            "cma_stds": None if cma_stds is None else [float(v) for v in cma_stds],
             "search_bounds_log10": None
             if search_bounds_log10 is None
             else {
@@ -650,6 +678,7 @@ def _build_cmaes_report_payload(
             "include_delta": bool(scoring.include_delta),
             "categorical_weight": float(scoring.categorical_weight),
             "delta_weight": float(scoring.delta_weight),
+            "full_trajectory": bool(scoring.full_trajectory),
             "force_magnitude_weight": float(force_magnitude_weight),
             "isolated_eval_waves": bool(isolated_eval_waves),
             "wave_max_attempts": int(wave_max_attempts),
@@ -833,6 +862,19 @@ def _make_parser() -> argparse.ArgumentParser:
             "Hold state aggregation for Sinkhorn scoring. Default: mean "
             "(arithmetic mean of stable hold frames before Δs rows; use none "
             "for quasi-static level bags)."
+        ),
+    )
+    p.add_argument(
+        "--full-trajectory",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Score move_out ramp segments alongside hold segments (instead of "
+            "hold-only), with a phase one-hot tagging each row move_out vs "
+            "hold. Needed to identify damping (ζ) params, which zero-velocity "
+            "holds can't constrain. Requires --hold-aggregation none (a "
+            "reduced ramp state throws away the signal this exists to "
+            "capture). Default: off (hold-only, matches prior behavior)."
         ),
     )
     p.add_argument(
@@ -1597,6 +1639,16 @@ def _run(
         search_bounds_log10 = _effective_search_bounds_log10(mode, search)
     except ValueError as exc:
         raise SystemExit(f"CMA_SEARCH_PARAMS['search_bounds_log10']: {exc}") from exc
+    phenotype_dim = (
+        len(search_bounds_log10[0]) if search_bounds_log10 is not None else len(initial_mean)
+    )
+    try:
+        cma_stds = validate_cma_stds(
+            search["cma_stds"],
+            phenotype_dim=phenotype_dim,
+        )
+    except (KeyError, ValueError, TypeError) as exc:
+        raise SystemExit(f"CMA_SEARCH_PARAMS['cma_stds']: {exc}") from exc
 
     settle_config = _settle_config_kwargs(args=args)
     dynamic_apple = bool(getattr(args, "dynamic_apple", True))
@@ -1686,6 +1738,7 @@ def _run(
         include_delta=bool(getattr(args, "include_delta", True)),
         categorical_weight=float(getattr(args, "categorical_weight", 100.0)),
         delta_weight=float(getattr(args, "delta_weight", 1.0)),
+        full_trajectory=bool(getattr(args, "full_trajectory", False)),
     )
 
     derive_structure_cma_seeds(base_seed=base_seed, structure_indices=structure_indices)
@@ -1726,6 +1779,7 @@ def _run(
             population_size=population_size,
             search_bounds_log10=search_bounds_log10,
             max_sigma_log10=max_sigma,
+            cma_stds=cma_stds,
         )
         state = StructureCmaState(
             structure_idx=int(structure_idx),
@@ -1790,6 +1844,7 @@ def _run(
             timing=timing,
             population_size=population_size,
             search_bounds_log10=search_bounds_log10,
+            cma_stds=cma_stds,
             force_magnitude_weight=float(
                 getattr(args, "force_magnitude_weight", 0.0)
             ),

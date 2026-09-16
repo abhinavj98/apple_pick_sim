@@ -56,7 +56,7 @@ def test_candidates_from_log10_vector_round_trip():
 def test_candidates_from_log10_vector_rejects_wrong_length():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
-    with pytest.raises(ValueError, match="3, 5, or 6"):
+    with pytest.raises(ValueError, match="3, 5, 6, or 9"):
         cmaes.candidates_from_log10_vector((4.0, 9.0))
 
 
@@ -72,6 +72,74 @@ def test_candidates_from_log10_vector_6d_includes_support_roll_kp():
     assert c.stem_youngs == pytest.approx(10**7.5)
     assert c.support_roll_kp == pytest.approx(0.75)
     assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_candidates_from_log10_vector_9d_includes_damping_ratios():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    x = (4.0, 9.0, 8.5, 8.0, 7.5, math.log10(0.75), 0.25, 0.4, 0.6)
+    c = cmaes.candidates_from_log10_vector(x)
+    assert c.support_roll_kp == pytest.approx(0.75)
+    assert c.spur_damping_ratio == pytest.approx(0.25)
+    assert c.stem_damping_ratio == pytest.approx(0.4)
+    assert c.support_joint_zeta == pytest.approx(0.6)
+    assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_candidates_from_log10_vector_9d_rejects_zeta_outside_unit_interval():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = (4.0, 9.0, 8.5, 8.0, 7.5, math.log10(0.75))
+    with pytest.raises(ValueError, match="damping|zeta|\\[0, 1\\]"):
+        cmaes.candidates_from_log10_vector((*base, -0.01, 0.5, 0.5))
+    with pytest.raises(ValueError, match="damping|zeta|\\[0, 1\\]"):
+        cmaes.candidates_from_log10_vector((*base, 0.5, 1.01, 0.5))
+
+
+def test_support_kp_apply_to_9d_sets_spur_stem_damping():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _base_primary_spur_stem()
+    out = cmaes.SupportKpYoungsCandidate(
+        support_kp=5e3,
+        spur=1e8,
+        stem=1e7,
+        spur_youngs=3e8,
+        stem_youngs=2e8,
+        support_roll_kp=0.75,
+        spur_damping_ratio=0.2,
+        stem_damping_ratio=0.35,
+        support_joint_zeta=0.55,
+    ).apply_to(base)
+    assert out.spur.damping_ratio == pytest.approx(0.2)
+    assert out.stem.damping_ratio == pytest.approx(0.35)
+    assert out.primary.damping_ratio == pytest.approx(base.primary.damping_ratio)
+
+
+def test_resolve_initial_mean_log10_bounds_midpoint_dim9():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    mean = cmaes.resolve_initial_mean_log10(
+        "bounds_midpoint", bounds, phenotype_dim=9
+    )
+    assert len(mean) == 9
+    assert mean[:6] == pytest.approx(
+        cmaes.resolve_initial_mean_log10("bounds_midpoint", bounds, phenotype_dim=6)
+    )
+    assert mean[6:] == pytest.approx((0.5, 0.5, 0.5))
+
+
+def test_normalize_search_bounds_log10_accepts_dim9():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    lower = [2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0]
+    upper = [6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0]
+    box = cmaes.normalize_search_bounds_log10({"lower": lower, "upper": upper})
+    assert box is not None
+    assert len(box[0]) == 9
+    assert box[0][6:] == pytest.approx((0.0, 0.0, 0.0))
+    assert box[1][6:] == pytest.approx((1.0, 1.0, 1.0))
 
 
 def test_resolve_initial_mean_log10_bounds_midpoint_dim6():
@@ -550,6 +618,39 @@ def test_create_structure_cma_optimizer_passes_maxstd():
         max_sigma_log10=0.5,
     )
     assert es.opts["maxstd"] == 0.5
+
+
+def test_create_structure_cma_optimizer_applies_cma_stds():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    mean = (4.0, 9.0, 8.5, 8.0, 7.5, -0.12, 0.5, 0.5, 0.5)
+    stds = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0)
+    search_bounds = (
+        (2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0),
+        (6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0),
+    )
+    es, _, _ = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_mean_log10=mean,
+        initial_sigma_log10=0.2,
+        base_seed=0,
+        structure_idx=0,
+        population_size=4,
+        search_bounds_log10=search_bounds,
+        cma_stds=stds,
+    )
+    assert list(es.opts["CMA_stds"]) == pytest.approx(list(stds))
+    # pycma may rescale sigma_vec near bounds; opts carry the requested CMA_stds.
+
+
+def test_validate_cma_stds_rejects_wrong_length():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    with pytest.raises(ValueError, match="cma_stds"):
+        cmaes.validate_cma_stds([1.0, 1.0], phenotype_dim=9)
+    with pytest.raises(ValueError, match="cma_stds"):
+        cmaes.validate_cma_stds([1.0] * 8 + [0.0], phenotype_dim=9)
 
 
 def test_resolve_initial_mean_log10_bounds_midpoint_and_explicit():

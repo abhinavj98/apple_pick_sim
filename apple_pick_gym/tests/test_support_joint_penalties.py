@@ -350,3 +350,56 @@ def test_support_joint_zeta_from_dataset_rejects_negative():
     )()
     with pytest.raises(ValueError, match="joint_damping_ratio"):
         support_joint_zeta_from_dataset(dataset)
+
+
+def test_apply_per_env_support_joint_penalties_honors_zeta_per_env():
+    from apple_pick_gym.batched_envs.support_joint_penalties import (
+        apply_per_env_support_joint_penalties,
+    )
+
+    scene, params_list = _build_support_scene()
+    cable = scene.cable
+    layout = scene.layout
+    num_envs = int(layout.num_envs)
+    joints_per_world = int(layout.joints_per_world)
+    assert num_envs == 2
+    j_support = _template_joint_by_label(
+        cable.fruiting_fixed_joints, "primary_support_left"
+    )
+    support_kp = [1.0e3, 1.0e3]
+    zetas = [0.2, 0.8]
+    apply_per_env_support_joint_penalties(
+        scene,
+        support_kp,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+        dowel_length_m_per_env=[support_dowel_length_m(p) for p in params_list],
+        zeta_per_env=zetas,
+    )
+    model = cable.model
+    body_mass = model.body_mass.numpy()
+    body_inertia = model.body_inertia.numpy()
+    joint_child = model.joint_child.numpy()
+    bodies_per_world = int(layout.bodies_per_world)
+    kds: list[float] = []
+    for w, (kp, zeta) in enumerate(zip(support_kp, zetas, strict=True)):
+        global_joint = w * joints_per_world + j_support
+        angular_kp = support_angular_kp_from_linear(
+            kp, support_dowel_length_m(params_list[w])
+        )
+        ang_kd, _lin_kd = joint_kd_from_damping_ratio(
+            zeta=zeta,
+            roles=("support",),
+            fruiting_fixed_joints=cable.fruiting_fixed_joints,
+            body_mass=body_mass,
+            body_inertia=body_inertia,
+            joint_child=joint_child,
+            angular_kp_by_role={"support": angular_kp},
+            linear_kp_by_role={"support": kp},
+            body_offset=w * bodies_per_world,
+        )
+        got = _angular_kd_at_joint(cable.solver, global_joint)
+        assert got == pytest.approx(ang_kd["support"])
+        kds.append(got)
+    assert kds[0] != pytest.approx(kds[1])
+

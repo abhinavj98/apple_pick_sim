@@ -229,7 +229,7 @@ The two geometry blocks have different jobs:
    `pre_grasp_geometry.lengthened_snapshot` has woody fields, **`fruiting_base_pos`**
    comes from that lengthened T (surface→centerline); otherwise from the rest/legacy
    spur start. Convert then applies a mass-gated +Z sag lift
-   (`raise_fruiting_base_pos_for_sag`: light 10 mm / heavy 14 mm) on top of that
+   (`raise_fruiting_base_pos_for_sag`: light/heavy 1 mm) on top of that
    native base. On current
    `final_data_correct_torque` s04/s05 trees, `parts.stem.length_m` is the
    caliper catalog minus 5 mm (s04 15→10 mm, s05 13→8 mm) and

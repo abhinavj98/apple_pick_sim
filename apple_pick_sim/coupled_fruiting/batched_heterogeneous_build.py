@@ -180,6 +180,7 @@ def build_batched_heterogeneous_scene(
     joint_damping_ratio = config.fruiting_system.joint_damping_ratio
     support_kp_per_env = config.fruiting_system.support_kp_per_env
     support_roll_kp_per_env = config.fruiting_system.support_roll_kp_per_env
+    support_zeta_per_env = config.fruiting_system.support_zeta_per_env
 
     if fix_to_apple and not vbd_only:
         gripper_weld = weld_grippers[0]
@@ -246,6 +247,7 @@ def build_batched_heterogeneous_scene(
                 per_env_params=params,
                 support_kp_per_env=support_kp_per_env,
                 support_roll_kp_per_env=support_roll_kp_per_env,
+                support_zeta_per_env=support_zeta_per_env,
             )
             stability_reports, ke_decay_reports, _preload = _run_vbd_settle(
                 settled,
@@ -308,6 +310,7 @@ def build_batched_heterogeneous_scene(
                 per_env_params=params,
                 support_kp_per_env=support_kp_per_env,
                 support_roll_kp_per_env=support_roll_kp_per_env,
+                support_zeta_per_env=support_zeta_per_env,
             )
             stability_reports, ke_decay_reports, _preload = _run_vbd_settle(
                 scene,
@@ -335,6 +338,7 @@ def build_batched_heterogeneous_scene(
         per_env_params=params,
         support_kp_per_env=support_kp_per_env,
         support_roll_kp_per_env=support_roll_kp_per_env,
+        support_zeta_per_env=support_zeta_per_env,
     )
 
     if not collect_diag:
@@ -624,6 +628,7 @@ def _apply_support_roll_penalties(
     *,
     joint_damping_ratio: float | None = None,
     support_roll_kp_per_env: Sequence[float] | None = None,
+    support_zeta_per_env: Sequence[float] | None = None,
 ) -> dict[str, float]:
     if support_roll_kp_per_env is not None:
         layout = scene.layout
@@ -634,13 +639,21 @@ def _apply_support_roll_penalties(
                 f"support_roll_kp_per_env length ({len(support_roll_kp_per_env)}) "
                 f"must match num_envs ({layout.num_envs})"
             )
+        if support_zeta_per_env is not None and len(support_zeta_per_env) != int(
+            layout.num_envs
+        ):
+            raise ValueError(
+                f"support_zeta_per_env length ({len(support_zeta_per_env)}) "
+                f"must match num_envs ({layout.num_envs})"
+            )
         per_env_kp = [
             {**roll_kp_overrides, "support": float(kp)}
             for kp in support_roll_kp_per_env
         ]
         cable = scene.cable
         per_env_kd: list[dict[str, float]] | None = None
-        if joint_damping_ratio is not None:
+        use_zeta = joint_damping_ratio is not None or support_zeta_per_env is not None
+        if use_zeta:
             from apple_pick_sim.fruiting_system.build import (
                 _roll_kd_overrides_from_damping_ratio,
             )
@@ -651,11 +664,15 @@ def _apply_support_roll_penalties(
             bodies_per_world = int(layout.bodies_per_world)
             per_env_kd = []
             for w, env_kp in enumerate(per_env_kp):
+                if support_zeta_per_env is not None:
+                    env_zeta = float(support_zeta_per_env[w])
+                else:
+                    env_zeta = float(joint_damping_ratio)
                 per_env_kd.append(
                     _roll_kd_overrides_from_damping_ratio(
                         cable.fruiting_fixed_joints,
                         env_kp,
-                        zeta=float(joint_damping_ratio),
+                        zeta=env_zeta,
                         joint_child=joint_child,
                         body_inertia=body_inertia,
                         body_offset=int(w) * bodies_per_world,
@@ -721,6 +738,7 @@ def _apply_joint_penalty_overrides(
     per_env_params: Sequence[FruitingSystemParams] | None = None,
     support_kp_per_env: Sequence[float] | None = None,
     support_roll_kp_per_env: Sequence[float] | None = None,
+    support_zeta_per_env: Sequence[float] | None = None,
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
     # kp first so weld stiffness is in place before kd patches.
     # Support angular k_p = (3/4) L^2 k_lin with L = primary (dowel) length.
@@ -829,18 +847,31 @@ def _apply_joint_penalty_overrides(
 
     ang_kd = dict(angular_kd_overrides)
     lin_kd = dict(linear_kd_overrides)
-    if joint_damping_ratio is not None:
+    use_zeta = joint_damping_ratio is not None or support_zeta_per_env is not None
+    if use_zeta:
         layout = scene.layout
         if layout is None:
             raise ValueError("joint_damping_ratio requires a batched scene layout")
+        if support_zeta_per_env is not None and len(support_zeta_per_env) != int(
+            layout.num_envs
+        ):
+            raise ValueError(
+                f"support_zeta_per_env length ({len(support_zeta_per_env)}) "
+                f"must match num_envs ({layout.num_envs})"
+            )
         model = scene.cable.model
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
         joint_child = model.joint_child.numpy()
         joints = list(scene.cable.fruiting_fixed_joints)
+        zeta0 = (
+            float(support_zeta_per_env[0])
+            if support_zeta_per_env is not None
+            else float(joint_damping_ratio)
+        )
         # Env-0 map is the reported "requested" base; per-env uses that env's m/I.
         ang_kd, lin_kd = joint_kd_from_damping_ratio(
-            zeta=float(joint_damping_ratio),
+            zeta=zeta0,
             fruiting_fixed_joints=joints,
             body_mass=body_mass,
             body_inertia=body_inertia,
@@ -863,8 +894,13 @@ def _apply_joint_penalty_overrides(
                     if per_env_lin_kp is not None
                     else linear_kp_overrides
                 )
+                env_zeta = (
+                    float(support_zeta_per_env[w])
+                    if support_zeta_per_env is not None
+                    else float(joint_damping_ratio)
+                )
                 a, l = joint_kd_from_damping_ratio(
-                    zeta=float(joint_damping_ratio),
+                    zeta=env_zeta,
                     fruiting_fixed_joints=joints,
                     body_mass=body_mass,
                     body_inertia=body_inertia,
@@ -896,6 +932,7 @@ def _apply_joint_penalty_overrides(
                 dict(roll_kp_overrides or {}),
                 joint_damping_ratio=joint_damping_ratio,
                 support_roll_kp_per_env=support_roll_kp_per_env,
+                support_zeta_per_env=support_zeta_per_env,
             )
             return ang_kd, lin_kd, applied_angular_kp, applied_linear_kp
 
@@ -906,6 +943,7 @@ def _apply_joint_penalty_overrides(
         dict(roll_kp_overrides or {}),
         joint_damping_ratio=joint_damping_ratio,
         support_roll_kp_per_env=support_roll_kp_per_env,
+        support_zeta_per_env=support_zeta_per_env,
     )
     return applied_angular_kd, applied_linear_kd, applied_angular_kp, applied_linear_kp
 

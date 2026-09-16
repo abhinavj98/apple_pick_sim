@@ -914,6 +914,18 @@ def test_snapshot_optimizer_distribution_mean_uses_phenotype_xfavorite():
     assert snap.mean_log10 != pytest.approx(tuple(opt.mean))
 
 
+def test_snapshot_xfavorite_log10_accepts_length_9():
+    """Length-9 CMA (E + roll + damping ζ) must snapshot full xfavorite."""
+    favorite = (3.0, 8.7, 9.0, 9.0, 8.7, -0.1, 0.5, 0.5, 0.5)
+
+    class Opt9:
+        @property
+        def result(self):
+            return type("R", (), {"xfavorite": list(favorite)})()
+
+    assert cmaes.snapshot_xfavorite_log10(Opt9()) == pytest.approx(favorite)
+
+
 def test_fit_uses_xfavorite_not_mean_or_xbest():
     bounds = _bounds()
 

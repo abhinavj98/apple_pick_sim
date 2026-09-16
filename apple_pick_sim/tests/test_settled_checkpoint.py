@@ -61,12 +61,40 @@ def test_cache_key_includes_settle_quiet_every(config, ranges, per_env_params):
     key_off = build_cache_key(config, ranges, per_env_params)
     quiet_cfg = dataclasses.replace(
         config,
-        scene=dataclasses.replace(config.scene, settle_quiet_every=100),
+        scene=dataclasses.replace(config.scene, settle_quiet_every=50),
     )
     key_on = build_cache_key(quiet_cfg, ranges, per_env_params)
     assert key_off != key_on
-    assert "quiet_every=100" in key_on
-    assert "quiet_every=300" in key_off
+    assert "quiet_every=50" in key_on
+    assert "quiet_every=100" in key_off
+
+
+def test_cache_key_differs_when_spur_or_stem_damping_ratio_changes(
+    config, ranges, per_env_params
+):
+    from apple_pick_sim.fruiting_system import set_rod_damping_ratio
+
+    base_key = build_cache_key(config, ranges, per_env_params)
+    altered = [
+        set_rod_damping_ratio(p, "spur", 0.11)
+        if getattr(p, "spur", None) is not None
+        else p
+        for p in per_env_params
+    ]
+    if all(getattr(p, "spur", None) is None for p in per_env_params):
+        pytest.skip("fixture has no spur rods")
+    assert build_cache_key(config, ranges, altered) != base_key
+    altered_stem = [
+        set_rod_damping_ratio(p, "stem", 0.22)
+        if getattr(p, "stem", None) is not None
+        else p
+        for p in per_env_params
+    ]
+    if any(getattr(p, "stem", None) is not None for p in per_env_params):
+        assert build_cache_key(config, ranges, altered_stem) != base_key
+        assert build_cache_key(config, ranges, altered_stem) != build_cache_key(
+            config, ranges, altered
+        )
 
 
 def test_save_load_roundtrip(tmp_path, config, ranges, per_env_params):

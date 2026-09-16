@@ -27,6 +27,9 @@ DEFAULT_PHENOTYPE_DIM_NAMES: tuple[str, ...] = (
     "E_youngs_spur",
     "E_youngs_stem",
     "support_roll_kp",
+    "spur_damping_ratio",
+    "stem_damping_ratio",
+    "support_joint_zeta",
 )
 
 

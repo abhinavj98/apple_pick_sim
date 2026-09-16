@@ -222,7 +222,11 @@ def maybe_include_gt_candidate(
 
 
 class SupportKpYoungsCandidate(NamedTuple):
-    """One sys-ID candidate: support k_p plus spur/stem flexural and axial moduli (Pa)."""
+    """One sys-ID candidate: support k_p plus spur/stem flexural and axial moduli (Pa).
+
+    Length-9 CMA also carries spur/stem rod ``damping_ratio`` and support-joint ζ
+    as linear coordinates in ``[0, 1]``.
+    """
 
     support_kp: float
     spur: float
@@ -230,13 +234,16 @@ class SupportKpYoungsCandidate(NamedTuple):
     spur_youngs: float | None = None
     stem_youngs: float | None = None
     support_roll_kp: float | None = None
+    spur_damping_ratio: float | None = None
+    stem_damping_ratio: float | None = None
+    support_joint_zeta: float | None = None
 
     def apply_to(self, base: FruitingSystemParams) -> FruitingSystemParams:
         """Return a copy with spur/stem flexural (and optional axial) moduli re-derived.
 
-        Primary (and secondary) material is left unchanged. ``support_kp`` and
-        ``support_roll_kp`` are not applied here — fused replay patches support
-        joints per env.
+        Primary (and secondary) material is left unchanged. ``support_kp``,
+        ``support_roll_kp``, and ``support_joint_zeta`` are not applied here —
+        fused replay patches support joints per env.
         """
         out = base
         for segment, value in (
@@ -249,6 +256,10 @@ class SupportKpYoungsCandidate(NamedTuple):
             out = fs.set_rod_youngs_modulus(out, "spur", float(self.spur_youngs))
         if self.stem_youngs is not None and base.stem is not None:
             out = fs.set_rod_youngs_modulus(out, "stem", float(self.stem_youngs))
+        if self.spur_damping_ratio is not None and base.spur is not None:
+            out = fs.set_rod_damping_ratio(out, "spur", float(self.spur_damping_ratio))
+        if self.stem_damping_ratio is not None and base.stem is not None:
+            out = fs.set_rod_damping_ratio(out, "stem", float(self.stem_damping_ratio))
         return out
 
     def short_label(self) -> str:
@@ -260,7 +271,125 @@ class SupportKpYoungsCandidate(NamedTuple):
         ]
         if self.support_roll_kp is not None:
             parts.append(f"{math.log10(self.support_roll_kp):.2f}")
+        if self.spur_damping_ratio is not None:
+            parts.append(f"ζs={float(self.spur_damping_ratio):.2f}")
+        if self.stem_damping_ratio is not None:
+            parts.append(f"ζt={float(self.stem_damping_ratio):.2f}")
+        if self.support_joint_zeta is not None:
+            parts.append(f"ζj={float(self.support_joint_zeta):.2f}")
         return f"log10=({','.join(parts)})"
+
+
+def _validate_unit_interval_zeta(name: str, value: float) -> float:
+    v = float(value)
+    if not math.isfinite(v) or v < 0.0 or v > 1.0:
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    return v
+
+
+def candidates_from_log10_vector(
+    log10_vector: Sequence[float],
+) -> SupportKpYoungsCandidate:
+    """Map phenotype vector to a physical candidate.
+
+    Length 3: ``(k_p, E_flex_spur, E_flex_stem)`` with axial moduli unchanged.
+    Length 5: adds ``(E_youngs_spur, E_youngs_stem)``.
+    Length 6: adds ``support_roll_kp`` (N·m/rad) after axial moduli (log10).
+    Length 9: adds linear ``spur_damping_ratio``, ``stem_damping_ratio``,
+    ``support_joint_zeta`` in ``[0, 1]`` after roll (dims 0–5 remain log10).
+    """
+    n = len(log10_vector)
+    if n not in (3, 5, 6, 9):
+        raise ValueError(
+            f"log10_vector must have length 3, 5, 6, or 9, got {n}"
+        )
+    spur_youngs = None
+    stem_youngs = None
+    support_roll_kp = None
+    spur_damping_ratio = None
+    stem_damping_ratio = None
+    support_joint_zeta = None
+    if n >= 5:
+        spur_youngs = 10.0 ** float(log10_vector[3])
+        stem_youngs = 10.0 ** float(log10_vector[4])
+    if n >= 6:
+        support_roll_kp = 10.0 ** float(log10_vector[5])
+    if n == 9:
+        spur_damping_ratio = _validate_unit_interval_zeta(
+            "spur_damping_ratio", log10_vector[6]
+        )
+        stem_damping_ratio = _validate_unit_interval_zeta(
+            "stem_damping_ratio", log10_vector[7]
+        )
+        support_joint_zeta = _validate_unit_interval_zeta(
+            "support_joint_zeta", log10_vector[8]
+        )
+    return SupportKpYoungsCandidate(
+        support_kp=10.0 ** float(log10_vector[0]),
+        spur=10.0 ** float(log10_vector[1]),
+        stem=10.0 ** float(log10_vector[2]),
+        spur_youngs=spur_youngs,
+        stem_youngs=stem_youngs,
+        support_roll_kp=support_roll_kp,
+        spur_damping_ratio=spur_damping_ratio,
+        stem_damping_ratio=stem_damping_ratio,
+        support_joint_zeta=support_joint_zeta,
+    )
+
+
+def log10_vector_from_candidate(
+    candidate: SupportKpYoungsCandidate,
+) -> tuple[float, ...]:
+    """Extract phenotype; 5/6/9-tuple when axial/roll/damping set."""
+    base = (
+        math.log10(float(candidate.support_kp)),
+        math.log10(float(candidate.spur)),
+        math.log10(float(candidate.stem)),
+    )
+    has_damping = (
+        candidate.spur_damping_ratio is not None
+        or candidate.stem_damping_ratio is not None
+        or candidate.support_joint_zeta is not None
+    )
+    if candidate.spur_youngs is None and candidate.stem_youngs is None:
+        if candidate.support_roll_kp is not None or has_damping:
+            raise ValueError(
+                "support_roll_kp / damping ratios require axial moduli on "
+                "SupportKpYoungsCandidate"
+            )
+        return base
+    if candidate.spur_youngs is None or candidate.stem_youngs is None:
+        raise ValueError("partial axial moduli on SupportKpYoungsCandidate")
+    axial = (
+        *base,
+        math.log10(float(candidate.spur_youngs)),
+        math.log10(float(candidate.stem_youngs)),
+    )
+    if candidate.support_roll_kp is None:
+        if has_damping:
+            raise ValueError(
+                "damping ratios require support_roll_kp on SupportKpYoungsCandidate"
+            )
+        return axial
+    roll = (*axial, math.log10(float(candidate.support_roll_kp)))
+    if not has_damping:
+        return roll
+    if (
+        candidate.spur_damping_ratio is None
+        or candidate.stem_damping_ratio is None
+        or candidate.support_joint_zeta is None
+    ):
+        raise ValueError("partial damping ratios on SupportKpYoungsCandidate")
+    return (
+        *roll,
+        float(candidate.spur_damping_ratio),
+        float(candidate.stem_damping_ratio),
+        float(candidate.support_joint_zeta),
+    )
+
+
+DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT = math.log10(0.75)
+DEFAULT_DAMPING_RATIO_MIDPOINT = 0.5
 
 
 def iter_support_kp_youngs_candidates(
@@ -276,68 +405,6 @@ def iter_support_kp_youngs_candidates(
             spur=float(spur),
             stem=float(stem),
         )
-
-
-def candidates_from_log10_vector(
-    log10_vector: Sequence[float],
-) -> SupportKpYoungsCandidate:
-    """Map log10 phenotype to a physical candidate.
-
-    Length 3: ``(k_p, E_flex_spur, E_flex_stem)`` with axial moduli unchanged.
-    Length 5: adds ``(E_youngs_spur, E_youngs_stem)``.
-    Length 6: adds ``support_roll_kp`` (N·m/rad) after axial moduli.
-    """
-    n = len(log10_vector)
-    if n not in (3, 5, 6):
-        raise ValueError(
-            f"log10_vector must have length 3, 5, or 6, got {n}"
-        )
-    spur_youngs = None
-    stem_youngs = None
-    support_roll_kp = None
-    if n >= 5:
-        spur_youngs = 10.0 ** float(log10_vector[3])
-        stem_youngs = 10.0 ** float(log10_vector[4])
-    if n == 6:
-        support_roll_kp = 10.0 ** float(log10_vector[5])
-    return SupportKpYoungsCandidate(
-        support_kp=10.0 ** float(log10_vector[0]),
-        spur=10.0 ** float(log10_vector[1]),
-        stem=10.0 ** float(log10_vector[2]),
-        spur_youngs=spur_youngs,
-        stem_youngs=stem_youngs,
-        support_roll_kp=support_roll_kp,
-    )
-
-
-def log10_vector_from_candidate(
-    candidate: SupportKpYoungsCandidate,
-) -> tuple[float, ...]:
-    """Extract log10 phenotype; 5-tuple when axial set; 6-tuple when roll set."""
-    base = (
-        math.log10(float(candidate.support_kp)),
-        math.log10(float(candidate.spur)),
-        math.log10(float(candidate.stem)),
-    )
-    if candidate.spur_youngs is None and candidate.stem_youngs is None:
-        if candidate.support_roll_kp is not None:
-            raise ValueError(
-                "support_roll_kp requires axial moduli on SupportKpYoungsCandidate"
-            )
-        return base
-    if candidate.spur_youngs is None or candidate.stem_youngs is None:
-        raise ValueError("partial axial moduli on SupportKpYoungsCandidate")
-    axial = (
-        *base,
-        math.log10(float(candidate.spur_youngs)),
-        math.log10(float(candidate.stem_youngs)),
-    )
-    if candidate.support_roll_kp is None:
-        return axial
-    return (*axial, math.log10(float(candidate.support_roll_kp)))
-
-
-DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT = math.log10(0.75)
 
 
 def gt_support_kp_from_dataset(dataset: BatchedSysIdDataset) -> float:
@@ -600,8 +667,20 @@ def resolve_initial_mean_log10(
                 mid[2],
                 DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT,
             )
+        if phenotype_dim == 9:
+            return (
+                mid[0],
+                mid[1],
+                mid[2],
+                mid[1],
+                mid[2],
+                DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT,
+                DEFAULT_DAMPING_RATIO_MIDPOINT,
+                DEFAULT_DAMPING_RATIO_MIDPOINT,
+                DEFAULT_DAMPING_RATIO_MIDPOINT,
+            )
         raise ValueError(
-            "bounds_midpoint initial mean supports phenotype_dim 3, 4, 5, or 6, "
+            "bounds_midpoint initial mean supports phenotype_dim 3, 4, 5, 6, or 9, "
             f"got {phenotype_dim}"
         )
     try:
@@ -649,7 +728,8 @@ def normalize_search_bounds_log10(
 
     Accepted forms:
     - ``None`` → unbounded
-    - ``{"lower": [...], "upper": [...]}`` in log10 (length 3, 5, or 6)
+    - ``{"lower": [...], "upper": [...]}`` in log10 (length 3, 5, 6, or 9;
+      length-9 last three coords are linear ζ in ``[0, 1]``)
     """
     if spec is None:
         return None
@@ -664,11 +744,11 @@ def normalize_search_bounds_log10(
         upper = tuple(float(v) for v in spec["upper"])
     except TypeError as exc:
         raise ValueError(
-            "search_bounds_log10 lower/upper must be length-3, 5, or 6 sequences"
+            "search_bounds_log10 lower/upper must be length-3, 5, 6, or 9 sequences"
         ) from exc
-    if len(lower) not in (3, 4, 5, 6) or len(upper) != len(lower):
+    if len(lower) not in (3, 4, 5, 6, 9) or len(upper) != len(lower):
         raise ValueError(
-            "search_bounds_log10 lower/upper must have length 3, 4, 5, or 6"
+            "search_bounds_log10 lower/upper must have length 3, 4, 5, 6, or 9"
         )
     if not all(math.isfinite(v) for v in (*lower, *upper)):
         raise ValueError("search_bounds_log10 lower/upper must be finite")
@@ -679,15 +759,31 @@ def search_bounds_report_payload(
     search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None,
 ) -> dict[str, Any] | None:
-    """JSON fragment for active CMA search bounds; ``None`` when unbounded."""
+    """JSON fragment for active CMA search bounds; ``None`` when unbounded.
+
+    For length-9 boxes the last three coords are linear ζ (not log10); physical
+    min/max for those slots are identity, not ``10**x``.
+    """
     if search_bounds_log10 is None:
         return None
     lower, upper = search_bounds_log10
+    n = len(lower)
+    n_log = n - 3 if n == 9 else n
+
+    def _physical(values: tuple[float, ...]) -> list[float]:
+        out: list[float] = []
+        for i, v in enumerate(values):
+            if i < n_log:
+                out.append(float(10.0**v))
+            else:
+                out.append(float(v))
+        return out
+
     return {
         "log10_lower": list(lower),
         "log10_upper": list(upper),
-        "physical_min_pa": [float(10.0**v) for v in lower],
-        "physical_max_pa": [float(10.0**v) for v in upper],
+        "physical_min_pa": _physical(lower),
+        "physical_max_pa": _physical(upper),
     }
 
 
@@ -733,6 +829,25 @@ def make_pycma_randn(generator: np.random.Generator) -> Callable[..., Any]:
     return randn
 
 
+def validate_cma_stds(
+    stds: Sequence[float],
+    *,
+    phenotype_dim: int,
+) -> tuple[float, ...]:
+    """Validate per-coordinate CMA_stds (positive finite, matching phenotype dim)."""
+    try:
+        values = tuple(float(v) for v in stds)
+    except TypeError as exc:
+        raise ValueError("cma_stds must be a numeric sequence") from exc
+    if len(values) != int(phenotype_dim):
+        raise ValueError(
+            f"cma_stds must have length {phenotype_dim}, got {len(values)}"
+        )
+    if not all(math.isfinite(v) and v > 0.0 for v in values):
+        raise ValueError("cma_stds entries must be finite and > 0")
+    return values
+
+
 def build_pycma_options(
     *,
     randn: Callable[..., Any],
@@ -740,6 +855,7 @@ def build_pycma_options(
     search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None = None,
     max_sigma_log10: float | None = None,
+    cma_stds: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """Build pycma options; omit bounds when ``search_bounds_log10`` is None."""
     options: dict[str, Any] = {
@@ -755,6 +871,15 @@ def build_pycma_options(
     cap = validate_max_sigma_log10(max_sigma_log10)
     if cap is not None:
         options["maxstd"] = float(cap)
+    if cma_stds is not None:
+        phenotype_dim = (
+            len(search_bounds_log10[0])
+            if search_bounds_log10 is not None
+            else len(cma_stds)
+        )
+        options["CMA_stds"] = list(
+            validate_cma_stds(cma_stds, phenotype_dim=phenotype_dim)
+        )
     return options
 
 
@@ -769,6 +894,7 @@ def create_structure_cma_optimizer(
     search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None = None,
     max_sigma_log10: float | None = None,
+    cma_stds: Sequence[float] | None = None,
 ) -> tuple[cma.CMAEvolutionStrategy, int, np.random.Generator]:
     """Construct one pycma optimizer (bounded only when search bounds are set)."""
     sigma = validate_initial_sigma_log10(initial_sigma_log10)
@@ -784,11 +910,15 @@ def create_structure_cma_optimizer(
     )
     effective_seed = derive_structure_cma_seed(int(base_seed), int(structure_idx))
     rng = np.random.default_rng(effective_seed)
+    stds = None
+    if cma_stds is not None:
+        stds = validate_cma_stds(cma_stds, phenotype_dim=len(mean))
     options = build_pycma_options(
         randn=make_pycma_randn(rng),
         population_size=population_size,
         search_bounds_log10=search_bounds_log10,
         max_sigma_log10=cap,
+        cma_stds=stds,
     )
     es = cma.CMAEvolutionStrategy(
         list(mean),
@@ -810,6 +940,25 @@ class YoungsModulusScoringConfig:
     include_delta: bool = True
     categorical_weight: float = 100.0
     delta_weight: float = 1.0
+    full_trajectory: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.full_trajectory:
+            return
+        resolved_hold_reduce = (
+            str(self.hold_aggregation)
+            if self.hold_aggregation is not None
+            else ("median" if self.use_median else "none")
+        )
+        if resolved_hold_reduce != "none":
+            raise ValueError(
+                "full_trajectory=True requires hold-reduction to resolve to "
+                "'none': reducing a move_out ramp to a single median/mean "
+                "state discards the signal (e.g. damping) full-trajectory "
+                f"scoring exists to capture; got hold_aggregation="
+                f"{self.hold_aggregation!r} use_median={self.use_median!r} "
+                f"(resolved={resolved_hold_reduce!r})"
+            )
 
 
 def _hold_reduce_from_scoring(scoring: YoungsModulusScoringConfig) -> str | None:
@@ -832,6 +981,7 @@ def _wasserstein_kwargs_from_scoring(
         "include_delta": bool(scoring.include_delta),
         "categorical_weight": float(scoring.categorical_weight),
         "delta_weight": float(scoring.delta_weight),
+        "full_trajectory": bool(scoring.full_trajectory),
     }
 
 
@@ -2080,8 +2230,10 @@ def snapshot_xfavorite_log10(optimizer: Any) -> tuple[float, ...]:
     if favorite is None:
         raise ValueError("optimizer.result.xfavorite is unavailable")
     values = tuple(float(v) for v in favorite)
-    if len(values) not in (3, 4, 5, 6):
-        raise ValueError(f"xfavorite must have length 3, 4, 5, or 6, got {len(values)}")
+    if len(values) not in (3, 4, 5, 6, 9):
+        raise ValueError(
+            f"xfavorite must have length 3, 4, 5, 6, or 9, got {len(values)}"
+        )
     return values
 
 
@@ -2499,10 +2651,22 @@ def _candidate_to_e_list(candidate: Any) -> list[float]:
     roll = getattr(candidate, "support_roll_kp", None)
     if roll is not None:
         out.append(float(roll))
+    spur_d = getattr(candidate, "spur_damping_ratio", None)
+    stem_d = getattr(candidate, "stem_damping_ratio", None)
+    joint_z = getattr(candidate, "support_joint_zeta", None)
+    if spur_d is not None and stem_d is not None and joint_z is not None:
+        out.extend([float(spur_d), float(stem_d), float(joint_z)])
     return out
 
 
 def _candidate_to_log10_list(candidate: Any) -> list[float]:
+    """Phenotype coords: log10 for stiffness dims; identity for linear ζ dims."""
+    if (
+        getattr(candidate, "spur_damping_ratio", None) is not None
+        and getattr(candidate, "stem_damping_ratio", None) is not None
+        and getattr(candidate, "support_joint_zeta", None) is not None
+    ):
+        return list(log10_vector_from_candidate(candidate))
     return [math.log10(v) for v in _candidate_to_e_list(candidate)]
 
 

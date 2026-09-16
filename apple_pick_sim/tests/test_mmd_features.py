@@ -590,6 +590,123 @@ def test_iter_kept_hold_segments_keeps_full_hold():
     assert segments[0].tolist() == [1, 2, 3, 4, 5, 6, 7]
 
 
+def test_iter_kept_hold_segments_target_phase_extracts_move_out():
+    phase = np.array([0, 0, 1, 1, 1, 0, 0, 1], dtype=np.int8)
+    dir_idx = np.zeros(8, dtype=np.int32)
+
+    segments = iter_kept_hold_segments(
+        phase=phase, dir_idx=dir_idx, direction=0, target_phase=0
+    )
+
+    assert [s.tolist() for s in segments] == [[0, 1], [5, 6]]
+
+
+def test_full_trajectory_includes_move_out_and_tags_phase_onehot():
+    """full_trajectory=True emits move_out then hold rows per cycle, phase-tagged."""
+    arrays = _arrays_for_steps(steps=10, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(10, dtype=np.int32)
+    arrays["phase"] = np.array([0, 0, 1, 1, 1, 0, 0, 1, 1, 1], dtype=np.int8)
+    arrays["hold_number"] = np.array(
+        [-1, -1, 5, 5, 5, -1, -1, 9, 9, 9], dtype=np.int32
+    )
+
+    by_direction = build_transition_features_by_direction(
+        arrays,
+        hold_id_onehot=True,
+        n_holds=10,
+        full_trajectory=True,
+    )
+
+    assert set(by_direction) == {0}
+    feats = by_direction[0]
+    state_dim = build_state_matrix(arrays).shape[1]
+    # [s, delta] + hold onehot (10) + phase onehot (2)
+    assert feats.shape[1] == 2 * state_dim + 10 + 2
+    # move_out[0,1] -> 1 transition; hold[2,3,4] -> 2; move_out[5,6] -> 1; hold[7,8,9] -> 2
+    assert feats.shape[0] == 1 + 2 + 1 + 2
+
+    hold_onehot = feats[:, 2 * state_dim : 2 * state_dim + 10]
+    phase_onehot = feats[:, 2 * state_dim + 10 :]
+
+    # Cycle 0 (move_out row, then 2 hold rows) inherits hold_number=5; cycle 1 inherits 9.
+    assert [int(np.argmax(row)) for row in hold_onehot] == [5, 5, 5, 9, 9, 9]
+    # move_out rows tag phase index 0; hold rows tag phase index 1.
+    np.testing.assert_array_equal(
+        phase_onehot,
+        [[1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]],
+    )
+
+
+def test_full_trajectory_excludes_return_and_pre_weld():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    # pre_weld(-1), move_out(0)x2, hold(1)x2, return(2)x3
+    arrays["phase"] = np.array([-1, 0, 0, 1, 1, 2, 2, 2], dtype=np.int8)
+
+    by_direction = build_transition_features_by_direction(arrays, full_trajectory=True)
+
+    # move_out[1,2] -> 1 transition; hold[3,4] -> 1 transition.
+    assert by_direction[0].shape[0] == 2
+
+
+def test_full_trajectory_raises_on_orphan_move_out_segment():
+    arrays = _arrays_for_steps(steps=6, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(6, dtype=np.int32)
+    # Second move_out segment [4, 5] has no following hold.
+    arrays["phase"] = np.array([0, 0, 1, 1, 0, 0], dtype=np.int8)
+
+    with pytest.raises(ValueError, match="no immediately-following hold segment"):
+        build_transition_features_by_direction(arrays, full_trajectory=True)
+
+
+def test_full_trajectory_scores_leading_hold_with_no_preceding_move_out():
+    """Real-data conversion can inject a leading rest hold (inject_rest_hold);
+    it has no preceding move_out and must be scored hold-only, not raise."""
+    arrays = _arrays_for_steps(steps=10, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(10, dtype=np.int32)
+    # rest hold[0,1], move[2,3]+hold[4,5] (cycle 1), move[6,7]+hold[8,9] (cycle 2).
+    arrays["phase"] = np.array([1, 1, 0, 0, 1, 1, 0, 0, 1, 1], dtype=np.int8)
+    arrays["hold_number"] = np.array(
+        [0, 0, -1, -1, 1, 1, -1, -1, 2, 2], dtype=np.int32
+    )
+
+    by_direction = build_transition_features_by_direction(
+        arrays,
+        hold_id_onehot=True,
+        n_holds=3,
+        full_trajectory=True,
+    )
+
+    feats = by_direction[0]
+    state_dim = build_state_matrix(arrays).shape[1]
+    # rest hold[0,1] -> 1 row; move[2,3]+hold[4,5] -> 2 rows; move[6,7]+hold[8,9] -> 2 rows.
+    assert feats.shape[0] == 1 + 2 + 2
+
+    hold_onehot = feats[:, 2 * state_dim : 2 * state_dim + 3]
+    phase_onehot = feats[:, 2 * state_dim + 3 :]
+    assert [int(np.argmax(row)) for row in hold_onehot] == [0, 1, 1, 2, 2]
+    np.testing.assert_array_equal(
+        phase_onehot,
+        [
+            [0.0, 1.0],  # rest hold
+            [1.0, 0.0],  # move cycle 1
+            [0.0, 1.0],  # hold cycle 1
+            [1.0, 0.0],  # move cycle 2
+            [0.0, 1.0],  # hold cycle 2
+        ],
+    )
+
+
+def test_full_trajectory_rejects_median_hold_reduce():
+    arrays = _arrays_for_steps(steps=5, junction_names=["joint_a"])
+    arrays["phase"] = np.array([0, 1, 1, 1, 1], dtype=np.int8)
+
+    with pytest.raises(ValueError, match="hold_reduce"):
+        build_transition_features_by_direction(
+            arrays, full_trajectory=True, use_median=True
+        )
+
+
 def test_median_hold_to_hold_features_use_full_hold_medians():
     """Two holds → one [median_s0, median_s1 - median_s0] row; outlier ignored."""
     arrays = _arrays_for_steps(steps=10, junction_names=["joint_a"])

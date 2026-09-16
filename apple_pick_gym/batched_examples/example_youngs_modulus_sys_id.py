@@ -559,6 +559,7 @@ def _make_build_env_fn(
         per_env_grippers=None,
         support_kp_per_env=None,
         support_roll_kp_per_env=None,
+        support_zeta_per_env=None,
     ) -> ApplePickBatchedSysIdEnv:
         if gripper is not None and per_env_grippers is not None:
             raise ValueError(
@@ -603,6 +604,20 @@ def _make_build_env_fn(
                     support_roll_kp_per_env=roll_tuple,
                 ),
             )
+        if support_zeta_per_env is not None:
+            zeta_tuple = tuple(float(z) for z in support_zeta_per_env)
+            if len(zeta_tuple) != int(num_envs):
+                raise ValueError(
+                    f"support_zeta_per_env length ({len(zeta_tuple)}) must match "
+                    f"num_envs ({num_envs})"
+                )
+            sim_config = dataclasses.replace(
+                sim_config,
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system,
+                    support_zeta_per_env=zeta_tuple,
+                ),
+            )
         if gripper is not None:
             sim_config = dataclasses.replace(
                 sim_config,
@@ -622,6 +637,7 @@ def _make_build_env_fn(
 
     build_env_fn.wants_support_kp_per_env = True
     build_env_fn.wants_support_roll_kp_per_env = True
+    build_env_fn.wants_support_zeta_per_env = True
     return build_env_fn
 
 

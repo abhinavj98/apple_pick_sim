@@ -197,6 +197,10 @@ class FruitingSystemConfig:
     # (length must match num_envs). Writes both ``joint_target_ke`` and
     # penalty slot ``c0+2`` so ``min(penalty_k, target_ke)`` matches.
     support_roll_kp_per_env: tuple[float, ...] | None = None
+    # Per-env support-joint ζ used with ``support_kp_per_env`` /
+    # ``support_roll_kp_per_env`` when CMA searches damping. Length must match
+    # ``num_envs``. When unset, ``joint_damping_ratio`` remains the scalar.
+    support_zeta_per_env: tuple[float, ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)

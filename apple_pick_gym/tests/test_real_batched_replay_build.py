@@ -362,6 +362,76 @@ def test_make_real_replay_build_env_fn_applies_support_kp_before_post_grasp_sett
     assert apply_kwargs[0]["support_kp_per_env"] == (500.0, 5000.0)
 
 
+def test_make_real_replay_build_env_fn_applies_support_zeta_per_env_before_settle(
+    monkeypatch,
+):
+    """Per-candidate support ζ must reach joint/roll re-apply before snapshot."""
+    from apple_pick_gym.batched_envs import real_batched_replay_build as build
+
+    cable = object()
+    layout = SimpleNamespace(num_envs=2, joints_per_world=7)
+    apply_kwargs: list[dict] = []
+    roll_kwargs: list[dict] = []
+
+    class _FakeEnv:
+        def __init__(self, **kwargs):
+            sim_config = kwargs["sim_config"]
+            self._sim = SimpleNamespace(
+                scene=SimpleNamespace(cable=cable, layout=layout),
+                config=sim_config,
+                per_env_params=(
+                    SimpleNamespace(primary=SimpleNamespace(length=0.8)),
+                    SimpleNamespace(primary=SimpleNamespace(length=0.8)),
+                ),
+                layout=layout,
+                capture_episode_snapshot=lambda: None,
+            )
+
+    def _apply_support(scene, support_kp_per_env, **kwargs):
+        apply_kwargs.append({"support_kp_per_env": tuple(support_kp_per_env), **kwargs})
+
+    def _apply_roll(scene, support_roll_kp_per_env, **kwargs):
+        roll_kwargs.append(
+            {"support_roll_kp_per_env": tuple(support_roll_kp_per_env), **kwargs}
+        )
+
+    monkeypatch.setattr(build, "ApplePickBatchedSysIdEnv", _FakeEnv)
+    monkeypatch.setattr(
+        build, "apply_logged_post_grasp_se3_to_cable", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(build, "apply_per_env_support_joint_penalties", _apply_support)
+    monkeypatch.setattr(build, "apply_per_env_support_roll_penalties", _apply_roll)
+    monkeypatch.setattr(
+        build, "apply_post_grasp_vbd_settle", lambda *_a, **_k: ([], [])
+    )
+    meta = {
+        "initial_apple_pos": [0.1, 0.2, 0.3],
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": [0.1, 0.15, 0.3],
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+    }
+    fn = build.make_real_replay_build_env_fn(
+        ranges_path=_VARIANCE,
+        ranges=load_ranges(_VARIANCE),
+        topology_seed=0,
+        fruiting_base_pos=(0.0, 0.5, 0.95),
+        episode_meta=meta,
+        controller_mode="vic_pose",
+        post_grasp_settle_substeps=100,
+    )
+    assert getattr(fn, "wants_support_zeta_per_env", False) is True
+    fn(
+        num_envs=2,
+        per_env_params=[None, None],
+        max_episode_steps=4,
+        support_kp_per_env=[500.0, 5000.0],
+        support_roll_kp_per_env=[0.5, 1.5],
+        support_zeta_per_env=[0.2, 0.9],
+    )
+    assert apply_kwargs[0]["zeta_per_env"] == (0.2, 0.9)
+    assert roll_kwargs[0]["zeta_per_env"] == (0.2, 0.9)
+
+
 def test_make_real_replay_build_env_fn_recaptures_snapshot_after_post_grasp_se3(
     monkeypatch,
 ):

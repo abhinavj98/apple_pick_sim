@@ -32,8 +32,11 @@ from apple_pick_sim.fruiting_system.params import (
     PLACEHOLDER_EE_MASS_KG,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
-from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 from apple_pick_sim.sim_device import resolve_sim_device
+
+# Keep in sync with ``placement.IK_BOOTSTRAP_DEFAULT_ITERATIONS`` (avoid import cycle
+# via setup → coupled_fruiting → placement).
+_IK_BOOTSTRAP_DEFAULT_ITERATIONS = 128
 
 # Per-role FIXED-joint kd overrides (see docs/damping-tuning.md §3).
 # Defaults mirror ``make_fruiting_solver_vbd`` → Newton ``SolverVBD`` rigid joint kd.
@@ -116,12 +119,16 @@ class RobotConfig:
     gripper: GripperProxyConfig = dataclasses.field(default_factory=_default_gripper_proxy_config)
     robot_base_pos: tuple[float, float, float] | None = None
     per_env_ik: bool = True
-    ik_bootstrap_iterations: int = IK_BOOTSTRAP_DEFAULT_ITERATIONS
+    ik_bootstrap_iterations: int = _IK_BOOTSTRAP_DEFAULT_ITERATIONS
     skip_ik_bootstrap: bool = True
     defer_template_robot_bootstrap: bool = True
     force_batched_layout: bool = False
     # When set, weld/post-grasp arm placement writes these joints open-loop (no IK).
     bootstrap_joint_q: tuple[float, ...] | None = None
+    # When set, each world gets its own open-loop joint_q (no world-0 broadcast).
+    per_world_bootstrap_joint_q: tuple[tuple[float, ...], ...] | None = None
+    # In-process only: reuse USD-imported FR3 + SolverMuJoCo across fused rebuilds.
+    reuse_replicated_mujoco: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -129,13 +136,13 @@ class SceneSettleCollisionConfig:
     """Fruiting placement, VBD settle, and AVBD collision policy."""
 
     fruiting_base_pos: tuple[float, float, float] | None = None
-    settle_substeps: int = 5000
+    settle_substeps: int = 6000
     settle_gravity_ramp: bool = False
-    settle_quiet_every: int | None = 300
+    settle_quiet_every: int | None = 100
     settle_max_speed_m_s: float = 0.05
     # Extra VBD settle on the welded scene after seed_fix_to_apple (0 = skip).
     # Matches plant-only ``--post-grasp-settle-substeps`` in example_view_pre_grasp_settle.
-    post_grasp_settle_substeps: int = 0
+    post_grasp_settle_substeps: int = 2000
     enable_self_collisions: bool = False
     enable_apple_woody_collisions: bool = True
     enable_proxy_woody_collisions: bool = True
@@ -167,6 +174,8 @@ class FruitingSystemConfig:
     stem_force_cap_N: float | None = DEFAULT_STEM_FORCE_CAP_N
     stem_torque_cap_Nm: float | None = DEFAULT_STEM_TORQUE_CAP_NM
     stem_harvest_explicit_apple_weight: bool = False
+    tcp_harvest_source: str = "stem"
+    """``\"stem\"`` (default) or ``\"weld\"`` (requires ``GripperProxyConfig.dynamic_apple``)."""
     joint_angular_kd_overrides: dict[str, float] = dataclasses.field(
         default_factory=lambda: dict(_DEFAULT_JOINT_ANGULAR_KD_OVERRIDES)
     )
@@ -175,9 +184,23 @@ class FruitingSystemConfig:
     )
     joint_angular_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     joint_linear_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
+    joint_roll_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     # When set, build expands ζ → absolute kd (mutually exclusive with non-empty kd maps
     # in ranges JSON). Absolute kd override dicts above are then ignored at apply time.
     joint_damping_ratio: float | None = None
+    # Per-env linear support kp (N/m). When set, replaces fixture
+    # ``joint_linear_kp_overrides["support"]`` before free/post-grasp settle so
+    # CMA candidates shape gravity equilibrium (length must match num_envs).
+    support_kp_per_env: tuple[float, ...] | None = None
+    # Per-env T-roll support kp (N·m/rad). When set, replaces fixture
+    # ``joint_roll_kp_overrides["support"]`` before free/post-grasp settle
+    # (length must match num_envs). Writes both ``joint_target_ke`` and
+    # penalty slot ``c0+2`` so ``min(penalty_k, target_ke)`` matches.
+    support_roll_kp_per_env: tuple[float, ...] | None = None
+    # Per-env support-joint ζ used with ``support_kp_per_env`` /
+    # ``support_roll_kp_per_env`` when CMA searches damping. Length must match
+    # ``num_envs``. When unset, ``joint_damping_ratio`` remains the scalar.
+    support_zeta_per_env: tuple[float, ...] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -198,6 +221,11 @@ class ControllerConfig:
         )
     )
     allocate_action_buffer: bool = True
+    kp_null: float = 10.0
+    kd_null: float = 6.3246
+    sep_ori: bool = False
+    # Continuous_Force_RL: 0.2 N·m per 1 ms. 0 disables slew (algebraic tests).
+    joint_torque_slew_nm_s: float = 200.0
 
     def expected_action_shape(self, num_envs: int) -> tuple[int, int]:
         """Return ``(num_envs, action_dim)``."""
@@ -324,6 +352,12 @@ class BatchedHeterogeneousCoupledSimConfig:
 
         if self.robot.kind != "fr3":
             raise ValueError(f"robot.kind must be 'fr3', got {self.robot.kind!r}")
+
+        if float(self.controller.joint_torque_slew_nm_s) < 0.0:
+            raise ValueError(
+                "controller.joint_torque_slew_nm_s must be >= 0, "
+                f"got {self.controller.joint_torque_slew_nm_s}"
+            )
 
         if self.controller.mode == "vic":
             if self.robot.step_mode != "coupled":

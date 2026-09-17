@@ -2,7 +2,12 @@
 
 ## Status
 
-Approved design for M3.1.1. This spec covers the diagnostic grid-search objective only. It does not tune simulator parameters, run CEM, update candidate distributions, or choose final calibration parameters.
+**Status:** Historical
+
+Superseded by the H3 scoring contract and the 2026-08-13/14 feature-alignment
+and fixed-scale normalization specs.
+
+**Canonical living doc:** `docs/handbook-sysid-scoring.md`
 
 ## Goal
 

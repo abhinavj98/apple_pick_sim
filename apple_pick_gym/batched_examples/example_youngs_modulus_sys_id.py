@@ -23,6 +23,9 @@ Run from repo root::
         --output /tmp/youngs_rank \\
         --support-kp-values 1e3,1e4,1e5 --log10-e-spur 7.5 --log10-e-stem 7.0
 
+    # Optional GL MP4 of the batched multi-world view (requires --viewer gl):
+    #   --record-video /tmp/youngs_grid.mp4 --viewer gl
+
 Candidates are ``support_kp x E_spur x E_stem``; primary \\(E\\) is fixed from
 the structure's true/fixture params and is never a free grid axis.
 """
@@ -36,6 +39,7 @@ import math
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +59,17 @@ from apple_pick_gym.batched_envs.batched_sysid_cmaes import (
     evaluate_youngs_modulus_structures,
     gt_support_kp_youngs_candidate_from_structure,
     maybe_include_gt_candidate,
+)
+from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
+    DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS,
+    bootstrap_joint_q_from_episode_metadata,
+    check_action_semantics,
+    control_hz_from_episode_metadata,
+    dataset_declares_vic_pose,
+    fruiting_base_pos_from_episode_metadata,
+    make_real_replay_build_env_fn,
+    real_replay_sim_config,
 )
 from apple_pick_gym.youngs_modulus_overlay_viz import (
     overlay_episodes_from_replay_evaluation,
@@ -79,13 +94,14 @@ from apple_pick_sim.system_id.batched_replay_export import (
     ReplayCandidateSpec,
     export_replay_candidates_for_structure,
 )
+from robot_replay.gl_video_recorder import GlVideoRecorder
 
 CONTROL_HZ = 30.0
 SUB_DT = 1.0 / 1800.0
 ENV_SPACING = (2.0, 2.0, 2.0)
-SETTLE_SUBSTEPS = 5000
+SETTLE_SUBSTEPS = 2000
 SETTLE_GRAVITY_RAMP = False
-SETTLE_QUIET_EVERY: int | None = 300
+SETTLE_QUIET_EVERY: int | None = 100
 MAX_ENVS_PER_BATCH = 25000
 VIC_GAINS = ImpedanceGains(
     linear_k=200.0,
@@ -173,9 +189,11 @@ def _winner_summary(evaluation: YoungsModulusEvaluation) -> dict[str, Any] | Non
     relative_error: dict[str, float | None] = {}
     for segment in ("support_kp", "spur", "stem"):
         winner_value = _json_float(getattr(winner.candidate, segment))
-        gt_value = _json_float(getattr(gt, segment))
+        gt_value = _json_float(getattr(gt, segment)) if gt is not None else None
         winner_log10 = _json_log10(getattr(winner.candidate, segment))
-        gt_log10 = _json_log10(getattr(gt, segment))
+        gt_log10 = (
+            _json_log10(getattr(gt, segment)) if gt is not None else None
+        )
         log10_error[segment] = (
             _json_float(winner_log10 - gt_log10)
             if winner_log10 is not None and gt_log10 is not None
@@ -199,18 +217,26 @@ def _structure_result_to_json(evaluation: YoungsModulusEvaluation) -> dict[str, 
         (int(score.rank) for score in evaluation.scores if score.is_gt and score.rank is not None),
         None,
     )
-    return {
-        "structure_idx": int(evaluation.structure_idx),
-        "gt_support_kp": _json_float(gt.support_kp),
-        "gt_youngs_modulus_pa": {
+    if gt is None:
+        gt_support_kp = None
+        gt_youngs = {"spur": None, "stem": None}
+        gt_log10_vector: list[float | None] = [None, None, None]
+    else:
+        gt_support_kp = _json_float(gt.support_kp)
+        gt_youngs = {
             "spur": _json_float(gt.spur),
             "stem": _json_float(gt.stem),
-        },
-        "gt_log10_vector": [
+        }
+        gt_log10_vector = [
             _json_log10(gt.support_kp),
             _json_log10(gt.spur),
             _json_log10(gt.stem),
-        ],
+        ]
+    return {
+        "structure_idx": int(evaluation.structure_idx),
+        "gt_support_kp": gt_support_kp,
+        "gt_youngs_modulus_pa": gt_youngs,
+        "gt_log10_vector": gt_log10_vector,
         "fixed_secondary_e_pa": _json_float(evaluation.fixed_secondary_e_pa),
         "direction_indices": [int(d) for d in evaluation.direction_indices],
         "candidates": [_candidate_to_json_row(score) for score in evaluation.scores],
@@ -367,6 +393,7 @@ def _resolve_sim_build_knobs(ranges: dict) -> tuple[
     dict[str, float],
     dict[str, float],
     dict[str, float],
+    dict[str, float],
     float | None,
 ]:
     sb = parse_sim_build(ranges)
@@ -377,6 +404,7 @@ def _resolve_sim_build_knobs(ranges: dict) -> tuple[
             dict(JOINT_LINEAR_KD_OVERRIDES),
             dict(JOINT_ANGULAR_KP_OVERRIDES),
             dict(JOINT_LINEAR_KP_OVERRIDES),
+            {},
             None,
         )
     return (
@@ -390,6 +418,7 @@ def _resolve_sim_build_knobs(ranges: dict) -> tuple[
         dict(sb.joint_linear_kd_overrides),
         dict(sb.joint_angular_kp_overrides),
         dict(sb.joint_linear_kp_overrides),
+        dict(sb.joint_roll_kp_overrides),
         sb.joint_damping_ratio,
     )
 
@@ -402,6 +431,7 @@ def build_sim_config(
     settle_quiet_every: int | None = None,
     device: str | None = None,
     ranges: dict | None = None,
+    reuse_replicated_mujoco: bool = False,
 ) -> BatchedHeterogeneousCoupledSimConfig:
     if ranges is None:
         ranges = load_ranges(default_ranges_fixture_path())
@@ -411,6 +441,7 @@ def build_sim_config(
         joint_linear_kd,
         joint_angular_kp,
         joint_linear_kp,
+        joint_roll_kp,
         joint_damping_ratio,
     ) = _resolve_sim_build_knobs(ranges)
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=int(num_envs))
@@ -442,7 +473,12 @@ def build_sim_config(
             joint_linear_kd_overrides=joint_linear_kd,
             joint_angular_kp_overrides=joint_angular_kp,
             joint_linear_kp_overrides=joint_linear_kp,
+            joint_roll_kp_overrides=joint_roll_kp,
             joint_damping_ratio=joint_damping_ratio,
+        ),
+        robot=dataclasses.replace(
+            gym_cfg.robot,
+            reuse_replicated_mujoco=bool(reuse_replicated_mujoco),
         ),
     )
 
@@ -508,6 +544,7 @@ def _make_build_env_fn(
     control_hz: float,
     device: str | None = None,
     settle_config: dict | None = None,
+    reuse_replicated_mujoco: bool = False,
 ):
     from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
 
@@ -520,6 +557,9 @@ def _make_build_env_fn(
         max_episode_steps: int,
         gripper=None,
         per_env_grippers=None,
+        support_kp_per_env=None,
+        support_roll_kp_per_env=None,
+        support_zeta_per_env=None,
     ) -> ApplePickBatchedSysIdEnv:
         if gripper is not None and per_env_grippers is not None:
             raise ValueError(
@@ -529,12 +569,55 @@ def _make_build_env_fn(
             num_envs=num_envs,
             device=device,
             ranges=ranges,
+            reuse_replicated_mujoco=reuse_replicated_mujoco,
             **(settle_config or {}),
         )
         sim_config = dataclasses.replace(
             sim_config,
             runtime=dataclasses.replace(sim_config.runtime, control_hz=float(control_hz)),
         )
+        if support_kp_per_env is not None:
+            kp_tuple = tuple(float(kp) for kp in support_kp_per_env)
+            if len(kp_tuple) != int(num_envs):
+                raise ValueError(
+                    f"support_kp_per_env length ({len(kp_tuple)}) must match "
+                    f"num_envs ({num_envs})"
+                )
+            sim_config = dataclasses.replace(
+                sim_config,
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system,
+                    support_kp_per_env=kp_tuple,
+                ),
+            )
+        if support_roll_kp_per_env is not None:
+            roll_tuple = tuple(float(kp) for kp in support_roll_kp_per_env)
+            if len(roll_tuple) != int(num_envs):
+                raise ValueError(
+                    f"support_roll_kp_per_env length ({len(roll_tuple)}) must match "
+                    f"num_envs ({num_envs})"
+                )
+            sim_config = dataclasses.replace(
+                sim_config,
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system,
+                    support_roll_kp_per_env=roll_tuple,
+                ),
+            )
+        if support_zeta_per_env is not None:
+            zeta_tuple = tuple(float(z) for z in support_zeta_per_env)
+            if len(zeta_tuple) != int(num_envs):
+                raise ValueError(
+                    f"support_zeta_per_env length ({len(zeta_tuple)}) must match "
+                    f"num_envs ({num_envs})"
+                )
+            sim_config = dataclasses.replace(
+                sim_config,
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system,
+                    support_zeta_per_env=zeta_tuple,
+                ),
+            )
         if gripper is not None:
             sim_config = dataclasses.replace(
                 sim_config,
@@ -552,6 +635,9 @@ def _make_build_env_fn(
             sim_config=sim_config,
         )
 
+    build_env_fn.wants_support_kp_per_env = True
+    build_env_fn.wants_support_roll_kp_per_env = True
+    build_env_fn.wants_support_zeta_per_env = True
     return build_env_fn
 
 
@@ -611,6 +697,22 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Replay RNG seed (default: manifest collection.seed).",
     )
     p.add_argument(
+        "--controller-mode",
+        choices=("vic", "vic_pose"),
+        default=None,
+        help="Replay controller mode (default: infer vic_pose from dataset, else vic).",
+    )
+    p.add_argument(
+        "--dynamic-apple",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Real vic_pose replay: keep the apple VBD-dynamic and harvest TCP from the "
+            "proxy↔apple weld (default: on). Pass --no-dynamic-apple for stem harvest. "
+            "Ignored for sim-sim twist vic."
+        ),
+    )
+    p.add_argument(
         "--support-kp-values",
         type=str,
         default=None,
@@ -654,6 +756,21 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Pool transition bags across directions for Sinkhorn scoring.",
     )
     p.add_argument(
+        "--include-delta",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Append the Δs half to each scored transition row (default: on).",
+    )
+    p.add_argument(
+        "--categorical-weight",
+        type=float,
+        default=1.0,
+        help=(
+            "Reciprocal scale for hold/direction one-hot columns in Sinkhorn "
+            "normalization (higher anchors per-hold/per-direction transport)."
+        ),
+    )
+    p.add_argument(
         "--export-replays",
         action="store_true",
         help="Export per-candidate replay mini-datasets.",
@@ -679,6 +796,17 @@ def _make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Draw cyan pull-direction arrows (requires --viewer gl).",
     )
+    p.add_argument(
+        "--record-video",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write GL viewer frames to PATH.mp4 for the batched multi-world "
+            "view (requires --viewer gl; --headless OK). FPS matches sim "
+            "control_hz. Chunked candidate batches append into one file."
+        ),
+    )
     p.add_argument("--settle-substeps", type=int, default=None)
     p.add_argument(
         "--settle-gravity-ramp",
@@ -687,6 +815,73 @@ def _make_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--settle-quiet-every", type=int, default=SETTLE_QUIET_EVERY)
     return p
+
+
+def require_gl_frame_capture(viewer: object) -> None:
+    """Raise ``SystemExit`` unless ``viewer`` supports ``get_frame`` (ViewerGL)."""
+    if not hasattr(viewer, "get_frame"):
+        raise SystemExit(
+            "--record-video requires a GL viewer with get_frame(); "
+            "pass --viewer gl (optionally --headless)."
+        )
+
+
+def make_grid_on_step(
+    viewer: object,
+    *,
+    control_hz: float,
+    graphical: bool,
+    use_viewer: bool,
+    show_pull_direction: bool = False,
+    recorder: GlVideoRecorder | None = None,
+) -> Callable[..., bool]:
+    """Render each replay frame; optionally capture GL frames into ``recorder``."""
+    frame_dt = 1.0 / float(control_hz)
+    viewer_state: dict[str, object] = {"model": None}
+
+    def on_step(*, frame_idx: int, env: object) -> bool:
+        if hasattr(viewer, "is_running") and not viewer.is_running():
+            return False
+        if not use_viewer:
+            return True
+
+        sim = getattr(env, "_sim", None)
+        if sim is None:
+            return True
+        scene = getattr(sim, "scene", None)
+        if scene is None:
+            return True
+
+        active_model = scene.cable.model
+        if viewer_state.get("model") is not active_model:
+            viewer.set_model(active_model)
+            if graphical and getattr(env, "num_envs", 1) > 1:
+                viewer.set_world_offsets(tuple(sim.config.runtime.env_spacing))
+            if viewer_state.get("model") is None and hasattr(
+                viewer, "hide_loading_splash"
+            ):
+                viewer.hide_loading_splash()
+            viewer_state["model"] = active_model
+
+        hz = float(getattr(sim.config.runtime, "control_hz", control_hz))
+        sim_time = float(frame_idx) / max(hz, 1e-9)
+        obs = getattr(env, "_last_obs", None)
+        _render_frame(
+            viewer,
+            env,
+            sim_time,
+            obs=obs,
+            show_pull_direction=show_pull_direction,
+        )
+        if recorder is not None:
+            if recorder.fps is None:
+                recorder.set_fps(hz)
+            recorder.capture(viewer)
+        elif graphical:
+            time.sleep(max(0.0, frame_dt))
+        return True
+
+    return on_step
 
 
 def _render_frame(
@@ -736,8 +931,10 @@ def _candidates_for_structure(
     structure_idx: int,
     *,
     parser: argparse.ArgumentParser,
+    include_gt: bool | None = None,
 ) -> list:
-    gt = gt_support_kp_youngs_candidate_from_structure(dataset, int(structure_idx))
+    if include_gt is None:
+        include_gt = bool(args.include_gt_candidate)
     support_kp_values = args.support_kp_values
     log10_support_kp = args.log10_support_kp
     if support_kp_values is None and log10_support_kp is None:
@@ -750,11 +947,9 @@ def _candidates_for_structure(
     )
     if not candidates:
         parser.error("candidate grid is empty; provide at least one log10-E value per segment")
-    candidates = maybe_include_gt_candidate(
-        candidates,
-        gt,
-        include_gt=bool(args.include_gt_candidate),
-    )
+    if include_gt:
+        gt = gt_support_kp_youngs_candidate_from_structure(dataset, int(structure_idx))
+        candidates = maybe_include_gt_candidate(candidates, gt, include_gt=True)
     if int(args.max_candidates) > 0 and len(candidates) > int(args.max_candidates):
         parser.error(
             f"candidate grid has {len(candidates)} entries, exceeding "
@@ -768,6 +963,7 @@ def _run(
     parser: argparse.ArgumentParser,
     *,
     viewer: object,
+    recorder: GlVideoRecorder | None = None,
 ) -> dict[str, Any]:
     device = args.device
     if device == "cuda":
@@ -797,19 +993,92 @@ def _run(
     if not structure_indices:
         raise SystemExit("No structure indices to evaluate.")
 
+    episode_meta = dataset.load_episode_metadata(structure_indices[0], 0)
+    dataset_is_vic_pose = dataset_declares_vic_pose(collection, episode_meta)
+    mode = getattr(args, "controller_mode", None)
+    if mode is None:
+        mode = "vic_pose" if dataset_is_vic_pose else "vic"
+    check_action_semantics(
+        controller_mode=mode,
+        collection=collection,
+        episode_meta=episode_meta,
+        allow_wrench_as_twist=False,
+    )
+    if (mode == "vic_pose" or dataset_is_vic_pose) and len(structure_indices) > 1:
+        raise SystemExit(
+            "vic_pose real replay currently supports one converted episode / "
+            "one structure per run; select exactly one --structure-index."
+        )
+    action_dim = 19 if mode == "vic_pose" else 6
+
     replay_seed = args.seed
     if replay_seed is None and "seed" in collection:
         replay_seed = int(collection["seed"])
 
     settle_config = _settle_config_kwargs(args=args)
-    build_env_fn = _make_build_env_fn(
-        ranges_path=str(ranges_path),
-        topology_seed=topology_seed,
-        control_hz=control_hz,
-        device=device,
-        settle_config=settle_config,
-    )
-    replay_sim_config = build_sim_config(num_envs=1, ranges=ranges, **settle_config)
+    dynamic_apple = bool(getattr(args, "dynamic_apple", True))
+    if mode == "vic_pose":
+        if bool(args.include_gt_candidate):
+            print(
+                "warning: --include-gt-candidate ignored for vic_pose_v1 "
+                "(no sim-oracle GT)",
+                file=sys.stderr,
+            )
+        control_hz = control_hz_from_episode_metadata(
+            episode_meta,
+            collection=collection,
+        )
+        fruiting_base_pos = fruiting_base_pos_from_episode_metadata(episode_meta)
+        bootstrap_joint_q = bootstrap_joint_q_from_episode_metadata(episode_meta)
+        real_topology_seed = int(
+            collection.get("topology_seed", collection.get("seed", 0))
+        )
+        build_env_fn = make_real_replay_build_env_fn(
+            ranges_path=Path(ranges_path),
+            ranges=ranges,
+            topology_seed=real_topology_seed,
+            fruiting_base_pos=fruiting_base_pos,
+            episode_meta=episode_meta,
+            settle_substeps=settle_config.get("settle_substeps")
+            or DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS,
+            settle_quiet_every=settle_config.get("settle_quiet_every"),
+            settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
+            post_grasp_settle_substeps=DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
+            bootstrap_joint_q=bootstrap_joint_q,
+            controller_mode="vic_pose",
+            control_hz=control_hz,
+            dynamic_apple=dynamic_apple,
+        )
+        replay_sim_config = real_replay_sim_config(
+            num_envs=1,
+            topology_seed=real_topology_seed,
+            fruiting_base_pos=fruiting_base_pos,
+            ranges=ranges,
+            settle_substeps=settle_config.get("settle_substeps")
+            or DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS,
+            settle_quiet_every=settle_config.get("settle_quiet_every"),
+            settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
+            post_grasp_settle_substeps=DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
+            bootstrap_joint_q=bootstrap_joint_q,
+            controller_mode="vic_pose",
+            control_hz=control_hz,
+            dynamic_apple=dynamic_apple,
+        )
+        include_gt = False
+    else:
+        build_env_fn = _make_build_env_fn(
+            ranges_path=str(ranges_path),
+            topology_seed=topology_seed,
+            control_hz=control_hz,
+            device=device,
+            settle_config=settle_config,
+        )
+        replay_sim_config = build_sim_config(
+            num_envs=1,
+            ranges=ranges,
+            **settle_config,
+        )
+        include_gt = bool(args.include_gt_candidate)
     scoring = YoungsModulusScoringConfig(
         use_median=bool(args.use_median),
         hold_id_onehot=bool(args.hold_id_onehot),
@@ -817,51 +1086,21 @@ def _run(
         n_holds=_resolve_n_holds(dataset, collection),
         n_directions=int(num_directions),
         device=device,
+        include_delta=bool(getattr(args, "include_delta", True)),
+        categorical_weight=float(getattr(args, "categorical_weight", 1.0)),
     )
 
     graphical = isinstance(viewer, newton.viewer.ViewerGL)
     use_viewer = graphical or getattr(args, "viewer", None) != "null"
     show_pull_direction = bool(args.show_pull_direction) and graphical
-    frame_dt = 1.0 / float(control_hz)
-    viewer_state: dict[str, object] = {"model": None}
-
-    def on_step(*, frame_idx: int, env: object) -> bool:
-        if hasattr(viewer, "is_running") and not viewer.is_running():
-            return False
-        if not use_viewer:
-            return True
-
-        sim = getattr(env, "_sim", None)
-        if sim is None:
-            return True
-        scene = getattr(sim, "scene", None)
-        if scene is None:
-            return True
-
-        active_model = scene.cable.model
-        if viewer_state.get("model") is not active_model:
-            viewer.set_model(active_model)
-            if graphical and getattr(env, "num_envs", 1) > 1:
-                viewer.set_world_offsets(tuple(sim.config.runtime.env_spacing))
-            if viewer_state.get("model") is None and hasattr(
-                viewer, "hide_loading_splash"
-            ):
-                viewer.hide_loading_splash()
-            viewer_state["model"] = active_model
-
-        hz = float(getattr(sim.config.runtime, "control_hz", control_hz))
-        sim_time = float(frame_idx) / max(hz, 1e-9)
-        obs = getattr(env, "_last_obs", None)
-        _render_frame(
-            viewer,
-            env,
-            sim_time,
-            obs=obs,
-            show_pull_direction=show_pull_direction,
-        )
-        if graphical:
-            time.sleep(max(0.0, frame_dt))
-        return True
+    on_step = make_grid_on_step(
+        viewer,
+        control_hz=control_hz,
+        graphical=graphical,
+        use_viewer=use_viewer,
+        show_pull_direction=show_pull_direction,
+        recorder=recorder,
+    )
 
     candidates_by_structure: dict[int, list] = {}
     candidate_errors: dict[int, str] = {}
@@ -872,6 +1111,7 @@ def _run(
                 args,
                 int(structure_idx),
                 parser=parser,
+                include_gt=include_gt,
             )
         except Exception as exc:
             if bool(args.fail_fast):
@@ -897,6 +1137,7 @@ def _run(
             fail_fast=bool(args.fail_fast),
             on_step=on_step,
             replay_sim_config=replay_sim_config,
+            action_dim=action_dim,
         )
         for structure_idx in structure_indices:
             evaluation = batch.evaluations.get(int(structure_idx))
@@ -911,12 +1152,9 @@ def _run(
                 }
             )
         failed_count = sum(row["error"] is not None for row in structure_results)
-        fused_count = max(
-            0, int(batch.prepared_structures) - len(batch.retried_structures)
-        )
         print(
             f"structures prepared={int(batch.prepared_structures)} "
-            f"fused={fused_count} retried={len(batch.retried_structures)} "
+            f"fused={int(batch.prepared_structures) - len(batch.errors)} "
             f"failed={failed_count}"
         )
         diagnostics = batch.replay_diagnostics
@@ -964,6 +1202,7 @@ def _run(
                     include_excluded=bool(args.include_excluded),
                     on_step=on_step,
                     replay_sim_config=replay_sim_config,
+                    action_dim=action_dim,
                 )
                 structure_results.append(
                     {
@@ -1020,6 +1259,16 @@ def _run(
     )
     _write_ranking_json_atomic(output_dir / "ranking.json", ranking_payload)
 
+    if recorder is not None:
+        if recorder.frame_count <= 0:
+            raise SystemExit(
+                f"--record-video requested but wrote 0 frames ({recorder.path})"
+            )
+        print(
+            f"recorded video frames={recorder.frame_count} path={recorder.path}",
+            file=sys.stderr,
+        )
+
     return {
         "dataset": str(args.dataset),
         "output": str(output_dir),
@@ -1038,14 +1287,21 @@ def main() -> None:
 
     parser = _make_parser()
     viewer, args = newton.examples.init(parser=parser)
+    recorder: GlVideoRecorder | None = None
+    record_path = getattr(args, "record_video", None)
+    if record_path is not None:
+        require_gl_frame_capture(viewer)
+        recorder = GlVideoRecorder(record_path)
     try:
-        result = _run(args, parser, viewer=viewer)
+        result = _run(args, parser, viewer=viewer, recorder=recorder)
         failures = [
             row for row in result["structure_results"] if row.get("error") is not None
         ]
         if failures and all(row.get("evaluation") is None for row in result["structure_results"]):
             raise SystemExit(1)
     finally:
+        if recorder is not None:
+            recorder.close()
         if hasattr(viewer, "close"):
             viewer.close()
 

@@ -14,10 +14,12 @@ _SIM_TESTS_DIR = _TESTS_DIR.parent.parent / "apple_pick_sim" / "tests"
 if str(_SIM_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SIM_TESTS_DIR))
 
-from conftest import COUPLED_SCENE_KW, requires_fr3  # noqa: E402
+from apple_pick_sim.tests.conftest import COUPLED_SCENE_KW, requires_fr3  # noqa: E402
 from apple_pick_gym.batched_envs.support_joint_penalties import (  # noqa: E402
+    SUPPORT_ANGULAR_KP_LENGTH_FACTOR,
     SUPPORT_JOINT_ZETA_FALLBACK,
     apply_per_env_support_joint_penalties,
+    support_angular_kp_from_linear,
     support_joint_zeta_from_dataset,
 )
 from apple_pick_sim.coupled_fruiting import CoupledFruitingScene  # noqa: E402
@@ -32,6 +34,7 @@ from apple_pick_sim.fruiting_system import (  # noqa: E402
 )
 from apple_pick_sim.fruiting_system.joint_kd_scaling import (  # noqa: E402
     joint_kd_from_damping_ratio,
+    support_dowel_length_m,
 )
 from apple_pick_sim.robot import fr3_robot  # noqa: E402
 
@@ -39,6 +42,13 @@ _NUM_ENVS = 2
 T_JUNCTION_RANGES_FIXTURE = (
     _SIM_TESTS_DIR.parent / "fixtures" / "fruiting_system_ranges_real_world_proxy_variance.json"
 )
+
+
+def test_support_angular_kp_scales_linear_by_three_quarters_dowel_length_squared():
+    assert SUPPORT_ANGULAR_KP_LENGTH_FACTOR == pytest.approx(0.75)
+    assert support_angular_kp_from_linear(690.0, 0.35) == pytest.approx(
+        0.75 * (0.35**2) * 690.0
+    )
 
 
 def _gripper_free() -> GripperProxyConfig:
@@ -49,7 +59,7 @@ def _gripper_free() -> GripperProxyConfig:
     )
 
 
-def _build_support_scene() -> CoupledFruitingScene:
+def _build_support_scene() -> tuple[CoupledFruitingScene, list]:
     ranges = load_ranges(T_JUNCTION_RANGES_FIXTURE)
     params_list = sample_heterogeneous_params_list(
         ranges, topology_seed=7, num_envs=_NUM_ENVS
@@ -64,12 +74,37 @@ def _build_support_scene() -> CoupledFruitingScene:
         gripper_proxy=_gripper_free(),
     )
     layout = BatchedEnvLayout.from_cable_only(cable, cable.model)
-    return CoupledFruitingScene(
+    scene = CoupledFruitingScene(
         cable=cable,
         cable_collision_pipeline=None,
         vbd_only=True,
         layout=layout,
     )
+    return scene, params_list
+
+
+def test_batched_t_junction_world_supports_are_soft_on_every_env():
+    import newton
+
+    scene, _params_list = _build_support_scene()
+    cable = scene.cable
+    layout = scene.layout
+    jpw = int(layout.joints_per_world)
+    jc = cable.solver.joint_constraint_start.numpy()
+    hard = cable.solver.joint_is_hard.numpy()
+    lin_slot = newton.solvers.SolverVBD.JointSlot.LINEAR
+    ang_slot = newton.solvers.SolverVBD.JointSlot.ANGULAR
+    left = _template_joint_by_label(cable.fruiting_fixed_joints, "primary_support_left")
+    right = _template_joint_by_label(cable.fruiting_fixed_joints, "primary_support_right")
+    spur_stem = _template_joint_by_label(cable.fruiting_fixed_joints, "spur_stem")
+    for w in range(int(layout.num_envs)):
+        for j0 in (left, right):
+            c0 = int(jc[w * jpw + j0])
+            assert int(hard[c0 + lin_slot]) == 0
+            assert int(hard[c0 + ang_slot]) == 0
+        c_spur = int(jc[w * jpw + spur_stem])
+        assert int(hard[c_spur + lin_slot]) == 1
+        assert int(hard[c_spur + ang_slot]) == 1
 
 
 def _joints_per_world(cable) -> int:
@@ -120,13 +155,14 @@ def _linear_kp_at_joint(solver, global_joint_index: int) -> float:
 
 
 def test_apply_per_env_support_joint_penalties_sets_kp_and_critical_kd():
-    scene = _build_support_scene()
+    scene, params_list = _build_support_scene()
     cable = scene.cable
     layout = scene.layout
     num_envs = int(layout.num_envs)
     joints_per_world = int(layout.joints_per_world)
     j_support = _template_joint_by_label(cable.fruiting_fixed_joints, "primary_support_left")
     j_spur_stem = _template_joint_by_label(cable.fruiting_fixed_joints, "spur_stem")
+    lengths = [support_dowel_length_m(p) for p in params_list]
 
     spur_stem_kd_before = [
         _angular_kd_at_joint(cable.solver, w * joints_per_world + j_spur_stem)
@@ -140,6 +176,7 @@ def test_apply_per_env_support_joint_penalties_sets_kp_and_critical_kd():
         support_kp,
         num_envs=num_envs,
         joints_per_world=joints_per_world,
+        dowel_length_m_per_env=lengths,
         zeta=zeta,
     )
 
@@ -151,7 +188,10 @@ def test_apply_per_env_support_joint_penalties_sets_kp_and_critical_kd():
 
     for w, kp in enumerate(support_kp):
         global_joint = w * joints_per_world + j_support
-        assert _angular_kp_at_joint(cable.solver, global_joint) == pytest.approx(kp)
+        angular_kp = support_angular_kp_from_linear(kp, lengths[w])
+        assert _angular_kp_at_joint(cable.solver, global_joint) == pytest.approx(
+            angular_kp
+        )
         assert _linear_kp_at_joint(cable.solver, global_joint) == pytest.approx(kp)
 
         ang_kd, lin_kd = joint_kd_from_damping_ratio(
@@ -161,7 +201,7 @@ def test_apply_per_env_support_joint_penalties_sets_kp_and_critical_kd():
             body_mass=body_mass,
             body_inertia=body_inertia,
             joint_child=joint_child,
-            angular_kp_by_role={"support": kp},
+            angular_kp_by_role={"support": angular_kp},
             linear_kp_by_role={"support": kp},
             body_offset=w * bodies_per_world,
         )
@@ -172,7 +212,14 @@ def test_apply_per_env_support_joint_penalties_sets_kp_and_critical_kd():
             lin_kd["support"]
         )
         assert ang_kd["support"] == pytest.approx(
-            zeta * 2.0 * math.sqrt(kp * _inertia_max(body_inertia, child_body(w, bodies_per_world, cable, j_support)))
+            zeta
+            * 2.0
+            * math.sqrt(
+                angular_kp
+                * _inertia_max(
+                    body_inertia, child_body(w, bodies_per_world, cable, j_support)
+                )
+            )
         )
         assert lin_kd["support"] == pytest.approx(
             zeta * 2.0 * math.sqrt(kp * _child_mass(body_mass, child_body(w, bodies_per_world, cable, j_support)))
@@ -182,6 +229,39 @@ def test_apply_per_env_support_joint_penalties_sets_kp_and_critical_kd():
             cable.solver, w * joints_per_world + j_spur_stem
         )
         assert spur_kd_after == pytest.approx(spur_stem_kd_before[w])
+
+
+def test_apply_per_env_support_roll_penalties_sets_target_ke_and_penalty():
+    from apple_pick_gym.batched_envs.support_joint_penalties import (
+        apply_per_env_support_roll_penalties,
+    )
+
+    scene, _params_list = _build_support_scene()
+    cable = scene.cable
+    layout = scene.layout
+    num_envs = int(layout.num_envs)
+    joints_per_world = int(layout.joints_per_world)
+    j_support = _template_joint_by_label(
+        cable.fruiting_fixed_joints, "primary_support_left"
+    )
+    roll_kps = [0.5, 3.0]
+    apply_per_env_support_roll_penalties(
+        scene,
+        roll_kps,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+        zeta=0.3,
+    )
+    jqd = cable.model.joint_qd_start.numpy()
+    jc = cable.solver.joint_constraint_start.numpy()
+    ke = cable.model.joint_target_ke.numpy()
+    k_np = cable.solver.joint_penalty_k.numpy()
+    for w, kp in enumerate(roll_kps):
+        gj = w * joints_per_world + j_support
+        dof = int(jqd[gj])
+        c0 = int(jc[gj])
+        assert float(ke[dof]) == pytest.approx(kp)
+        assert float(k_np[c0 + 2]) == pytest.approx(kp)
 
 
 def _inertia_max(body_inertia: np.ndarray, child: int) -> float:
@@ -201,7 +281,7 @@ def child_body(world: int, bodies_per_world: int, cable, template_joint: int) ->
 
 
 def test_apply_rejects_nonpositive_support_kp():
-    scene = _build_support_scene()
+    scene, params_list = _build_support_scene()
     layout = scene.layout
     with pytest.raises(ValueError, match="support_kp"):
         apply_per_env_support_joint_penalties(
@@ -209,11 +289,12 @@ def test_apply_rejects_nonpositive_support_kp():
             [0.0],
             num_envs=int(layout.num_envs),
             joints_per_world=int(layout.joints_per_world),
+            dowel_length_m_per_env=[support_dowel_length_m(p) for p in params_list],
         )
 
 
 def test_apply_rejects_wrong_support_kp_length():
-    scene = _build_support_scene()
+    scene, params_list = _build_support_scene()
     layout = scene.layout
     with pytest.raises(ValueError, match="support_kp"):
         apply_per_env_support_joint_penalties(
@@ -221,6 +302,7 @@ def test_apply_rejects_wrong_support_kp_length():
             [1.0e3],
             num_envs=int(layout.num_envs),
             joints_per_world=int(layout.joints_per_world),
+            dowel_length_m_per_env=[support_dowel_length_m(p) for p in params_list],
         )
 
 
@@ -249,6 +331,7 @@ def test_support_joint_zeta_from_dataset_falls_back_when_missing():
             "dataset_dir": Path("/tmp/fake_support_kp_dataset"),
         },
     )()
+    assert SUPPORT_JOINT_ZETA_FALLBACK == pytest.approx(1.0)
     assert support_joint_zeta_from_dataset(dataset) == pytest.approx(
         SUPPORT_JOINT_ZETA_FALLBACK
     )
@@ -267,3 +350,56 @@ def test_support_joint_zeta_from_dataset_rejects_negative():
     )()
     with pytest.raises(ValueError, match="joint_damping_ratio"):
         support_joint_zeta_from_dataset(dataset)
+
+
+def test_apply_per_env_support_joint_penalties_honors_zeta_per_env():
+    from apple_pick_gym.batched_envs.support_joint_penalties import (
+        apply_per_env_support_joint_penalties,
+    )
+
+    scene, params_list = _build_support_scene()
+    cable = scene.cable
+    layout = scene.layout
+    num_envs = int(layout.num_envs)
+    joints_per_world = int(layout.joints_per_world)
+    assert num_envs == 2
+    j_support = _template_joint_by_label(
+        cable.fruiting_fixed_joints, "primary_support_left"
+    )
+    support_kp = [1.0e3, 1.0e3]
+    zetas = [0.2, 0.8]
+    apply_per_env_support_joint_penalties(
+        scene,
+        support_kp,
+        num_envs=num_envs,
+        joints_per_world=joints_per_world,
+        dowel_length_m_per_env=[support_dowel_length_m(p) for p in params_list],
+        zeta_per_env=zetas,
+    )
+    model = cable.model
+    body_mass = model.body_mass.numpy()
+    body_inertia = model.body_inertia.numpy()
+    joint_child = model.joint_child.numpy()
+    bodies_per_world = int(layout.bodies_per_world)
+    kds: list[float] = []
+    for w, (kp, zeta) in enumerate(zip(support_kp, zetas, strict=True)):
+        global_joint = w * joints_per_world + j_support
+        angular_kp = support_angular_kp_from_linear(
+            kp, support_dowel_length_m(params_list[w])
+        )
+        ang_kd, _lin_kd = joint_kd_from_damping_ratio(
+            zeta=zeta,
+            roles=("support",),
+            fruiting_fixed_joints=cable.fruiting_fixed_joints,
+            body_mass=body_mass,
+            body_inertia=body_inertia,
+            joint_child=joint_child,
+            angular_kp_by_role={"support": angular_kp},
+            linear_kp_by_role={"support": kp},
+            body_offset=w * bodies_per_world,
+        )
+        got = _angular_kd_at_joint(cable.solver, global_joint)
+        assert got == pytest.approx(ang_kd["support"])
+        kds.append(got)
+    assert kds[0] != pytest.approx(kds[1])
+

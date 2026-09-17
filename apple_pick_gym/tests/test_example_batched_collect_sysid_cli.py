@@ -51,8 +51,8 @@ def test_collection_and_trajectory_cli_defaults(monkeypatch):
     assert args.save_snapshot is False
     assert args.settle_substeps is None
     assert args.settle_gravity_ramp is False
-    assert args.settle_quiet_every == 300
-    assert module.SETTLE_QUIET_EVERY == 300
+    assert args.settle_quiet_every == 100
+    assert module.SETTLE_QUIET_EVERY == 100
     assert args.ranges_path is None
     assert args.movement_per_step_m == 0.02
     assert args.total_movement_m == 0.10
@@ -142,6 +142,7 @@ def test_sim_config_stays_in_module_constants():
         joint_linear_kd,
         joint_angular_kp,
         joint_linear_kp,
+        joint_roll_kp,
         joint_damping_ratio,
     ) = module._resolve_sim_build_knobs(ranges)
     gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=4)
@@ -169,6 +170,7 @@ def test_sim_config_stays_in_module_constants():
             joint_linear_kd_overrides=joint_linear_kd,
             joint_angular_kp_overrides=joint_angular_kp,
             joint_linear_kp_overrides=joint_linear_kp,
+            joint_roll_kp_overrides=joint_roll_kp,
             joint_damping_ratio=joint_damping_ratio,
         ),
     )
@@ -185,8 +187,9 @@ def test_build_sim_config_reads_sim_build_from_default_fixture():
     assert cfg.controller.vic_gains.linear_k == pytest.approx(sb.vic_gains.linear_k)
     assert cfg.fruiting_system.joint_angular_kd_overrides == sb.joint_angular_kd_overrides
     assert cfg.fruiting_system.joint_angular_kp_overrides == sb.joint_angular_kp_overrides
+    assert cfg.fruiting_system.joint_roll_kp_overrides == sb.joint_roll_kp_overrides
     assert cfg.fruiting_system.joint_damping_ratio == sb.joint_damping_ratio
-    assert cfg.fruiting_system.joint_damping_ratio == pytest.approx(0.5)
+    assert cfg.fruiting_system.joint_damping_ratio == pytest.approx(1.0)
 
 
 def test_build_sim_config_settle_quiet_every_override():

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import warp as wp
@@ -13,15 +13,40 @@ from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
 from apple_pick_sim.sim_device import resolve_sim_device
-from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
-    _N_ARM_DOF,
-    allocate_vic_joint_torque_buffers,
-)
-from apple_pick_sim.coupled_fruiting.vic_joint_torques_batched import (
-    allocate_vic_joint_torque_buffers_batched,
+from apple_pick_sim.robot.fr3_robot.fr3_v21_props import (
+    apply_fr3_v21_arm_properties,
+    load_fr3_v21_dynamics,
 )
 from apple_pick_sim.robot.fr3_robot.paths import TESTFR3_SCENE_USD, fr3_assets_available
 
+# Keep in sync with ``coupled_fruiting.vic_joint_torques._N_ARM_DOF`` (avoid import cycle
+# via setup → coupled_fruiting → placement).
+_N_ARM_DOF = 7
+
+# Reflected rotor inertia (kg·m²) on FR3 arm joints 1–7 from franka_fr3v2_custom
+# dynamics.yaml (motor_inertia × gear_ratio²). USD assets ship armature=0; without
+# this, rotational task inertia Λ is near-singular and VIC tracking sags on oblique pulls.
+_FR3_V21_DYNAMICS = load_fr3_v21_dynamics()
+FR3_REFLECTED_MOTOR_INERTIA_KGM2: tuple[float, ...] = _FR3_V21_DYNAMICS.reflected_motor_inertia_kgm2
+FR3_DEFAULT_VIC_JOINT_DAMPING: tuple[float, ...] = _FR3_V21_DYNAMICS.mu_viscous
+FR3_DEFAULT_JOINT_FRICTION: tuple[float, ...] = _FR3_V21_DYNAMICS.mu_coulomb
+
+
+def _arm_dof_values(
+    value: float | Sequence[float],
+    *,
+    num_arm_dofs: int,
+    dtype: np.dtype,
+) -> np.ndarray:
+    """Broadcast a scalar or length-``num_arm_dofs`` sequence onto arm DOFs."""
+    arr = np.asarray(value, dtype=dtype).reshape(-1)
+    if arr.size == 1:
+        return np.full(int(num_arm_dofs), float(arr[0]), dtype=dtype)
+    if arr.size != int(num_arm_dofs):
+        raise ValueError(
+            f"expected scalar or length-{num_arm_dofs} values, got shape {arr.shape}"
+        )
+    return arr.astype(dtype, copy=False)
 def resolve_tcp_body_index(model: newton.Model) -> int:
     """Return the unique body index for the tcp link. Heuristic: find ``ee``, then see if a direct child ``tcp`` exists."""
     labels = list(model.body_label)
@@ -82,12 +107,17 @@ def build_fr3_robot_builder(
     root_xform: wp.transform | None = None,
     add_ground_plane: bool = False,
     add_apple_payload: bool = False,
+    request_body_parent_f: bool = False,
 ) -> tuple[newton.ModelBuilder, int]:
     """Populate an FR3 USD scene on a builder without ``finalize``.
 
     When ``add_apple_payload`` is true, appends a mass-only FIXED child of the TCP
     labeled ``apple_payload`` (inertia-only dummy; no shape). See
     ``apple_pick_sim.coupled_fruiting.mujoco_apple_payload``.
+
+    When ``request_body_parent_f`` is true, allocates ``State.body_parent_f``
+    (MuJoCo ``cfrc_int`` analog) for unloaded F/T diagnostics. Default off so
+    CMA/gym paths are unchanged.
     """
     if not fr3_assets_available():
         raise FileNotFoundError(
@@ -96,10 +126,14 @@ def build_fr3_robot_builder(
     path = Path(usd_path) if usd_path is not None else TESTFR3_SCENE_USD
     builder = newton.ModelBuilder(gravity=0.0, up_axis=newton.Axis.Z)
     SolverMuJoCo.register_custom_attributes(builder)
+    # Skip visual-only shapes: CMA/sysid is headless, and fewer USD shapes
+    # reduce exposure to OpenUSD LoadUsdPhysicsFromRange heap corruption
+    # (newton-physics/newton#3655 / #3293; fixed in usd-core >=26.5).
     usd_kw: dict[str, Any] = {
         "floating": False,
         "collapse_fixed_joints": False,
         "enable_self_collisions": False,
+        "load_visual_shapes": False,
         "schema_resolvers": [SchemaResolverMjc(), SchemaResolverNewton()],
     }
     if root_xform is not None:
@@ -113,6 +147,8 @@ def build_fr3_robot_builder(
         from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import append_apple_payload_link
 
         append_apple_payload_link(builder, tcp_idx)
+    if request_body_parent_f:
+        builder.request_state_attributes("body_parent_f")
     return builder, tcp_idx
 
 
@@ -148,7 +184,9 @@ def build_fr3_robot_model_from_usd(
     add_ground_plane: bool = False,
     add_apple_payload: bool = False,
     mujoco_solver_kwargs: dict[str, Any] | None = None,
-) -> tuple[newton.Model, int, SolverMuJoCo]:
+    create_solver: bool = True,
+    request_body_parent_f: bool = False,
+) -> tuple[newton.Model, int, SolverMuJoCo | None]:
     """Build FR3 + Isaac-exported EE/tcp from USD for ``SolverMuJoCo``.
 
     Default USD is [`assets/testfr3_resolved.usda`] (paired with [`assets/testfr3.usd`] in Omni).
@@ -165,6 +203,9 @@ def build_fr3_robot_model_from_usd(
     TCP (``apple_payload``); set inertial props via
     ``apply_mujoco_apple_payload_inertias``.
 
+    When ``request_body_parent_f`` is true, allocates ``State.body_parent_f`` for
+    unloaded TCP wrench diagnostics (default off).
+
     Returns ``(model, tcp_body_index, mj_solver)``.
     """
     if not fr3_assets_available():
@@ -178,12 +219,16 @@ def build_fr3_robot_model_from_usd(
         root_xform=root_xform,
         add_ground_plane=add_ground_plane,
         add_apple_payload=add_apple_payload,
+        request_body_parent_f=request_body_parent_f,
     )
     model = builder.finalize(device=device)
     # Model A: zero gravity for teleop/PD hold (cable VBD keeps -9.81 on its own model).
     model.set_gravity((0.0, 0.0, 0.0))
 
     tcp_idx = resolve_tcp_body_index(model)
+
+    if not create_solver:
+        return model, tcp_idx, None
 
     mj_kw: dict[str, Any] = {
         "solver": "newton",
@@ -279,23 +324,77 @@ def zero_mujoco_joint_pd(robot_model: newton.Model) -> None:
     robot_model.joint_target_kd.assign(np.zeros(n, dtype=np.float32))
 
 
-def _set_vic_passive_joint_damping(
+def _set_fr3_joint_armature(
     robot_model: newton.Model,
-    vic_joint_damping: float,
+    armature: tuple[float, ...] | np.ndarray = FR3_REFLECTED_MOTOR_INERTIA_KGM2,
     *,
     num_arm_dofs: int = _N_ARM_DOF,
+    dofs_per_world: int | None = None,
+) -> None:
+    """Assign reflected motor inertia on each world's arm DOFs (MuJoCo ``dof_armature``)."""
+    if robot_model.joint_armature is None:
+        return
+    arr = robot_model.joint_armature.numpy().copy()
+    values = np.asarray(armature, dtype=arr.dtype).reshape(-1)
+    n_arm = int(num_arm_dofs)
+    if int(values.shape[0]) != n_arm:
+        raise ValueError(f"armature length {values.shape[0]} != num_arm_dofs {n_arm}")
+    n = int(arr.shape[0])
+    stride = int(dofs_per_world) if dofs_per_world is not None else max(n, n_arm)
+    if stride < n_arm:
+        raise ValueError(f"dofs_per_world {stride} < num_arm_dofs {n_arm}")
+    for start in range(0, n, stride):
+        arr[start : start + n_arm] = values
+    robot_model.joint_armature.assign(arr)
+
+
+def _set_vic_passive_joint_damping(
+    robot_model: newton.Model,
+    vic_joint_damping: float | Sequence[float],
+    *,
+    num_arm_dofs: int = _N_ARM_DOF,
+    dofs_per_world: int | None = None,
 ) -> None:
     """Assign ``Model.joint_damping`` on arm DOFs (synced to ``mj_model.dof_damping`` on notify).
 
     Passive viscous damping absorbs cable-coupling disturbances in null-space modes that
-    task-space VIC ``K_d`` cannot see. Matches real FR3 bearing friction (~0.5–2 N·m·s/rad).
+    task-space VIC ``K_d`` cannot see. Default matches franka_fr3v2_custom ``mu_viscous``.
     """
     if robot_model.joint_damping is None:
         return
     damping = robot_model.joint_damping.numpy().copy()
-    n_arm = min(int(num_arm_dofs), int(damping.shape[0]))
-    damping[:n_arm] = float(vic_joint_damping)
+    values = _arm_dof_values(vic_joint_damping, num_arm_dofs=num_arm_dofs, dtype=damping.dtype)
+    n = int(damping.shape[0])
+    stride = int(dofs_per_world) if dofs_per_world is not None else max(n, int(num_arm_dofs))
+    if stride < int(num_arm_dofs):
+        raise ValueError(f"dofs_per_world {stride} < num_arm_dofs {num_arm_dofs}")
+    for start in range(0, n, stride):
+        damping[start : start + int(num_arm_dofs)] = values
     robot_model.joint_damping.assign(damping)
+
+
+def _set_fr3_joint_friction(
+    robot_model: newton.Model,
+    friction: float | Sequence[float],
+    *,
+    num_arm_dofs: int = _N_ARM_DOF,
+    dofs_per_world: int | None = None,
+) -> None:
+    """Assign ``Model.joint_friction`` on arm DOFs (synced to ``mj_model.dof_frictionloss``).
+
+    Default matches franka_fr3v2_custom ``mu_coulomb`` (dry Coulomb, Nm).
+    """
+    if robot_model.joint_friction is None:
+        return
+    fric = robot_model.joint_friction.numpy().copy()
+    values = _arm_dof_values(friction, num_arm_dofs=num_arm_dofs, dtype=fric.dtype)
+    n = int(fric.shape[0])
+    stride = int(dofs_per_world) if dofs_per_world is not None else max(n, int(num_arm_dofs))
+    if stride < int(num_arm_dofs):
+        raise ValueError(f"dofs_per_world {stride} < num_arm_dofs {num_arm_dofs}")
+    for start in range(0, n, stride):
+        fric[start : start + int(num_arm_dofs)] = values
+    robot_model.joint_friction.assign(fric)
 
 
 def scale_mujoco_joint_pd(robot_model: newton.Model, scale: float) -> None:
@@ -326,17 +425,26 @@ def configure_vic_joint_torques_arm(
     kp_null: float = 10.0,
     kd_null: float = 6.3246,
     singularity_damping: float = 0.0,
-    vic_joint_damping: float = 1.0,
+    sep_ori: bool = False,
+    vic_joint_damping: float | Sequence[float] = FR3_DEFAULT_VIC_JOINT_DAMPING,
+    joint_friction: float | Sequence[float] = FR3_DEFAULT_JOINT_FRICTION,
 ) -> None:
     """One-shot setup for post-grasp VIC via ``control.joint_f`` (J^T Λ wrench mapping)."""
     zero_mujoco_joint_pd(robot_model)
     _set_vic_passive_joint_damping(robot_model, vic_joint_damping)
-    mj_solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+    _set_fr3_joint_friction(robot_model, joint_friction)
+    _set_fr3_joint_armature(robot_model)
+    apply_fr3_v21_arm_properties(robot_model, mj_solver)
+    mj_solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
     hold_mujoco_actuator_targets_at_state(robot_model, state, control)
     if control.joint_f is None:
         n = int(robot_model.joint_dof_count)
         control.joint_f = wp.zeros(n, dtype=float, device=robot_model.device)
     if scene is not None:
+        from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
+            allocate_vic_joint_torque_buffers,
+        )
+
         tcp = (
             int(tcp_body_index)
             if tcp_body_index is not None
@@ -349,6 +457,7 @@ def configure_vic_joint_torques_arm(
             kp_null=kp_null,
             kd_null=kd_null,
             singularity_damping=singularity_damping,
+            sep_ori=sep_ori,
         )
 
 
@@ -364,12 +473,34 @@ def configure_vic_joint_torques_arm_batched(
     kp_null: float = 10.0,
     kd_null: float = 6.3246,
     singularity_damping: float = 0.0,
-    vic_joint_damping: float = 1.0,
+    sep_ori: bool = False,
+    vic_joint_damping: float | Sequence[float] = FR3_DEFAULT_VIC_JOINT_DAMPING,
+    joint_friction: float | Sequence[float] = FR3_DEFAULT_JOINT_FRICTION,
 ) -> None:
     """One-shot batched VIC setup: zero PD, ``joint_f`` for all worlds, batched J/H buffers."""
     zero_mujoco_joint_pd(robot_model)
-    _set_vic_passive_joint_damping(robot_model, vic_joint_damping)
-    mj_solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+    dof_per = int(layout.joint_dof_count_per_world)
+    _set_vic_passive_joint_damping(
+        robot_model,
+        vic_joint_damping,
+        dofs_per_world=dof_per,
+    )
+    _set_fr3_joint_friction(
+        robot_model,
+        joint_friction,
+        dofs_per_world=dof_per,
+    )
+    _set_fr3_joint_armature(
+        robot_model,
+        dofs_per_world=dof_per,
+    )
+    apply_fr3_v21_arm_properties(
+        robot_model,
+        mj_solver,
+        robot_bodies_per_world=int(layout.robot_bodies_per_world),
+        num_envs=int(layout.num_envs),
+    )
+    mj_solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
     hold_mujoco_actuator_targets_at_state(robot_model, state, control)
     if control.joint_f is None:
         n = int(robot_model.joint_dof_count)
@@ -380,6 +511,10 @@ def configure_vic_joint_torques_arm_batched(
         tcp = int(scene.tcp_body_index)
     else:
         tcp = int(layout.tcp_body_indices[0])
+    from apple_pick_sim.coupled_fruiting.vic_joint_torques_batched import (
+        allocate_vic_joint_torque_buffers_batched,
+    )
+
     allocate_vic_joint_torque_buffers_batched(
         robot_model,
         scene,
@@ -388,6 +523,7 @@ def configure_vic_joint_torques_arm_batched(
         kp_null=kp_null,
         kd_null=kd_null,
         singularity_damping=singularity_damping,
+        sep_ori=sep_ori,
     )
 
 

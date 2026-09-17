@@ -360,3 +360,62 @@ def test_overlay_episodes_from_replay_evaluation_preserves_sparse_direction_ids(
     assert by_candidate[1].excluded is True
     np.testing.assert_array_equal(by_candidate[0].ft_wrist, ft)
     np.testing.assert_array_equal(by_candidate[0].tcp_pos, tcp)
+
+
+def _replay_eval_with_stable_mask(stable: np.ndarray):
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    n = int(stable.shape[0])
+    phase = np.full(n, PHASE_TO_INT["hold"], dtype=np.int8)
+    pull = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    replay = {
+        "phase": phase,
+        "ft_wrist": np.zeros((n, 6), dtype=np.float64),
+        "tcp_pos": np.zeros((n, 3), dtype=np.float64),
+        "dir_idx": np.zeros(n, dtype=np.int32),
+        "excitation_direction": np.tile(pull, (n, 1)),
+        "stable": np.asarray(stable, dtype=bool),
+    }
+    candidate = cmaes.YoungsModulusCandidate(1.0e8, 10**7.5, 1.0e7)
+    score = cmaes.YoungsModulusCandidateScore(
+        candidate_index=0,
+        candidate=candidate,
+        aggregate_sinkhorn=0.1,
+        per_direction_sinkhorn={0: 0.1},
+        instability_fraction=float(np.mean(~np.asarray(stable, dtype=bool))),
+        disqualified=False,
+        disqualification_reason=None,
+        rank=1,
+        is_gt=False,
+    )
+    return cmaes.YoungsModulusEvaluation(
+        structure_idx=0,
+        gt_candidate=None,
+        fixed_secondary_e_pa=None,
+        direction_indices=(0,),
+        scores=[score],
+        replay_episodes=[[replay]],
+        applied_params=[],
+    )
+
+
+def test_overlay_episodes_omit_only_when_unstable_fraction_exceeds_quarter():
+    from apple_pick_gym.youngs_modulus_overlay_viz import (
+        overlay_episodes_from_replay_evaluation,
+    )
+
+    at_threshold = overlay_episodes_from_replay_evaluation(
+        _replay_eval_with_stable_mask(
+            np.array([False, True, True, True], dtype=bool)
+        ),
+        [0],
+    )
+    above_threshold = overlay_episodes_from_replay_evaluation(
+        _replay_eval_with_stable_mask(
+            np.array([False, False, True, True], dtype=bool)
+        ),
+        [0],
+    )
+
+    assert at_threshold[0].excluded is False
+    assert above_threshold[0].excluded is True

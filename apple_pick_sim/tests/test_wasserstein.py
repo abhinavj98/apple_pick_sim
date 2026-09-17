@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from apple_pick_sim.system_id import wasserstein
 from apple_pick_sim.system_id.wasserstein import (
     LOW_SAMPLE_MIN_TRANSITIONS,
     POOLED_DIRECTION_KEY,
@@ -24,22 +25,26 @@ geomloss = pytest.importorskip("geomloss")
 
 
 def _arrays_for_steps(*, steps: int, shift: float = 0.0) -> dict:
-    junction_names = ["joint_a"]
+    junction_names = ["primary_spur", "spur_stem"]
     base = np.arange(steps, dtype=np.float32).reshape(steps, 1) + float(shift)
     woody_start = {
-        "joint_a": np.hstack([base + 100.0, base + 101.0, base + 102.0]).astype(np.float32),
-    }
-    woody_end = {
-        "joint_a": np.hstack([base + 300.0, base + 301.0, base + 302.0]).astype(np.float32),
+        "primary_spur": np.hstack([base + 100.0, base + 101.0, base + 102.0]).astype(
+            np.float32
+        ),
+        "spur_stem": np.hstack([base + 200.0, base + 201.0, base + 202.0]).astype(
+            np.float32
+        ),
     }
     return {
         "ft_wrist": np.hstack([base + i for i in range(6)]).astype(np.float32),
         "tcp_velocity": np.hstack([base + 10.0 + i for i in range(6)]).astype(np.float32),
         "action": np.hstack([base + 20.0 + i for i in range(6)]).astype(np.float32),
         "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
+        "tcp_quat": np.tile(
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (steps, 1)
+        ),
         "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
         "woody_part_start_pos": woody_start,
-        "woody_part_end_pos": woody_end,
         "excitation_direction": np.tile(
             np.array([[0.0, 1.0, 0.0]], dtype=np.float32), (steps, 1)
         ),
@@ -81,6 +86,20 @@ def _two_hold_episode(*, dir_idx: int, shift: float = 0.0, steps: int = 10) -> d
     """Two median holds → one transition (singleton Sinkhorn bag)."""
     del steps  # size is derived from the hold pattern
     return _episode_with_median_holds(dir_idx=dir_idx, n_holds=2, shift=shift)
+
+
+def _two_cycle_full_trajectory_episode(*, dir_idx: int, shift: float = 0.0) -> dict:
+    """Two (move_out, hold) cycles, 2 frames each, for full_trajectory scoring."""
+    phase = np.array([0, 0, 1, 1, 0, 0, 1, 1], dtype=np.int8)
+    steps = int(phase.size)
+    ep = _arrays_for_steps(steps=steps, shift=shift)
+    ep["dir_idx"] = np.full(steps, int(dir_idx), dtype=np.int32)
+    ep["phase"] = phase
+    if dir_idx != 0:
+        ep["excitation_direction"] = np.tile(
+            np.array([[1.0, 0.0, 0.0]], dtype=np.float32), (steps, 1)
+        )
+    return ep
 
 
 def _episode_without_valid_holds(*, dir_idx: int, steps: int = 10) -> dict:
@@ -131,6 +150,31 @@ def test_sinkhorn_distance_singleton_shift_matches_geomloss_half_sqdist():
     expected = 0.5 * float(np.sum((x - y) ** 2))
     assert dist == pytest.approx(expected, abs=1e-12)
     assert dist > 0.0
+
+
+def test_feature_kwargs_forward_hold_reduce_mean():
+    kwargs = wasserstein._feature_kwargs(
+        use_median=False,
+        hold_id_onehot=False,
+        n_holds=5,
+        dir_id_onehot=False,
+        n_directions=8,
+        hold_reduce="mean",
+    )
+    assert kwargs["hold_reduce"] == "mean"
+    assert kwargs["use_median"] is False
+    assert "categorical_weight" not in kwargs
+    assert kwargs["include_delta"] is True
+    with pytest.raises(TypeError):
+        wasserstein._feature_kwargs(
+            use_median=False,
+            hold_id_onehot=False,
+            n_holds=5,
+            dir_id_onehot=False,
+            n_directions=8,
+            hold_reduce="mean",
+            categorical_weight=30.0,
+        )
 
 
 def test_complete_score_single_transition_bags_are_low_sample_and_finite():
@@ -722,3 +766,200 @@ def test_sinkhorn_mse_spearman_excludes_disqualified():
         disqualified=[False, False, True],
     )
     assert out.spearman == pytest.approx(1.0)
+
+
+def test_sinkhorn_singleton_grows_with_categorical_weight_squared():
+    from apple_pick_sim.system_id.mmd_features import (
+        STATE_VECTOR_PHYS_SCALE,
+        transition_feature_scale,
+    )
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n_dir = 3
+    n_features = state_dim + n_dir
+    base = np.zeros(n_features, dtype=np.float64)
+    base[-n_dir:] = [1.0, 0.0, 0.0]
+    alt = base.copy()
+    alt[-n_dir:] = [0.0, 1.0, 0.0]
+
+    def _singleton_cost(weight: float) -> float:
+        scale = transition_feature_scale(
+            n_features, include_delta=False, categorical_weight=weight
+        )
+        x = (base / scale).reshape(1, -1)
+        y = (alt / scale).reshape(1, -1)
+        return float(sinkhorn_distance(x, y, device="cpu"))
+
+    low = _singleton_cost(1.0)
+    high = _singleton_cost(10.0)
+    assert high == pytest.approx(100.0 * low, rel=1e-6)
+
+
+def test_complete_score_raises_on_include_delta_contract_mismatch():
+    gt = [_two_hold_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        hold_reduce="none",
+        include_delta=False,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+    )
+    with pytest.raises(ValueError, match="include_delta mismatch"):
+        score_candidate_wasserstein_complete(
+            candidate_index=0,
+            stiffnesses={"primary_e_pa": 1.0},
+            gt_context=context,
+            replay_observations=gt,
+            device="cpu",
+            hold_reduce="none",
+            include_delta=True,
+            hold_id_onehot=True,
+            n_holds=2,
+            n_directions=1,
+        )
+
+
+def test_complete_score_raises_on_full_trajectory_contract_mismatch():
+    """Scoring full_trajectory=False against a full_trajectory=True GT context must fail loudly."""
+    gt = [_two_cycle_full_trajectory_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        hold_reduce="none",
+        include_delta=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+        full_trajectory=True,
+    )
+    with pytest.raises(ValueError, match="full_trajectory mismatch"):
+        score_candidate_wasserstein_complete(
+            candidate_index=0,
+            stiffnesses={"primary_e_pa": 1.0},
+            gt_context=context,
+            replay_observations=gt,
+            device="cpu",
+            hold_reduce="none",
+            include_delta=True,
+            hold_id_onehot=True,
+            n_holds=2,
+            n_directions=1,
+            full_trajectory=False,
+        )
+
+
+def test_complete_score_full_trajectory_scores_move_out_and_hold():
+    """full_trajectory=True end-to-end: identical GT/candidate → ~0 aggregate."""
+    gt = [_two_cycle_full_trajectory_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        hold_reduce="none",
+        include_delta=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+        full_trajectory=True,
+    )
+    result = score_candidate_wasserstein_complete(
+        candidate_index=0,
+        stiffnesses={"primary_e_pa": 1.0},
+        gt_context=context,
+        replay_observations=gt,
+        device="cpu",
+        hold_reduce="none",
+        include_delta=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        n_directions=1,
+        full_trajectory=True,
+    )
+    assert result.aggregate_sinkhorn == pytest.approx(0.0, abs=1e-6)
+    assert not result.missing_directions
+
+
+def test_complete_score_raises_on_categorical_weight_contract_mismatch():
+    gt = [_two_hold_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        use_median=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+        categorical_weight=1.0,
+    )
+    with pytest.raises(ValueError, match="categorical_weight mismatch"):
+        score_candidate_wasserstein_complete(
+            candidate_index=0,
+            stiffnesses={"primary_e_pa": 1.0},
+            gt_context=context,
+            replay_observations=gt,
+            device="cpu",
+            use_median=True,
+            hold_id_onehot=True,
+            n_holds=2,
+            n_directions=1,
+            categorical_weight=30.0,
+        )
+
+
+def test_complete_score_raises_on_delta_weight_contract_mismatch():
+    gt = [_two_hold_episode(dir_idx=0)]
+    context = prepare_gt_wasserstein_scoring_context(
+        gt,
+        use_median=True,
+        hold_id_onehot=True,
+        n_holds=2,
+        pool_directions=True,
+        n_directions=1,
+        delta_weight=0.2,
+    )
+    with pytest.raises(ValueError, match="delta_weight mismatch"):
+        score_candidate_wasserstein_complete(
+            candidate_index=0,
+            stiffnesses={"primary_e_pa": 1.0},
+            gt_context=context,
+            replay_observations=gt,
+            device="cpu",
+            use_median=True,
+            hold_id_onehot=True,
+            n_holds=2,
+            n_directions=1,
+            delta_weight=1.0,
+        )
+
+
+def test_near_constant_gt_column_does_not_explode_sinkhorn():
+    """Hold-constant features must not dominate cost via eps std floor."""
+    steps = 12
+    base = _arrays_for_steps(steps=steps)
+    gt_ep = _episode_with_median_holds(dir_idx=0, n_holds=4)
+    ctx = prepare_gt_wasserstein_scoring_context(
+        [gt_ep], use_median=True, hold_id_onehot=True, pool_directions=True, n_directions=1
+    )
+    sim_ep = _episode_with_median_holds(dir_idx=0, n_holds=4, shift=0.05)
+    self_score = score_candidate_wasserstein_complete(
+        candidate_index=0,
+        stiffnesses={},
+        gt_context=ctx,
+        replay_observations=[gt_ep],
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        n_directions=1,
+    )
+    sim_score = score_candidate_wasserstein_complete(
+        candidate_index=0,
+        stiffnesses={},
+        gt_context=ctx,
+        replay_observations=[sim_ep],
+        use_median=True,
+        hold_id_onehot=True,
+        pool_directions=True,
+        n_directions=1,
+    )
+    assert self_score.aggregate_sinkhorn == pytest.approx(0.0, abs=1e-6)
+    assert sim_score.aggregate_sinkhorn < 1.0e6

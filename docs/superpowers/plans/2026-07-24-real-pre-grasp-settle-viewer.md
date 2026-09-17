@@ -33,7 +33,7 @@
 | `apple_pick_sim/tests/test_real_pre_grasp_params.py` | Unit tests for parse/map/params |
 | `robot_replay/example_view_pre_grasp_settle.py` | CLI: build → settle → view |
 | `robot_replay/README.md` | Document command |
-| `docs/real-sysid-pre-post-grasp-fixes.md` | Link to shipped viewer path (short note) |
+| `docs/handbook-real-replay.md` | Link to shipped viewer path (short note) |
 
 ---
 
@@ -471,7 +471,7 @@ git commit -m "Build FruitingSystemParams from real pre-grasp geometry."
 **Files:**
 - Create: `robot_replay/example_view_pre_grasp_settle.py`
 - Modify: `robot_replay/README.md`
-- Modify: `docs/real-sysid-pre-post-grasp-fixes.md` (one short “shipped viewer” pointer)
+- Modify: `docs/handbook-real-replay.md` (one short “shipped viewer” pointer)
 - Modify: `docs/superpowers/specs/2026-07-24-real-pre-grasp-settle-viewer-design.md` status → Implemented when done
 
 **Interfaces:**
@@ -667,7 +667,7 @@ Expected: exits 0; JSON contains `fruiting_base_pos` and `fruiting_system_params
 
 ```bash
 git add robot_replay/example_view_pre_grasp_settle.py robot_replay/README.md \
-  docs/real-sysid-pre-post-grasp-fixes.md \
+  docs/handbook-real-replay.md \
   docs/superpowers/specs/2026-07-24-real-pre-grasp-settle-viewer-design.md
 git commit -m "Add plant-only pre-grasp settle viewer for real parquet."
 ```

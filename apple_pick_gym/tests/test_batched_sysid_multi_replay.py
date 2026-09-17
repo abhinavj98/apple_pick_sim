@@ -34,11 +34,12 @@ def _recorded(
     direction_idx: int,
     *,
     frames: int = 3,
+    action_dim: int = 6,
     junction_names: tuple[str, ...] = ("support", "primary_spur", "spur_stem"),
 ) -> dict[str, Any]:
     sentinel = 10000 * structure_idx + direction_idx
     return {
-        "action": np.full((frames, 6), sentinel, dtype=np.float32),
+        "action": np.full((frames, action_dim), sentinel, dtype=np.float32),
         "junction_names": list(junction_names),
         "recorded_sentinel": sentinel,
     }
@@ -52,29 +53,49 @@ def _request(
     params: fs.FruitingSystemParams | None = None,
     gripper: GripperProxyConfig | None = None,
     frames: int = 3,
+    action_dim: int = 6,
     junction_names: tuple[str, ...] = ("support", "primary_spur", "spur_stem"),
+    meta_by_direction: dict[int, dict[str, Any]] | None = None,
 ) -> multi.ReplayStructureRequest:
-    return multi.ReplayStructureRequest(
-        structure_idx=structure_idx,
-        candidates=candidates,
-        direction_indices=directions,
-        base_params=_params(structure_idx) if params is None else params,
-        recorded_by_direction={
+    kwargs: dict[str, Any] = {
+        "structure_idx": structure_idx,
+        "candidates": candidates,
+        "direction_indices": directions,
+        "base_params": _params(structure_idx) if params is None else params,
+        "recorded_by_direction": {
             direction_idx: _recorded(
                 structure_idx,
                 direction_idx,
                 frames=frames,
+                action_dim=action_dim,
                 junction_names=junction_names,
             )
             for direction_idx in directions
         },
-        gripper=GripperProxyConfig(
+        "gripper": GripperProxyConfig(
             fix_to_apple=True,
             weld_direction=(1.0, 0.0, 0.0),
         )
         if gripper is None
         else gripper,
-    )
+    }
+    if meta_by_direction is not None:
+        kwargs["meta_by_direction"] = meta_by_direction
+    return multi.ReplayStructureRequest(**kwargs)
+
+
+def _real_dir_meta(*, apple_pos: tuple[float, float, float]) -> dict[str, Any]:
+    tcp_pos = (apple_pos[0], apple_pos[1] - 0.05, apple_pos[2])
+    return {
+        "weld_direction": [0.0, -1.0, 0.0],
+        "initial_apple_pos": list(apple_pos),
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": list(tcp_pos),
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+        "weld_reference_pos": list(apple_pos),
+        "weld_reference_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_robot_joint_q": [0.1, 0.2, 0.3, -1.0, 0.0, 1.5, -0.5],
+    }
 
 
 def test_build_replay_candidate_blocks_preserves_original_stable_identity_and_payloads():
@@ -261,6 +282,17 @@ def test_build_replay_candidate_blocks_accepts_different_recorded_weld_poses():
     )
 
     assert len(multi.build_replay_candidate_blocks((first, second))) == 2
+
+
+def test_build_replay_candidate_blocks_accepts_19d_actions_and_rejects_mixed_widths():
+    first = _request(4, action_dim=19)
+    compatible = _request(1, params=first.base_params, action_dim=19)
+
+    assert len(multi.build_replay_candidate_blocks((first, compatible))) == 2
+
+    mixed_width = _request(1, params=first.base_params, action_dim=6)
+    with pytest.raises(multi.ReplayFusionIncompatible, match="action width"):
+        multi.build_replay_candidate_blocks((first, mixed_width))
 
 
 @pytest.mark.parametrize(
@@ -569,11 +601,52 @@ def test_replay_multi_structure_prunes_only_failed_structures_and_discards_parti
         fail_fast=False,
     )
 
-    assert outcome.failed_structures == {4: "chunk 1: synthetic failure"}
+    detail = outcome.failed_structures[4]
+    assert detail.startswith("chunk 1: synthetic failure")
+    assert "Traceback (most recent call last)" in detail
+    assert "RuntimeError: synthetic failure" in detail
     assert all(key.structure_idx != 4 for key in outcome.replay_by_key)
     assert multi.ReplaySlotKey(1, 0, 0) in outcome.replay_by_key
     assert outcome.diagnostics.failed_chunk_indices == (1,)
     assert build_count == 3
+
+
+def test_replay_multi_structure_synchronizes_before_close_on_failure(
+    monkeypatch,
+    _fake_replay_runtime,
+):
+    """Failure path must drain Warp before tearing down the env."""
+    order: list[str] = []
+    monkeypatch.setattr(
+        multi,
+        "_synchronize_device",
+        lambda: order.append("sync"),
+        raising=False,
+    )
+    blocks = multi.build_replay_candidate_blocks((_request(4),))
+
+    class _FailingEnv(_FakeEnv):
+        def close(self):
+            order.append("close")
+            super().close()
+
+        def step(self, actions):
+            raise RuntimeError("synthetic step failure")
+
+    def build_env_fn(**kwargs):
+        env = _FailingEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    outcome = multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        fail_fast=False,
+    )
+    assert 4 in outcome.failed_structures
+    assert "Traceback" in outcome.failed_structures[4]
+    assert order == ["sync", "sync", "close"]
 
 
 def test_replay_multi_structure_fail_fast_reraises_original_exception(
@@ -651,7 +724,7 @@ def test_replay_multi_structure_synchronizes_before_stopping_gpu_timers(
         build_env_fn=build_env_fn,
     )
 
-    assert synchronizations == ["sync", "sync"]
+    assert synchronizations == ["sync", "sync", "sync"]
 
 
 def test_build_replay_candidate_blocks_copies_support_kp_from_candidate():
@@ -685,7 +758,9 @@ def test_replay_multi_structure_applies_support_kp_before_reset(
     apply_calls: list[dict[str, Any]] = []
     event_order: list[str] = []
 
-    def fake_apply(scene, support_kp_per_env, *, num_envs, joints_per_world, zeta):
+    def fake_apply(
+        scene, support_kp_per_env, *, num_envs, joints_per_world, zeta, **_kwargs
+    ):
         apply_calls.append(
             {
                 "scene": scene,
@@ -759,6 +834,78 @@ def test_replay_multi_structure_applies_support_kp_before_reset(
     assert event_order == ["apply", "reset"]
 
 
+def test_replay_multi_structure_passes_support_kp_into_build_when_advertised(
+    monkeypatch,
+    _fake_replay_runtime,
+):
+    """Build-time settle path: pass support_kp_per_env and skip late apply."""
+    apply_calls: list[tuple[float, ...]] = []
+    build_kwargs_seen: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        multi,
+        "apply_per_env_support_joint_penalties",
+        lambda _scene, kp, **_kwargs: apply_calls.append(tuple(kp)),
+        raising=False,
+    )
+
+    class _Env(_FakeEnv):
+        def __init__(self, params, grippers, *, support_kp_per_env=None):
+            super().__init__(params, grippers)
+            self.support_kp_per_env = (
+                None if support_kp_per_env is None else tuple(support_kp_per_env)
+            )
+            self._snapshot_kp = self.support_kp_per_env
+            self.kp_after_reset: tuple[float, ...] | None = None
+            self._sim = SimpleNamespace(
+                scene=SimpleNamespace(label="scene"),
+                layout=SimpleNamespace(num_envs=self.num_envs, joints_per_world=7),
+            )
+
+        def reset(self, *, seed: int):
+            # Mimic episode snapshot restore of joint_penalty_k.
+            self.kp_after_reset = self._snapshot_kp
+            super().reset(seed=seed)
+
+    params = _params(4)
+    blocks = multi.build_replay_candidate_blocks(
+        (
+            _request(
+                4,
+                params=params,
+                candidates=(
+                    _Candidate(40.0, support_kp=1.0e3),
+                    _Candidate(41.0, support_kp=2.0e4),
+                ),
+                directions=(0,),
+            ),
+        )
+    )
+
+    def build_env_fn(**kwargs):
+        build_kwargs_seen.append(dict(kwargs))
+        env = _Env(
+            kwargs["per_env_params"],
+            kwargs["per_env_grippers"],
+            support_kp_per_env=kwargs.get("support_kp_per_env"),
+        )
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    build_env_fn.wants_support_kp_per_env = True
+
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    assert build_kwargs_seen[0]["support_kp_per_env"] == [1.0e3, 2.0e4]
+    assert apply_calls == []
+    assert _fake_replay_runtime.built[0].kp_after_reset == (1.0e3, 2.0e4)
+
+
 def test_replay_multi_structure_skips_support_kp_apply_when_unset(
     monkeypatch,
     _fake_replay_runtime,
@@ -802,7 +949,7 @@ def test_replay_multi_structure_support_kp_sets_solver_arrays_per_env(
     if str(_SIM_TESTS_DIR) not in sys.path:
         sys.path.insert(0, str(_SIM_TESTS_DIR))
 
-    from conftest import COUPLED_SCENE_KW  # noqa: E402
+    from apple_pick_sim.tests.conftest import COUPLED_SCENE_KW  # noqa: E402
     from apple_pick_sim.coupled_fruiting import CoupledFruitingScene  # noqa: E402
     from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout  # noqa: E402
     from apple_pick_sim.coupled_fruiting.batched_build import (  # noqa: E402
@@ -899,6 +1046,511 @@ def test_replay_multi_structure_support_kp_sets_solver_arrays_per_env(
 
     env = _fake_replay_runtime.built[0]
     assert env.kp_before_reset is not None
-    assert env.kp_before_reset[0] == pytest.approx(1.0e3)
-    assert env.kp_before_reset[1] == pytest.approx(2.0e4)
+    from apple_pick_gym.batched_envs.support_joint_penalties import (
+        support_angular_kp_from_linear,
+    )
+
+    assert env.kp_before_reset[0] == pytest.approx(
+        support_angular_kp_from_linear(1.0e3, params.primary.length)
+    )
+    assert env.kp_before_reset[1] == pytest.approx(
+        support_angular_kp_from_linear(2.0e4, params.primary.length)
+    )
+
+
+def test_real_build_env_fn_advertises_per_env_meta():
+    from pathlib import Path
+
+    from apple_pick_gym.batched_envs.real_batched_replay_build import (
+        make_real_replay_build_env_fn,
+    )
+    from apple_pick_sim.fruiting_system.params import load_ranges
+
+    ranges_path = Path(
+        "apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json"
+    )
+    fn = make_real_replay_build_env_fn(
+        ranges_path=ranges_path,
+        ranges=load_ranges(ranges_path),
+        topology_seed=0,
+        fruiting_base_pos=(0.0, 0.5, 0.95),
+        episode_meta=_real_dir_meta(apple_pos=(0.1, 0.2, 0.3)),
+    )
+    assert getattr(fn, "wants_per_env_meta", False) is True
+
+
+def test_two_direction_batch_gets_distinct_weld_poses(_fake_replay_runtime):
+    meta_d0 = _real_dir_meta(apple_pos=(1.0, 0.0, 0.0))
+    meta_d1 = _real_dir_meta(apple_pos=(2.0, 0.0, 0.0))
+    request = _request(
+        4,
+        candidates=(_Candidate(40.0),),
+        directions=(0, 1),
+        meta_by_direction={0: meta_d0, 1: meta_d1},
+    )
+    blocks = multi.build_replay_candidate_blocks((request,))
+    slots = blocks[0].slots
+    assert slots[0].episode_meta != slots[1].episode_meta
+    assert slots[0].gripper.weld_reference_pos != slots[1].gripper.weld_reference_pos
+    d0_weld = tuple(float(x) for x in meta_d0["weld_reference_pos"])
+    assert slots[0].gripper.weld_reference_pos == pytest.approx(d0_weld)
+    assert slots[1].gripper.weld_reference_pos != d0_weld
+
+    build_calls: list[dict[str, Any]] = []
+
+    def build_env_fn(**kwargs):
+        build_calls.append(kwargs)
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    build_env_fn.wants_per_env_meta = True
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    assert build_calls[0]["per_env_episode_meta"] == [meta_d0, meta_d1]
+
+
+def test_slots_without_meta_do_not_pass_per_env_meta(_fake_replay_runtime):
+    request = _request(4, candidates=(_Candidate(40.0),), directions=(0, 1))
+    blocks = multi.build_replay_candidate_blocks((request,))
+    assert all(slot.gripper is request.gripper for slot in blocks[0].slots)
+
+    build_calls: list[dict[str, Any]] = []
+
+    def build_env_fn(**kwargs):
+        build_calls.append(kwargs)
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    build_env_fn.wants_per_env_meta = True
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    assert "per_env_episode_meta" not in build_calls[0]
+    assert all(slot.gripper == request.gripper for slot in blocks[0].slots)
+
+
+_PADDED_FRAME_SENTINEL = 8888.0
+
+
+def _unequal_length_request(
+    structure_idx: int = 4, *, action_dim: int = 6
+) -> multi.ReplayStructureRequest:
+    action0 = np.stack(
+        [np.full(action_dim, 10.0 + float(i), dtype=np.float32) for i in range(5)]
+    )
+    action1 = np.stack(
+        [np.full(action_dim, 20.0 + float(i), dtype=np.float32) for i in range(3)]
+    )
+    rec0 = _recorded(structure_idx, 0, frames=5, action_dim=action_dim)
+    rec1 = _recorded(structure_idx, 1, frames=3, action_dim=action_dim)
+    rec0["action"] = action0
+    rec1["action"] = action1
+    return dataclasses.replace(
+        _request(
+            structure_idx,
+            candidates=(_Candidate(40.0),),
+            directions=(0, 1),
+            frames=5,
+            action_dim=action_dim,
+        ),
+        recorded_by_direction={0: rec0, 1: rec1},
+    )
+
+
+def _patch_horizon_collectors(monkeypatch, *, pad_sentinel: float) -> None:
+    class HorizonCollectors:
+        def __init__(self, num_envs, recorded_by_env):
+            assert num_envs == len(recorded_by_env)
+            self.recorded = list(recorded_by_env)
+            self.env = None
+            self._n_steps = 0
+
+        def record_all_envs_step(self, env, *, frame_idx, **_kwargs):
+            self.env = env
+            self._n_steps = int(frame_idx) + 1
+
+        def to_arrays(self, env_idx):
+            n_replayed = int(self._n_steps)
+            n_true = int(np.asarray(self.recorded[env_idx]["action"]).shape[0])
+            ft = np.arange(n_replayed, dtype=np.float32).reshape(n_replayed, 1)
+            if n_true < n_replayed:
+                ft[n_true:] = pad_sentinel
+            return {"ft_wrist": ft.copy(), "tcp_pos": ft.copy()}
+
+    monkeypatch.setattr(
+        multi, "BatchedSysIdReplayCollectors", HorizonCollectors, raising=False
+    )
+
+
+def test_drive_tensor_pads_short_directions_with_last_action(
+    monkeypatch,
+    _fake_replay_runtime,
+):
+    _patch_horizon_collectors(monkeypatch, pad_sentinel=_PADDED_FRAME_SENTINEL)
+    request = _unequal_length_request()
+    blocks = multi.build_replay_candidate_blocks((request,))
+    last_logged = np.asarray(request.recorded_by_direction[1]["action"][-1])
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    env = _fake_replay_runtime.built[0]
+    drive = np.stack([np.asarray(step) for step in env.actions], axis=1)
+    assert drive.shape == (2, 5, 6)
+    np.testing.assert_array_equal(drive[0], request.recorded_by_direction[0]["action"])
+    np.testing.assert_array_equal(drive[1, :3], request.recorded_by_direction[1]["action"])
+    np.testing.assert_array_equal(drive[1, 3], last_logged)
+    np.testing.assert_array_equal(drive[1, 4], last_logged)
+    assert not np.allclose(drive[1, 3:], 0.0)
+
+
+def test_replay_records_reset_obs_before_first_action(monkeypatch, _fake_replay_runtime):
+    """Frame 0 is the post-reset grasp; action[0] is applied after that row."""
+    collectors: list[Any] = []
+
+    class OrderCollectors:
+        def __init__(self, num_envs, recorded_by_env):
+            assert num_envs == len(recorded_by_env)
+            self.recorded = list(recorded_by_env)
+            self.n_actions_at_record: list[int] = []
+            collectors.append(self)
+
+        def record_all_envs_step(self, env, *, frame_idx, **_kwargs):
+            del frame_idx
+            self.n_actions_at_record.append(len(env.actions))
+
+        def to_arrays(self, env_idx):
+            del env_idx
+            n = len(self.n_actions_at_record)
+            return {"ft_wrist": np.zeros((n, 1), dtype=np.float32)}
+
+    monkeypatch.setattr(multi, "BatchedSysIdReplayCollectors", OrderCollectors, raising=False)
+    request = _request(4, candidates=(_Candidate(40.0),), frames=3, action_dim=6)
+    blocks = multi.build_replay_candidate_blocks((request,))
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    env = _fake_replay_runtime.built[0]
+    assert collectors[0].n_actions_at_record[0] == 0
+    assert collectors[0].n_actions_at_record == list(range(3))
+    assert len(env.actions) == 3
+
+
+def test_replay_arrays_truncate_to_recorded_length(monkeypatch, _fake_replay_runtime):
+    _patch_horizon_collectors(monkeypatch, pad_sentinel=_PADDED_FRAME_SENTINEL)
+    request = _unequal_length_request()
+    blocks = multi.build_replay_candidate_blocks((request,))
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    outcome = multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    key0 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=0)
+    key1 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=1)
+    arrays0 = outcome.replay_by_key[key0]
+    arrays1 = outcome.replay_by_key[key1]
+    assert arrays0["ft_wrist"].shape[0] == 5
+    assert arrays1["ft_wrist"].shape[0] == 3
+    assert arrays1["tcp_pos"].shape[0] == 3
+    assert int(np.asarray(request.recorded_by_direction[1]["action"]).shape[0]) == 3
+
+
+def test_padded_frames_absent_from_features(monkeypatch, _fake_replay_runtime):
+    _patch_horizon_collectors(monkeypatch, pad_sentinel=_PADDED_FRAME_SENTINEL)
+    request = _unequal_length_request()
+    blocks = multi.build_replay_candidate_blocks((request,))
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    outcome = multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+    )
+
+    key1 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=1)
+    arrays1 = outcome.replay_by_key[key1]
+    stacked = np.concatenate(
+        [np.asarray(arrays1["ft_wrist"]).reshape(-1), np.asarray(arrays1["tcp_pos"]).reshape(-1)]
+    )
+    assert np.all(stacked != _PADDED_FRAME_SENTINEL)
+    assert arrays1["ft_wrist"].shape[0] == 3
+
+
+def _recorded_for_real_collector(
+    structure_idx: int,
+    direction_idx: int,
+    *,
+    frames: int,
+    action_dim: int = 6,
+    junction_names: tuple[str, ...] = ("support", "primary_spur", "spur_stem"),
+) -> dict[str, Any]:
+    recorded = _recorded(
+        structure_idx,
+        direction_idx,
+        frames=frames,
+        action_dim=action_dim,
+        junction_names=junction_names,
+    )
+    recorded["phase"] = np.zeros(frames, dtype=np.int8)
+    recorded["dir_idx"] = np.full(frames, direction_idx, dtype=np.int32)
+    recorded["excitation_type"] = np.zeros(frames, dtype=np.int8)
+    recorded["excitation_direction"] = np.tile(
+        np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        (frames, 1),
+    )
+    return recorded
+
+
+def _batched_replay_obs(
+    *,
+    num_envs: int,
+    frame_idx: int,
+    junction_names: list[str],
+    recorded_n_frames: tuple[int, ...],
+    pad_sentinel: float,
+) -> dict[str, Any]:
+    woody_part_info: dict[str, dict[str, torch.Tensor]] = {}
+    for name in junction_names:
+        anchors = torch.zeros(num_envs, 6, dtype=torch.float32)
+        for env_idx in range(num_envs):
+            anchors[env_idx] = torch.tensor(
+                [
+                    10.0 + frame_idx,
+                    11.0 + frame_idx,
+                    12.0 + frame_idx,
+                    20.0 + frame_idx,
+                    21.0 + frame_idx,
+                    22.0 + frame_idx,
+                ],
+                dtype=torch.float32,
+            ) + float(env_idx)
+        woody_part_info[name] = {
+            "anchors_pos": anchors,
+            "anchor_force": torch.zeros(num_envs, 6, dtype=torch.float32),
+        }
+
+    ft_wrist = torch.zeros(num_envs, 6, dtype=torch.float32)
+    for env_idx in range(num_envs):
+        if frame_idx >= int(recorded_n_frames[env_idx]):
+            ft_wrist[env_idx] = pad_sentinel
+        else:
+            ft_wrist[env_idx] = 100.0 + float(frame_idx) + float(env_idx)
+
+    return {
+        "woody_part_info": woody_part_info,
+        "apple_pos": torch.full((num_envs, 3), 4.0 + float(frame_idx), dtype=torch.float32),
+        "tcp_force": torch.zeros(num_envs, 6, dtype=torch.float32),
+        "tcp_velocity": torch.full((num_envs, 6), 200.0 + float(frame_idx), dtype=torch.float32),
+        "ft_wrist": ft_wrist,
+        "raw_ft_wrist": torch.zeros(num_envs, 6, dtype=torch.float32),
+        "tcp_pos": torch.full((num_envs, 3), 1.0 + float(frame_idx), dtype=torch.float32),
+        "tcp_quat": torch.zeros(num_envs, 4, dtype=torch.float32),
+        "apple_quat": torch.zeros(num_envs, 4, dtype=torch.float32),
+        "robot_joint_q": torch.zeros(num_envs, 7, dtype=torch.float32),
+        "excitation_type": torch.zeros(num_envs, dtype=torch.long),
+        "excitation_f_inst": torch.zeros(num_envs, dtype=torch.float32),
+        "excitation_direction": torch.zeros(num_envs, 3, dtype=torch.float32),
+    }
+
+
+class _ObsFakeEnv:
+    def __init__(
+        self,
+        params,
+        grippers,
+        *,
+        recorded_n_frames: tuple[int, ...],
+        pad_sentinel: float,
+    ):
+        self.params = list(params)
+        self.grippers = list(grippers)
+        self.num_envs = len(self.params)
+        self.device = torch.device("cpu")
+        self.recorded_n_frames = tuple(int(n) for n in recorded_n_frames)
+        self.pad_sentinel = float(pad_sentinel)
+        self.junction_names = list(
+            _recorded_for_real_collector(0, 0, frames=1)["junction_names"]
+        )
+        self._sim = SimpleNamespace(build_result=None)
+        self.closed = False
+        self.actions: list[np.ndarray] = []
+        self._last_obs = _batched_replay_obs(
+            num_envs=self.num_envs,
+            frame_idx=0,
+            junction_names=self.junction_names,
+            recorded_n_frames=self.recorded_n_frames,
+            pad_sentinel=self.pad_sentinel,
+        )
+
+    def reset(self, *, seed: int):
+        self.seed = seed
+
+    def step(self, actions):
+        self.actions.append(np.asarray(actions))
+        frame_idx = len(self.actions) - 1
+        self._last_obs = _batched_replay_obs(
+            num_envs=self.num_envs,
+            frame_idx=frame_idx,
+            junction_names=self.junction_names,
+            recorded_n_frames=self.recorded_n_frames,
+            pad_sentinel=self.pad_sentinel,
+        )
+
+    def close(self):
+        self.closed = True
+
+
+def _patch_real_collector_replay_runtime(monkeypatch) -> None:
+    class FakeMonitor:
+        def __init__(self, num_envs, **_kwargs):
+            self.num_envs = num_envs
+
+        def check(self, _obs, *, step_idx):
+            return SimpleNamespace(
+                step_idx=step_idx,
+                unstable=torch.zeros(self.num_envs, dtype=torch.bool),
+                reasons=[[] for _ in range(self.num_envs)],
+            )
+
+    class FakeDisable:
+        def __init__(self, num_envs, **_kwargs):
+            self.num_envs = num_envs
+
+        def apply_actions(self, actions):
+            return actions
+
+        def should_record_mask(self):
+            return torch.ones(self.num_envs, dtype=torch.bool)
+
+        def update(self, _mask):
+            return None
+
+    monkeypatch.setattr(multi, "BatchedStabilityMonitor", FakeMonitor, raising=False)
+    monkeypatch.setattr(multi, "EnvDisableController", FakeDisable, raising=False)
+    monkeypatch.setattr(
+        multi,
+        "ik_bootstrap_unstable_mask",
+        lambda _env, n: torch.zeros(n, dtype=torch.bool),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        multi,
+        "hard_blowup_mask",
+        lambda report: torch.zeros_like(report.unstable),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        multi,
+        "actions_tensor_from_recorded_frame",
+        lambda recorded_actions, *, frame_idx, device: torch.as_tensor(
+            recorded_actions[:, frame_idx, :],
+            device=device,
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        multi,
+        "initialize_batched_env_from_episode_sources",
+        lambda _env, _dataset, _sources: None,
+        raising=False,
+    )
+
+
+def test_unequal_length_replay_gates_real_collector_record_mask(monkeypatch):
+    _patch_real_collector_replay_runtime(monkeypatch)
+    action0 = np.stack(
+        [np.full(6, 10.0 + float(i), dtype=np.float32) for i in range(5)]
+    )
+    action1 = np.stack(
+        [np.full(6, 20.0 + float(i), dtype=np.float32) for i in range(3)]
+    )
+    rec0 = _recorded_for_real_collector(4, 0, frames=5)
+    rec1 = _recorded_for_real_collector(4, 1, frames=3)
+    rec0["action"] = action0
+    rec1["action"] = action1
+    request = dataclasses.replace(
+        _request(
+            4,
+            candidates=(_Candidate(40.0),),
+            directions=(0, 1),
+            frames=5,
+        ),
+        recorded_by_direction={0: rec0, 1: rec1},
+    )
+    blocks = multi.build_replay_candidate_blocks((request,))
+    built: list[_ObsFakeEnv] = []
+
+    def build_env_fn(**kwargs):
+        env = _ObsFakeEnv(
+            kwargs["per_env_params"],
+            kwargs["per_env_grippers"],
+            recorded_n_frames=(5, 3),
+            pad_sentinel=_PADDED_FRAME_SENTINEL,
+        )
+        built.append(env)
+        return env
+
+    outcome = multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+        max_envs_per_batch=0,
+        fail_fast=True,
+    )
+
+    key0 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=0)
+    key1 = multi.ReplaySlotKey(structure_idx=4, local_candidate_idx=0, direction_idx=1)
+    arrays0 = outcome.replay_by_key[key0]
+    arrays1 = outcome.replay_by_key[key1]
+    assert arrays0["ft_wrist"].shape[0] == 5
+    assert arrays1["ft_wrist"].shape[0] == 3
+    stacked = np.concatenate(
+        [np.asarray(arrays1["ft_wrist"]).reshape(-1), np.asarray(arrays1["tcp_pos"]).reshape(-1)]
+    )
+    assert np.all(stacked != _PADDED_FRAME_SENTINEL)
+    assert len(built) == 1
+    assert len(built[0].actions) == 5
 

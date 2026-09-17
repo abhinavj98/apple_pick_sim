@@ -1,7 +1,8 @@
 # Wrench-Cap Retune Design
 
 **Date:** 2026-07-17  
-**Status:** Approved
+**Status:** Superseded — current scene defaults are 40 N / 10 N·m
+**Canonical living doc:** `docs/handbook-variable-impedance.md`
 
 ## Purpose
 

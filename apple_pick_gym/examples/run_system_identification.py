@@ -227,14 +227,16 @@ def _prepare_gt_mmd_context(recorded_episodes: list[dict]) -> dict[int, MmdDirec
         fit_gt_normalization,
         rbf_bandwidth_median,
     )
+    from apple_pick_sim.system_id.mmd_features import n_junctions_from_episodes
 
     gt_by_direction = _combine_transition_features(recorded_episodes)
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
+    n_junctions = n_junctions_from_episodes(recorded_episodes)
     context: dict[int, MmdDirectionContext] = {}
     for direction, gt_features in gt_by_direction.items():
-        stats = fit_gt_normalization(gt_features)
+        stats = fit_gt_normalization(gt_features, n_junctions=n_junctions)
         gt_norm = apply_normalization(gt_features, stats)
         bandwidth = rbf_bandwidth_median(gt_norm)
         context[int(direction)] = MmdDirectionContext(

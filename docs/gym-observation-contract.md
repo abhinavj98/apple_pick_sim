@@ -1,5 +1,11 @@
 # Gym observation contract (v3)
 
+> **Layer boundary:** this document defines runtime observation dictionaries.
+> Runtime obs may include `woody_part_end_pos`; `batched_sysid_v1` trajectory
+> bags do not, and score vectors use only `STATE_VECTOR_FIELDS`. See
+> [`handbook-sysid-scoring.md`](handbook-sysid-scoring.md) for the canonical
+> obs vs bag vs score glossary.
+
 ## Schema version
 
 All `apple_pick_gym` envs include `info["obs_schema"] == "v3"` on `reset()` and `step()`.
@@ -49,7 +55,7 @@ Logs without `info["obs_schema"]` should be treated as pre-v1 replay layout.
 
 ## Observation-only replay subset
 
-M3.0.3 uses a reset-time subset of the observation contract to initialize replay without privileged simulator arrays. Collection stores these reset values in episode metadata separately from per-step Parquet frames, whose frame 0 is the observation after action 0. For real-world collection, these fields must be sensor-derived or calibration-derived in the same world frame used by the simulator:
+M3.0.3 uses a reset-time subset of the observation contract to initialize replay without privileged simulator arrays. Collection stores these reset values in episode metadata separately from per-step Parquet frames. **Sim-collect** frame 0 is the observation after action 0. **Converted real** frame 0 is still at grasp (command already 1 cm, force unloaded); real replay therefore records the post-reset observation as frame 0 and applies `action[0]` afterward. For real-world collection, these fields must be sensor-derived or calibration-derived in the same world frame used by the simulator:
 
 | Field | Why replay needs it |
 |-------|---------------------|
@@ -81,7 +87,7 @@ Coupled keys plus:
 
 | Key | Shape | Source |
 |-----|-------|--------|
-| `ft_wrist` | `(6,)` | Lagged applied plant wrench from `coupling_forces_cache` (F/T sensor proxy); SysId defaults cap applied force/torque norms at 100 N / 100 N·m |
+| `ft_wrist` | `(6,)` | Lagged applied plant wrench from `coupling_forces_cache` (F/T sensor proxy); legacy single-env `ApplePickSysIdEnv` explicitly defaults to 100 N / 100 N·m, while batched coupled scenes use 40 N / 10 N·m |
 | `raw_ft_wrist` | `(6,)` | SysId-only uncapped stem-harvest TCP wrench for diagnostics/objectives |
 | `tcp_pos` | `(3,)` | Actual TCP body position (SysId only) |
 | `excitation_type` | scalar int | SysId excitation phase metadata (SysId only) |

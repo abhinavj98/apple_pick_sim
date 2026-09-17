@@ -1,4 +1,9 @@
-"""Bend-stiffness grid and recorded-action tensor helpers for batched sys-ID MMD."""
+"""Bend-stiffness grid and recorded-action tensor helpers for batched sys-ID MMD.
+
+Note: the biased_mmd2 scoring helpers in this module are stale; active
+Young's / CMA ranking uses Sinkhorn in wasserstein.py. They still call
+fit_gt_normalization and therefore inherit fixed physical scales.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +22,11 @@ from apple_pick_gym.batched_envs.batched_stability_monitor import (
     ik_bootstrap_unstable_mask,
 )
 from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
+from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    dataset_declares_vic_pose,
+)
 from apple_pick_gym.grid_viz_metrics import (
+    _woody_end_or_apple_2d,
     bend_stiffness_values_match,
     woody_segment_pos_mse_hold_aggregated,
     woody_segment_pos_mse_masked,
@@ -25,6 +34,7 @@ from apple_pick_gym.grid_viz_metrics import (
 )
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_from_episode_metadata,
+    gripper_proxy_for_real_batched_replay,
     infer_base_params_for_structure,
     initialize_batched_env_from_dataset,
     true_params_for_structure,
@@ -40,6 +50,7 @@ from apple_pick_sim.system_id.mmd_features import (
     _stable_masked_segment,
     combine_transition_features,
     iter_kept_hold_segments,
+    n_junctions_from_episodes,
     replay_obs_dict_from_sysid_numpy,
 )
 from apple_pick_sim.system_id.manifest_sim_config import warn_manifest_sim_config_mismatch
@@ -553,9 +564,9 @@ def trajectory_mse(
     if junction_names and _has_woody_for_scoring(replay, recorded, junction_names):
         for name in junction_names:
             start_rep = np.asarray(replay["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
-            end_rep = np.asarray(replay["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rep = _woody_end_or_apple_2d(replay, name, n)
             start_rec = np.asarray(recorded["woody_part_start_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
-            end_rec = np.asarray(recorded["woody_part_end_pos"][name], dtype=np.float64).reshape(-1, 3)[:n]
+            end_rec = _woody_end_or_apple_2d(recorded, name, n)
             rep = np.concatenate([start_rep, end_rep], axis=1)
             rec = np.concatenate([start_rec, end_rec], axis=1)
             woody_mse[name] = _masked_mse(
@@ -603,15 +614,23 @@ def _has_woody_for_scoring(
     recorded: Mapping[str, Any],
     junction_names: list[str],
 ) -> bool:
-    for key in ("woody_part_start_pos", "woody_part_end_pos"):
-        for source in (replay, recorded):
-            woody = source.get(key)
-            if not isinstance(woody, dict):
+    """True when both sides have woody starts (ends optional; ``apple_pos`` fallback)."""
+    if not junction_names:
+        return False
+    for source in (replay, recorded):
+        woody_start = source.get("woody_part_start_pos")
+        if not isinstance(woody_start, dict):
+            return False
+        for name in junction_names:
+            if name not in woody_start:
                 return False
-            for name in junction_names:
-                if name not in woody:
-                    return False
-    return bool(junction_names)
+        woody_end = source.get("woody_part_end_pos")
+        has_full_end = isinstance(woody_end, dict) and all(
+            name in woody_end for name in junction_names
+        )
+        if not has_full_end and "apple_pos" not in source:
+            return False
+    return True
 
 
 def prepare_gt_mmd_context(
@@ -635,9 +654,10 @@ def prepare_gt_mmd_context(
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
+    n_junctions = n_junctions_from_episodes(recorded_episodes)
     context: dict[int, MmdDirectionContext] = {}
     for direction, gt_features in gt_by_direction.items():
-        stats = fit_gt_normalization(gt_features)
+        stats = fit_gt_normalization(gt_features, n_junctions=n_junctions)
         gt_norm = apply_normalization(gt_features, stats)
         bandwidth = rbf_bandwidth_median(gt_norm)
         context[int(direction)] = MmdDirectionContext(
@@ -836,6 +856,20 @@ def load_recorded_episodes_for_structure(
     return out
 
 
+def load_episode_metadata_for_directions(
+    dataset: BatchedSysIdDataset,
+    *,
+    structure_idx: int,
+    direction_indices: Sequence[int],
+) -> dict[int, dict]:
+    """Load episode metadata keyed by direction index. Do not merge into recorded arrays."""
+    out: dict[int, dict] = {}
+    for direction_idx in direction_indices:
+        key = int(direction_idx)
+        out[key] = dict(dataset.load_episode_metadata(int(structure_idx), key))
+    return out
+
+
 def direction_episodes_from_collectors(
     collectors: BatchedSysIdReplayCollectors,
     *,
@@ -885,6 +919,7 @@ def replay_candidates_for_structure(
     use_oracle_params: bool = True,
     direction_indices: Sequence[int] | None = None,
     include_excluded: bool = False,
+    action_dim: int = 6,
 ) -> BatchedSysIdReplayCollectors:
     dirs = resolve_direction_indices(
         dataset,
@@ -917,6 +952,7 @@ def replay_candidates_for_structure(
             use_oracle_params=bool(use_oracle_params),
             direction_indices=dirs,
             include_excluded=bool(include_excluded),
+            action_dim=int(action_dim),
         )
         merged = collectors if merged is None else merged.concat_envs(collectors)
     assert merged is not None
@@ -1050,11 +1086,30 @@ def _concat_replay_arrays(left: dict[str, Any], right: dict[str, Any]) -> dict[s
             name: _cat_1d_or_2d_for_woody(left["woody_part_start_pos"][name], right["woody_part_start_pos"][name])
             for name in junction_names
         },
-        "woody_part_end_pos": {
-            name: _cat_1d_or_2d_for_woody(left["woody_part_end_pos"][name], right["woody_part_end_pos"][name])
-            for name in junction_names
-        },
+        "woody_part_end_pos": _concat_woody_end_pos(left, right, junction_names),
         "junction_names": junction_names,
+    }
+
+
+def _concat_woody_end_pos(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    junction_names: list[str],
+) -> dict[str, np.ndarray]:
+    """Concatenate ``woody_part_end_pos`` when both sides have it; else empty.
+
+    Collector-produced arrays (``ReplayObservationCollector.to_arrays()``) no
+    longer emit ``woody_part_end_pos``; tolerate its absence instead of
+    resurrecting the column.
+    """
+    left_end = left.get("woody_part_end_pos")
+    right_end = right.get("woody_part_end_pos")
+    if not isinstance(left_end, dict) or not isinstance(right_end, dict):
+        return {}
+    return {
+        name: _cat_1d_or_2d_for_woody(left_end[name], right_end[name])
+        for name in junction_names
+        if name in left_end and name in right_end
     }
 
 
@@ -1121,13 +1176,12 @@ class BatchedSysIdReplayCollectors:
     ) -> None:
         """Record one replay frame for every env with a single batched GPU download."""
         from apple_pick_gym.batched_envs.obs_torch import (
+            batched_obs_for_replay_download,
             download_batched_replay_obs_numpy,
             replay_obs_dict_from_batched_numpy_row,
         )
 
-        last_obs = getattr(env, "_last_obs", None)
-        if last_obs is None:
-            raise RuntimeError("call reset() or step() before record_all_envs_step()")
+        last_obs = batched_obs_for_replay_download(env)
 
         num_envs = len(self._collectors)
         if num_envs == 0:
@@ -1326,6 +1380,56 @@ def stacked_recorded_actions_for_structure(
     action_dim: int = 6,
 ) -> np.ndarray:
     """Stack recorded EE actions for all candidate/direction env slots."""
+    tensor, _ = build_recorded_actions_for_structure(
+        dataset,
+        structure_idx=structure_idx,
+        num_directions=num_directions,
+        num_candidates=num_candidates,
+        direction_indices=direction_indices,
+        include_excluded=include_excluded,
+        action_dim=action_dim,
+        pad_unequal_lengths=False,
+    )
+    return tensor
+
+
+def _truncate_time_axis(value: Any, n_frames: int) -> Any:
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return value
+        return value[: int(n_frames)]
+    return value
+
+
+def _truncate_replay_arrays(arrays: Mapping[str, Any], n_frames: int) -> dict[str, Any]:
+    """Slice time-varying replay arrays to the recorded length before features."""
+    n = int(n_frames)
+    out: dict[str, Any] = {}
+    for key, value in arrays.items():
+        if key == "junction_names":
+            out[key] = list(value)
+            continue
+        if isinstance(value, dict):
+            out[key] = {
+                name: _truncate_time_axis(arr, n) for name, arr in value.items()
+            }
+            continue
+        out[key] = _truncate_time_axis(value, n)
+    return out
+
+
+def build_recorded_actions_for_structure(
+    dataset: BatchedSysIdDataset,
+    *,
+    structure_idx: int,
+    num_directions: int,
+    num_candidates: int,
+    direction_indices: Sequence[int] | None = None,
+    include_excluded: bool = False,
+    action_dim: int = 6,
+    pad_unequal_lengths: bool = False,
+) -> tuple[np.ndarray, tuple[int, ...]]:
+    """Stack recorded actions; optionally pad ragged direction lengths to T_max."""
     dirs = resolve_direction_indices(
         dataset,
         structure_idx=int(structure_idx),
@@ -1347,7 +1451,8 @@ def stacked_recorded_actions_for_structure(
         if n_frames is None:
             n_frames = int(action.shape[0])
         elif int(action.shape[0]) != n_frames:
-            raise ValueError("all direction episodes must have same n_frames")
+            if not pad_unequal_lengths:
+                raise ValueError("all direction episodes must have same n_frames")
         direction_actions.append(action)
 
     if n_frames is None:
@@ -1355,12 +1460,33 @@ def stacked_recorded_actions_for_structure(
 
     d = len(dirs)
     num_envs = int(num_candidates) * d
+    if pad_unequal_lengths and len({int(a.shape[0]) for a in direction_actions}) > 1:
+        t_max = max(int(action.shape[0]) for action in direction_actions)
+        padded_directions: list[np.ndarray] = []
+        recorded_n_frames_by_direction: list[int] = []
+        for action in direction_actions:
+            n_dir = int(action.shape[0])
+            recorded_n_frames_by_direction.append(n_dir)
+            if n_dir == t_max:
+                padded_directions.append(action)
+                continue
+            pad = np.repeat(action[-1][None, :], t_max - n_dir, axis=0)
+            padded_directions.append(np.concatenate([action, pad], axis=0))
+        out = np.empty((num_envs, t_max, action_dim), dtype=np.float32)
+        recorded_n_frames_per_env: list[int] = []
+        for candidate_idx in range(num_candidates):
+            for local_dir, action in enumerate(padded_directions):
+                env_idx = candidate_idx * d + local_dir
+                out[env_idx] = action
+                recorded_n_frames_per_env.append(recorded_n_frames_by_direction[local_dir])
+        return out, tuple(recorded_n_frames_per_env)
+
     out = np.empty((num_envs, n_frames, action_dim), dtype=np.float32)
     for candidate_idx in range(num_candidates):
         for local_dir, _direction_idx in enumerate(dirs):
             env_idx = candidate_idx * d + local_dir
             out[env_idx] = direction_actions[local_dir]
-    return out
+    return out, tuple(int(n_frames) for _ in range(num_envs))
 
 
 def build_recorded_actions_tensor(
@@ -1394,6 +1520,59 @@ def actions_tensor_from_recorded_frame(
     """Return one recorded action frame for every env on ``device``."""
     frame = np.asarray(recorded_actions[:, frame_idx, :], dtype=np.float32)
     return torch.as_tensor(frame, device=device, dtype=torch.float32)
+
+
+def replay_control_horizon_record_before_step(
+    *,
+    env: Any,
+    recorded_actions: np.ndarray,
+    recorded_n_frames_arr: np.ndarray,
+    collectors: Any,
+    disable_ctrl: Any,
+    monitor: Any,
+    on_step: Callable[..., bool] | None = None,
+) -> None:
+    """Record the current (reset) obs, then step; repeat for each logged action.
+
+    Converted real bags keep frame 0 at grasp: ``action[0]`` is already the
+    first 1 cm target, but TCP/force have not loaded. Recording after the first
+    ``env.step`` would dump that pose-error wrench into the row that real leaves
+    unloaded.
+    """
+    gather = getattr(env, "_gather_obs", None)
+    if callable(gather):
+        gather()
+    n_frames = int(recorded_actions.shape[1])
+    for frame_idx in range(n_frames):
+        last_obs = getattr(env, "_last_obs", None)
+        if last_obs is None:
+            raise RuntimeError("env._last_obs missing before replay record")
+        step_report = monitor.check(last_obs, step_idx=int(frame_idx))
+        record_mask = disable_ctrl.should_record_mask()
+        if hasattr(record_mask, "detach"):
+            record_mask = record_mask.detach().cpu().numpy()
+        else:
+            record_mask = np.asarray(record_mask, dtype=bool).reshape(-1)
+        within_recorded = int(frame_idx) < recorded_n_frames_arr
+        collectors.record_all_envs_step(
+            env,
+            frame_idx=frame_idx,
+            unstable=step_report.unstable,
+            record_mask=record_mask & within_recorded,
+        )
+        actions = actions_tensor_from_recorded_frame(
+            recorded_actions,
+            frame_idx=frame_idx,
+            device=env.device,
+        )
+        env.step(disable_ctrl.apply_actions(actions))
+        if on_step is not None and not bool(on_step(frame_idx=frame_idx, env=env)):
+            break
+        last_obs = getattr(env, "_last_obs", None)
+        if last_obs is None:
+            raise RuntimeError("env._last_obs missing after step")
+        post_report = monitor.check(last_obs, step_idx=int(frame_idx))
+        disable_ctrl.update(hard_blowup_mask(post_report))
 
 
 def replay_batched_sysid_structure(
@@ -1437,7 +1616,7 @@ def replay_batched_sysid_structure(
         [c.apply_to(base_params) for c in candidates],
         d,
     )
-    recorded_actions = build_recorded_actions_tensor(
+    recorded_actions, recorded_n_frames_per_env = build_recorded_actions_for_structure(
         dataset,
         structure_idx=int(structure_idx),
         num_directions=d,
@@ -1445,11 +1624,25 @@ def replay_batched_sysid_structure(
         direction_indices=dirs,
         include_excluded=bool(include_excluded),
         action_dim=action_dim,
+        pad_unequal_lengths=True,
     )
     n_frames = int(recorded_actions.shape[1])
+    recorded_n_frames_arr = np.asarray(recorded_n_frames_per_env, dtype=np.int64)
     replay_seed = _resolve_replay_seed(dataset, seed)
     structure_meta = dataset.load_episode_metadata(int(structure_idx), int(dirs[0]))
-    replay_gripper = gripper_proxy_from_episode_metadata(structure_meta)
+    collection = dataset.manifest.get("collection", {})
+    if dataset_declares_vic_pose(collection, structure_meta) and d > 1:
+        raise ValueError(
+            "scalar replay_batched_sysid_structure cannot evaluate multi-direction "
+            "vic_pose datasets: it does not pass per_env_episode_meta, so every "
+            "direction would share direction 0's weld pose and bootstrap joints. "
+            "Use the fused multi-structure path (default) or pass a single direction."
+        )
+    replay_gripper = (
+        gripper_proxy_for_real_batched_replay(structure_meta)
+        if dataset_declares_vic_pose(collection, structure_meta)
+        else gripper_proxy_from_episode_metadata(structure_meta)
+    )
 
     env = build_env_fn(
         num_envs=num_envs,
@@ -1507,30 +1700,33 @@ def replay_batched_sysid_structure(
         )
         collectors = BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
 
-        for frame_idx in range(n_frames):
-            actions = actions_tensor_from_recorded_frame(
-                recorded_actions,
-                frame_idx=frame_idx,
-                device=env.device,
-            )
-            actions = disable_ctrl.apply_actions(actions)
-            env.step(actions)
-            if on_step is not None:
-                keep_going = bool(on_step(frame_idx=frame_idx, env=env))
-                if not keep_going:
-                    break
-            last_obs = getattr(env, "_last_obs", None)
-            if last_obs is None:
-                raise RuntimeError("env._last_obs missing after step")
-            step_report = monitor.check(last_obs, step_idx=int(frame_idx))
-            collectors.record_all_envs_step(
-                env,
-                frame_idx=frame_idx,
-                unstable=step_report.unstable,
-                record_mask=disable_ctrl.should_record_mask(),
-            )
-            disable_ctrl.update(hard_blowup_mask(step_report))
+        replay_control_horizon_record_before_step(
+            env=env,
+            recorded_actions=recorded_actions,
+            recorded_n_frames_arr=recorded_n_frames_arr,
+            collectors=collectors,
+            disable_ctrl=disable_ctrl,
+            monitor=monitor,
+            on_step=on_step,
+        )
     finally:
+        try:
+            import warp as wp
+
+            wp.synchronize()
+        except Exception:
+            pass
         env.close()
+
+    if any(int(n) < n_frames for n in recorded_n_frames_per_env):
+        truncated = BatchedSysIdReplayCollectors.__new__(BatchedSysIdReplayCollectors)
+        truncated._recorded_by_env = list(recorded_by_env)
+        truncated._collectors = [
+            _FrozenReplayCollector(
+                _truncate_replay_arrays(collector.to_arrays(), recorded_n_frames_per_env[env_idx])
+            )
+            for env_idx, collector in enumerate(collectors._collectors)
+        ]
+        return truncated
 
     return collectors

@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Implemented (slice A); **orientation superseded** by `2026-08-04-true-tcp-pose-weld-design.md` |
+| **Status** | Superseded — slice A shipped, but the orientation contract was replaced by true TCP SE(3) |
+| **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-07-24 |
 | **Scope** | Extend pre-grasp settle viewer: long settle → TCP-anchored grasp snap → short settle; FR3 milestone |
 | **Implements first** | Slice A — proxy-only grasp (no FR3) |
@@ -10,7 +11,7 @@
 | **Supersession** | Proxy orientation: use logged TCP quat (true SE(3)), not look-at +Z∥ŵ — see 2026-08-04 design |
 
 Related: `docs/superpowers/specs/2026-07-24-real-pre-grasp-settle-viewer-design.md`,
-`docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md`,
+`docs/handbook-real-replay.md`, `robot_replay/README.md`,
 `docs/digital-twin.md`.
 
 ## Problem

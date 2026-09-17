@@ -119,6 +119,7 @@ def test_harvest_batched_stem_tension_no_numpy_on_joint_indices():
         captured["joint_indices"] = kwargs.get("joint_indices")
         captured["out_f"] = kwargs.get("out_f")
         captured["out_t"] = kwargs.get("out_t")
+        captured["include_penalty_damping"] = kwargs.get("include_penalty_damping", True)
         return out_f, out_t
 
     class _CableModel:
@@ -151,6 +152,7 @@ def test_harvest_batched_stem_tension_no_numpy_on_joint_indices():
     assert isinstance(captured["joint_indices"], wp.array)
     assert captured["out_f"] is out_f
     assert captured["out_t"] is out_t
+    assert captured["include_penalty_damping"] is False
 
 
 def test_prepare_batched_stem_harvest_arrays_allocates_wrench_scratch():
@@ -169,6 +171,8 @@ def test_prepare_batched_stem_harvest_arrays_allocates_wrench_scratch():
                 body_mass=wp.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6], dtype=float, device="cpu"),
             ),
             gripper_proxy_offset_in_apple_frame=None,
+            # prepare_batched_stem_harvest_arrays reads apple_radius for inertia.
+            params=SimpleNamespace(apple_radius=0.04),
         ),
         per_world_proxy_offsets=None,
     )

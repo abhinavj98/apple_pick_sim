@@ -97,13 +97,14 @@ def woody_endpoint_series(
         mask = np.asarray(mask, dtype=bool).reshape(-1)
 
     start_by_name = arrays["woody_part_start_pos"]
-    end_by_name = arrays["woody_part_end_pos"]
+    end_by_name = arrays.get("woody_part_end_pos") or {}
     out: list[EndpointSeries] = []
     for name in junction_names:
         start = np.asarray(start_by_name[name], dtype=np.float64)
-        end = np.asarray(end_by_name[name], dtype=np.float64)
         out.append(EndpointSeries(name=f"{name} start", xyz=start[mask]))
-        out.append(EndpointSeries(name=f"{name} end", xyz=end[mask]))
+        if name in end_by_name:
+            end = np.asarray(end_by_name[name], dtype=np.float64)
+            out.append(EndpointSeries(name=f"{name} end", xyz=end[mask]))
     return out
 
 

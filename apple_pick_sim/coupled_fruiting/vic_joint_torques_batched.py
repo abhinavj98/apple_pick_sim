@@ -12,8 +12,12 @@ import newton
 
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
+    _DEFAULT_KD_NULL,
+    _DEFAULT_KP_NULL,
     _N_ARM_DOF,
+    _mass_matrix_with_model_armature_torch,
     _require_torch,
+    apply_joint_torque_slew_to_scene,
     find_tcp_link_idx,
 )
 from apple_pick_sim.coupled_fruiting.vic_wrench import (
@@ -111,9 +115,10 @@ def compute_joint_torques_from_wrench_torch_batched(
     joint_vel,
     default_dof_pos,
     *,
-    kp_null: float = 10.0,
-    kd_null: float = 6.3246,
+    kp_null: float = _DEFAULT_KP_NULL,
+    kd_null: float = _DEFAULT_KD_NULL,
     singularity_damping: float = 0.0,
+    sep_ori: bool = False,
     dtype=None,
 ):
     """Batched ``J^T Λ wrench`` with null-space compensation (``N`` articulations)."""
@@ -137,7 +142,16 @@ def compute_joint_torques_from_wrench_torch_batched(
         eye6 = torch.eye(6, device=JMJ_full.device, dtype=dtype).expand(n, 6, 6)
         JMJ_full = JMJ_full + singularity_damping * eye6
     M_task_full = torch.linalg.inv(JMJ_full)
-    jt_torque = (jacobian_T @ M_task_full @ task_wrench.unsqueeze(-1)).squeeze(-1)
+    if sep_ori:
+        wrench_pos_only = torch.zeros_like(task_wrench)
+        wrench_pos_only[:, :3] = task_wrench[:, :3]
+        tau_pos = (jacobian_T @ M_task_full @ wrench_pos_only.unsqueeze(-1)).squeeze(-1)
+        tau_rot = (
+            jacobian[:, 3:6, :].transpose(-1, -2) @ task_wrench[:, 3:6].unsqueeze(-1)
+        ).squeeze(-1)
+        jt_torque = tau_pos + tau_rot
+    else:
+        jt_torque = (jacobian_T @ M_task_full @ task_wrench.unsqueeze(-1)).squeeze(-1)
 
     J_inv = M_task_full @ jacobian @ M_inv
     dist = default_dof_pos - joint_pos
@@ -157,9 +171,10 @@ def allocate_vic_joint_torque_buffers_batched(
     layout: BatchedEnvLayout,
     *,
     tcp_body_index: int | None = None,
-    kp_null: float = 10.0,
-    kd_null: float = 6.3246,
+    kp_null: float = _DEFAULT_KP_NULL,
+    kd_null: float = _DEFAULT_KD_NULL,
     singularity_damping: float = 0.0,
+    sep_ori: bool = False,
 ) -> None:
     """Pre-allocate batched Jacobian/mass buffers for ``layout.num_envs`` articulations."""
     num_envs = int(layout.num_envs)
@@ -184,9 +199,18 @@ def allocate_vic_joint_torque_buffers_batched(
     scene.vic_jt_default_dof_pos_batched = wp.array(
         np.stack(default_rows, axis=0), dtype=float, device=dev
     )
+    # Re-configure / plant rebuild zeros hysteresis; next slew ramps from 0.
+    scene.vic_jt_sent_tau = wp.zeros((num_envs, _N_ARM_DOF), dtype=float, device=dev)
     scene.vic_jt_kp_null = float(kp_null)
     scene.vic_jt_kd_null = float(kd_null)
     scene.vic_jt_singularity_damping = float(singularity_damping)
+    scene.vic_jt_sep_ori = bool(sep_ori)
+    if not hasattr(scene, "vic_jt_torque_slew_nm_s"):
+        from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
+            DEFAULT_JOINT_TORQUE_SLEW_NM_S,
+        )
+
+        scene.vic_jt_torque_slew_nm_s = float(DEFAULT_JOINT_TORQUE_SLEW_NM_S)
 
 
 def _resolve_batched_vic_desired_twists(scene: Any, num_envs: int, dev: Any):
@@ -311,6 +335,7 @@ def launch_apply_vic_joint_torques_batched(
     M_th = wp.to_torch(scene.vic_jt_H_buf)[:num_envs, :_N_ARM_DOF, :_N_ARM_DOF].to(
         device=torch_device, dtype=torch.float64
     )
+    M_th = _mass_matrix_with_model_armature_torch(torch, M_th, model)
 
     q_flat = wp.to_torch(state.joint_q).to(device=torch_device, dtype=torch.float64)
     qd_flat = wp.to_torch(state.joint_qd).to(device=torch_device, dtype=torch.float64)
@@ -331,16 +356,17 @@ def launch_apply_vic_joint_torques_batched(
         joint_pos=q_th,
         joint_vel=qd_th,
         default_dof_pos=default_q_th,
-        kp_null=float(getattr(scene, "vic_jt_kp_null", 10.0)),
-        kd_null=float(getattr(scene, "vic_jt_kd_null", 6.3246)),
+        kp_null=float(getattr(scene, "vic_jt_kp_null", _DEFAULT_KP_NULL)),
+        kd_null=float(getattr(scene, "vic_jt_kd_null", _DEFAULT_KD_NULL)),
         singularity_damping=float(getattr(scene, "vic_jt_singularity_damping", 0.0)),
+        sep_ori=bool(getattr(scene, "vic_jt_sep_ori", False)),
     )
 
     joint_f_th = wp.to_torch(control.joint_f).reshape(num_envs, dof_per)
     joint_f_th[:, :_N_ARM_DOF] = tau.to(dtype=joint_f_th.dtype)
 
 
-def apply_vic_joint_torques_batched_to_scene(scene: Any) -> None:
+def apply_vic_joint_torques_batched_to_scene(scene: Any, *, dt: float | None = None) -> None:
     """Write batched VIC joint torques when controller and per-env targets are configured."""
     if getattr(scene, "vic_controller", None) is None:
         return
@@ -352,3 +378,5 @@ def apply_vic_joint_torques_batched_to_scene(scene: Any) -> None:
         scene,
         gains=getattr(scene, "vic_gains", None),
     )
+    if dt is not None:
+        apply_joint_torque_slew_to_scene(scene, dt=float(dt))

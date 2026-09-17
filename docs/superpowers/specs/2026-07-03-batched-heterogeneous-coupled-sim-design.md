@@ -1,6 +1,7 @@
 # Batched heterogeneous coupled sim runtime (V.3.1 step B)
 
-**Status:** Draft — approved in brainstorming session  
+**Status:** Implemented
+**Canonical living doc:** `docs/handbook-coupled-simulation.md`
 **Scope:** Runtime parent class `BatchedHeterogeneousCoupledSim`; settle disk cache; `step()` / `gather_obs()`  
 **Prerequisite:** [Build layer spec (step A)](2026-07-03-batched-heterogeneous-build-design.md) — `build_batched_heterogeneous_scene()` implemented in `batched_heterogeneous_build.py`  
 **Config:** [`apple_pick_sim/coupled_fruiting/batched_heterogeneous_config.py`](../../apple_pick_sim/coupled_fruiting/batched_heterogeneous_config.py)  
@@ -531,6 +532,6 @@ Include in ROADMAP V.3.1 validation block when implemented.
 - [`docs/ROADMAP.md`](../../ROADMAP.md) — V.3.1 deliverable checklist
 - [`batched_heterogeneous_config.py`](../../apple_pick_sim/coupled_fruiting/batched_heterogeneous_config.py)
 - [`batched_heterogeneous_build.py`](../../apple_pick_sim/coupled_fruiting/batched_heterogeneous_build.py)
-- [`docs/vectorized-coupled-fruiting.md`](../../vectorized-coupled-fruiting.md) — settle-then-weld flow
+- [`docs/handbook-coupled-simulation.md`](../../handbook-coupled-simulation.md) — settle-then-weld flow
 - [`apple_pick_sim/batched_obs.py`](../../apple_pick_sim/batched_obs.py) — `gather_batched_obs`, `BatchedObsBuffers`
 - Reference example (pre–V.3.2): `apple_pick_sim/examples/example_batched_heterogeneous_coupled_fruiting.py`

@@ -2,8 +2,9 @@
 
 **Date:** 2026-07-16  
 **Roadmap slice:** V.5.2 — continuous Young's-modulus calibration  
-**Status:** Approved; implementation complete — Task 8 verification passed (focused/full tests + CUDA 5×5 acceptance, 2026-07-17). Search-box defaults amended 2026-07-22 to match shipped `CMA_SEARCH_PARAMS` (absolute 0.1–100 GPa). All-invalid recovery and joint-kd ζ-hold amended 2026-07-22 (see Error handling / Non-goals).
-**Implementation notes / how-to:** `docs/youngs-modulus-cmaes-implementation.md`; README → **CMA-ES sim-to-sim transfer**.
+**Status:** Superseded — the loop shipped, but its primary-\(E\) phenotype was replaced by support-\(k_p\) × spur/stem \(E\).
+**Canonical living doc:** `docs/handbook-youngs-cma.md`
+**Implementation notes / how-to:** `docs/handbook-youngs-cma.md`; README → **CMA-ES sim-to-sim transfer**.
 
 ## Purpose
 
@@ -16,7 +17,7 @@ The output is one fitted three-component Young's-modulus vector per structure.
 The implementation also retains optimizer diagnostics and cross-structure
 statistics. Turning those fits into domain-randomization ranges is deferred.
 The implemented Cartesian-grid command remains the diagnostic and acceptance
-path documented in `docs/youngs-modulus-sysid.md`.
+path documented in `docs/handbook-youngs-cma.md`.
 
 ## Scope
 
@@ -471,7 +472,7 @@ Manual CUDA acceptance:
 
 The smoke need not enforce a universal fit-error threshold; held-out acceptance
 belongs to V.5.3. **Task 8 verification passed 2026-07-17** (artifacts under
-`tmp/task8_cuda_acceptance/`; see `docs/youngs-modulus-cmaes-implementation.md`).
+`tmp/task8_cuda_acceptance/`; see `docs/handbook-youngs-cma.md`).
 
 ## Success criteria
 

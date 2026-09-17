@@ -12,7 +12,10 @@ from typing import Any
 import numpy as np
 import pyarrow.parquet as pq
 
-from apple_pick_sim.fruiting_system.params import FruitingSystemParams, load_ranges
+from apple_pick_sim.fruiting_system.params import (
+    FruitingSystemParams,
+    load_ranges,
+)
 from apple_pick_sim.system_id.real_to_batched_sysid import (
     build_fruiting_params_from_real,
     range_midpoint,
@@ -20,6 +23,13 @@ from apple_pick_sim.system_id.real_to_batched_sysid import (
 
 _ZERO_EPS = 1e-12
 _BEND_EPS = 1e-3
+# Solved apple radius must stay physically plausible when absorbing tag slop.
+_APPLE_RADIUS_MIN_M = 0.010
+_APPLE_RADIUS_MAX_M = 0.090
+# Catalog gimbal: spur clocks about the primary; stem leans about robot→fruiting.
+# Proxy world: primary +X, robot reach +Y, hang −Z. Robot→fruiting is +Y.
+_WORLD_DOWN = (0.0, 0.0, -1.0)
+_ROBOT_TO_FRUITING = (0.0, 1.0, 0.0)
 
 
 def load_dataset_metadata(path: str | Path) -> dict[str, Any]:
@@ -103,6 +113,102 @@ def primary_direction_from_fixture(fixture_path: str | Path) -> tuple[float, flo
     return _direction_from_angles(az, el)
 
 
+def _optional_manual_angle_deg(block: dict[str, Any], key: str) -> float | None:
+    raw = block.get(key)
+    if raw is None:
+        return None
+    angle = float(raw)
+    if not math.isfinite(angle):
+        raise ValueError(f"{key} must be finite, got {raw!r}")
+    return angle
+
+
+def _unit3(vec: np.ndarray | tuple[float, float, float], *, field: str) -> np.ndarray:
+    arr = np.asarray(vec, dtype=np.float64).reshape(3)
+    n = float(np.linalg.norm(arr))
+    if n < _ZERO_EPS:
+        raise ValueError(f"{field}: zero-length vector")
+    return arr / n
+
+
+def _rotate_about_axis(
+    vec: np.ndarray,
+    axis: np.ndarray | tuple[float, float, float],
+    angle_deg: float,
+) -> np.ndarray:
+    """Right-hand Rodrigues rotation of ``vec`` about ``axis`` by ``angle_deg``."""
+    k = _unit3(axis, field="rotation_axis")
+    v = np.asarray(vec, dtype=np.float64).reshape(3)
+    theta = math.radians(float(angle_deg))
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    return v * cos_t + np.cross(k, v) * sin_t + k * float(np.dot(k, v)) * (1.0 - cos_t)
+
+
+def _spur_rest_direction(primary_dir: np.ndarray) -> np.ndarray:
+    """Horizontal T-junction rest: ⟂ primary, toward robot reach (+Y when primary is +X)."""
+    down = np.asarray(_WORLD_DOWN, dtype=np.float64)
+    rest = np.cross(primary_dir, down)
+    if float(np.linalg.norm(rest)) < 1e-6:
+        rest = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        rest = rest - primary_dir * float(np.dot(rest, primary_dir))
+    return _unit3(rest, field="spur_rest_direction")
+
+
+def rod_directions_from_manual_catalog_angles(
+    primary_dir: tuple[float, float, float],
+    *,
+    spur_angle_deg: float,
+    stem_angle_deg: float,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Catalog junction angles → unit spur/stem directions.
+
+    ``manual_spur_angle_deg`` clocks the T-junction spur about the **primary**
+    axis (proxy +X). Rest is horizontal toward robot reach (+Y); −90° hangs
+    toward −Z. ``manual_stem_angle_deg`` then leans the stem about
+    **robot→fruiting** (proxy +Y), not world Z. Right-hand +60° after a 90°
+    hang yields stem ``(−sin 60, 0, −cos 60)`` (lean toward −X in XZ).
+    """
+    primary = _unit3(primary_dir, field="primary_dir")
+    rest = _spur_rest_direction(primary)
+    spur = _rotate_about_axis(rest, primary, -float(spur_angle_deg))
+    stem = _rotate_about_axis(spur, _ROBOT_TO_FRUITING, float(stem_angle_deg))
+    spur_u = _unit3(spur, field="spur_direction")
+    stem_u = _unit3(stem, field="stem_direction")
+    return (
+        (float(spur_u[0]), float(spur_u[1]), float(spur_u[2])),
+        (float(stem_u[0]), float(stem_u[1]), float(stem_u[2])),
+    )
+
+
+def _resolve_rod_directions(
+    *,
+    primary_dir: tuple[float, float, float],
+    parts: dict[str, Any],
+    chord_spur_dir: tuple[float, float, float],
+    chord_stem_dir: tuple[float, float, float],
+) -> tuple[tuple[float, float, float], tuple[float, float, float], str]:
+    spur_block = parts.get("spur")
+    stem_block = parts.get("stem")
+    if not isinstance(spur_block, dict) or not isinstance(stem_block, dict):
+        return chord_spur_dir, chord_stem_dir, "woody_chords"
+    spur_angle = _optional_manual_angle_deg(spur_block, "manual_spur_angle_deg")
+    stem_angle = _optional_manual_angle_deg(stem_block, "manual_stem_angle_deg")
+    if spur_angle is None and stem_angle is None:
+        return chord_spur_dir, chord_stem_dir, "woody_chords"
+    if spur_angle is None or stem_angle is None:
+        raise ValueError(
+            "manual catalog angles require both manual_spur_angle_deg and "
+            "manual_stem_angle_deg in pre_grasp_geometry.parts"
+        )
+    spur_dir, stem_dir = rod_directions_from_manual_catalog_angles(
+        primary_dir,
+        spur_angle_deg=spur_angle,
+        stem_angle_deg=stem_angle,
+    )
+    return spur_dir, stem_dir, "manual_catalog_angles"
+
+
 @dataclass(frozen=True)
 class PreGraspMappedGeometry:
     """Geometry extracted from real pre_grasp_geometry for plant rebuild."""
@@ -167,6 +273,62 @@ def select_pre_grasp_woody_snapshot(pre: dict[str, Any]) -> tuple[dict[str, Any]
     )
 
 
+def _woody_spur_start_and_chord_dir(
+    snap: dict[str, Any],
+) -> tuple[np.ndarray, tuple[float, float, float]]:
+    """Return part0 spur-start surface xyz and unit spur chord direction."""
+    start9 = np.asarray(snap["woody_part_start_pos"], dtype=np.float64).reshape(9)
+    end9 = np.asarray(snap["woody_part_end_pos"], dtype=np.float64).reshape(9)
+    spur_start = start9[0:3]
+    spur_end = end9[0:3]
+    spur_dir = _unit(spur_end - spur_start, field="spur_direction")
+    return spur_start, spur_dir
+
+
+def _fruiting_base_from_lengthened_or_rest(
+    pre: dict[str, Any],
+    *,
+    rest_spur_start_surface: np.ndarray,
+    rest_spur_dir: tuple[float, float, float],
+    primary_dir: tuple[float, float, float],
+    primary_radius_m: float,
+    rest_snapshot_source: str,
+) -> tuple[tuple[float, float, float], float, np.ndarray, str, str]:
+    """Prefer lengthened_snapshot T; else rest/snapshot spur-start centerline."""
+    lengthened = pre.get("lengthened_snapshot")
+    if _snapshot_has_woody(lengthened):
+        assert isinstance(lengthened, dict)
+        spur_start, spur_chord_dir = _woody_spur_start_and_chord_dir(lengthened)
+        fruiting_base = surface_to_centerline(
+            spur_start, spur_chord_dir, primary_dir, primary_radius_m
+        )
+        surface_to_centerline_m = float(
+            np.linalg.norm(np.asarray(spur_start, dtype=np.float64) - np.asarray(fruiting_base))
+        )
+        return (
+            fruiting_base,
+            surface_to_centerline_m,
+            spur_start,
+            "lengthened_snapshot spur_start_surface − r_primary·radial_hat",
+            "lengthened_snapshot",
+        )
+    fruiting_base = surface_to_centerline(
+        rest_spur_start_surface, rest_spur_dir, primary_dir, primary_radius_m
+    )
+    surface_to_centerline_m = float(
+        np.linalg.norm(
+            np.asarray(rest_spur_start_surface, dtype=np.float64) - np.asarray(fruiting_base)
+        )
+    )
+    return (
+        fruiting_base,
+        surface_to_centerline_m,
+        np.asarray(rest_spur_start_surface, dtype=np.float64).reshape(3),
+        "spur_start_surface − r_primary·radial_hat",
+        rest_snapshot_source,
+    )
+
+
 def map_pre_grasp_geometry(
     meta: dict[str, Any],
     *,
@@ -211,36 +373,116 @@ def map_pre_grasp_geometry(
 
     spur_dir = _unit(spur_end - spur_start_surface, field="spur_direction")
     stem_dir = _unit(apple_pos - spur_end, field="stem_direction")
+    chord_spur_dir = spur_dir
+    chord_stem_dir = stem_dir
+    spur_dir, stem_dir, direction_source = _resolve_rod_directions(
+        primary_dir=primary_dir,
+        parts=parts,
+        chord_spur_dir=chord_spur_dir,
+        chord_stem_dir=chord_stem_dir,
+    )
 
     primary_r = float(parts["primary"]["radius_m"])
-    fruiting_base = surface_to_centerline(
-        spur_start_surface, spur_dir, primary_dir, primary_r
+    (
+        fruiting_base,
+        surface_to_centerline_m,
+        base_spur_start_surface,
+        fruiting_base_pos_source,
+        fruiting_base_pos_snapshot,
+    ) = _fruiting_base_from_lengthened_or_rest(
+        pre,
+        rest_spur_start_surface=spur_start_surface,
+        rest_spur_dir=spur_dir,
+        primary_dir=primary_dir,
+        primary_radius_m=primary_r,
+        rest_snapshot_source=snap_source,
     )
-    surface_to_centerline_m = float(
-        np.linalg.norm(np.asarray(spur_start_surface, dtype=np.float64) - np.asarray(fruiting_base))
-    )
+
+    rod_density_diag: dict[str, dict[str, Any]] = {}
 
     def _geo(name: str) -> dict[str, float]:
         block = parts[name]
+        length = float(block["length_m"])
+        radius = float(block["radius_m"])
+        catalog_density = float(block["density_kg_m3"])
+        density = catalog_density
+        raw_mass = block.get("mass_kg")
+        if raw_mass is not None:
+            mass = float(raw_mass)
+            if not math.isfinite(mass) or mass <= 0.0:
+                raise ValueError(
+                    f"parts[{name!r}].mass_kg must be finite > 0, got {mass}"
+                )
+            volume = math.pi * radius * radius * length
+            if volume < _ZERO_EPS:
+                raise ValueError(
+                    f"parts[{name!r}] cylinder volume too small to convert mass_kg"
+                )
+            density = mass / volume
+            rod_density_diag[name] = {
+                "source": "mass_kg",
+                "mass_kg": mass,
+                "catalog_density_kg_m3": catalog_density,
+                "density_kg_m3": density,
+            }
         return {
-            "length_m": float(block["length_m"]),
-            "radius_m": float(block["radius_m"]),
-            "density_kg_m3": float(block["density_kg_m3"]),
+            "length_m": length,
+            "radius_m": radius,
+            "density_kg_m3": density,
         }
 
     spur_chord = float(np.linalg.norm(spur_end - spur_start_surface))
-    apple_r = float(parts["apple"]["radius_m"]) if "apple" in parts else None
-    apple_d = float(parts["apple"]["density_kg_m3"]) if "apple" in parts else None
+    apple_block = parts.get("apple") if isinstance(parts.get("apple"), dict) else None
+    r_catalog = float(apple_block["radius_m"]) if apple_block is not None else None
+    rho_catalog = (
+        float(apple_block["density_kg_m3"]) if apple_block is not None else None
+    )
     # Woody Apple junction is the fruit CoM; physical stem is spur→surface.
     spur_to_com = float(np.linalg.norm(apple_pos - spur_end))
-    if apple_r is None:
-        stem_chord = spur_to_com
-    else:
-        stem_chord = spur_to_com - float(apple_r)
     spur_L = float(parts["spur"]["length_m"])
     stem_L = float(parts["stem"]["length_m"])
-    apple_vs_chord = apple_pos - apple_chord_end
 
+    # Catalog stem length is ground truth; apple radius closes the measured
+    # spur→CoM chord. Density is back-solved so the apple mass stays fixed
+    # (logged mass_kg when present, else catalog volume * density).
+    apple_r: float | None = None
+    apple_d: float | None = None
+    apple_mass: float | None = None
+    apple_mass_source: str | None = None
+    if r_catalog is not None and rho_catalog is not None:
+        apple_r = spur_to_com - stem_L
+        if not (_APPLE_RADIUS_MIN_M < apple_r < _APPLE_RADIUS_MAX_M):
+            raise ValueError(
+                "solved apple_radius "
+                f"{apple_r:.6f} m is outside "
+                f"[{_APPLE_RADIUS_MIN_M}, {_APPLE_RADIUS_MAX_M}] m "
+                f"(spur_to_com={spur_to_com:.6f} m, stem_catalog={stem_L:.6f} m, "
+                f"catalog_radius={r_catalog:.6f} m)"
+            )
+        logged_mass = apple_block.get("mass_kg") if apple_block is not None else None
+        if logged_mass is not None:
+            apple_mass = float(logged_mass)
+            if apple_mass <= 0.0:
+                raise ValueError(f"parts.apple.mass_kg must be positive, got {apple_mass}")
+            apple_mass_source = "parts.mass_kg"
+        else:
+            apple_mass = (4.0 / 3.0) * math.pi * r_catalog**3 * rho_catalog
+            apple_mass_source = "catalog_radius_density"
+        apple_d = apple_mass / ((4.0 / 3.0) * math.pi * apple_r**3)
+        stem_chord = stem_L
+    else:
+        stem_chord = spur_to_com
+
+    apple_vs_chord = apple_pos - apple_chord_end
+    rod_geometry = {
+        "primary": _geo("primary"),
+        "spur": _geo("spur"),
+        "stem": _geo("stem"),
+    }
+
+    # Catalog stem rest length; do not preload-shorten. Apple radius absorbs
+    # spur→CoM vs catalog-stem mismatch; axial stretch develops under gravity
+    # during pre-/post-grasp settle (natural stretch, not build-time preload).
     def _rel_err(catalog: float, measured: float) -> float:
         if abs(catalog) < _ZERO_EPS:
             return float("inf") if measured > _ZERO_EPS else 0.0
@@ -250,9 +492,18 @@ def map_pre_grasp_geometry(
         "spur_chord_length_m": spur_chord,
         "stem_spur_to_com_m": spur_to_com,
         "stem_chord_length_m": stem_chord,
-        "stem_chord_formula": "‖spur_end−apple_CoM‖−apple_radius",
+        "stem_chord_formula": (
+            "catalog_stem_length" if r_catalog is not None else "‖spur_end−apple_CoM‖"
+        ),
         "spur_catalog_length_m": spur_L,
         "stem_catalog_length_m": stem_L,
+        "stem_preload_chord_m": None,
+        "stem_axial_preload_n": None,
+        "apple_radius_solved_m": apple_r,
+        "apple_radius_catalog_m": r_catalog,
+        "apple_density_solved_kg_m3": apple_d,
+        "apple_mass_kg": apple_mass,
+        "apple_mass_source": apple_mass_source,
         "spur_length_abs_error_m": abs(spur_chord - spur_L),
         "stem_length_abs_error_m": abs(stem_chord - stem_L),
         "spur_length_rel_error": _rel_err(spur_L, spur_chord),
@@ -273,24 +524,43 @@ def map_pre_grasp_geometry(
         },
         "apple_pos_vs_chord_end_m": apple_vs_chord.tolist(),
         "apple_pos_vs_chord_end_norm_m": float(np.linalg.norm(apple_vs_chord)),
+        "rod_direction_source": direction_source,
+        "chord_spur_direction": list(chord_spur_dir),
+        "chord_stem_direction": list(chord_stem_dir),
         "spur_direction": list(spur_dir),
         "stem_direction": list(stem_dir),
-        "spur_start_surface": [float(spur_start_surface[0]), float(spur_start_surface[1]), float(spur_start_surface[2])],
+        "spur_start_surface": [
+            float(base_spur_start_surface[0]),
+            float(base_spur_start_surface[1]),
+            float(base_spur_start_surface[2]),
+        ],
         "primary_surface_to_centerline_m": surface_to_centerline_m,
-        "fruiting_base_pos_source": "spur_start_surface − r_primary·radial_hat",
+        "fruiting_base_pos_source": fruiting_base_pos_source,
+        "fruiting_base_pos_snapshot": fruiting_base_pos_snapshot,
         "fruiting_base_pos": list(fruiting_base),
         "pre_grasp_snapshot_source": snap_source,
+        "rod_density": rod_density_diag,
     }
+    spur_u = np.asarray(spur_dir, dtype=np.float64)
+    stem_u = np.asarray(stem_dir, dtype=np.float64)
+    chord_spur_u = np.asarray(chord_spur_dir, dtype=np.float64)
+    chord_stem_u = np.asarray(chord_stem_dir, dtype=np.float64)
+    diagnostics["built_spur_stem_angle_deg"] = math.degrees(
+        math.acos(float(np.clip(np.dot(spur_u, stem_u), -1.0, 1.0)))
+    )
+    diagnostics["chord_spur_stem_angle_deg"] = math.degrees(
+        math.acos(float(np.clip(np.dot(chord_spur_u, chord_stem_u), -1.0, 1.0)))
+    )
+    spur_block = parts.get("spur") if isinstance(parts.get("spur"), dict) else {}
+    stem_block = parts.get("stem") if isinstance(parts.get("stem"), dict) else {}
+    diagnostics["manual_spur_angle_deg"] = spur_block.get("manual_spur_angle_deg")
+    diagnostics["manual_stem_angle_deg"] = stem_block.get("manual_stem_angle_deg")
 
     return PreGraspMappedGeometry(
         fruiting_base_pos=fruiting_base,
         spur_direction=spur_dir,
         stem_direction=stem_dir,
-        rod_geometry={
-            "primary": _geo("primary"),
-            "spur": _geo("spur"),
-            "stem": _geo("stem"),
-        },
+        rod_geometry=rod_geometry,
         apple_radius_m=apple_r,
         apple_density_kg_m3=apple_d,
         woody_bending_angles=bend,
@@ -312,7 +582,8 @@ def format_pre_grasp_diagnostics(diagnostics: dict[str, Any]) -> str:
         (
             f"  stem: catalog={diagnostics['stem_catalog_length_m']:.4f} m  "
             f"chord={diagnostics['stem_chord_length_m']:.4f} m  "
-            f"(‖spur−CoM‖={diagnostics['stem_spur_to_com_m']:.4f} m − r)  "
+            f"(‖spur−CoM‖={diagnostics['stem_spur_to_com_m']:.4f} m, "
+            f"r_solved={diagnostics.get('apple_radius_solved_m')})  "
             f"abs_err={diagnostics['stem_length_abs_error_m']:.4f} m  "
             f"rel_err={diagnostics['stem_length_rel_error']:.3%}"
         ),
@@ -321,6 +592,24 @@ def format_pre_grasp_diagnostics(diagnostics: dict[str, Any]) -> str:
             f"{diagnostics['apple_pos_vs_chord_end_norm_m']:.6e} m"
         ),
     ]
+    source = diagnostics.get("rod_direction_source")
+    lines.extend(
+        [
+            "connection angles:",
+            (
+                f"  source={source}  "
+                f"manual_spur_angle_deg={diagnostics.get('manual_spur_angle_deg')}  "
+                f"manual_stem_angle_deg={diagnostics.get('manual_stem_angle_deg')}"
+            ),
+            (
+                f"  built spur–stem angle="
+                f"{float(diagnostics.get('built_spur_stem_angle_deg', float('nan'))):.1f}°  "
+                f"chord spur–stem angle="
+                f"{float(diagnostics.get('chord_spur_stem_angle_deg', float('nan'))):.1f}°"
+            ),
+            "  axes: spur about primary, stem about robot→fruiting (+Y)",
+        ]
+    )
     return "\n".join(lines)
 
 

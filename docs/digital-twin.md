@@ -5,7 +5,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Roadmap slice** | M3.0.3 (observation-only replay init) **Done**; M3.0.4 (digital-twin fixture catalog) **Done**; V.4.2.1 helpers/`--infer-params` **Done** (infer-only floor optional cleanup) — see `docs/ROADMAP.md` (Current focus is **V.5.3**) |
-| **Related docs** | `docs/system_identification.md`, `docs/sysid-trajectory-storage.md`, `docs/batched-sysid-dataset.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/gym-observation-contract.md`, `docs/real-world-proxy.md`, `docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md` |
+| **Related docs** | `docs/system_identification.md`, H3 `docs/handbook-sysid-scoring.md`, `docs/gym-observation-contract.md`, `docs/real-world-proxy.md`, H4 `docs/handbook-real-replay.md`, `robot_replay/README.md` |
 
 This document merges the observation-only-replay spec and the geometry-reconstruction implementation notes that used to live in two separate files (`observation-replay-digital-twin.md`, `digital-twin-from-obs-implementation.md`).
 
@@ -17,7 +17,7 @@ M3 needs a replay path that can run from real-world logs, not from Newton intern
 
 **Digital-twin reconstruction** rebuilds a quasi-static fruiting cable scene from partial real-world observations instead of sampling geometry from variance fixture JSON. The named fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) and example observation JSON are committed; catalog tests pass.
 
-**Batched sys-ID replay:** parallel collection writes `batched_sysid_v1` datasets (`docs/batched-sysid-dataset.md`). Grid replay defaults to oracle `true_params_for_structure`; CLI `--infer-params` on `example_batched_sysid_mmd_grid.py` uses `infer_base_params_for_structure` (`batched_digital_twin_init.py`). The fidelity capstone `test_batched_sysid_replay_fidelity.py` still materializes legacy episodes and resets with full serialized `fruiting_system_params`. **V.4.2.1 (deferred):** prove an infer-only / frame-0 woody + `params_fingerprint` fidelity floor — helpers exist; not Current focus (`docs/ROADMAP.md`).
+**Batched sys-ID replay:** parallel collection writes `batched_sysid_v1` datasets (`docs/handbook-sysid-scoring.md`). Grid replay defaults to oracle `true_params_for_structure`; CLI `--infer-params` on `example_batched_sysid_mmd_grid.py` uses `infer_base_params_for_structure` (`batched_digital_twin_init.py`). The fidelity capstone `test_batched_sysid_replay_fidelity.py` still materializes legacy episodes and resets with full serialized `fruiting_system_params`. **V.4.2.1 (deferred):** prove an infer-only / frame-0 woody + `params_fingerprint` fidelity floor — helpers exist; not Current focus (`docs/ROADMAP.md`).
 
 ## Validation strategy
 
@@ -111,8 +111,7 @@ uv run python apple_pick_gym/examples/visualize_pull_directions.py \
 | `apple_pick_sim/system_id/batched_digital_twin_init.py` | `digital_twin_obs_from_batched_episode`, `infer_base_params_for_structure`, `true_params_for_structure` |
 | `apple_pick_sim/system_id/parquet_init.py` | `digital_twin_obs_from_episode`, `observation_reset_options_from_parquet` — frame-0 digital-twin init |
 | `apple_pick_sim/system_id/batched_trajectory_store.py` | `BatchedSysIdDataset`, `materialize_legacy_episode_dir` |
-| `docs/sysid-trajectory-storage.md` | Legacy single-env dataset storage contract |
-| `docs/batched-sysid-dataset.md` | Batched `batched_sysid_v1` layout and collect commands |
+| `docs/handbook-sysid-scoring.md` | Batched `batched_sysid_v1` bags, scoring contract, and legacy single-env layout |
 | `docs/gym-observation-contract.md` | Runtime observation schema — bump schema only when observation keys or semantics break |
 
 ### Tests and verification (Part 1)
@@ -139,7 +138,7 @@ Workflow (analogous to settle-then-weld, but obs-driven):
 ### Real-robot pre-grasp → post-grasp weld
 
 Bench episodes under `robot_replay/` split geometry into two metadata roles
-(see `robot_replay/README.md` and `docs/real-sysid-pre-post-grasp-fixes.md`):
+(see `robot_replay/README.md` and `docs/handbook-real-replay.md`):
 
 | Stage | Source | Use |
 | ----- | ------ | --- |

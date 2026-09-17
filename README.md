@@ -131,7 +131,7 @@ import json; print(json.dumps(geometry_fingerprint(scene), indent=2))
 
 ### M1 two-model coupling (FR3 + VBD cable)
 
-Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via the **`apple_pick_sim/coupled_fruiting/`** package. See **[`docs/coupled-sim-api.md`](docs/coupled-sim-api.md)** for the canonical public API. Gripper proxy defaults to **`fix_to_apple=False`** (velocity-delta harvest); pass ``GripperProxyConfig(fix_to_apple=True)`` for stem-harvest / apple co-teleport.
+Headless **staggered** ``SolverMuJoCo`` + ``SolverVBD`` step via the **`apple_pick_sim/coupled_fruiting/`** package. See **[`docs/handbook-coupled-simulation.md`](docs/handbook-coupled-simulation.md)** for the canonical public API. Gripper proxy defaults to **`fix_to_apple=False`** (velocity-delta harvest); pass ``GripperProxyConfig(fix_to_apple=True)`` for stem-harvest / apple co-teleport.
 
 - **FR3 + custom EE (required):** ``build_coupled_fruiting_fr3`` — import from ``apple_pick_sim.coupled_fruiting.builders``; see ``assets/fr3/README.md``.
 - **Batched heterogeneous (canonical):** ``BatchedHeterogeneousCoupledSim`` + ``example_batched_heterogeneous_coupled_sim.py``.
@@ -179,7 +179,7 @@ uv run python apple_pick_sim/examples/example_coupled_fruiting.py --fix-to-apple
 
 ### `example_batched_heterogeneous_coupled_sim.py` (batched coupled fruiting)
 
-Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/coupled-sim-api.md`** and **`docs/vectorized-coupled-fruiting.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, stiffness/E grids, and CMA-ES: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3, [V].5.2 Done; Current focus **[M4].0** real `robot_replay` → CMA).
+Canonical batched entry point: **N** heterogeneous worlds (per-env material θ), settle→weld init, FR3 teleop via ``BatchedHeterogeneousCoupledSim``. Defaults: **`--controller vic`**, settle disk cache **off** (pass ``--use-settle-cache`` to reuse). See **`docs/handbook-coupled-simulation.md`** (settle knobs: quiet/zero-qd, opt-in gravity ramp). Batched gym, parallel sys-ID collect, stiffness/E grids, and CMA-ES: **`docs/ROADMAP.md`** ([V].3.3, [V].4.2–4.3, [V].5.2 Done; Current focus **[M4].0** s09 holdout CMA — Task 9 GPU science gate **failed** on val torque magnitude).
 
 ```bash
 # Headless smoke (settle→weld)
@@ -308,7 +308,7 @@ uv run --env-file pytest.env python -m pytest \
 
 ### M3 replay and digital-twin setup
 
-Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Parquet recordings are observation-first; privileged `.npz` snapshots are opt-in (`--save-snapshot`) for exact sim-to-sim baseline comparisons. The digital-twin fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) lists fixture names, base poses, observation fixtures, and smoke commands. **Parallel batched collection** uses the `batched_sysid_v1` layout — see [`docs/batched-sysid-dataset.md`](docs/batched-sysid-dataset.md). Specs: [`docs/sysid-trajectory-storage.md`](docs/sysid-trajectory-storage.md), [`docs/digital-twin.md`](docs/digital-twin.md), [`docs/sysid-mmd-grid-replay-alignment.md`](docs/sysid-mmd-grid-replay-alignment.md). Status: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Sys-ID recordings can be replayed with `ApplePickReplay-v0`. Parquet recordings are observation-first; privileged `.npz` snapshots are opt-in (`--save-snapshot`) for exact sim-to-sim baseline comparisons. The digital-twin fixture catalog (`apple_pick_sim/fixtures/digital_twin_fixture_catalog.json`) lists fixture names, base poses, observation fixtures, and smoke commands. **Parallel batched collection** uses the `batched_sysid_v1` layout — see [`docs/handbook-sysid-scoring.md`](docs/handbook-sysid-scoring.md). Observation-only reconstruction: [`docs/digital-twin.md`](docs/digital-twin.md). Status: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ```bash
 # Collect a short observation-only dataset (no privileged snapshot by default)
@@ -408,7 +408,7 @@ uv run --env-file pytest.env python -m pytest \
   apple_pick_gym/tests/test_replay_env.py -q
 ```
 
-The batched grid writes Plotly/HTML ranking artifacts under `--plot-output` (see `docs/sysid-mmd-grid-replay-alignment.md`). The legacy `--mmd-output` path writes `mmd_results.csv` plus `mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and `mmd_stiffness_sensitivity.png`.
+The batched grid writes Plotly/HTML ranking artifacts under `--plot-output` (see `docs/handbook-sysid-scoring.md`). The legacy `--mmd-output` path writes `mmd_results.csv` plus `mmd_ranked_loss.png`, `mmd_direction_heatmap.png`, and `mmd_stiffness_sensitivity.png`.
 
 ### Real robot parquet → batched sim + FR3 replay (`robot_replay/`)
 
@@ -416,26 +416,30 @@ Convert a compiled real sys-ID parquet into a 1×1 `batched_sysid_v1` dataset, t
 replay with open-loop FR3 under **`vic_pose`** (19D pose+gains packed from
 `target_pose_4x4` + `dump.controller_gains`; real `action` is a pose-control
 wrench, not an EE twist). Full contract: **`robot_replay/README.md`**.
-Roadmap Current focus: **[M4].0** (wire these datasets into CMA; gym collect /
-MMD / sim-sim CMA stay on twist `vic`).
+Folder convert of one tree (`--input-dir`) writes 1×N episodes
+(`sXX-dNN.parquet` → `direction_idx=NN`). Roadmap Current focus: **[M4].0**
+holdout CMA (Task 9 GPU science gate **failed** on val torque); gym collect / MMD /
+sim-sim CMA stay on twist `vic`.
 
 ```bash
 # 1) Real parquet → batched_sysid_v1 (packs 19D vic_pose_v1 actions)
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
-  --input robot_replay/s02-d00.parquet \
-  --dataset-out tmp/real_batched_s02_d00 \
+  --input robot_replay/new_data/s09/s09-d00.parquet \
+  --dataset-out tmp/real_batched_s09_d00 \
   --overwrite
 
 # 2) Headless FR3 replay (defaults: --controller-mode vic_pose)
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset tmp/real_batched_s02_d00 \
+  --dataset tmp/real_batched_s09_d00 \
   --viewer null --max-frames 24 \
+  --direction-idx 0 \
   --settle-substeps 80 --post-grasp-settle-substeps 0
 
 # 3) GL: full episode after off-screen settle (defaults match pre-grasp settle viewer)
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset tmp/real_batched_s02_d00 \
+  --dataset tmp/real_batched_s09_d00 \
   --viewer gl --max-frames 0 \
+  --direction-idx 0 \
   --settle-substeps 5000 --settle-quiet-every 300 \
   --post-grasp-settle-substeps 500
 ```
@@ -452,7 +456,7 @@ trajectories collected from a differently parameterized "ground-truth" sim
 (`batched_sysid_v1`). Primary \(E\) is fixed from each structure's true params.
 Stored GT support \(k_p\) and spur/stem \(E\) are **not** used for initialization
 or fitness — only for post-hoc comparison in reports. Notes:
-[`docs/youngs-modulus-cmaes-implementation.md`](docs/youngs-modulus-cmaes-implementation.md).
+[`docs/handbook-youngs-cma.md`](docs/handbook-youngs-cma.md).
 Cartesian grid diagnostic (not the optimizer): `example_youngs_modulus_sys_id.py`
 (`--support-kp-values` or `--log10-support-kp`, plus `--log10-e-spur` /
 `--log10-e-stem`).
@@ -490,6 +494,48 @@ uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
   --overwrite
 ```
 
+**Real 1×1 CMA** (auto-detects `vic_pose_v1` metadata; same H4 builder as the
+grid; plumbing/fit-loop smoke — ranking quality is ROADMAP-owned):
+
+```bash
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --dataset tmp/real_batched_s09_d00 \
+  --output tmp/real_kp_e_cmaes_s09_d00 \
+  --viewer null \
+  --overwrite
+```
+
+**Real folder convert → holdout CMA** (opt-in 5/3 split; seed 17 ⇒ train
+`{2,4,5,6,7}`, val `{0,1,3}`). Requires eight compiled `s09-dNN.parquet`.
+Task 9 ran this recipe (2026-08-17, pop=15 / gen=10): plumbing passed;
+science gate **failed** on val torque magnitude (see `docs/ROADMAP.md`).
+Omit `--direction-split-seed` to score all dirs with no
+`holdout_report.json`.
+
+```bash
+uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
+  --input-dir robot_replay/new_data/s09 \
+  --dataset-out tmp/real_batched_s09 \
+  --overwrite
+
+uv run python apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py \
+  --dataset tmp/real_batched_s09 \
+  --output tmp/real_kp_e_cmaes_s09_holdout \
+  --direction-split-seed 17 \
+  --viewer null \
+  --overwrite
+```
+
+Shipped `CMA_SEARCH_PARAMS` in
+`apple_pick_gym/batched_examples/example_youngs_modulus_cmaes.py` is
+`population_size=15`, `max_generations=10` (~hours on an RTX 4090). That full
+run has **not** been executed in verification. For a local smoke, temporarily set
+`population_size=4`, `max_generations=3` in that file, run the command above
+(with a distinct `--output` if you want to keep artifacts), then restore the
+shipped knobs before commit. Verified reduced run on `s09-d00`
+(`tmp/real_kp_e_cmaes_s09_d00_retry`): generation-wise `eligible_mean`
+`18.85 → 17.99 → 13.75`. Ranking is still not trusted.
+
 Useful options:
 
 ```bash
@@ -510,9 +556,9 @@ Edit search knobs (`initial_mean_log10`, `initial_sigma_log10`, `population_size
 Default 3-vector is
 \(\log_{10}([k_p^{\mathrm{support}}, E_{\mathrm{spur}}, E_{\mathrm{stem}}])\)
 with bounds lower `[2, 8, 8]` / upper `[6, 11, 11]` (support \(k_p\): 100–1e6;
-spur/stem \(E\): 0.1–100 GPa). No new CMA CLI flags — only `--cma-seed` and
-shared dataset/replay knobs on the CLI. `--cma-seed` overrides the dict's
-`cma_seed` only.
+spur/stem \(E\): 0.1–100 GPa). `--cma-seed` overrides the dict's `cma_seed`
+only. Holdout flags (H5): `--direction-split-seed` (bare ⇒ 17), or both
+`--direction-indices` and `--val-direction-indices`.
 
 Regenerate Plotly figures from an existing report:
 

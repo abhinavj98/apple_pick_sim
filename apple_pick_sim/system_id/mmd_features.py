@@ -2,30 +2,170 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
 import numpy as np
+
+from apple_pick_sim.system_id.trajectory_store import PHASE_TO_INT
+
+_MOVE_OUT_PHASE = int(PHASE_TO_INT["move_out"])
+_HOLD_PHASE = int(PHASE_TO_INT["hold"])
+
+CMA_WOODY_JUNCTIONS: tuple[str, str] = ("primary_spur", "spur_stem")
+
+
+def cma_woody_junctions_from_env(names: list[str]) -> list[str]:
+    """Filter an env's full T-junction ``names`` down to the CMA woody subset.
+
+    Real environments expose a larger T-junction set (e.g.
+    ``primary_support_left``, ``primary_support_right``, ``stem_apple``, ...).
+    CMA/MMD features only use ``CMA_WOODY_JUNCTIONS``; raise if either is missing.
+    """
+    have = set(names)
+    missing = [n for n in CMA_WOODY_JUNCTIONS if n not in have]
+    if missing:
+        raise ValueError(f"env junction_names missing {missing}; got {names}")
+    return list(CMA_WOODY_JUNCTIONS)
 
 STATE_VECTOR_FIELDS: tuple[str, ...] = (
     "ft_wrist",
     "tcp_velocity",
-    "action",
     "tcp_pos",
-    "apple_pos",
+    "tcp_rotvec",
     "woody_part_start_pos",
-    "woody_part_end_pos",
     "woody_bending_angles",
 )
+
+_STATE_VECTOR_PREFIX_PHYS_SCALE: tuple[float, ...] = (
+    # ft_wrist F
+    0.4,
+    0.4,
+    0.4,
+    # ft_wrist τ
+    1.0,
+    1.0,
+    1.0,
+    # tcp_velocity v
+    0.02,
+    0.02,
+    0.02,
+    # tcp_velocity ω
+    0.02,
+    0.02,
+    0.02,
+    # tcp_pos
+    0.005,
+    0.005,
+    0.005,
+    # tcp_rotvec (rad)
+    0.05,
+    0.05,
+    0.05,
+)
+WOODY_START_PHYS_SCALE = 0.005
+BEND_ANGLE_PHYS_SCALE = 0.05
+TCP_ROTVEC_PHYS_SCALE = 0.0
+
+
+def state_vector_phys_scale(n_junctions: int) -> np.ndarray:
+    """Fixed physical scales for one STATE_VECTOR row at ``n_junctions``.
+
+    Woody XYZ and bend scales are uniform across junctions. CMA production
+    uses ``n_junctions=2``; the exported ``STATE_VECTOR_PHYS_SCALE`` tuple is
+    that instance.
+    """
+    n = int(n_junctions)
+    if n < 1:
+        raise ValueError(f"n_junctions must be >= 1, got {n_junctions!r}")
+    prefix = np.asarray(_STATE_VECTOR_PREFIX_PHYS_SCALE, dtype=np.float64)
+    woody = np.full(3 * n, WOODY_START_PHYS_SCALE, dtype=np.float64)
+    bend = np.full(n, BEND_ANGLE_PHYS_SCALE, dtype=np.float64)
+    return np.concatenate([prefix, woody, bend])
+
+
+STATE_VECTOR_PHYS_SCALE: tuple[float, ...] = tuple(
+    float(x) for x in state_vector_phys_scale(n_junctions=2)
+)
+
+
+def transition_feature_scale(
+    n_features: int,
+    *,
+    n_junctions: int = 2,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
+    delta_weight: float = 1.0,
+) -> np.ndarray:
+    """Return divisor vector for [s, (Δs,) trailing one-hots].
+
+    ``delta_weight`` in ``(0, 1]`` down-weights the Δs block in Sinkhorn ground
+    cost by dividing delta columns by ``state_scale / delta_weight``.
+    """
+    state = state_vector_phys_scale(n_junctions)
+    state_dim = int(state.size)
+    n_blocks = 2 if bool(include_delta) else 1
+    min_features = n_blocks * state_dim
+    if n_features < min_features:
+        raise ValueError(
+            f"transition features width {n_features} < {n_blocks}*state_dim="
+            f"{min_features} (n_junctions={int(n_junctions)}, "
+            f"include_delta={bool(include_delta)})"
+        )
+    cat_weight = float(categorical_weight)
+    if not np.isfinite(cat_weight) or cat_weight <= 0.0:
+        raise ValueError(
+            f"categorical_weight must be finite and positive, got {categorical_weight!r}"
+        )
+    n_extra = int(n_features) - min_features
+    extra = np.full(n_extra, 1.0 / cat_weight, dtype=np.float64)
+    if n_blocks == 1:
+        return np.concatenate([state, extra])
+    delta_w = float(delta_weight)
+    if not np.isfinite(delta_w) or delta_w <= 0.0:
+        raise ValueError(
+            f"delta_weight must be finite and positive, got {delta_weight!r}"
+        )
+    delta_scale = state / delta_w
+    return np.concatenate([state, delta_scale, extra])
+
+
+def scored_ft_wrist(arrays: Mapping[str, Any]) -> Any:
+    """Prefer convert-time ``ft_wrist_lpf`` when present; else live ``ft_wrist``."""
+    lpf = arrays.get("ft_wrist_lpf")
+    if lpf is None:
+        return arrays["ft_wrist"]
+    arr = np.asarray(lpf)
+    if arr.size == 0:
+        return arrays["ft_wrist"]
+    return lpf
+
+
+def n_junctions_from_episodes(episodes: Sequence[Mapping[str, Any]]) -> int:
+    """Return the shared woody-junction count from recorded/replay bags."""
+    if not episodes:
+        raise ValueError("need at least one episode to resolve n_junctions")
+    counts: list[int] = []
+    for episode in episodes:
+        names = episode.get("junction_names")
+        if names is None:
+            raise KeyError("episode missing junction_names")
+        counts.append(len(names))
+    if len(set(counts)) != 1:
+        raise ValueError(f"mixed junction counts across episodes: {counts}")
+    n = int(counts[0])
+    if n < 1:
+        raise ValueError(f"n_junctions must be >= 1, got {n}")
+    return n
 
 REQUIRED_ARRAY_KEYS: tuple[str, ...] = (
     "ft_wrist",
     "tcp_velocity",
     "action",
     "tcp_pos",
+    "tcp_quat",
     "apple_pos",
     "woody_part_start_pos",
-    "woody_part_end_pos",
     "excitation_direction",
     "phase",
     "excitation_type",
@@ -56,11 +196,12 @@ class ReplayObservationCollector:
             self._action_dim = int(recorded_action.shape[1])
         else:
             self._action_dim = 6
-        self._rows: dict[str, list[np.ndarray | int]] = {
+        self._rows: dict[str, list[np.ndarray | int | float]] = {
             "action": [],
             "ft_wrist": [],
             "tcp_velocity": [],
             "tcp_pos": [],
+            "tcp_quat": [],
             "apple_pos": [],
             "phase": [],
             "dir_idx": [],
@@ -69,10 +210,10 @@ class ReplayObservationCollector:
             "stable": [],
             "hold_number": [],
         }
+        self._record_sim_time = "sim_time" in recorded
+        if self._record_sim_time:
+            self._rows["sim_time"] = []
         self._woody_start: dict[str, list[np.ndarray]] = {
-            name: [] for name in self._junction_names
-        }
-        self._woody_end: dict[str, list[np.ndarray]] = {
             name: [] for name in self._junction_names
         }
 
@@ -103,7 +244,7 @@ class ReplayObservationCollector:
                 f"frame_idx={frame_idx} out of range for recorded episode "
                 f"with {n_frames} frames"
             )
-        for key in ("ft_wrist", "tcp_velocity", "tcp_pos", "apple_pos", "woody_start", "woody_end"):
+        for key in ("ft_wrist", "tcp_velocity", "tcp_pos", "tcp_quat", "apple_pos", "woody_start"):
             if key not in obs:
                 raise KeyError(f"missing replay observation field: {key}")
 
@@ -120,6 +261,9 @@ class ReplayObservationCollector:
         )
         self._rows["tcp_pos"].append(
             np.array(obs["tcp_pos"], dtype=np.float32, copy=True).reshape(3)
+        )
+        self._rows["tcp_quat"].append(
+            np.array(obs["tcp_quat"], dtype=np.float32, copy=True).reshape(4)
         )
         self._rows["apple_pos"].append(
             np.array(obs["apple_pos"], dtype=np.float32, copy=True).reshape(3)
@@ -147,18 +291,21 @@ class ReplayObservationCollector:
             obs["woody_start"], key="woody_start"
         ).items():
             self._woody_start[name].append(np.array(pos, dtype=np.float32, copy=True))
-        for name, pos in self._split_flat_woody(obs["woody_end"], key="woody_end").items():
-            self._woody_end[name].append(np.array(pos, dtype=np.float32, copy=True))
         self._rows["stable"].append(bool(stable))
+        if self._record_sim_time:
+            self._rows["sim_time"].append(
+                float(self._recorded_row("sim_time", frame_idx))
+            )
 
     def to_arrays(self) -> dict[str, Any]:
         """Return collected observations as arrays compatible with feature builders."""
 
-        return {
+        out: dict[str, Any] = {
             "action": np.stack(self._rows["action"], axis=0).astype(np.float32),
             "ft_wrist": np.stack(self._rows["ft_wrist"], axis=0).astype(np.float32),
             "tcp_velocity": np.stack(self._rows["tcp_velocity"], axis=0).astype(np.float32),
             "tcp_pos": np.stack(self._rows["tcp_pos"], axis=0).astype(np.float32),
+            "tcp_quat": np.stack(self._rows["tcp_quat"], axis=0).astype(np.float32),
             "apple_pos": np.stack(self._rows["apple_pos"], axis=0).astype(np.float32),
             "phase": np.asarray(self._rows["phase"], dtype=np.int8),
             "dir_idx": np.asarray(self._rows["dir_idx"], dtype=np.int32),
@@ -172,18 +319,24 @@ class ReplayObservationCollector:
                 name: np.stack(rows, axis=0).astype(np.float32)
                 for name, rows in self._woody_start.items()
             },
-            "woody_part_end_pos": {
-                name: np.stack(rows, axis=0).astype(np.float32)
-                for name, rows in self._woody_end.items()
-            },
             "junction_names": list(self._junction_names),
         }
+        if self._record_sim_time:
+            out["sim_time"] = np.asarray(self._rows["sim_time"], dtype=np.float64)
+        return out
 
 
 def _require_keys(arrays: Mapping[str, Any], keys: tuple[str, ...]) -> None:
     missing = [key for key in keys if key not in arrays]
     if missing:
         raise KeyError(f"missing MMD feature field(s): {', '.join(missing)}")
+
+
+def _require_junction_position_map(value: Any, *, field: str) -> Mapping[str, Any]:
+    """Reject non-mapping woody endpoint bags before junction-name subscripting."""
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} must be a junction mapping, got {type(value).__name__}")
+    return value
 
 
 def _as_2d(values: Any, *, name: str, n_frames: int) -> np.ndarray:
@@ -233,14 +386,10 @@ def replay_obs_dict_from_sysid_numpy(
         "ft_wrist": np.asarray(sysid_obs["ft_wrist"], dtype=np.float32).reshape(6),
         "tcp_velocity": np.asarray(sysid_obs["tcp_velocity"], dtype=np.float32).reshape(6),
         "tcp_pos": np.asarray(sysid_obs["tcp_pos"], dtype=np.float32).reshape(3),
+        "tcp_quat": np.asarray(sysid_obs["tcp_quat"], dtype=np.float32).reshape(4),
         "apple_pos": np.asarray(sysid_obs["apple_pos"], dtype=np.float32).reshape(3),
         "woody_start": flatten_woody_positions(
             sysid_obs["woody_part_start_pos"],
-            frame_idx=0,
-            junction_names=junction_names,
-        ),
-        "woody_end": flatten_woody_positions(
-            sysid_obs["woody_part_end_pos"],
             frame_idx=0,
             junction_names=junction_names,
         ),
@@ -253,6 +402,7 @@ def _stack_woody(
     n_frames: int,
     junction_names: list[str],
 ) -> np.ndarray:
+    _require_junction_position_map(woody_by_junction, field="woody_part_start_pos")
     rows = [
         flatten_woody_positions(
             woody_by_junction,
@@ -266,6 +416,122 @@ def _stack_woody(
     return np.stack(rows, axis=0).astype(np.float32, copy=False)
 
 
+def _tiled_positions(values: Any, *, n_frames: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = np.tile(arr, (n_frames, 1))
+    return arr
+
+
+def _bending_chords(
+    arrays: Mapping[str, Any],
+    *,
+    n_frames: int,
+    junction_names: list[str],
+) -> list[np.ndarray]:
+    """Per-junction chord vectors (n_frames, 3) used for bending deflection.
+
+    ``CMA_WOODY_JUNCTIONS`` (``primary_spur``, ``spur_stem``) uses the real
+    Branch/Spur/Apple-aligned chords: ``primary_spur`` chords
+    ``start[spur_stem] - start[primary_spur]``; ``spur_stem`` chords
+    ``apple_pos - start[spur_stem]``. Other junction orderings fall back to the
+    distal rule: chord ``i`` is ``start[i+1] - start[i]`` and the last chord is
+    ``apple_pos - start[last]``.
+    """
+    starts_by_name = _require_junction_position_map(
+        arrays["woody_part_start_pos"],
+        field="woody_part_start_pos",
+    )
+    apple_pos = _tiled_positions(arrays["apple_pos"], n_frames=n_frames)
+
+    if list(junction_names) == list(CMA_WOODY_JUNCTIONS):
+        primary_spur = _tiled_positions(
+            starts_by_name["primary_spur"], n_frames=n_frames
+        )
+        spur_stem = _tiled_positions(starts_by_name["spur_stem"], n_frames=n_frames)
+        return [spur_stem - primary_spur, apple_pos - spur_stem]
+
+    starts = [
+        _tiled_positions(starts_by_name[name], n_frames=n_frames)
+        for name in junction_names
+    ]
+    n_junctions = len(junction_names)
+    return [
+        starts[i + 1] - starts[i] if i < n_junctions - 1 else apple_pos - starts[i]
+        for i in range(n_junctions)
+    ]
+
+
+def _normalize_quat_xyzw(quat: np.ndarray) -> np.ndarray:
+    """Return unit quaternion(s) in xyzw layout; zero norm maps to identity."""
+    arr = np.asarray(quat, dtype=np.float64)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, 4)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    out = np.zeros_like(arr)
+    valid = norms.reshape(-1) > 0.0
+    if np.any(valid):
+        out[valid] = arr[valid] / norms[valid]
+    out[~valid, 3] = 1.0
+    return out
+
+
+def _quat_conj_xyzw(quat: np.ndarray) -> np.ndarray:
+    out = np.asarray(quat, dtype=np.float64).copy()
+    out[..., :3] *= -1.0
+    return out
+
+
+def _quat_mul_xyzw(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Hamilton product for xyzw quaternions with broadcasting on the leading axis."""
+    l = np.asarray(left, dtype=np.float64)
+    r = np.asarray(right, dtype=np.float64)
+    x1, y1, z1, w1 = l[..., 0], l[..., 1], l[..., 2], l[..., 3]
+    x2, y2, z2, w2 = r[..., 0], r[..., 1], r[..., 2], r[..., 3]
+    return np.stack(
+        [
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        ],
+        axis=-1,
+    )
+
+
+def _rotvec_from_unit_quat_xyzw(quat: np.ndarray) -> np.ndarray:
+    """Axis-angle 3-vector from a unit xyzw quaternion (shortest path, w >= 0)."""
+    q = np.asarray(quat, dtype=np.float64)
+    flip = q[..., 3] < 0.0
+    q = q.copy()
+    q[flip] *= -1.0
+    vec = q[..., :3]
+    w = np.clip(q[..., 3], -1.0, 1.0)
+    vec_norm = np.linalg.norm(vec, axis=-1)
+    angle = 2.0 * np.arctan2(vec_norm, w)
+    out = np.zeros(vec.shape, dtype=np.float64)
+    small = vec_norm > 1e-12
+    if np.any(small):
+        scale = angle[small] / vec_norm[small]
+        out[small] = vec[small] * scale[:, np.newaxis]
+    return out
+
+
+def build_tcp_rotvec(quat_xyzw: Any) -> np.ndarray:
+    """Frame-0-relative TCP rotation vectors from bag ``tcp_quat`` xyzw rows."""
+    quats = _normalize_quat_xyzw(np.asarray(quat_xyzw, dtype=np.float64))
+    if quats.shape[0] == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    q0 = quats[0:1]
+    aligned = quats.copy()
+    dots = np.sum(quats * q0, axis=1, keepdims=True)
+    aligned = np.where(dots < 0.0, -aligned, aligned)
+    q_rel = _quat_mul_xyzw(_quat_conj_xyzw(q0), aligned)
+    rotvec = _rotvec_from_unit_quat_xyzw(q_rel)
+    rotvec[0, :] = 0.0
+    return rotvec.astype(np.float32, copy=False)
+
+
 def build_bending_angles(
     arrays: Mapping[str, Any],
     *,
@@ -277,17 +543,10 @@ def build_bending_angles(
     if n_junctions == 0:
         return np.zeros((n_frames, 0), dtype=np.float32)
 
+    chords = _bending_chords(arrays, n_frames=n_frames, junction_names=junction_names)
+
     angles = np.zeros((n_frames, n_junctions), dtype=np.float64)
-    for j_idx, name in enumerate(junction_names):
-        starts = np.asarray(arrays["woody_part_start_pos"][name], dtype=np.float64)
-        ends = np.asarray(arrays["woody_part_end_pos"][name], dtype=np.float64)
-
-        if starts.ndim == 1:
-            starts = np.tile(starts, (n_frames, 1))
-        if ends.ndim == 1:
-            ends = np.tile(ends, (n_frames, 1))
-
-        vectors = ends - starts  # (n_frames, 3)
+    for j_idx, vectors in enumerate(chords):
         lengths = np.linalg.norm(vectors, axis=1, keepdims=True)
 
         lengths_nonzero = np.where(lengths == 0.0, 1.0, lengths)
@@ -307,7 +566,16 @@ def build_bending_angles(
 
 
 def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
-    """Build per-frame observable state rows in the MMD feature order."""
+    """Build per-frame observable state rows in the MMD feature order.
+
+    ``apple_pos`` is required on ``arrays`` for bend-chord geometry but is not
+    concatenated into the scored state.
+    """
+
+    if not isinstance(arrays, Mapping):
+        raise ValueError(
+            f"feature arrays must be a mapping, got {type(arrays).__name__}"
+        )
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
     action = np.asarray(arrays["action"], dtype=np.float32)
@@ -317,18 +585,12 @@ def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
     junction_names = [str(name) for name in arrays["junction_names"]]
 
     columns = [
-        _as_2d(arrays["ft_wrist"], name="ft_wrist", n_frames=n_frames),
+        _as_2d(scored_ft_wrist(arrays), name="ft_wrist", n_frames=n_frames),
         _as_2d(arrays["tcp_velocity"], name="tcp_velocity", n_frames=n_frames),
-        _as_2d(arrays["action"], name="action", n_frames=n_frames),
         _as_2d(arrays["tcp_pos"], name="tcp_pos", n_frames=n_frames),
-        _as_2d(arrays["apple_pos"], name="apple_pos", n_frames=n_frames),
+        build_tcp_rotvec(arrays["tcp_quat"]),
         _stack_woody(
             arrays["woody_part_start_pos"],
-            n_frames=n_frames,
-            junction_names=junction_names,
-        ),
-        _stack_woody(
-            arrays["woody_part_end_pos"],
             n_frames=n_frames,
             junction_names=junction_names,
         ),
@@ -348,12 +610,15 @@ def iter_kept_hold_segments(
     direction: int,
     stable: np.ndarray | None = None,
     min_frames: int = 1,
+    target_phase: int = _HOLD_PHASE,
 ) -> list[np.ndarray]:
-    """Return full contiguous hold index arrays for one direction (no latter-half burn-in).
+    """Return full contiguous segment index arrays for one direction (no latter-half burn-in).
 
-    Segmentation uses ``phase == 1`` and matching ``dir_idx`` only. ``stable`` is
-    accepted for API compatibility but does **not** split segments (apply it as an
-    in-hold sample mask at aggregation time instead).
+    Segmentation uses ``phase == target_phase`` (default: hold) and matching
+    ``dir_idx`` only. ``stable`` is accepted for API compatibility but does
+    **not** split segments (apply it as an in-segment sample mask at
+    aggregation time instead). Pass ``target_phase=_MOVE_OUT_PHASE`` to extract
+    the ramp segments that precede each hold instead.
     """
 
     phase = np.asarray(phase).reshape(-1)
@@ -383,9 +648,10 @@ def iter_kept_hold_segments(
             kept.append(idxs)
         current = []
 
+    target = int(target_phase)
     for frame_idx, (phase_value, dir_value) in enumerate(zip(phase, dir_idx, strict=True)):
-        is_hold = int(phase_value) == 1 and int(dir_value) == int(direction)
-        if is_hold:
+        is_kept = int(phase_value) == target and int(dir_value) == int(direction)
+        if is_kept:
             current.append(frame_idx)
             continue
         _flush()
@@ -429,6 +695,51 @@ def _one_hot_dir_id(dir_idx: int, *, n_directions: int) -> np.ndarray:
     return vec
 
 
+def _one_hot_phase_id(phase_value: int, *, n_phases: int = 2) -> np.ndarray:
+    """One-hot tag distinguishing ``move_out`` (index 0) from ``hold`` (index 1).
+
+    Uses the ``PHASE_TO_INT`` codes directly as the one-hot index, since
+    ``move_out == 0`` and ``hold == 1`` already.
+    """
+    n = int(n_phases)
+    if n <= 0:
+        raise ValueError(f"n_phases must be positive, got {n_phases!r}")
+    i = int(phase_value)
+    if i < 0 or i >= n:
+        raise ValueError(f"phase_value {i} out of range for n_phases={n}")
+    vec = np.zeros(n, dtype=np.float32)
+    vec[i] = 1.0
+    return vec
+
+
+def _resolve_hold_id(arrays: Mapping[str, Any], frame_idx: int, *, fallback: int) -> int:
+    """Return the recorded ``hold_number`` at ``frame_idx``, or ``fallback`` if unset.
+
+    Sim recordings stamp ``hold_number=-1`` on frames outside the hold phase
+    (see ``quasi_static_trajectory.QuasiStaticTrajectory.current_hold_number``),
+    so a ``move_out`` segment paired with a later hold must be resolved via
+    that hold's own frame, not its own.
+    """
+    if "hold_number" in arrays:
+        hn = int(np.asarray(arrays["hold_number"])[int(frame_idx)])
+        return hn if hn >= 0 else int(fallback)
+    return int(fallback)
+
+
+_HOLD_REDUCE_VALUES = ("none", "median", "mean")
+
+
+def _resolve_hold_reduce(*, use_median: bool, hold_reduce: str | None) -> str:
+    if hold_reduce is None:
+        return "median" if bool(use_median) else "none"
+    value = str(hold_reduce)
+    if value not in _HOLD_REDUCE_VALUES:
+        raise ValueError(
+            f"hold_reduce must be one of {_HOLD_REDUCE_VALUES}, got {hold_reduce!r}"
+        )
+    return value
+
+
 def combine_transition_features(
     episodes: list[Mapping[str, Any]],
     *,
@@ -437,8 +748,11 @@ def combine_transition_features(
     n_holds: int | None = None,
     dir_id_onehot: bool = False,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
+    include_delta: bool = True,
+    full_trajectory: bool = False,
 ) -> dict[int, np.ndarray]:
-    """Concatenate hold-only transition features keyed by excitation direction."""
+    """Concatenate hold-only (or full move_out+hold) transition features by direction."""
     parts: dict[int, list[np.ndarray]] = {}
     for arrays in episodes:
         for direction, features in build_transition_features_by_direction(
@@ -448,6 +762,9 @@ def combine_transition_features(
             n_holds=n_holds,
             dir_id_onehot=dir_id_onehot,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
+            include_delta=include_delta,
+            full_trajectory=full_trajectory,
         ).items():
             parts.setdefault(direction, []).append(features)
     return {
@@ -465,13 +782,34 @@ def build_transition_features_by_direction(
     n_holds: int | None = None,
     dir_id_onehot: bool = False,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
+    include_delta: bool = True,
+    full_trajectory: bool = False,
 ) -> dict[int, np.ndarray]:
-    """Build hold-only transition feature rows keyed by excitation direction.
+    """Build hold-only (or full move_out+hold) transition feature rows by direction.
 
-    When ``use_median`` is True, emit one row per consecutive hold pair using
-    full-hold median states: ``[s_i, s_{i+1}-s_i]`` (optionally + hold-id /
-    dir-id one-hot). When False, emit frame→frame transitions on full hold
-    segments.
+    ``hold_reduce="median"|"mean"`` emits one row per consecutive hold pair
+    using the reduced hold state ``[s_i, s_{i+1}-s_i]`` when ``include_delta``
+    is true, or one level row per retained hold when false. ``use_median=True``
+    is an alias for ``hold_reduce="median"``. ``none`` / ``use_median=False``
+    emits frame→frame transitions on full hold segments, or one level row per
+    stable hold frame when ``include_delta=False``.
+
+    ``full_trajectory=True`` additionally includes each direction's
+    ``move_out`` ramp segments, each paired with the ``hold`` segment it
+    immediately precedes (``return`` and ``pre_weld`` frames stay excluded,
+    and ``move_out``/``hold`` transitions never cross a segment boundary). A
+    hold with no immediately-preceding ``move_out`` (e.g. the leading rest
+    hold ``real_to_batched_sysid.py``'s ``inject_rest_hold`` prepends before
+    the first real move) is scored hold-only; a ``move_out`` with no
+    immediately-following hold is an error. Every row gets a 2-wide one-hot
+    phase tag so the ground cost can tell ramp rows apart from hold rows
+    instead of pooling them. Each ``move_out`` segment inherits its paired
+    hold segment's resolved ``hold_id`` for ``hold_id_onehot``, since sim
+    recordings stamp ``hold_number=-1`` outside the hold phase. Requires
+    ``hold_reduce`` to resolve to ``"none"``: reducing a ramp to one
+    median/mean state discards the very signal (e.g. damping) full-trajectory
+    scoring exists to capture.
     """
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
@@ -483,6 +821,15 @@ def build_transition_features_by_direction(
     )
     if state.shape[0] != phase.size or state.shape[0] != dir_idx.size:
         raise ValueError("state, phase, and dir_idx frame counts must match")
+
+    reduce_mode = _resolve_hold_reduce(use_median=use_median, hold_reduce=hold_reduce)
+    if full_trajectory and reduce_mode != "none":
+        raise ValueError(
+            "full_trajectory=True requires hold_reduce to resolve to 'none' "
+            f"(median/mean hold reduction is incompatible with ramp scoring), "
+            f"got hold_reduce={hold_reduce!r} use_median={use_median!r} "
+            f"(resolved={reduce_mode!r})"
+        )
 
     resolved_n_holds = n_holds
     if hold_id_onehot:
@@ -511,72 +858,135 @@ def build_transition_features_by_direction(
         if len(frame_indices) == 0:
             continue
 
-        segments = iter_kept_hold_segments(
-            phase=phase,
-            dir_idx=dir_idx,
-            direction=direction,
-            min_frames=1,
-        )
         rows: list[np.ndarray] = []
-        if use_median:
-            medians: list[np.ndarray] = []
+        if full_trajectory:
+            hold_segments = iter_kept_hold_segments(
+                phase=phase,
+                dir_idx=dir_idx,
+                direction=direction,
+                min_frames=1,
+                target_phase=_HOLD_PHASE,
+            )
+            move_segments = iter_kept_hold_segments(
+                phase=phase,
+                dir_idx=dir_idx,
+                direction=direction,
+                min_frames=1,
+                target_phase=_MOVE_OUT_PHASE,
+            )
+            # Pair each hold with the move_out segment immediately preceding it
+            # (its last frame is this hold's first frame - 1), not by list
+            # position: real-data conversion can inject a leading rest hold
+            # (see real_to_batched_sysid.py's inject_rest_hold) with no
+            # move_out before it, which would make a positional 1:1 zip
+            # under-count by one on essentially every real episode. A hold
+            # with no immediately-preceding move_out is scored hold-only. A
+            # move_out with no immediately-following hold has nowhere to
+            # attach and is an error.
+            move_by_last_frame = {int(seg[-1]): seg for seg in move_segments}
+            consumed_last_frames: set[int] = set()
+            cycles: list[tuple[np.ndarray | None, np.ndarray]] = []
+            for hold_segment in hold_segments:
+                preceding_key = int(hold_segment[0]) - 1
+                move_segment = move_by_last_frame.get(preceding_key)
+                if move_segment is not None:
+                    consumed_last_frames.add(preceding_key)
+                cycles.append((move_segment, hold_segment))
+            orphan_count = len(move_segments) - len(consumed_last_frames)
+            if orphan_count:
+                raise ValueError(
+                    "full_trajectory=True found "
+                    f"{orphan_count} move_out segment(s) for direction "
+                    f"{direction} with no immediately-following hold segment"
+                )
+            n_holds_dir = (
+                int(resolved_n_holds)
+                if resolved_n_holds is not None
+                else max(len(hold_segments), 1)
+            )
+            for cycle_i, (move_segment, hold_segment) in enumerate(cycles):
+                hold_id = _resolve_hold_id(
+                    arrays, int(hold_segment[0]), fallback=cycle_i
+                )
+                phase_segments = (
+                    ((_MOVE_OUT_PHASE, move_segment),) if move_segment is not None else ()
+                ) + ((_HOLD_PHASE, hold_segment),)
+                for phase_value, segment in phase_segments:
+                    kept = _stable_masked_segment(segment, stable)
+                    phase_onehot = _one_hot_phase_id(phase_value, n_phases=2)
+                    if include_delta:
+                        if kept.size < 2:
+                            continue
+                        for start_idx, end_idx in zip(kept[:-1], kept[1:], strict=True):
+                            current = state[int(start_idx)]
+                            delta = state[int(end_idx)] - current
+                            row = np.concatenate([current, delta]).astype(np.float32)
+                            if hold_id_onehot:
+                                row = np.concatenate(
+                                    [row, _one_hot_hold_id(hold_id, n_holds=n_holds_dir)]
+                                )
+                            if dir_id_onehot:
+                                assert resolved_n_directions is not None
+                                row = np.concatenate(
+                                    [
+                                        row,
+                                        _one_hot_dir_id(
+                                            direction, n_directions=resolved_n_directions
+                                        ),
+                                    ]
+                                )
+                            row = np.concatenate([row, phase_onehot])
+                            rows.append(row)
+                    else:
+                        if kept.size < 1:
+                            continue
+                        for frame_idx in kept:
+                            row = np.asarray(state[int(frame_idx)], dtype=np.float32)
+                            if hold_id_onehot:
+                                row = np.concatenate(
+                                    [row, _one_hot_hold_id(hold_id, n_holds=n_holds_dir)]
+                                )
+                            if dir_id_onehot:
+                                assert resolved_n_directions is not None
+                                row = np.concatenate(
+                                    [
+                                        row,
+                                        _one_hot_dir_id(
+                                            direction, n_directions=resolved_n_directions
+                                        ),
+                                    ]
+                                )
+                            row = np.concatenate([row, phase_onehot])
+                            rows.append(row)
+        elif reduce_mode in ("median", "mean"):
+            segments = iter_kept_hold_segments(
+                phase=phase,
+                dir_idx=dir_idx,
+                direction=direction,
+                min_frames=1,
+            )
+            reducer = np.mean if reduce_mode == "mean" else np.median
+            reduced: list[np.ndarray] = []
             hold_ids: list[int] = []
             for hold_i, segment in enumerate(segments):
                 kept = _stable_masked_segment(segment, stable)
                 if kept.size < 1:
                     continue
-                medians.append(np.median(state[kept], axis=0).astype(np.float32))
-                if "hold_number" in arrays:
-                    hn = int(np.asarray(arrays["hold_number"])[int(kept[0])])
-                    hold_ids.append(hn if hn >= 0 else hold_i)
-                else:
-                    hold_ids.append(hold_i)
+                reduced.append(reducer(state[kept], axis=0).astype(np.float32))
+                hold_ids.append(_resolve_hold_id(arrays, int(kept[0]), fallback=hold_i))
             n_holds_dir = (
                 int(resolved_n_holds)
                 if resolved_n_holds is not None
-                else max(len(medians), 1)
+                else max(len(reduced), 1)
             )
-            for i in range(len(medians) - 1):
-                current = medians[i]
-                delta = medians[i + 1] - current
-                row = np.concatenate([current, delta]).astype(np.float32)
-                if hold_id_onehot:
-                    row = np.concatenate(
-                        [row, _one_hot_hold_id(hold_ids[i], n_holds=n_holds_dir)]
-                    )
-                if dir_id_onehot:
-                    assert resolved_n_directions is not None
-                    row = np.concatenate(
-                        [
-                            row,
-                            _one_hot_dir_id(
-                                direction, n_directions=resolved_n_directions
-                            ),
-                        ]
-                    )
-                rows.append(row)
-        else:
-            n_holds_dir = (
-                int(resolved_n_holds)
-                if resolved_n_holds is not None
-                else max(len(segments), 1)
-            )
-            for hold_i, segment in enumerate(segments):
-                kept = _stable_masked_segment(segment, stable)
-                if kept.size < 2:
-                    continue
-                for start_idx, end_idx in zip(kept[:-1], kept[1:], strict=True):
-                    current = state[int(start_idx)]
-                    delta = state[int(end_idx)] - current
+            if include_delta:
+                for i in range(len(reduced) - 1):
+                    current = reduced[i]
+                    delta = reduced[i + 1] - current
                     row = np.concatenate([current, delta]).astype(np.float32)
                     if hold_id_onehot:
-                        if "hold_number" in arrays:
-                            hn = int(np.asarray(arrays["hold_number"])[int(start_idx)])
-                            hid = hn if hn >= 0 else hold_i
-                        else:
-                            hid = hold_i
                         row = np.concatenate(
-                            [row, _one_hot_hold_id(hid, n_holds=n_holds_dir)]
+                            [row, _one_hot_hold_id(hold_ids[i], n_holds=n_holds_dir)]
                         )
                     if dir_id_onehot:
                         assert resolved_n_directions is not None
@@ -589,6 +999,82 @@ def build_transition_features_by_direction(
                             ]
                         )
                     rows.append(row)
+            else:
+                for i, current in enumerate(reduced):
+                    row = np.asarray(current, dtype=np.float32)
+                    if hold_id_onehot:
+                        row = np.concatenate(
+                            [row, _one_hot_hold_id(hold_ids[i], n_holds=n_holds_dir)]
+                        )
+                    if dir_id_onehot:
+                        assert resolved_n_directions is not None
+                        row = np.concatenate(
+                            [
+                                row,
+                                _one_hot_dir_id(
+                                    direction, n_directions=resolved_n_directions
+                                ),
+                            ]
+                        )
+                    rows.append(row)
+        else:
+            segments = iter_kept_hold_segments(
+                phase=phase,
+                dir_idx=dir_idx,
+                direction=direction,
+                min_frames=1,
+            )
+            n_holds_dir = (
+                int(resolved_n_holds)
+                if resolved_n_holds is not None
+                else max(len(segments), 1)
+            )
+            for hold_i, segment in enumerate(segments):
+                kept = _stable_masked_segment(segment, stable)
+                if include_delta:
+                    if kept.size < 2:
+                        continue
+                    for start_idx, end_idx in zip(kept[:-1], kept[1:], strict=True):
+                        current = state[int(start_idx)]
+                        delta = state[int(end_idx)] - current
+                        row = np.concatenate([current, delta]).astype(np.float32)
+                        if hold_id_onehot:
+                            hid = _resolve_hold_id(arrays, int(start_idx), fallback=hold_i)
+                            row = np.concatenate(
+                                [row, _one_hot_hold_id(hid, n_holds=n_holds_dir)]
+                            )
+                        if dir_id_onehot:
+                            assert resolved_n_directions is not None
+                            row = np.concatenate(
+                                [
+                                    row,
+                                    _one_hot_dir_id(
+                                        direction, n_directions=resolved_n_directions
+                                    ),
+                                ]
+                            )
+                        rows.append(row)
+                else:
+                    if kept.size < 1:
+                        continue
+                    for frame_idx in kept:
+                        row = np.asarray(state[int(frame_idx)], dtype=np.float32)
+                        if hold_id_onehot:
+                            hid = _resolve_hold_id(arrays, int(frame_idx), fallback=hold_i)
+                            row = np.concatenate(
+                                [row, _one_hot_hold_id(hid, n_holds=n_holds_dir)]
+                            )
+                        if dir_id_onehot:
+                            assert resolved_n_directions is not None
+                            row = np.concatenate(
+                                [
+                                    row,
+                                    _one_hot_dir_id(
+                                        direction, n_directions=resolved_n_directions
+                                    ),
+                                ]
+                            )
+                        rows.append(row)
         if rows:
             arr = np.stack(rows, axis=0).astype(np.float32, copy=False)
             if direction in out:
@@ -596,3 +1082,110 @@ def build_transition_features_by_direction(
             else:
                 out[direction] = arr
     return out
+
+
+def _mean_hold_states(
+    arrays: Mapping[str, Any], *, direction: int
+) -> list[np.ndarray]:
+    state = build_state_matrix(arrays)
+    phase = np.asarray(arrays["phase"]).reshape(-1)
+    dir_idx = np.asarray(arrays["dir_idx"]).reshape(-1)
+    stable = np.asarray(
+        arrays.get("stable", np.ones(phase.shape[0], dtype=bool)), dtype=bool
+    ).reshape(-1)
+    segments = iter_kept_hold_segments(
+        phase=phase,
+        dir_idx=dir_idx,
+        direction=int(direction),
+        min_frames=1,
+    )
+    means: list[np.ndarray] = []
+    for segment in segments:
+        kept = _stable_masked_segment(segment, stable)
+        if kept.size < 1:
+            continue
+        means.append(np.mean(state[kept], axis=0).astype(np.float64))
+    return means
+
+
+def mean_hold_block_errors(
+    *,
+    real: Mapping[str, Any],
+    sim: Mapping[str, Any],
+    direction: int,
+) -> dict[str, Any]:
+    """Block L2 between per-hold mean STATE_VECTOR rows (same reduce as Sinkhorn mean)."""
+    real_means = _mean_hold_states(real, direction=direction)
+    sim_means = _mean_hold_states(sim, direction=direction)
+    n_holds = min(len(real_means), len(sim_means))
+    empty = {
+        "force_err_n": None,
+        "torque_err_nm": None,
+        "woody_start_m": None,
+        "woody_bend_rad": None,
+        "force_norm_n": {"real": None, "sim": None},
+        "torque_norm_nm": {"real": None, "sim": None},
+        "woody_start_norm_m": {"real": None, "sim": None},
+        "woody_bend_norm_rad": {"real": None, "sim": None},
+    }
+    if n_holds < 1:
+        return empty
+
+    n_junctions = len([str(n) for n in real["junction_names"]])
+    woody0 = len(_STATE_VECTOR_PREFIX_PHYS_SCALE)
+    bend0 = woody0 + 3 * n_junctions
+
+    def _woody_starts(row: np.ndarray) -> np.ndarray:
+        return np.asarray(row[woody0:bend0], dtype=np.float64).reshape(n_junctions, 3)
+
+    force_err: list[float] = []
+    torque_err: list[float] = []
+    woody_start_err: list[float] = []
+    woody_bend_err: list[float] = []
+    force_norm_real: list[float] = []
+    force_norm_sim: list[float] = []
+    torque_norm_real: list[float] = []
+    torque_norm_sim: list[float] = []
+    woody_disp_real: list[float] = []
+    woody_disp_sim: list[float] = []
+    woody_bend_norm_real: list[float] = []
+    woody_bend_norm_sim: list[float] = []
+    first_real_woody = _woody_starts(real_means[0])
+    first_sim_woody = _woody_starts(sim_means[0])
+    for r, s in zip(real_means[:n_holds], sim_means[:n_holds], strict=True):
+        force_err.append(float(np.linalg.norm(s[:3] - r[:3])))
+        torque_err.append(float(np.linalg.norm(s[3:6] - r[3:6])))
+        wr = _woody_starts(r)
+        ws = _woody_starts(s)
+        woody_start_err.append(float(np.mean(np.linalg.norm(ws - wr, axis=1))))
+        woody_bend_err.append(float(np.mean(np.abs(s[bend0:] - r[bend0:]))))
+        force_norm_real.append(float(np.linalg.norm(r[:3])))
+        force_norm_sim.append(float(np.linalg.norm(s[:3])))
+        torque_norm_real.append(float(np.linalg.norm(r[3:6])))
+        torque_norm_sim.append(float(np.linalg.norm(s[3:6])))
+        woody_disp_real.append(float(np.mean(np.linalg.norm(wr - first_real_woody, axis=1))))
+        woody_disp_sim.append(float(np.mean(np.linalg.norm(ws - first_sim_woody, axis=1))))
+        woody_bend_norm_real.append(float(np.mean(np.abs(r[bend0:]))))
+        woody_bend_norm_sim.append(float(np.mean(np.abs(s[bend0:]))))
+    return {
+        "force_err_n": float(np.mean(force_err)),
+        "torque_err_nm": float(np.mean(torque_err)),
+        "woody_start_m": float(np.mean(woody_start_err)),
+        "woody_bend_rad": float(np.mean(woody_bend_err)),
+        "force_norm_n": {
+            "real": float(np.mean(force_norm_real)),
+            "sim": float(np.mean(force_norm_sim)),
+        },
+        "torque_norm_nm": {
+            "real": float(np.mean(torque_norm_real)),
+            "sim": float(np.mean(torque_norm_sim)),
+        },
+        "woody_start_norm_m": {
+            "real": float(np.mean(woody_disp_real)),
+            "sim": float(np.mean(woody_disp_sim)),
+        },
+        "woody_bend_norm_rad": {
+            "real": float(np.mean(woody_bend_norm_real)),
+            "sim": float(np.mean(woody_bend_norm_sim)),
+        },
+    }

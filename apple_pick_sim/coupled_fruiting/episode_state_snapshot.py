@@ -3,15 +3,35 @@
 from __future__ import annotations
 
 import dataclasses
+import warnings
 from typing import Any
 
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.proxy_coupling import sync_solver_body_q_prev_from_state
-from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
+from apple_pick_sim.coupled_fruiting.scene import (
+    init_robot_mujoco_step_buffers,
+    seed_lagged_coupling_from_rest_harvest,
+)
 from apple_pick_sim.robot import fr3_robot
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance_batched import (
     Fr3BatchedEEImpedanceController,
+)
+
+_DEFAULT_COUPLING_SEED_DT = 1.0 / 1800.0
+
+_AVBD_ARRAY_ATTRS = (
+    "joint_lambda_lin",
+    "joint_lambda_ang",
+    "joint_penalty_k",
+    "joint_C0_lin",
+    "joint_C0_ang",
+    "body_q_prev",
+)
+_AVBD_DAHL_ATTRS = (
+    "joint_sigma_prev",
+    "joint_kappa_prev",
+    "joint_dkappa_prev",
 )
 
 
@@ -21,6 +41,24 @@ def _clone_wp_array(arr: wp.array | None) -> wp.array | None:
     out = wp.empty_like(arr)
     wp.copy(out, arr)
     return out
+
+
+def _capture_solver_avbd(solver: Any) -> dict[str, wp.array | None]:
+    out: dict[str, wp.array | None] = {}
+    for name in _AVBD_ARRAY_ATTRS + _AVBD_DAHL_ATTRS:
+        arr = getattr(solver, name, None)
+        out[name] = _clone_wp_array(arr) if arr is not None else None
+    return out
+
+
+def _restore_solver_avbd(solver: Any, snap: dict[str, wp.array | None]) -> None:
+    for name, cloned in snap.items():
+        if cloned is None:
+            continue
+        target = getattr(solver, name, None)
+        if target is None:
+            continue
+        wp.copy(target, cloned)
 
 
 @dataclasses.dataclass
@@ -42,6 +80,19 @@ class EpisodeStateSnapshot:
     vic_lin_vels: wp.array | None = None
     vic_ang_vels: wp.array | None = None
     vic_default_dof_pos_batched: wp.array | None = None
+    # Cable SolverVBD AVBD warm-start / pretension state (optional for old npz).
+    joint_lambda_lin: wp.array | None = None
+    joint_lambda_ang: wp.array | None = None
+    joint_penalty_k: wp.array | None = None
+    joint_C0_lin: wp.array | None = None
+    joint_C0_ang: wp.array | None = None
+    solver_body_q_prev: wp.array | None = None
+    joint_sigma_prev: wp.array | None = None
+    joint_kappa_prev: wp.array | None = None
+    joint_dkappa_prev: wp.array | None = None
+    # Cable model revolute drive stiffness (T-roll uses min(penalty_k, target_ke)).
+    joint_target_ke: wp.array | None = None
+    joint_target_kd: wp.array | None = None
 
     @classmethod
     def capture(cls, sim: Any) -> EpisodeStateSnapshot:
@@ -61,6 +112,8 @@ class EpisodeStateSnapshot:
             vic_ang = _clone_wp_array(ee_ctrl._ang_vels_wp)
 
         vic_default = getattr(scene, "vic_jt_default_dof_pos_batched", None)
+        avbd = _capture_solver_avbd(cable.solver)
+        model = cable.model
         return cls(
             robot_body_q=_clone_wp_array(rs0.body_q),
             robot_body_qd=_clone_wp_array(rs0.body_qd),
@@ -77,6 +130,17 @@ class EpisodeStateSnapshot:
             vic_lin_vels=vic_lin,
             vic_ang_vels=vic_ang,
             vic_default_dof_pos_batched=_clone_wp_array(vic_default),
+            joint_lambda_lin=avbd["joint_lambda_lin"],
+            joint_lambda_ang=avbd["joint_lambda_ang"],
+            joint_penalty_k=avbd["joint_penalty_k"],
+            joint_C0_lin=avbd["joint_C0_lin"],
+            joint_C0_ang=avbd["joint_C0_ang"],
+            solver_body_q_prev=avbd["body_q_prev"],
+            joint_sigma_prev=avbd["joint_sigma_prev"],
+            joint_kappa_prev=avbd["joint_kappa_prev"],
+            joint_dkappa_prev=avbd["joint_dkappa_prev"],
+            joint_target_ke=_clone_wp_array(getattr(model, "joint_target_ke", None)),
+            joint_target_kd=_clone_wp_array(getattr(model, "joint_target_kd", None)),
         )
 
     def restore(self, sim: Any) -> None:
@@ -99,11 +163,36 @@ class EpisodeStateSnapshot:
         wp.copy(cable.state_1.body_q, self.cable_body_q_1)
         wp.copy(cable.state_1.body_qd, self.cable_body_qd_1)
 
+        avbd_snap = {
+            "joint_lambda_lin": self.joint_lambda_lin,
+            "joint_lambda_ang": self.joint_lambda_ang,
+            "joint_penalty_k": self.joint_penalty_k,
+            "joint_C0_lin": self.joint_C0_lin,
+            "joint_C0_ang": self.joint_C0_ang,
+            "body_q_prev": self.solver_body_q_prev,
+            "joint_sigma_prev": self.joint_sigma_prev,
+            "joint_kappa_prev": self.joint_kappa_prev,
+            "joint_dkappa_prev": self.joint_dkappa_prev,
+        }
+        if self.joint_lambda_lin is None:
+            warnings.warn(
+                "episode snapshot lacks AVBD lambda state; plant pretension may be lost on reset",
+                UserWarning,
+                stacklevel=2,
+            )
+            sync_solver_body_q_prev_from_state(cable, cable.state_0.body_q)
+        else:
+            _restore_solver_avbd(cable.solver, avbd_snap)
+
+        if self.joint_target_ke is not None and hasattr(cable.model, "joint_target_ke"):
+            wp.copy(cable.model.joint_target_ke, self.joint_target_ke)
+        if self.joint_target_kd is not None and hasattr(cable.model, "joint_target_kd"):
+            wp.copy(cable.model.joint_target_kd, self.joint_target_kd)
+
         init_robot_mujoco_step_buffers(scene)
         fr3_robot.hold_mujoco_actuator_targets_at_state(
             scene.robot_model, scene.robot_state_0, scene.robot_control
         )
-        sync_solver_body_q_prev_from_state(cable, cable.state_0.body_q)
 
         if self.vic_default_dof_pos_batched is not None and getattr(
             scene, "vic_jt_default_dof_pos_batched", None
@@ -124,7 +213,9 @@ class EpisodeStateSnapshot:
             ee_ctrl.stage_targets_to_scene(scene)
 
         scene.vic_target_twist = fr3_robot.EEVelocity()
-        if scene.proxy_forces is not None:
-            scene.proxy_forces.zero_()
-        if scene.coupling_forces_cache is not None:
-            scene.coupling_forces_cache.zero_()
+        cfg = getattr(sim, "_config", None)
+        if cfg is not None:
+            seed_dt = float(cfg.runtime.sub_dt)
+        else:
+            seed_dt = _DEFAULT_COUPLING_SEED_DT
+        seed_lagged_coupling_from_rest_harvest(scene, seed_dt)

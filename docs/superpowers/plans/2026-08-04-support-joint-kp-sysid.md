@@ -417,7 +417,7 @@ git commit -m "Retarget Young's CMA-ES to support kp with fixed zeta=1."
 
 **Files:**
 - Modify: `README.md` (CMA-ES sim-to-sim section)
-- Modify: `docs/youngs-modulus-sysid.md`, `docs/youngs-modulus-cmaes-implementation.md`
+- Modify: `docs/handbook-youngs-cma.md`, `docs/handbook-youngs-cma.md`
 - Modify: `docs/ROADMAP.md` Agent execution notes if those commands are listed
 - Modify: `docs/superpowers/specs/2026-08-04-support-joint-kp-sysid-design.md` status → Implemented when done
 - Modify: `docs/damping-tuning.md` short note that support \(k_p\) is a sys-ID target with ζ=1 on support only during this path

@@ -22,18 +22,23 @@ import sys
 from pathlib import Path
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Convert a real-world sys-ID parquet using settle-viewer pre/post "
             "builders. Emit metadata JSON and/or a full batched_sysid_v1 dataset."
         )
     )
-    parser.add_argument(
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "--input",
         type=Path,
-        required=True,
         help="Real-world episode parquet path (prefer s02-d00.parquet)",
+    )
+    input_group.add_argument(
+        "--input-dir",
+        type=Path,
+        help="Folder of compiled sXX-dNN.parquet files for one tree (1×N convert).",
     )
     parser.add_argument(
         "--fixture",
@@ -71,28 +76,92 @@ def main(argv: list[str] | None = None) -> int:
         default=1.0,
         help="Multiply weld_direction by this sign (default: 1.0)",
     )
+    parser.add_argument(
+        "--control-hz",
+        type=float,
+        default=30.0,
+        help="Output control rate after F/T block-mean decimation (default: 30).",
+    )
+    parser.add_argument(
+        "--ft-lpf-hz",
+        type=float,
+        default=10.0,
+        help="Zero-phase Butterworth cutoff in Hz before decimation (default: 10).",
+    )
+    parser.add_argument(
+        "--ft-lpf-order",
+        type=int,
+        default=4,
+        help="Butterworth order for --ft-lpf-hz (default: 4).",
+    )
+    parser.add_argument(
+        "--base-pos-tolerance-m",
+        type=float,
+        default=5e-3,
+        help="Max per-axis fruiting_base_pos spread across directions (default: 5e-3).",
+    )
+    parser.add_argument(
+        "--transport-torque-to-tcp",
+        action="store_true",
+        help=(
+            "After rotating logged F/T into world, subtract p×F so torque is "
+            "the moment about the TCP (O_F_ext_hat_K is about the base origin)."
+        ),
+    )
+    parser.add_argument(
+        "--no-inject-rest-hold",
+        action="store_true",
+        help=(
+            "Do not stamp source frame 0 as hold 0 on the first converted frame "
+            "(default injects a rest hold and shifts later hold_number values +1)."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     from apple_pick_sim.system_id.real_to_batched_sysid import (
         build_episode_metadata_from_real,
         export_real_episode_to_batched_dataset,
+        export_real_tree_folder_to_batched_dataset,
     )
 
     if args.dataset_out is not None:
-        out_dir = export_real_episode_to_batched_dataset(
-            args.input,
+        common_kw = dict(
             fixture_path=args.fixture,
             output_dir=args.dataset_out,
             weld_direction_sign=args.weld_direction_sign,
             overwrite=bool(args.overwrite),
             allow_zero_action=bool(args.allow_zero_action),
             command_argv=list(sys.argv if argv is None else ["convert", *argv]),
+            control_hz=float(args.control_hz),
+            ft_lpf_hz=float(args.ft_lpf_hz),
+            ft_lpf_order=int(args.ft_lpf_order),
+            transport_torque_to_tcp=bool(args.transport_torque_to_tcp),
+            inject_rest_hold=not bool(args.no_inject_rest_hold),
         )
+        if args.input_dir is not None:
+            out_dir = export_real_tree_folder_to_batched_dataset(
+                args.input_dir,
+                base_pos_tolerance_m=float(args.base_pos_tolerance_m),
+                **common_kw,
+            )
+        else:
+            out_dir = export_real_episode_to_batched_dataset(
+                args.input,
+                **common_kw,
+            )
         print(f"Wrote batched dataset {out_dir}", file=sys.stderr)
 
+    input_path = args.input if args.input is not None else None
     if args.out is not None or args.dataset_out is None:
+        if input_path is None:
+            parser.error("metadata JSON output requires --input (single parquet)")
         meta = build_episode_metadata_from_real(
-            args.input,
+            input_path,
             fixture_path=args.fixture,
             weld_direction_sign=args.weld_direction_sign,
         )

@@ -28,20 +28,27 @@ class FixedJointWrenchRecord:
 
 
 def iter_fixed_joint_indices(model: newton.Model) -> list[tuple[int, str]]:
-    """Return ``(joint_index, label)`` for joints whose label starts with ``joint_`` and type is FIXED.
+    """Return ``(joint_index, label)`` for fruiting weld/readout joints.
+
+    Includes world-parent ``FIXED`` joints and world-parent ``REVOLUTE`` supports
+    (T-junction ``primary_support_*``) whose labels start with ``joint_``.
 
     Prefer :func:`apple_pick_sim.fruiting_system.iter_fruiting_fixed_joint_indices` for
     scenes built by :func:`~apple_pick_sim.fruiting_system.generate_scene`, which uses
     explicit joint metadata instead of this heuristic.
     """
     jt = model.joint_type.numpy()
+    jparent = model.joint_parent.numpy()
     out: list[tuple[int, str]] = []
     for j, label in enumerate(model.joint_label):
         if not label.startswith("joint_"):
             continue
-        if int(jt[j]) != int(newton.JointType.FIXED):
+        joint_type = int(jt[j])
+        if joint_type == int(newton.JointType.FIXED):
+            out.append((j, label))
             continue
-        out.append((j, label))
+        if joint_type == int(newton.JointType.REVOLUTE) and int(jparent[j]) < 0:
+            out.append((j, label))
     return out
 
 
@@ -54,6 +61,7 @@ def fixed_joint_wrenches_child_com_vbd(
     dt: float,
     control: newton.Control | None = None,
     joint_pairs: list[tuple[int, str]] | None = None,
+    include_penalty_damping: bool = True,
 ) -> list[FixedJointWrenchRecord]:
     """Return per-fixed-joint wrenches for the given joints (child at COM, world frame).
 
@@ -68,6 +76,9 @@ def fixed_joint_wrenches_child_com_vbd(
         joint_pairs: Optional explicit ``(joint_index, label)`` list (e.g. from
             :attr:`apple_pick_sim.fruiting_system.FruitingSystemScene.fruiting_fixed_joints`).
             If ``None``, uses :func:`iter_fixed_joint_indices`.
+        include_penalty_damping: When ``False``, omit AVBD penalty-weld
+            ``kd * dC/dt`` (stem TCP harvest). Default ``True`` for debug / woody
+            readouts. VBD still uses ``solver.joint_penalty_kd`` in the solve.
 
     Returns:
         One :class:`FixedJointWrenchRecord` per joint in ``joint_pairs`` order (or heuristic order).
@@ -80,9 +91,18 @@ def fixed_joint_wrenches_child_com_vbd(
         return []
 
     indices = [j for j, _ in pairs]
-    f_np, t_np = solver.gather_joint_wrench_child_com(
-        model, body_q, body_q_prev, indices, dt, control=control
+    out_f, out_t = gather_joint_wrench_child_com_device(
+        model,
+        solver,
+        body_q=body_q,
+        body_q_prev=body_q_prev,
+        joint_indices=indices,
+        dt=dt,
+        control=control,
+        include_penalty_damping=include_penalty_damping,
     )
+    f_np = out_f.numpy()
+    t_np = out_t.numpy()
     jchild = model.joint_child.numpy()
     out: list[FixedJointWrenchRecord] = []
     for i, (j, lab) in enumerate(pairs):
@@ -107,6 +127,27 @@ def _as_body_q_on_solver_device(solver: newton.solvers.SolverVBD, x: Any) -> wp.
     return wp.array(x, dtype=wp.transform, device=device)
 
 
+def _penalty_kd_buffer_for_gather(
+    solver: newton.solvers.SolverVBD,
+    *,
+    include_penalty_damping: bool,
+) -> wp.array:
+    """Return ``solver.joint_penalty_kd`` or a cached zeros twin (never mutates kd)."""
+    src = solver.joint_penalty_kd
+    if include_penalty_damping:
+        return src
+    zeros = getattr(solver, "_joint_penalty_kd_harvest_zeros", None)
+    if (
+        zeros is None
+        or zeros.shape != src.shape
+        or zeros.dtype != src.dtype
+        or str(zeros.device) != str(src.device)
+    ):
+        zeros = wp.zeros_like(src)
+        solver._joint_penalty_kd_harvest_zeros = zeros
+    return zeros
+
+
 def gather_joint_wrench_child_com_device(
     model: newton.Model,
     solver: newton.solvers.SolverVBD,
@@ -118,10 +159,15 @@ def gather_joint_wrench_child_com_device(
     control: newton.Control | None = None,
     out_f: wp.array | None = None,
     out_t: wp.array | None = None,
+    include_penalty_damping: bool = True,
 ) -> tuple[wp.array, wp.array]:
     """Device-resident joint wrenches (mirrors :meth:`SolverVBD.gather_joint_wrench_child_com`).
 
     Returns ``(force_world, torque_world)`` as ``wp.vec3`` arrays on ``solver.device``.
+
+    When ``include_penalty_damping`` is ``False``, the gather kernel reads a
+    zeros buffer instead of ``solver.joint_penalty_kd`` so the returned wrench
+    omits ``kd * dC/dt``. The solver's real kd array is never written.
     """
     if model is not solver.model:
         raise ValueError("gather_joint_wrench_child_com_device: model must match the VBD solver model.")
@@ -155,6 +201,10 @@ def gather_joint_wrench_child_com_device(
         gather_joint_wrench_child_at_com_kernel,
     )
 
+    kd_buf = _penalty_kd_buffer_for_gather(
+        solver, include_penalty_damping=include_penalty_damping
+    )
+
     wp.launch(
         kernel=gather_joint_wrench_child_at_com_kernel,
         dim=n,
@@ -175,7 +225,7 @@ def gather_joint_wrench_child_com_device(
             model.joint_target_q_start,
             solver.joint_constraint_start,
             solver.joint_penalty_k,
-            solver.joint_penalty_kd,
+            kd_buf,
             solver.joint_sigma_start,
             solver.joint_C_fric,
             model.joint_target_ke,

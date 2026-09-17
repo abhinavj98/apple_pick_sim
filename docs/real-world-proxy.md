@@ -49,7 +49,7 @@ positions and world-frame twists. The doc and fixture metadata must state this
 explicitly; no `obs_schema` change is required for this slice.
 
 Episode metadata continues to record `robot_base_pos` and `fruiting_base_pos` for
-replay and digital-twin calibration (`docs/sysid-trajectory-storage.md`).
+replay and digital-twin calibration (`docs/handbook-sysid-scoring.md`).
 For this fixture, `fruiting_base_pos` is the **T center** (mid-span spur junction),
 not a cantilever root.
 
@@ -90,6 +90,11 @@ The physical bench holds the branch at **both ends**; the spur and apple hang fr
                           │
                           v +Y   (reach toward apple)
 ```
+
+Real-episode catalog connection angles (`manual_spur_angle_deg` about primary
++X, `manual_stem_angle_deg` about robot→fruiting +Y) override woody chords
+when both are present. How to check: `docs/handbook-real-replay.md`
+§ Checking connection angles.
 
 **Convention:** `fruiting_base_pos` is the **T center** (world position of the mid-span
 `primary_spur` junction), not the left support or a cantilever root. Primary rod
@@ -161,7 +166,7 @@ load (not a simple serial subtree cut — see `docs/WRENCH_READOUT.md` §5.1).
 
 Markers stay on **visible surfaces**; compile / ingest applies the known
 **real-world offset** so stored junctions match **sim centerline / CoM** frames
-(see `docs/real-sysid-pre-post-grasp-fixes.md` and
+(see H4 `docs/handbook-real-replay.md` and
 `apple_pick_sim/system_id/real_pre_grasp_params.py`).
 
 | Tracked point | Meaning (robot frame) | Sim use |
@@ -241,7 +246,7 @@ Physical proxy targets (spring constant at branch joint):
 | High | 711 | 736 |
 
 **Fixture policy:** **continuous tier bands** in variance JSON, not three separate
-preset files. Map proxy **210 – 736 N/m** onto **`youngs_modulus_pa`** min/max at
+preset files. Map proxy **210 – 736 N/m** onto **`flexural_modulus_pa`** min/max at
 nominal primary geometry (see `docs/material-parameter-sampling.md`); legacy
 `primary.bend_stiffness` bands are deprecated.
 
@@ -257,7 +262,7 @@ numerical stability guard for domain randomization, is shipped — see
 
 ### Spur stiffness
 
-Vary spur **`youngs_modulus_pa`** (and \(\zeta\)) in the variance fixture (short
+Vary spur **`flexural_modulus_pa`** (and \(\zeta\)) in the variance fixture (short
 segment, compliant shoot). Exact N/m mapping is TBD; keep order-of-magnitude below
 primary and above stem unless sys-ID dictates otherwise.
 
@@ -288,11 +293,11 @@ Document in code comments and tests when the torsion API lands.
 
 `fruiting_system_ranges_real_world_proxy_variance.json` should randomize:
 
-- Primary **`youngs_modulus_pa`** and **`damping_ratio`** (branch tier band → \(E\))
+- Primary **`flexural_modulus_pa`**, **`youngs_modulus_pa`** (axial; duplicated flex bands at migration → beam \(EA/L\) stretch), and **`damping_ratio`**
 - Spur length
 - Spur yaw / roll off the nominal **−Z** hang (`elevation_delta_deg`, `lateral_delta_deg`)
-- Spur **`youngs_modulus_pa`** / **`damping_ratio`**
-- Stem material (\(\zeta\), \(E\); pending torsion API; interim bend-derived range allowed)
+- Spur **`flexural_modulus_pa`** / **`damping_ratio`**
+- Stem material (\(\zeta\), flexural + axial \(E\); pending torsion API; interim bend-derived range allowed)
 - Apple `radius` and `density` (see placeholders)
 
 Material sampling contract: `docs/material-parameter-sampling.md`.
@@ -318,6 +323,9 @@ Nominal fixture may use fixed angles for reproducible IK smoke tests.
 | Tool radius | 0.05 m (50 mm; Ø100) | **Specified** |
 | TCP location | Distal tip face center, out from link7 / `ee` flange | **Specified** |
 | Tool mass | 1.1 kg | **Measured** (synced to `EE_MASS_KG` / USD `ee`) |
+| EE COM (flange frame) | `(0, 0, 0.077) m` | **Measured** (`EE_COM_IN_FLANGE_M`; Desk `F_x_Cee`) |
+| EE COM (ee local) | `(0, 0, -0.077) m` | **Measured** (`EE_COM_IN_EE_LOCAL_M`; RotX 180° via `fr3_joint8`) |
+| EE inertia diagonal | `(0.002152, 0.002152, 0.001191) kg·m²` | **Measured** (`EE_INERTIA_DIAG_KGM2`; Desk `I_ee`) |
 
 **Tip / flange / tip-out contract:**
 
@@ -415,7 +423,7 @@ migrating to this fixture if metadata base poses are updated consistently.
    under asymmetric branch loading is not validated (branch cut `primary_spur` is tested).
 7. **Intra-cable collisions** — default builds disable all fruiting-chain shape contacts
    (`enable_self_collisions=False`): woody, stem, apple, and gripper proxy do not collide
-   with each other. Ground contact only. See `docs/vectorized-coupled-fruiting.md` (warning).
+   with each other. Ground contact only. See H1 `docs/handbook-coupled-simulation.md` (warning).
 
 ---
 
@@ -504,5 +512,6 @@ uv run --env-file pytest.env python -m pytest \
 | 2026-06-26 | Magnet detach → stem **torsion** (follow-up slice); interim bend only |
 | 2026-06-26 | EE 140 mm × Ø100 (r=50 mm), TCP +Z tip-out; mass placeholder 0.5 kg until measured |
 | 2026-08-11 | EE mass set to **1.1 kg** (`EE_MASS_KG`, `PLACEHOLDER_EE_MASS_KG`, USD `ee`) |
+| 2026-08-13 | EE COM `(0,0,0.077)_F` / `(0,0,-0.077)_ee` and `I_ee` diagonal on USD `/fr3/ee`; `/ee/tcp` stays 0.001 kg massless for coupling |
 | 2026-06-26 | Apple density placeholder 700 kg/m³ until measured |
 | 2026-06-26 | T builder shipped; default topology `t_junction`; opt-in `linear_chain` |

@@ -9,7 +9,10 @@ from typing import Any
 import numpy as np
 
 from apple_pick_sim.system_id.mmd import NormalizationStats, apply_normalization, fit_gt_normalization
-from apple_pick_sim.system_id.mmd_features import combine_transition_features
+from apple_pick_sim.system_id.mmd_features import (
+    combine_transition_features,
+    n_junctions_from_episodes,
+)
 
 SINKHORN_P = 2
 SINKHORN_BLUR = 1.0
@@ -23,6 +26,10 @@ class WassersteinDirectionContext:
 
     gt_norm: np.ndarray
     stats: NormalizationStats
+    include_delta: bool = True
+    categorical_weight: float = 1.0
+    delta_weight: float = 1.0
+    full_trajectory: bool = False
 
 
 @dataclass(frozen=True)
@@ -55,6 +62,10 @@ class WassersteinScoringContext:
 
     pooled: WassersteinDirectionContext
     per_direction: dict[int, WassersteinDirectionContext]
+    include_delta: bool = True
+    categorical_weight: float = 1.0
+    delta_weight: float = 1.0
+    full_trajectory: bool = False
 
     @property
     def expected_directions(self) -> tuple[int, ...]:
@@ -138,6 +149,9 @@ def _feature_kwargs(
     n_holds: int | None,
     dir_id_onehot: bool,
     n_directions: int | None,
+    hold_reduce: str | None = None,
+    include_delta: bool = True,
+    full_trajectory: bool = False,
 ) -> dict[str, Any]:
     return {
         "use_median": bool(use_median),
@@ -145,6 +159,65 @@ def _feature_kwargs(
         "n_holds": n_holds,
         "dir_id_onehot": bool(dir_id_onehot),
         "n_directions": n_directions,
+        "hold_reduce": hold_reduce,
+        "include_delta": bool(include_delta),
+        "full_trajectory": bool(full_trajectory),
+    }
+
+
+def _assert_normalization_contract(
+    *,
+    prepared_include_delta: bool,
+    prepared_categorical_weight: float,
+    prepared_delta_weight: float,
+    include_delta: bool,
+    categorical_weight: float,
+    delta_weight: float,
+    prepared_full_trajectory: bool = False,
+    full_trajectory: bool = False,
+) -> None:
+    if bool(include_delta) != bool(prepared_include_delta):
+        raise ValueError(
+            "include_delta mismatch: "
+            f"prepared={bool(prepared_include_delta)} score={bool(include_delta)}"
+        )
+    if bool(full_trajectory) != bool(prepared_full_trajectory):
+        raise ValueError(
+            "full_trajectory mismatch: "
+            f"prepared={bool(prepared_full_trajectory)} score={bool(full_trajectory)}"
+        )
+    prepared_w = float(prepared_categorical_weight)
+    score_w = float(categorical_weight)
+    if not np.isfinite(score_w) or abs(score_w - prepared_w) > 1.0e-9 * max(
+        1.0, abs(prepared_w)
+    ):
+        raise ValueError(
+            "categorical_weight mismatch: "
+            f"prepared={prepared_w} score={score_w}"
+        )
+    prepared_dw = float(prepared_delta_weight)
+    score_dw = float(delta_weight)
+    if not np.isfinite(score_dw) or abs(score_dw - prepared_dw) > 1.0e-9 * max(
+        1.0, abs(prepared_dw)
+    ):
+        raise ValueError(
+            "delta_weight mismatch: "
+            f"prepared={prepared_dw} score={score_dw}"
+        )
+
+
+def _normalization_kwargs(
+    *,
+    n_junctions: int,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
+    delta_weight: float = 1.0,
+) -> dict[str, Any]:
+    return {
+        "n_junctions": int(n_junctions),
+        "include_delta": bool(include_delta),
+        "categorical_weight": float(categorical_weight),
+        "delta_weight": float(delta_weight),
     }
 
 
@@ -166,6 +239,10 @@ def prepare_gt_wasserstein_context(
     n_holds: int | None = None,
     pool_directions: bool = False,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
+    delta_weight: float = 1.0,
 ) -> dict[int, WassersteinDirectionContext]:
     """Fit GT normalization from recorded transition bags (per-dir or pooled)."""
     dir_id_onehot = bool(pool_directions)
@@ -177,6 +254,8 @@ def prepare_gt_wasserstein_context(
             n_holds=n_holds,
             dir_id_onehot=dir_id_onehot,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
+            include_delta=include_delta,
         ),
     )
     if pool_directions:
@@ -184,11 +263,24 @@ def prepare_gt_wasserstein_context(
     if not gt_by_direction:
         raise ValueError("No valid hold-only GT transition features were found.")
 
+    n_junctions = n_junctions_from_episodes(recorded_episodes)
+    norm_kwargs = _normalization_kwargs(
+        n_junctions=n_junctions,
+        include_delta=include_delta,
+        categorical_weight=categorical_weight,
+        delta_weight=delta_weight,
+    )
     context: dict[int, WassersteinDirectionContext] = {}
     for direction, gt_features in gt_by_direction.items():
-        stats = fit_gt_normalization(gt_features)
+        stats = fit_gt_normalization(gt_features, **norm_kwargs)
         gt_norm = apply_normalization(gt_features, stats)
-        context[int(direction)] = WassersteinDirectionContext(gt_norm=gt_norm, stats=stats)
+        context[int(direction)] = WassersteinDirectionContext(
+            gt_norm=gt_norm,
+            stats=stats,
+            include_delta=bool(include_delta),
+            categorical_weight=float(categorical_weight),
+            delta_weight=float(delta_weight),
+        )
     return context
 
 
@@ -204,8 +296,22 @@ def score_candidate_wasserstein(
     n_holds: int | None = None,
     pool_directions: bool = False,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
+    delta_weight: float = 1.0,
 ) -> WassersteinCandidateResult:
     """Score one replayed candidate against precomputed GT Wasserstein context."""
+    if gt_context:
+        first = next(iter(gt_context.values()))
+        _assert_normalization_contract(
+            prepared_include_delta=first.include_delta,
+            prepared_categorical_weight=first.categorical_weight,
+            prepared_delta_weight=first.delta_weight,
+            include_delta=include_delta,
+            categorical_weight=categorical_weight,
+            delta_weight=delta_weight,
+        )
     dir_id_onehot = bool(pool_directions)
     candidate_by_direction = combine_transition_features(
         replay_observations,
@@ -215,6 +321,8 @@ def score_candidate_wasserstein(
             n_holds=n_holds,
             dir_id_onehot=dir_id_onehot,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
+            include_delta=include_delta,
         ),
     )
     if pool_directions:
@@ -289,12 +397,18 @@ def prepare_gt_wasserstein_scoring_context(
     n_holds: int | None = None,
     pool_directions: bool = True,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
+    delta_weight: float = 1.0,
+    full_trajectory: bool = False,
 ) -> WassersteinScoringContext:
     """Build pooled fitness GT and independently normalized per-direction diagnostics.
 
     ``pool_directions`` is accepted for API symmetry with
     ``score_candidate_wasserstein_complete``; prepare always builds both the
-    pooled fitness bag and physical-direction diagnostics.
+    pooled fitness bag and physical-direction diagnostics. ``full_trajectory``
+    is documented on ``build_transition_features_by_direction``.
     """
     del pool_directions  # always build pooled + per-direction contexts
     per_direction_features = combine_transition_features(
@@ -305,17 +419,32 @@ def prepare_gt_wasserstein_scoring_context(
             n_holds=n_holds,
             dir_id_onehot=False,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
+            include_delta=include_delta,
+            full_trajectory=full_trajectory,
         ),
     )
     if not per_direction_features:
         raise ValueError("No valid hold-only GT transition features were found.")
 
+    n_junctions = n_junctions_from_episodes(recorded_episodes)
+    norm_kwargs = _normalization_kwargs(
+        n_junctions=n_junctions,
+        include_delta=include_delta,
+        categorical_weight=categorical_weight,
+        delta_weight=delta_weight,
+    )
     per_direction: dict[int, WassersteinDirectionContext] = {}
     for direction, gt_features in per_direction_features.items():
-        stats = fit_gt_normalization(gt_features)
+        stats = fit_gt_normalization(gt_features, **norm_kwargs)
         gt_norm = apply_normalization(gt_features, stats)
         per_direction[int(direction)] = WassersteinDirectionContext(
-            gt_norm=gt_norm, stats=stats
+            gt_norm=gt_norm,
+            stats=stats,
+            include_delta=bool(include_delta),
+            categorical_weight=float(categorical_weight),
+            delta_weight=float(delta_weight),
+            full_trajectory=bool(full_trajectory),
         )
 
     # Pooled fitness bag always uses fixed-width physical-direction one-hot
@@ -328,18 +457,32 @@ def prepare_gt_wasserstein_scoring_context(
             n_holds=n_holds,
             dir_id_onehot=True,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
+            include_delta=include_delta,
+            full_trajectory=full_trajectory,
         ),
     )
     pooled_features = _pool_by_direction(pooled_source)
     if not pooled_features:
         raise ValueError("No valid hold-only GT transition features were found.")
     pooled_raw = pooled_features[POOLED_DIRECTION_KEY]
-    pooled_stats = fit_gt_normalization(pooled_raw)
+    pooled_stats = fit_gt_normalization(pooled_raw, **norm_kwargs)
     pooled = WassersteinDirectionContext(
         gt_norm=apply_normalization(pooled_raw, pooled_stats),
         stats=pooled_stats,
+        include_delta=bool(include_delta),
+        categorical_weight=float(categorical_weight),
+        delta_weight=float(delta_weight),
+        full_trajectory=bool(full_trajectory),
     )
-    return WassersteinScoringContext(pooled=pooled, per_direction=per_direction)
+    return WassersteinScoringContext(
+        pooled=pooled,
+        per_direction=per_direction,
+        include_delta=bool(include_delta),
+        categorical_weight=float(categorical_weight),
+        delta_weight=float(delta_weight),
+        full_trajectory=bool(full_trajectory),
+    )
 
 
 def score_candidate_wasserstein_complete(
@@ -354,8 +497,23 @@ def score_candidate_wasserstein_complete(
     n_holds: int | None = None,
     pool_directions: bool = True,
     n_directions: int | None = None,
+    hold_reduce: str | None = None,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
+    delta_weight: float = 1.0,
+    full_trajectory: bool = False,
 ) -> WassersteinCandidateResult:
     """Score a candidate with pooled fitness and physical-direction diagnostics."""
+    _assert_normalization_contract(
+        prepared_include_delta=gt_context.include_delta,
+        prepared_categorical_weight=gt_context.categorical_weight,
+        prepared_delta_weight=gt_context.delta_weight,
+        include_delta=include_delta,
+        categorical_weight=categorical_weight,
+        delta_weight=delta_weight,
+        prepared_full_trajectory=gt_context.full_trajectory,
+        full_trajectory=full_trajectory,
+    )
     candidate_per_direction = combine_transition_features(
         replay_observations,
         **_feature_kwargs(
@@ -364,6 +522,9 @@ def score_candidate_wasserstein_complete(
             n_holds=n_holds,
             dir_id_onehot=False,
             n_directions=n_directions,
+            hold_reduce=hold_reduce,
+            include_delta=include_delta,
+            full_trajectory=full_trajectory,
         ),
     )
 
@@ -422,6 +583,9 @@ def score_candidate_wasserstein_complete(
                 n_holds=n_holds,
                 dir_id_onehot=True,
                 n_directions=n_directions,
+                hold_reduce=hold_reduce,
+                include_delta=include_delta,
+                full_trajectory=full_trajectory,
             ),
         )
         # Restrict to expected physical directions before pooling.

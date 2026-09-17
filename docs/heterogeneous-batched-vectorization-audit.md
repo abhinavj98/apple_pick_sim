@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-07-27
 
-Audit of the batched heterogeneous coupled stack and its dependency chain against the goal of **fully vectorized** GPU stepping. Canonical batched heterogeneous API: `apple_pick_sim.coupled_fruiting.BatchedHeterogeneousCoupledSim` (thin example: `example_batched_heterogeneous_coupled_sim.py`). Flow reference: [`vectorized-coupled-fruiting.md`](vectorized-coupled-fruiting.md); slice status: `docs/ROADMAP.md`.
+Audit of the batched heterogeneous coupled stack and its dependency chain against the goal of **fully vectorized** GPU stepping. Canonical batched heterogeneous API: `apple_pick_sim.coupled_fruiting.BatchedHeterogeneousCoupledSim` (thin example: `example_batched_heterogeneous_coupled_sim.py`). Flow reference: [`handbook-coupled-simulation.md`](handbook-coupled-simulation.md); slice status: `docs/ROADMAP.md`.
 
 ---
 

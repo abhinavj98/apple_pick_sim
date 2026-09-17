@@ -1,6 +1,7 @@
 # Batched heterogeneous build API (V.3.1 step A)
 
-**Status:** Draft — approved in brainstorming session  
+**Status:** Implemented
+**Canonical living doc:** `docs/handbook-coupled-simulation.md`
 **Scope:** Build-only layer; full `BatchedHeterogeneousCoupledSim` (step B) deferred  
 **Config:** `apple_pick_sim/coupled_fruiting/batched_heterogeneous_config.py` (done; `ControllerConfig.action_dim` / `validate_actions` — [runtime spec](2026-07-03-batched-heterogeneous-coupled-sim-design.md#config-extensions-batched_heterogeneous_configpy))
 

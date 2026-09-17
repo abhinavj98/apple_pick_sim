@@ -3,6 +3,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Status** | Implemented |
+| **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-08-12 |
 | **Code** | `robot_replay/gl_video_recorder.py`, `robot_replay/example_replay_real_batched.py` |
 

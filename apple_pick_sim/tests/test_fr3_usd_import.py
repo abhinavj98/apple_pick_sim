@@ -5,11 +5,13 @@ from __future__ import annotations
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 import newton
 from newton.solvers import SolverMuJoCo
 
 from apple_pick_sim.robot import fr3_robot
+from apple_pick_sim.robot.fr3_robot import setup as fr3_setup
 
 
 def _usd_available() -> bool:
@@ -82,6 +84,26 @@ class TestFr3UsdImport(unittest.TestCase):
         fr3_robot.sync_robot_gravity_to_mujoco(model, solver)
         g = solver.mj_model.opt.gravity
         np.testing.assert_allclose(np.asarray(g).reshape(3), 0.0, atol=1e-9)
+
+
+class TestBuildFr3LoadVisualShapes(unittest.TestCase):
+    """Headless FR3 import must skip visual-only USD shapes (OpenUSD heap bug mitigation)."""
+
+    def test_build_fr3_robot_builder_passes_load_visual_shapes_false(self):
+        builder = mock.MagicMock()
+        with (
+            mock.patch.object(fr3_setup, "fr3_assets_available", return_value=True),
+            mock.patch.object(fr3_setup.newton, "ModelBuilder", return_value=builder),
+            mock.patch.object(fr3_setup.SolverMuJoCo, "register_custom_attributes"),
+            mock.patch.object(
+                fr3_setup, "resolve_tcp_body_index_from_builder", return_value=0
+            ),
+        ):
+            fr3_setup.build_fr3_robot_builder()
+        builder.add_usd.assert_called_once()
+        kwargs = builder.add_usd.call_args.kwargs
+        self.assertIn("load_visual_shapes", kwargs)
+        self.assertIs(kwargs["load_visual_shapes"], False)
 
 
 class TestInitMujocoActuatorTargets(unittest.TestCase):

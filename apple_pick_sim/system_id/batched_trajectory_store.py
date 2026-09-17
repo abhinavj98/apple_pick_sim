@@ -91,6 +91,9 @@ EPISODE_METADATA_KEYS: tuple[str, ...] = (
     "action_compatible_with_vic_twist",
     "action_dim",
     "action_layout",
+    "ft_filter",
+    # Real→batched: source frame 0 stamped as hold 0 on converted frame 0.
+    "rest_hold_injected",
 )
 
 
@@ -336,12 +339,28 @@ class BatchedSysIdDataset:
             return np.stack([np.asarray(row, dtype=np.float32).reshape(-1) for row in rows], axis=0)
 
         def _stack_woody(prefix: str) -> dict[str, np.ndarray]:
+            """Stack per-frame woody positions for ``junction_names``.
+
+            Trajectory frames no longer write ``woody_end__*`` columns (bags
+            must not persist ends); only the pre-weld row (``step_idx=-1``) may
+            still have them, for digital-twin geometry rebuild. Rows without a
+            value for an otherwise-present column are filled with NaN rather
+            than raising, so callers indexing the pre-weld frame specifically
+            still get real data.
+            """
             out: dict[str, np.ndarray] = {}
             for name in junction_names:
                 col = f"{prefix}{name}"
+                if col not in table.column_names:
+                    continue
                 rows = table.column(col).to_pylist()
                 out[name] = np.stack(
-                    [np.asarray(row, dtype=np.float32).reshape(3) for row in rows],
+                    [
+                        np.asarray(row, dtype=np.float32).reshape(3)
+                        if row is not None
+                        else np.full(3, np.nan, dtype=np.float32)
+                        for row in rows
+                    ],
                     axis=0,
                 )
             return out
@@ -377,6 +396,8 @@ class BatchedSysIdDataset:
             "robot_joint_q": _stack_column("robot_joint_q").reshape(-1, 7),
             "junction_names": list(junction_names),
         }
+        if "ft_wrist_lpf" in table.column_names:
+            arrays["ft_wrist_lpf"] = _stack_column("ft_wrist_lpf").reshape(-1, 6)
         if "sim_time" in table.column_names:
             arrays["sim_time"] = _stack_column("sim_time").reshape(-1)
         if "amplitude_m" in table.column_names:

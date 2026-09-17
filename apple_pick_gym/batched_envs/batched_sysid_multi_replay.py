@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+import traceback
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable, Protocol
 
@@ -11,17 +12,18 @@ import numpy as np
 
 from apple_pick_gym.batched_envs.batched_stability_monitor import (
     BatchedStabilityMonitor,
-    hard_blowup_mask,
     ik_bootstrap_unstable_mask,
 )
 from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     BatchedSysIdReplayCollectors,
-    actions_tensor_from_recorded_frame,
+    replay_control_horizon_record_before_step,
 )
 from apple_pick_gym.batched_envs.support_joint_penalties import (
     apply_per_env_support_joint_penalties,
+    apply_per_env_support_roll_penalties,
     support_joint_zeta_from_dataset,
 )
+from apple_pick_sim.fruiting_system.joint_kd_scaling import support_dowel_length_m
 from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
@@ -30,6 +32,9 @@ from apple_pick_sim.fruiting_system.params import (
 from apple_pick_sim.system_id import (
     ReplayEpisodeSource,
     initialize_batched_env_from_episode_sources,
+)
+from apple_pick_sim.system_id.batched_digital_twin_init import (
+    gripper_proxy_for_real_batched_replay,
 )
 
 
@@ -64,6 +69,7 @@ class ReplayStructureRequest:
     base_params: FruitingSystemParams
     recorded_by_direction: Mapping[int, dict[str, Any]]
     gripper: GripperProxyConfig
+    meta_by_direction: Mapping[int, dict] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -74,6 +80,9 @@ class ReplaySlot:
     source: ReplayEpisodeSource
     gripper: GripperProxyConfig
     support_kp: float | None = None
+    support_roll_kp: float | None = None
+    support_joint_zeta: float | None = None
+    episode_meta: dict | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -108,6 +117,7 @@ class _ReplayCompatibilitySignature:
     apple_present: bool
     junction_names: tuple[str, ...]
     frame_count: int
+    action_width: int
     direction_indices: tuple[int, ...]
     gripper: tuple[Any, ...]
 
@@ -144,24 +154,30 @@ def _validate_request(request: ReplayStructureRequest) -> _ReplayCompatibilitySi
         )
 
     frame_count: int | None = None
+    action_width: int | None = None
     junction_names: tuple[str, ...] | None = None
     for direction_idx in directions:
         recorded = request.recorded_by_direction[direction_idx]
         action = np.asarray(recorded.get("action"))
-        if action.ndim != 2 or action.shape[1] != 6:
+        if action.ndim != 2 or action.shape[1] not in (6, 19):
             raise ValueError(
-                "expected action shape (T, 6) for "
+                "expected action shape (T, 6) or (T, 19) for "
                 f"structure {int(request.structure_idx)} direction {direction_idx}, "
                 f"got {action.shape!r}"
+            )
+        episode_action_width = int(action.shape[1])
+        if action_width is None:
+            action_width = episode_action_width
+        elif episode_action_width != action_width:
+            raise ValueError(
+                "all direction episodes must have the same action width for "
+                f"structure {int(request.structure_idx)}"
             )
         episode_frames = int(action.shape[0])
         if frame_count is None:
             frame_count = episode_frames
-        elif episode_frames != frame_count:
-            raise ValueError(
-                "all direction episodes must have the same frame count for "
-                f"structure {int(request.structure_idx)}"
-            )
+        else:
+            frame_count = max(frame_count, episode_frames)
         episode_junctions = tuple(str(name) for name in recorded.get("junction_names", ()))
         if junction_names is None:
             junction_names = episode_junctions
@@ -186,7 +202,7 @@ def _validate_request(request: ReplayStructureRequest) -> _ReplayCompatibilitySi
         str(gripper.label),
         bool(gripper.fix_to_apple),
     )
-    assert frame_count is not None and junction_names is not None
+    assert frame_count is not None and action_width is not None and junction_names is not None
     return _ReplayCompatibilitySignature(
         topology=str(params.topology),
         enabled_rods=enabled_rods,
@@ -194,9 +210,54 @@ def _validate_request(request: ReplayStructureRequest) -> _ReplayCompatibilitySi
         apple_present=params.apple_radius is not None and params.apple_density is not None,
         junction_names=junction_names,
         frame_count=frame_count,
+        action_width=action_width,
         direction_indices=directions,
         gripper=gripper_signature,
     )
+
+
+def _pad_actions_with_last(actions_by_slot: Sequence[np.ndarray]) -> np.ndarray:
+    """Stack ragged ``(T_i, A)`` actions to ``(N, T_max, A)`` by repeating the last row."""
+    arrays = [np.asarray(action, dtype=np.float32) for action in actions_by_slot]
+    if not arrays:
+        raise ValueError("cannot pad an empty recorded-action list")
+    t_max = max(int(action.shape[0]) for action in arrays)
+    action_width = int(arrays[0].shape[1])
+    out = np.empty((len(arrays), t_max, action_width), dtype=np.float32)
+    for slot_idx, action in enumerate(arrays):
+        n_frames = int(action.shape[0])
+        if n_frames == 0:
+            raise ValueError("cannot pad an empty action episode")
+        if int(action.shape[1]) != action_width:
+            raise ValueError("all slots must have the same action width")
+        out[slot_idx, :n_frames] = action
+        pad = t_max - n_frames
+        if pad:
+            out[slot_idx, n_frames:] = np.repeat(action[-1][None, :], pad, axis=0)
+    return out
+
+
+def _truncate_time_axis(value: Any, n_frames: int) -> Any:
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return value
+        return value[: int(n_frames)]
+    return value
+
+
+def _truncate_replay_arrays(arrays: Mapping[str, Any], n_frames: int) -> dict[str, Any]:
+    """Slice time-varying replay arrays to the recorded length before features."""
+    n = int(n_frames)
+    out: dict[str, Any] = {}
+    for key, value in arrays.items():
+        if key == "junction_names":
+            out[key] = value
+            continue
+        if isinstance(value, dict):
+            out[key] = {name: _truncate_time_axis(arr, n) for name, arr in value.items()}
+            continue
+        out[key] = _truncate_time_axis(value, n)
+    return out
 
 
 def _raise_if_incompatible(
@@ -210,6 +271,7 @@ def _raise_if_incompatible(
         ("apple presence", baseline.apple_present, candidate.apple_present),
         ("junction names", baseline.junction_names, candidate.junction_names),
         ("frame count", baseline.frame_count, candidate.frame_count),
+        ("action width", baseline.action_width, candidate.action_width),
         ("direction layout", baseline.direction_indices, candidate.direction_indices),
         ("gripper configuration", baseline.gripper, candidate.gripper),
     )
@@ -242,26 +304,43 @@ def build_replay_candidate_blocks(
         for local_candidate_idx, candidate in enumerate(request.candidates):
             params = candidate.apply_to(request.base_params)
             support_kp = getattr(candidate, "support_kp", None)
-            slots = tuple(
-                ReplaySlot(
-                    key=ReplaySlotKey(
-                        structure_idx=structure_idx,
-                        local_candidate_idx=local_candidate_idx,
-                        direction_idx=direction_idx,
-                    ),
-                    params=params,
-                    recorded=request.recorded_by_direction[direction_idx],
-                    source=ReplayEpisodeSource(
-                        structure_idx=structure_idx,
-                        direction_idx=direction_idx,
-                    ),
-                    gripper=request.gripper,
-                    support_kp=float(support_kp)
-                    if support_kp is not None
-                    else None,
+            support_roll_kp = getattr(candidate, "support_roll_kp", None)
+            support_joint_zeta = getattr(candidate, "support_joint_zeta", None)
+            slots_list: list[ReplaySlot] = []
+            for direction_idx in directions:
+                if request.meta_by_direction is not None:
+                    env_meta = dict(request.meta_by_direction[direction_idx])
+                    slot_gripper = gripper_proxy_for_real_batched_replay(env_meta)
+                else:
+                    env_meta = None
+                    slot_gripper = request.gripper
+                slots_list.append(
+                    ReplaySlot(
+                        key=ReplaySlotKey(
+                            structure_idx=structure_idx,
+                            local_candidate_idx=local_candidate_idx,
+                            direction_idx=direction_idx,
+                        ),
+                        params=params,
+                        recorded=request.recorded_by_direction[direction_idx],
+                        source=ReplayEpisodeSource(
+                            structure_idx=structure_idx,
+                            direction_idx=direction_idx,
+                        ),
+                        gripper=slot_gripper,
+                        support_kp=float(support_kp)
+                        if support_kp is not None
+                        else None,
+                        support_roll_kp=float(support_roll_kp)
+                        if support_roll_kp is not None
+                        else None,
+                        support_joint_zeta=float(support_joint_zeta)
+                        if support_joint_zeta is not None
+                        else None,
+                        episode_meta=env_meta,
+                    )
                 )
-                for direction_idx in directions
-            )
+            slots = tuple(slots_list)
             block = ReplayCandidateBlock(
                 structure_idx=structure_idx,
                 local_candidate_idx=local_candidate_idx,
@@ -395,32 +474,108 @@ def replay_multi_structure_candidate_blocks(
             continue
         slots = tuple(slot for block in surviving_blocks for slot in block.slots)
         chunk_env_counts.append(len(slots))
-        recorded_actions = np.stack(
-            [
-                np.asarray(slot.recorded["action"], dtype=np.float32)
-                for slot in slots
-            ],
-            axis=0,
+        recorded_n_frames = tuple(
+            int(np.asarray(slot.recorded["action"]).shape[0]) for slot in slots
+        )
+        recorded_actions = _pad_actions_with_last(
+            [slot.recorded["action"] for slot in slots]
         )
         env = None
         try:
             build_started = time.perf_counter()
+            build_kwargs: dict[str, Any] = {}
+            if getattr(build_env_fn, "wants_per_env_meta", False) and all(
+                slot.episode_meta is not None for slot in slots
+            ):
+                build_kwargs["per_env_episode_meta"] = [
+                    dict(slot.episode_meta) for slot in slots
+                ]
+            support_kps = [slot.support_kp for slot in slots]
+            build_accepts_support_kp = getattr(
+                build_env_fn, "wants_support_kp_per_env", False
+            )
+            if build_accepts_support_kp and any(kp is not None for kp in support_kps):
+                if any(kp is None for kp in support_kps):
+                    raise ValueError(
+                        "support_kp must be set on every fused replay slot when "
+                        "build_env_fn.wants_support_kp_per_env is True"
+                    )
+                build_kwargs["support_kp_per_env"] = [float(kp) for kp in support_kps]
+            support_roll_kps = [slot.support_roll_kp for slot in slots]
+            build_accepts_support_roll = getattr(
+                build_env_fn, "wants_support_roll_kp_per_env", False
+            )
+            if build_accepts_support_roll and any(
+                kp is not None for kp in support_roll_kps
+            ):
+                if any(kp is None for kp in support_roll_kps):
+                    raise ValueError(
+                        "support_roll_kp must be set on every fused replay slot when "
+                        "build_env_fn.wants_support_roll_kp_per_env is True"
+                    )
+                build_kwargs["support_roll_kp_per_env"] = [
+                    float(kp) for kp in support_roll_kps
+                ]
+            support_zetas = [slot.support_joint_zeta for slot in slots]
+            build_accepts_support_zeta = getattr(
+                build_env_fn, "wants_support_zeta_per_env", False
+            )
+            if build_accepts_support_zeta and any(
+                z is not None for z in support_zetas
+            ):
+                if any(z is None for z in support_zetas):
+                    raise ValueError(
+                        "support_joint_zeta must be set on every fused replay slot when "
+                        "build_env_fn.wants_support_zeta_per_env is True"
+                    )
+                build_kwargs["support_zeta_per_env"] = [
+                    float(z) for z in support_zetas
+                ]
             env = build_env_fn(
                 num_envs=len(slots),
                 per_env_params=[slot.params for slot in slots],
                 per_env_grippers=[slot.gripper for slot in slots],
                 max_episode_steps=int(recorded_actions.shape[1]),
+                **build_kwargs,
             )
             _synchronize_device()
             build_seconds += time.perf_counter() - build_started
 
-            if any(slot.support_kp is not None for slot in slots):
+            def _slot_zetas_or_dataset() -> list[float]:
+                dataset_zeta = support_joint_zeta_from_dataset(dataset)
+                return [
+                    float(slot.support_joint_zeta)
+                    if slot.support_joint_zeta is not None
+                    else float(dataset_zeta)
+                    for slot in slots
+                ]
+
+            # Prefer build-time support kp (settles + snapshot). Late apply only
+            # for legacy build_env_fn that does not advertise settle-time support.
+            if (
+                not build_accepts_support_kp
+                and any(slot.support_kp is not None for slot in slots)
+            ):
                 apply_per_env_support_joint_penalties(
                     env._sim.scene,
                     [slot.support_kp for slot in slots],
                     num_envs=env._sim.layout.num_envs,
                     joints_per_world=env._sim.layout.joints_per_world,
-                    zeta=support_joint_zeta_from_dataset(dataset),
+                    dowel_length_m_per_env=[
+                        support_dowel_length_m(slot.params) for slot in slots
+                    ],
+                    zeta_per_env=_slot_zetas_or_dataset(),
+                )
+            if (
+                not build_accepts_support_roll
+                and any(slot.support_roll_kp is not None for slot in slots)
+            ):
+                apply_per_env_support_roll_penalties(
+                    env._sim.scene,
+                    [slot.support_roll_kp for slot in slots],
+                    num_envs=env._sim.layout.num_envs,
+                    joints_per_world=env._sim.layout.joints_per_world,
+                    zeta_per_env=_slot_zetas_or_dataset(),
                 )
 
             replay_started = time.perf_counter()
@@ -448,33 +603,24 @@ def replay_multi_structure_candidate_blocks(
                 len(slots),
                 [slot.recorded for slot in slots],
             )
-            for frame_idx in range(int(recorded_actions.shape[1])):
-                actions = actions_tensor_from_recorded_frame(
-                    recorded_actions,
-                    frame_idx=frame_idx,
-                    device=env.device,
-                )
-                env.step(disable_ctrl.apply_actions(actions))
-                if on_step is not None and not bool(
-                    on_step(frame_idx=frame_idx, env=env)
-                ):
-                    break
-                last_obs = getattr(env, "_last_obs", None)
-                if last_obs is None:
-                    raise RuntimeError("env._last_obs missing after step")
-                step_report = monitor.check(last_obs, step_idx=frame_idx)
-                collectors.record_all_envs_step(
-                    env,
-                    frame_idx=frame_idx,
-                    unstable=step_report.unstable,
-                    record_mask=disable_ctrl.should_record_mask(),
-                )
-                disable_ctrl.update(hard_blowup_mask(step_report))
+            recorded_n_frames_arr = np.asarray(recorded_n_frames, dtype=np.int64)
+            replay_control_horizon_record_before_step(
+                env=env,
+                recorded_actions=recorded_actions,
+                recorded_n_frames_arr=recorded_n_frames_arr,
+                collectors=collectors,
+                disable_ctrl=disable_ctrl,
+                monitor=monitor,
+                on_step=on_step,
+            )
 
             for env_idx, slot in enumerate(slots):
                 if slot.key in replay_by_key:
                     raise RuntimeError(f"duplicate replay result key: {slot.key}")
-                replay_by_key[slot.key] = collectors.to_arrays(env_idx)
+                replay_by_key[slot.key] = _truncate_replay_arrays(
+                    collectors.to_arrays(env_idx),
+                    recorded_n_frames[env_idx],
+                )
             _synchronize_device()
             replay_seconds += time.perf_counter() - replay_started
         except SysIdReplayCancelled:
@@ -483,12 +629,10 @@ def replay_multi_structure_candidate_blocks(
             if fail_fast:
                 raise
             failed_chunk_indices.append(chunk_idx)
+            detail = f"chunk {chunk_idx}: {exc}\n{traceback.format_exc()}"
             failed_now = {slot.key.structure_idx for slot in slots}
             for structure_idx in failed_now:
-                failed_structures.setdefault(
-                    structure_idx,
-                    f"chunk {chunk_idx}: {exc}",
-                )
+                failed_structures.setdefault(structure_idx, detail)
             replay_by_key = {
                 key: arrays
                 for key, arrays in replay_by_key.items()
@@ -496,6 +640,10 @@ def replay_multi_structure_candidate_blocks(
             }
         finally:
             if env is not None:
+                try:
+                    _synchronize_device()
+                except Exception:
+                    pass
                 env.close()
 
     surviving_planned_keys = {

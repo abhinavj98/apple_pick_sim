@@ -1,8 +1,8 @@
 # GPU coupling architecture and optimization
 
-**Last updated:** 2026-07-27 (co-teleport / explicit-flag cache; FR3-only builders)
+**Last updated:** 2026-09-03 (VIC joint-torque slew on-device Torch clamp)
 
-**Scope note:** Single-env sections below describe the original coupled picking path. For the **multi-env batched heterogeneous** GPU hot path (`BatchedHeterogeneousCoupledSim`), see `docs/vectorized-coupled-fruiting.md`, `docs/heterogeneous-batched-vectorization-audit.md`, and design spec `docs/superpowers/specs/2026-07-03-batched-gpu-hot-path-design.md`.
+**Scope note:** Single-env sections below describe the original coupled picking path. For the **multi-env batched heterogeneous** GPU hot path (`BatchedHeterogeneousCoupledSim`), see H1 `docs/handbook-coupled-simulation.md`, `docs/heterogeneous-batched-vectorization-audit.md`, and design spec `docs/superpowers/specs/2026-07-03-batched-gpu-hot-path-design.md`.
 
 ## Behavior summary
 
@@ -32,7 +32,7 @@ Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → 
 
 **Still CPU (acceptable):** keyboard teleop, `velocity_for_world` callbacks, debug/viewer `.numpy()` readouts, checkpoint `body_q` capture (once at build).
 
-**Robot:** FR3-only public API (`docs/coupled-sim-api.md`). Placeholder builders removed.
+**Robot:** FR3-only public API (`docs/handbook-coupled-simulation.md`). Placeholder builders removed.
 
 ---
 
@@ -80,6 +80,7 @@ Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → 
 |----------|-----------|--------|
 | `coupled_substep` | `wp.clone(body_qd)` | **Fixed** — pooled `qd_synced` + `wp.copy` |
 | `harvest_stem_tension_for_tcp` | Full-buffer `.numpy()` + NumPy limit | **Fixed** — device gather + Warp limit kernel |
+| `apply_joint_torque_slew_to_scene` | Per-substep `.numpy()` / `assign` on `joint_f` | **Fixed** — in-place Torch clamp on `wp.to_torch` views |
 | `DEFAULT_MUJOCO_SOLVER_KWARGS` | `use_mujoco_cpu` | **Default `False`** in solver kwargs; builders resolve to MuJoCo CPU on CPU Warp devices and MuJoCo Warp on CUDA unless explicitly overridden |
 | `CouplingForceDebugRecorder` | `.numpy()` | Debug only (unchanged) |
 | FR3 teleop / IK | Host `joint_q` / keyboard | Frame-rate path (acceptable) |
@@ -90,7 +91,7 @@ Coupling semantics (unchanged): **apply lagged wrench → MuJoCo robot step → 
 
 ### Staggered two-model loop
 
-Documented in `docs/mujoco-vbd-coupling-architecture.md`. `coupled_substep` applies **lagged** `proxy_forces` to the robot, advances MuJoCo, mirrors TCP motion to the cable proxy (and apple when welded), runs VBD, then **harvests** fresh coupling wrench into `proxy_forces` for the next substep. Tests: `test_coupled_substep_lag_one_step`, `test_qd_synced_buffer_reused_across_substeps`.
+Documented in `docs/handbook-coupled-simulation.md`. `coupled_substep` applies **lagged** `proxy_forces` to the robot, advances MuJoCo, mirrors TCP motion to the cable proxy (and apple when welded), runs VBD, then **harvests** fresh coupling wrench into `proxy_forces` for the next substep. Tests: `test_coupled_substep_lag_one_step`, `test_qd_synced_buffer_reused_across_substeps`.
 
 ### Stem harvest vs velocity delta
 

@@ -130,6 +130,73 @@ def scrape_ee_cylinder_authored(usd_path: Path) -> dict:
     }
 
 
+def flange_com_to_ee_local(
+    f_x_cee: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Map Franka flange F_x_Cee into USD ee local (fr3_joint8 RotX 180°)."""
+    x, y, z = f_x_cee
+    return (float(x), float(-y), float(-z))
+
+
+def scrape_ee_mass_properties(usd_path: Path) -> dict:
+    """Return mass/COM/inertia for ``/fr3/ee`` and ``/fr3/ee/tcp`` from a USDA file."""
+    text = usd_path.read_text(encoding="utf-8")
+    ee_block = _extract_ee_block(text)
+    ee_own_attrs = _split_ee_own_attrs(ee_block)
+
+    ee_mass_kg = _parse_physics_float(ee_own_attrs, "physics:mass")
+    ee_com_xyz = _parse_physics_point3f(ee_own_attrs, "physics:centerOfMass")
+    ee_inertia_diag = _parse_physics_float3(ee_own_attrs, "physics:diagonalInertia")
+
+    tcp_block = _extract_child_block(ee_block, r'def\s+Xform\s+"tcp"')
+    tcp_mass_kg = _parse_physics_float(tcp_block, "physics:mass")
+
+    return {
+        "ee_mass_kg": ee_mass_kg,
+        "ee_com_xyz": ee_com_xyz,
+        "ee_inertia_diag": ee_inertia_diag,
+        "tcp_mass_kg": tcp_mass_kg,
+    }
+
+
+def _split_ee_own_attrs(ee_block: str) -> str:
+    """Return ee prim own attributes (text before the first nested ``def``)."""
+    match = re.search(r"\n        def ", ee_block)
+    if match is None:
+        return ee_block
+    return ee_block[: match.start()]
+
+
+def _parse_physics_float(block: str, attr_name: str) -> float:
+    pattern = rf"float\s+{re.escape(attr_name)}\s*=\s*([^\s\n]+)"
+    match = re.search(pattern, block)
+    if match is None:
+        raise ValueError(f"missing {attr_name} in block")
+    return float(match.group(1))
+
+
+def _parse_physics_point3f(block: str, attr_name: str) -> tuple[float, float, float]:
+    pattern = rf"point3f\s+{re.escape(attr_name)}\s*=\s*\(([^)]+)\)"
+    match = re.search(pattern, block)
+    if match is None:
+        raise ValueError(f"missing {attr_name} in block")
+    parts = [float(part.strip()) for part in match.group(1).split(",")]
+    if len(parts) != 3:
+        raise ValueError(f"{attr_name} must have 3 components, got {parts!r}")
+    return (parts[0], parts[1], parts[2])
+
+
+def _parse_physics_float3(block: str, attr_name: str) -> tuple[float, float, float]:
+    pattern = rf"float3\s+{re.escape(attr_name)}\s*=\s*\(([^)]+)\)"
+    match = re.search(pattern, block)
+    if match is None:
+        raise ValueError(f"missing {attr_name} in block")
+    parts = [float(part.strip()) for part in match.group(1).split(",")]
+    if len(parts) != 3:
+        raise ValueError(f"{attr_name} must have 3 components, got {parts!r}")
+    return (parts[0], parts[1], parts[2])
+
+
 def _extract_ee_block(text: str) -> str:
     match = re.search(r'def\s+Xform\s+"ee"\s*(?:\([^)]*\))?\s*\{', text)
     if match is None:

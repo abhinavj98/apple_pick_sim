@@ -402,6 +402,7 @@ def test_export_replay_candidates_for_structure_with_collectors(tmp_path: Path):
                 "ft_wrist": np.full(6, float(env_idx + 1), dtype=np.float32),
                 "tcp_velocity": np.zeros(6, dtype=np.float32),
                 "tcp_pos": np.zeros(3, dtype=np.float32),
+                "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
                 "apple_pos": np.zeros(3, dtype=np.float32),
                 "woody_part_start_pos": {
                     name: np.zeros(3, dtype=np.float32)

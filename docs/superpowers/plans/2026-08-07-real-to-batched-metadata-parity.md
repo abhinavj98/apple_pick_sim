@@ -33,7 +33,7 @@
 **Files:**
 - Create: `robot_replay/example_view_batched_episode_meta.py`
 - Modify: `robot_replay/README.md`
-- Modify: `docs/real-sysid-pre-post-grasp-fixes.md` (C1 note)
+- Modify: `docs/handbook-real-replay.md` (C1 note)
 
 - [ ] Viewer loads converted JSON, settle + optional grasp
 - [ ] Document convert + parity commands

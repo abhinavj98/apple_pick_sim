@@ -7,8 +7,10 @@ import pytest
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.explicit_load import (
+    apple_com_acceleration_world,
     apple_com_from_tcp_grasp_offset,
     apple_explicit_wrench_about_tcp,
+    apple_inertial_reaction_wrench_about_tcp,
     apple_mass_kg_from_model,
     apple_support_force_world,
     body_com_position_world,
@@ -46,10 +48,44 @@ _SETTLE_WELD_BUILD_KW = dict(
 _GRAVITY = (0.0, 0.0, -9.81)
 
 
-def test_apple_support_force_world_opposes_gravity():
+def test_apple_inertial_reaction_zero_when_at_rest():
+    m, I = 0.2, 0.001
+    r = np.array([0.08, 0.0, 0.0])
+    z = np.zeros(3)
+    f, tau = apple_inertial_reaction_wrench_about_tcp(m, I, z, z, r)
+    np.testing.assert_allclose(f, 0.0, atol=0.0)
+    np.testing.assert_allclose(tau, 0.0, atol=0.0)
+
+
+def test_apple_inertial_reaction_upward_accel_loads_robot_more():
+    m = 0.2
+    a_com = np.array([0.0, 0.0, 0.5])
+    f, tau = apple_inertial_reaction_wrench_about_tcp(m, 0.0, a_com, np.zeros(3), np.zeros(3))
+    np.testing.assert_allclose(f, -m * a_com, rtol=1e-12, atol=1e-12)
+    assert float(f[2]) < 0.0
+
+
+def test_apple_inertial_reaction_free_fall_cancels_weight():
+    m = 0.2
+    g = np.array([0.0, 0.0, -9.81])
+    f_w = apple_support_force_world(m, _GRAVITY)
+    f_i, _ = apple_inertial_reaction_wrench_about_tcp(m, 0.0, g, np.zeros(3), np.zeros(3))
+    np.testing.assert_allclose(f_w + f_i, 0.0, atol=1e-10)
+
+
+def test_apple_com_acceleration_centripetal():
+    w = np.array([0.0, 0.0, 2.0])
+    r = np.array([0.1, 0.0, 0.0])
+    a_com = apple_com_acceleration_world(np.zeros(3), w, np.zeros(3), np.zeros(3), r)
+    expected = np.cross(w, np.cross(w, r))
+    np.testing.assert_allclose(a_com, expected, rtol=1e-12, atol=1e-12)
+    assert float(a_com[0]) < 0.0
+
+
+def test_apple_support_force_world_matches_apple_weight():
     m = 0.2
     f = apple_support_force_world(m, _GRAVITY)
-    np.testing.assert_allclose(f, [0.0, 0.0, m * 9.81], rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(f, [0.0, 0.0, -m * 9.81], rtol=1e-12, atol=1e-12)
 
 
 def test_apple_support_force_zero_mass_returns_zero():
@@ -206,8 +242,8 @@ def test_stem_harvest_explicit_adds_force_and_torque():
 
     w_off = out_off.numpy().reshape(-1, 6)[tcp]
     w_on = out_on.numpy().reshape(-1, 6)[tcp]
-    np.testing.assert_allclose(w_on[:3] - w_off[:3], -f_exp, rtol=0.02, atol=0.02)
-    np.testing.assert_allclose(w_on[3:] - w_off[3:], -tau_exp, rtol=0.02, atol=0.05)
+    np.testing.assert_allclose(w_on[:3] - w_off[:3], f_exp, rtol=0.02, atol=0.02)
+    np.testing.assert_allclose(w_on[3:] - w_off[3:], tau_exp, rtol=0.02, atol=0.05)
 
 
 @pytest.mark.slow
@@ -337,8 +373,8 @@ def test_coupled_substep_explicit_flag_delta_matches_explicit_wrench():
     delta_f = w_on[:3] - w_off[:3]
     expected_mg = float(np.linalg.norm(f_exp))
     assert expected_mg > 0.5
-    assert float(delta_f[2]) > 0.4 * expected_mg, (
-        f"explicit-on should add child-side +m·g support on TCP: "
+    assert float(delta_f[2]) < -0.4 * expected_mg, (
+        f"explicit-on should add env-on-robot m·g payload on TCP: "
         f"ΔFz={delta_f[2]:.2f}, m·g≈{expected_mg:.2f}"
     )
     np.testing.assert_allclose(
@@ -352,7 +388,7 @@ def test_coupled_substep_explicit_flag_delta_matches_explicit_wrench():
 @requires_fr3
 @pytest.mark.slow
 def test_settle_weld_hold_explicit_support_matches_mg():
-    """Quiet settle→weld + hold: stem-harvest explicit term adds ≈ child-side ``m·g`` on TCP."""
+    """Quiet settle→weld + hold: stem-harvest explicit term adds ≈ env-on-robot ``m·g`` on TCP."""
     import apple_pick_sim.coupled_fruiting as cf
     from apple_pick_sim.coupled_fruiting.builders import build_coupled_fruiting_fr3
 
@@ -425,4 +461,4 @@ def test_settle_weld_hold_explicit_support_matches_mg():
     delta = out_on.numpy().reshape(-1, 6)[tcp, :3] - out_off.numpy().reshape(-1, 6)[tcp, :3]
     f_exp, _ = _explicit_apple_wrench_for_scene(scene)
     np.testing.assert_allclose(delta, f_exp, rtol=0.05, atol=0.15)
-    assert float(delta[2]) > 0.5 * float(f_exp[2])
+    assert float(delta[2]) < 0.5 * float(f_exp[2])

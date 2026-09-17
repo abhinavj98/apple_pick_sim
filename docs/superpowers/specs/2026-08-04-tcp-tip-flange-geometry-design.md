@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Implemented |
+| **Status** | Superseded — tool length is 180 mm (`EE_CYLINDER_HALF_HEIGHT=0.09`); radius/test notes remain useful |
+| **Canonical living doc:** | `docs/handbook-coupled-simulation.md` |
 | **Date** | 2026-08-04 |
 | **Scope** | Lock tip-out TCP contract across VBD proxy, FR3 USD assets, and docs; regress tip↔TCP coincidence |
 | **Related** | `2026-08-04-true-tcp-pose-weld-design.md` (post-grasp SE(3)); `docs/real-world-proxy.md` |

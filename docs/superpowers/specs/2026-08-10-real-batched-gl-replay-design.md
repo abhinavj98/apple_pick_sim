@@ -2,10 +2,11 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Phase B GL + post-grasp settle **plumbing Done**; **correct action drive pending** (wrench ≠ twist VIC) |
+| **Status** | Implemented — Drive is Done via 19D `vic_pose` |
+| **Canonical living doc:** | `docs/handbook-real-replay.md` |
 | **Date** | 2026-08-10 |
 | **Depends on** | Bit-2 format export (`batched_sysid_v1` from real parquet) |
-| **Related** | `docs/real-sysid-pre-post-grasp-fixes.md` (C6), `robot_replay/example_replay_real_batched.py`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
+| **Related** | `docs/handbook-real-replay.md` (C6), `robot_replay/example_replay_real_batched.py`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
 
 ## Purpose
 
@@ -13,17 +14,18 @@ Watch a **complete open-loop FR3 trajectory** in Newton GL after rebuild and
 settle, using a real episode already converted to `batched_sysid_v1`. Settle
 remains off-screen; the window shows trajectory frames only.
 
-**Drive-signal caveat:** real `action` is often a pose-control **wrench**. Twist
-`mode=vic` replay is **not** physically correct until pose/wrench mode ships.
-Export/replay refuse wrench-as-twist unless `--allow-wrench-as-twist`.
+**Drive signal:** real episodes ship 19D `vic_pose_v1` actions from convert
+(pose PD + gains matching logged real control). Legacy 6D `vic` twist replay
+remains available for older datasets; `--allow-wrench-as-twist` is rejected for
+`vic_pose_v1` exports.
 
 ## Sequencing
 
 | Phase | Scope | Status |
 | ----- | ----- | ------ |
-| **B** | GL `on_step` on real replay CLI; TCP motion gate; rebuild from episode metadata | **Plumbing Done**; TCP gate ≠ correct wrench drive |
+| **B** | GL `on_step` on real replay CLI; TCP motion gate; rebuild from episode metadata | **Done** |
 | **Post-grasp** | `SceneSettleCollisionConfig.post_grasp_settle_substeps` (CLI default 500); free settle 5000 + quiet 300; rebrand smoke → `example_replay_real_batched.py` | **Done** |
-| **Drive** | Pose PD (`vic_pose`) or logged-wrench apply matching real `action_semantics` | **Pending** |
+| **Drive** | Pose PD (`vic_pose`) matching converted real action semantics | **Done** |
 | **A** | Later: teach `example_batched_sysid_mmd_grid.py` the same real clamps / flags so grids, scoring, and GL work on exported real datasets | Follow-on |
 
 ## Architecture
@@ -61,11 +63,11 @@ also needs fixture ``sim_build`` support-joint kp/ζ on a CUDA-capable device.
 
 ```bash
 uv run python robot_replay/convert_real_to_batched_sysid_metadata.py \
-  --input robot_replay/s02-d00_action.parquet \
-  --dataset-out /tmp/real_batched_s02_d00 --overwrite
+  --input robot_replay/new_data/s09/s09-d00.parquet \
+  --dataset-out /tmp/real_batched_s09_d00 --overwrite
 
 uv run python robot_replay/example_replay_real_batched.py \
-  --dataset /tmp/real_batched_s02_d00 \
+  --dataset /tmp/real_batched_s09_d00 \
   --viewer gl \
   --max-frames 0 \
   --settle-substeps 5000 \

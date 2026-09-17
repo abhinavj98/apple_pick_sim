@@ -67,13 +67,13 @@ def test_apple_explicit_wrench_about_tcp_with_rotation():
         tcp_orientation_world=q_tcp
     )
     
-    # Support force by robot should be opposite to weight => (0, 0, +mg)
-    expected_f = np.array([0.0, 0.0, 10.0])
+    # Env-on-robot apple weight with g=(0,0,-10) => (0, 0, -mg)
+    expected_f = np.array([0.0, 0.0, -10.0])
     np.testing.assert_allclose(f, expected_f)
-    
+
     # Using the true lever arm r = (-0.1, 0, 0)
-    # tau = r x f = (-0.1, 0, 0) x (0, 0, 10) = (0, 1.0, 0)
-    expected_tau = np.array([0.0, 1.0, 0.0])
+    # tau = r x f = (-0.1, 0, 0) x (0, 0, -10) = (0, -1.0, 0)
+    expected_tau = np.array([0.0, -1.0, 0.0])
     np.testing.assert_allclose(tau, expected_tau, atol=1e-5)
 
 if __name__ == "__main__":

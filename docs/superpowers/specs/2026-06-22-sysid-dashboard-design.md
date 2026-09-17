@@ -1,5 +1,8 @@
 # Sys-ID Dataset Dashboard Design
 
+**Status:** Historical
+**Canonical living doc:** `docs/handbook-sysid-scoring.md`
+
 ## Purpose
 
 Build a local Plotly Dash dashboard for sanity-checking sys-ID datasets collected

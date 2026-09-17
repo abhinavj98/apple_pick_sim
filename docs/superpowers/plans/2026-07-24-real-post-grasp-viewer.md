@@ -31,7 +31,7 @@
 | `apple_pick_sim/tests/test_real_post_grasp_plan.py` | Unit + apply tests |
 | `robot_replay/example_view_pre_grasp_settle.py` | CLI phases |
 | `robot_replay/README.md` | Document flags |
-| `docs/real-sysid-pre-post-grasp-fixes.md` | TCP↔r and +Z∥ŵ contract notes |
+| `docs/handbook-real-replay.md` | TCP↔r and +Z∥ŵ contract notes |
 | Spec | Mark Implemented (slice A) when done |
 
 **Not in this plan:** `weld_fixed_offset_in_apple_frame` / build.py look-at bypass (rejected). Slice B FR3 deferred (seed `joint_pos` from grasp table row when implemented).
@@ -124,7 +124,7 @@ git commit -m "Apply post-grasp look-at weld after free cable settle."
 **Files:**
 - Modify: `robot_replay/example_view_pre_grasp_settle.py`
 - Modify: `robot_replay/README.md`
-- Modify: `docs/real-sysid-pre-post-grasp-fixes.md`
+- Modify: `docs/handbook-real-replay.md`
 - Modify: spec status → Implemented (slice A)
 
 **Flags:** `--grasp-after-settle`, `--post-grasp-settle-substeps` (500), `--tcp-radius-warn-m` (0.02).

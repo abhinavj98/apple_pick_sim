@@ -39,7 +39,7 @@ Select the FR3 teleop controller with ``--controller``:
 - ``direct`` — kinematic direct ``joint_q`` writes (testing / accurate pose hold).
 
 For ``vic``, tune impedance with ``--vic-linear-k``, ``--vic-linear-d``, ``--vic-angular-k``, and
-``--vic-angular-d`` (defaults **8000/80** N/m and **40/4** N·m/rad; batched/fixture defaults differ — see ``docs/variable-impedance-teleop.md``).
+``--vic-angular-d`` (defaults **8000/80** N/m and **40/4** N·m/rad; batched/fixture defaults differ — see ``docs/handbook-variable-impedance.md``).
 """
 
 from __future__ import annotations

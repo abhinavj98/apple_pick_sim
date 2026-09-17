@@ -53,6 +53,25 @@ def test_solid_sphere_inertia_nonpositive_returns_zero():
     assert float(I2[0, 0]) == 0.0
 
 
+def test_apply_payload_inertias_refuses_weld_harvest():
+    """Weld harvest already carries apple weight; applying payload mass double-counts."""
+    from types import SimpleNamespace
+
+    from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import (
+        apply_mujoco_apple_payload_inertias,
+    )
+
+    scene = SimpleNamespace(
+        stem_harvest_explicit_apple_inertia=False,
+        tcp_harvest_source="weld",
+        robot_model=object(),
+        mj_solver=object(),
+        cable=object(),
+    )
+    with pytest.raises(ValueError, match="tcp_harvest_source='weld'"):
+        apply_mujoco_apple_payload_inertias(scene)
+
+
 def test_apple_com_in_tcp_frame_matches_inv_offset():
     from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import apple_com_in_tcp_frame
 
@@ -82,7 +101,7 @@ def test_payload_props_from_params():
 
 
 @requires_fr3
-def test_welded_fr3_has_payload_matching_avbd_apple():
+def test_welded_fr3_default_payload_mass_zero_with_harvest_inertia():
     cf = _import_cf()
     fs = _import_fs()
     scene = build_coupled_fr3(
@@ -96,6 +115,38 @@ def test_welded_fr3_has_payload_matching_avbd_apple():
         robot_base_from_proxy=False,
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
         ik_bootstrap_iterations=128,
+    )
+    assert scene.mj_apple_payload_body_index is not None
+    payload = int(scene.mj_apple_payload_body_index)
+    m_mj = float(scene.robot_model.body_mass.numpy()[payload])
+    assert m_mj == pytest.approx(0.0, abs=1e-12)
+    assert scene.stem_harvest_explicit_apple_weight is True
+    assert scene.stem_harvest_explicit_apple_inertia is True
+    assert scene.apple_inertia_kgm2 > 0.0
+    g = scene.robot_model.gravity.numpy()
+    np.testing.assert_allclose(g, 0.0, atol=0.0)
+    from apple_pick_sim.robot.fr3_robot.setup import resolve_tcp_body_index
+
+    assert resolve_tcp_body_index(scene.robot_model) == scene.tcp_body_index
+    assert payload != scene.tcp_body_index
+
+
+@requires_fr3
+def test_welded_fr3_payload_matching_avbd_when_inertia_off():
+    cf = _import_cf()
+    fs = _import_fs()
+    scene = build_coupled_fr3(
+        cf,
+        fs.load_ranges(RANGES_FIXTURE),
+        0,
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True, robot_facing_weld=True),
+        enable_self_collisions=False,
+        base_pos=COUPLED_BASE_POS,
+        robot_base_pos=COUPLED_ROBOT_BASE_POS,
+        robot_base_from_proxy=False,
+        mujoco_solver_kwargs=DEFAULT_MJ_KW,
+        ik_bootstrap_iterations=128,
+        stem_harvest_explicit_apple_inertia=False,
     )
     assert scene.mj_apple_payload_body_index is not None
     payload = int(scene.mj_apple_payload_body_index)
@@ -147,7 +198,7 @@ def test_free_proxy_fr3_has_no_payload_body():
 
 
 @requires_fr3
-def test_hetero_welded_payload_masses_follow_per_env_apples():
+def test_hetero_welded_payload_masses_zero_with_harvest_inertia():
     from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_fr3
 
     fs = _import_fs()
@@ -176,15 +227,67 @@ def test_hetero_welded_payload_masses_follow_per_env_apples():
     assert layout is not None
     assert layout.template_mj_apple_payload_body is not None
     masses = scene.robot_model.body_mass.numpy()
+    for idx in layout.mj_apple_payload_body_indices:
+        assert float(masses[int(idx)]) == pytest.approx(0.0, abs=1e-12)
+    assert scene.stem_harvest_explicit_apple_inertia is True
+
+
+@requires_fr3
+def test_hetero_welded_payload_masses_follow_per_env_apples_when_inertia_off():
+    from apple_pick_sim.coupled_fruiting.builders import build_heterogeneous_coupled_fruiting_fr3
+
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    p0 = fs.sample_params(ranges, seed=0)
+    p1 = dataclasses.replace(
+        p0,
+        apple_radius=float(p0.apple_radius) * 1.35,
+        apple_density=float(p0.apple_density) * 0.7,
+    )
+    assert analytic_apple_mass_kg(p0) != pytest.approx(analytic_apple_mass_kg(p1))
+
+    scene = build_heterogeneous_coupled_fruiting_fr3(
+        ranges,
+        [p0, p1],
+        gripper_proxy=fs.GripperProxyConfig(fix_to_apple=True, robot_facing_weld=True),
+        enable_self_collisions=False,
+        base_pos=COUPLED_BASE_POS,
+        robot_base_pos=COUPLED_ROBOT_BASE_POS,
+        mujoco_solver_kwargs=DEFAULT_MJ_KW,
+        ik_bootstrap_iterations=64,
+        skip_ik_bootstrap=True,
+        defer_template_robot_bootstrap=True,
+        stem_harvest_explicit_apple_inertia=False,
+    )
+    layout = scene.layout
+    assert layout is not None
+    assert layout.template_mj_apple_payload_body is not None
+    from apple_pick_sim.coupled_fruiting.mujoco_apple_payload import apple_com_in_tcp_frame
+
+    masses = scene.robot_model.body_mass.numpy()
     coms = scene.robot_model.body_com.numpy()
+    inertias = scene.robot_model.body_inertia.numpy()
+    offsets = scene.per_world_proxy_offsets
+    assert offsets is not None
+    for w, params_w in enumerate((p0, p1)):
+        payload_i = int(layout.mj_apple_payload_body_indices[w])
+        apple_i = int(layout.apple_body_indices[w])
+        m = float(masses[payload_i])
+        assert m == pytest.approx(float(scene.cable.model.body_mass.numpy()[apple_i]))
+        r = float(params_w.apple_radius)
+        assert float(inertias[payload_i][0, 0]) == pytest.approx(0.4 * m * r * r, rel=1e-5, abs=1e-10)
+        np.testing.assert_allclose(
+            coms[payload_i],
+            apple_com_in_tcp_frame(offsets[w]),
+            rtol=1e-5,
+            atol=1e-6,
+        )
     m0 = float(masses[layout.mj_apple_payload_body_indices[0]])
     m1 = float(masses[layout.mj_apple_payload_body_indices[1]])
-    assert m0 == pytest.approx(float(scene.cable.model.body_mass.numpy()[layout.apple_body_indices[0]]))
-    assert m1 == pytest.approx(float(scene.cable.model.body_mass.numpy()[layout.apple_body_indices[1]]))
     assert m0 != pytest.approx(m1)
-    c0 = float(np.linalg.norm(coms[layout.mj_apple_payload_body_indices[0]]))
-    c1 = float(np.linalg.norm(coms[layout.mj_apple_payload_body_indices[1]]))
-    assert c0 != pytest.approx(c1, abs=1e-6) or float(p0.apple_radius) != float(p1.apple_radius)
+    c0 = coms[layout.mj_apple_payload_body_indices[0]]
+    c1 = coms[layout.mj_apple_payload_body_indices[1]]
+    assert not np.allclose(c0, c1, rtol=1e-5, atol=1e-6)
 
 
 def _payload_inertia_diag(scene) -> np.ndarray:
@@ -285,6 +388,7 @@ def test_clear_payload_zeros_inertia_vs_analytic_sphere():
         robot_base_from_proxy=False,
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
         ik_bootstrap_iterations=128,
+        stem_harvest_explicit_apple_inertia=False,
     )
     assert scene.mj_apple_payload_body_index is not None
     expected = _expected_sphere_I(scene)
@@ -337,6 +441,7 @@ def test_vic_tcp_motion_differs_with_and_without_payload_inertia():
         robot_base_from_proxy=False,
         mujoco_solver_kwargs=DEFAULT_MJ_KW,
         ik_bootstrap_iterations=128,
+        stem_harvest_explicit_apple_inertia=False,
     )
     assert scene.mj_apple_payload_body_index is not None
     payload = int(scene.mj_apple_payload_body_index)

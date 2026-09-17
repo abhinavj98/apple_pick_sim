@@ -7,13 +7,35 @@ import pytest
 
 from apple_pick_sim.system_id.mmd_features import (
     ReplayObservationCollector,
+    STATE_VECTOR_PHYS_SCALE,
+    build_bending_angles,
     build_state_matrix,
+    build_tcp_rotvec,
     build_transition_features_by_direction,
+    cma_woody_junctions_from_env,
     combine_transition_features,
     flatten_woody_positions,
     iter_kept_hold_segments,
+    mean_hold_block_errors,
     replay_obs_dict_from_sysid_numpy,
 )
+
+
+def test_cma_woody_junctions_filters_support():
+    assert cma_woody_junctions_from_env(
+        [
+            "primary_support_left",
+            "primary_support_right",
+            "primary_spur",
+            "spur_stem",
+            "stem_apple",
+        ]
+    ) == ["primary_spur", "spur_stem"]
+
+
+def test_cma_woody_junctions_from_env_raises_when_missing():
+    with pytest.raises(ValueError, match="missing"):
+        cma_woody_junctions_from_env(["primary_support_left", "primary_spur"])
 
 
 def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None) -> dict:
@@ -27,14 +49,6 @@ def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None) ->
             np.float32
         ),
     }
-    woody_end = {
-        "joint_a": np.hstack([base + 300.0, base + 301.0, base + 302.0]).astype(
-            np.float32
-        ),
-        "joint_b": np.hstack([base + 400.0, base + 401.0, base + 402.0]).astype(
-            np.float32
-        ),
-    }
     return {
         "ft_wrist": np.hstack([base + i for i in range(6)]).astype(np.float32),
         "tcp_velocity": np.hstack([base + 10.0 + i for i in range(6)]).astype(
@@ -42,9 +56,11 @@ def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None) ->
         ),
         "action": np.hstack([base + 20.0 + i for i in range(6)]).astype(np.float32),
         "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
+        "tcp_quat": np.tile(
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (steps, 1)
+        ),
         "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
         "woody_part_start_pos": woody_start,
-        "woody_part_end_pos": woody_end,
         "excitation_direction": np.tile(
             np.array([[0.0, 1.0, 0.0]], dtype=np.float32), (steps, 1)
         ),
@@ -65,6 +81,35 @@ def test_flatten_woody_positions_uses_junction_names_order():
     )
 
     np.testing.assert_allclose(flat, [200.0, 201.0, 202.0, 100.0, 101.0, 102.0])
+
+
+def test_build_bending_angles_uses_spur_and_stem_chords():
+    n = 2
+    arrays = {
+        "junction_names": ["primary_spur", "spur_stem"],
+        "woody_part_start_pos": {
+            "primary_spur": np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32),
+            "spur_stem": np.array([[0.0, 0.0, -0.1], [0.1, 0.0, 0.0]], dtype=np.float32),
+        },
+        "apple_pos": np.array([[0.0, 0.0, -0.2], [0.1, 0.0, -0.1]], dtype=np.float32),
+    }
+    ang = build_bending_angles(arrays, n_frames=n, junction_names=list(arrays["junction_names"]))
+    assert ang.shape == (2, 2)
+    assert ang[0, 0] == pytest.approx(0.0)
+    assert ang[0, 1] == pytest.approx(0.0)
+    # rest spur chord (0,0,-0.1); frame 1 (0.1,0,0) is 90° from -Z
+    assert ang[1, 0] == pytest.approx(np.pi / 2, rel=1e-5)
+    assert ang[1, 1] == pytest.approx(0.0)
+
+
+def test_build_bending_angles_non_cma_names_use_distal_rule():
+    """Non-CMA junction names fall back to start[i+1]-start[i]; last = apple_pos-start[last]."""
+    arrays = _arrays_for_steps(steps=2, junction_names=["joint_b", "joint_a"])
+    ang = build_bending_angles(
+        arrays, n_frames=2, junction_names=arrays["junction_names"]
+    )
+    assert ang.shape == (2, 2)
+    assert ang[0].tolist() == [0.0, 0.0]
 
 
 def test_build_state_matrix_uses_exact_feature_order():
@@ -88,20 +133,14 @@ def test_build_state_matrix_uses_exact_feature_order():
             13.0,
             14.0,
             15.0,
-            # action
-            20.0,
-            21.0,
-            22.0,
-            23.0,
-            24.0,
-            25.0,
-            # tcp_pos, apple_pos
+            # tcp_pos (apple_pos is bag/chord geometry only, not scored)
             30.0,
             31.0,
             32.0,
-            40.0,
-            41.0,
-            42.0,
+            # tcp_rotvec (frame-0 relative; identity quat → zeros)
+            0.0,
+            0.0,
+            0.0,
             # woody starts in junction_names order: joint_b then joint_a
             200.0,
             201.0,
@@ -109,13 +148,6 @@ def test_build_state_matrix_uses_exact_feature_order():
             100.0,
             101.0,
             102.0,
-            # woody ends in junction_names order: joint_b then joint_a
-            400.0,
-            401.0,
-            402.0,
-            300.0,
-            301.0,
-            302.0,
             # woody_bending_angles in junction_names order: joint_b then joint_a
             0.0,
             0.0,
@@ -124,6 +156,55 @@ def test_build_state_matrix_uses_exact_feature_order():
     )
     assert state.shape == (1, expected.size)
     np.testing.assert_allclose(state[0], expected)
+
+
+def test_build_state_matrix_prefers_ft_wrist_lpf_when_present():
+    arrays = _arrays_for_steps(steps=1, junction_names=["joint_b", "joint_a"])
+    arrays["ft_wrist_lpf"] = np.full((1, 6), 7.0, dtype=np.float32)
+    state = build_state_matrix(arrays)
+    np.testing.assert_allclose(state[0, :6], [7.0] * 6)
+
+
+def test_build_tcp_rotvec_identity_is_zero():
+    quats = np.tile(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (3, 1))
+    rotvec = build_tcp_rotvec(quats)
+    assert rotvec.shape == (3, 3)
+    np.testing.assert_allclose(rotvec, 0.0)
+
+
+def test_build_tcp_rotvec_90deg_about_z():
+    half = np.sqrt(0.5)
+    quats = np.array(
+        [
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, half, half],
+            [0.0, 0.0, half, half],
+        ],
+        dtype=np.float64,
+    )
+    rotvec = build_tcp_rotvec(quats)
+    np.testing.assert_allclose(rotvec[0], 0.0, atol=1e-6)
+    np.testing.assert_allclose(rotvec[1], [0.0, 0.0, np.pi / 2], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(rotvec[2], [0.0, 0.0, np.pi / 2], rtol=1e-5, atol=1e-5)
+
+
+def test_build_tcp_rotvec_q_and_neg_q_match():
+    half = np.sqrt(0.5)
+    q = np.array([0.0, 0.0, half, half], dtype=np.float64)
+    rot_pos = build_tcp_rotvec(np.stack([np.array([0.0, 0.0, 0.0, 1.0]), q]))
+    rot_neg = build_tcp_rotvec(np.stack([np.array([0.0, 0.0, 0.0, 1.0]), -q]))
+    np.testing.assert_allclose(rot_pos[1], rot_neg[1], rtol=1e-5, atol=1e-5)
+
+
+def test_build_tcp_rotvec_zero_norm_quat_is_identity():
+    quats = np.array([[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]], dtype=np.float64)
+    rotvec = build_tcp_rotvec(quats)
+    np.testing.assert_allclose(rotvec, 0.0, atol=1e-6)
+
+
+def test_state_vector_phys_scale_length_matches_two_junction_state_matrix():
+    arrays = _arrays_for_steps(steps=1, junction_names=["joint_b", "joint_a"])
+    assert len(STATE_VECTOR_PHYS_SCALE) == build_state_matrix(arrays).shape[1]
 
 
 def test_transition_features_are_hold_only_per_direction_and_segment():
@@ -163,19 +244,16 @@ def test_replay_obs_dict_from_sysid_numpy_flattens_woody():
         "ft_wrist": np.arange(6, dtype=np.float32),
         "tcp_velocity": np.arange(6, 12, dtype=np.float32),
         "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32),
         "woody_part_start_pos": {
             "joint_b": np.array([7.0, 8.0, 9.0], dtype=np.float32),
             "joint_a": np.array([10.0, 11.0, 12.0], dtype=np.float32),
         },
-        "woody_part_end_pos": {
-            "joint_b": np.array([13.0, 14.0, 15.0], dtype=np.float32),
-            "joint_a": np.array([16.0, 17.0, 18.0], dtype=np.float32),
-        },
     }
     out = replay_obs_dict_from_sysid_numpy(sysid_obs, junction_names=["joint_b", "joint_a"])
     np.testing.assert_allclose(out["woody_start"], [7, 8, 9, 10, 11, 12])
-    np.testing.assert_allclose(out["woody_end"], [13, 14, 15, 16, 17, 18])
+    assert "woody_end" not in out
 
 
 def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
@@ -189,13 +267,10 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
         "ft_wrist": recorded["ft_wrist"][frame_idx],
         "tcp_velocity": recorded["tcp_velocity"][frame_idx],
         "tcp_pos": recorded["tcp_pos"][frame_idx],
+        "tcp_quat": recorded["tcp_quat"][frame_idx],
         "apple_pos": recorded["apple_pos"][frame_idx],
         "woody_part_start_pos": {
             name: recorded["woody_part_start_pos"][name][frame_idx]
-            for name in junction_names
-        },
-        "woody_part_end_pos": {
-            name: recorded["woody_part_end_pos"][name][frame_idx]
             for name in junction_names
         },
     }
@@ -206,14 +281,10 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
         "ft_wrist": sysid_obs["ft_wrist"],
         "tcp_velocity": sysid_obs["tcp_velocity"],
         "tcp_pos": sysid_obs["tcp_pos"],
+        "tcp_quat": sysid_obs["tcp_quat"],
         "apple_pos": sysid_obs["apple_pos"],
         "woody_start": flatten_woody_positions(
             recorded["woody_part_start_pos"],
-            frame_idx=frame_idx,
-            junction_names=junction_names,
-        ),
-        "woody_end": flatten_woody_positions(
-            recorded["woody_part_end_pos"],
             frame_idx=frame_idx,
             junction_names=junction_names,
         ),
@@ -230,10 +301,30 @@ def test_replay_obs_dict_from_sysid_numpy_matches_collector_contract():
             adapted_arrays["woody_part_start_pos"][name],
             direct_arrays["woody_part_start_pos"][name],
         )
-        np.testing.assert_allclose(
-            adapted_arrays["woody_part_end_pos"][name],
-            direct_arrays["woody_part_end_pos"][name],
-        )
+    assert "woody_part_end_pos" not in adapted_arrays
+
+
+def test_replay_observation_collector_copies_sim_time_from_recorded():
+    recorded = _arrays_for_steps(steps=3, junction_names=["joint_a"])
+    recorded["phase"] = np.array([0, 1, 1], dtype=np.int8)
+    recorded["dir_idx"] = np.array([0, 0, 0], dtype=np.int32)
+    recorded["sim_time"] = np.array([0.0, 1.0 / 30.0, 2.0 / 30.0], dtype=np.float64)
+    collector = ReplayObservationCollector(recorded)
+    obs = {
+        "ft_wrist": np.arange(6, dtype=np.float32),
+        "tcp_velocity": np.arange(6, dtype=np.float32),
+        "tcp_pos": np.zeros(3, dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "apple_pos": np.zeros(3, dtype=np.float32),
+        "woody_start": np.zeros(3, dtype=np.float32),
+    }
+    collector.record(obs, frame_idx=1)
+    collector.record(obs, frame_idx=2)
+    arrays = collector.to_arrays()
+    np.testing.assert_allclose(
+        arrays["sim_time"],
+        recorded["sim_time"][1:3],
+    )
 
 
 def test_replay_observation_collector_stable_column():
@@ -245,9 +336,9 @@ def test_replay_observation_collector_stable_column():
         "ft_wrist": np.arange(6, dtype=np.float32) + 1000.0,
         "tcp_velocity": np.arange(6, dtype=np.float32) + 2000.0,
         "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32),
         "woody_start": np.array([10.0, 11.0, 12.0, 20.0, 21.0, 22.0], dtype=np.float32),
-        "woody_end": np.array([30.0, 31.0, 32.0, 40.0, 41.0, 42.0], dtype=np.float32),
     }
     collector.record(obs, frame_idx=1, stable=False)
     arrays = collector.to_arrays()
@@ -263,14 +354,38 @@ def test_replay_observation_collector_oob_frame_raises():
         "ft_wrist": np.arange(6, dtype=np.float32),
         "tcp_velocity": np.arange(6, dtype=np.float32),
         "tcp_pos": np.zeros(3, dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.zeros(3, dtype=np.float32),
         "woody_start": np.zeros(3, dtype=np.float32),
-        "woody_end": np.zeros(3, dtype=np.float32),
     }
     with pytest.raises(IndexError, match="frame_idx"):
         collector.record(obs, frame_idx=2)
     with pytest.raises(IndexError, match="frame_idx"):
         collector.record(obs, frame_idx=-1)
+
+
+def test_replay_observation_collector_record_requires_woody_start_not_end():
+    """record() must require woody_start; it must not require woody_end."""
+    recorded = _arrays_for_steps(steps=2, junction_names=["joint_a"])
+    recorded["phase"] = np.array([0, 1], dtype=np.int8)
+    recorded["dir_idx"] = np.array([0, 0], dtype=np.int32)
+    collector = ReplayObservationCollector(recorded)
+    base_obs = {
+        "ft_wrist": np.arange(6, dtype=np.float32),
+        "tcp_velocity": np.arange(6, dtype=np.float32),
+        "tcp_pos": np.zeros(3, dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+        "apple_pos": np.zeros(3, dtype=np.float32),
+    }
+    with pytest.raises(KeyError, match="woody_start"):
+        collector.record(dict(base_obs), frame_idx=0)
+
+    # Succeeds without woody_end.
+    collector.record(
+        {**base_obs, "woody_start": np.zeros(3, dtype=np.float32), "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)},
+        frame_idx=0,
+    )
+    assert collector.n_rows == 1
 
 
 def test_transition_features_exclude_unstable_hold_frame():
@@ -318,6 +433,98 @@ def test_median_features_mid_hold_unstable_keeps_one_hold_pair():
     np.testing.assert_allclose(by_direction[0][0], expected, rtol=1e-5)
 
 
+def test_mean_hold_reduce_uses_mean_state_not_median():
+    """A 3-frame hold with an outlier must emit mean, not median, hold→hold rows."""
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    # Outlier on hold-0 frame 3 so mean(Fx) != median(Fx).
+    arrays["ft_wrist"][3, 0] = 100.0
+
+    median_rows = build_transition_features_by_direction(arrays, use_median=True)
+    mean_rows = build_transition_features_by_direction(arrays, hold_reduce="mean")
+    assert median_rows[0].shape[0] == 1
+    assert mean_rows[0].shape[0] == 1
+    assert not np.allclose(median_rows[0][0], mean_rows[0][0])
+
+    state = build_state_matrix(arrays)
+    mean0 = np.mean(state[[1, 2, 3]], axis=0)
+    mean1 = np.mean(state[[5, 6, 7]], axis=0)
+    expected = np.concatenate([mean0, mean1 - mean0]).astype(np.float32)
+    np.testing.assert_allclose(mean_rows[0][0], expected, rtol=1e-5)
+
+
+def test_mean_hold_block_errors_match_l2_of_mean_hold_states_not_framewise_mae():
+    # Two holds: frames 1-3 are hold 0, frames 5-7 are hold 1.
+    # Spike only on the *last* frame of hold 0 (frame index 3) so the
+    # per-frame L2 norms are [1, 1, 10] inside that hold, giving
+    # frame-wise MAE = 4.0, while mean-hold L2 = ||mean([1,1,10])|| = 4.0 too.
+    # To discriminate, add a spike only on one frame of hold 0 in Fy so
+    # that the spike direction (Fy) cancels when *mean*-reduced but not
+    # when frame-wise L2'd (norm is always positive).
+    real = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    real["dir_idx"] = np.zeros(8, dtype=np.int32)
+    # phase: 0=pre-hold, 1=hold0 (frames 1-3), 0=inter (frame 4), 1=hold1 (frames 5-7)
+    real["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    sim = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    sim["dir_idx"] = np.zeros(8, dtype=np.int32)
+    sim["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    # Constant +2 N on Fx across all frames in hold 0 (frames 1-3)
+    # and opposite spike +-4 on Fy (frame 1 only).
+    # Mean Fy offset in hold 0 = (-4+0+0)/3 = -4/3; mean Fx = +2.
+    # Frame-wise norms: frame1=sqrt(4+16)=sqrt(20), frame2=2, frame3=2
+    # Frame-wise MAE = (sqrt(20)+2+2)/3 ≈ 2.82
+    # Mean-hold L2 = ||(2, -4/3, 0)|| ≈ 2.40  ← different
+    sim["ft_wrist"] = np.array(real["ft_wrist"], copy=True)
+    sim["ft_wrist"][1:4, 0] = real["ft_wrist"][1:4, 0] + 2.0  # Fx +2 in hold 0
+    sim["ft_wrist"][1, 1] = real["ft_wrist"][1, 1] - 4.0      # Fy spike on frame 1 only
+
+    errors = mean_hold_block_errors(real=real, sim=sim, direction=0)
+    state_real = build_state_matrix(real)
+    state_sim = build_state_matrix(sim)
+    # Mean-hold L2: mean of hold0 frames then ||diff||
+    dF0 = np.mean(state_sim[[1, 2, 3], :3], axis=0) - np.mean(state_real[[1, 2, 3], :3], axis=0)
+    dF1 = np.mean(state_sim[[5, 6, 7], :3], axis=0) - np.mean(state_real[[5, 6, 7], :3], axis=0)
+    # function averages hold errors across both holds
+    expected = (float(np.linalg.norm(dF0)) + float(np.linalg.norm(dF1))) / 2.0
+    assert errors["force_err_n"] == pytest.approx(expected, rel=1e-4)
+    # Frame-wise MAE is strictly greater here because the spike makes
+    # per-frame norms larger than the norm of the mean.
+    framewise_norms = np.linalg.norm(
+        state_sim[[1, 2, 3], :3] - state_real[[1, 2, 3], :3], axis=1
+    )
+    framewise_mae = float(np.mean(framewise_norms))
+    assert abs(errors["force_err_n"] - framewise_mae) > 0.1, (
+        f"mean-hold L2 ({errors['force_err_n']:.4f}) should differ from "
+        f"frame-wise MAE ({framewise_mae:.4f})"
+    )
+
+
+def test_build_state_matrix_rejects_non_mapping_woody_part_start_pos():
+    arrays = _arrays_for_steps(steps=4, junction_names=["joint_a"])
+
+    def _not_a_mapping() -> None:
+        pass
+
+    arrays["woody_part_start_pos"] = _not_a_mapping
+    with pytest.raises(ValueError, match="woody_part_start_pos must be a junction mapping"):
+        build_state_matrix(arrays)
+
+
+def test_mean_hold_block_errors_rejects_non_mapping_episode_with_value_error():
+    real = _arrays_for_steps(steps=4, junction_names=["joint_a"])
+    real["dir_idx"] = np.zeros(4, dtype=np.int32)
+    real["phase"] = np.array([0, 1, 1, 0], dtype=np.int8)
+    sim = dict(real)
+
+    def _not_a_mapping() -> None:
+        pass
+
+    sim["woody_part_start_pos"] = _not_a_mapping
+    with pytest.raises(ValueError, match="woody_part_start_pos must be a junction mapping"):
+        mean_hold_block_errors(real=real, sim=sim, direction=0)
+
+
 def test_replay_observation_collector_supports_19d_vic_pose_actions():
     """Recorded vic_pose actions (T, 19) must reshape to action_dim, not hardcoded 6."""
     recorded = _arrays_for_steps(steps=2, junction_names=["joint_a"])
@@ -330,9 +537,9 @@ def test_replay_observation_collector_supports_19d_vic_pose_actions():
         "ft_wrist": np.arange(6, dtype=np.float32),
         "tcp_velocity": np.arange(6, dtype=np.float32),
         "tcp_pos": np.zeros(3, dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.zeros(3, dtype=np.float32),
         "woody_start": np.zeros(3, dtype=np.float32),
-        "woody_end": np.zeros(3, dtype=np.float32),
     }
     collector.record(obs, frame_idx=1)
 
@@ -350,12 +557,10 @@ def test_replay_observation_collector_builds_dataset_shaped_arrays():
         "ft_wrist": np.arange(6, dtype=np.float32) + 1000.0,
         "tcp_velocity": np.arange(6, dtype=np.float32) + 2000.0,
         "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32),
         "woody_start": np.array(
             [10.0, 11.0, 12.0, 20.0, 21.0, 22.0], dtype=np.float32
-        ),
-        "woody_end": np.array(
-            [30.0, 31.0, 32.0, 40.0, 41.0, 42.0], dtype=np.float32
         ),
     }
 
@@ -372,6 +577,7 @@ def test_replay_observation_collector_builds_dataset_shaped_arrays():
     np.testing.assert_allclose(
         arrays["woody_part_start_pos"]["joint_b"][0], [20.0, 21.0, 22.0]
     )
+    assert "woody_part_end_pos" not in arrays
 
 
 def test_iter_kept_hold_segments_keeps_full_hold():
@@ -382,6 +588,123 @@ def test_iter_kept_hold_segments_keeps_full_hold():
 
     assert len(segments) == 1
     assert segments[0].tolist() == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_iter_kept_hold_segments_target_phase_extracts_move_out():
+    phase = np.array([0, 0, 1, 1, 1, 0, 0, 1], dtype=np.int8)
+    dir_idx = np.zeros(8, dtype=np.int32)
+
+    segments = iter_kept_hold_segments(
+        phase=phase, dir_idx=dir_idx, direction=0, target_phase=0
+    )
+
+    assert [s.tolist() for s in segments] == [[0, 1], [5, 6]]
+
+
+def test_full_trajectory_includes_move_out_and_tags_phase_onehot():
+    """full_trajectory=True emits move_out then hold rows per cycle, phase-tagged."""
+    arrays = _arrays_for_steps(steps=10, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(10, dtype=np.int32)
+    arrays["phase"] = np.array([0, 0, 1, 1, 1, 0, 0, 1, 1, 1], dtype=np.int8)
+    arrays["hold_number"] = np.array(
+        [-1, -1, 5, 5, 5, -1, -1, 9, 9, 9], dtype=np.int32
+    )
+
+    by_direction = build_transition_features_by_direction(
+        arrays,
+        hold_id_onehot=True,
+        n_holds=10,
+        full_trajectory=True,
+    )
+
+    assert set(by_direction) == {0}
+    feats = by_direction[0]
+    state_dim = build_state_matrix(arrays).shape[1]
+    # [s, delta] + hold onehot (10) + phase onehot (2)
+    assert feats.shape[1] == 2 * state_dim + 10 + 2
+    # move_out[0,1] -> 1 transition; hold[2,3,4] -> 2; move_out[5,6] -> 1; hold[7,8,9] -> 2
+    assert feats.shape[0] == 1 + 2 + 1 + 2
+
+    hold_onehot = feats[:, 2 * state_dim : 2 * state_dim + 10]
+    phase_onehot = feats[:, 2 * state_dim + 10 :]
+
+    # Cycle 0 (move_out row, then 2 hold rows) inherits hold_number=5; cycle 1 inherits 9.
+    assert [int(np.argmax(row)) for row in hold_onehot] == [5, 5, 5, 9, 9, 9]
+    # move_out rows tag phase index 0; hold rows tag phase index 1.
+    np.testing.assert_array_equal(
+        phase_onehot,
+        [[1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]],
+    )
+
+
+def test_full_trajectory_excludes_return_and_pre_weld():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    # pre_weld(-1), move_out(0)x2, hold(1)x2, return(2)x3
+    arrays["phase"] = np.array([-1, 0, 0, 1, 1, 2, 2, 2], dtype=np.int8)
+
+    by_direction = build_transition_features_by_direction(arrays, full_trajectory=True)
+
+    # move_out[1,2] -> 1 transition; hold[3,4] -> 1 transition.
+    assert by_direction[0].shape[0] == 2
+
+
+def test_full_trajectory_raises_on_orphan_move_out_segment():
+    arrays = _arrays_for_steps(steps=6, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(6, dtype=np.int32)
+    # Second move_out segment [4, 5] has no following hold.
+    arrays["phase"] = np.array([0, 0, 1, 1, 0, 0], dtype=np.int8)
+
+    with pytest.raises(ValueError, match="no immediately-following hold segment"):
+        build_transition_features_by_direction(arrays, full_trajectory=True)
+
+
+def test_full_trajectory_scores_leading_hold_with_no_preceding_move_out():
+    """Real-data conversion can inject a leading rest hold (inject_rest_hold);
+    it has no preceding move_out and must be scored hold-only, not raise."""
+    arrays = _arrays_for_steps(steps=10, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(10, dtype=np.int32)
+    # rest hold[0,1], move[2,3]+hold[4,5] (cycle 1), move[6,7]+hold[8,9] (cycle 2).
+    arrays["phase"] = np.array([1, 1, 0, 0, 1, 1, 0, 0, 1, 1], dtype=np.int8)
+    arrays["hold_number"] = np.array(
+        [0, 0, -1, -1, 1, 1, -1, -1, 2, 2], dtype=np.int32
+    )
+
+    by_direction = build_transition_features_by_direction(
+        arrays,
+        hold_id_onehot=True,
+        n_holds=3,
+        full_trajectory=True,
+    )
+
+    feats = by_direction[0]
+    state_dim = build_state_matrix(arrays).shape[1]
+    # rest hold[0,1] -> 1 row; move[2,3]+hold[4,5] -> 2 rows; move[6,7]+hold[8,9] -> 2 rows.
+    assert feats.shape[0] == 1 + 2 + 2
+
+    hold_onehot = feats[:, 2 * state_dim : 2 * state_dim + 3]
+    phase_onehot = feats[:, 2 * state_dim + 3 :]
+    assert [int(np.argmax(row)) for row in hold_onehot] == [0, 1, 1, 2, 2]
+    np.testing.assert_array_equal(
+        phase_onehot,
+        [
+            [0.0, 1.0],  # rest hold
+            [1.0, 0.0],  # move cycle 1
+            [0.0, 1.0],  # hold cycle 1
+            [1.0, 0.0],  # move cycle 2
+            [0.0, 1.0],  # hold cycle 2
+        ],
+    )
+
+
+def test_full_trajectory_rejects_median_hold_reduce():
+    arrays = _arrays_for_steps(steps=5, junction_names=["joint_a"])
+    arrays["phase"] = np.array([0, 1, 1, 1, 1], dtype=np.int8)
+
+    with pytest.raises(ValueError, match="hold_reduce"):
+        build_transition_features_by_direction(
+            arrays, full_trajectory=True, use_median=True
+        )
 
 
 def test_median_hold_to_hold_features_use_full_hold_medians():
@@ -510,7 +833,7 @@ def test_transition_features_exclude_pre_weld_row_after_strip():
         arrays[key] = np.vstack(
             [np.zeros((1, arrays[key].shape[1]), dtype=np.float32), arrays[key]]
         )
-    for woody_key in ("woody_part_start_pos", "woody_part_end_pos"):
+    for woody_key in ("woody_part_start_pos",):
         for name in arrays[woody_key]:
             arrays[woody_key][name] = np.vstack(
                 [
@@ -532,3 +855,87 @@ def test_transition_features_exclude_pre_weld_row_after_strip():
     assert by_direction
     for features in by_direction.values():
         assert not np.any(features[:, :6] == -999.0)
+
+
+def test_level_bags_emit_one_row_per_stable_hold_frame():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    arrays["stable"] = np.ones(8, dtype=bool)
+
+    by_direction = build_transition_features_by_direction(
+        arrays,
+        hold_reduce="none",
+        include_delta=False,
+        hold_id_onehot=True,
+        n_holds=2,
+        dir_id_onehot=True,
+        n_directions=1,
+    )
+    state = build_state_matrix(arrays)
+    state_dim = int(state.shape[1])
+    rows = by_direction[0]
+    assert rows.shape == (6, state_dim + 2 + 1)
+    expected_indices = [1, 2, 3, 5, 6, 7]
+    hold_onehots = [
+        np.array([1.0, 0.0], dtype=np.float32),
+        np.array([1.0, 0.0], dtype=np.float32),
+        np.array([1.0, 0.0], dtype=np.float32),
+        np.array([0.0, 1.0], dtype=np.float32),
+        np.array([0.0, 1.0], dtype=np.float32),
+        np.array([0.0, 1.0], dtype=np.float32),
+    ]
+    for row_i, frame_idx in enumerate(expected_indices):
+        expected = np.concatenate(
+            [
+                state[int(frame_idx)],
+                hold_onehots[row_i],
+                np.array([1.0], dtype=np.float32),
+            ]
+        ).astype(np.float32)
+        np.testing.assert_allclose(rows[row_i], expected, rtol=1e-5)
+
+
+def test_level_bags_exclude_unstable_frames():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+    arrays["stable"] = np.array(
+        [True, True, False, True, True, True, True, True], dtype=bool
+    )
+
+    by_direction = build_transition_features_by_direction(
+        arrays, hold_reduce="none", include_delta=False
+    )
+    assert by_direction[0].shape[0] == 5
+
+
+def test_level_bags_single_frame_hold_contributes_one_row():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 0, 1, 1, 1, 0, 0], dtype=np.int8)
+
+    level_rows = build_transition_features_by_direction(
+        arrays, hold_reduce="none", include_delta=False
+    )
+    delta_rows = build_transition_features_by_direction(
+        arrays, hold_reduce="none", include_delta=True
+    )
+    assert level_rows[0].shape[0] == 4
+    assert delta_rows[0].shape[0] == 2
+
+
+def test_level_bags_mean_hold_reduce_emits_one_row_per_hold():
+    arrays = _arrays_for_steps(steps=8, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(8, dtype=np.int32)
+    arrays["phase"] = np.array([0, 1, 1, 1, 0, 1, 1, 1], dtype=np.int8)
+
+    rows = build_transition_features_by_direction(
+        arrays, hold_reduce="mean", include_delta=False
+    )
+    state = build_state_matrix(arrays)
+    mean0 = np.mean(state[[1, 2, 3]], axis=0)
+    mean1 = np.mean(state[[5, 6, 7]], axis=0)
+    assert rows[0].shape == (2, state.shape[1])
+    np.testing.assert_allclose(rows[0][0], mean0.astype(np.float32), rtol=1e-5)
+    np.testing.assert_allclose(rows[0][1], mean1.astype(np.float32), rtol=1e-5)

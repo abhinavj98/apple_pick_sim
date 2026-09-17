@@ -292,8 +292,9 @@ def build_sysid_frame_row(
 ) -> dict[str, Any]:
     """Build one Parquet frame row from a sys-ID observation dict."""
     start_by_name = _woody_pos_dict_from_obs(obs["woody_part_start_pos"])
-    end_by_name = _woody_pos_dict_from_obs(obs["woody_part_end_pos"])
-    if set(start_by_name) != set(end_by_name):
+    end_raw = obs.get("woody_part_end_pos")
+    end_by_name = _woody_pos_dict_from_obs(end_raw) if end_raw is not None else None
+    if end_by_name is not None and set(start_by_name) != set(end_by_name):
         raise ValueError("woody_part_start_pos and woody_part_end_pos keys must match")
 
     action_vec = np.asarray(action, dtype=np.float32).reshape(-1)
@@ -326,13 +327,17 @@ def build_sysid_frame_row(
         "woody_part_force": _as_f32_list(obs.get("woody_part_force", np.zeros(0))),
         "stable": bool(stable),
     }
+    lpf = obs.get("ft_wrist_lpf")
+    if lpf is not None:
+        row["ft_wrist_lpf"] = _as_f32_list(lpf, size=6)
     if episode_id is not None:
         row["episode_id"] = str(episode_id)
     if dir_idx is not None:
         row["dir_idx"] = int(dir_idx)
     for name in sorted(start_by_name):
         row[woody_start_column(name)] = _as_f32_list(start_by_name[name], size=3)
-        row[woody_end_column(name)] = _as_f32_list(end_by_name[name], size=3)
+        if end_by_name is not None:
+            row[woody_end_column(name)] = _as_f32_list(end_by_name[name], size=3)
     return row
 
 
@@ -517,6 +522,8 @@ class TrajectoryDataset:
             "robot_joint_q": _stack_column("robot_joint_q").reshape(-1, 7),
             "junction_names": list(junction_names),
         }
+        if "ft_wrist_lpf" in table.column_names:
+            arrays["ft_wrist_lpf"] = _stack_column("ft_wrist_lpf").reshape(-1, 6)
         if "sim_time" in table.column_names:
             arrays["sim_time"] = _stack_column("sim_time").reshape(-1)
         if "amplitude_m" in table.column_names:

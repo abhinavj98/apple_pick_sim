@@ -1,7 +1,8 @@
 # Batched API GPU hot path and defaults alignment
 
 **Date:** 2026-07-03  
-**Status:** Approved design (brainstorming)  
+**Status:** Historical
+**Canonical living doc:** `docs/handbook-coupled-simulation.md`
 **Scope:** `BatchedHeterogeneousCoupledSim` — init/build, frame, substep; `defaults()` preset  
 **Roadmap context:** V.3.1–V.3.2 done; supports V.3.3 gym migration  
 
@@ -191,7 +192,7 @@ uv run python apple_pick_sim/diagnostics/benchmark_batched_heterogeneous.py \
 
 ## References
 
-- `docs/vectorized-coupled-fruiting.md` — θ application table, config map
+- `docs/handbook-coupled-simulation.md` — θ application table, config map
 - `docs/heterogeneous-batched-vectorization-audit.md` — prior audit (bootstrap section stale)
 - `docs/gpu-coupling-optimization.md` — single-env GPU doc (needs batched section)
 - `docs/ROADMAP.md` — V.3.3+ sequencing

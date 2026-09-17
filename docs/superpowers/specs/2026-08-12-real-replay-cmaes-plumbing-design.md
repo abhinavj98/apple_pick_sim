@@ -2,11 +2,12 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Design approved; slice 1 plan at `docs/superpowers/plans/2026-08-12-real-replay-parallel-sysid-plumbing.md` |
+| **Status** | Partial — slice 1 implemented; slice 2 superseded; later CMA plumbing remains ROADMAP-owned |
+| **Canonical living doc:** | `docs/handbook-youngs-cma.md` |
 | **Date** | 2026-08-12 |
 | **Roadmap** | M4.0 bit 3 (real `robot_replay` → grid / CMA) |
 | **Extends** | `docs/superpowers/specs/2026-08-11-batched-real-replay-post-grasp-se3-design.md` (slice B), `docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-design.md` (bit 3), `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
-| **Code (today)** | `robot_replay/example_replay_real_batched.py`, `example_youngs_modulus_sys_id.py`, `example_youngs_modulus_cmaes.py` |
+| **Code (today)** | `real_batched_replay_build.py`, `robot_replay/example_replay_real_batched.py`, `example_youngs_modulus_sys_id.py`, `example_youngs_modulus_cmaes.py` (CMA wiring = slice 4) |
 
 ## Purpose
 
@@ -30,13 +31,13 @@ This is plumbing, not a new optimizer. Cartesian grid is the first consumer; CMA
 ## Slice order
 
 ```text
-1. Shared real-replay build + fused plumbing   ← this plan
-2. Feature transform before loss (F/T frame + LPF; pose-only action features)
+1. Shared real-replay build + fused plumbing   ← slice 1 Done
+2. Feature transform before loss   ← **superseded** by `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md` (convert-time F/T rotate, no LPF, woody/hold/USD COM)
 3. Cartesian grid ranking (Sinkhorn on transformed bags)
 4. CMA (same builder + evaluator)
 ```
 
-Convert keeps storing logged columns as-is. Slice 2 maps **bags at score time**.
+Convert keeps storing logged columns as-is. ~~Slice 2 maps **bags at score time**.~~ Feature alignment (2026-08-13 spec) maps F/T at **convert time** and woody/hold in convert + collector; see that spec.
 
 ## Slice 1 — shared build
 
@@ -114,7 +115,9 @@ Scalar `replay_batched_sysid_structure` already takes `action_dim` (example pass
 
 `PreparedYoungsModulusStructure.gt_candidate` and `YoungsModulusEvaluation.gt_candidate` become `YoungsModulusCandidate | None`. On real datasets they are `None`; `is_gt` is always false. `use_oracle_params=True` still means “use episode `fruiting_system_params` for **geometry**,” not “this \(E\) is truth to recover.”
 
-## Slice 2 — feature transform (follow-up plan)
+## Slice 2 — feature transform (superseded)
+
+**Superseded by** `docs/superpowers/specs/2026-08-13-real-sim-cma-feature-alignment-design.md` (convert-time `R(tcp) @` F/T rotate, no LPF, no pose-only action). Do not implement the plan below.
 
 Do **not** implement in slice 1.
 

@@ -52,7 +52,7 @@ from apple_pick_sim.system_id.real_post_grasp_plan import (
     format_post_grasp_plan,
 )
 
-SETTLE_QUIET_EVERY: int | None = 300
+SETTLE_QUIET_EVERY: int | None = 100
 Phase = Literal["long_settle", "short_settle", "run"]
 
 
@@ -97,7 +97,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override fixture path (default: episode_meta.fixture_path).",
     )
-    parser.add_argument("--settle-substeps", type=int, default=5000)
+    parser.add_argument("--settle-substeps", type=int, default=2000)
     parser.add_argument("--grasp-after-settle", action="store_true")
     parser.add_argument("--apple-position-only", action="store_true")
     parser.add_argument("--post-grasp-settle-substeps", type=int, default=500)

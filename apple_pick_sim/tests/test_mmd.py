@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from apple_pick_sim.system_id.mmd import (
     apply_normalization,
@@ -12,32 +13,190 @@ from apple_pick_sim.system_id.mmd import (
 )
 
 
-def test_gt_normalization_is_per_feature_and_uses_gt_only_statistics():
-    gt = np.array(
-        [
-            [1.0, 10.0],
-            [3.0, 10.0],
-            [5.0, 10.0],
-        ],
-        dtype=np.float32,
+def test_fit_gt_normalization_uses_fixed_physical_scale_not_gt_std():
+    from apple_pick_sim.system_id.mmd_features import (
+        STATE_VECTOR_PHYS_SCALE,
+        transition_feature_scale,
     )
-    candidate = np.array(
-        [
-            [100.0, -1000.0],
-            [200.0, -2000.0],
-        ],
-        dtype=np.float32,
-    )
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    # Minimal transition row width: [s, Δs] only (no one-hot)
+    n = 2 * state_dim
+    gt = np.zeros((3, n), dtype=np.float64)
+    # Column 0 is Fx: give GT real variance that must NOT become the divisor
+    gt[:, 0] = [0.0, 3.0, 6.0]
+    # Matching Δ column (index state_dim) left at 0
 
     stats = fit_gt_normalization(gt)
-    normalized_gt = apply_normalization(gt, stats)
-    normalized_candidate = apply_normalization(candidate, stats)
+    scale = transition_feature_scale(n)
+    np.testing.assert_allclose(stats.std, scale)
+    np.testing.assert_allclose(stats.mean[0], 3.0)
+    # Candidate residual 3 N on Fx → 3/0.5 = 6 after apply, not 3/std(GT)=3/sqrt(6)
+    cand = np.zeros((1, n), dtype=np.float64)
+    cand[0, 0] = 6.0  # 3 N above GT mean
+    out = apply_normalization(cand, stats)
+    assert out[0, 0] == pytest.approx(3.0 / 0.5)
+    assert STATE_VECTOR_PHYS_SCALE[0] == pytest.approx(0.5)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[3:6], 1.0)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[12:15], 0.005)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[15:18], 0.05)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[18:24], 0.002)
+    np.testing.assert_allclose(STATE_VECTOR_PHYS_SCALE[24:26], 0.01)
 
-    np.testing.assert_allclose(stats.mean, [3.0, 10.0])
-    np.testing.assert_allclose(stats.std, [np.std([1.0, 3.0, 5.0]), 1.0e-6])
-    np.testing.assert_allclose(normalized_gt[:, 1], 0.0)
-    assert np.all(np.isfinite(normalized_candidate))
-    assert normalized_candidate[0, 0] > 50.0
+
+def test_near_zero_gt_velocity_does_not_explode_candidate_residual():
+    from apple_pick_sim.system_id.mmd_features import STATE_VECTOR_PHYS_SCALE
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n = 2 * state_dim
+    vx = 6  # index of tcp_velocity vx in STATE_VECTOR after dropping action
+    assert STATE_VECTOR_PHYS_SCALE[vx] == pytest.approx(0.02)
+
+    gt = np.zeros((4, n), dtype=np.float64)
+    gt[:, vx] = [0.0, 1e-4, -1e-4, 0.0]  # tiny hold variance
+    stats = fit_gt_normalization(gt)
+    cand = np.zeros((1, n), dtype=np.float64)
+    cand[0, vx] = 0.01  # 1 cm/s residual
+    out = apply_normalization(cand, stats)
+    # Fixed scale 0.02 → 0.5; old GT-std path would be O(100)
+    assert out[0, vx] == pytest.approx(0.01 / 0.02)
+    assert abs(out[0, vx]) < 2.0
+
+
+def test_trailing_onehot_is_not_mean_centered():
+    from apple_pick_sim.system_id.mmd_features import STATE_VECTOR_PHYS_SCALE
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n_holds = 4
+    n = 2 * state_dim + n_holds
+    gt = np.zeros((2, n), dtype=np.float64)
+    gt[0, -4:] = [1, 0, 0, 0]
+    gt[1, -4:] = [0, 1, 0, 0]
+    stats = fit_gt_normalization(gt)
+    np.testing.assert_allclose(stats.mean[-4:], 0.0)
+    np.testing.assert_allclose(stats.std[-4:], 1.0)
+    out = apply_normalization(gt, stats)
+    np.testing.assert_allclose(out[0, -4:], [1, 0, 0, 0])
+
+
+def _state_dim_for_junctions(n_junctions: int) -> int:
+    # ft(6)+vel(6)+tcp(3)+rotvec(3)+woody(3J)+bend(J)
+    return 18 + 4 * int(n_junctions)
+
+
+def test_fit_gt_normalization_scales_one_junction_woody_and_bend():
+    n_junctions = 1
+    state_dim = _state_dim_for_junctions(n_junctions)
+    n = 2 * state_dim
+    gt = np.zeros((2, n), dtype=np.float64)
+    gt[:, 0] = [0.0, 6.0]  # Fx mean 3 N
+
+    stats = fit_gt_normalization(gt, n_junctions=n_junctions)
+
+    assert stats.std.shape == (n,)
+    np.testing.assert_allclose(stats.std[0], 0.5)
+    np.testing.assert_allclose(stats.std[12:15], 0.005)  # tcp_pos
+    np.testing.assert_allclose(stats.std[15:18], 0.05)  # tcp_rotvec
+    np.testing.assert_allclose(stats.std[18:21], 0.002)  # woody_start
+    assert stats.std[21] == pytest.approx(0.01)
+    np.testing.assert_allclose(stats.std[state_dim : state_dim + 6], stats.std[:6])
+    cand = np.zeros((1, n), dtype=np.float64)
+    cand[0, 0] = 6.0
+    out = apply_normalization(cand, stats)
+    assert out[0, 0] == pytest.approx(3.0 / 0.5)
+
+
+def test_fit_gt_normalization_does_not_treat_extra_junctions_as_onehots():
+    n_junctions = 3
+    state_dim = _state_dim_for_junctions(n_junctions)
+    n = 2 * state_dim
+    gt = np.full((2, n), 0.4, dtype=np.float64)
+
+    stats = fit_gt_normalization(gt, n_junctions=n_junctions)
+
+    woody0 = 18
+    last_bend = state_dim - 1
+    np.testing.assert_allclose(stats.std[woody0 : woody0 + 9], 0.002)
+    np.testing.assert_allclose(stats.std[woody0 + 9 : state_dim], 0.01)
+    np.testing.assert_allclose(stats.mean[last_bend], 0.4)
+    np.testing.assert_allclose(stats.std[last_bend], 0.01)
+    np.testing.assert_allclose(stats.mean[state_dim + last_bend], 0.4)
+    np.testing.assert_allclose(stats.std[state_dim + last_bend], 0.01)
+
+
+def test_transition_feature_scale_accepts_single_block_when_include_delta_false():
+    from apple_pick_sim.system_id.mmd_features import (
+        STATE_VECTOR_PHYS_SCALE,
+        transition_feature_scale,
+    )
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n_extra = 4
+    n = state_dim + n_extra
+    scale = transition_feature_scale(n, include_delta=False)
+    assert scale.shape == (n,)
+    np.testing.assert_allclose(scale[:state_dim], transition_feature_scale(2 * state_dim)[:state_dim])
+    np.testing.assert_allclose(scale[-n_extra:], 1.0)
+
+    with pytest.raises(ValueError, match="transition features width"):
+        transition_feature_scale(state_dim - 1, include_delta=False)
+
+
+def test_categorical_weight_scales_trailing_onehots_only():
+    from apple_pick_sim.system_id.mmd_features import (
+        STATE_VECTOR_PHYS_SCALE,
+        transition_feature_scale,
+    )
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n_extra = 3
+    n = 2 * state_dim + n_extra
+    scale = transition_feature_scale(n, categorical_weight=10.0)
+    np.testing.assert_allclose(scale[: 2 * state_dim], transition_feature_scale(n)[: 2 * state_dim])
+    np.testing.assert_allclose(scale[-n_extra:], 0.1)
+
+
+def test_delta_weight_inflates_delta_block_scales_only():
+    from apple_pick_sim.system_id.mmd_features import (
+        STATE_VECTOR_PHYS_SCALE,
+        transition_feature_scale,
+    )
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n = 2 * state_dim
+    level = transition_feature_scale(n)[:state_dim]
+    scale = transition_feature_scale(n, delta_weight=0.2)
+    np.testing.assert_allclose(scale[:state_dim], level)
+    np.testing.assert_allclose(scale[state_dim:], level / 0.2)
+
+
+def test_fit_gt_normalization_honors_delta_weight():
+    from apple_pick_sim.system_id.mmd_features import STATE_VECTOR_PHYS_SCALE
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    gt = np.zeros((4, 2 * state_dim), dtype=np.float64)
+    gt[:, 0] = [0.0, 1.0, 2.0, 3.0]
+    gt[:, state_dim] = [0.0, 0.2, 0.4, 0.6]
+
+    stats = fit_gt_normalization(gt, delta_weight=0.2)
+    np.testing.assert_allclose(stats.std[:state_dim], stats.std[state_dim:] * 0.2)
+
+
+def test_fit_gt_normalization_include_delta_false_zeros_mean_after_one_block():
+    from apple_pick_sim.system_id.mmd_features import STATE_VECTOR_PHYS_SCALE
+
+    state_dim = len(STATE_VECTOR_PHYS_SCALE)
+    n_holds = 2
+    n = state_dim + n_holds
+    gt = np.zeros((3, n), dtype=np.float64)
+    gt[:, 0] = [0.0, 3.0, 6.0]
+    gt[0, -2:] = [1, 0]
+    gt[1, -2:] = [0, 1]
+
+    stats = fit_gt_normalization(gt, include_delta=False)
+    assert stats.mean[0] == pytest.approx(3.0)
+    np.testing.assert_allclose(stats.mean[-n_holds:], 0.0)
+    assert stats.std.shape == (n,)
 
 
 def test_rbf_bandwidth_uses_median_pairwise_distance():

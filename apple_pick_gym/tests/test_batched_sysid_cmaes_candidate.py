@@ -28,16 +28,18 @@ def test_support_kp_candidate_apply_to_leaves_primary_e_unchanged():
 
     base = _base_primary_spur_stem()
     assert base.primary is not None and base.spur is not None
-    e0 = base.primary.youngs_modulus_pa
+    e0 = base.primary.flexural_modulus_pa
+    y0_spur = base.spur.youngs_modulus_pa
     out = cmaes.SupportKpYoungsCandidate(
         support_kp=5e3, spur=1e8, stem=1e7
     ).apply_to(base)
     assert out.primary is not None
-    assert out.primary.youngs_modulus_pa == pytest.approx(e0)
+    assert out.primary.flexural_modulus_pa == pytest.approx(e0)
     assert out.spur is not None
-    assert out.spur.youngs_modulus_pa == pytest.approx(1e8)
+    assert out.spur.flexural_modulus_pa == pytest.approx(1e8)
+    assert out.spur.youngs_modulus_pa == pytest.approx(y0_spur)
     assert out.stem is not None
-    assert out.stem.youngs_modulus_pa == pytest.approx(1e7)
+    assert out.stem.flexural_modulus_pa == pytest.approx(1e7)
 
 
 def test_candidates_from_log10_vector_round_trip():
@@ -54,8 +56,240 @@ def test_candidates_from_log10_vector_round_trip():
 def test_candidates_from_log10_vector_rejects_wrong_length():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
-    with pytest.raises(ValueError, match="3"):
+    with pytest.raises(ValueError, match="3, 5, 6, 9, or 10"):
         cmaes.candidates_from_log10_vector((4.0, 9.0))
+
+
+def test_candidates_from_log10_vector_6d_includes_support_roll_kp():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    x = (4.0, 9.0, 8.5, 8.0, 7.5, math.log10(0.75))
+    c = cmaes.candidates_from_log10_vector(x)
+    assert c.support_kp == pytest.approx(1e4)
+    assert c.spur == pytest.approx(1e9)
+    assert c.stem == pytest.approx(10**8.5)
+    assert c.spur_youngs == pytest.approx(1e8)
+    assert c.stem_youngs == pytest.approx(10**7.5)
+    assert c.support_roll_kp == pytest.approx(0.75)
+    assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_candidates_from_log10_vector_9d_includes_damping_ratios():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    x = (4.0, 9.0, 8.5, 8.0, 7.5, math.log10(0.75), 0.25, 0.4, 0.6)
+    c = cmaes.candidates_from_log10_vector(x)
+    assert c.support_roll_kp == pytest.approx(0.75)
+    assert c.spur_damping_ratio == pytest.approx(0.25)
+    assert c.stem_damping_ratio == pytest.approx(0.4)
+    assert c.support_joint_zeta == pytest.approx(0.6)
+    assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_candidates_from_log10_vector_10d_includes_primary_density():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    x = (4.0, 9.0, 8.5, 8.0, 7.5, math.log10(0.75), 0.25, 0.4, 0.6, math.log10(750.0))
+    c = cmaes.candidates_from_log10_vector(x)
+    assert c.support_roll_kp == pytest.approx(0.75)
+    assert c.spur_damping_ratio == pytest.approx(0.25)
+    assert c.stem_damping_ratio == pytest.approx(0.4)
+    assert c.support_joint_zeta == pytest.approx(0.6)
+    assert c.primary_density == pytest.approx(750.0)
+    assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_log10_vector_from_candidate_rejects_primary_density_without_damping():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    c = cmaes.SupportKpYoungsCandidate(
+        support_kp=1e4,
+        spur=1e8,
+        stem=10**8.5,
+        spur_youngs=1e8,
+        stem_youngs=10**7.5,
+        support_roll_kp=0.75,
+        primary_density=750.0,
+    )
+    with pytest.raises(ValueError, match="primary_density"):
+        cmaes.log10_vector_from_candidate(c)
+
+
+def test_candidates_from_log10_vector_9d_rejects_zeta_outside_unit_interval():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = (4.0, 9.0, 8.5, 8.0, 7.5, math.log10(0.75))
+    with pytest.raises(ValueError, match="damping|zeta|\\[0, 1\\]"):
+        cmaes.candidates_from_log10_vector((*base, -0.01, 0.5, 0.5))
+    with pytest.raises(ValueError, match="damping|zeta|\\[0, 1\\]"):
+        cmaes.candidates_from_log10_vector((*base, 0.5, 1.01, 0.5))
+
+
+def test_support_kp_apply_to_9d_sets_spur_stem_damping():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _base_primary_spur_stem()
+    out = cmaes.SupportKpYoungsCandidate(
+        support_kp=5e3,
+        spur=1e8,
+        stem=1e7,
+        spur_youngs=3e8,
+        stem_youngs=2e8,
+        support_roll_kp=0.75,
+        spur_damping_ratio=0.2,
+        stem_damping_ratio=0.35,
+        support_joint_zeta=0.55,
+    ).apply_to(base)
+    assert out.spur.damping_ratio == pytest.approx(0.2)
+    assert out.stem.damping_ratio == pytest.approx(0.35)
+    assert out.primary.damping_ratio == pytest.approx(base.primary.damping_ratio)
+
+
+def test_support_kp_apply_to_10d_sets_primary_density_only():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _base_primary_spur_stem()
+    density_new = base.primary.density * 1.5
+    out = cmaes.SupportKpYoungsCandidate(
+        support_kp=5e3,
+        spur=1e8,
+        stem=1e7,
+        spur_youngs=3e8,
+        stem_youngs=2e8,
+        support_roll_kp=0.75,
+        spur_damping_ratio=0.2,
+        stem_damping_ratio=0.35,
+        support_joint_zeta=0.55,
+        primary_density=density_new,
+    ).apply_to(base)
+    assert out.primary.density == pytest.approx(density_new)
+    assert out.primary.flexural_modulus_pa == pytest.approx(base.primary.flexural_modulus_pa)
+    assert out.spur.density == pytest.approx(base.spur.density)
+    assert out.stem.density == pytest.approx(base.stem.density)
+
+
+def test_resolve_initial_mean_log10_bounds_midpoint_dim9():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    mean = cmaes.resolve_initial_mean_log10(
+        "bounds_midpoint", bounds, phenotype_dim=9
+    )
+    assert len(mean) == 9
+    assert mean[:6] == pytest.approx(
+        cmaes.resolve_initial_mean_log10("bounds_midpoint", bounds, phenotype_dim=6)
+    )
+    assert mean[6:] == pytest.approx((0.5, 0.5, 0.5))
+
+
+def test_resolve_initial_mean_log10_bounds_midpoint_dim10():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    mean = cmaes.resolve_initial_mean_log10(
+        "bounds_midpoint", bounds, phenotype_dim=10
+    )
+    assert len(mean) == 10
+    assert mean[:9] == pytest.approx(
+        cmaes.resolve_initial_mean_log10("bounds_midpoint", bounds, phenotype_dim=9)
+    )
+    assert mean[9] == pytest.approx(cmaes.DEFAULT_PRIMARY_DENSITY_LOG10_MIDPOINT)
+
+
+def test_normalize_search_bounds_log10_accepts_dim9():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    lower = [2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0]
+    upper = [6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0]
+    box = cmaes.normalize_search_bounds_log10({"lower": lower, "upper": upper})
+    assert box is not None
+    assert len(box[0]) == 9
+    assert box[0][6:] == pytest.approx((0.0, 0.0, 0.0))
+    assert box[1][6:] == pytest.approx((1.0, 1.0, 1.0))
+
+
+def test_normalize_search_bounds_log10_accepts_dim10():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    lower = [2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0, 2.6]
+    upper = [6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0, 3.1]
+    box = cmaes.normalize_search_bounds_log10({"lower": lower, "upper": upper})
+    assert box is not None
+    assert len(box[0]) == 10
+    assert box[0][6:9] == pytest.approx((0.0, 0.0, 0.0))
+    assert box[1][6:9] == pytest.approx((1.0, 1.0, 1.0))
+    assert box[0][9] == pytest.approx(2.6)
+    assert box[1][9] == pytest.approx(3.1)
+
+
+def test_search_bounds_report_payload_dim9_treats_zeta_as_linear():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    lower = (2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0)
+    upper = (6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0)
+    payload = cmaes.search_bounds_report_payload((lower, upper))
+    assert payload is not None
+    assert payload["physical_min_pa"][:6] == pytest.approx([10.0**v for v in lower[:6]])
+    assert payload["physical_min_pa"][6:9] == pytest.approx([0.0, 0.0, 0.0])
+    assert payload["physical_max_pa"][6:9] == pytest.approx([1.0, 1.0, 1.0])
+
+
+def test_search_bounds_report_payload_dim10_treats_only_zeta_as_linear():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    lower = (2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0, 2.6)
+    upper = (6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0, 3.1)
+    payload = cmaes.search_bounds_report_payload((lower, upper))
+    assert payload is not None
+    # dims 0-5 log10
+    assert payload["physical_min_pa"][:6] == pytest.approx([10.0**v for v in lower[:6]])
+    assert payload["physical_max_pa"][:6] == pytest.approx([10.0**v for v in upper[:6]])
+    # dims 6-8 linear zeta, NOT 10**x
+    assert payload["physical_min_pa"][6:9] == pytest.approx([0.0, 0.0, 0.0])
+    assert payload["physical_max_pa"][6:9] == pytest.approx([1.0, 1.0, 1.0])
+    # dim 9 (primary density) is log10 again, NOT identity
+    assert payload["physical_min_pa"][9] == pytest.approx(10.0**2.6)
+    assert payload["physical_max_pa"][9] == pytest.approx(10.0**3.1)
+
+
+def test_candidate_to_e_list_includes_primary_density_when_damping_set():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    with_density = cmaes.SupportKpYoungsCandidate(
+        support_kp=1e4,
+        spur=1e8,
+        stem=10**8.5,
+        spur_youngs=1e8,
+        stem_youngs=10**7.5,
+        support_roll_kp=0.75,
+        spur_damping_ratio=0.25,
+        stem_damping_ratio=0.4,
+        support_joint_zeta=0.6,
+        primary_density=750.0,
+    )
+    e_list = cmaes._candidate_to_e_list(with_density)
+    assert len(e_list) == 10
+    assert e_list[-1] == pytest.approx(750.0)
+    log10_list = cmaes._candidate_to_log10_list(with_density)
+    assert len(log10_list) == 10
+    assert log10_list[-1] == pytest.approx(math.log10(750.0))
+
+    without_density = with_density._replace(primary_density=None)
+    assert len(cmaes._candidate_to_e_list(without_density)) == 9
+
+
+def test_resolve_initial_mean_log10_bounds_midpoint_dim6():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    mean = cmaes.resolve_initial_mean_log10(
+        "bounds_midpoint", bounds, phenotype_dim=6
+    )
+    assert len(mean) == 6
+    assert mean[:3] == pytest.approx(bounds.log10_midpoint)
+    assert mean[3] == pytest.approx(bounds.log10_midpoint[1])
+    assert mean[4] == pytest.approx(bounds.log10_midpoint[2])
+    assert mean[5] == pytest.approx(math.log10(0.75))
 
 
 def test_gt_support_kp_from_dataset_reads_manifest_sim_config():
@@ -127,8 +361,10 @@ def test_gt_support_kp_youngs_candidate_from_structure(monkeypatch):
     candidate = cmaes.gt_support_kp_youngs_candidate_from_structure(dataset, 2)
     assert candidate == cmaes.SupportKpYoungsCandidate(
         support_kp=5.0e3,
-        spur=gt_params.spur.youngs_modulus_pa,
-        stem=gt_params.stem.youngs_modulus_pa,
+        spur=gt_params.spur.flexural_modulus_pa,
+        stem=gt_params.stem.flexural_modulus_pa,
+        spur_youngs=gt_params.spur.youngs_modulus_pa,
+        stem_youngs=gt_params.stem.youngs_modulus_pa,
     )
 
 
@@ -181,10 +417,12 @@ def test_support_kp_apply_to_sets_spur_stem_e_leaves_primary_secondary_unchanged
 
     assert out.secondary is not None
     assert out.primary is not None and out.spur is not None and out.stem is not None
-    assert out.primary.youngs_modulus_pa == pytest.approx(base_primary.youngs_modulus_pa)
+    assert out.primary.flexural_modulus_pa == pytest.approx(base_primary.flexural_modulus_pa)
     assert out.primary.damping_ratio == pytest.approx(base_primary.damping_ratio)
     assert out.primary.bend_stiffness == pytest.approx(base_primary.bend_stiffness)
-    assert out.secondary.youngs_modulus_pa == pytest.approx(base_secondary.youngs_modulus_pa)
+    assert out.secondary.flexural_modulus_pa == pytest.approx(
+        base_secondary.flexural_modulus_pa
+    )
     assert out.secondary.damping_ratio == pytest.approx(base_secondary.damping_ratio)
     assert out.secondary.length == pytest.approx(base_secondary.length)
     assert out.secondary.radius == pytest.approx(base_secondary.radius)
@@ -198,7 +436,8 @@ def test_support_kp_apply_to_sets_spur_stem_e_leaves_primary_secondary_unchanged
         (out.spur, e_sp, base.spur),
         (out.stem, e_st, base.stem),
     ):
-        assert rod.youngs_modulus_pa == pytest.approx(e_new)
+        assert rod.flexural_modulus_pa == pytest.approx(e_new)
+        assert rod.youngs_modulus_pa == pytest.approx(base_rod.youngs_modulus_pa)
         assert rod.damping_ratio == pytest.approx(base_rod.damping_ratio)
         assert rod.length == pytest.approx(base_rod.length)
         assert rod.radius == pytest.approx(base_rod.radius)
@@ -207,6 +446,7 @@ def test_support_kp_apply_to_sets_spur_stem_e_leaves_primary_secondary_unchanged
         assert rod.direction == base_rod.direction
         expected = fs.rod_params_from_material(
             e_new,
+            base_rod.youngs_modulus_pa,
             base_rod.damping_ratio,
             base_rod.length,
             base_rod.radius,
@@ -216,69 +456,46 @@ def test_support_kp_apply_to_sets_spur_stem_e_leaves_primary_secondary_unchanged
         )
         assert rod.bend_stiffness == pytest.approx(expected.bend_stiffness)
         assert rod.bend_damping == pytest.approx(expected.bend_damping)
+        assert rod.stretch_stiffness == pytest.approx(base_rod.stretch_stiffness)
 
 
-def test_apply_to_preserves_fixed_axial_stretch_overrides():
+def test_support_kp_apply_to_5d_sets_axial_moduli():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
-    fixed_k, fixed_c = 5.0e5, 30.0
-    primary = fs.rod_params_from_material(
-        youngs_modulus_pa=1.0e7,
-        damping_ratio=0.05,
-        length=0.20,
-        radius=0.01,
-        density=300.0,
-        num_segments=4,
-        direction=(1.0, 0.0, 0.0),
-        stretch_stiffness=fixed_k,
-        stretch_damping=fixed_c,
-    )
-    spur = fs.rod_params_from_material(
-        youngs_modulus_pa=5.0e6,
-        damping_ratio=0.04,
-        length=0.08,
-        radius=0.006,
-        density=280.0,
-        num_segments=3,
-        direction=(0.0, 0.0, -1.0),
-        stretch_stiffness=fixed_k,
-        stretch_damping=fixed_c,
-    )
-    stem = fs.rod_params_from_material(
-        youngs_modulus_pa=2.0e6,
-        damping_ratio=0.03,
-        length=0.04,
-        radius=0.004,
-        density=250.0,
-        num_segments=2,
-        direction=(0.0, 0.0, -1.0),
-        stretch_stiffness=fixed_k,
-        stretch_damping=fixed_c,
-    )
-    base = fs.FruitingSystemParams(
-        primary=primary,
-        secondary=None,
-        spur=spur,
-        stem=stem,
-        apple_radius=0.04,
-        apple_density=800.0,
-    )
+    base = _base_primary_spur_stem()
+    y_sp, y_st = 3.0e8, 2.0e8
+    out = cmaes.SupportKpYoungsCandidate(
+        support_kp=5e3,
+        spur=1e8,
+        stem=1e7,
+        spur_youngs=y_sp,
+        stem_youngs=y_st,
+    ).apply_to(base)
+    assert out.spur.youngs_modulus_pa == pytest.approx(y_sp)
+    assert out.stem.youngs_modulus_pa == pytest.approx(y_st)
+    x = (4.0, 9.0, 8.5, math.log10(y_sp), math.log10(y_st))
+    c = cmaes.candidates_from_log10_vector(x)
+    assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_apply_to_preserves_axial_when_3d_candidate():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _base_primary_spur_stem()
+    k_spur = base.spur.stretch_stiffness
     out = cmaes.SupportKpYoungsCandidate(
         support_kp=1.0e4, spur=6.0e6, stem=3.0e6
     ).apply_to(base)
-    assert out.primary is not None and out.spur is not None and out.stem is not None
-    assert out.primary.stretch_stiffness == pytest.approx(fixed_k)
-    assert out.primary.stretch_damping == pytest.approx(fixed_c)
-    for rod in (out.spur, out.stem):
-        assert rod.stretch_stiffness == pytest.approx(fixed_k)
-        assert rod.stretch_damping == pytest.approx(fixed_c)
+    assert out.spur.stretch_stiffness == pytest.approx(k_spur)
+    assert out.stem.stretch_stiffness == pytest.approx(base.stem.stretch_stiffness)
 
 
 def test_log10_e_from_params_requires_primary_spur_stem():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
     rod = fs.rod_params_from_material(
-        youngs_modulus_pa=1.0e7,
+        1.0e7,
+        1.0e7,
         damping_ratio=0.05,
         length=0.10,
         radius=0.01,
@@ -298,7 +515,7 @@ def test_log10_e_from_params_requires_primary_spur_stem():
         cmaes.log10_e_from_params(base)
 
 
-def test_set_rod_youngs_modulus_rederives_and_preserves_zeta():
+def test_set_rod_youngs_modulus_rederives_stretch_and_preserves_flexural():
     base = _base_primary_spur_stem()
     assert base.primary is not None
     old_zeta = base.primary.damping_ratio
@@ -306,8 +523,10 @@ def test_set_rod_youngs_modulus_rederives_and_preserves_zeta():
     out = fs.set_rod_youngs_modulus(base, "primary", e_new)
     assert out.primary is not None
     assert out.primary.youngs_modulus_pa == pytest.approx(e_new)
+    assert out.primary.flexural_modulus_pa == pytest.approx(base.primary.flexural_modulus_pa)
     assert out.primary.damping_ratio == pytest.approx(old_zeta)
     expected = fs.rod_params_from_material(
+        base.primary.flexural_modulus_pa,
         e_new,
         old_zeta,
         base.primary.length,
@@ -316,8 +535,7 @@ def test_set_rod_youngs_modulus_rederives_and_preserves_zeta():
         base.primary.num_segments,
         base.primary.direction,
     )
-    # Without fixed stretch on fixture sample, bend (and beam stretch) follow E.
-    assert out.primary.bend_stiffness == pytest.approx(expected.bend_stiffness)
+    assert out.primary.stretch_stiffness == pytest.approx(expected.stretch_stiffness)
 
 
 def test_candidates_from_log10_e_rejects_wrong_length():
@@ -336,9 +554,9 @@ def test_gt_candidate_reads_lossless_structure_params(monkeypatch):
     candidate = cmaes.gt_youngs_modulus_candidate_from_structure(object(), 3)
 
     assert candidate == cmaes.YoungsModulusCandidate(
-        primary=gt_params.primary.youngs_modulus_pa,
-        spur=gt_params.spur.youngs_modulus_pa,
-        stem=gt_params.stem.youngs_modulus_pa,
+        primary=gt_params.primary.flexural_modulus_pa,
+        spur=gt_params.spur.flexural_modulus_pa,
+        stem=gt_params.stem.flexural_modulus_pa,
     )
     assert gt_params.secondary is not None
 
@@ -361,10 +579,10 @@ def test_maybe_include_gt_candidate_is_configurable_and_deduplicates_in_log_spac
 
 def _valid_youngs_ranges() -> dict:
     return {
-        "primary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
-        "spur": {"youngs_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
-        "stem": {"youngs_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
-        "secondary": {"youngs_modulus_pa": {"min": 1.0e7, "max": 1.0e8}},
+        "primary": {"flexural_modulus_pa": {"min": 1.0e7, "max": 1.0e9}},
+        "spur": {"flexural_modulus_pa": {"min": 1.0e6, "max": 1.0e8}},
+        "stem": {"flexural_modulus_pa": {"min": 1.0e5, "max": 1.0e7}},
+        "secondary": {"flexural_modulus_pa": {"min": 1.0e7, "max": 1.0e8}},
     }
 
 
@@ -407,22 +625,22 @@ def test_extract_youngs_modulus_cma_bounds_from_fixture_paths():
 @pytest.mark.parametrize(
     "mutate,match",
     [
-        (lambda r: r["primary"].pop("youngs_modulus_pa"), "primary"),
-        (lambda r: r["spur"]["youngs_modulus_pa"].pop("min"), "spur"),
-        (lambda r: r["stem"]["youngs_modulus_pa"].__setitem__("max", None), "stem"),
-        (lambda r: r["primary"]["youngs_modulus_pa"].__setitem__("min", "bad"), "primary"),
-        (lambda r: r["spur"]["youngs_modulus_pa"].__setitem__("min", float("nan")), "spur"),
-        (lambda r: r["stem"]["youngs_modulus_pa"].__setitem__("max", float("inf")), "stem"),
-        (lambda r: r["primary"]["youngs_modulus_pa"].__setitem__("min", 0.0), "primary"),
-        (lambda r: r["spur"]["youngs_modulus_pa"].__setitem__("min", -1.0), "spur"),
+        (lambda r: r["primary"].pop("flexural_modulus_pa"), "primary"),
+        (lambda r: r["spur"]["flexural_modulus_pa"].pop("min"), "spur"),
+        (lambda r: r["stem"]["flexural_modulus_pa"].__setitem__("max", None), "stem"),
+        (lambda r: r["primary"]["flexural_modulus_pa"].__setitem__("min", "bad"), "primary"),
+        (lambda r: r["spur"]["flexural_modulus_pa"].__setitem__("min", float("nan")), "spur"),
+        (lambda r: r["stem"]["flexural_modulus_pa"].__setitem__("max", float("inf")), "stem"),
+        (lambda r: r["primary"]["flexural_modulus_pa"].__setitem__("min", 0.0), "primary"),
+        (lambda r: r["spur"]["flexural_modulus_pa"].__setitem__("min", -1.0), "spur"),
         (
-            lambda r: r["stem"]["youngs_modulus_pa"].__setitem__("min", 1.0e7)
-            or r["stem"]["youngs_modulus_pa"].__setitem__("max", 1.0e7),
+            lambda r: r["stem"]["flexural_modulus_pa"].__setitem__("min", 1.0e7)
+            or r["stem"]["flexural_modulus_pa"].__setitem__("max", 1.0e7),
             "stem",
         ),
         (
-            lambda r: r["primary"]["youngs_modulus_pa"].__setitem__("min", 1.0e9)
-            or r["primary"]["youngs_modulus_pa"].__setitem__("max", 1.0e7),
+            lambda r: r["primary"]["flexural_modulus_pa"].__setitem__("min", 1.0e9)
+            or r["primary"]["flexural_modulus_pa"].__setitem__("max", 1.0e7),
             "primary",
         ),
     ],
@@ -496,6 +714,79 @@ def test_build_pycma_options_omit_bounds_include_randn_nan_seed_and_optional_pop
 
     options_pop = cmaes.build_pycma_options(randn=randn, population_size=8)
     assert options_pop["popsize"] == 8
+
+
+def test_build_pycma_options_sets_maxstd_from_max_sigma_log10():
+    import numpy as np
+
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    randn = cmaes.make_pycma_randn(np.random.default_rng(0))
+    options = cmaes.build_pycma_options(randn=randn, max_sigma_log10=0.5)
+    assert options["maxstd"] == 0.5
+    options_off = cmaes.build_pycma_options(randn=randn)
+    assert "maxstd" not in options_off
+
+
+def test_clamp_optimizer_sigma_caps_sigma_in_place():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    class _Es:
+        sigma = 2.7
+
+    es = _Es()
+    cmaes.clamp_optimizer_sigma(es, max_sigma_log10=0.5)
+    assert es.sigma == 0.5
+    cmaes.clamp_optimizer_sigma(es, max_sigma_log10=None)
+    assert es.sigma == 0.5
+
+
+def test_create_structure_cma_optimizer_passes_maxstd():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    es, _, _ = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_sigma_log10=0.2,
+        base_seed=0,
+        structure_idx=0,
+        population_size=4,
+        max_sigma_log10=0.5,
+    )
+    assert es.opts["maxstd"] == 0.5
+
+
+def test_create_structure_cma_optimizer_applies_cma_stds():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    mean = (4.0, 9.0, 8.5, 8.0, 7.5, -0.12, 0.5, 0.5, 0.5)
+    stds = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0)
+    search_bounds = (
+        (2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0),
+        (6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0),
+    )
+    es, _, _ = cmaes.create_structure_cma_optimizer(
+        bounds,
+        initial_mean_log10=mean,
+        initial_sigma_log10=0.2,
+        base_seed=0,
+        structure_idx=0,
+        population_size=4,
+        search_bounds_log10=search_bounds,
+        cma_stds=stds,
+    )
+    assert list(es.opts["CMA_stds"]) == pytest.approx(list(stds))
+    # pycma may rescale sigma_vec near bounds; opts carry the requested CMA_stds.
+
+
+def test_validate_cma_stds_rejects_wrong_length():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    with pytest.raises(ValueError, match="cma_stds"):
+        cmaes.validate_cma_stds([1.0, 1.0], phenotype_dim=9)
+    with pytest.raises(ValueError, match="cma_stds"):
+        cmaes.validate_cma_stds([1.0] * 8 + [0.0], phenotype_dim=9)
 
 
 def test_resolve_initial_mean_log10_bounds_midpoint_and_explicit():
@@ -616,9 +907,9 @@ def test_sigma_exploration_is_not_clipped_to_fixture_bounds():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
     narrow = {
-        "primary": {"youngs_modulus_pa": {"min": 1.0e8, "max": 2.0e8}},
-        "spur": {"youngs_modulus_pa": {"min": 1.0e7, "max": 2.0e7}},
-        "stem": {"youngs_modulus_pa": {"min": 1.0e6, "max": 2.0e6}},
+        "primary": {"flexural_modulus_pa": {"min": 1.0e8, "max": 2.0e8}},
+        "spur": {"flexural_modulus_pa": {"min": 1.0e7, "max": 2.0e7}},
+        "stem": {"flexural_modulus_pa": {"min": 1.0e6, "max": 2.0e6}},
     }
     bounds = cmaes.extract_youngs_modulus_cma_bounds(narrow)
     for seg in (bounds.primary, bounds.spur, bounds.stem):

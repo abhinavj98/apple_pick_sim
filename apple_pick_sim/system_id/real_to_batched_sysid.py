@@ -11,7 +11,10 @@ Contract: ``docs/superpowers/specs/2026-08-07-real-to-batched-metadata-parity-de
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,13 +25,14 @@ from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     _spur_attach_fraction_from_ranges,
     _spur_surface_offset_from_ranges,
-    _stretch_kw_from_seg_ranges,
+    _stem_surface_offset_from_ranges,
     fruiting_params_to_dict,
     load_ranges,
     params_fingerprint,
     rod_params_from_material,
 )
 from apple_pick_sim.system_id.batched_trajectory_store import SCHEMA_VERSION
+from apple_pick_sim.system_id.mmd_features import CMA_WOODY_JUNCTIONS
 
 SIM_JUNCTION_NAMES: tuple[str, str, str] = ("primary_spur", "spur_stem", "stem_apple")
 ROD_NAMES: tuple[str, str, str] = ("primary", "spur", "stem")
@@ -39,6 +43,38 @@ _JUNCTION_TO_ROD: dict[str, str] = {
 }
 _ZERO_CHORD_EPS = 1e-12
 _DEFAULT_CONTROL_HZ = 15.0
+DEFAULT_TARGET_CONTROL_HZ = 30.0
+DEFAULT_FT_LPF_CUTOFF_HZ = 10.0
+DEFAULT_FT_LPF_ORDER = 4
+_TREE_PARQUET_RE = re.compile(r"(?P<tree>s\d+)-d(?P<dir>\d+)\.parquet")
+
+# Convert-time primary T-junction lift: rest snapshot base is sagged vs lengthened.
+# Force-calibrated (not full tagged sag ~14–16 mm): light/heavy ~1 mm.
+SAG_BASE_Z_MASS_THRESHOLD_KG = 0.25
+SAG_BASE_Z_LIGHT_M = 0.001
+SAG_BASE_Z_HEAVY_M = 0.001
+
+
+def raise_fruiting_base_pos_for_sag(
+    base_pos: tuple[float, float, float] | list[float],
+    *,
+    apple_mass_kg: float,
+) -> tuple[float, float, float]:
+    """Raise fruiting ``base_pos`` in +Z to compensate measured support sag.
+
+    Applied only during real→batched conversion so post-grasp TCP stays at the
+    logged pose while the primary T-junction sits slightly higher.
+    """
+    mass = float(apple_mass_kg)
+    if not math.isfinite(mass) or mass <= 0.0:
+        raise ValueError(f"apple_mass_kg must be finite > 0, got {mass}")
+    dz = (
+        SAG_BASE_Z_HEAVY_M
+        if mass >= SAG_BASE_Z_MASS_THRESHOLD_KG
+        else SAG_BASE_Z_LIGHT_M
+    )
+    x, y, z = (float(base_pos[0]), float(base_pos[1]), float(base_pos[2]))
+    return (x, y, z + float(dz))
 
 
 def flat_woody_to_dicts(
@@ -55,6 +91,46 @@ def flat_woody_to_dicts(
         starts[name] = start[sl].copy()
         ends[name] = end[sl].copy()
     return starts, ends
+
+
+def tag_poses_to_cma_woody(
+    branch_pose_4x4: Any,
+    spur_pose_4x4: Any,
+    apple_pose_4x4: Any,
+) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """Branch/Spur/Apple SE(3) translations → CMA woody starts + apple_pos."""
+    from apple_pick_sim.system_id.real_post_grasp_plan import pose_4x4_to_pos_quat
+
+    branch_pos, _ = pose_4x4_to_pos_quat(branch_pose_4x4)
+    spur_pos, _ = pose_4x4_to_pos_quat(spur_pose_4x4)
+    apple_pos, _ = pose_4x4_to_pos_quat(apple_pose_4x4)
+    return {
+        "primary_spur": np.asarray(branch_pos, dtype=np.float32),
+        "spur_stem": np.asarray(spur_pos, dtype=np.float32),
+    }, np.asarray(apple_pos, dtype=np.float32)
+
+
+_TAG_POSE_COLUMNS: tuple[str, str, str] = (
+    "branch_pose_4x4",
+    "spur_pose_4x4",
+    "apple_pose_4x4",
+)
+
+
+def _require_tag_pose_columns(table: Any, path: Path) -> None:
+    missing = [name for name in _TAG_POSE_COLUMNS if name not in table.column_names]
+    if missing:
+        raise ValueError(
+            f"{path}: convert Sinkhorn woody/apple requires tag pose columns "
+            f"{list(_TAG_POSE_COLUMNS)}; missing {missing}"
+        )
+
+
+def _pose_cell(table: Any, name: str, row_i: int, path: Path) -> Any:
+    raw = table.column(name)[row_i].as_py()
+    if raw is None:
+        raise ValueError(f"{path}: {name} is null at row {row_i}")
+    return raw
 
 
 def rod_directions_from_woody(
@@ -98,6 +174,33 @@ def range_midpoint(band: dict[str, Any]) -> float:
     return 0.5 * (float(band["min"]) + float(band["max"]))
 
 
+def world_wrench_from_ee_logged(
+    ft_ee: Any,
+    tcp_pose_4x4: Any,
+    *,
+    transport_torque_to_tcp: bool = False,
+) -> np.ndarray:
+    """Rotate logged EE-frame wrench ``[F, τ]`` into world using ``R(tcp)``.
+
+    When ``transport_torque_to_tcp`` is True, subtract ``p × F`` after the
+    rotation so τ is the moment about the TCP origin. Use only for legacy
+    parquets whose logged torque is about the robot base origin. Current real
+    collections (``final_data_correct_torque/``) already store TCP-local torque;
+    leave ``transport_torque_to_tcp`` False for convert.
+    """
+    ft = np.asarray(ft_ee, dtype=np.float64).reshape(6)
+    pose = np.asarray(tcp_pose_4x4, dtype=np.float64).reshape(4, 4)
+    R = pose[:3, :3]
+    f_w = R @ ft[:3]
+    t_w = R @ ft[3:]
+    if transport_torque_to_tcp:
+        t_w = t_w - np.cross(pose[:3, 3], f_w)
+    out = np.empty(6, dtype=np.float32)
+    out[:3] = f_w.astype(np.float32)
+    out[3:] = t_w.astype(np.float32)
+    return out
+
+
 def build_fruiting_params_from_real(
     *,
     ranges_path: str | Path,
@@ -112,8 +215,7 @@ def build_fruiting_params_from_real(
     When ``use_parts_density`` is True, each rod's ``density_kg_m3`` (and optional
     ``apple_density_kg_m3``) come from ``rod_geometry`` / the apple override;
     Young's modulus, bend damping ratio, and ``num_segments`` still use fixture
-    midpoints. Axial stretch uses fixture ``vbd_stretch_force`` on the measured
-    geometry (same helper as :func:`~apple_pick_sim.fruiting_system.params.sample_params`).
+    midpoints. Both moduli use fixture midpoints on the measured geometry.
     """
     ranges = load_ranges(ranges_path)
     rods: dict[str, Any] = {}
@@ -135,7 +237,10 @@ def build_fruiting_params_from_real(
         length = float(geo["length_m"])
         radius = float(geo["radius_m"])
         num_segments = int(round(range_midpoint(seg["num_segments"])))
+        preload_chord_m = geo.get("preload_chord_m")
+        axial_preload_n = geo.get("axial_preload_n")
         rods[name] = rod_params_from_material(
+            range_midpoint(seg["flexural_modulus_pa"]),
             range_midpoint(seg["youngs_modulus_pa"]),
             range_midpoint(seg["damping_ratio"]),
             length,
@@ -143,13 +248,8 @@ def build_fruiting_params_from_real(
             density,
             num_segments,
             directions[name],
-            **_stretch_kw_from_seg_ranges(
-                seg,
-                length=length,
-                radius=radius,
-                density=density,
-                num_segments=num_segments,
-            ),
+            preload_chord_m=None if preload_chord_m is None else float(preload_chord_m),
+            axial_preload_n=None if axial_preload_n is None else float(axial_preload_n),
         )
     apple_r = (
         float(apple_radius_m)
@@ -170,6 +270,7 @@ def build_fruiting_params_from_real(
         topology="t_junction",
         spur_attach_fraction=_spur_attach_fraction_from_ranges(ranges),
         spur_surface_offset=_spur_surface_offset_from_ranges(ranges),
+        stem_surface_offset=_stem_surface_offset_from_ranges(ranges),
     )
 
 
@@ -327,11 +428,19 @@ def build_episode_metadata_from_real(
         load_dataset_metadata,
     )
 
-    params, base_pos, _diagnostics = fruiting_params_from_pre_grasp_parquet(
+    params, base_pos, diagnostics = fruiting_params_from_pre_grasp_parquet(
         path, fixture_path=fixture
     )
     if params.apple_radius is None:
         raise ValueError("native pre-grasp params missing apple_radius")
+    apple_mass = diagnostics.get("apple_mass_kg")
+    if apple_mass is None:
+        raise ValueError(
+            "pre-grasp diagnostics missing apple_mass_kg; cannot apply sag base-Z offset"
+        )
+    base_pos = raise_fruiting_base_pos_for_sag(
+        base_pos, apple_mass_kg=float(apple_mass)
+    )
     dm = load_dataset_metadata(path)
     plan = post_grasp_plan_from_metadata(
         dm,
@@ -380,8 +489,8 @@ def build_episode_metadata_from_real(
         "excitation_type": "quasi_static",
         "control_hz": _resolve_control_hz(dm),
         "seed": None,
-        "n_woody_parts": 3,
-        "junction_names": list(SIM_JUNCTION_NAMES),
+        "n_woody_parts": 2,
+        "junction_names": list(CMA_WOODY_JUNCTIONS),
         "initial_tcp_pos": tcp_pos,
         "initial_tcp_quat": tcp_quat,
         "initial_apple_pos": apple_pos,
@@ -536,40 +645,322 @@ def _vic_pose_action_row(
     return np.asarray([*pos, *quat_wxyz, *kp, *kd], dtype=np.float32)
 
 
-def export_real_episode_to_batched_dataset(
+def decimation_window_size(source_hz: float, target_hz: float) -> int:
+    """Samples per output frame; at least 1 (no upsample)."""
+    source = float(source_hz)
+    target = float(target_hz)
+    if source <= 0.0 or target <= 0.0:
+        raise ValueError(f"source_hz and target_hz must be positive, got {source_hz}, {target_hz}")
+    return max(1, int(round(source / target)))
+
+
+def last_sample_indices(n_frames: int, window: int) -> np.ndarray:
+    """Index of the last source sample in each complete ``window``-sample block."""
+    if window < 1:
+        raise ValueError(f"window must be positive, got {window}")
+    n_out = int(n_frames) // int(window)
+    if n_out < 1:
+        raise ValueError(
+            f"need at least one full window of {window} samples, got n_frames={n_frames}"
+        )
+    return (np.arange(n_out, dtype=np.int64) + 1) * int(window) - 1
+
+
+def block_mean_downsample(values: np.ndarray, window: int) -> np.ndarray:
+    """Mean each complete block of ``window`` rows; drop a trailing remainder."""
+    if window < 1:
+        raise ValueError(f"window must be positive, got {window}")
+    x = np.asarray(values, dtype=np.float64)
+    squeeze = False
+    if x.ndim == 1:
+        x = x[:, None]
+        squeeze = True
+    if x.ndim != 2:
+        raise ValueError(f"values must be 1D or 2D, got shape {x.shape}")
+    n_out = x.shape[0] // int(window)
+    if n_out < 1:
+        raise ValueError(
+            f"need at least one full window of {window} samples, got n_frames={x.shape[0]}"
+        )
+    trimmed = x[: n_out * int(window)]
+    out = trimmed.reshape(n_out, int(window), x.shape[1]).mean(axis=1)
+    if squeeze:
+        out = out[:, 0]
+    return out.astype(np.float32)
+
+
+def zero_phase_lowpass(
+    values: np.ndarray,
+    *,
+    source_hz: float,
+    cutoff_hz: float,
+    order: int = DEFAULT_FT_LPF_ORDER,
+) -> np.ndarray:
+    """Forward-backward Butterworth; skip when cutoff is unusable or the series is too short."""
+    filtered, _status = zero_phase_lowpass_with_status(
+        values, source_hz=source_hz, cutoff_hz=cutoff_hz, order=order
+    )
+    return filtered
+
+
+def zero_phase_lowpass_with_status(
+    values: np.ndarray,
+    *,
+    source_hz: float,
+    cutoff_hz: float,
+    order: int = DEFAULT_FT_LPF_ORDER,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Return filtered values plus ``applied`` / ``skip_reason`` provenance."""
+    x = np.asarray(values, dtype=np.float64)
+    if cutoff_hz <= 0.0 or source_hz <= 0.0:
+        return x.copy(), {"applied": False, "skip_reason": "nonpositive_hz"}
+    nyquist = 0.5 * float(source_hz)
+    if float(cutoff_hz) >= nyquist:
+        return x.copy(), {"applied": False, "skip_reason": "cutoff_at_or_above_nyquist"}
+    from scipy.signal import butter, filtfilt
+
+    sos_order = int(order)
+    if sos_order < 1:
+        raise ValueError(f"filter order must be positive, got {order}")
+    b, a = butter(sos_order, float(cutoff_hz) / nyquist, btype="low")
+    padlen = 3 * (max(len(a), len(b)) - 1)
+    if x.shape[0] <= padlen:
+        return x.copy(), {"applied": False, "skip_reason": "series_shorter_than_padlen"}
+    filtered = filtfilt(b, a, x, axis=0)
+    return np.asarray(filtered, dtype=np.float64), {"applied": True}
+
+
+@dataclasses.dataclass
+class _ConvertedEpisode:
+    path: Path
+    direction_idx: int
+    traj: Any
+    episode_meta: dict[str, Any]
+    ft_filter: dict[str, Any]
+    junction_names: list[str]
+    pull_direction: list[float] | None
+    fruiting_base_pos: list[float]
+    max_hold_number: int
+    dm: dict[str, Any]
+
+
+def _require_dump_direction_index(path: Path, dm: dict[str, Any], direction_idx: int) -> None:
+    dump = dm.get("dump") or {}
+    if not isinstance(dump, dict) or "direction_index" not in dump:
+        return
+    logged = int(dump["direction_index"])
+    if logged != int(direction_idx):
+        raise ValueError(
+            f"{path}: dump.direction_index={logged} does not match filename "
+            f"s*-d{int(direction_idx):02d}"
+        )
+
+
+def _discover_tree_parquets(input_dir: Path) -> list[tuple[Path, int]]:
+    entries: list[tuple[Path, int]] = []
+    tree_prefix: str | None = None
+    seen_dirs: set[int] = set()
+    for path in sorted(input_dir.glob("*.parquet")):
+        match = _TREE_PARQUET_RE.fullmatch(path.name)
+        if match is None:
+            continue
+        tree = match.group("tree")
+        direction_idx = int(match.group("dir"))
+        if tree_prefix is None:
+            tree_prefix = tree
+        elif tree != tree_prefix:
+            raise ValueError(
+                f"{input_dir}: mixed tree prefixes {tree_prefix!r} and {tree!r}"
+            )
+        if direction_idx in seen_dirs:
+            raise ValueError(
+                f"{input_dir}: duplicate direction index d{direction_idx:02d} in filenames"
+            )
+        seen_dirs.add(direction_idx)
+        entries.append((path, direction_idx))
+    if not entries:
+        raise ValueError(f"{input_dir}: no compiled sXX-dNN.parquet files found")
+    return entries
+
+
+def _rod_geometry_signature(params_blob: Any) -> tuple[Any, ...]:
+    if isinstance(params_blob, str):
+        data = json.loads(params_blob)
+    elif isinstance(params_blob, dict):
+        data = params_blob
+    else:
+        raise ValueError("fruiting_system_params must be dict or JSON string")
+    sig: list[Any] = []
+    for rod in ROD_NAMES:
+        block = data.get(rod) or {}
+        sig.append(
+            (
+                float(block.get("length", 0.0)),
+                float(block.get("radius", 0.0)),
+                int(block.get("num_segments", 0)),
+            )
+        )
+    return tuple(sig)
+
+
+def _canonicalize_tree_geometry(
+    episodes: list[_ConvertedEpisode],
+    *,
+    base_pos_tolerance_m: float,
+) -> tuple[list[float], dict[str, Any], str]:
+    if not episodes:
+        raise ValueError("canonicalize_tree_geometry requires at least one episode")
+    base_arr = np.stack(
+        [np.asarray(ep.fruiting_base_pos, dtype=np.float64).reshape(3) for ep in episodes],
+        axis=0,
+    )
+    mean_base = base_arr.mean(axis=0)
+    spread = np.max(np.abs(base_arr - mean_base.reshape(1, 3)), axis=0)
+    if float(np.max(spread)) > float(base_pos_tolerance_m):
+        raise ValueError(
+            "fruiting_base_pos spread exceeds tolerance "
+            f"{float(base_pos_tolerance_m)} m (max axis delta {float(np.max(spread)):.6f} m)"
+        )
+    ref = min(episodes, key=lambda ep: ep.direction_idx)
+    ref_junctions = list(ref.junction_names)
+    ref_sig = _rod_geometry_signature(ref.episode_meta.get("fruiting_system_params"))
+    for ep in episodes:
+        if list(ep.junction_names) != ref_junctions:
+            raise ValueError(
+                f"{ep.path}: junction_names {ep.junction_names!r} != {ref_junctions!r}"
+            )
+        if _rod_geometry_signature(ep.episode_meta.get("fruiting_system_params")) != ref_sig:
+            raise ValueError(f"{ep.path}: rod geometry mismatch within tree folder")
+    mean_list = [float(x) for x in mean_base.tolist()]
+    canonical_params = ref.episode_meta.get("fruiting_system_params")
+    canonical_fp = str(ref.episode_meta.get("params_fingerprint"))
+    for ep in episodes:
+        ep.episode_meta = {
+            **ep.episode_meta,
+            "fruiting_base_pos": list(mean_list),
+            "fruiting_system_params": canonical_params,
+            "params_fingerprint": canonical_fp,
+        }
+        ep.fruiting_base_pos = list(mean_list)
+    return mean_list, canonical_params, canonical_fp
+
+
+def _manifest_sim_config_from_fixture(
+    *,
+    fixture_path: Path,
+    topology_seed: int,
+    fruiting_base_pos: tuple[float, float, float],
+    control_hz: float,
+) -> dict[str, Any]:
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
+        BatchedHeterogeneousCoupledSimConfig,
+        ObsConfig,
+    )
+    from apple_pick_sim.fruiting_system.params import load_ranges, parse_sim_build
+    from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
+    from apple_pick_sim.system_id.manifest_sim_config import sim_config_to_manifest_dict
+
+    ranges = load_ranges(fixture_path)
+    sb = parse_sim_build(ranges)
+    vic_gains = None
+    joint_angular_kd: dict[str, float] = {}
+    joint_linear_kd: dict[str, float] = {}
+    joint_angular_kp: dict[str, float] = {}
+    joint_linear_kp: dict[str, float] = {}
+    joint_damping_ratio: float | None = None
+    if sb is not None:
+        vic_gains = ImpedanceGains(
+            linear_k=sb.vic_gains.linear_k,
+            linear_d=sb.vic_gains.linear_d,
+            angular_k=sb.vic_gains.angular_k,
+            angular_d=sb.vic_gains.angular_d,
+        )
+        joint_angular_kd = dict(sb.joint_angular_kd_overrides)
+        joint_linear_kd = dict(sb.joint_linear_kd_overrides)
+        joint_angular_kp = dict(sb.joint_angular_kp_overrides)
+        joint_linear_kp = dict(sb.joint_linear_kp_overrides)
+        joint_damping_ratio = sb.joint_damping_ratio
+
+    gym_cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=1)
+    controller = dataclasses.replace(
+        gym_cfg.controller,
+        mode="vic_pose",
+        action_dim=19,
+        linear_speed=1.0,
+        angular_speed=1.0,
+    )
+    if vic_gains is not None:
+        controller = dataclasses.replace(controller, vic_gains=vic_gains)
+    runtime = dataclasses.replace(gym_cfg.runtime, control_hz=float(control_hz))
+    config = dataclasses.replace(
+        gym_cfg,
+        runtime=runtime,
+        robot=dataclasses.replace(
+            gym_cfg.robot,
+            kind="fr3",
+            step_mode="coupled",
+            fix_to_apple=True,
+            skip_ik_bootstrap=True,
+            defer_template_robot_bootstrap=True,
+            force_batched_layout=True,
+            robot_base_pos=(0.0, 0.0, 0.0),
+            per_env_ik=False,
+        ),
+        scene=dataclasses.replace(
+            gym_cfg.scene,
+            settle_substeps=5000,
+            settle_quiet_every=100,
+            settle_gravity_ramp=False,
+            post_grasp_settle_substeps=2000,
+            fruiting_base_pos=fruiting_base_pos,
+        ),
+        controller=controller,
+        fruiting_system=dataclasses.replace(
+            gym_cfg.fruiting_system,
+            joint_angular_kd_overrides=joint_angular_kd,
+            joint_linear_kd_overrides=joint_linear_kd,
+            joint_angular_kp_overrides=joint_angular_kp,
+            joint_linear_kp_overrides=joint_linear_kp,
+            joint_damping_ratio=joint_damping_ratio,
+        ),
+        domain_randomization=dataclasses.replace(
+            gym_cfg.domain_randomization,
+            topology_seed=int(topology_seed),
+        ),
+        obs=ObsConfig(allocate_buffers=True),
+    )
+    return sim_config_to_manifest_dict(config)
+
+
+def _build_real_episode(
     input_path: str | Path,
     *,
     fixture_path: str | Path,
-    output_dir: str | Path,
+    direction_idx: int,
     weld_direction_sign: float = 1.0,
-    overwrite: bool = False,
     allow_zero_action: bool = False,
-    command_argv: list[str] | None = None,
-) -> Path:
-    """Write a 1×1 ``batched_sysid_v1`` dataset from one real-world parquet.
-
-    Uses bit-1 metadata builders for episode schema metadata and maps trajectory
-    rows into batched frame columns (including per-junction woody columns).
-
-    When real ``action`` is a pose-control wrench, packs a 19D ``vic_pose``
-    action from ``target_pose_4x4`` + ``dump.controller_gains`` instead of
-    copying the wrench (which is not an EE twist for ``mode=vic``).
-    """
-    from apple_pick_sim.system_id.batched_trajectory_store import (
-        BatchedEpisodeWriter,
-        episode_filename,
-        write_manifest,
-    )
+    control_hz: float | None = None,
+    ft_lpf_hz: float = DEFAULT_FT_LPF_CUTOFF_HZ,
+    ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
+    transport_torque_to_tcp: bool = False,
+    inject_rest_hold: bool = True,
+) -> _ConvertedEpisode:
+    """Convert one real parquet into trajectory + metadata (no manifest write)."""
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedEpisodeWriter
     from apple_pick_sim.system_id.real_post_grasp_plan import pose_4x4_to_pos_quat
 
     path = Path(input_path)
-    out = Path(output_dir)
     fixture = Path(fixture_path)
 
     episode_meta = build_episode_metadata_from_real(
         path, fixture_path=fixture, weld_direction_sign=weld_direction_sign
     )
-    # Match sim-collected batched_sysid_v1: fruiting_system_params is a JSON string.
+    episode_meta = {
+        **episode_meta,
+        "structure_idx": 0,
+        "direction_idx": int(direction_idx),
+        "env_idx": int(direction_idx),
+    }
     params_blob = episode_meta.get("fruiting_system_params")
     if isinstance(params_blob, dict):
         episode_meta = {
@@ -577,6 +968,7 @@ def export_real_episode_to_batched_dataset(
             "fruiting_system_params": json.dumps(params_blob, sort_keys=True),
         }
     table = pq.read_table(path)
+    _require_tag_pose_columns(table, path)
 
     dm_raw = pq.read_metadata(path).schema.to_arrow_schema().metadata or {}
     dm_blob = dm_raw.get(b"dataset_metadata")
@@ -603,7 +995,6 @@ def export_real_episode_to_batched_dataset(
             "action_dim": 19,
             "action_layout": "vic_pose_v1",
         }
-    # Pose-wrench logs pack from target_pose_4x4; logged action/wrench is unused.
     has_drive_fill = isinstance(dm.get("drive_fill"), dict)
     if (
         not pack_vic_pose
@@ -618,16 +1009,35 @@ def export_real_episode_to_batched_dataset(
             "robot_replay/fill_actions_from_tcp_velocity.py, or set allow_zero_action=True."
         )
 
-    control_hz = float(episode_meta["control_hz"])
-    if control_hz <= 0:
-        raise ValueError(f"invalid control_hz={control_hz}")
+    source_hz = float(episode_meta["control_hz"])
+    if source_hz <= 0:
+        raise ValueError(f"invalid source control_hz={source_hz}")
+    target_hz = DEFAULT_TARGET_CONTROL_HZ if control_hz is None else float(control_hz)
+    if target_hz <= 0:
+        raise ValueError(f"invalid control_hz={target_hz}")
+    window = decimation_window_size(source_hz, target_hz)
+    output_hz = source_hz if window == 1 else target_hz
 
-    traj = BatchedEpisodeWriter(episode_id=str(episode_meta["episode_id"]))
-    junction_names = list(episode_meta["junction_names"])
+    n_src = int(table.num_rows)
+    phases: list[str] = []
+    actions: list[np.ndarray] = []
+    tcp_vels: list[np.ndarray] = []
+    fts: list[np.ndarray] = []
+    raw_fts: list[np.ndarray] = []
+    tcp_pos_rows: list[np.ndarray] = []
+    tcp_quats: list[np.ndarray] = []
+    apple_pos_rows: list[np.ndarray] = []
+    apple_quats: list[np.ndarray] = []
+    joint_qs: list[np.ndarray] = []
+    woody_rows: list[dict[str, np.ndarray]] = []
+    excitations: list[np.ndarray] = []
+    amplitudes: list[float] = []
+    hold_numbers: list[int] = []
+    step_indices: list[int] = []
 
-    for i in range(table.num_rows):
+    for i in range(n_src):
         phase_raw = _phase_name_for_row(table, i)
-        phase = _REAL_PHASE_NAME_TO_BATCHED.get(phase_raw, "move_out")
+        phases.append(_REAL_PHASE_NAME_TO_BATCHED.get(phase_raw, "move_out"))
 
         if pack_vic_pose:
             assert kp is not None and kd is not None
@@ -638,7 +1048,10 @@ def export_real_episode_to_batched_dataset(
             action = np.asarray(
                 table.column("action")[i].as_py(), dtype=np.float32
             ).reshape(6)
-        tcp_vel = np.asarray(table.column("tcp_velocity")[i].as_py(), dtype=np.float32).reshape(6)
+        actions.append(action)
+        tcp_vels.append(
+            np.asarray(table.column("tcp_velocity")[i].as_py(), dtype=np.float32).reshape(6)
+        )
         ft = np.asarray(table.column("ft_wrist")[i].as_py(), dtype=np.float32).reshape(6)
         raw_ft = ft
         if "ft_wrist_raw" in table.column_names:
@@ -647,15 +1060,37 @@ def export_real_episode_to_batched_dataset(
             ).reshape(6)
 
         tcp_pos = np.asarray(table.column("tcp_pos")[i].as_py(), dtype=np.float32).reshape(3)
-        apple_pos = np.asarray(table.column("apple_pos")[i].as_py(), dtype=np.float32).reshape(3)
-        if "tcp_pose_4x4" in table.column_names:
+        if pack_vic_pose:
+            if "tcp_pose_4x4" not in table.column_names:
+                raise ValueError(
+                    f"{path}: pose-control wrench semantics require tcp_pose_4x4 "
+                    "to rotate ft_wrist into the TCP world frame"
+                )
+            tcp_pose = table.column("tcp_pose_4x4")[i].as_py()
+            ft = world_wrench_from_ee_logged(
+                ft, tcp_pose, transport_torque_to_tcp=transport_torque_to_tcp
+            )
+            raw_ft = world_wrench_from_ee_logged(
+                raw_ft, tcp_pose, transport_torque_to_tcp=transport_torque_to_tcp
+            )
+            _, tcp_quat = pose_4x4_to_pos_quat(tcp_pose)
+        elif "tcp_pose_4x4" in table.column_names:
             _, tcp_quat = pose_4x4_to_pos_quat(table.column("tcp_pose_4x4")[i].as_py())
         else:
             tcp_quat = (0.0, 0.0, 0.0, 1.0)
-        if "apple_pose_4x4" in table.column_names:
-            _, apple_quat = pose_4x4_to_pos_quat(table.column("apple_pose_4x4")[i].as_py())
-        else:
-            apple_quat = (0.0, 0.0, 0.0, 1.0)
+        fts.append(np.asarray(ft, dtype=np.float32).reshape(6))
+        raw_fts.append(np.asarray(raw_ft, dtype=np.float32).reshape(6))
+        tcp_pos_rows.append(tcp_pos)
+        tcp_quats.append(np.asarray(tcp_quat, dtype=np.float32))
+
+        branch_pose = _pose_cell(table, "branch_pose_4x4", i, path)
+        spur_pose = _pose_cell(table, "spur_pose_4x4", i, path)
+        apple_pose = _pose_cell(table, "apple_pose_4x4", i, path)
+        woody_starts, apple_pos = tag_poses_to_cma_woody(branch_pose, spur_pose, apple_pose)
+        _, apple_quat = pose_4x4_to_pos_quat(apple_pose)
+        woody_rows.append(woody_starts)
+        apple_pos_rows.append(np.asarray(apple_pos, dtype=np.float32))
+        apple_quats.append(np.asarray(apple_quat, dtype=np.float32))
 
         if "joint_pos" in table.column_names:
             joint_q = np.asarray(table.column("joint_pos")[i].as_py(), dtype=np.float32).reshape(7)
@@ -665,10 +1100,7 @@ def export_real_episode_to_batched_dataset(
             ).reshape(7)
         else:
             joint_q = np.zeros(7, dtype=np.float32)
-
-        start9 = table.column("woody_part_start_pos")[i].as_py()
-        end9 = table.column("woody_part_end_pos")[i].as_py()
-        starts, ends = flat_woody_to_dicts(start9, end9)
+        joint_qs.append(joint_q)
 
         if "excitation_direction" in table.column_names:
             exc = np.asarray(
@@ -677,11 +1109,13 @@ def export_real_episode_to_batched_dataset(
         else:
             pull = episode_meta.get("pull_direction") or [0.0, -1.0, 0.0]
             exc = np.asarray(pull, dtype=np.float32).reshape(3)
+        excitations.append(exc)
 
         amp = 0.0
         if "amplitude_m" in table.column_names:
             amp_raw = table.column("amplitude_m")[i].as_py()
             amp = float(np.asarray(amp_raw, dtype=np.float64).reshape(-1)[0])
+        amplitudes.append(amp)
 
         hold_idx = None
         if "hold_index" in table.column_names:
@@ -689,7 +1123,7 @@ def export_real_episode_to_batched_dataset(
         hold_raw = None
         if "hold_number" in table.column_names:
             hold_raw = table.column("hold_number")[i].as_py()
-        hold_number = _scalar_hold_number(hold_raw, hold_index=hold_idx)
+        hold_numbers.append(_scalar_hold_number(hold_raw, hold_index=hold_idx))
 
         step_idx = i
         if "step_idx" in table.column_names:
@@ -697,84 +1131,317 @@ def export_real_episode_to_batched_dataset(
                 step_idx = int(table.column("step_idx")[i].as_py())
             except (TypeError, ValueError):
                 step_idx = i
+        step_indices.append(step_idx)
 
+    ft_unfiltered = np.stack(fts, axis=0)
+    raw_unfiltered = np.stack(raw_fts, axis=0)
+    vel_unfiltered = np.stack(tcp_vels, axis=0)
+    ft_lpf, lpf_info = zero_phase_lowpass_with_status(
+        ft_unfiltered,
+        source_hz=source_hz,
+        cutoff_hz=float(ft_lpf_hz),
+        order=int(ft_lpf_order),
+    )
+    ft_out = block_mean_downsample(ft_unfiltered, window)
+    raw_ft_out = block_mean_downsample(raw_unfiltered, window)
+    vel_out = block_mean_downsample(vel_unfiltered, window)
+    ft_lpf_out = block_mean_downsample(ft_lpf, window)
+    pick = last_sample_indices(n_src, window)
+
+    ft_filter = {
+        "method": "butterworth_filtfilt",
+        "cutoff_hz": float(ft_lpf_hz),
+        "order": int(ft_lpf_order),
+        "source_hz": source_hz,
+        "target_hz": output_hz,
+        "tare": "ema_minus_ema",
+        "column": "ft_wrist_lpf",
+        "window": int(window),
+        "applied": bool(lpf_info.get("applied")),
+        "torque_moment": "tcp" if transport_torque_to_tcp else "logged",
+    }
+    if not ft_filter["applied"] and lpf_info.get("skip_reason"):
+        ft_filter["skip_reason"] = str(lpf_info["skip_reason"])
+    episode_meta = {
+        **episode_meta,
+        "control_hz": float(output_hz),
+        "ft_filter": dict(ft_filter),
+    }
+    if inject_rest_hold:
+        episode_meta = {**episode_meta, "rest_hold_injected": True}
+
+    traj = BatchedEpisodeWriter(episode_id=str(episode_meta["episode_id"]))
+    junction_names = list(episode_meta["junction_names"])
+    recorded_hold_numbers: list[int] = []
+    for out_i, src_i in enumerate(pick.tolist()):
+        use_rest = bool(inject_rest_hold) and out_i == 0
+        sample_i = 0 if use_rest else int(src_i)
+        if use_rest:
+            phase = "hold"
+            hold_n = 0
+            vel_row = vel_unfiltered[0]
+            ft_row = ft_unfiltered[0]
+            ft_lpf_row = ft_lpf[0]
+            raw_ft_row = raw_unfiltered[0]
+        else:
+            phase = phases[int(src_i)]
+            hold_n = int(hold_numbers[int(src_i)])
+            if inject_rest_hold and hold_n >= 0:
+                hold_n = hold_n + 1
+            vel_row = vel_out[out_i]
+            ft_row = ft_out[out_i]
+            ft_lpf_row = ft_lpf_out[out_i]
+            raw_ft_row = raw_ft_out[out_i]
+        recorded_hold_numbers.append(int(hold_n))
         obs = {
             "excitation_type": 0,
-            "excitation_direction": exc,
-            "tcp_velocity": tcp_vel,
-            "ft_wrist": ft,
-            "raw_ft_wrist": raw_ft,
-            "tcp_pos": tcp_pos,
-            "apple_pos": apple_pos,
-            "tcp_quat": np.asarray(tcp_quat, dtype=np.float32),
-            "apple_quat": np.asarray(apple_quat, dtype=np.float32),
-            "robot_joint_q": joint_q,
-            "woody_part_start_pos": {name: starts[name] for name in junction_names},
-            "woody_part_end_pos": {name: ends[name] for name in junction_names},
+            "excitation_direction": excitations[sample_i],
+            "tcp_velocity": np.asarray(vel_row, dtype=np.float32).reshape(6),
+            "ft_wrist": np.asarray(ft_row, dtype=np.float32).reshape(6),
+            "ft_wrist_lpf": np.asarray(ft_lpf_row, dtype=np.float32).reshape(6),
+            "raw_ft_wrist": np.asarray(raw_ft_row, dtype=np.float32).reshape(6),
+            "tcp_pos": tcp_pos_rows[sample_i],
+            "apple_pos": apple_pos_rows[sample_i],
+            "tcp_quat": tcp_quats[sample_i],
+            "apple_quat": apple_quats[sample_i],
+            "robot_joint_q": joint_qs[sample_i],
+            "woody_part_start_pos": woody_rows[sample_i],
             "woody_part_force": np.zeros(0, dtype=np.float32),
         }
         traj.record_step(
-            step_idx=step_idx,
-            sim_time=float(i) / control_hz,
+            step_idx=int(step_indices[sample_i]),
+            sim_time=float(out_i) / float(output_hz),
             phase=phase,
-            amplitude_m=amp,
-            action=action,
+            amplitude_m=amplitudes[sample_i],
+            action=actions[sample_i],
             obs=obs,
             stable=True,
-            hold_number=hold_number,
+            hold_number=int(hold_n),
         )
 
+    max_hold = max((int(h) for h in recorded_hold_numbers), default=-1)
+    fruiting_base = [float(x) for x in episode_meta.get("fruiting_base_pos") or [0.0, 0.0, 0.0]]
+    pull_dir = episode_meta.get("pull_direction")
+    return _ConvertedEpisode(
+        path=path,
+        direction_idx=int(direction_idx),
+        traj=traj,
+        episode_meta=episode_meta,
+        ft_filter=dict(ft_filter),
+        junction_names=junction_names,
+        pull_direction=list(pull_dir) if pull_dir is not None else None,
+        fruiting_base_pos=fruiting_base,
+        max_hold_number=max_hold,
+        dm=dm,
+    )
+
+
+def _assert_identical_ft_filters(episodes: list[_ConvertedEpisode]) -> dict[str, Any]:
+    if not episodes:
+        raise ValueError("ft_filter check requires at least one episode")
+    ref = episodes[0].ft_filter
+    for ep in episodes[1:]:
+        if ep.ft_filter != ref:
+            raise ValueError(f"{ep.path}: ft_filter differs across directions in one tree")
+    return dict(ref)
+
+
+def _write_batched_manifest(
+    out: Path,
+    *,
+    fixture: Path,
+    episodes: list[_ConvertedEpisode],
+    command_argv: list[str],
+    source_real_parquet: str | None = None,
+    source_real_parquets: list[str] | None = None,
+    num_directions: int,
+    topology_seed: int | None = None,
+    sim_config: dict[str, Any] | None = None,
+    n_holds: int | None = None,
+) -> None:
+    from apple_pick_sim.system_id.batched_trajectory_store import write_manifest
+
+    ref = min(episodes, key=lambda ep: ep.direction_idx)
+    ft_filter = _assert_identical_ft_filters(episodes)
+    output_hz = float(ref.episode_meta["control_hz"])
+    max_steps = max(int(ep.traj.n_frames) for ep in episodes)
+    structures = [
+        {
+            "structure_idx": 0,
+            "params_fingerprint": ref.episode_meta.get("params_fingerprint"),
+            "junction_names": list(ref.junction_names),
+            "n_woody_parts": int(ref.episode_meta.get("n_woody_parts") or 2),
+        }
+    ]
+    manifest_episodes = [
+        {
+            "structure_idx": 0,
+            "direction_idx": int(ep.direction_idx),
+            "env_idx": int(ep.direction_idx),
+            "filename": f"episodes/s00_d{int(ep.direction_idx):02d}.parquet",
+            "episode_id": ep.episode_meta["episode_id"],
+            "pull_direction": ep.pull_direction,
+            "n_frames": ep.traj.n_frames,
+            "excluded": False,
+            "excluded_reason": None,
+        }
+        for ep in sorted(episodes, key=lambda item: item.direction_idx)
+    ]
+    seed_raw = ref.episode_meta.get("seed")
+    seed_fallback = int(topology_seed) if topology_seed is not None else 0
+    collection: dict[str, Any] = {
+        "seed": int(seed_raw) if seed_raw is not None else seed_fallback,
+        "ranges_path": str(fixture.resolve()),
+        "control_hz": output_hz,
+        "ft_filter": dict(ft_filter),
+        "num_structures": 1,
+        "num_directions": int(num_directions),
+        "max_steps": int(max_steps),
+        "drive_fill": ref.dm.get("drive_fill"),
+    }
+    if topology_seed is not None:
+        collection["topology_seed"] = int(topology_seed)
+    if source_real_parquet is not None:
+        collection["source_real_parquet"] = source_real_parquet
+    if source_real_parquets is not None:
+        collection["source_real_parquets"] = list(source_real_parquets)
+    if sim_config is not None:
+        collection["sim_config"] = sim_config
+    if n_holds is not None:
+        collection["n_holds"] = int(n_holds)
+    if ref.episode_meta.get("action_layout") == "vic_pose_v1":
+        collection["action_semantics"] = ref.episode_meta.get("action_semantics")
+        collection["action_compatible_with_vic_twist"] = False
+        collection["action_dim"] = int(ref.episode_meta.get("action_dim") or 19)
+        collection["action_layout"] = "vic_pose_v1"
+    write_manifest(
+        out,
+        command_argv=list(command_argv),
+        collection=collection,
+        structures=structures,
+        episodes=manifest_episodes,
+        overwrite=True,
+    )
+
+
+def export_real_episode_to_batched_dataset(
+    input_path: str | Path,
+    *,
+    fixture_path: str | Path,
+    output_dir: str | Path,
+    weld_direction_sign: float = 1.0,
+    overwrite: bool = False,
+    allow_zero_action: bool = False,
+    command_argv: list[str] | None = None,
+    control_hz: float | None = None,
+    ft_lpf_hz: float = DEFAULT_FT_LPF_CUTOFF_HZ,
+    ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
+    transport_torque_to_tcp: bool = False,
+    inject_rest_hold: bool = True,
+) -> Path:
+    """Write a 1×1 ``batched_sysid_v1`` dataset from one real-world parquet."""
+    from apple_pick_sim.system_id.batched_trajectory_store import episode_filename
+
+    path = Path(input_path)
+    out = Path(output_dir)
+    fixture = Path(fixture_path)
+    converted = _build_real_episode(
+        path,
+        fixture_path=fixture,
+        direction_idx=0,
+        weld_direction_sign=weld_direction_sign,
+        allow_zero_action=allow_zero_action,
+        control_hz=control_hz,
+        ft_lpf_hz=ft_lpf_hz,
+        ft_lpf_order=ft_lpf_order,
+        transport_torque_to_tcp=transport_torque_to_tcp,
+        inject_rest_hold=inject_rest_hold,
+    )
     if out.exists() and any(out.iterdir()) and not overwrite:
         raise FileExistsError(f"output_dir not empty (pass overwrite=True): {out}")
     out.mkdir(parents=True, exist_ok=True)
     ep_rel = episode_filename(0, 0)
-    ep_path = out / ep_rel
-    traj.save(ep_path, episode_meta)
-
-    structures = [
-        {
-            "structure_idx": 0,
-            "params_fingerprint": episode_meta.get("params_fingerprint"),
-            "junction_names": list(junction_names),
-            "n_woody_parts": int(episode_meta.get("n_woody_parts") or 3),
-        }
-    ]
-    episodes = [
-        {
-            "structure_idx": 0,
-            "direction_idx": 0,
-            "env_idx": 0,
-            "filename": ep_rel,
-            "episode_id": episode_meta["episode_id"],
-            "pull_direction": episode_meta.get("pull_direction"),
-            "n_frames": traj.n_frames,
-            "excluded": False,
-            "excluded_reason": None,
-        }
-    ]
-    seed_raw = episode_meta.get("seed")
-    collection = {
-        # Replay helpers require an int seed; real logs often omit one.
-        "seed": int(seed_raw) if seed_raw is not None else 0,
-        "ranges_path": str(fixture.resolve()),
-        "control_hz": control_hz,
-        "num_structures": 1,
-        "num_directions": 1,
-        "max_steps": traj.n_frames,
-        "source_real_parquet": str(path.resolve()),
-        "drive_fill": dm.get("drive_fill"),
-    }
-    if episode_meta.get("action_layout") == "vic_pose_v1":
-        collection["action_semantics"] = episode_meta.get("action_semantics")
-        collection["action_compatible_with_vic_twist"] = False
-        collection["action_dim"] = int(episode_meta.get("action_dim") or 19)
-        collection["action_layout"] = "vic_pose_v1"
-    write_manifest(
+    converted.traj.save(out / ep_rel, converted.episode_meta)
+    _write_batched_manifest(
         out,
+        fixture=fixture,
+        episodes=[converted],
         command_argv=list(command_argv or ["export_real_episode_to_batched_dataset"]),
-        collection=collection,
-        structures=structures,
-        episodes=episodes,
-        overwrite=True,
+        source_real_parquet=str(path.resolve()),
+        num_directions=1,
+    )
+    return out
+
+
+def export_real_tree_folder_to_batched_dataset(
+    input_dir: str | Path,
+    *,
+    fixture_path: str | Path,
+    output_dir: str | Path,
+    weld_direction_sign: float = 1.0,
+    overwrite: bool = False,
+    allow_zero_action: bool = False,
+    command_argv: list[str] | None = None,
+    control_hz: float | None = None,
+    ft_lpf_hz: float = DEFAULT_FT_LPF_CUTOFF_HZ,
+    ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
+    base_pos_tolerance_m: float = 5e-3,
+    transport_torque_to_tcp: bool = False,
+    inject_rest_hold: bool = True,
+) -> Path:
+    """Write a 1×N ``batched_sysid_v1`` dataset from one tree folder of parquets."""
+    from apple_pick_sim.system_id.batched_trajectory_store import episode_filename
+
+    src_dir = Path(input_dir)
+    out = Path(output_dir)
+    fixture = Path(fixture_path)
+    discovered = _discover_tree_parquets(src_dir)
+    converted: list[_ConvertedEpisode] = []
+    for path, direction_idx in discovered:
+        dm = _load_dataset_metadata(path)
+        _require_dump_direction_index(path, dm, direction_idx)
+        converted.append(
+            _build_real_episode(
+                path,
+                fixture_path=fixture,
+                direction_idx=direction_idx,
+                weld_direction_sign=weld_direction_sign,
+                allow_zero_action=allow_zero_action,
+                control_hz=control_hz,
+                ft_lpf_hz=ft_lpf_hz,
+                ft_lpf_order=ft_lpf_order,
+                transport_torque_to_tcp=transport_torque_to_tcp,
+                inject_rest_hold=inject_rest_hold,
+            )
+        )
+    _canonicalize_tree_geometry(converted, base_pos_tolerance_m=float(base_pos_tolerance_m))
+    if out.exists() and any(out.iterdir()) and not overwrite:
+        raise FileExistsError(f"output_dir not empty (pass overwrite=True): {out}")
+    out.mkdir(parents=True, exist_ok=True)
+    for ep in converted:
+        rel = episode_filename(0, ep.direction_idx)
+        ep.traj.save(out / rel, ep.episode_meta)
+    num_directions = max(ep.direction_idx for ep in converted) + 1
+    n_holds = max(ep.max_hold_number for ep in converted) + 1
+    ref = min(converted, key=lambda ep: ep.direction_idx)
+    topology_seed = int(ref.episode_meta.get("seed") or 0)
+    mean_base = tuple(float(x) for x in ref.fruiting_base_pos)
+    output_hz = float(ref.episode_meta["control_hz"])
+    sim_config = _manifest_sim_config_from_fixture(
+        fixture_path=fixture,
+        topology_seed=topology_seed,
+        fruiting_base_pos=mean_base,
+        control_hz=output_hz,
+    )
+    _write_batched_manifest(
+        out,
+        fixture=fixture,
+        episodes=converted,
+        command_argv=list(command_argv or ["export_real_tree_folder_to_batched_dataset"]),
+        source_real_parquets=[str(ep.path.resolve()) for ep in converted],
+        num_directions=num_directions,
+        topology_seed=topology_seed,
+        sim_config=sim_config,
+        n_holds=n_holds,
     )
     return out

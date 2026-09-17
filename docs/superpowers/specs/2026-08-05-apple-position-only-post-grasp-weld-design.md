@@ -2,7 +2,8 @@
 
 | Field | Value |
 | ----- | ----- |
-| **Status** | Implemented |
+| **Status** | Superseded — full logged apple/TCP SE(3) is the default; position-only remains an escape hatch |
+| **Canonical living doc:** | `docs/handbook-coupled-simulation.md` |
 | **Date** | 2026-08-05 |
 | **Extends** | `docs/superpowers/specs/2026-08-04-true-tcp-pose-weld-design.md`, `robot_replay/example_view_pre_grasp_settle.py` |
 | **Superseded open issue** | Resolved by `docs/superpowers/specs/2026-08-07-pre-grasp-apple-orientation-design.md` |

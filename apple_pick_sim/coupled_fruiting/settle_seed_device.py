@@ -21,16 +21,13 @@ def offset7_to_transform(offset_7d: tuple | np.ndarray | Sequence[float]) -> wp.
 
 
 def capture_body_q_numpy(body_q: wp.array) -> np.ndarray:
-    """One host read of cable ``body_q`` for checkpoint persistence."""
-    return (
-        wp.to_torch(body_q)
-        .detach()
-        .cpu()
-        .numpy()
-        .reshape(-1, 7)
-        .astype(np.float32)
-        .copy()
-    )
+    """One host read of cable ``body_q`` for checkpoint persistence.
+
+    Stays on the Warp host-copy path: ``wp.to_torch`` would hand this array's storage
+    to torch, and the rebuild path discards the owning scene right after this call.
+    ``.copy()`` is required because ``numpy()`` aliases storage for host-side arrays.
+    """
+    return np.asarray(body_q.numpy(), dtype=np.float32).reshape(-1, 7).copy()
 
 
 def copy_cable_state_device(src_cable: Any, dst_cable: Any) -> None:
@@ -70,7 +67,8 @@ def _align_proxy_from_apple_kernel(
     apple_indices: wp.array(dtype=int),
     proxy_indices: wp.array(dtype=int),
     grasp_offsets: wp.array(dtype=wp.transform),
-    quiet_apple_proxy: int,
+    quiet_proxy: int,
+    quiet_apple: int,
 ):
     w = wp.tid()
     apple_idx = apple_indices[w]
@@ -80,9 +78,10 @@ def _align_proxy_from_apple_kernel(
     apple_tf = body_q[apple_idx]
     proxy_tf = wp.transform_multiply(apple_tf, grasp_offsets[w])
     body_q[proxy_idx] = proxy_tf
-    if quiet_apple_proxy != 0:
-        body_qd[apple_idx] = _ZERO_QD
+    if quiet_proxy != 0:
         body_qd[proxy_idx] = _ZERO_QD
+    if quiet_apple != 0:
+        body_qd[apple_idx] = _ZERO_QD
 
 
 def _grasp_offsets_wp(
@@ -111,8 +110,19 @@ def align_batched_proxy_poses_device(
     per_world_proxy_offsets: tuple[tuple | None, ...] | None,
     default_offset: tuple | np.ndarray | None,
     quiet_apple_proxy: bool,
+    quiet_apple: bool | None = None,
 ) -> None:
-    """Write per-env proxy ``body_q`` from apple pose × grasp offset; optionally zero twists."""
+    """Write per-env proxy ``body_q`` from apple pose × grasp offset; optionally zero twists.
+
+    ``quiet_apple`` defaults to ``quiet_apple_proxy`` unless the apple is dynamic
+    (``gripper_proxy_config.dynamic_apple``), in which case only the proxy is quieted.
+    """
+    if quiet_apple is None:
+        dynamic = bool(
+            getattr(getattr(cable, "gripper_proxy_config", None), "dynamic_apple", False)
+        )
+        quiet_apple = bool(quiet_apple_proxy) and not dynamic
+    quiet_proxy = bool(quiet_apple_proxy)
     dev = cable.state_0.body_q.device
     apple_idx = wp.array(list(layout.apple_body_indices), dtype=int, device=dev)
     proxy_idx = wp.array(list(layout.proxy_body_indices), dtype=int, device=dev)
@@ -132,7 +142,8 @@ def align_batched_proxy_poses_device(
             apple_idx,
             proxy_idx,
             grasp_offsets,
-            1 if quiet_apple_proxy else 0,
+            1 if quiet_proxy else 0,
+            1 if quiet_apple else 0,
         ],
         device=dev,
     )

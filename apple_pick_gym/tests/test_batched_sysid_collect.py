@@ -12,10 +12,12 @@ from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
 from apple_pick_gym.batched_envs.batched_sysid_collect import (
     assign_pull_directions,
     broadcast_structure_params,
+    cma_collect_junction_names,
     collect_batched_quasi_static_dataset,
     sample_and_broadcast_structure_params,
     structure_and_direction_indices,
 )
+from apple_pick_sim.system_id.mmd_features import CMA_WOODY_JUNCTIONS
 from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
     BatchedHeterogeneousCoupledSimConfig,
     ControllerConfig,
@@ -75,6 +77,24 @@ def _test_sim_config(*, num_envs: int) -> BatchedHeterogeneousCoupledSimConfig:
         ),
         obs=ObsConfig(allocate_buffers=True),
     )
+
+
+def test_cma_collect_junction_names_filters_t_junction_topology():
+    """T-junction envs with the full CMA set collapse to the two CMA names."""
+    env_names = [
+        "primary_support_left",
+        "primary_support_right",
+        "primary_spur",
+        "spur_stem",
+        "stem_apple",
+    ]
+    assert cma_collect_junction_names(env_names) == list(CMA_WOODY_JUNCTIONS)
+
+
+def test_cma_collect_junction_names_keeps_full_names_for_secondary_topology():
+    """Secondary topologies missing primary_spur keep the full name list."""
+    env_names = ["primary_support_left", "primary_support_right", "stem_apple"]
+    assert cma_collect_junction_names(env_names) == env_names
 
 
 def test_structure_grid_index_helpers():

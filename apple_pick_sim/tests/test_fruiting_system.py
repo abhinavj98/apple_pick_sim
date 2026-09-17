@@ -67,6 +67,7 @@ def test_load_ranges_segment_keys():
         "num_segments",
         "length",
         "radius",
+        "flexural_modulus_pa",
         "youngs_modulus_pa",
         "damping_ratio",
         "density",
@@ -117,7 +118,7 @@ def test_soft_variance_fixture_uses_tenth_stiffness_ranges():
     soft = fs.load_ranges(SOFT_VARIANCE_FIXTURE)
 
     for segment in ("primary", "secondary", "spur", "stem"):
-        for key in ("youngs_modulus_pa",):
+        for key in ("flexural_modulus_pa", "youngs_modulus_pa"):
             assert soft[segment][key]["min"] == pytest.approx(
                 baseline[segment][key]["min"] * 0.1
             )
@@ -268,7 +269,58 @@ def test_load_ranges_sim_build_optional_joint_overrides():
     assert sb is not None
     assert sb.joint_angular_kd_overrides == {}
     assert sb.joint_linear_kp_overrides == {}
+    assert sb.joint_roll_kp_overrides == {}
     assert sb.joint_damping_ratio is None
+
+
+def test_parse_sim_build_accepts_joint_roll_kp_overrides():
+    fs = _import_module()
+    block = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "joint_roll_kp_overrides": {"support": 2.5},
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), block)
+    sb = fs.parse_sim_build(fs.load_ranges(path))
+    assert sb is not None
+    assert sb.joint_roll_kp_overrides == {"support": 2.5}
+
+
+def test_t_junction_support_roll_kp_from_sim_build():
+    import newton
+
+    fs = _import_module()
+    proxy = FIXTURES_DIR / "fruiting_system_ranges_real_world_proxy.json"
+    ranges = fs.load_ranges(proxy)
+    sim_build = {
+        "vic_gains": {
+            "linear_k": 100.0,
+            "linear_d": 20.0,
+            "angular_k": 10.0,
+            "angular_d": 3.0,
+        },
+        "joint_roll_kp_overrides": {"support": 2.5},
+    }
+    path = _write_ranges_with_sim_build(ranges, sim_build)
+    scene = fs.generate_scene(
+        fs.load_ranges(path),
+        seed=0,
+        base_pos=(0.0, 0.5, 0.95),
+        device="cpu",
+        **NO_SELF_COLLISION_KW,
+    )
+    jt = scene.model.joint_type.numpy()
+    jqd = scene.model.joint_qd_start.numpy()
+    jtarget_ke = scene.model.joint_target_ke.numpy()
+    jc = scene.solver.joint_constraint_start.numpy()
+    k_np = scene.solver.joint_penalty_k.numpy()
+    for j, lab in scene.fruiting_fixed_joints:
+        if "primary_support" not in lab:
+            continue
+        assert int(jt[j]) == int(newton.JointType.REVOLUTE)
+        dof = int(jqd[j])
+        assert float(jtarget_ke[dof]) == pytest.approx(2.5)
+        c0 = int(jc[j])
+        assert float(k_np[c0 + 2]) == pytest.approx(2.5)
 
 
 def test_parse_sim_build_accepts_joint_damping_ratio():
@@ -330,8 +382,10 @@ def test_parse_sim_build_rejects_negative_joint_damping_ratio():
 
 def test_rod_params_from_material_derivation():
     fs = _import_module()
+    e_flex, e_axial = 1.0e7, 2.0e7
     rod = fs.rod_params_from_material(
-        youngs_modulus_pa=1.0e7,
+        e_flex,
+        e_axial,
         damping_ratio=0.05,
         length=0.10,
         radius=0.01,
@@ -344,8 +398,10 @@ def test_rod_params_from_material_derivation():
     l_seg = 0.10 / 4.0
     m_seg = 300.0 * area * l_seg
     j_seg = m_seg * (3.0 * 0.01**2 + l_seg**2) / 12.0
-    assert rod.stretch_stiffness == pytest.approx(1.0e7 * area / l_seg)
-    assert rod.bend_stiffness == pytest.approx(1.0e7 * inertia / l_seg)
+    assert rod.flexural_modulus_pa == pytest.approx(e_flex)
+    assert rod.youngs_modulus_pa == pytest.approx(e_axial)
+    assert rod.stretch_stiffness == pytest.approx(e_axial * area / l_seg)
+    assert rod.bend_stiffness == pytest.approx(e_flex * inertia / l_seg)
     assert rod.stretch_damping == pytest.approx(
         2.0 * 0.05 * math.sqrt(rod.stretch_stiffness * m_seg)
     )
@@ -358,6 +414,7 @@ def test_sample_params_stores_E_and_zeta_on_rod():
     fs = _import_module()
     params = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=0)
     assert params.primary is not None
+    assert params.primary.flexural_modulus_pa > 0.0
     assert params.primary.youngs_modulus_pa > 0.0
     assert params.primary.damping_ratio >= 0.0
 
@@ -369,7 +426,7 @@ def test_sample_params_primary_E_ge_secondary():
         params = fs.sample_params(ranges, seed=seed)
         if params.primary is None or params.secondary is None:
             continue
-        assert params.primary.youngs_modulus_pa >= params.secondary.youngs_modulus_pa
+        assert params.primary.flexural_modulus_pa >= params.secondary.flexural_modulus_pa
 
 
 def test_load_ranges_rejects_bend_stiffness_key():
@@ -421,18 +478,25 @@ def test_load_ranges_requires_youngs_modulus_pa():
         fs.load_ranges(path)
 
 
-def test_fruiting_params_v2_roundtrip():
+def test_fruiting_params_v3_roundtrip():
     fs = _import_module()
     params = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=42)
     encoded = fs.fruiting_params_to_dict(params)
     assert encoded["schema"] == fs.FRUITING_SYSTEM_PARAMS_SCHEMA
+    assert encoded["primary"]["flexural_modulus_pa"] == pytest.approx(
+        params.primary.flexural_modulus_pa
+    )
     assert encoded["primary"]["youngs_modulus_pa"] == pytest.approx(
         params.primary.youngs_modulus_pa
     )
     decoded = fs.fruiting_params_from_dict(encoded)
+    assert decoded.primary.flexural_modulus_pa == pytest.approx(
+        params.primary.flexural_modulus_pa
+    )
     assert decoded.primary.youngs_modulus_pa == pytest.approx(params.primary.youngs_modulus_pa)
     assert decoded.primary.damping_ratio == pytest.approx(params.primary.damping_ratio)
     assert decoded.spur_surface_offset == params.spur_surface_offset
+    assert decoded.stem_surface_offset == params.stem_surface_offset
 
 
 def test_fruiting_params_from_dict_missing_spur_surface_offset_defaults_false():
@@ -450,6 +514,22 @@ def test_spur_surface_offset_parallel_direction_zero_offset():
 
     radial = _primary_radial_surface_offset_world((1.0, 0.0, 0.0), (1.0, 0.0, 0.0), 0.02)
     np.testing.assert_allclose(np.array(radial), (0.0, 0.0, 0.0), atol=1e-9)
+
+
+def test_rod_tip_surface_offset_parallel_child_direction():
+    from apple_pick_sim.fruiting_system.build import _rod_tip_surface_offset_world
+
+    offset = _rod_tip_surface_offset_world((0.0, 0.0, -1.0), 0.012)
+    np.testing.assert_allclose(np.array(offset), (0.0, 0.0, -0.012), atol=1e-9)
+
+
+def test_fruiting_params_from_dict_missing_stem_surface_offset_defaults_false():
+    fs = _import_module()
+    params = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=42)
+    encoded = fs.fruiting_params_to_dict(params)
+    del encoded["stem_surface_offset"]
+    decoded = fs.fruiting_params_from_dict(encoded)
+    assert decoded.stem_surface_offset is False
 
 
 def test_fruiting_params_v1_deserialization():
@@ -493,7 +573,8 @@ def test_stretch_knobs_from_max_force_matches_delta_fraction():
 def test_rod_params_from_material_stretch_override():
     fs = _import_module()
     rod = fs.rod_params_from_material(
-        youngs_modulus_pa=1.0e7,
+        1.0e7,
+        1.0e7,
         damping_ratio=0.05,
         length=0.10,
         radius=0.01,
@@ -515,7 +596,75 @@ def test_rod_params_from_material_stretch_override():
     )
 
 
-def test_load_ranges_vbd_stretch_force_validates():
+def test_set_rod_flexural_modulus_changes_bend_only():
+    fs = _import_module()
+    base = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=3)
+    e_new = base.primary.flexural_modulus_pa * 2.0
+    out = fs.set_rod_flexural_modulus(base, "primary", e_new)
+    assert out.primary.flexural_modulus_pa == pytest.approx(e_new)
+    assert out.primary.youngs_modulus_pa == pytest.approx(base.primary.youngs_modulus_pa)
+    assert out.primary.stretch_stiffness == pytest.approx(base.primary.stretch_stiffness)
+
+
+def test_set_rod_youngs_modulus_changes_stretch_only():
+    fs = _import_module()
+    base = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=3)
+    e_new = base.primary.youngs_modulus_pa * 2.0
+    out = fs.set_rod_youngs_modulus(base, "primary", e_new)
+    assert out.primary.youngs_modulus_pa == pytest.approx(e_new)
+    assert out.primary.flexural_modulus_pa == pytest.approx(base.primary.flexural_modulus_pa)
+    assert out.primary.bend_stiffness == pytest.approx(base.primary.bend_stiffness)
+
+
+def test_set_rod_damping_ratio_updates_damping_knobs_only():
+    fs = _import_module()
+    base = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=3)
+    zeta_new = 0.25
+    assert base.spur.damping_ratio != pytest.approx(zeta_new)
+    out = fs.set_rod_damping_ratio(base, "spur", zeta_new)
+    assert out.spur.damping_ratio == pytest.approx(zeta_new)
+    assert out.spur.flexural_modulus_pa == pytest.approx(base.spur.flexural_modulus_pa)
+    assert out.spur.youngs_modulus_pa == pytest.approx(base.spur.youngs_modulus_pa)
+    assert out.spur.bend_stiffness == pytest.approx(base.spur.bend_stiffness)
+    assert out.spur.stretch_stiffness == pytest.approx(base.spur.stretch_stiffness)
+    assert out.spur.bend_damping != pytest.approx(base.spur.bend_damping)
+    assert out.spur.stretch_damping != pytest.approx(base.spur.stretch_damping)
+    # Primary unchanged; ζ=0 allowed.
+    assert out.primary.damping_ratio == pytest.approx(base.primary.damping_ratio)
+    zeroed = fs.set_rod_damping_ratio(base, "stem", 0.0)
+    assert zeroed.stem.damping_ratio == pytest.approx(0.0)
+    assert zeroed.stem.bend_damping == pytest.approx(0.0)
+    with pytest.raises(ValueError, match="damping_ratio"):
+        fs.set_rod_damping_ratio(base, "spur", -0.1)
+
+
+def test_set_rod_density_updates_mass_knobs_only():
+    fs = _import_module()
+    base = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=3)
+    density_new = base.primary.density * 2.0
+    out = fs.set_rod_density(base, "primary", density_new)
+    assert out.primary.density == pytest.approx(density_new)
+    assert out.primary.flexural_modulus_pa == pytest.approx(base.primary.flexural_modulus_pa)
+    assert out.primary.youngs_modulus_pa == pytest.approx(base.primary.youngs_modulus_pa)
+    assert out.primary.damping_ratio == pytest.approx(base.primary.damping_ratio)
+    # Mass doubles -> damping (which scales with sqrt(m_seg)) scales with sqrt(2),
+    # not with density directly, and not left unchanged.
+    assert out.primary.bend_damping == pytest.approx(
+        base.primary.bend_damping * (2.0**0.5)
+    )
+    assert out.primary.stretch_damping == pytest.approx(
+        base.primary.stretch_damping * (2.0**0.5)
+    )
+    # Only primary changes; spur/stem/secondary densities are untouched.
+    assert out.spur.density == pytest.approx(base.spur.density)
+    assert out.stem.density == pytest.approx(base.stem.density)
+    with pytest.raises(ValueError, match="density"):
+        fs.set_rod_density(base, "primary", 0.0)
+    with pytest.raises(ValueError, match="density"):
+        fs.set_rod_density(base, "primary", -1.0)
+
+
+def test_load_ranges_rejects_vbd_stretch_force():
     fs = _import_module()
     import copy
     import json
@@ -528,112 +677,25 @@ def test_load_ranges_vbd_stretch_force_validates():
     }
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(ranges, f)
-        path = f.name
-    loaded = fs.load_ranges(path)
-    assert loaded["primary"]["vbd_stretch_force"]["max_force_n"] == 35.0
-    assert loaded["primary"]["vbd_stretch_force"]["damping_ratio"] == 1.0
-
-
-def test_load_ranges_vbd_stretch_force_rejects_partial_nonpositive_legacy():
-    fs = _import_module()
-    import copy
-    import json
-    import tempfile
-
-    ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
-
-    bad_partial = copy.deepcopy(ranges)
-    bad_partial["primary"]["vbd_stretch_force"] = {"max_force_n": 35.0}
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(bad_partial, f)
-        path = f.name
-    with pytest.raises(ValueError, match="damping_ratio"):
-        fs.load_ranges(path)
-
-    bad_nonpositive = copy.deepcopy(ranges)
-    bad_nonpositive["primary"]["vbd_stretch_force"] = {
-        "max_force_n": 35.0,
-        "damping_ratio": 0.0,
-    }
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(bad_nonpositive, f)
-        path = f.name
-    with pytest.raises(ValueError, match="damping_ratio"):
-        fs.load_ranges(path)
-
-    legacy = copy.deepcopy(ranges)
-    legacy["primary"]["vbd_stretch_fixed"] = {
-        "stretch_stiffness": 500000.0,
-        "stretch_damping": 30.0,
-    }
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(legacy, f)
         path = f.name
     with pytest.raises(ValueError, match="vbd_stretch_force"):
         fs.load_ranges(path)
 
 
-def test_sample_params_stretch_force_derives_from_geometry():
+def test_fruiting_params_v2_read_maps_flexural_and_backcomputes_axial():
     fs = _import_module()
-    import copy
-    import json
-    import tempfile
-
-    ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
-    ranges["primary"]["vbd_stretch_force"] = {
-        "max_force_n": 35.0,
-        "damping_ratio": 1.5,
-    }
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(ranges, f)
-        path = f.name
-    loaded = fs.load_ranges(path)
-    p0 = fs.sample_params(loaded, seed=0)
-    p1 = fs.sample_params(loaded, seed=99)
-    assert p0.primary is not None and p1.primary is not None
-    for rod in (p0.primary, p1.primary):
-        k_exp, c_exp = fs.stretch_knobs_from_max_force(
-            35.0,
-            1.5,
-            rod.length,
-            rod.radius,
-            rod.density,
-            rod.num_segments,
-        )
-        assert rod.stretch_stiffness == pytest.approx(k_exp)
-        assert rod.stretch_damping == pytest.approx(c_exp)
-    assert p0.primary.bend_stiffness != pytest.approx(p1.primary.bend_stiffness)
-
-
-def test_params_from_ranges_median_honors_vbd_stretch_force():
-    from apple_pick_sim.digital_twin.from_obs import params_from_ranges_median
-
-    fs = _import_module()
-    import copy
-    import json
-    import tempfile
-
-    ranges = copy.deepcopy(fs.load_ranges(RANGES_FIXTURE))
-    ranges["primary"]["vbd_stretch_force"] = {
-        "max_force_n": 35.0,
-        "damping_ratio": 1.0,
-    }
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-        json.dump(ranges, f)
-        path = f.name
-    loaded = fs.load_ranges(path)
-    params = params_from_ranges_median(loaded)
-    assert params.primary is not None
-    k_exp, c_exp = fs.stretch_knobs_from_max_force(
-        35.0,
-        1.0,
-        params.primary.length,
-        params.primary.radius,
-        params.primary.density,
-        params.primary.num_segments,
-    )
-    assert params.primary.stretch_stiffness == pytest.approx(k_exp)
-    assert params.primary.stretch_damping == pytest.approx(c_exp)
+    params = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=42)
+    v2 = fs.fruiting_params_to_dict(params)
+    v2["schema"] = fs.FRUITING_SYSTEM_PARAMS_SCHEMA_V2
+    for seg_name in ("primary", "secondary", "spur", "stem"):
+        row = v2.get(seg_name)
+        rod = getattr(params, seg_name)
+        if row is None or rod is None:
+            continue
+        row["youngs_modulus_pa"] = float(rod.flexural_modulus_pa)
+        row.pop("flexural_modulus_pa", None)
+    decoded = fs.fruiting_params_from_dict(v2)
+    assert decoded.primary.flexural_modulus_pa == pytest.approx(params.primary.flexural_modulus_pa)
 
 
 # ---------------------------------------------------------------------------
@@ -749,9 +811,9 @@ def test_primary_stiffer_than_secondary():
         params = fs.sample_params(ranges, seed=seed)
         if params.primary is None or params.secondary is None:
             continue
-        assert params.primary.youngs_modulus_pa >= params.secondary.youngs_modulus_pa, (
-            f"seed={seed}: primary.youngs_modulus_pa ({params.primary.youngs_modulus_pa}) "
-            f"< secondary.youngs_modulus_pa ({params.secondary.youngs_modulus_pa})"
+        assert params.primary.flexural_modulus_pa >= params.secondary.flexural_modulus_pa, (
+            f"seed={seed}: primary.flexural_modulus_pa ({params.primary.flexural_modulus_pa}) "
+            f"< secondary.flexural_modulus_pa ({params.secondary.flexural_modulus_pa})"
         )
 
 
@@ -766,16 +828,23 @@ def test_params_within_bounds():
             seg_ranges = ranges.get(seg_name)
             if seg_params is None or seg_ranges is None:
                 continue
-            for attr in ("length", "radius", "youngs_modulus_pa", "damping_ratio", "density"):
+            for attr in (
+                "length",
+                "radius",
+                "flexural_modulus_pa",
+                "youngs_modulus_pa",
+                "damping_ratio",
+                "density",
+            ):
                 v = getattr(seg_params, attr)
                 lo = seg_ranges[attr]["min"]
                 hi = seg_ranges[attr]["max"]
                 if (
                     seg_name == "secondary"
-                    and attr == "youngs_modulus_pa"
+                    and attr == "flexural_modulus_pa"
                     and params.primary is not None
                 ):
-                    hi = min(hi, params.primary.youngs_modulus_pa)
+                    hi = min(hi, params.primary.flexural_modulus_pa)
                     lo = min(lo, hi)
                 assert lo <= v <= hi, (
                     f"seed={seed}: {seg_name}.{attr}={v} out of [{lo}, {hi}]"
@@ -1105,7 +1174,7 @@ def test_fingerprint_primary_stiffer_than_secondary():
         fp = fs.geometry_fingerprint(
             fs.generate_scene(ranges, seed=seed, **NO_SELF_COLLISION_KW)
         )
-        pe, se = fp.get("primary_youngs_modulus_pa"), fp.get("secondary_youngs_modulus_pa")
+        pe, se = fp.get("primary_flexural_modulus_pa"), fp.get("secondary_flexural_modulus_pa")
         if pe is None or se is None:
             continue
         assert pe >= se, f"seed={seed}: fingerprint E ordering violated"
@@ -1114,6 +1183,20 @@ def test_fingerprint_primary_stiffer_than_secondary():
 # ---------------------------------------------------------------------------
 # Rollout (headless Newton simulation)
 # ---------------------------------------------------------------------------
+
+
+def test_make_fruiting_solver_vbd_default_iterations(monkeypatch):
+    from apple_pick_sim.fruiting_system import build as build_mod
+
+    captured: dict[str, int] = {}
+
+    class _FakeSolver:
+        def __init__(self, model, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(build_mod.newton.solvers, "SolverVBD", _FakeSolver)
+    build_mod.make_fruiting_solver_vbd(object())
+    assert captured["iterations"] == 30
 
 
 def test_short_rollout_no_crash():
@@ -1855,7 +1938,8 @@ def test_set_rod_bend_stiffness_rejects_nonpositive():
 def test_set_rod_bend_stiffness_preserves_damping_ratio():
     fs = _import_module()
     rod = fs.rod_params_from_material(
-        youngs_modulus_pa=1.0e7,
+        1.0e7,
+        1.0e7,
         damping_ratio=0.05,
         length=0.10,
         radius=0.01,
@@ -2048,6 +2132,7 @@ def test_example_fruiting_system_enable_self_collision_parser_enabled():
 
 def _rod(fs, direction: tuple[float, float, float]):
     return fs.rod_params_from_material(
+        flexural_modulus_pa=1.0e7,
         youngs_modulus_pa=1.0e7,
         damping_ratio=0.05,
         length=0.10,

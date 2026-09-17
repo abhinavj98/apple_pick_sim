@@ -3,7 +3,8 @@
 | Field | Value |
 | ----- | ----- |
 | **Date** | 2026-07-03 |
-| **Status** | Approved (phased PRs) |
+| **Status** | Historical |
+| **Canonical living doc:** | `docs/handbook-coupled-simulation.md` |
 | **Goal** | Delete redundant examples/builders; FR3-only batched path; narrow public API before V.3.3 gym |
 | **Execution** | Phased PRs (5 PRs), worktree `chore/pre-gym-cleanup` |
 
@@ -107,7 +108,7 @@ Work in worktree: `../apple_pick_sim-pre-gym-cleanup`, branch `chore/pre-gym-cle
 | **PR2** | Narrow `__init__.py` exports; fix gym/diagnostic imports | Fast pytest + gym import |
 | **PR3** | FR3-only examples + `batched_heterogeneous_build` | Heterogeneous build tests |
 | **PR4** | Delete builders; migrate tests + diagnostics | Full `apple_pick_sim/tests/` |
-| **PR5** | Add `docs/coupled-sim-api.md`; ROADMAP validation update | ROADMAP commands |
+| **PR5** | Add `docs/handbook-coupled-simulation.md`; ROADMAP validation update | ROADMAP commands |
 
 ---
 

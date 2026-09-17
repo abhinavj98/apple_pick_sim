@@ -23,20 +23,32 @@ import warp as wp
 
 from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     align_proxy_body_q_prev_for_vbd,
-    sync_model_body_q_rest_from_state,
     sync_solver_body_q_prev_from_state,
+    sync_weld_proxy_rest_from_apple_rest,
 )
 from apple_pick_sim.coupled_fruiting.batched_build import (
     broadcast_settled_cable_state_to_batched_worlds,
 )
 from apple_pick_sim.coupled_fruiting.batched_layout import BatchedEnvLayout
 from apple_pick_sim.coupled_fruiting.broadcast_actions import broadcast_joint_q_from_world0
-from apple_pick_sim.coupled_fruiting.scene import init_robot_mujoco_step_buffers
+from apple_pick_sim.coupled_fruiting.scene import (
+    init_robot_mujoco_step_buffers,
+    seed_lagged_coupling_from_rest_harvest,
+)
 from apple_pick_sim.coupled_fruiting.settle_seed_device import (
     align_batched_proxy_poses_device,
     copy_cable_state_device,
     zero_all_body_qd_device,
 )
+
+# Default coupling substep used when seeding lag buffers after bootstrap (matches
+# RuntimeConfig.sub_dt). Rest harvest is Ċ≈0 so the exact dt is secondary.
+_DEFAULT_COUPLING_SEED_DT = 1.0 / 1800.0
+
+
+def _seed_or_clear_lagged_coupling(scene: Any, *, dt: float = _DEFAULT_COUPLING_SEED_DT) -> None:
+    """Fill lag buffers with rest stem+mg (welded) or zeros (free proxy)."""
+    seed_lagged_coupling_from_rest_harvest(scene, float(dt))
 
 
 def _proxy_world_pose_from_apple(
@@ -301,10 +313,71 @@ def apply_open_loop_fr3_joint_q(scene: Any, joint_q: Sequence[float]) -> None:
     fr3_robot.init_mujoco_actuator_targets_from_model(
         scene.robot_model, scene.robot_control
     )
-    if scene.proxy_forces is not None:
-        scene.proxy_forces.zero_()
-    if scene.coupling_forces_cache is not None:
-        scene.coupling_forces_cache.zero_()
+    _seed_or_clear_lagged_coupling(scene)
+
+
+def _padded_joint_q_row(joint_q: Sequence[float], coord_per: int) -> np.ndarray:
+    q = np.asarray(joint_q, dtype=np.float32).reshape(-1)
+    if q.size < 1:
+        raise ValueError("bootstrap_joint_q must be a non-empty sequence of joint angles")
+    n = min(int(q.size), int(coord_per))
+    row = np.zeros(int(coord_per), dtype=np.float32)
+    row[:n] = q[:n]
+    return row
+
+
+def apply_open_loop_fr3_joint_q_per_world(
+    scene: Any, per_world_joint_q: Sequence[Sequence[float]]
+) -> None:
+    """Write a distinct open-loop FR3 ``joint_q`` into each batched world (no broadcast)."""
+    import newton
+
+    from apple_pick_sim.robot import fr3_robot
+
+    if scene.robot_model is None or scene.robot_state_0 is None:
+        return
+
+    layout = getattr(scene, "layout", None)
+    n_worlds = int(layout.num_envs) if layout is not None else int(scene.robot_model.world_count)
+    if len(per_world_joint_q) != n_worlds:
+        raise ValueError(
+            f"per_world_joint_q length {len(per_world_joint_q)} != num_envs {n_worlds}"
+        )
+
+    tpl_robot = getattr(scene, "ik_template_robot_model", None)
+    if tpl_robot is not None:
+        coord_per = int(tpl_robot.joint_coord_count)
+    else:
+        coord_per = int(scene.robot_model.joint_coord_count) // max(n_worlds, 1)
+
+    batched_jq = scene.robot_model.joint_q.numpy().astype(np.float32).copy()
+    n_wrote = 0
+    for world_idx, q_w in enumerate(per_world_joint_q):
+        row = _padded_joint_q_row(q_w, coord_per)
+        n_wrote = int(min(np.asarray(q_w, dtype=np.float32).reshape(-1).size, coord_per))
+        start = world_idx * coord_per
+        batched_jq[start : start + coord_per] = row
+
+    jqd = np.zeros(int(scene.robot_model.joint_dof_count), dtype=np.float32)
+    scene.robot_model.joint_q.assign(batched_jq)
+    scene.robot_model.joint_qd.assign(jqd)
+    scene.robot_state_0.joint_q.assign(batched_jq)
+    scene.robot_state_0.joint_qd.assign(jqd)
+    newton.eval_fk(
+        scene.robot_model,
+        scene.robot_model.joint_q,
+        scene.robot_model.joint_qd,
+        scene.robot_state_0,
+    )
+    print(
+        "FR3 open-loop joint bootstrap (skip IK, per-world): "
+        f"wrote {n_wrote} joint coords into {n_worlds} worlds"
+    )
+    init_robot_mujoco_step_buffers(scene)
+    fr3_robot.init_mujoco_actuator_targets_from_model(
+        scene.robot_model, scene.robot_control
+    )
+    _seed_or_clear_lagged_coupling(scene)
 
 
 def _bootstrap_tcp_at_fixed_origin(
@@ -312,16 +385,22 @@ def _bootstrap_tcp_at_fixed_origin(
     *,
     ik_iterations: int = 96,
     bootstrap_joint_q: Sequence[float] | None = None,
+    per_world_bootstrap_joint_q: Sequence[Sequence[float]] | None = None,
 ) -> None:
     """Align TCP to the seeded cable proxy using the scene's fixed FR3 base placement.
 
-    When ``bootstrap_joint_q`` is set, writes those joints open-loop (no IK).
+    When ``per_world_bootstrap_joint_q`` is set, writes each world's joints open-loop
+    (no IK, no world-0 broadcast). When only ``bootstrap_joint_q`` is set, writes those
+    joints open-loop and broadcasts as today.
 
     For batched scenes (world_count > 1), IK is solved on the single-world template
     model stored in ``scene.ik_template_robot_model`` to avoid Newton's IK FK building
     an incorrect kinematic chain from multi-world joint coordinates.  The solved
     world-0 joint_q is then written into the batched model and broadcast to all worlds.
     """
+    if per_world_bootstrap_joint_q is not None:
+        apply_open_loop_fr3_joint_q_per_world(scene, per_world_bootstrap_joint_q)
+        return
     if bootstrap_joint_q is not None:
         apply_open_loop_fr3_joint_q(scene, bootstrap_joint_q)
         return
@@ -407,10 +486,7 @@ def _bootstrap_tcp_at_fixed_origin(
     fr3_robot.init_mujoco_actuator_targets_from_model(
         scene.robot_model, scene.robot_control
     )
-    if scene.proxy_forces is not None:
-        scene.proxy_forces.zero_()
-    if scene.coupling_forces_cache is not None:
-        scene.coupling_forces_cache.zero_()
+    _seed_or_clear_lagged_coupling(scene)
 
 
 def _proxy_targets_world_from_cable(
@@ -503,6 +579,7 @@ def seed_fix_to_apple_from_settled_body_q(
     per_world_proxy_offsets: tuple[tuple | None, ...] | None = None,
     ik_bootstrap_iterations: int | None = None,
     bootstrap_joint_q: Sequence[float] | None = None,
+    per_world_bootstrap_joint_q: Sequence[Sequence[float]] | None = None,
 ) -> None:
     """Seed welded scene cable poses from settled ``body_q`` (checkpoint path)."""
     bq = np.asarray(settled_body_q, dtype=np.float32).reshape(-1, 7)
@@ -541,6 +618,7 @@ def seed_fix_to_apple_from_settled_body_q(
         per_world_proxy_offsets=per_world_proxy_offsets,
         ik_bootstrap_iterations=ik_bootstrap_iterations,
         bootstrap_joint_q=bootstrap_joint_q,
+        per_world_bootstrap_joint_q=per_world_bootstrap_joint_q,
     )
 
 
@@ -553,6 +631,7 @@ def seed_fix_to_apple_from_settled(
     per_world_proxy_offsets: tuple[tuple | None, ...] | None = None,
     ik_bootstrap_iterations: int | None = None,
     bootstrap_joint_q: Sequence[float] | None = None,
+    per_world_bootstrap_joint_q: Sequence[Sequence[float]] | None = None,
 ) -> None:
     """Seed a welded (``fix_to_apple=True``) scene from a settled free-apple scene.
 
@@ -611,8 +690,12 @@ def seed_fix_to_apple_from_settled(
         bq_w[proxy, :3] = proxy_pos
         bq_w[proxy, 3:] = proxy_quat
         if quiet_apple_proxy:
-            bqd_w[apple] = 0.0
             bqd_w[proxy] = 0.0
+            dynamic_apple = bool(
+                getattr(getattr(cable_w, "gripper_proxy_config", None), "dynamic_apple", False)
+            )
+            if not dynamic_apple:
+                bqd_w[apple] = 0.0
         cable_w.state_0.body_q.assign(bq_w.reshape(-1, 7))
         cable_w.state_0.body_qd.assign(bqd_w.reshape(-1, 6))
         cable_w.state_1.body_q.assign(bq_w.reshape(-1, 7))
@@ -623,13 +706,22 @@ def seed_fix_to_apple_from_settled(
     # overwrite the seeded settled body poses.
     # Align VBD's warm-start/previous-pose buffers so the first step does not see
     # a mixed settled/unsettled state and inject an artificial stem impulse.
+    # Quiet weld FIXED kappa via proxy rest = apple_build_rest * offset; leave apple
+    # and woody model.body_q at build-time so stem→apple / plant preload remains.
     body_count = int(cable_w.model.body_count)
     align_proxy_body_q_prev_for_vbd(cable_w, tuple(range(body_count)))
-    # VBD angular joints use model.body_q as rest; keep it in sync with the seeded
-    # poses (else FIXED kappa is measured against pre-settle build geometry).
-    sync_model_body_q_rest_from_state(cable_w)
+    sync_weld_proxy_rest_from_apple_rest(
+        cable_w,
+        layout=layout,
+        per_env_offsets=per_world_proxy_offsets,
+    )
 
     wp.synchronize()
+    if per_world_bootstrap_joint_q is not None:
+        _bootstrap_tcp_at_fixed_origin(
+            welded_scene, per_world_bootstrap_joint_q=per_world_bootstrap_joint_q
+        )
+        return
     if bootstrap_joint_q is not None:
         # Open-loop arm pose: skip IK (and per-env IK) entirely.
         _bootstrap_tcp_at_fixed_origin(
@@ -642,9 +734,15 @@ def seed_fix_to_apple_from_settled(
             layout,
             ik_iterations=ik_bootstrap_iterations,
         )
-        from apple_pick_sim.coupled_fruiting.proxy_coupling import prepare_batched_stem_harvest_arrays
+        from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+            prepare_batched_stem_harvest_arrays,
+            prepare_batched_weld_harvest_arrays,
+        )
 
-        prepare_batched_stem_harvest_arrays(welded_scene, layout)
+        if getattr(welded_scene, "tcp_harvest_source", "stem") == "weld":
+            prepare_batched_weld_harvest_arrays(welded_scene, layout)
+        else:
+            prepare_batched_stem_harvest_arrays(welded_scene, layout)
     else:
         from apple_pick_sim.robot.fr3_robot.placement import IK_BOOTSTRAP_DEFAULT_ITERATIONS
 
@@ -666,7 +764,4 @@ def seed_fix_to_apple_from_settled(
     fr3_robot.init_mujoco_actuator_targets_from_model(
         welded_scene.robot_model, welded_scene.robot_control
     )
-    if welded_scene.proxy_forces is not None:
-        welded_scene.proxy_forces.zero_()
-    if welded_scene.coupling_forces_cache is not None:
-        welded_scene.coupling_forces_cache.zero_()
+    _seed_or_clear_lagged_coupling(welded_scene)

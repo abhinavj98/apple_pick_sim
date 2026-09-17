@@ -393,6 +393,50 @@ def test_build_recorded_actions_tensor_rejects_mismatched_frame_counts():
         )
 
 
+def test_build_recorded_actions_for_structure_pads_unequal_direction_lengths():
+    dataset = MagicMock()
+
+    def load_episode_obs_arrays(structure_idx: int, direction_idx: int) -> dict:
+        del structure_idx
+        n_frames = 5 if direction_idx == 0 else 3
+        action = np.arange(n_frames * 6, dtype=np.float32).reshape(n_frames, 6)
+        action[:, 0] = float(direction_idx)
+        return {"action": action}
+
+    dataset.load_episode_obs_arrays.side_effect = load_episode_obs_arrays
+
+    tensor, n_frames_per_env = grid.build_recorded_actions_for_structure(
+        dataset,
+        structure_idx=0,
+        num_directions=2,
+        num_candidates=2,
+        pad_unequal_lengths=True,
+    )
+    assert tensor.shape == (4, 5, 6)
+    assert n_frames_per_env == (5, 3, 5, 3)
+    np.testing.assert_array_equal(tensor[1, 3], tensor[1, 2])
+    np.testing.assert_array_equal(tensor[1, 4], tensor[1, 2])
+
+
+def test_truncate_replay_arrays_keeps_woody_dict_indexable_by_name():
+    arrays = {
+        "action": np.arange(20, dtype=np.float32).reshape(5, 4),
+        "ft_wrist": np.ones((5, 6), dtype=np.float32),
+        "woody_part_start_pos": {
+            "primary_spur": np.arange(15, dtype=np.float32).reshape(5, 3),
+            "spur_stem": np.arange(15, 30, dtype=np.float32).reshape(5, 3),
+        },
+        "junction_names": ["primary_spur", "spur_stem"],
+    }
+    out = grid._truncate_replay_arrays(arrays, 3)
+    assert out["action"].shape[0] == 3
+    assert out["junction_names"] == ["primary_spur", "spur_stem"]
+    np.testing.assert_array_equal(
+        out["woody_part_start_pos"]["primary_spur"],
+        arrays["woody_part_start_pos"]["primary_spur"][:3],
+    )
+
+
 def test_actions_tensor_from_recorded_frame_shape_and_device():
     recorded = np.arange(24, dtype=np.float32).reshape(2, 2, 6)
     device = torch.device("cpu")
@@ -461,6 +505,7 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
         return env
 
     dataset = MagicMock()
+    dataset.manifest = {"collection": {"action_dim": 6}}
 
     def load_episode_obs_arrays(structure_idx: int, direction_idx: int) -> dict:
         del structure_idx
@@ -482,10 +527,17 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
         "ik_bootstrap_unstable_mask",
         lambda _env, num_envs: torch.zeros(int(num_envs), dtype=torch.bool),
     )
+    sim_gripper = MagicMock(name="sim_gripper")
+    real_gripper = MagicMock(name="real_gripper")
     monkeypatch.setattr(
         grid,
         "gripper_proxy_from_episode_metadata",
-        lambda _meta: MagicMock(),
+        lambda _meta: sim_gripper,
+    )
+    monkeypatch.setattr(
+        grid,
+        "gripper_proxy_for_real_batched_replay",
+        lambda _meta: real_gripper,
     )
 
     collectors = grid.replay_batched_sysid_structure(
@@ -498,6 +550,7 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
         direction_indices=[0, 2],
     )
 
+    assert build_calls[0]["gripper"] is sim_gripper
     assert build_calls[0]["per_env_params"] == [
         candidate_0.apply_to(base),
         candidate_0.apply_to(base),
@@ -508,14 +561,52 @@ def test_replay_youngs_modulus_candidates_preserves_sparse_direction_ids(monkeyp
     assert collectors.to_arrays(1)["dir_idx"][0] == 2
 
 
+def test_replay_batched_sysid_structure_rejects_multi_direction_vic_pose(monkeypatch):
+    """Scalar path cannot share direction-0 weld meta across vic_pose directions."""
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _sample_params(seed=0)
+    candidate = cmaes.YoungsModulusCandidate(primary=1.0e8, spur=2.0e7, stem=3.0e7)
+    dataset = MagicMock()
+    dataset.manifest = {"collection": {"action_layout": "vic_pose_v1", "action_dim": 19}}
+    dataset.load_episode_obs_arrays.return_value = _recorded_arrays_for_replay(
+        n_frames=2, direction_idx=0
+    )
+    dataset.load_episode_metadata.return_value = {
+        "junction_names": ["joint_a", "joint_b"],
+        "pull_direction": [1.0, 0.0, 0.0],
+    }
+    monkeypatch.setattr(grid, "base_params_for_replay", lambda *_a, **_k: base)
+    monkeypatch.setattr(
+        grid,
+        "gripper_proxy_for_real_batched_replay",
+        lambda _meta: MagicMock(),
+    )
+
+    with pytest.raises(ValueError, match="per_env_episode_meta"):
+        grid.replay_batched_sysid_structure(
+            dataset=dataset,
+            structure_idx=0,
+            candidates=[candidate],
+            num_directions=2,
+            seed=0,
+            build_env_fn=MagicMock(),
+            direction_indices=[0, 2],
+        )
+
+
 def test_replay_candidates_for_structure_threads_on_step(monkeypatch):
     calls: list[tuple[int, int]] = []
+    forwarded_action_dims: list[int] = []
 
-    def fake_replay_batched_sysid_structure(*, candidates, on_step=None, **_kwargs):
+    def fake_replay_batched_sysid_structure(
+        *, candidates, on_step=None, action_dim=6, **_kwargs
+    ):
         assert on_step is not None
         for i in range(3):
             assert on_step(frame_idx=i, env=MagicMock())
         calls.append((len(candidates), 1))
+        forwarded_action_dims.append(int(action_dim))
         recorded_by_env = [
             _recorded_arrays_for_replay(n_frames=4, direction_idx=0),
         ]
@@ -539,10 +630,12 @@ def test_replay_candidates_for_structure_threads_on_step(monkeypatch):
         build_env_fn=MagicMock(),
         max_envs_per_batch=0,
         on_step=on_step,
+        action_dim=19,
     )
 
     assert isinstance(out, grid.BatchedSysIdReplayCollectors)
     assert calls, "expected replay_batched_sysid_structure to be called"
+    assert forwarded_action_dims == [19]
 
 
 def _recorded_arrays_for_replay(*, n_frames: int, direction_idx: int = 0) -> dict:
@@ -566,6 +659,7 @@ def _sysid_numpy_obs_for_frame(*, frame_idx: int, junction_names: list[str]) -> 
         "ft_wrist": np.full(6, 100.0 + frame_idx, dtype=np.float32),
         "tcp_velocity": np.full(6, 200.0 + frame_idx, dtype=np.float32),
         "tcp_pos": np.array([1.0, 2.0, 3.0], dtype=np.float32) + frame_idx,
+        "tcp_quat": np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32),
         "apple_pos": np.array([4.0, 5.0, 6.0], dtype=np.float32) + frame_idx,
         "woody_part_start_pos": {
             name: np.array([10.0, 11.0, 12.0], dtype=np.float32) + frame_idx
@@ -851,6 +945,9 @@ def _arrays_for_steps(*, steps: int, junction_names: list[str] | None = None, sh
         "tcp_velocity": np.hstack([base + 10.0 + i for i in range(6)]).astype(np.float32),
         "action": np.hstack([base + 20.0 + i for i in range(6)]).astype(np.float32),
         "tcp_pos": np.hstack([base + 30.0 + i for i in range(3)]).astype(np.float32),
+        "tcp_quat": np.tile(
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (steps, 1)
+        ),
         "apple_pos": np.hstack([base + 40.0 + i for i in range(3)]).astype(np.float32),
         "woody_part_start_pos": woody_start,
         "woody_part_end_pos": woody_end,

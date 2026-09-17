@@ -8,16 +8,16 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-07-27 (docs refresh: coupling/batch/CMA/robot-replay aligned to code; TCP harvest F/T sign; hot-path co-teleport cache) |
+| **Last reviewed** | 2026-08-14 (H1–H5 index; removed handbook stubs and absorbed living duplicates) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
 
 1. **`docs/VISION.md`** — why this project exists, scope, non-goals, success criteria. Read once, revisit rarely.
 2. **`docs/ROADMAP.md`** — the single source of truth for status: what's shipped, what's active, what's next, validation commands. Every other doc in this repo should defer to it for sequencing.
-3. **This file** — architecture map + doc index.
-4. **The specific topic doc** (see [Document index](#document-index) below) for how a subsystem works.
-5. **Code** — once a doc points you at a module, read the code; docs describe intent and contracts, not line-by-line behavior.
+3. **The H1–H5 handbooks** — living subsystem contracts, selected from the [Document index](#document-index) below.
+4. **This file** — architecture map + full doc index.
+5. **Code** — once a handbook points you at a module, read the code; docs describe intent and contracts, not line-by-line behavior.
 
 If a doc's status claim and the actual code/tests disagree, trust the code and tests, then fix the doc (or flag it) rather than propagating the stale claim.
 
@@ -57,7 +57,7 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Two-solver split (core architectural fact, M1):** `SolverMuJoCo` cannot represent `JointType.CABLE`, so the fruiting tree (plant) and the FR3 arm live on **two separate `newton.Model` instances**, coupled through proxy bodies and a one-substep-lag wrench exchange. This is the single most important thing to understand before touching simulation code — see `docs/mujoco-vbd-coupling-architecture.md`.
+**Two-solver split (core architectural fact, M1):** `SolverMuJoCo` cannot represent `JointType.CABLE`, so the fruiting tree (plant) and the FR3 arm live on **two separate `newton.Model` instances**, coupled through proxy bodies and a one-substep-lag wrench exchange. This is the single most important thing to understand before touching simulation code — see H1 `docs/handbook-coupled-simulation.md`.
 
 ## Directory map
 
@@ -75,72 +75,89 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | `apple_pick_gym/batched_envs/` | Batched GPU gym (V.3.3+): batched envs/collection/grid, `batched_sysid_cmaes.py` (Young's candidates, scoring, CMA-ES orchestration), `batched_sysid_multi_replay.py` (stable fused scheduling), stability/soft-disable/exclusion, `sysid_gate_report.py`, `youngs_modulus_gate_report.py` (ranking), `youngs_modulus_cmaes_gate_report.py` (CMA integrity) |
 | `apple_pick_gym/batched_examples/` | Parallel collect/grid examples plus `example_youngs_modulus_sys_id.py` (dataset-driven fused E-grid) and `example_youngs_modulus_cmaes.py` (separate CMA-ES fit) |
 | `apple_pick_gym/grid_viz_*.py` | Plotly / table / report helpers for batched stiffness-grid ranking (incl. paired-hold woody MSE) |
+| `apple_pick_gym/viz/` | CMA persist real-vs-sim plots (`cma_force_plots.py`: Fx/Fy/Fz, Tx/Ty/Tz, TCP XYZ, woody-start XYZ from `structure_XXX/generations`) |
 | `scripts/` | Staged sys-ID helpers: `collect_and_rank_sysid_gt.sh`, `gate_sysid_gt_sinkhorn.sh`, `gate_youngs_modulus_sysid.sh` (multi-seed ranking gate), `gate_youngs_modulus_cmaes.sh` (multi-seed CMA integrity gate) |
 | `robot_replay/` | Real-robot sys-ID episodes + convert CLI; pre-grasp rebuild / post-grasp weld contract in `README.md` (woody via `rest_snapshot_during_run`) |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |
-| `docs/` | This documentation set (below). `docs/specs/` holds dated point-in-time design notes (historical once stamped Implemented) |
+| `docs/` | Living handbooks and supporting references (below); `docs/superpowers/{specs,plans}/` and `docs/specs/` are dated design archives |
 
 ## Document index
 
-Organized by question, not by filename — each doc listed once, under its primary topic.
+Start with the five living domain handbooks. They own current subsystem
+contracts; `docs/ROADMAP.md` alone owns status and sequencing.
 
-### "What's the status / what's next?"
+### Start here
 
 - **`docs/ROADMAP.md`** — the only place that should be trusted for slice status, sequencing, and validation commands.
 - `docs/VISION.md` — intent, scope, non-goals, success criteria (rarely changes).
+- `docs/FEATURES.md` — short feature → handbook → code-entry lookup.
 
-### "How does the core plant + arm coupling work?"
+### Living domain handbooks (H1–H5)
 
-- **`docs/coupled-sim-api.md`** — **canonical public API** after pre-gym cleanup: runtime exports, builders, examples, FR3 requirements.
-- `docs/mujoco-vbd-coupling-architecture.md` — the two-`Model` split, ownership table, staggered substep protocol, sim-to-real gravity contract (M1). Read this first for any coupling work.
-- `docs/variable-impedance-teleop.md` — post-grasp VIC: total TCP wrench, joint-torque control, which gym envs are kinematic vs. dynamic.
-- `docs/WRENCH_READOUT.md` — fixed-joint wrench semantics, sign conventions, subtree cuts.
-- `docs/explicit-apple-load-tcp-harvest.md` — explicit apple-weight term in stem harvest.
-- `docs/mujoco-apple-payload.md` — welded MuJoCo TCP inertia-only apple payload (mass / \(I\) / COM; Model A `g=0`).
-- `docs/gpu-coupling-optimization.md` — single-env GPU/CPU split and benchmarks (does **not** cover the batched hot path — see next section).
+- **H1 — `docs/handbook-coupled-simulation.md`** — two-model
+  MuJoCo/VBD ownership, public batched API, settle→weld, wrench/payload
+  semantics, geometry, and the GPU hot path. Code starts in
+  `apple_pick_sim/coupled_fruiting/` and `apple_pick_sim/fruiting_system/`.
+- **H2 — `docs/handbook-variable-impedance.md`** — `vic` and `vic_pose`,
+  total TCP wrench, torque control, caps, and soft-disable behavior. Code
+  starts in `apple_pick_sim/coupled_fruiting/vic_joint_torques*.py`,
+  `ee_impedance*.py`, and `vic_wrench.py`.
+- **H3 — `docs/handbook-sysid-scoring.md`** — `batched_sysid_v1`, aligned
+  state/transition bags, fixed physical scales, and MMD/Sinkhorn scoring.
+  Code starts in `apple_pick_sim/system_id/{mmd_features,mmd,wasserstein}.py`
+  and the trajectory stores.
+- **H4 — `docs/handbook-real-replay.md`** — real Parquet conversion,
+  pre-grasp rebuild, post-grasp settle/weld, `vic_pose` replay, and the shared
+  real builder. Code starts in `robot_replay/`,
+  `apple_pick_sim/system_id/real_to_batched_sysid.py`, and
+  `apple_pick_gym/batched_envs/real_batched_replay_build.py`.
+- **H5 — `docs/handbook-youngs-cma.md`** — support-\(k_p\) × spur/stem
+  Young's-\(E\) phenotype, Cartesian/fused ranking, CMA-ES, gates, and the
+  real-data handoff. Code starts in
+  `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` and the Young's
+  examples/reports.
 
-### "How does batched / heterogeneous / vectorized sim work?"
+### Supporting references (unique math / protocol only)
 
-- `docs/vectorized-coupled-fruiting.md` — **single source of truth for the batched build→settle→weld→teleop flow**, homogeneous vs. heterogeneous batches, co-located physics vs. viewer spacing. Defaults: controller **vic**, settle cache **off**. Does not carry its own status table — see ROADMAP for sequencing.
-- `docs/heterogeneous-batched-vectorization-audit.md` — narrower audit of which parts of the heterogeneous example's hot path are/aren't GPU-vectorized (re-verified 2026-07-02: both original P0 gaps are now fixed).
+Do not treat these as second copies of the handbooks. They keep derivations
+and experiment notes that H1–H5 summarize rather than duplicate.
 
-### "How do I sample / randomize plant material and geometry?"
+- **Coupling (H1):** `docs/WRENCH_READOUT.md`,
+  `docs/explicit-apple-load-tcp-harvest.md`,
+  `docs/gpu-coupling-optimization.md`, and
+  `docs/heterogeneous-batched-vectorization-audit.md`.
+- **Plant/material (H1):** `docs/material-parameter-sampling.md`,
+  `docs/real-world-proxy.md`, and `docs/damping-tuning.md`.
+- **Observations (H2/H3):** `docs/gym-observation-contract.md`.
+- **Sys-ID protocol/stability (H3/H5):** `docs/system_identification.md` and
+  `docs/batched-stability-monitor-design.md`.
+- **Replay/twin (H4):** `docs/digital-twin.md`, `docs/connection-angles-implementation.md`,
+  and `robot_replay/README.md`.
+- **Open defect (H5):** `docs/in-process-rebuild-heap-corruption.md` — intermittent
+  Warp/Newton host-heap corruption when rebuilding and stepping many scenes in one
+  process; why `--no-isolated-eval-waves` is unsafe.
 
-- `docs/material-parameter-sampling.md` — the shipped `(E, ζ)` → derived VBD-stiffness/damping sampling contract, **plus a "Derivation" appendix** explaining why raw independent sampling is unstable and the physics behind the fix. Also documents optional top-level `sim_build` (VIC + joint kp/kd) on ranges JSON.
-- `docs/real-world-proxy.md` — bench-proxy geometry, placement, stiffness tiers, and a still-open topology mismatch between the nominal and variance proxy fixtures (see its "Topology caveat").
-- `docs/damping-tuning.md` — three-layer policy: bend (real \(E,\zeta\)), FIXED-joint damping (settle), stretch (`vbd_stretch_force` max load). Variance fixture `sim_build` is the canonical copy for batched-example weld damping.
+### Archived design records
 
-### "How does system identification / sys-ID work?"
-
-- `docs/system_identification.md` — the full M3 protocol (excitation trajectories and CMA-ES direction) **plus an implementation-notes appendix** for the shipped §2.1 quasi-static stepped mapping (trajectory phases, Fibonacci hemisphere, code map, tests).
-- **`docs/youngs-modulus-sysid.md`** — canonical implemented E-grid, complete scoring, fused replay, ranking report/gate, and verification contract; handoff pointer to the separate CMA-ES command.
-- **`docs/youngs-modulus-cmaes-implementation.md`** — CMA-ES loop behavior, counters, reports, gate, tests, and uv commands (V.5.2 verified).
-- **README → CMA-ES sim-to-sim transfer** — copy-paste collect → fit → gate commands for Young's-modulus CMA-ES (`example_batched_collect_sysid_data.py` then `example_youngs_modulus_cmaes.py`).
-- `docs/sysid-transition-features.md` — **MMD/Wasserstein state vector and transition-bag layout** (\(s\), \([s,\Delta s]\), median/hold one-hots, pooling, gate flags).
-- `docs/sysid-trajectory-storage.md` — legacy single-env Parquet schema, collection/replay commands, dataset dashboard.
-- `docs/batched-sysid-dataset.md` — **batched_sysid_v1** layout for parallel collection (`example_batched_collect_sysid_data.py`).
-- `docs/sysid-mmd-grid-replay-alignment.md` — pre-weld strip, hold-metric semantics, structure-level weld, oracle vs `--infer-params` for the **shipped** in-process grid (`example_batched_sysid_mmd_grid.py`).
-- `docs/batched-stability-monitor-design.md` — online per-env stability monitor used during collect/grid (Implemented).
-- `docs/digital-twin.md` — observation-only replay initialization (shipped) and digital-twin geometry reconstruction; batched infer-only fidelity floor is deferred V.4.2.1 in `docs/ROADMAP.md`.
-- `docs/real-sysid-pre-post-grasp-fixes.md` — real-robot pre-grasp (non-bending rebuild) vs post-grasp (settled weld) contract, quirks, compile fixes.
-- `robot_replay/README.md` — real episode folder, convert CLI, same pre/post twin-init contract.
-- `docs/superpowers/specs/2026-07-24-real-pre-grasp-settle-viewer-design.md` — pre-grasp → `FruitingSystemParams` → plant-only settle viewer (draft).
-
-### "How does the Gym adapter work?"
-
-- `docs/gym-observation-contract.md` — observation schema versioning (v1→v3), shared keys, env-specific keys.
-- `docs/variable-impedance-teleop.md` — which envs are kinematic (`ApplePickCoupledEnv`) vs. dynamic/VIC (`ApplePickVicEnv` and its subclasses `ApplePickSysIdEnv`, `ApplePickReplayEnv`). Batched VIC/SysId envs: `apple_pick_gym/batched_envs/`.
+- `docs/superpowers/specs/` — dated design decisions and implementation
+  snapshots. Their status/canonical fields point back to H1–H5; do not treat
+  an unstamped prose tense as current status. **Do not read these first.**
+- `docs/superpowers/plans/` — dated execution plans and completed task
+  checklists. These explain how work was staged, not how the shipped system
+  behaves now.
+- `docs/specs/` — older design archive retained for history.
 
 ## Known gaps (do not assume these are done without checking code/tests)
 
 | Gap | Detail | Where documented |
 | --- | ------ | ----------------- |
-| Loss / GT scoring hardening (V.5.1) | **Done.** Soft-disable + exclude-fraction collect, transition features, median/hold-id/pooled Sinkhorn. GT should rank first on healthy samples; bad-sampling misses remain diagnostic and the operational gate uses a strict majority. | `docs/ROADMAP.md`, `docs/sysid-transition-features.md`, `docs/system_identification.md` |
-| CMA-ES calibration (V.5.2) | Done — support-\(k_p\) × spur/stem log10-\(E\) fused pooled-Sinkhorn loop (primary \(E\) fixed) | `docs/ROADMAP.md`, `docs/system_identification.md` §4, `docs/youngs-modulus-cmaes-implementation.md`, design spec |
-| Fused Young's grid acceptance | Implementation present; clean independent/fused timing, low-cap parity, build count, and peak-memory evidence pending | `docs/youngs-modulus-sysid.md`, `docs/ROADMAP.md` |
-| Batched digital-twin fidelity (V.4.2.1) | Done as shipped helpers + `--infer-params`; infer-only fidelity floor optional cleanup (not Current focus) | `docs/ROADMAP.md`, `docs/sysid-mmd-grid-replay-alignment.md`, `docs/digital-twin.md` |
-| `real_world_proxy.json` topology | Nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`. The two fixtures for the same physical proxy build different topologies | `docs/real-world-proxy.md` |
-| Real `pre_grasp` / `post_grasp` metadata | Bit-1/2 Done: convert + 19D `vic_pose` pack + replay. **Next (ROADMAP M4.0):** feed converted real datasets into CMA/grid under `vic_pose` (gym collect/MMD/sim-sim CMA stay twist `vic`) | `docs/ROADMAP.md`, `docs/real-sysid-pre-post-grasp-fixes.md`, `robot_replay/README.md`, `docs/variable-impedance-teleop.md`, `docs/superpowers/specs/2026-08-10-vic-pose-action-controller-design.md` |
+| M4.0 trusted real ranking → CMA | Plumbing and feature alignment are Done. Next is a trusted Cartesian Sinkhorn/grid ranking smoke on aligned real bags, followed by `example_youngs_modulus_cmaes.py` on the same shared real builder. | `docs/ROADMAP.md`, H3, H4, H5 |
+| Real dataset discovery | Multi-episode manifest/discovery remains open (or the workflow must document one dataset per episode). | `docs/ROADMAP.md`, H4 |
+| Fused Young's grid acceptance | Implementation is present; clean independent/fused timing, low-cap parity, build-count, and peak-memory evidence remain pending. | `docs/ROADMAP.md`, H5 |
+| Batched digital-twin fidelity (V.4.2.1) | Helpers and `--infer-params` shipped; an infer-only fidelity floor is optional deferred cleanup, not Current focus. | `docs/ROADMAP.md`, `docs/digital-twin.md`, H4 |
+| `real_world_proxy.json` topology | The nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`, so the two fixtures build different topologies. | `docs/real-world-proxy.md`, H1 |
+| Held-out sim-sim validation (V.5.3) | Deferred until after M4.0 or explicit maintainer direction. | `docs/ROADMAP.md`, H5 |
+| In-process rebuild heap corruption | Open, not root-caused. Rebuilding and stepping many scenes in one process intermittently corrupts host object state (SIGSEGV / bogus `code`/`function` attribute errors). Use process-isolated eval waves; `--no-isolated-eval-waves` is unsafe. | `docs/in-process-rebuild-heap-corruption.md`, H5 |
 
 ## Conventions worth knowing before editing docs or code
 

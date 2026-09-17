@@ -321,6 +321,23 @@ def test_missing_dataset_dir_raises(tmp_path: Path):
         TrajectoryDataset(tmp_path / "missing")
 
 
+def test_build_sysid_frame_row_omits_woody_end_columns_when_missing():
+    obs = _synthetic_obs()
+    del obs["woody_part_end_pos"]
+    row = build_sysid_frame_row(
+        step_idx=0,
+        sim_time=0.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=obs,
+    )
+    assert woody_start_column("joint_0") in row
+    assert woody_start_column("joint_1") in row
+    assert woody_end_column("joint_0") not in row
+    assert woody_end_column("joint_1") not in row
+
+
 def test_build_sysid_frame_row_stable_defaults_true():
     row = build_sysid_frame_row(
         step_idx=0,
@@ -344,3 +361,18 @@ def test_build_sysid_frame_row_stable_false():
         stable=False,
     )
     assert row["stable"] is False
+
+
+def test_build_sysid_frame_row_writes_optional_ft_wrist_lpf():
+    obs = _synthetic_obs()
+    obs["ft_wrist_lpf"] = np.arange(6, dtype=np.float32) + 50.0
+    row = build_sysid_frame_row(
+        step_idx=0,
+        sim_time=0.0,
+        phase="hold",
+        amplitude_m=0.0,
+        action=np.zeros(6, dtype=np.float32),
+        obs=obs,
+    )
+    assert row["ft_wrist"] == pytest.approx([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    assert row["ft_wrist_lpf"] == pytest.approx([50.0, 51.0, 52.0, 53.0, 54.0, 55.0])

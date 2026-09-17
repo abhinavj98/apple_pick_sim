@@ -19,6 +19,23 @@ def _require_torch():
     return torch
 
 
+def test_controller_config_null_space_defaults_keep_twist_osc():
+    ctrl = ControllerConfig()
+    assert ctrl.sep_ori is False
+    assert ctrl.kp_null == pytest.approx(10.0)
+    assert ctrl.kd_null == pytest.approx(6.3246)
+    assert ctrl.joint_torque_slew_nm_s == pytest.approx(200.0)
+
+
+def test_validate_rejects_negative_joint_torque_slew():
+    cfg = dataclasses.replace(
+        BatchedHeterogeneousCoupledSimConfig.test_minimal(num_envs=2),
+        controller=ControllerConfig(joint_torque_slew_nm_s=-1.0),
+    )
+    with pytest.raises(ValueError, match="joint_torque_slew_nm_s"):
+        cfg.validate()
+
+
 def test_expected_action_shape():
     ctrl = ControllerConfig(action_dim=6)
     assert ctrl.expected_action_shape(4) == (4, 6)

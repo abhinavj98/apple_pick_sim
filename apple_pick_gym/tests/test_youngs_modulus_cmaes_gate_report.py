@@ -99,7 +99,6 @@ def _fitted_structure(
         "replay_candidate_evaluations": optimizer_samples_told + 1,
         "final_mean_evaluations": 1,
         "physical_env_slots": 12,
-        "scalar_retries": 0,
         "stop_kind": stop_kind,
         "stop_conditions": stop_conditions,
         "generations": [],

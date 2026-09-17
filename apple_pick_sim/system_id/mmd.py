@@ -9,7 +9,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class NormalizationStats:
-    """Per-feature normalization statistics fit from GT transitions."""
+    """GT mean plus fixed physical-scale divisors (``std`` field stores scale)."""
 
     mean: np.ndarray
     std: np.ndarray
@@ -24,14 +24,43 @@ def _as_feature_matrix(values: np.ndarray, *, name: str) -> np.ndarray:
     return arr
 
 
-def fit_gt_normalization(gt: np.ndarray, eps: float = 1.0e-6) -> NormalizationStats:
-    """Fit per-feature mean/std from GT transitions only."""
+def fit_gt_normalization(
+    gt: np.ndarray,
+    eps: float = 1.0e-6,
+    *,
+    n_junctions: int = 2,
+    include_delta: bool = True,
+    categorical_weight: float = 1.0,
+    delta_weight: float = 1.0,
+) -> NormalizationStats:
+    """Fit GT mean; use fixed physical scales as divisors.
+
+    ``eps`` is retained for call-site compatibility but ignored: scale no longer
+    comes from GT std. Trailing columns beyond ``n_blocks * state_dim(n_junctions)``
+    (hold/dir one-hots) use mean=0 and scale ``1/categorical_weight``. Default
+    ``n_junctions=2`` is the CMA woody pair; pass the bag's junction count for
+    1-junction MMD examples.
+    """
+    del eps  # unused; kept for signature compatibility
+    from apple_pick_sim.system_id.mmd_features import (
+        state_vector_phys_scale,
+        transition_feature_scale,
+    )
 
     gt_arr = _as_feature_matrix(gt, name="gt")
     mean = np.mean(gt_arr, axis=0)
-    std = np.std(gt_arr, axis=0)
-    std = np.where(std < float(eps), float(eps), std)
-    return NormalizationStats(mean=mean, std=std)
+    scale = transition_feature_scale(
+        gt_arr.shape[1],
+        n_junctions=n_junctions,
+        include_delta=include_delta,
+        categorical_weight=categorical_weight,
+        delta_weight=delta_weight,
+    )
+    state_dim = int(state_vector_phys_scale(n_junctions).size)
+    n_blocks = 2 if bool(include_delta) else 1
+    mean = mean.copy()
+    mean[n_blocks * state_dim :] = 0.0
+    return NormalizationStats(mean=mean, std=scale)
 
 
 def apply_normalization(values: np.ndarray, stats: NormalizationStats) -> np.ndarray:

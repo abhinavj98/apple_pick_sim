@@ -45,9 +45,48 @@ from apple_pick_sim.system_id.batched_trajectory_store import (
     resolve_batched_dataset_output_dir,
 )
 from apple_pick_sim.system_id.manifest_sim_config import sim_config_to_manifest_dict
+from apple_pick_sim.system_id.mmd_features import CMA_WOODY_JUNCTIONS, cma_woody_junctions_from_env
 from apple_pick_sim.system_id.pre_weld_obs import complete_pre_weld_sysid_obs
 
 EXCLUDED_REASON_STABILITY_BLOWUP = "stability_blowup"
+
+
+def cma_collect_junction_names(env_names: Sequence[str]) -> list[str]:
+    """Junction names to record for one env's T-junction topology.
+
+    Structures sampled from ``topology_seed=42`` are heterogeneous: some are
+    T-junction topologies exposing the full CMA woody set
+    (``primary_spur``, ``spur_stem``, plus supports/apple stem), others are
+    secondary topologies without ``primary_spur``. When *all* of
+    ``CMA_WOODY_JUNCTIONS`` are present, collect only that two-name CMA subset
+    (matching the real-replay sys-ID bag contract); otherwise keep the env's
+    full junction name list unchanged for backward compatibility.
+    """
+    names = list(env_names)
+    if set(CMA_WOODY_JUNCTIONS).issubset(names):
+        return cma_woody_junctions_from_env(names)
+    return names
+
+
+def _woody_obs_for_junction_names(
+    obs: dict[str, Any],
+    junction_names: Sequence[str],
+    full_names: Sequence[str],
+) -> dict[str, Any]:
+    """Subset ``woody_part_start_pos`` and omit ends when CMA-filtering applies.
+
+    No-op (returns ``obs`` unchanged) when ``junction_names`` already equals
+    the env's full ``full_names`` (secondary topologies).
+    """
+    if list(junction_names) == list(full_names):
+        return obs
+    filtered = dict(obs)
+    starts = obs.get("woody_part_start_pos") or {}
+    filtered["woody_part_start_pos"] = {
+        name: starts[name] for name in junction_names if name in starts
+    }
+    filtered.pop("woody_part_end_pos", None)
+    return filtered
 
 
 class OnStepCallback(Protocol):
@@ -210,7 +249,11 @@ class BatchedSysIdCollectors:
         stable: bool = True,
         hold_number: int = -1,
     ) -> None:
-        obs = env.sysid_numpy_obs(int(env_idx))
+        full_names = list(env.junction_names)
+        collect_names = cma_collect_junction_names(full_names)
+        obs = _woody_obs_for_junction_names(
+            env.sysid_numpy_obs(int(env_idx)), collect_names, full_names
+        )
         self._writers[int(env_idx)].record_step(
             step_idx=int(step_idx),
             sim_time=float(sim_time),
@@ -290,6 +333,7 @@ def build_episode_metadata(
     exported = env.sysid_numpy_obs(int(env_idx))
     fruiting_base = per_env.get("fruiting_base_pos")
     rod_radii = per_env.get("rod_radii")
+    junction_names = cma_collect_junction_names(list(env.junction_names))
     return {
         "schema_version": SCHEMA_VERSION,
         "episode_id": str(episode_id),
@@ -306,8 +350,8 @@ def build_episode_metadata(
         "excitation_type": "quasi_static",
         "control_hz": float(config.control_hz),
         "seed": int(seed),
-        "n_woody_parts": len(env.junction_names),
-        "junction_names": list(env.junction_names),
+        "n_woody_parts": len(junction_names),
+        "junction_names": junction_names,
         "initial_tcp_pos": [float(x) for x in np.asarray(exported["tcp_pos"]).reshape(3)],
         "initial_tcp_quat": [float(x) for x in np.asarray(exported["tcp_quat"]).reshape(4)],
         "initial_apple_pos": [float(x) for x in np.asarray(exported["apple_pos"]).reshape(3)],
@@ -555,15 +599,21 @@ def collect_batched_quasi_static_dataset(
         return out
 
     sim_time = 0.0
+    full_junction_names = list(env.junction_names)
+    collect_junction_names = cma_collect_junction_names(full_junction_names)
     pre_weld_report = monitor.check(obs, step_idx=PRE_WELD_STEP_IDX)
     for env_idx in range(num_envs):
         pre_weld_obs = env.pre_weld_sysid_obs(int(env_idx))
         if pre_weld_obs is not None:
             collectors.record_pre_weld_step(
                 env_idx=int(env_idx),
-                obs=complete_pre_weld_sysid_obs(
-                    pre_weld_obs,
-                    pull_direction=per_env_directions[int(env_idx)],
+                obs=_woody_obs_for_junction_names(
+                    complete_pre_weld_sysid_obs(
+                        pre_weld_obs,
+                        pull_direction=per_env_directions[int(env_idx)],
+                    ),
+                    collect_junction_names,
+                    full_junction_names,
                 ),
                 stable=not bool(pre_weld_report.unstable[int(env_idx)].item()),
             )

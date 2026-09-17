@@ -1,8 +1,12 @@
 """Inertia-only MuJoCo apple payload (mass / COM / I) for welded FR3 builds.
 
-Model A keeps ``gravity = 0``; stem harvest still supplies ``-m · g``. The FIXED
-child of the TCP only contributes reflected inertia, with properties taken from
-the AVBD apple (mass, radius → solid-sphere ``I``, grasp offset → COM).
+Model A keeps ``gravity = 0``; stem harvest supplies env-on-robot apple weight and
+(when enabled) inertial reaction. The FIXED child of the TCP remains in the model
+for topology and A/B tests; production welded builds with harvest inertia **or**
+``tcp_harvest_source='weld'`` leave ``body_mass = 0`` on this body (weld reaction
+already carries apple weight). Legacy A/B uses
+:func:`apply_mujoco_apple_payload_inertias` only when
+``stem_harvest_explicit_apple_inertia`` is false and harvest is not weld.
 """
 
 from __future__ import annotations
@@ -160,6 +164,17 @@ def _set_body_inertial_props(
 
 def apply_mujoco_apple_payload_inertias(scene: Any) -> None:
     """Write per-env AVBD apple mass/inertia/COM onto MuJoCo payload bodies and notify."""
+    if bool(getattr(scene, "stem_harvest_explicit_apple_inertia", False)):
+        raise ValueError(
+            "apply_mujoco_apple_payload_inertias refuses when "
+            "stem_harvest_explicit_apple_inertia is True (would double-count apple load)"
+        )
+    if getattr(scene, "tcp_harvest_source", "stem") == "weld":
+        raise ValueError(
+            "apply_mujoco_apple_payload_inertias refuses when "
+            "tcp_harvest_source='weld' (weld reaction already carries apple weight; "
+            "payload mass in M(q) would double-count)"
+        )
     robot_model = getattr(scene, "robot_model", None)
     mj_solver = getattr(scene, "mj_solver", None)
     cable = getattr(scene, "cable", None)

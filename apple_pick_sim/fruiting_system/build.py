@@ -18,6 +18,7 @@ from apple_pick_sim.fruiting_system.gripper_proxy_shape import (
     add_gripper_proxy_collision_shape,
     gripper_proxy_clearance,
 )
+from apple_pick_sim.fruiting_system.joint_kd_scaling import support_roll_kd_from_damping_ratio
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     GripperProxyConfig,
@@ -181,9 +182,16 @@ def _apply_all_chain_collision_filters(
     _filter_shape_collisions_within_group(builder, chain_body_indices)
 
 
+# Penalty-only AVBD on T-junction world clamps. Default FIXED joints are hard
+# (augmented Lagrangian); support k_p is meant to be a kθ / kx spring.
+_VBD_JOINT_SOFT_CUSTOM_ATTRIBUTES: dict[str, int] = {"vbd:joint_is_hard": 0}
+
 
 def _new_fruiting_builder() -> newton.ModelBuilder:
     builder = newton.ModelBuilder()
+    newton.solvers.SolverVBD.register_custom_attributes(
+        builder, dahl_defaults_enabled=False
+    )
     builder.default_shape_cfg.ke = 1.0e2
     builder.default_shape_cfg.kd = 1.0e3  # 1.0e1 × ke(1.0e2), absolute VBD damping (#2877)
     builder.default_shape_cfg.mu = 1
@@ -245,7 +253,14 @@ def _build_linear_chain_into_builder(
     prev_quats: list[wp.quat] | None = None
 
     for name, rod in rod_specs:
-        start = origin if prev_bodies is None else prev_points[-1]
+        tip_offset_world = wp.vec3(0.0, 0.0, 0.0)
+        if prev_bodies is not None and prev_name == "spur" and name == "stem":
+            if params.stem_surface_offset:
+                assert prev_rod is not None
+                tip_offset_world = _rod_tip_surface_offset_world(
+                    rod.direction, prev_rod.radius
+                )
+        start = origin if prev_bodies is None else prev_points[-1] + tip_offset_world
         points, quats = _make_rod_geometry(
             start, rod.direction, rod.length, rod.num_segments
         )
@@ -271,14 +286,16 @@ def _build_linear_chain_into_builder(
             builder.body_mass[bodies[0]] = 0.0
             builder.body_inv_mass[bodies[0]] = 0.0
         else:
-            assert prev_rod is not None and prev_name is not None
+            assert prev_rod is not None and prev_name is not None and prev_quats is not None
             parent_seg_len = prev_rod.length / prev_rod.num_segments
+            parent_local_offset = wp.quat_rotate_inv(prev_quats[-1], tip_offset_world)
             j_link = _connect_rod_tip_to_base(
                 builder,
                 parent_body=prev_bodies[-1],
                 parent_seg_length=parent_seg_len,
                 child_body=bodies[0],
                 key=f"joint_{prev_name}_{name}",
+                parent_local_offset=parent_local_offset,
             )
             all_joints.append(j_link)
             fruiting_fixed_joints.append((j_link, f"joint_{prev_name}_{name}"))
@@ -422,6 +439,7 @@ def _build_t_junction_into_builder(
 
     for branch_i, (name, rod) in enumerate(branch_specs):
         radial_world = wp.vec3(0.0, 0.0, 0.0)
+        tip_offset_world = wp.vec3(0.0, 0.0, 0.0)
         if branch_i == 0:
             if params.spur_surface_offset:
                 radial_world = _primary_radial_surface_offset_world(
@@ -429,7 +447,11 @@ def _build_t_junction_into_builder(
                 )
             branch_start = primary_points[parent_idx + 1] + radial_world
         else:
-            branch_start = prev_points[-1]
+            if params.stem_surface_offset:
+                tip_offset_world = _rod_tip_surface_offset_world(
+                    rod.direction, prev_rod.radius
+                )
+            branch_start = prev_points[-1] + tip_offset_world
         points, quats = _make_rod_geometry(
             branch_start, rod.direction, rod.length, rod.num_segments
         )
@@ -466,12 +488,14 @@ def _build_t_junction_into_builder(
             )
         else:
             parent_seg_len = prev_rod.length / prev_rod.num_segments
+            parent_local_offset = wp.quat_rotate_inv(prev_quats[-1], tip_offset_world)
             j_link = _connect_rod_tip_to_base(
                 builder,
                 parent_body=prev_bodies[-1],
                 parent_seg_length=parent_seg_len,
                 child_body=bodies[0],
                 key=f"joint_{prev_name}_{name}",
+                parent_local_offset=parent_local_offset,
             )
         all_joints.append(j_link)
         fruiting_fixed_joints.append((j_link, f"joint_{prev_name}_{name}"))
@@ -556,16 +580,22 @@ def _build_t_junction_into_builder(
 def _attach_t_junction_world_supports(
     builder: newton.ModelBuilder,
     artifacts: _FruitingChainArtifacts,
+    *,
+    support_roll_kp: float = 0.0,
 ) -> None:
-    """Add world-fixed primary endpoint supports (must run after all other joints)."""
+    """Add world revolute primary endpoint supports (must run after all other joints)."""
     ctx = artifacts.t_junction_support_ctx
     if ctx is None:
         return
     primary_points, primary_bodies, primary_seg_len = ctx
+    axis = wp.normalize(primary_points[-1] - primary_points[0])
+    roll_ke = float(support_roll_kp)
     j_left = _connect_world_to_rod_base(
         builder,
         world_pos=primary_points[0],
         body=primary_bodies[0],
+        axis=axis,
+        target_ke=roll_ke,
         key="joint_primary_support_left",
     )
     j_right = _connect_world_to_rod_tip(
@@ -573,6 +603,8 @@ def _attach_t_junction_world_supports(
         world_pos=primary_points[-1],
         body=primary_bodies[-1],
         seg_length=primary_seg_len,
+        axis=axis,
+        target_ke=roll_ke,
         key="joint_primary_support_right",
     )
     artifacts.all_joints.extend((j_left, j_right))
@@ -795,9 +827,12 @@ def _add_gripper_proxy(
     overwritten each MuJoCo substep by ``sync_proxy_state`` (not integrated from cable
     gravity alone). With ``fix_to_apple``, a FIXED joint welds the proxy to the apple
     at the exterior pole (same placement as the free proxy, via ``parent_xform`` /
-    ``child_xform``). The apple and proxy use ``inv_mass == 0`` so VBD does not integrate
-    them; staggered coupling teleports their poses from the robot TCP each substep while
-    the stem supplies the harvested wrench.
+    ``child_xform``). By default the apple and proxy use ``inv_mass == 0`` so VBD does
+    not integrate them; staggered coupling teleports their poses from the robot TCP
+    each substep while the stem supplies the harvested wrench. With
+    ``dynamic_apple=True``, only the proxy is prescribed: the apple keeps finite
+    ``inv_mass``, is **not** co-teleported, and TCP harvest must use the proxy↔apple
+    weld reaction (``tcp_harvest_source="weld"``, auto-resolved at build).
     """
     if config.robot_facing_weld and not config.fix_to_apple:
         raise ValueError("robot_facing_weld requires fix_to_apple=True")
@@ -996,7 +1031,10 @@ def _add_gripper_proxy(
         artifacts.fruiting_fixed_joints.append(
             (apple_fixed_joint, "joint_apple_gripper_proxy")
         )
-        _prescribe_body_vbd_integration(builder, artifacts.apple_body)
+        # Proxy is always prescribed under fix_to_apple (TCP mirror target). The apple
+        # stays dynamic when ``dynamic_apple=True`` so gravity/load sharing enter VBD.
+        if not bool(getattr(config, "dynamic_apple", False)):
+            _prescribe_body_vbd_integration(builder, artifacts.apple_body)
         _prescribe_body_vbd_integration(builder, proxy_body)
     else:
         proxy_free_joint = builder.add_joint_free(parent=-1, child=proxy_body)
@@ -1006,7 +1044,7 @@ def _add_gripper_proxy(
 
 def make_fruiting_solver_vbd(model: newton.Model, **overrides: Any) -> newton.solvers.SolverVBD:
     kwargs: dict[str, Any] = {
-        "iterations": 25,
+        "iterations": 30,
         "friction_epsilon": 1e-2,
         "rigid_contact_k_start": 1.0e4,
         "rigid_joint_linear_k_start": 1.0e8,
@@ -1745,6 +1783,228 @@ def set_fruiting_joint_angular_kp_batched(
     )
 
 
+_REVOLUTE_DRIVE_SLOT = 2
+
+
+def _roll_kd_overrides_from_damping_ratio(
+    fruiting_fixed_joints: Iterable[tuple[int, str]],
+    roll_kp_overrides: Mapping[str, float],
+    *,
+    zeta: float,
+    joint_child: np.ndarray,
+    body_inertia: np.ndarray,
+    body_offset: int = 0,
+) -> dict[str, float]:
+    """Expand fixture ζ to per-role revolute T-roll drive kd."""
+    label_kd: dict[str, float] = {}
+    for key, kp in roll_kp_overrides.items():
+        kp_val = float(kp)
+        if kp_val <= 0.0:
+            label_kd[key] = 0.0
+            continue
+        matches = [(int(j), lab) for j, lab in fruiting_fixed_joints if key in lab]
+        if not matches:
+            continue
+        child_local = int(joint_child[matches[0][0]])
+        child = int(body_offset) + child_local
+        label_kd[key] = support_roll_kd_from_damping_ratio(
+            zeta=float(zeta),
+            roll_kp=kp_val,
+            child_inertia=body_inertia[child],
+        )
+    return label_kd
+
+
+def apply_fruiting_support_roll_penalties(
+    solver: newton.solvers.SolverVBD,
+    model: newton.Model,
+    fruiting_fixed_joints: Iterable[tuple[int, str]],
+    roll_kp_overrides: Mapping[str, float],
+    *,
+    joint_damping_ratio: float | None = None,
+    body_offset: int = 0,
+) -> dict[str, float]:
+    """Apply fixture T-roll drive kp (and optional ζ→kd) on revolute world supports."""
+    if not roll_kp_overrides:
+        return {}
+    label_kd = None
+    if joint_damping_ratio is not None:
+        label_kd = _roll_kd_overrides_from_damping_ratio(
+            fruiting_fixed_joints,
+            roll_kp_overrides,
+            zeta=float(joint_damping_ratio),
+            joint_child=model.joint_child.numpy(),
+            body_inertia=model.body_inertia.numpy(),
+            body_offset=int(body_offset),
+        )
+    set_fruiting_joint_roll_kp(
+        solver,
+        model,
+        fruiting_fixed_joints,
+        dict(roll_kp_overrides),
+        label_kd=label_kd,
+    )
+    return dict(roll_kp_overrides)
+
+
+def _validate_template_joint_roll_drive_slots(
+    solver: newton.solvers.SolverVBD,
+    template_joint_indices: Iterable[int],
+) -> None:
+    """Ensure each template joint has a revolute drive/limit AVBD slot."""
+    jc_dim = solver.joint_constraint_dim.numpy()
+    for joint_index in template_joint_indices:
+        cdim = int(jc_dim[joint_index])
+        if cdim <= _REVOLUTE_DRIVE_SLOT:
+            raise ValueError(
+                f"joint_index={joint_index} has constraint dimension {cdim}; "
+                f"cannot set roll drive kp (slot {_REVOLUTE_DRIVE_SLOT})."
+            )
+
+
+def set_fruiting_joint_roll_kp(
+    solver: newton.solvers.SolverVBD,
+    model: newton.Model,
+    fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kp: dict[str, float],
+    *,
+    label_kd: dict[str, float] | None = None,
+) -> dict[str, list[int]]:
+    """Patch T-roll drive stiffness on revolute world supports.
+
+    Writes ``model.joint_target_ke`` / ``joint_target_kd`` on the free hinge DOF and
+    synchronizes VBD penalty slot ``c0 + 2`` so runtime drive uses the requested
+    ``min(penalty_k, target_ke)`` value.
+    """
+    matched_by_key = _match_fruiting_joint_labels(
+        fruiting_fixed_joints,
+        label_kp,
+        param_name="label_kp",
+        value_label="roll kp",
+    )
+    if not matched_by_key:
+        return {}
+
+    for name in ("joint_penalty_k", "joint_penalty_k_min", "joint_penalty_k_max"):
+        if not hasattr(solver, name):
+            raise RuntimeError(
+                f"SolverVBD {name} is not initialized; "
+                "ensure the solver was constructed with rigid bodies present."
+            )
+
+    template_indices = sorted(
+        {j for indices in matched_by_key.values() for j in indices}
+    )
+    _validate_template_joint_roll_drive_slots(solver, template_indices)
+
+    jt = model.joint_type.numpy()
+    jqd = model.joint_qd_start.numpy()
+    jc_start = solver.joint_constraint_start.numpy()
+    target_ke_np = model.joint_target_ke.numpy().copy()
+    target_kd_np = model.joint_target_kd.numpy().copy()
+    k_np = solver.joint_penalty_k.numpy().copy()
+    k_min_np = solver.joint_penalty_k_min.numpy().copy()
+    k_max_np = solver.joint_penalty_k_max.numpy().copy()
+
+    for key, joint_indices in matched_by_key.items():
+        kp_val = float(label_kp[key])
+        if kp_val < 0.0:
+            raise ValueError(f"roll kp for {key!r} must be >= 0, got {kp_val}")
+        kd_val = (
+            float(label_kd[key])
+            if label_kd is not None and key in label_kd
+            else None
+        )
+        if kd_val is not None and kd_val < 0.0:
+            raise ValueError(f"roll kd for {key!r} must be >= 0, got {kd_val}")
+        for joint_index in joint_indices:
+            if int(jt[joint_index]) != int(newton.JointType.REVOLUTE):
+                continue
+            dof = int(jqd[joint_index])
+            target_ke_np[dof] = kp_val
+            if kd_val is not None:
+                target_kd_np[dof] = kd_val
+            c0 = int(jc_start[joint_index])
+            _patch_k_constraint_slot(
+                k_np, k_min_np, k_max_np, c0 + _REVOLUTE_DRIVE_SLOT, kp_val
+            )
+
+    model.joint_target_ke.assign(target_ke_np)
+    if label_kd is not None:
+        model.joint_target_kd.assign(target_kd_np)
+    solver.joint_penalty_k.assign(k_np)
+    solver.joint_penalty_k_min.assign(k_min_np)
+    solver.joint_penalty_k_max.assign(k_max_np)
+    return matched_by_key
+
+
+def set_fruiting_joint_roll_kp_batched(
+    solver: newton.solvers.SolverVBD,
+    model: newton.Model,
+    template_fruiting_fixed_joints: Iterable[tuple[int, str]],
+    label_kp: dict[str, float] | None = None,
+    *,
+    label_kp_per_env: Sequence[Mapping[str, float]] | None = None,
+    label_kd: dict[str, float] | None = None,
+    label_kd_per_env: Sequence[Mapping[str, float]] | None = None,
+    num_envs: int,
+    joints_per_world: int,
+) -> dict[str, list[int]]:
+    """Patch roll drive kp/kd across every env of a batched SolverVBD.
+
+    Pass either ``label_kp`` (broadcast) or ``label_kp_per_env`` (one map per
+    env). Optional ``label_kd`` / ``label_kd_per_env`` follow the same rule.
+    Dual-writes ``model.joint_target_ke`` and penalty slot ``c0+2``.
+    """
+    if num_envs < 1:
+        raise ValueError(f"num_envs must be >= 1, got {num_envs}.")
+    if joints_per_world < 1:
+        raise ValueError(f"joints_per_world must be >= 1, got {joints_per_world}.")
+    if num_envs * joints_per_world != int(model.joint_count):
+        raise ValueError(
+            f"batched joint layout mismatch: num_envs={num_envs} * "
+            f"joints_per_world={joints_per_world} != model.joint_count="
+            f"{model.joint_count}."
+        )
+
+    per_env_label_kp = _normalize_batched_label_kp(
+        label_kp, label_kp_per_env, num_envs=num_envs
+    )
+    per_env_label_kd: list[dict[str, float] | None]
+    if label_kd is None and label_kd_per_env is None:
+        per_env_label_kd = [None] * int(num_envs)
+    else:
+        per_env_label_kd = list(
+            _normalize_batched_label_kp(
+                label_kd, label_kd_per_env, num_envs=num_envs
+            )
+        )
+
+    template_list = list(template_fruiting_fixed_joints)
+    matched_by_key: dict[str, list[int]] = {}
+    for w in range(int(num_envs)):
+        offset = w * int(joints_per_world)
+        env_joints = [(offset + j, lab) for j, lab in template_list]
+        matched = set_fruiting_joint_roll_kp(
+            solver,
+            model,
+            env_joints,
+            dict(per_env_label_kp[w]),
+            label_kd=(
+                dict(per_env_label_kd[w])
+                if per_env_label_kd[w] is not None
+                else None
+            ),
+        )
+        if w == 0:
+            matched_by_key = matched
+    if num_envs == 1:
+        return matched_by_key
+    return _global_matched_joint_indices(
+        matched_by_key, num_envs=int(num_envs), joints_per_world=int(joints_per_world)
+    )
+
+
 def set_fruiting_joint_linear_kp(
     solver: newton.solvers.SolverVBD,
     fruiting_fixed_joints: Iterable[tuple[int, str]],
@@ -1934,6 +2194,15 @@ def _primary_radial_surface_offset_world(
     return (radial / radial_len) * float(primary_radius)
 
 
+def _rod_tip_surface_offset_world(
+    child_direction: tuple[float, float, float],
+    parent_radius: float,
+) -> wp.vec3:
+    """World offset from parent tip centerline to child-base contact on parent end cap."""
+    d = wp.normalize(wp.vec3(*child_direction))
+    return d * float(parent_radius)
+
+
 def _primary_spur_parent_body_index(num_segments: int, fraction: float) -> int:
     """Index of the primary body whose tip hosts the spur branch."""
     point_index = int(round(float(fraction) * num_segments))
@@ -1945,15 +2214,22 @@ def _connect_world_to_rod_base(
     builder: newton.ModelBuilder,
     world_pos: wp.vec3,
     body: int,
+    axis: wp.vec3,
     key: str,
+    *,
+    target_ke: float = 0.0,
 ) -> int:
-    """World-fixed support at a rod segment base (local ``(0,0,0)``)."""
-    return builder.add_joint_fixed(
+    """World revolute support at a rod segment base (local ``(0,0,0)``)."""
+    return builder.add_joint_revolute(
         parent=-1,
         child=body,
         parent_xform=wp.transform(world_pos, wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        axis=axis,
+        target_ke=float(target_ke),
+        target_pos=0.0,
         label=key,
+        custom_attributes=_VBD_JOINT_SOFT_CUSTOM_ATTRIBUTES,
     )
 
 
@@ -1962,15 +2238,22 @@ def _connect_world_to_rod_tip(
     world_pos: wp.vec3,
     body: int,
     seg_length: float,
+    axis: wp.vec3,
     key: str,
+    *,
+    target_ke: float = 0.0,
 ) -> int:
-    """World-fixed support at a rod segment tip (local ``(0,0,seg_length)``)."""
-    return builder.add_joint_fixed(
+    """World revolute support at a rod segment tip (local ``(0,0,seg_length)``)."""
+    return builder.add_joint_revolute(
         parent=-1,
         child=body,
         parent_xform=wp.transform(world_pos, wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, seg_length), wp.quat_identity()),
+        axis=axis,
+        target_ke=float(target_ke),
+        target_pos=0.0,
         label=key,
+        custom_attributes=_VBD_JOINT_SOFT_CUSTOM_ATTRIBUTES,
     )
 
 

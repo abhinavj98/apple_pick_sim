@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from unittest.mock import MagicMock
 
@@ -40,6 +41,9 @@ def _dummy_recorded_episode(*, direction_idx: int = 0, n_frames: int = 8) -> dic
         "ft_wrist": np.zeros((n_frames, 6), dtype=np.float32),
         "tcp_velocity": np.zeros((n_frames, 6), dtype=np.float32),
         "tcp_pos": np.zeros((n_frames, 3), dtype=np.float32),
+        "tcp_quat": np.tile(
+            np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (n_frames, 1)
+        ),
         "apple_pos": np.zeros((n_frames, 3), dtype=np.float32),
         "woody_part_start_pos": {
             "joint_a": np.zeros((n_frames, 3), dtype=np.float32),
@@ -378,7 +382,9 @@ def test_evaluator_uses_source_direction_width_for_sparse_ids(
     assert replay_call["direction_indices"] == [0, 2]
     assert replay_call["num_directions"] == 2
     assert gt_context_calls[0]["n_directions"] == expected_scoring_n_directions
-    assert "pool_directions" not in gt_context_calls[0]
+    assert gt_context_calls[0]["pool_directions"] is pool_directions
+    assert gt_context_calls[0]["include_delta"] is True
+    assert gt_context_calls[0]["categorical_weight"] == pytest.approx(100.0)
     assert score_calls[0]["n_directions"] == expected_scoring_n_directions
     assert score_calls[0]["pool_directions"] is pool_directions
 
@@ -783,6 +789,192 @@ def _prepared_structure(
     )
 
 
+def test_prepare_vic_pose_dataset_uses_real_gripper_and_skips_gt(
+    monkeypatch: pytest.MonkeyPatch,
+    gt_params: fs.FruitingSystemParams,
+):
+    candidate = cmaes.SupportKpYoungsCandidate(1.0e4, 1.0e9, 1.0e9)
+    recorded = _dummy_recorded_episode(direction_idx=0)
+    meta = {
+        "initial_apple_pos": [0.0, 0.0, 0.0],
+        "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+        "initial_tcp_pos": [0.01, 0.02, 0.03],
+        "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+    }
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "num_directions": 1,
+            "seed": 0,
+        }
+    }
+    dataset.load_episode_metadata.return_value = meta
+    monkeypatch.setattr(cmaes, "resolve_direction_indices", lambda *_a, **_k: [0])
+    monkeypatch.setattr(
+        cmaes,
+        "load_recorded_episodes_for_structure",
+        lambda *_a, **_k: [recorded],
+    )
+    monkeypatch.setattr(
+        cmaes,
+        "prepare_gt_wasserstein_scoring_context",
+        lambda *_a, **_k: MagicMock(),
+    )
+    monkeypatch.setattr(cmaes, "true_params_for_structure", lambda *_a, **_k: gt_params)
+
+    prepared = cmaes.prepare_youngs_modulus_structure(
+        dataset=dataset,
+        structure_idx=0,
+        candidates=(candidate,),
+        num_directions=1,
+        scoring=cmaes.YoungsModulusScoringConfig(
+            use_median=True,
+            hold_id_onehot=False,
+            pool_directions=True,
+            n_holds=1,
+            n_directions=1,
+            device="cpu",
+        ),
+    )
+
+    assert prepared.gt_candidate is None
+    assert (
+        prepared.replay_request.gripper.weld_proxy_offset_in_apple_frame
+        is not None
+    )
+
+
+def test_score_is_gt_false_when_gt_candidate_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+    gt_params: fs.FruitingSystemParams,
+):
+    candidate = cmaes.YoungsModulusCandidate(1.0e8, 1.0e7, 1.0e7)
+    prepared = dataclasses.replace(
+        _prepared_structure(
+            structure_idx=0,
+            candidates=(candidate,),
+            directions=(0,),
+            gt_params=gt_params,
+        ),
+        gt_candidate=None,
+    )
+    replay_by_key = {
+        multi.ReplaySlotKey(0, 0, 0): _dummy_recorded_episode(direction_idx=0)
+    }
+    monkeypatch.setattr(
+        cmaes,
+        "replay_instability_fraction_all_frames",
+        lambda **_kwargs: 0.0,
+    )
+    monkeypatch.setattr(
+        cmaes,
+        "score_candidate_wasserstein_complete",
+        lambda **_kwargs: _wasserstein_result(candidate_index=0, aggregate=0.1),
+    )
+
+    evaluation = cmaes.score_prepared_youngs_modulus_structure(
+        prepared,
+        replay_by_key=replay_by_key,
+        scoring=cmaes.YoungsModulusScoringConfig(n_directions=1),
+    )
+
+    assert evaluation.gt_candidate is None
+    assert evaluation.scores[0].is_gt is False
+
+
+def test_score_prepared_disqualifies_candidate_with_invalid_replay_features(
+    monkeypatch: pytest.MonkeyPatch,
+    gt_params: fs.FruitingSystemParams,
+):
+    candidate = cmaes.YoungsModulusCandidate(1.0e8, 1.0e7, 1.0e7)
+    prepared = _prepared_structure(
+        structure_idx=0,
+        candidates=(candidate,),
+        directions=(0,),
+        gt_params=gt_params,
+    )
+    broken = _dummy_recorded_episode(direction_idx=0)
+
+    def _not_a_mapping() -> None:
+        pass
+
+    broken["woody_part_start_pos"] = _not_a_mapping
+    replay_by_key = {multi.ReplaySlotKey(0, 0, 0): broken}
+    monkeypatch.setattr(
+        cmaes,
+        "replay_instability_fraction_all_frames",
+        lambda **_kwargs: 0.0,
+    )
+
+    evaluation = cmaes.score_prepared_youngs_modulus_structure(
+        prepared,
+        replay_by_key=replay_by_key,
+        scoring=cmaes.YoungsModulusScoringConfig(
+            n_directions=1,
+            hold_aggregation="mean",
+        ),
+    )
+
+    assert evaluation.scores[0].disqualified is True
+    assert evaluation.scores[0].disqualification_reason.startswith(
+        "invalid_replay_features:"
+    )
+    assert evaluation.scores[0].mean_hold_force_err_n is None
+
+
+def test_scalar_evaluation_uses_resolved_action_dim(
+    monkeypatch: pytest.MonkeyPatch,
+    gt_params: fs.FruitingSystemParams,
+):
+    candidate = cmaes.YoungsModulusCandidate(1.0e8, 1.0e7, 1.0e7)
+    prepared = _prepared_structure(
+        structure_idx=0,
+        candidates=(candidate,),
+        directions=(0,),
+        gt_params=gt_params,
+    )
+    dataset = MagicMock()
+    dataset.manifest = {"collection": {}}
+    replay_call: dict[str, object] = {}
+    sentinel = MagicMock()
+    monkeypatch.setattr(
+        cmaes,
+        "prepare_youngs_modulus_structure",
+        lambda **_kwargs: prepared,
+    )
+
+    def fake_replay(**kwargs):
+        replay_call.update(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(cmaes, "replay_candidates_for_structure", fake_replay)
+    monkeypatch.setattr(
+        cmaes,
+        "direction_episodes_from_collectors",
+        lambda *_a, **_k: [_dummy_recorded_episode(direction_idx=0)],
+    )
+    monkeypatch.setattr(
+        cmaes,
+        "score_prepared_youngs_modulus_structure",
+        lambda *_a, **_k: sentinel,
+    )
+
+    result = cmaes.evaluate_youngs_modulus_candidates(
+        dataset=dataset,
+        structure_idx=0,
+        candidates=(candidate,),
+        num_directions=1,
+        build_env_fn=MagicMock(),
+        scoring=cmaes.YoungsModulusScoringConfig(n_directions=1),
+        action_dim=19,
+    )
+
+    assert result is sentinel
+    assert replay_call["action_dim"] == 19
+
+
 def test_score_prepared_routes_original_structure_local_candidate_and_physical_direction(
     monkeypatch: pytest.MonkeyPatch,
     gt_params: fs.FruitingSystemParams,
@@ -966,7 +1158,7 @@ def test_evaluate_multi_structure_fuses_in_requested_order_and_scores_local_cand
     assert tuple(batch.evaluations) == (4, 1)
     assert [len(batch.evaluations[idx].scores) for idx in (4, 1)] == [2, 1]
     assert batch.errors == {}
-    assert batch.retried_structures == ()
+    assert not hasattr(batch, "retried_structures")
     assert len(replay_calls) == 1
     assert [(b.structure_idx, b.local_candidate_idx) for b in replay_calls[0]] == [
         (4, 0),
@@ -975,7 +1167,7 @@ def test_evaluate_multi_structure_fuses_in_requested_order_and_scores_local_cand
     ]
 
 
-def test_evaluate_multi_structure_fusion_incompatibility_falls_back_without_errors(
+def test_evaluate_multi_structure_fusion_incompatibility_raises_actionable_error(
     monkeypatch: pytest.MonkeyPatch,
     gt_params: fs.FruitingSystemParams,
 ):
@@ -997,42 +1189,27 @@ def test_evaluate_multi_structure_fusion_incompatibility_falls_back_without_erro
         "prepare_youngs_modulus_structure",
         lambda **kwargs: prepared[int(kwargs["structure_idx"])],
     )
-    replay_fused = MagicMock(side_effect=AssertionError("fused replay must not run"))
-    monkeypatch.setattr(cmaes, "replay_multi_structure_candidate_blocks", replay_fused)
-    scalar_calls: list[int] = []
-
-    def fake_scalar(**kwargs):
-        structure_idx = int(kwargs["structure_idx"])
-        scalar_calls.append(structure_idx)
-        item = prepared[structure_idx]
-        return cmaes.YoungsModulusEvaluation(
-            structure_idx=structure_idx,
-            gt_candidate=item.gt_candidate,
-            fixed_secondary_e_pa=item.fixed_secondary_e_pa,
-            direction_indices=item.direction_indices,
-            scores=[],
-            replay_episodes=[],
-            applied_params=[],
-        )
-
-    monkeypatch.setattr(cmaes, "evaluate_youngs_modulus_candidates", fake_scalar)
-
-    batch = cmaes.evaluate_youngs_modulus_structures(
-        dataset=MagicMock(),
-        structures=structures,
-        num_directions=5,
-        build_env_fn=MagicMock(),
-        scoring=cmaes.YoungsModulusScoringConfig(n_directions=5),
+    monkeypatch.setattr(
+        cmaes,
+        "evaluate_youngs_modulus_candidates",
+        MagicMock(side_effect=AssertionError("scalar retry must not run")),
     )
 
-    assert tuple(batch.evaluations) == (4, 1)
-    assert batch.errors == {}
-    assert batch.retried_structures == (4, 1)
-    assert scalar_calls == [4, 1]
-    replay_fused.assert_not_called()
+    with pytest.raises(
+        multi.ReplayFusionIncompatible,
+        match=r"direction layout|--no-multi-structure-batch",
+    ):
+        cmaes.evaluate_youngs_modulus_structures(
+            dataset=MagicMock(),
+            structures=structures,
+            num_directions=5,
+            build_env_fn=MagicMock(),
+            scoring=cmaes.YoungsModulusScoringConfig(n_directions=5),
+            action_dim=19,
+        )
 
 
-def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
+def test_evaluate_multi_structure_runtime_failure_records_error_without_retry(
     monkeypatch: pytest.MonkeyPatch,
     gt_params: fs.FruitingSystemParams,
 ):
@@ -1054,6 +1231,12 @@ def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
         "prepare_youngs_modulus_structure",
         lambda **kwargs: prepared[int(kwargs["structure_idx"])],
     )
+    chunk_detail = (
+        "chunk 0: synthetic failure\n"
+        "Traceback (most recent call last):\n"
+        "  File \"fake.py\", line 1, in <module>\n"
+        "RuntimeError: synthetic failure\n"
+    )
     replay_for_1 = {
         multi.ReplaySlotKey(1, 0, direction_idx): _dummy_recorded_episode(
             direction_idx=direction_idx
@@ -1065,7 +1248,7 @@ def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
         "replay_multi_structure_candidate_blocks",
         lambda **_kwargs: multi.MultiStructureReplayOutcome(
             replay_by_key=replay_for_1,
-            failed_structures={4: "chunk 0: synthetic failure"},
+            failed_structures={4: chunk_detail},
             diagnostics=multi.MultiStructureReplayDiagnostics(
                 candidate_blocks=2,
                 flattened_envs=4,
@@ -1089,23 +1272,11 @@ def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
             aggregate=0.1,
         ),
     )
-    scalar_calls: list[int] = []
-
-    def fake_scalar(**kwargs):
-        structure_idx = int(kwargs["structure_idx"])
-        scalar_calls.append(structure_idx)
-        item = prepared[structure_idx]
-        return cmaes.YoungsModulusEvaluation(
-            structure_idx=structure_idx,
-            gt_candidate=item.gt_candidate,
-            fixed_secondary_e_pa=item.fixed_secondary_e_pa,
-            direction_indices=item.direction_indices,
-            scores=[],
-            replay_episodes=[],
-            applied_params=[],
-        )
-
-    monkeypatch.setattr(cmaes, "evaluate_youngs_modulus_candidates", fake_scalar)
+    monkeypatch.setattr(
+        cmaes,
+        "evaluate_youngs_modulus_candidates",
+        MagicMock(side_effect=AssertionError("scalar retry must not run")),
+    )
 
     batch = cmaes.evaluate_youngs_modulus_structures(
         dataset=MagicMock(),
@@ -1115,10 +1286,10 @@ def test_evaluate_multi_structure_runtime_failure_retries_only_failed_structure(
         scoring=cmaes.YoungsModulusScoringConfig(n_directions=5),
     )
 
-    assert tuple(batch.evaluations) == (4, 1)
-    assert batch.errors == {}
-    assert batch.retried_structures == (4,)
-    assert scalar_calls == [4]
+    assert tuple(batch.evaluations) == (1,)
+    assert batch.errors[4] == chunk_detail
+    assert "Traceback (most recent call last)" in batch.errors[4]
+    assert not hasattr(batch, "retried_structures")
 
 
 def test_evaluate_multi_structure_records_preparation_error_and_fail_fast_raises(
@@ -1182,7 +1353,12 @@ def test_evaluate_multi_structure_records_preparation_error_and_fail_fast_raises
     )
 
     assert tuple(batch.evaluations) == (1,)
-    assert batch.errors == {4: "malformed structure 4"}
+    assert tuple(batch.errors) == (4,)
+    # Prepare-stage errors must carry a traceback, like replay/scoring errors do:
+    # a bare message leaves an instant wave failure undiagnosable.
+    assert batch.errors[4].startswith("malformed structure 4")
+    assert "Traceback (most recent call last)" in batch.errors[4]
+    assert "fake_prepare" in batch.errors[4]
 
     with pytest.raises(ValueError, match="malformed structure 4"):
         cmaes.evaluate_youngs_modulus_structures(

@@ -151,6 +151,11 @@ def _write_replay_episode_parquet(
         default=np.zeros(0, dtype=np.float32),
     )
 
+    replay_woody_end = replay.get("woody_part_end_pos")
+    has_replay_woody_end = isinstance(replay_woody_end, dict) and all(
+        name in replay_woody_end for name in junction_names
+    )
+
     for frame_idx in range(n_frames):
         obs = {
             "excitation_type": int(np.asarray(replay["excitation_type"])[frame_idx]),
@@ -174,11 +179,12 @@ def _write_replay_episode_parquet(
                 name: np.asarray(replay["woody_part_start_pos"][name])[frame_idx]
                 for name in junction_names
             },
-            "woody_part_end_pos": {
-                name: np.asarray(replay["woody_part_end_pos"][name])[frame_idx]
-                for name in junction_names
-            },
         }
+        if has_replay_woody_end:
+            obs["woody_part_end_pos"] = {
+                name: np.asarray(replay_woody_end[name])[frame_idx]
+                for name in junction_names
+            }
         writer.record_step(
             step_idx=frame_idx,
             sim_time=float(sim_time[frame_idx] if sim_time.ndim else sim_time),

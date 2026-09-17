@@ -13,7 +13,8 @@ from apple_pick_sim.batched_obs import BatchedObsBuffers
 
 
 def _to_torch(arr: wp.array, device: torch.device) -> torch.Tensor:
-    return wp.to_torch(arr).to(device=device, dtype=torch.float32)
+    """Owned torch copy; must not alias live Warp observation buffers."""
+    return wp.to_torch(arr).to(device=device, dtype=torch.float32).clone()
 
 
 def obs_dict_from_bufs(
@@ -120,6 +121,36 @@ def _torch_to_numpy_f32_copy(value: Any) -> np.ndarray:
     return np.array(value, dtype=np.float32, copy=True)
 
 
+def _obs_ready_for_replay_download(obs: Mapping[str, Any]) -> bool:
+    woody = obs.get("woody_part_info")
+    if not isinstance(woody, Mapping) or not woody:
+        return False
+    first = next(iter(woody.values()), None)
+    return isinstance(first, Mapping) and "anchors_pos" in first
+
+
+def batched_obs_for_replay_download(env: Any) -> Mapping[str, Any]:
+    """Return batched obs safe for replay download; re-gather if ``_last_obs`` is stale."""
+    last_obs = getattr(env, "_last_obs", None)
+    if isinstance(last_obs, Mapping) and _obs_ready_for_replay_download(last_obs):
+        return last_obs
+    gather = getattr(env, "_gather_obs", None)
+    if not callable(gather):
+        raise RuntimeError("call reset() or step() before recording replay observations")
+    obs = gather()
+    if not isinstance(obs, Mapping):
+        raise TypeError(
+            f"batched obs must be a mapping after gather, got {type(obs).__name__}"
+        )
+    if not _obs_ready_for_replay_download(obs):
+        woody = obs.get("woody_part_info")
+        raise TypeError(
+            "batched obs missing usable woody_part_info for replay download; "
+            f"got {type(woody).__name__}"
+        )
+    return obs
+
+
 def download_batched_replay_obs_numpy(
     obs: Mapping[str, Any],
     junction_names: list[str],
@@ -136,6 +167,7 @@ def download_batched_replay_obs_numpy(
         "ft_wrist": _torch_to_numpy_f32_copy(obs["ft_wrist"]),
         "tcp_velocity": _torch_to_numpy_f32_copy(obs["tcp_velocity"]),
         "tcp_pos": _torch_to_numpy_f32_copy(obs["tcp_pos"]),
+        "tcp_quat": _torch_to_numpy_f32_copy(obs["tcp_quat"]),
         "apple_pos": _torch_to_numpy_f32_copy(obs["apple_pos"]),
         "woody_start": np.concatenate(woody_start_parts, axis=1),
         "woody_end": np.concatenate(woody_end_parts, axis=1),
@@ -153,6 +185,7 @@ def replay_obs_dict_from_batched_numpy_row(
         "ft_wrist": np.asarray(batched["ft_wrist"][i], dtype=np.float32).reshape(6),
         "tcp_velocity": np.asarray(batched["tcp_velocity"][i], dtype=np.float32).reshape(6),
         "tcp_pos": np.asarray(batched["tcp_pos"][i], dtype=np.float32).reshape(3),
+        "tcp_quat": np.asarray(batched["tcp_quat"][i], dtype=np.float32).reshape(4),
         "apple_pos": np.asarray(batched["apple_pos"][i], dtype=np.float32).reshape(3),
         "woody_start": np.asarray(batched["woody_start"][i], dtype=np.float32),
         "woody_end": np.asarray(batched["woody_end"][i], dtype=np.float32),

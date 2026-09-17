@@ -64,8 +64,8 @@ def test_defaults_preset_constructs_and_validates():
     assert cfg.robot.kind == "fr3"
     assert cfg.robot.per_env_ik is True
     assert cfg.robot.ik_bootstrap_iterations == IK_BOOTSTRAP_DEFAULT_ITERATIONS
-    assert cfg.scene.settle_substeps == 5000
-    assert cfg.scene.settle_quiet_every == 300
+    assert cfg.scene.settle_substeps == 2000
+    assert cfg.scene.settle_quiet_every == 100
     assert cfg.fruiting_system.stem_coupling_gain == DEFAULT_STEM_COUPLING_GAIN
     assert cfg.controller.mode == "vic"
     assert cfg.controller.linear_speed == pytest.approx(1.0)
@@ -75,8 +75,8 @@ def test_defaults_preset_constructs_and_validates():
     assert cfg.obs is None
 
 
-def test_example_cli_settle_quiet_every_default_is_300(monkeypatch):
-    """Canonical example defaults periodic settle quiet to every 300 VBD substeps."""
+def test_example_cli_settle_quiet_every_default_is_100(monkeypatch):
+    """Canonical example defaults periodic settle quiet to every 100 VBD substeps."""
     import argparse
     import importlib.util
     import sys
@@ -97,7 +97,7 @@ def test_example_cli_settle_quiet_every_default_is_300(monkeypatch):
 
     monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
     args = module._make_parser().parse_args([])
-    assert args.settle_quiet_every == 300
+    assert args.settle_quiet_every == 100
 
 
 def test_gym_defaults_preset():
@@ -109,6 +109,7 @@ def test_gym_defaults_preset():
     assert cfg.controller.mode == "vic"
     assert cfg.robot.fix_to_apple is True
     assert cfg.robot.force_batched_layout is True
+    assert cfg.robot.reuse_replicated_mujoco is False
 
 
 def test_test_minimal_preset():
@@ -277,3 +278,15 @@ def test_inject_mode_validate_passes_with_matching_params():
         ),
     )
     cfg.validate()
+
+
+def test_builder_kwargs_forward_reuse_replicated_mujoco():
+    from apple_pick_sim.coupled_fruiting.batched_heterogeneous_build import _builder_kwargs
+
+    cfg = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=2)
+    cfg = dataclasses.replace(
+        cfg,
+        robot=dataclasses.replace(cfg.robot, reuse_replicated_mujoco=True),
+    )
+    kw = _builder_kwargs(cfg, gripper=cfg.robot.gripper, vbd_only=False)
+    assert kw["reuse_replicated_mujoco"] is True

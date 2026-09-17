@@ -20,7 +20,7 @@ from apple_pick_sim.fruiting_system.params import (
     rod_params_from_material,
     _spur_attach_fraction_from_ranges,
     _spur_surface_offset_from_ranges,
-    _stretch_kw_from_seg_ranges,
+    _stem_surface_offset_from_ranges,
     _topology_from_ranges,
 )
 
@@ -80,6 +80,7 @@ def _rod_params_from_range_median(seg_ranges: dict) -> RodParams:
     density = _median_range_scalar(seg_ranges, "density")
     num_segments = max(2, _median_range_int(seg_ranges, "num_segments"))
     return rod_params_from_material(
+        _median_range_scalar(seg_ranges, "flexural_modulus_pa"),
         _median_range_scalar(seg_ranges, "youngs_modulus_pa"),
         _median_range_scalar(seg_ranges, "damping_ratio"),
         length,
@@ -87,13 +88,6 @@ def _rod_params_from_range_median(seg_ranges: dict) -> RodParams:
         density,
         num_segments,
         (1.0, 0.0, 0.0),
-        **_stretch_kw_from_seg_ranges(
-            seg_ranges,
-            length=length,
-            radius=radius,
-            density=density,
-            num_segments=num_segments,
-        ),
     )
 
 
@@ -124,6 +118,7 @@ def params_from_ranges_median(ranges: dict) -> FruitingSystemParams:
         topology=_topology_from_ranges(ranges),
         spur_attach_fraction=_spur_attach_fraction_from_ranges(ranges),
         spur_surface_offset=_spur_surface_offset_from_ranges(ranges),
+        stem_surface_offset=_stem_surface_offset_from_ranges(ranges),
     )
 
 
@@ -201,6 +196,7 @@ def infer_params_from_obs(
             else ref.radius
         )
         return rod_params_from_material(
+            ref.flexural_modulus_pa,
             ref.youngs_modulus_pa,
             ref.damping_ratio,
             length,
@@ -228,6 +224,7 @@ def infer_params_from_obs(
         topology=topology,
         spur_attach_fraction=template.spur_attach_fraction,
         spur_surface_offset=template.spur_surface_offset,
+        stem_surface_offset=template.stem_surface_offset,
     )
 
 

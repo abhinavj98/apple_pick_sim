@@ -48,15 +48,16 @@ def test_build_sim_config_forwards_joint_damping_ratio_from_default_fixture():
     ranges = load_ranges(default_ranges_fixture_path())
     sb = parse_sim_build(ranges)
     assert sb is not None
-    assert sb.joint_damping_ratio == pytest.approx(0.5)
+    assert sb.joint_damping_ratio == pytest.approx(1.0)
     assert sb.joint_angular_kd_overrides == {}
     assert sb.joint_linear_kd_overrides == {}
 
     cfg = module.build_sim_config(num_envs=2, ranges=ranges)
-    assert cfg.fruiting_system.joint_damping_ratio == pytest.approx(0.5)
+    assert cfg.fruiting_system.joint_damping_ratio == pytest.approx(1.0)
     assert cfg.fruiting_system.joint_angular_kd_overrides == {}
     assert cfg.fruiting_system.joint_linear_kd_overrides == {}
     assert cfg.fruiting_system.joint_angular_kp_overrides == sb.joint_angular_kp_overrides
+    assert cfg.fruiting_system.joint_roll_kp_overrides == sb.joint_roll_kp_overrides
 
 
 def test_build_env_closure_forwards_per_env_grippers_and_rejects_scalar_conflict(
@@ -134,6 +135,17 @@ def test_parser_defaults_and_required_args(monkeypatch):
     assert args.max_overlay_candidates == 8
     assert args.fail_fast is False
     assert args.multi_structure_batch is True
+    assert args.controller_mode is None
+    assert args.dynamic_apple is True
+    assert parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/gt",
+            "--output",
+            "/tmp/rank",
+            "--no-dynamic-apple",
+        ]
+    ).dynamic_apple is False
     assert parser.parse_args(
         [
             "--dataset",
@@ -156,6 +168,27 @@ def test_parser_defaults_and_required_args(monkeypatch):
     assert "--num-structures" not in option_strings
     assert "--num-directions" not in option_strings
     assert "--log10-e-primary" not in option_strings
+
+
+def test_parser_accepts_controller_mode_vic_pose(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+
+    args = parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/ds",
+            "--output",
+            "/tmp/out",
+            "--controller-mode",
+            "vic_pose",
+        ]
+    )
+
+    assert args.controller_mode == "vic_pose"
 
 
 def test_parser_help_mentions_support_kp_not_primary_e(monkeypatch):
@@ -359,7 +392,7 @@ def test_run_without_gt_candidate_skips_insertion(monkeypatch):
     monkeypatch.setattr(
         module,
         "gt_support_kp_youngs_candidate_from_structure",
-        lambda *_args, **_kwargs: cmaes.SupportKpYoungsCandidate(1.0e8, 10**7.5, 1.0e7),
+        lambda *_args, **_kwargs: pytest.fail("GT lookup must be skipped"),
     )
     monkeypatch.setattr(
         module,
@@ -419,6 +452,131 @@ def test_run_without_gt_candidate_skips_insertion(monkeypatch):
     module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
 
     assert len(evaluator_calls[0]["candidates"]) == 1
+
+
+def test_run_vic_pose_dataset_uses_real_builder_and_skips_gt(
+    monkeypatch, tmp_path, capsys
+):
+    module = _load_module()
+    grid_candidate = cmaes.SupportKpYoungsCandidate(2.0e8, 10**7.5, 1.0e7)
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 1,
+            "ranges_path": "/tmp/ranges.json",
+            "topology_seed": 9,
+        }
+    }
+    dataset.structure_summaries.return_value = [{}]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+        "control_hz": 15.0,
+        "fruiting_base_pos": [1.0, 2.0, 3.0],
+        "initial_robot_joint_q": [0.1, 0.2],
+    }
+    evaluation = cmaes.YoungsModulusEvaluation(
+        structure_idx=0,
+        gt_candidate=None,
+        fixed_secondary_e_pa=None,
+        direction_indices=(0,),
+        scores=[],
+        replay_episodes=[],
+        applied_params=[],
+    )
+    real_builder = MagicMock()
+    real_builder_calls: list[dict] = []
+    real_config_calls: list[dict] = []
+    evaluator_calls: list[dict] = []
+
+    def fake_make_real_builder(**kwargs):
+        real_builder_calls.append(dict(kwargs))
+        return real_builder
+
+    def fake_real_config(**kwargs):
+        real_config_calls.append(dict(kwargs))
+        return SimpleNamespace(
+            controller=SimpleNamespace(mode=kwargs["controller_mode"], action_dim=19)
+        )
+
+    def fake_evaluate(**kwargs):
+        evaluator_calls.append(dict(kwargs))
+        return evaluation
+
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: {})
+    monkeypatch.setattr(
+        module,
+        "candidates_from_support_kp_grid_cli",
+        lambda **_kwargs: [grid_candidate],
+    )
+    monkeypatch.setattr(
+        module,
+        "gt_support_kp_youngs_candidate_from_structure",
+        lambda *_args, **_kwargs: pytest.fail("real replay must not load sim GT"),
+    )
+    monkeypatch.setattr(module, "make_real_replay_build_env_fn", fake_make_real_builder)
+    monkeypatch.setattr(module, "real_replay_sim_config", fake_real_config)
+    monkeypatch.setattr(module, "evaluate_youngs_modulus_candidates", fake_evaluate)
+
+    args = _task5_run_args(module, tmp_path / "rank", export_replays=False)
+    args.dataset = "/tmp/real"
+    args.controller_mode = None
+    args.include_gt_candidate = True
+
+    result = module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
+
+    assert len(real_builder_calls) == 1
+    assert real_builder_calls[0]["controller_mode"] == "vic_pose"
+    assert real_builder_calls[0]["control_hz"] == pytest.approx(15.0)
+    assert real_builder_calls[0]["fruiting_base_pos"] == pytest.approx((1.0, 2.0, 3.0))
+    assert real_builder_calls[0]["bootstrap_joint_q"] == pytest.approx((0.1, 0.2))
+    assert real_builder_calls[0]["dynamic_apple"] is True
+    assert len(real_config_calls) == 1
+    assert real_config_calls[0]["dynamic_apple"] is True
+    assert evaluator_calls[0]["build_env_fn"] is real_builder
+    assert evaluator_calls[0]["action_dim"] == 19
+    replay_config = evaluator_calls[0]["replay_sim_config"]
+    assert replay_config.controller.mode == "vic_pose"
+    assert replay_config.controller.action_dim == 19
+    assert "--include-gt-candidate ignored" in capsys.readouterr().err
+    assert result["ranking"]["structures"][0]["gt_support_kp"] is None
+    assert result["ranking"]["structures"][0]["gt_rank"] is None
+
+
+def test_run_rejects_multiple_structures_for_vic_pose(monkeypatch, tmp_path):
+    module = _load_module()
+    dataset = MagicMock()
+    dataset.manifest = {
+        "collection": {
+            "action_layout": "vic_pose_v1",
+            "action_dim": 19,
+            "control_hz": 15.0,
+            "num_directions": 1,
+            "ranges_path": "/tmp/ranges.json",
+        }
+    }
+    dataset.structure_summaries.return_value = [{}, {}]
+    dataset.load_episode_metadata.return_value = {
+        "action_layout": "vic_pose_v1",
+        "action_dim": 19,
+    }
+    monkeypatch.setattr(module, "BatchedSysIdDataset", lambda _path: dataset)
+    monkeypatch.setattr(module, "load_ranges", lambda _path: {})
+
+    args = _task5_run_args(module, tmp_path / "rank", export_replays=False)
+    args.dataset = "/tmp/real"
+    args.structure_indices = (0, 1)
+    args.multi_structure_batch = True
+    args.controller_mode = "vic"
+
+    with pytest.raises(
+        SystemExit, match="one converted episode / one structure per run"
+    ):
+        module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
 
 
 def test_run_records_structure_errors_unless_fail_fast(monkeypatch):
@@ -547,7 +705,7 @@ def test_main_exits_nonzero_when_all_structures_fail(monkeypatch):
             viewer="null",
         )
 
-    def fake_run(_args, _parser, *, viewer):
+    def fake_run(_args, _parser, *, viewer, recorder=None):
         return {
             "structure_results": [
                 {"structure_idx": 0, "evaluation": None, "error": "structure 0 failed"},
@@ -899,6 +1057,37 @@ def test_structure_result_serializes_non_finite_floats_as_null():
     assert row["candidates"][0]["log10_vector"][:2] == [None, None]
     assert row["winner"]["log10_error"]["support_kp"] is None
     assert row["winner"]["relative_error"]["support_kp"] is None
+
+
+def test_structure_result_serializes_missing_gt_candidate_as_null():
+    """Real vic_pose replay has no sim-oracle GT; ranking JSON must still serialize."""
+    module = _load_module()
+    evaluation = _evaluation_with_scores()
+    evaluation.gt_candidate = None
+    evaluation.scores = [
+        dataclasses.replace(score, is_gt=False) for score in evaluation.scores
+    ]
+
+    row = module._structure_result_to_json(evaluation)
+    encoded = json.dumps(row, allow_nan=False)
+
+    assert encoded
+    assert row["gt_support_kp"] is None
+    assert row["gt_youngs_modulus_pa"] == {"spur": None, "stem": None}
+    assert row["gt_log10_vector"] == [None, None, None]
+    assert row["gt_rank"] is None
+    assert row["winner"]["candidate_index"] == 0
+    assert row["winner"]["log10_error"] == {
+        "support_kp": None,
+        "spur": None,
+        "stem": None,
+    }
+    assert row["winner"]["relative_error"] == {
+        "support_kp": None,
+        "spur": None,
+        "stem": None,
+    }
+    assert all(not candidate["is_gt"] for candidate in row["candidates"])
 
 
 def test_aggregate_ranking_report_summaries_and_skips():
@@ -1349,7 +1538,6 @@ def test_run_fused_default_preserves_requested_order_and_rebinds_each_chunk_mode
                 build_seconds=0.1,
                 replay_seconds=0.2,
             ),
-            retried_structures=(),
             prepared_structures=2,
             scoring_seconds=0.3,
             total_seconds=0.6,
@@ -1371,3 +1559,103 @@ def test_run_fused_default_preserves_requested_order_and_rebinds_each_chunk_mode
         call(model_0),
         call(model_1),
     ]
+
+
+def test_parser_accepts_record_video(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    args = parser.parse_args(
+        [
+            "--dataset",
+            "/tmp/ds",
+            "--output",
+            "/tmp/out",
+            "--record-video",
+            "/tmp/grid.mp4",
+        ]
+    )
+    assert args.record_video == Path("/tmp/grid.mp4")
+    default = parser.parse_args(["--dataset", "/tmp/ds", "--output", "/tmp/out"])
+    assert default.record_video is None
+
+
+def test_require_gl_frame_capture_rejects_null_viewer():
+    module = _load_module()
+    with pytest.raises(SystemExit, match="--viewer gl"):
+        module.require_gl_frame_capture(SimpleNamespace())
+
+
+def test_make_grid_on_step_captures_video_after_render():
+    module = _load_module()
+    order: list[str] = []
+
+    class Viewer:
+        def set_model(self, model):
+            order.append("set_model")
+
+        def set_world_offsets(self, spacing):
+            order.append(("offsets", spacing))
+
+        def hide_loading_splash(self):
+            order.append("splash")
+
+        def begin_frame(self, t):
+            order.append("begin")
+
+        def log_state(self, state):
+            order.append("log")
+
+        def log_contacts(self, contacts, state):
+            order.append("contacts")
+
+        def end_frame(self):
+            order.append("end")
+
+        def get_frame(self):
+            order.append("get_frame")
+            return object()
+
+        def is_running(self):
+            return True
+
+    class Recorder:
+        def __init__(self):
+            self.fps = None
+            self.captures = 0
+
+        def set_fps(self, fps: float) -> None:
+            self.fps = float(fps)
+
+        def capture(self, viewer) -> None:
+            order.append("capture")
+            viewer.get_frame()
+            self.captures += 1
+
+    cable = SimpleNamespace(model="MODEL", state_0="STATE")
+    scene = SimpleNamespace(cable=cable, last_vbd_contacts="CONTACTS")
+    sim = SimpleNamespace(
+        scene=scene,
+        layout=None,
+        config=SimpleNamespace(
+            runtime=SimpleNamespace(control_hz=20.0, env_spacing=(2.0, 2.0, 2.0))
+        ),
+        obs_bufs=None,
+    )
+    env = SimpleNamespace(_sim=sim, num_envs=2, _last_obs=None)
+    recorder = Recorder()
+    on_step = module.make_grid_on_step(
+        Viewer(),
+        control_hz=30.0,
+        graphical=True,
+        use_viewer=True,
+        show_pull_direction=False,
+        recorder=recorder,
+    )
+    assert on_step(frame_idx=0, env=env) is True
+    assert recorder.captures == 1
+    assert recorder.fps == pytest.approx(20.0)
+    assert "end" in order
+    assert order.index("end") < order.index("capture")

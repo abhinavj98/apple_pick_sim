@@ -486,7 +486,10 @@ def "fr3" (
     )
     {
         bool physics:kinematicEnabled = 0
-        float physics:mass = 1.5
+        point3f physics:centerOfMass = (0, 0, -0.077)
+        float3 physics:diagonalInertia = (0.0021521919406950474, 0.0021521919406950474, 0.0011912500485777855)
+        quatf physics:principalAxes = (1, 0, 0, 0)
+        float physics:mass = 1.1
         bool physics:rigidBodyEnabled = 1
         rel physics:simulationOwner
         quatd xformOp:orient = (1, 0, 0, 0)

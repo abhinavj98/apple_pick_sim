@@ -270,6 +270,7 @@ class BatchedObsBuffers:
     woody_joint_indices: wp.array
 
     apple_pos: wp.array
+    apple_pose: wp.array
     proxy_pos: wp.array
     tcp_pose: wp.array
     tcp_velocity: wp.array
@@ -315,6 +316,7 @@ def make_batched_obs_buffers(
         tcp_indices=_upload_indices(list(layout.tcp_body_indices), device),
         woody_joint_indices=_upload_indices(woody_joint_idx, device),
         apple_pos=wp.zeros((num_envs, 3), dtype=wp.float32, device=device),
+        apple_pose=wp.zeros((num_envs, 7), dtype=wp.float32, device=device),
         proxy_pos=wp.zeros((num_envs, 3), dtype=wp.float32, device=device),
         tcp_pose=wp.zeros((num_envs, 7), dtype=wp.float32, device=device),
         tcp_velocity=wp.zeros((num_envs, 6), dtype=wp.float32, device=device),
@@ -346,6 +348,7 @@ def gather_batched_obs(
     n_j = bufs.num_envs * bufs.num_junctions
 
     launch_gather_positions(cable_bq, bufs.apple_indices, bufs.apple_pos)
+    launch_gather_transforms(cable_bq, bufs.apple_indices, bufs.apple_pose)
     launch_gather_positions(cable_bq, bufs.proxy_indices, bufs.proxy_pos)
 
     robot_state = getattr(scene, "robot_state_0", None)

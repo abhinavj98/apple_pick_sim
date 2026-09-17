@@ -41,6 +41,18 @@ def test_missing_npz_raises(tmp_path: Path):
         load_npz_for_direction(tmp_path, structure_idx=0, direction_idx=0)
 
 
+def test_legacy_npz_without_avbd_keys_still_loads(tmp_path: Path):
+    """Optional AVBD keys absent from older collect npz must not break load."""
+    arrays = {key: np.arange(i + 1, dtype=np.float32) for i, key in enumerate(SNAPSHOT_ARRAY_KEYS)}
+    path = initial_state_path(tmp_path, 0, 1)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, origin_frame=np.asarray(WORLD_FRAME), **arrays)
+    loaded = load_npz_for_direction(tmp_path, structure_idx=0, direction_idx=1)
+    assert "joint_lambda_lin" not in loaded
+    for key in SNAPSHOT_ARRAY_KEYS:
+        np.testing.assert_array_equal(loaded[key], arrays[key])
+
+
 def test_missing_origin_frame_marker_raises(tmp_path: Path):
     path = initial_state_path(tmp_path, 0, 0)
     path.parent.mkdir(parents=True, exist_ok=True)

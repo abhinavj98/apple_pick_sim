@@ -282,9 +282,16 @@ def _compare_to_dataset(
         recorded["woody_part_start_pos"], frame_idx, junction_names
     )
     live_woody_end = np.asarray(obs["woody_end"], dtype=np.float32)
-    rec_woody_end = stack_woody_pos_frame(
-        recorded["woody_part_end_pos"], frame_idx, junction_names
-    )
+    rec_woody_end_by_name = recorded.get("woody_part_end_pos")
+    if isinstance(rec_woody_end_by_name, dict) and all(
+        name in rec_woody_end_by_name for name in junction_names
+    ):
+        rec_woody_end = stack_woody_pos_frame(
+            rec_woody_end_by_name, frame_idx, junction_names
+        )
+    else:
+        # Bags no longer persist woody ends; skip the end-vs-live comparison.
+        rec_woody_end = live_woody_end
     live_apple = np.asarray(obs["apple_pos"], dtype=np.float32)
     rec_apple = recorded["apple_pos"][frame_idx]
 

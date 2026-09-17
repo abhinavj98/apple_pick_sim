@@ -6,8 +6,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+import gc
 
 import numpy as np
+import warp as wp
 
 try:
     import gymnasium as gym
@@ -237,5 +239,28 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
             terminated = terminated.unsqueeze(-1)
         return obs, reward, terminated, truncated, info
 
+    def _release_observation_aliases(self) -> None:
+        """Drop torch views that alias Warp/CUDA buffers owned by ``_sim``.
+
+        ``wp.to_torch`` shares device storage. CMA rebuilds a fused world every
+        generation; retaining those tensors across ``close()`` pins or races the
+        buffers being freed and contributes to host-heap corruption (SIGSEGV).
+
+        Subclasses holding aliases under other attributes must extend this.
+        """
+        self._last_obs = None
+
     def close(self) -> None:
+        # Drain queued Warp/CUDA work before dropping ``_sim``. Freeing arrays
+        # while kernels still run (CUDA mempool enabled) poisons the host heap
+        # and shows up later as ``code``/``function`` AttributeErrors or SIGSEGV
+        # during CMA rebuilds. Do not call wp.clear_kernel_cache() here: it
+        # forces full recompile and still does not unregister Newton contact
+        # @wp.func globals; CMA uses process-isolated evaluation waves for that
+        # lifecycle instead.
+        wp.synchronize()
+        release = getattr(self, "_release_observation_aliases", None)
+        if callable(release):
+            release()
         self._sim = None  # type: ignore[assignment]
+        gc.collect()

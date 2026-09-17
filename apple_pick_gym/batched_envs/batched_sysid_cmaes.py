@@ -7,12 +7,17 @@ generation waves, and fit reporting for the separate CMA-ES entry point.
 from __future__ import annotations
 
 import math
+import os
+import pickle
 import time
+import traceback
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import product
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+import cloudpickle
 import cma
 import numpy as np
 
@@ -23,8 +28,11 @@ from apple_pick_sim.fruiting_system import params as fs
 from apple_pick_sim.fruiting_system.params import FruitingSystemParams
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_from_episode_metadata,
+    gripper_proxy_for_real_batched_replay,
     true_params_for_structure,
 )
+from apple_pick_sim.system_id.holdout_gates import FORCE_FLOOR_N
+from apple_pick_sim.system_id.mmd_features import mean_hold_block_errors
 from apple_pick_sim.system_id.wasserstein import (
     WassersteinScoringContext,
     prepare_gt_wasserstein_scoring_context,
@@ -33,6 +41,8 @@ from apple_pick_sim.system_id.wasserstein import (
 from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     UNSTABLE_DISQUALIFY_THRESHOLD,
     direction_episodes_from_collectors,
+    list_usable_direction_indices,
+    load_episode_metadata_for_directions,
     load_recorded_episodes_for_structure,
     replay_candidates_for_structure,
     replay_instability_fraction_all_frames,
@@ -47,9 +57,15 @@ from apple_pick_gym.batched_envs.batched_sysid_multi_replay import (
     build_replay_candidate_blocks,
     replay_multi_structure_candidate_blocks,
 )
+from apple_pick_gym.batched_envs.real_batched_replay_build import (
+    dataset_declares_vic_pose,
+)
 
 if TYPE_CHECKING:
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+
+CMA_OPTIMIZER_CHECKPOINT_FILENAME = "cma_optimizer_checkpoint.pkl"
+CMA_CHECKPOINT_VERSION = 1
 
 DEFAULT_INITIAL_SIGMA_LOG10 = 1.0
 _UINT32_MOD = 2**32
@@ -67,8 +83,7 @@ class YoungsModulusCandidate(NamedTuple):
 
         Only ``primary``, ``spur``, and ``stem`` are updated when present on
         ``base``. ``secondary`` (and any other fields) are left unchanged.
-        Geometry and ``damping_ratio`` are frozen; axial stretch overrides on
-        the base rod are preserved when they differ from beam theory.
+        Geometry and ``damping_ratio`` are frozen; axial ``youngs_modulus_pa`` unchanged.
         """
         out = base
         for segment, value in (
@@ -77,7 +92,7 @@ class YoungsModulusCandidate(NamedTuple):
             ("stem", self.stem),
         ):
             if getattr(base, segment) is not None:
-                out = fs.set_rod_youngs_modulus(out, segment, float(value))
+                out = fs.set_rod_flexural_modulus(out, segment, float(value))
         return out
 
     def short_label(self) -> str:
@@ -124,9 +139,9 @@ def log10_e_from_params(params: FruitingSystemParams) -> tuple[float, float, flo
             "params must include primary, spur, and stem rods for log10_e_from_params"
         )
     return (
-        math.log10(float(params.primary.youngs_modulus_pa)),
-        math.log10(float(params.spur.youngs_modulus_pa)),
-        math.log10(float(params.stem.youngs_modulus_pa)),
+        math.log10(float(params.primary.flexural_modulus_pa)),
+        math.log10(float(params.spur.flexural_modulus_pa)),
+        math.log10(float(params.stem.flexural_modulus_pa)),
     )
 
 
@@ -139,9 +154,9 @@ def youngs_modulus_candidate_from_params(
             "params must include primary, spur, and stem rods"
         )
     return YoungsModulusCandidate(
-        primary=float(params.primary.youngs_modulus_pa),
-        spur=float(params.spur.youngs_modulus_pa),
-        stem=float(params.stem.youngs_modulus_pa),
+        primary=float(params.primary.flexural_modulus_pa),
+        spur=float(params.spur.flexural_modulus_pa),
+        stem=float(params.stem.flexural_modulus_pa),
     )
 
 
@@ -154,11 +169,18 @@ def _candidate_stiffness_diagnostics(candidate: Any) -> dict[str, float]:
     """
     support_kp = getattr(candidate, "support_kp", None)
     if support_kp is not None:
-        return {
+        diag = {
             "support_kp": float(support_kp),
             "spur_e_pa": float(candidate.spur),
             "stem_e_pa": float(candidate.stem),
         }
+        spur_youngs = getattr(candidate, "spur_youngs", None)
+        stem_youngs = getattr(candidate, "stem_youngs", None)
+        if spur_youngs is not None:
+            diag["spur_youngs_e_pa"] = float(spur_youngs)
+        if stem_youngs is not None:
+            diag["stem_youngs_e_pa"] = float(stem_youngs)
+        return diag
     return {
         "primary_e_pa": float(candidate.primary),
         "spur_e_pa": float(candidate.spur),
@@ -200,17 +222,33 @@ def maybe_include_gt_candidate(
 
 
 class SupportKpYoungsCandidate(NamedTuple):
-    """One sys-ID candidate: support joint k_p plus spur/stem Young's modulus (Pa)."""
+    """One sys-ID candidate: support k_p plus spur/stem flexural and axial moduli (Pa).
+
+    Length-9 CMA also carries spur/stem rod ``damping_ratio`` and support-joint ζ
+    as linear coordinates in ``[0, 1]``. Length-10 CMA additionally carries the
+    primary rod's absolute ``density_kg_m3`` (log10), so the primary's self-weight
+    is searched instead of assumed from a catalog default.
+    """
 
     support_kp: float
     spur: float
     stem: float
+    spur_youngs: float | None = None
+    stem_youngs: float | None = None
+    support_roll_kp: float | None = None
+    spur_damping_ratio: float | None = None
+    stem_damping_ratio: float | None = None
+    support_joint_zeta: float | None = None
+    primary_density: float | None = None
 
     def apply_to(self, base: FruitingSystemParams) -> FruitingSystemParams:
-        """Return a copy with spur/stem ``E`` re-derived into VBD knobs.
+        """Return a copy with spur/stem flexural (and optional axial) moduli re-derived.
 
-        Primary (and secondary) material is left unchanged. ``support_kp`` is
-        not applied here — fused replay patches support joints per env.
+        Primary's density is applied when ``primary_density`` is set (its modulus
+        is otherwise left unchanged, since primary bending is treated as
+        negligible). Secondary is left unchanged. ``support_kp``,
+        ``support_roll_kp``, and ``support_joint_zeta`` are not applied here —
+        fused replay patches support joints per env.
         """
         out = base
         for segment, value in (
@@ -218,16 +256,164 @@ class SupportKpYoungsCandidate(NamedTuple):
             ("stem", self.stem),
         ):
             if getattr(base, segment) is not None:
-                out = fs.set_rod_youngs_modulus(out, segment, float(value))
+                out = fs.set_rod_flexural_modulus(out, segment, float(value))
+        if self.spur_youngs is not None and base.spur is not None:
+            out = fs.set_rod_youngs_modulus(out, "spur", float(self.spur_youngs))
+        if self.stem_youngs is not None and base.stem is not None:
+            out = fs.set_rod_youngs_modulus(out, "stem", float(self.stem_youngs))
+        if self.spur_damping_ratio is not None and base.spur is not None:
+            out = fs.set_rod_damping_ratio(out, "spur", float(self.spur_damping_ratio))
+        if self.stem_damping_ratio is not None and base.stem is not None:
+            out = fs.set_rod_damping_ratio(out, "stem", float(self.stem_damping_ratio))
+        if self.primary_density is not None and base.primary is not None:
+            out = fs.set_rod_density(out, "primary", float(self.primary_density))
         return out
 
     def short_label(self) -> str:
         """Compact legend label."""
-        return (
-            f"log10=({math.log10(self.support_kp):.2f},"
-            f"{math.log10(self.spur):.2f},"
-            f"{math.log10(self.stem):.2f})"
+        parts = [
+            f"{math.log10(self.support_kp):.2f}",
+            f"{math.log10(self.spur):.2f}",
+            f"{math.log10(self.stem):.2f}",
+        ]
+        if self.support_roll_kp is not None:
+            parts.append(f"{math.log10(self.support_roll_kp):.2f}")
+        if self.spur_damping_ratio is not None:
+            parts.append(f"ζs={float(self.spur_damping_ratio):.2f}")
+        if self.stem_damping_ratio is not None:
+            parts.append(f"ζt={float(self.stem_damping_ratio):.2f}")
+        if self.support_joint_zeta is not None:
+            parts.append(f"ζj={float(self.support_joint_zeta):.2f}")
+        if self.primary_density is not None:
+            parts.append(f"ρp={float(self.primary_density):.1f}")
+        return f"log10=({','.join(parts)})"
+
+
+def _validate_unit_interval_zeta(name: str, value: float) -> float:
+    v = float(value)
+    if not math.isfinite(v) or v < 0.0 or v > 1.0:
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    return v
+
+
+def candidates_from_log10_vector(
+    log10_vector: Sequence[float],
+) -> SupportKpYoungsCandidate:
+    """Map phenotype vector to a physical candidate.
+
+    Length 3: ``(k_p, E_flex_spur, E_flex_stem)`` with axial moduli unchanged.
+    Length 5: adds ``(E_youngs_spur, E_youngs_stem)``.
+    Length 6: adds ``support_roll_kp`` (N·m/rad) after axial moduli (log10).
+    Length 9: adds linear ``spur_damping_ratio``, ``stem_damping_ratio``,
+    ``support_joint_zeta`` in ``[0, 1]`` after roll (dims 0–5 remain log10).
+    Length 10: adds ``primary_density`` (kg/m³, log10) after the damping ratios.
+    """
+    n = len(log10_vector)
+    if n not in (3, 5, 6, 9, 10):
+        raise ValueError(
+            f"log10_vector must have length 3, 5, 6, 9, or 10, got {n}"
         )
+    spur_youngs = None
+    stem_youngs = None
+    support_roll_kp = None
+    spur_damping_ratio = None
+    stem_damping_ratio = None
+    support_joint_zeta = None
+    primary_density = None
+    if n >= 5:
+        spur_youngs = 10.0 ** float(log10_vector[3])
+        stem_youngs = 10.0 ** float(log10_vector[4])
+    if n >= 6:
+        support_roll_kp = 10.0 ** float(log10_vector[5])
+    if n >= 9:
+        spur_damping_ratio = _validate_unit_interval_zeta(
+            "spur_damping_ratio", log10_vector[6]
+        )
+        stem_damping_ratio = _validate_unit_interval_zeta(
+            "stem_damping_ratio", log10_vector[7]
+        )
+        support_joint_zeta = _validate_unit_interval_zeta(
+            "support_joint_zeta", log10_vector[8]
+        )
+    if n == 10:
+        primary_density = 10.0 ** float(log10_vector[9])
+    return SupportKpYoungsCandidate(
+        support_kp=10.0 ** float(log10_vector[0]),
+        spur=10.0 ** float(log10_vector[1]),
+        stem=10.0 ** float(log10_vector[2]),
+        spur_youngs=spur_youngs,
+        stem_youngs=stem_youngs,
+        support_roll_kp=support_roll_kp,
+        spur_damping_ratio=spur_damping_ratio,
+        stem_damping_ratio=stem_damping_ratio,
+        support_joint_zeta=support_joint_zeta,
+        primary_density=primary_density,
+    )
+
+
+def log10_vector_from_candidate(
+    candidate: SupportKpYoungsCandidate,
+) -> tuple[float, ...]:
+    """Extract phenotype; 5/6/9/10-tuple when axial/roll/damping/density set."""
+    base = (
+        math.log10(float(candidate.support_kp)),
+        math.log10(float(candidate.spur)),
+        math.log10(float(candidate.stem)),
+    )
+    has_damping = (
+        candidate.spur_damping_ratio is not None
+        or candidate.stem_damping_ratio is not None
+        or candidate.support_joint_zeta is not None
+    )
+    has_density = candidate.primary_density is not None
+    if candidate.spur_youngs is None and candidate.stem_youngs is None:
+        if candidate.support_roll_kp is not None or has_damping or has_density:
+            raise ValueError(
+                "support_roll_kp / damping ratios / primary_density require "
+                "axial moduli on SupportKpYoungsCandidate"
+            )
+        return base
+    if candidate.spur_youngs is None or candidate.stem_youngs is None:
+        raise ValueError("partial axial moduli on SupportKpYoungsCandidate")
+    axial = (
+        *base,
+        math.log10(float(candidate.spur_youngs)),
+        math.log10(float(candidate.stem_youngs)),
+    )
+    if candidate.support_roll_kp is None:
+        if has_damping or has_density:
+            raise ValueError(
+                "damping ratios / primary_density require support_roll_kp on "
+                "SupportKpYoungsCandidate"
+            )
+        return axial
+    roll = (*axial, math.log10(float(candidate.support_roll_kp)))
+    if not has_damping:
+        if has_density:
+            raise ValueError(
+                "primary_density requires damping ratios on SupportKpYoungsCandidate"
+            )
+        return roll
+    if (
+        candidate.spur_damping_ratio is None
+        or candidate.stem_damping_ratio is None
+        or candidate.support_joint_zeta is None
+    ):
+        raise ValueError("partial damping ratios on SupportKpYoungsCandidate")
+    damping = (
+        *roll,
+        float(candidate.spur_damping_ratio),
+        float(candidate.stem_damping_ratio),
+        float(candidate.support_joint_zeta),
+    )
+    if not has_density:
+        return damping
+    return (*damping, math.log10(float(candidate.primary_density)))
+
+
+DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT = math.log10(0.75)
+DEFAULT_DAMPING_RATIO_MIDPOINT = 0.5
+DEFAULT_PRIMARY_DENSITY_LOG10_MIDPOINT = math.log10(750.0)
 
 
 def iter_support_kp_youngs_candidates(
@@ -243,32 +429,6 @@ def iter_support_kp_youngs_candidates(
             spur=float(spur),
             stem=float(stem),
         )
-
-
-def candidates_from_log10_vector(
-    log10_vector: Sequence[float],
-) -> SupportKpYoungsCandidate:
-    """Map ``log10([k_p_support, E_spur, E_stem])`` to a physical candidate."""
-    if len(log10_vector) != 3:
-        raise ValueError(
-            f"log10_vector must have length 3, got {len(log10_vector)}"
-        )
-    return SupportKpYoungsCandidate(
-        support_kp=10.0 ** float(log10_vector[0]),
-        spur=10.0 ** float(log10_vector[1]),
-        stem=10.0 ** float(log10_vector[2]),
-    )
-
-
-def log10_vector_from_candidate(
-    candidate: SupportKpYoungsCandidate,
-) -> tuple[float, float, float]:
-    """Extract ``log10([k_p_support, E_spur, E_stem])``."""
-    return (
-        math.log10(float(candidate.support_kp)),
-        math.log10(float(candidate.spur)),
-        math.log10(float(candidate.stem)),
-    )
 
 
 def gt_support_kp_from_dataset(dataset: BatchedSysIdDataset) -> float:
@@ -317,8 +477,10 @@ def gt_support_kp_youngs_candidate_from_structure(
         )
     return SupportKpYoungsCandidate(
         support_kp=gt_support_kp_from_dataset(dataset),
-        spur=float(params.spur.youngs_modulus_pa),
-        stem=float(params.stem.youngs_modulus_pa),
+        spur=float(params.spur.flexural_modulus_pa),
+        stem=float(params.stem.flexural_modulus_pa),
+        spur_youngs=float(params.spur.youngs_modulus_pa),
+        stem_youngs=float(params.stem.youngs_modulus_pa),
     )
 
 
@@ -381,19 +543,19 @@ def _require_positive_finite_number(value: Any, *, field: str) -> float:
 def _segment_youngs_bounds(ranges: Mapping[str, Any], segment: str) -> SegmentYoungsModulusBounds:
     segment_payload = ranges.get(segment)
     if not isinstance(segment_payload, Mapping):
-        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
-    youngs = segment_payload.get("youngs_modulus_pa")
+        raise ValueError(f"{segment} flexural_modulus_pa bounds are missing")
+    youngs = segment_payload.get("flexural_modulus_pa")
     if not isinstance(youngs, Mapping):
-        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+        raise ValueError(f"{segment} flexural_modulus_pa bounds are missing")
     if "min" not in youngs or "max" not in youngs:
-        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+        raise ValueError(f"{segment} flexural_modulus_pa bounds are missing")
     if youngs.get("min") is None or youngs.get("max") is None:
-        raise ValueError(f"{segment} youngs_modulus_pa bounds are missing")
+        raise ValueError(f"{segment} flexural_modulus_pa bounds are missing")
     physical_min = _require_positive_finite_number(
-        youngs["min"], field=f"{segment}.youngs_modulus_pa.min"
+        youngs["min"], field=f"{segment}.flexural_modulus_pa.min"
     )
     physical_max = _require_positive_finite_number(
-        youngs["max"], field=f"{segment}.youngs_modulus_pa.max"
+        youngs["max"], field=f"{segment}.flexural_modulus_pa.max"
     )
     if physical_min >= physical_max:
         raise ValueError(
@@ -479,41 +641,133 @@ def validate_initial_sigma_log10(sigma: float) -> float:
     return value
 
 
+def validate_max_sigma_log10(sigma: float | None) -> float | None:
+    """Allow None (uncapped) or a positive finite log10-sigma ceiling."""
+    if sigma is None:
+        return None
+    if isinstance(sigma, bool) or not isinstance(sigma, (int, float)):
+        raise ValueError("max sigma must be numeric or None")
+    value = float(sigma)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("max sigma must be positive and finite")
+    return value
+
+
+def clamp_optimizer_sigma(optimizer: Any, *, max_sigma_log10: float | None) -> None:
+    """Cap pycma ``sigma`` after ``tell``; ``maxstd`` alone does not cap ``sigma``."""
+    cap = validate_max_sigma_log10(max_sigma_log10)
+    if cap is None:
+        return
+    current = float(getattr(optimizer, "sigma", float("nan")))
+    if math.isfinite(current) and current > cap:
+        optimizer.sigma = cap
+
+
 def resolve_initial_mean_log10(
     spec: Any,
     bounds: YoungsModulusCmaBounds,
-) -> tuple[float, float, float]:
-    """Resolve CMA start mean in log10-E coordinates.
+    *,
+    phenotype_dim: int = 3,
+) -> tuple[float, ...]:
+    """Resolve CMA start mean in log10 coordinates.
 
-    ``\"bounds_midpoint\"`` (or ``None``) uses fixture midpoints. Otherwise
-    ``spec`` must be a length-3 finite numeric sequence (fixture box is not a
-    search constraint unless ``search_bounds_log10`` is configured).
+    ``\"bounds_midpoint\"`` (or ``None``) uses fixture midpoints (3D). Otherwise
+    ``spec`` must be a length-``phenotype_dim`` finite numeric sequence.
     """
     if spec is None or spec == "bounds_midpoint":
-        return bounds.log10_midpoint
+        mid = bounds.log10_midpoint
+        if phenotype_dim == 3:
+            return mid
+        if phenotype_dim == 5:
+            return (mid[0], mid[1], mid[2], mid[1], mid[2])
+        if phenotype_dim == 4:
+            return (mid[1], mid[2], mid[1], mid[2])
+        if phenotype_dim == 6:
+            return (
+                mid[0],
+                mid[1],
+                mid[2],
+                mid[1],
+                mid[2],
+                DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT,
+            )
+        if phenotype_dim == 9:
+            return (
+                mid[0],
+                mid[1],
+                mid[2],
+                mid[1],
+                mid[2],
+                DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT,
+                DEFAULT_DAMPING_RATIO_MIDPOINT,
+                DEFAULT_DAMPING_RATIO_MIDPOINT,
+                DEFAULT_DAMPING_RATIO_MIDPOINT,
+            )
+        if phenotype_dim == 10:
+            return (
+                mid[0],
+                mid[1],
+                mid[2],
+                mid[1],
+                mid[2],
+                DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT,
+                DEFAULT_DAMPING_RATIO_MIDPOINT,
+                DEFAULT_DAMPING_RATIO_MIDPOINT,
+                DEFAULT_DAMPING_RATIO_MIDPOINT,
+                DEFAULT_PRIMARY_DENSITY_LOG10_MIDPOINT,
+            )
+        raise ValueError(
+            "bounds_midpoint initial mean supports phenotype_dim 3, 4, 5, 6, 9, or 10, "
+            f"got {phenotype_dim}"
+        )
     try:
         values = tuple(float(v) for v in spec)
     except TypeError as exc:
         raise ValueError(
-            "initial_mean_log10 must be 'bounds_midpoint' or a length-3 sequence"
+            f"initial_mean_log10 must be 'bounds_midpoint' or a length-{phenotype_dim} sequence"
         ) from exc
-    if len(values) != 3:
+    if len(values) != phenotype_dim:
         raise ValueError(
-            f"initial_mean_log10 must have length 3, got {len(values)}"
+            f"initial_mean_log10 must have length {phenotype_dim}, got {len(values)}"
         )
     if not all(math.isfinite(v) for v in values):
         raise ValueError("initial_mean_log10 must be finite")
-    return values  # type: ignore[return-value]
+    return values
+
+
+_DEGENERATE_BOUND_EPS = 1e-9
+
+
+def _expand_degenerate_search_bounds_log10(
+    lower: Sequence[float],
+    upper: Sequence[float],
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Allow lower==upper (fixed phenotype); pycma requires strict lower < upper."""
+    lo_list = [float(v) for v in lower]
+    hi_list = [float(v) for v in upper]
+    if len(lo_list) != len(hi_list):
+        raise ValueError("search bounds lower/upper length mismatch")
+    for i, (lo, hi) in enumerate(zip(lo_list, hi_list, strict=True)):
+        if lo >= hi:
+            if math.isclose(lo, hi, rel_tol=0.0, abs_tol=1e-12):
+                mid = lo
+                lo_list[i] = mid - _DEGENERATE_BOUND_EPS
+                hi_list[i] = mid + _DEGENERATE_BOUND_EPS
+            else:
+                raise ValueError("search_bounds_log10 requires lower < upper per axis")
+    return tuple(lo_list), tuple(hi_list)
 
 
 def normalize_search_bounds_log10(
     spec: Any,
-) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+) -> tuple[tuple[float, ...], tuple[float, ...]] | None:
     """Parse CMA search box; ``None`` means unbounded (no pycma clipping).
 
     Accepted forms:
     - ``None`` → unbounded
-    - ``{"lower": [p,s,t], "upper": [p,s,t]}`` in log10-E
+    - ``{"lower": [...], "upper": [...]}`` in log10 (length 3, 4, 5, 6, 9, or 10;
+      length-9/10 coords 6-8 are linear ζ in ``[0, 1]``; length-10's coord 9
+      (primary density) is log10 again)
     """
     if spec is None:
         return None
@@ -528,31 +782,49 @@ def normalize_search_bounds_log10(
         upper = tuple(float(v) for v in spec["upper"])
     except TypeError as exc:
         raise ValueError(
-            "search_bounds_log10 lower/upper must be length-3 sequences"
+            "search_bounds_log10 lower/upper must be length-3, 4, 5, 6, 9, or 10 "
+            "sequences"
         ) from exc
-    if len(lower) != 3 or len(upper) != 3:
-        raise ValueError("search_bounds_log10 lower/upper must have length 3")
+    if len(lower) not in (3, 4, 5, 6, 9, 10) or len(upper) != len(lower):
+        raise ValueError(
+            "search_bounds_log10 lower/upper must have length 3, 4, 5, 6, 9, or 10"
+        )
     if not all(math.isfinite(v) for v in (*lower, *upper)):
         raise ValueError("search_bounds_log10 lower/upper must be finite")
-    for lo, hi in zip(lower, upper, strict=True):
-        if lo >= hi:
-            raise ValueError("search_bounds_log10 requires lower < upper per axis")
-    return lower, upper  # type: ignore[return-value]
+    return _expand_degenerate_search_bounds_log10(lower, upper)
 
 
 def search_bounds_report_payload(
-    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None,
 ) -> dict[str, Any] | None:
-    """JSON fragment for active CMA search bounds; ``None`` when unbounded."""
+    """JSON fragment for active CMA search bounds; ``None`` when unbounded.
+
+    For length-9/10 boxes, coords 6-8 are linear ζ (not log10); physical
+    min/max for those slots are identity, not ``10**x``. Length-10's coord 9
+    (primary density) is log10 again, so the linear slots are not simply "the
+    last N" once density is present — they're always exactly indices 6-8.
+    """
     if search_bounds_log10 is None:
         return None
     lower, upper = search_bounds_log10
+    n = len(lower)
+    linear_indices = frozenset((6, 7, 8)) if n in (9, 10) else frozenset()
+
+    def _physical(values: tuple[float, ...]) -> list[float]:
+        out: list[float] = []
+        for i, v in enumerate(values):
+            if i in linear_indices:
+                out.append(float(v))
+            else:
+                out.append(float(10.0**v))
+        return out
+
     return {
         "log10_lower": list(lower),
         "log10_upper": list(upper),
-        "physical_min_pa": [float(10.0**v) for v in lower],
-        "physical_max_pa": [float(10.0**v) for v in upper],
+        "physical_min_pa": _physical(lower),
+        "physical_max_pa": _physical(upper),
     }
 
 
@@ -598,12 +870,33 @@ def make_pycma_randn(generator: np.random.Generator) -> Callable[..., Any]:
     return randn
 
 
+def validate_cma_stds(
+    stds: Sequence[float],
+    *,
+    phenotype_dim: int,
+) -> tuple[float, ...]:
+    """Validate per-coordinate CMA_stds (positive finite, matching phenotype dim)."""
+    try:
+        values = tuple(float(v) for v in stds)
+    except TypeError as exc:
+        raise ValueError("cma_stds must be a numeric sequence") from exc
+    if len(values) != int(phenotype_dim):
+        raise ValueError(
+            f"cma_stds must have length {phenotype_dim}, got {len(values)}"
+        )
+    if not all(math.isfinite(v) and v > 0.0 for v in values):
+        raise ValueError("cma_stds entries must be finite and > 0")
+    return values
+
+
 def build_pycma_options(
     *,
     randn: Callable[..., Any],
     population_size: int | None = None,
-    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None = None,
+    max_sigma_log10: float | None = None,
+    cma_stds: Sequence[float] | None = None,
 ) -> dict[str, Any]:
     """Build pycma options; omit bounds when ``search_bounds_log10`` is None."""
     options: dict[str, Any] = {
@@ -616,6 +909,18 @@ def build_pycma_options(
         options["bounds"] = [list(lower), list(upper)]
     if population_size is not None:
         options["popsize"] = int(population_size)
+    cap = validate_max_sigma_log10(max_sigma_log10)
+    if cap is not None:
+        options["maxstd"] = float(cap)
+    if cma_stds is not None:
+        phenotype_dim = (
+            len(search_bounds_log10[0])
+            if search_bounds_log10 is not None
+            else len(cma_stds)
+        )
+        options["CMA_stds"] = list(
+            validate_cma_stds(cma_stds, phenotype_dim=phenotype_dim)
+        )
     return options
 
 
@@ -627,21 +932,34 @@ def create_structure_cma_optimizer(
     base_seed: int,
     structure_idx: int,
     population_size: int | None = None,
-    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None = None,
+    max_sigma_log10: float | None = None,
+    cma_stds: Sequence[float] | None = None,
 ) -> tuple[cma.CMAEvolutionStrategy, int, np.random.Generator]:
     """Construct one pycma optimizer (bounded only when search bounds are set)."""
     sigma = validate_initial_sigma_log10(initial_sigma_log10)
+    cap = validate_max_sigma_log10(max_sigma_log10)
+    if cap is not None and cap < sigma:
+        raise ValueError("max_sigma_log10 must be >= initial_sigma_log10")
     mean = resolve_initial_mean_log10(
         "bounds_midpoint" if initial_mean_log10 is None else initial_mean_log10,
         bounds,
+        phenotype_dim=(
+            len(search_bounds_log10[0]) if search_bounds_log10 is not None else 3
+        ),
     )
     effective_seed = derive_structure_cma_seed(int(base_seed), int(structure_idx))
     rng = np.random.default_rng(effective_seed)
+    stds = None
+    if cma_stds is not None:
+        stds = validate_cma_stds(cma_stds, phenotype_dim=len(mean))
     options = build_pycma_options(
         randn=make_pycma_randn(rng),
         population_size=population_size,
         search_bounds_log10=search_bounds_log10,
+        max_sigma_log10=cap,
+        cma_stds=stds,
     )
     es = cma.CMAEvolutionStrategy(
         list(mean),
@@ -659,6 +977,165 @@ class YoungsModulusScoringConfig:
     n_holds: int | None = None
     n_directions: int | None = None
     device: str | None = None
+    hold_aggregation: str | None = "none"
+    include_delta: bool = True
+    categorical_weight: float = 100.0
+    delta_weight: float = 1.0
+    full_trajectory: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.full_trajectory:
+            return
+        resolved_hold_reduce = (
+            str(self.hold_aggregation)
+            if self.hold_aggregation is not None
+            else ("median" if self.use_median else "none")
+        )
+        if resolved_hold_reduce != "none":
+            raise ValueError(
+                "full_trajectory=True requires hold-reduction to resolve to "
+                "'none': reducing a move_out ramp to a single median/mean "
+                "state discards the signal (e.g. damping) full-trajectory "
+                f"scoring exists to capture; got hold_aggregation="
+                f"{self.hold_aggregation!r} use_median={self.use_median!r} "
+                f"(resolved={resolved_hold_reduce!r})"
+            )
+
+
+def _hold_reduce_from_scoring(scoring: YoungsModulusScoringConfig) -> str | None:
+    if scoring.hold_aggregation is not None:
+        return str(scoring.hold_aggregation)
+    return None
+
+
+def _wasserstein_kwargs_from_scoring(
+    scoring: YoungsModulusScoringConfig,
+    *,
+    scoring_n_directions: int,
+) -> dict[str, Any]:
+    return {
+        "use_median": bool(scoring.use_median),
+        "hold_id_onehot": bool(scoring.hold_id_onehot),
+        "n_holds": scoring.n_holds,
+        "n_directions": int(scoring_n_directions),
+        "hold_reduce": _hold_reduce_from_scoring(scoring),
+        "include_delta": bool(scoring.include_delta),
+        "categorical_weight": float(scoring.categorical_weight),
+        "delta_weight": float(scoring.delta_weight),
+        "full_trajectory": bool(scoring.full_trajectory),
+    }
+
+
+def _mean(values: list[float | None]) -> float | None:
+    finite = [float(v) for v in values if v is not None and math.isfinite(float(v))]
+    if not finite:
+        return None
+    return float(sum(finite) / len(finite))
+
+
+def _format_structure_eval_error(exc: BaseException) -> str:
+    """Preserve the exception message plus traceback for CMA batch diagnostics."""
+    message = str(exc)
+    tb = traceback.format_exc()
+    if tb.strip():
+        return f"{message}\n{tb}"
+    return message
+
+
+def _empty_mean_hold_error_payload() -> dict[str, Any]:
+    return {
+        "force_err_n": None,
+        "torque_err_nm": None,
+        "woody_start_m": None,
+        "woody_bend_rad": None,
+        "force_norm_n": {"real": None, "sim": None},
+        "torque_norm_nm": {"real": None, "sim": None},
+    }
+
+
+def _empty_mean_hold_error_fields() -> dict[str, Any]:
+    return {
+        "mean_hold_force_err_n": None,
+        "mean_hold_torque_err_nm": None,
+        "mean_hold_woody_start_m": None,
+        "mean_hold_woody_bend_rad": None,
+        "per_direction_mean_hold_force_err_n": {},
+        "per_direction_mean_hold_torque_err_nm": {},
+        "per_direction_mean_hold_woody_start_m": {},
+        "per_direction_mean_hold_woody_bend_rad": {},
+        "per_direction_mean_hold_force_norm_n": {},
+        "per_direction_mean_hold_torque_norm_nm": {},
+    }
+
+
+def _mean_hold_error_fields(
+    *,
+    recorded_episodes: Sequence[Mapping[str, Any]],
+    replay_episodes: Sequence[Mapping[str, Any]],
+    direction_indices: Sequence[int],
+) -> dict[str, Any]:
+    per_force: dict[int, float | None] = {}
+    per_torque: dict[int, float | None] = {}
+    per_woody: dict[int, float | None] = {}
+    per_bend: dict[int, float | None] = {}
+    per_force_norm: dict[int, dict[str, float | None]] = {}
+    per_torque_norm: dict[int, dict[str, float | None]] = {}
+    for recorded, replay, direction in zip(
+        recorded_episodes, replay_episodes, direction_indices, strict=True
+    ):
+        key = int(direction)
+        try:
+            err = mean_hold_block_errors(
+                real=recorded, sim=replay, direction=key
+            )
+        except (KeyError, ValueError, TypeError):
+            err = _empty_mean_hold_error_payload()
+        per_force[key] = err["force_err_n"]
+        per_torque[key] = err["torque_err_nm"]
+        per_woody[key] = err["woody_start_m"]
+        per_bend[key] = err["woody_bend_rad"]
+        per_force_norm[key] = dict(err["force_norm_n"])
+        per_torque_norm[key] = dict(err["torque_norm_nm"])
+    return {
+        "mean_hold_force_err_n": _mean(list(per_force.values())),
+        "mean_hold_torque_err_nm": _mean(list(per_torque.values())),
+        "mean_hold_woody_start_m": _mean(list(per_woody.values())),
+        "mean_hold_woody_bend_rad": _mean(list(per_bend.values())),
+        "per_direction_mean_hold_force_err_n": per_force,
+        "per_direction_mean_hold_torque_err_nm": per_torque,
+        "per_direction_mean_hold_woody_start_m": per_woody,
+        "per_direction_mean_hold_woody_bend_rad": per_bend,
+        "per_direction_mean_hold_force_norm_n": per_force_norm,
+        "per_direction_mean_hold_torque_norm_nm": per_torque_norm,
+    }
+
+
+def _eligible_mean_hold_summary(
+    scores: Sequence[YoungsModulusCandidateScore],
+) -> dict[str, float | None]:
+    eligible = [s for s in scores if not s.disqualified]
+
+    def _attr_mean(name: str) -> float | None:
+        return _mean([getattr(s, name) for s in eligible])
+
+    def _attr_best(name: str) -> float | None:
+        vals = [
+            float(v)
+            for s in eligible
+            if (v := getattr(s, name)) is not None and math.isfinite(float(v))
+        ]
+        return float(min(vals)) if vals else None
+
+    return {
+        "eligible_mean_hold_force_err_n": _attr_mean("mean_hold_force_err_n"),
+        "eligible_mean_hold_torque_err_nm": _attr_mean("mean_hold_torque_err_nm"),
+        "eligible_mean_hold_woody_start_m": _attr_mean("mean_hold_woody_start_m"),
+        "eligible_mean_hold_woody_bend_rad": _attr_mean("mean_hold_woody_bend_rad"),
+        "best_eligible_mean_hold_force_err_n": _attr_best("mean_hold_force_err_n"),
+        "best_eligible_mean_hold_torque_err_nm": _attr_best("mean_hold_torque_err_nm"),
+        "best_eligible_mean_hold_woody_start_m": _attr_best("mean_hold_woody_start_m"),
+        "best_eligible_mean_hold_woody_bend_rad": _attr_best("mean_hold_woody_bend_rad"),
+    }
 
 
 @dataclass(frozen=True)
@@ -672,12 +1149,22 @@ class YoungsModulusCandidateScore:
     disqualification_reason: str | None
     rank: int | None
     is_gt: bool
+    mean_hold_force_err_n: float | None = None
+    mean_hold_torque_err_nm: float | None = None
+    mean_hold_woody_start_m: float | None = None
+    mean_hold_woody_bend_rad: float | None = None
+    per_direction_mean_hold_force_err_n: dict[int, float | None] | None = None
+    per_direction_mean_hold_torque_err_nm: dict[int, float | None] | None = None
+    per_direction_mean_hold_woody_start_m: dict[int, float | None] | None = None
+    per_direction_mean_hold_woody_bend_rad: dict[int, float | None] | None = None
+    per_direction_mean_hold_force_norm_n: dict[int, dict[str, float | None]] | None = None
+    per_direction_mean_hold_torque_norm_nm: dict[int, dict[str, float | None]] | None = None
 
 
 @dataclass
 class YoungsModulusEvaluation:
     structure_idx: int
-    gt_candidate: YoungsModulusCandidate
+    gt_candidate: YoungsModulusCandidate | None
     fixed_secondary_e_pa: float | None
     direction_indices: tuple[int, ...]
     scores: list[YoungsModulusCandidateScore]
@@ -691,7 +1178,7 @@ class PreparedYoungsModulusStructure:
 
     replay_request: ReplayStructureRequest
     candidates: tuple[YoungsModulusCandidate, ...]
-    gt_candidate: YoungsModulusCandidate
+    gt_candidate: YoungsModulusCandidate | None
     fixed_secondary_e_pa: float | None
     direction_indices: tuple[int, ...]
     recorded_episodes: tuple[dict[str, Any], ...]
@@ -704,7 +1191,6 @@ class YoungsModulusBatchEvaluation:
     evaluations: dict[int, YoungsModulusEvaluation]
     errors: dict[int, str]
     replay_diagnostics: MultiStructureReplayDiagnostics | None
-    retried_structures: tuple[int, ...]
     prepared_structures: int = 0
     scoring_seconds: float = 0.0
     total_seconds: float = 0.0
@@ -721,15 +1207,32 @@ def prepare_youngs_modulus_structure(
     num_directions: int,
     scoring: YoungsModulusScoringConfig,
     include_excluded: bool = False,
+    direction_indices: Sequence[int] | None = None,
 ) -> PreparedYoungsModulusStructure:
     """Load and prepare one structure without running physical replay."""
     candidate_list = tuple(candidates)
     if not candidate_list:
         raise ValueError("candidates must be non-empty")
+    if direction_indices is not None:
+        usable = set(
+            list_usable_direction_indices(
+                dataset,
+                int(structure_idx),
+                include_excluded=bool(include_excluded),
+            )
+        )
+        for direction_idx in direction_indices:
+            disk_id = int(direction_idx)
+            if disk_id not in usable:
+                raise ValueError(
+                    f"direction index {disk_id} is not available on disk "
+                    f"for structure {int(structure_idx)}"
+                )
     resolved = resolve_direction_indices(
         dataset,
         structure_idx=int(structure_idx),
         num_directions=int(num_directions),
+        direction_indices=direction_indices,
         include_excluded=bool(include_excluded),
     )
     direction_indices = tuple(int(direction_idx) for direction_idx in resolved)
@@ -754,28 +1257,42 @@ def prepare_youngs_modulus_structure(
     )
     gt_context = prepare_gt_wasserstein_scoring_context(
         recorded,
-        use_median=bool(scoring.use_median),
-        hold_id_onehot=bool(scoring.hold_id_onehot),
-        n_holds=scoring.n_holds,
-        n_directions=scoring_n_directions,
+        pool_directions=bool(scoring.pool_directions),
+        **_wasserstein_kwargs_from_scoring(
+            scoring, scoring_n_directions=scoring_n_directions
+        ),
     )
     base_params = true_params_for_structure(dataset, int(structure_idx))
-    if isinstance(candidate_list[0], SupportKpYoungsCandidate):
-        gt_candidate = gt_support_kp_youngs_candidate_from_structure(
-            dataset, int(structure_idx)
-        )
+    first_direction_idx = direction_indices[0]
+    meta = dataset.load_episode_metadata(int(structure_idx), first_direction_idx)
+    collection = dataset.manifest.get("collection", {})
+    real = dataset_declares_vic_pose(collection, meta)
+    if real:
+        gripper = gripper_proxy_for_real_batched_replay(meta)
+        gt_candidate = None
     else:
-        gt_candidate = youngs_modulus_candidate_from_params(base_params)
+        gripper = gripper_proxy_from_episode_metadata(meta)
+        if isinstance(candidate_list[0], SupportKpYoungsCandidate):
+            gt_candidate = gt_support_kp_youngs_candidate_from_structure(
+                dataset, int(structure_idx)
+            )
+        else:
+            gt_candidate = youngs_modulus_candidate_from_params(base_params)
     fixed_secondary_e_pa = (
         None
         if base_params.secondary is None
         else float(base_params.secondary.youngs_modulus_pa)
     )
-    first_direction_idx = direction_indices[0]
-    gripper = gripper_proxy_from_episode_metadata(
-        dataset.load_episode_metadata(int(structure_idx), first_direction_idx)
-    )
     recorded_by_direction = dict(zip(direction_indices, recorded, strict=True))
+    meta_by_direction = (
+        load_episode_metadata_for_directions(
+            dataset,
+            structure_idx=int(structure_idx),
+            direction_indices=direction_indices,
+        )
+        if real
+        else None
+    )
     return PreparedYoungsModulusStructure(
         replay_request=ReplayStructureRequest(
             structure_idx=int(structure_idx),
@@ -784,6 +1301,7 @@ def prepare_youngs_modulus_structure(
             base_params=base_params,
             recorded_by_direction=recorded_by_direction,
             gripper=gripper,
+            meta_by_direction=meta_by_direction,
         ),
         candidates=candidate_list,
         gt_candidate=gt_candidate,
@@ -824,59 +1342,83 @@ def score_prepared_youngs_modulus_structure(
                 raise RuntimeError(f"invalid routed replay key: {key}")
         replay_eps = [replay_by_key[key] for key in keys]
         replay_episodes.append(replay_eps)
-        direction_instability = [
-            replay_instability_fraction_all_frames(replay=replay, recorded=recorded)
-            for replay, recorded in zip(
-                replay_eps, prepared.recorded_episodes, strict=True
-            )
-        ]
-        finite_instability = [
-            float(fraction)
-            for fraction in direction_instability
-            if math.isfinite(float(fraction))
-        ]
-        instability_fraction = (
-            max(finite_instability) if finite_instability else float("nan")
-        )
-        disqualified = any(
-            math.isfinite(float(fraction))
-            and float(fraction) > float(UNSTABLE_DISQUALIFY_THRESHOLD)
-            for fraction in direction_instability
-        )
-        disqualification_reason = "replay_instability" if disqualified else None
-
-        w_result = score_candidate_wasserstein_complete(
-            candidate_index=local_candidate_idx,
-            stiffnesses=_candidate_stiffness_diagnostics(candidate),
-            gt_context=prepared.gt_context,
-            replay_observations=replay_eps,
-            device=scoring.device,
-            use_median=bool(scoring.use_median),
-            hold_id_onehot=bool(scoring.hold_id_onehot),
-            n_holds=scoring.n_holds,
-            pool_directions=bool(scoring.pool_directions),
-            n_directions=scoring_n_directions,
-        )
-        if int(w_result.candidate_index) != local_candidate_idx:
-            raise RuntimeError(
-                "Wasserstein scorer candidate index mismatch: "
-                f"expected {local_candidate_idx}, got {w_result.candidate_index}"
-            )
-        if w_result.missing_directions:
-            disqualified = True
-            if disqualification_reason is None:
-                expected = set(prepared.gt_context.expected_directions)
-                missing = {int(direction) for direction in w_result.missing_directions}
-                disqualification_reason = (
-                    "empty_transition_bag"
-                    if expected and missing == expected
-                    else "missing_directions"
+        try:
+            direction_instability = [
+                replay_instability_fraction_all_frames(replay=replay, recorded=recorded)
+                for replay, recorded in zip(
+                    replay_eps, prepared.recorded_episodes, strict=True
                 )
-        aggregate_sinkhorn = float(w_result.aggregate_sinkhorn)
-        if not math.isfinite(aggregate_sinkhorn):
-            disqualified = True
-            if disqualification_reason is None:
-                disqualification_reason = "non_finite_sinkhorn"
+            ]
+            finite_instability = [
+                float(fraction)
+                for fraction in direction_instability
+                if math.isfinite(float(fraction))
+            ]
+            instability_fraction = (
+                max(finite_instability) if finite_instability else float("nan")
+            )
+            disqualified = any(
+                math.isfinite(float(fraction))
+                and float(fraction) > float(UNSTABLE_DISQUALIFY_THRESHOLD)
+                for fraction in direction_instability
+            )
+            disqualification_reason = "replay_instability" if disqualified else None
+
+            w_result = score_candidate_wasserstein_complete(
+                candidate_index=local_candidate_idx,
+                stiffnesses=_candidate_stiffness_diagnostics(candidate),
+                gt_context=prepared.gt_context,
+                replay_observations=replay_eps,
+                device=scoring.device,
+                pool_directions=bool(scoring.pool_directions),
+                **_wasserstein_kwargs_from_scoring(
+                    scoring, scoring_n_directions=scoring_n_directions
+                ),
+            )
+            if int(w_result.candidate_index) != local_candidate_idx:
+                raise RuntimeError(
+                    "Wasserstein scorer candidate index mismatch: "
+                    f"expected {local_candidate_idx}, got {w_result.candidate_index}"
+                )
+            if w_result.missing_directions:
+                disqualified = True
+                if disqualification_reason is None:
+                    expected = set(prepared.gt_context.expected_directions)
+                    missing = {int(direction) for direction in w_result.missing_directions}
+                    disqualification_reason = (
+                        "empty_transition_bag"
+                        if expected and missing == expected
+                        else "missing_directions"
+                    )
+            aggregate_sinkhorn = float(w_result.aggregate_sinkhorn)
+            if not math.isfinite(aggregate_sinkhorn):
+                disqualified = True
+                if disqualification_reason is None:
+                    disqualification_reason = "non_finite_sinkhorn"
+            hold_errors = _mean_hold_error_fields(
+                recorded_episodes=prepared.recorded_episodes,
+                replay_episodes=replay_eps,
+                direction_indices=prepared.direction_indices,
+            )
+        except (TypeError, ValueError) as exc:
+            provisional.append(
+                YoungsModulusCandidateScore(
+                    candidate_index=local_candidate_idx,
+                    candidate=candidate,
+                    aggregate_sinkhorn=float("nan"),
+                    per_direction_sinkhorn={},
+                    instability_fraction=float("nan"),
+                    disqualified=True,
+                    disqualification_reason=f"invalid_replay_features: {exc}",
+                    rank=None,
+                    is_gt=(
+                        prepared.gt_candidate is not None
+                        and youngs_modulus_values_match(candidate, prepared.gt_candidate)
+                    ),
+                    **_empty_mean_hold_error_fields(),
+                )
+            )
+            continue
         provisional.append(
             YoungsModulusCandidateScore(
                 candidate_index=local_candidate_idx,
@@ -887,7 +1429,11 @@ def score_prepared_youngs_modulus_structure(
                 disqualified=bool(disqualified),
                 disqualification_reason=disqualification_reason,
                 rank=None,
-                is_gt=youngs_modulus_values_match(candidate, prepared.gt_candidate),
+                is_gt=(
+                    prepared.gt_candidate is not None
+                    and youngs_modulus_values_match(candidate, prepared.gt_candidate)
+                ),
+                **hold_errors,
             )
         )
 
@@ -914,6 +1460,16 @@ def score_prepared_youngs_modulus_structure(
             disqualification_reason=score.disqualification_reason,
             rank=rank_by_index.get(score.candidate_index),
             is_gt=score.is_gt,
+            mean_hold_force_err_n=score.mean_hold_force_err_n,
+            mean_hold_torque_err_nm=score.mean_hold_torque_err_nm,
+            mean_hold_woody_start_m=score.mean_hold_woody_start_m,
+            mean_hold_woody_bend_rad=score.mean_hold_woody_bend_rad,
+            per_direction_mean_hold_force_err_n=score.per_direction_mean_hold_force_err_n,
+            per_direction_mean_hold_torque_err_nm=score.per_direction_mean_hold_torque_err_nm,
+            per_direction_mean_hold_woody_start_m=score.per_direction_mean_hold_woody_start_m,
+            per_direction_mean_hold_woody_bend_rad=score.per_direction_mean_hold_woody_bend_rad,
+            per_direction_mean_hold_force_norm_n=score.per_direction_mean_hold_force_norm_n,
+            per_direction_mean_hold_torque_norm_nm=score.per_direction_mean_hold_torque_norm_nm,
         )
         for score in provisional
     ]
@@ -942,8 +1498,10 @@ def evaluate_youngs_modulus_candidates(
     max_envs_per_batch: int = 0,
     seed: int | None = None,
     include_excluded: bool = False,
+    direction_indices: Sequence[int] | None = None,
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
+    action_dim: int | None = None,
 ) -> YoungsModulusEvaluation:
     """Compatibility wrapper using scalar per-structure physical replay."""
     prepared = prepare_youngs_modulus_structure(
@@ -953,7 +1511,19 @@ def evaluate_youngs_modulus_candidates(
         num_directions=int(num_directions),
         scoring=scoring,
         include_excluded=bool(include_excluded),
+        direction_indices=direction_indices,
     )
+    if action_dim is None:
+        first_meta = dataset.load_episode_metadata(
+            int(structure_idx), int(prepared.direction_indices[0])
+        )
+        action_dim = (
+            19
+            if dataset_declares_vic_pose(
+                dataset.manifest.get("collection", {}), first_meta
+            )
+            else 6
+        )
     collectors = replay_candidates_for_structure(
         dataset=dataset,
         structure_idx=int(structure_idx),
@@ -967,6 +1537,7 @@ def evaluate_youngs_modulus_candidates(
         replay_sim_config=replay_sim_config,
         use_oracle_params=True,
         include_excluded=bool(include_excluded),
+        action_dim=action_dim,
     )
     replay_by_key: dict[ReplaySlotKey, dict[str, Any]] = {}
     for candidate_index in range(len(prepared.candidates)):
@@ -1002,9 +1573,11 @@ def evaluate_youngs_modulus_structures(
     max_envs_per_batch: int = 0,
     seed: int | None = None,
     include_excluded: bool = False,
+    direction_indices: Sequence[int] | None = None,
     fail_fast: bool = False,
     on_step: Callable[..., bool] | None = None,
     replay_sim_config: BatchedHeterogeneousCoupledSimConfig | None = None,
+    action_dim: int | None = None,
 ) -> YoungsModulusBatchEvaluation:
     """Prepare independently, replay compatibly in fused chunks, and score."""
     total_started = time.perf_counter()
@@ -1024,43 +1597,18 @@ def evaluate_youngs_modulus_structures(
                 num_directions=int(num_directions),
                 scoring=scoring,
                 include_excluded=bool(include_excluded),
+                direction_indices=direction_indices,
             )
         except SysIdReplayCancelled:
             raise
         except Exception as exc:
             if fail_fast:
                 raise
-            errors[idx] = str(exc)
+            errors[idx] = _format_structure_eval_error(exc)
 
     evaluations: dict[int, YoungsModulusEvaluation] = {}
-    retried: list[int] = []
     replay_diagnostics: MultiStructureReplayDiagnostics | None = None
     scoring_seconds = 0.0
-
-    def scalar_retry(structure_idx: int) -> None:
-        if structure_idx in retried:
-            return
-        retried.append(structure_idx)
-        try:
-            evaluations[structure_idx] = evaluate_youngs_modulus_candidates(
-                dataset=dataset,
-                structure_idx=structure_idx,
-                candidates=structures_by_idx[structure_idx],
-                num_directions=int(num_directions),
-                build_env_fn=build_env_fn,
-                scoring=scoring,
-                max_envs_per_batch=int(max_envs_per_batch),
-                seed=seed,
-                include_excluded=bool(include_excluded),
-                on_step=on_step,
-                replay_sim_config=replay_sim_config,
-            )
-        except SysIdReplayCancelled:
-            raise
-        except Exception as exc:
-            if fail_fast:
-                raise
-            errors[structure_idx] = str(exc)
 
     physical_slots_by_structure = {
         int(idx): len(prepared.candidates) * len(prepared.direction_indices)
@@ -1073,9 +1621,11 @@ def evaluate_youngs_modulus_structures(
             blocks = build_replay_candidate_blocks(
                 tuple(item.replay_request for item in prepared_items)
             )
-        except ReplayFusionIncompatible:
-            for structure_idx in prepared_by_idx:
-                scalar_retry(structure_idx)
+        except ReplayFusionIncompatible as exc:
+            raise ReplayFusionIncompatible(
+                f"{exc}. Compatible structures must share one Newton model; "
+                "use --no-multi-structure-batch to evaluate structures independently."
+            ) from exc
         else:
             outcome = replay_multi_structure_candidate_blocks(
                 dataset=dataset,
@@ -1089,7 +1639,7 @@ def evaluate_youngs_modulus_structures(
             replay_diagnostics = outcome.diagnostics
             for structure_idx, prepared in prepared_by_idx.items():
                 if structure_idx in outcome.failed_structures:
-                    scalar_retry(structure_idx)
+                    errors[structure_idx] = outcome.failed_structures[structure_idx]
                     continue
                 scoring_started = time.perf_counter()
                 try:
@@ -1105,7 +1655,7 @@ def evaluate_youngs_modulus_structures(
                 except Exception as exc:
                     if fail_fast:
                         raise
-                    errors[structure_idx] = str(exc)
+                    errors[structure_idx] = _format_structure_eval_error(exc)
                 finally:
                     scoring_seconds += time.perf_counter() - scoring_started
 
@@ -1123,7 +1673,6 @@ def evaluate_youngs_modulus_structures(
         evaluations=ordered_evaluations,
         errors=ordered_errors,
         replay_diagnostics=replay_diagnostics,
-        retried_structures=tuple(retried),
         prepared_structures=len(prepared_by_idx),
         scoring_seconds=float(scoring_seconds),
         total_seconds=float(time.perf_counter() - total_started),
@@ -1181,10 +1730,12 @@ class StructureCmaState:
     final_evaluation: YoungsModulusEvaluation | None = None
     gt_candidate: YoungsModulusCandidate | None = None
     artifact_errors: list[str] = field(default_factory=list)
+    generation_artifacts: list[dict[str, Any]] = field(default_factory=list)
     # Active CMA box; None means unbounded (report bounds JSON null).
     search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]] | None = (
         None
     )
+    max_sigma_log10: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1221,21 +1772,24 @@ def _validate_ask_population(
     *,
     population_size: int,
     bounds: YoungsModulusCmaBounds,
-    search_bounds_log10: tuple[tuple[float, float, float], tuple[float, float, float]]
+    search_bounds_log10: tuple[tuple[float, ...], tuple[float, ...]]
     | None = None,
-) -> tuple[tuple[float, float, float], ...]:
+) -> tuple[tuple[float, ...], ...]:
     del bounds  # fixture ranges are not the search box unless search_bounds_log10 is set
+    phenotype_dim = (
+        len(search_bounds_log10[0]) if search_bounds_log10 is not None else 3
+    )
     if len(samples) != int(population_size):
         raise CmaGenerationFailure(
             "generation_evaluation",
             f"ask population size {len(samples)} != {population_size}",
         )
-    parsed: list[tuple[float, float, float]] = []
+    parsed: list[tuple[float, ...]] = []
     for sample in samples:
-        if len(sample) != 3:
+        if len(sample) != phenotype_dim:
             raise CmaGenerationFailure(
                 "generation_evaluation",
-                f"ask sample must have length 3, got {len(sample)}",
+                f"ask sample must have length {phenotype_dim}, got {len(sample)}",
             )
         values = tuple(float(v) for v in sample)
         if not all(math.isfinite(v) for v in values):
@@ -1245,13 +1799,17 @@ def _validate_ask_population(
             )
         if search_bounds_log10 is not None:
             lower, upper = search_bounds_log10
-            for value, lo, hi in zip(values, lower, upper, strict=True):
-                if value < lo - 1e-9 or value > hi + 1e-9:
+            values_list = list(values)
+            for j, (lo, hi) in enumerate(zip(lower, upper, strict=True)):
+                if hi - lo <= 2.0 * _DEGENERATE_BOUND_EPS:
+                    values_list[j] = 0.5 * (lo + hi)
+                elif values_list[j] < lo - 1e-9 or values_list[j] > hi + 1e-9:
                     raise CmaGenerationFailure(
                         "generation_evaluation",
                         "ask sample outside search bounds",
                     )
-        parsed.append(values)  # type: ignore[arg-type]
+            values = tuple(values_list)
+        parsed.append(values)
     return tuple(parsed)
 
 
@@ -1313,12 +1871,57 @@ def generation_score_summary(
     }
 
 
+def force_magnitude_log_ratio_penalty(
+    per_direction_norms: Mapping[int, Mapping[str, float | None]] | None,
+    *,
+    floor_n: float = FORCE_FLOOR_N,
+) -> float:
+    """Mean |log(sim‖F‖ / real‖F‖)| over directions with finite real and sim norms.
+
+    Each side is floored at ``floor_n`` before the ratio (same force floor as
+    holdout magnitude gates). Directions missing either side are skipped.
+    Returns 0.0 when no usable direction remains.
+    """
+    if not per_direction_norms:
+        return 0.0
+    floor = float(floor_n)
+    if not math.isfinite(floor) or floor <= 0.0:
+        raise ValueError(f"floor_n must be positive and finite, got {floor_n}")
+    terms: list[float] = []
+    for norms in per_direction_norms.values():
+        real = norms.get("real")
+        sim = norms.get("sim")
+        if real is None or sim is None:
+            continue
+        real_f = float(real)
+        sim_f = float(sim)
+        if not (math.isfinite(real_f) and math.isfinite(sim_f)):
+            continue
+        terms.append(abs(math.log(max(sim_f, floor) / max(real_f, floor))))
+    if not terms:
+        return 0.0
+    return float(sum(terms) / len(terms))
+
+
 def penalize_youngs_modulus_scores(
     scores: Sequence[YoungsModulusCandidateScore],
+    *,
+    force_magnitude_weight: float = 0.0,
 ) -> tuple[list[float], list[dict[str, Any]]]:
-    """Replace invalid scores with worst_finite + max(1, abs(worst_finite))."""
+    """Replace invalid scores with worst_finite + max(1, abs(worst_finite)).
+
+    Eligible fitness is ``aggregate_sinkhorn + force_magnitude_weight *
+    force_magnitude_log_ratio_penalty(...)``. Weight ``<= 0`` preserves
+    Sinkhorn-only fitness (magnitude penalty recorded as 0).
+    """
     ordered = sorted(scores, key=lambda score: int(score.candidate_index))
     _require_complete_candidate_indices(ordered, population_size=len(ordered))
+    weight = float(force_magnitude_weight)
+    if not math.isfinite(weight):
+        raise CmaGenerationFailure(
+            "penalty",
+            f"force_magnitude_weight must be finite, got {force_magnitude_weight}",
+        )
     eligible = [
         float(score.aggregate_sinkhorn)
         for score in ordered
@@ -1341,7 +1944,21 @@ def penalize_youngs_modulus_scores(
     for score in ordered:
         raw = float(score.aggregate_sinkhorn)
         invalid = bool(score.disqualified) or (not math.isfinite(raw))
-        value = penalty if invalid else raw
+        if weight <= 0.0:
+            mag_pen = 0.0
+        else:
+            mag_pen = force_magnitude_log_ratio_penalty(
+                score.per_direction_mean_hold_force_norm_n
+            )
+        if invalid:
+            value = penalty
+        else:
+            value = raw + weight * mag_pen
+            if not math.isfinite(value):
+                raise CmaGenerationFailure(
+                    "penalty",
+                    "force-magnitude fitness overflowed to a non-finite value",
+                )
         fitness.append(float(value))
         metadata.append(
             {
@@ -1350,6 +1967,8 @@ def penalize_youngs_modulus_scores(
                 "raw_aggregate_sinkhorn": raw,
                 "fitness": float(value),
                 "disqualification_reason": score.disqualification_reason,
+                "force_magnitude_penalty": float(mag_pen),
+                "force_magnitude_weight": float(weight),
             }
         )
     return fitness, metadata
@@ -1434,6 +2053,7 @@ def run_cma_generation_wave(
     evaluate_fn: Callable[..., YoungsModulusBatchEvaluation],
     generation_index: int,
     all_invalid_reasks: int = DEFAULT_ALL_INVALID_REASKS,
+    force_magnitude_weight: float = 0.0,
 ) -> CmaGenerationWaveResult:
     """Ask active optimizers, evaluate fused, then tell independently.
 
@@ -1487,6 +2107,7 @@ def run_cma_generation_wave(
         state = active_states[structure_idx]
         samples = ask_samples[structure_idx]
         state.optimizer.tell(samples, fitness)
+        clamp_optimizer_sigma(state.optimizer, max_sigma_log10=state.max_sigma_log10)
         state.completed_generations += 1
         state.optimizer_samples_told += len(fitness)
         if update_best:
@@ -1569,7 +2190,10 @@ def run_cma_generation_wave(
                     structure_idx, last_batch
                 )
                 try:
-                    fitness, metadata = penalize_youngs_modulus_scores(ordered_scores)
+                    fitness, metadata = penalize_youngs_modulus_scores(
+                        ordered_scores,
+                        force_magnitude_weight=force_magnitude_weight,
+                    )
                 except CmaGenerationFailure as exc:
                     if exc.stage != "all_invalid":
                         raise
@@ -1640,16 +2264,18 @@ class YoungsModulusCmaFitResult:
     timing: dict[str, Any] = field(default_factory=dict)
 
 
-def snapshot_xfavorite_log10(optimizer: Any) -> tuple[float, float, float]:
+def snapshot_xfavorite_log10(optimizer: Any) -> tuple[float, ...]:
     """Snapshot pycma's bounded phenotype mean (``result.xfavorite``)."""
     result = getattr(optimizer, "result", None)
     favorite = getattr(result, "xfavorite", None)
     if favorite is None:
         raise ValueError("optimizer.result.xfavorite is unavailable")
     values = tuple(float(v) for v in favorite)
-    if len(values) != 3:
-        raise ValueError(f"xfavorite must have length 3, got {len(values)}")
-    return values  # type: ignore[return-value]
+    if len(values) not in (3, 4, 5, 6, 9, 10):
+        raise ValueError(
+            f"xfavorite must have length 3, 4, 5, 6, 9, or 10, got {len(values)}"
+        )
+    return values
 
 
 def optimizer_covariance_diagnostics(optimizer: Any) -> dict[str, Any]:
@@ -1768,12 +2394,152 @@ def _evaluate_final_means(
     return batch
 
 
+@dataclass
+class StructureCmaCheckpointRecord:
+    structure_idx: int
+    optimizer: Any
+    completed_generations: int
+    optimizer_samples_told: int
+    best_sample_log10: tuple[float, float, float] | None
+    best_sample_fitness: float | None
+    generations: list[CmaGenerationRecord]
+    effective_seed: int
+    population_size: int
+    status: str
+    search_bounds_log10: (
+        tuple[tuple[float, float, float], tuple[float, float, float]] | None
+    )
+    max_sigma_log10: float | None
+    gt_candidate: YoungsModulusCandidate | None
+    final_mean_log10: tuple[float, float, float] | None
+
+
+def _checkpoint_status_for_persist(state: StructureCmaState) -> str:
+    """Checkpoint mid-run states should resume as active optimizers."""
+    if state.status in {"failed", "stopped_pending_final_evaluation"}:
+        return "active"
+    return str(state.status)
+
+
+def build_cma_optimizer_checkpoint(
+    states: Mapping[int, StructureCmaState],
+    *,
+    counters: Mapping[str, int] | None = None,
+) -> dict[str, Any]:
+    """Build an in-memory checkpoint payload from live optimizer states."""
+    structures: dict[int, StructureCmaCheckpointRecord] = {}
+    for structure_idx, state in states.items():
+        if int(state.completed_generations) <= 0:
+            continue
+        structures[int(structure_idx)] = StructureCmaCheckpointRecord(
+            structure_idx=int(structure_idx),
+            optimizer=state.optimizer,
+            completed_generations=int(state.completed_generations),
+            optimizer_samples_told=int(state.optimizer_samples_told),
+            best_sample_log10=state.best_sample_log10,
+            best_sample_fitness=state.best_sample_fitness,
+            generations=list(state.generations),
+            effective_seed=int(state.effective_seed),
+            population_size=int(state.population_size),
+            status=_checkpoint_status_for_persist(state),
+            search_bounds_log10=state.search_bounds_log10,
+            max_sigma_log10=state.max_sigma_log10,
+            gt_candidate=state.gt_candidate,
+            final_mean_log10=state.final_mean_log10,
+        )
+    return {
+        "version": int(CMA_CHECKPOINT_VERSION),
+        "structures": structures,
+        "counters": {str(key): int(value) for key, value in (counters or {}).items()},
+    }
+
+
+def dump_cma_optimizer_checkpoint(
+    path: Path | str,
+    states: Mapping[int, StructureCmaState],
+    *,
+    counters: Mapping[str, int] | None = None,
+) -> None:
+    """Atomically pickle optimizer state after at least one successful tell."""
+    payload = build_cma_optimizer_checkpoint(states, counters=counters)
+    if not payload["structures"]:
+        return
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        with tmp_path.open("wb") as fh:
+            cloudpickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, target)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def load_cma_optimizer_checkpoint(path: Path | str) -> dict[str, Any]:
+    """Load a checkpoint written by :func:`dump_cma_optimizer_checkpoint`."""
+    target = Path(path)
+    with target.open("rb") as fh:
+        payload = cloudpickle.load(fh)
+    if not isinstance(payload, dict):
+        raise ValueError(f"checkpoint must be a mapping, got {type(payload)!r}")
+    version = int(payload.get("version", -1))
+    if version != int(CMA_CHECKPOINT_VERSION):
+        raise ValueError(
+            f"unsupported checkpoint version {version}; expected {CMA_CHECKPOINT_VERSION}"
+        )
+    structures = payload.get("structures")
+    if not isinstance(structures, dict) or not structures:
+        raise ValueError("checkpoint contains no structure optimizer state")
+    return payload
+
+
+def apply_cma_checkpoint_to_states(
+    states: Mapping[int, StructureCmaState],
+    checkpoint: Mapping[str, Any],
+) -> dict[str, int]:
+    """Restore optimizer progress onto freshly constructed structure states."""
+    records = checkpoint["structures"]
+    for structure_idx, record in records.items():
+        idx = int(structure_idx)
+        if idx not in states:
+            raise KeyError(f"checkpoint structure {idx} missing from live states")
+        state = states[idx]
+        if not isinstance(record, StructureCmaCheckpointRecord):
+            raise TypeError(
+                f"checkpoint record for structure {idx} has unexpected type {type(record)!r}"
+            )
+        state.optimizer = record.optimizer
+        state.completed_generations = int(record.completed_generations)
+        state.optimizer_samples_told = int(record.optimizer_samples_told)
+        state.best_sample_log10 = record.best_sample_log10
+        state.best_sample_fitness = record.best_sample_fitness
+        state.generations = list(record.generations)
+        state.effective_seed = int(record.effective_seed)
+        state.population_size = int(record.population_size)
+        state.search_bounds_log10 = record.search_bounds_log10
+        state.max_sigma_log10 = record.max_sigma_log10
+        state.gt_candidate = record.gt_candidate
+        state.final_mean_log10 = record.final_mean_log10
+        state.failure = None
+        state.stop_kind = None
+        state.stop_conditions = {}
+        if record.status == "fitted":
+            state.status = "fitted"
+        else:
+            state.status = "active"
+    counters = checkpoint.get("counters") or {}
+    return {str(key): int(value) for key, value in counters.items()}
+
+
 def fit_youngs_modulus_structures(
     states: Mapping[int, StructureCmaState],
     *,
     max_generations: int,
     evaluate_fn: Callable[..., YoungsModulusBatchEvaluation],
     on_progress: Callable[[Mapping[int, StructureCmaState]], None] | None = None,
+    on_generation_wave: Callable[[CmaGenerationWaveResult], None] | None = None,
+    force_magnitude_weight: float = 0.0,
 ) -> YoungsModulusCmaFitResult:
     """Coordinate synchronized waves until active optimizers stop, then score means."""
     if int(max_generations) <= 0:
@@ -1786,7 +2552,10 @@ def fit_youngs_modulus_structures(
 
     fit_started = time.perf_counter()
     wave_timings: list[dict[str, Any]] = []
-    generation_waves = 0
+    generation_waves = max(
+        (int(state.completed_generations) for state in ordered.values()),
+        default=0,
+    )
     while True:
         active = {
             idx: state
@@ -1799,6 +2568,7 @@ def fit_youngs_modulus_structures(
             active,
             evaluate_fn=evaluate_fn,
             generation_index=generation_waves,
+            force_magnitude_weight=force_magnitude_weight,
         )
         if wave.records:
             seconds = float(next(iter(wave.records.values())).wave_seconds or 0.0)
@@ -1817,6 +2587,8 @@ def fit_youngs_modulus_structures(
             if idx in wave.failures:
                 continue
             _apply_stop_transition(state, max_generations=max_generations)
+        if on_generation_wave is not None and wave.records:
+            on_generation_wave(wave)
         if on_progress is not None:
             on_progress(ordered)
 
@@ -1878,11 +2650,18 @@ def to_strict_jsonable(value: Any) -> Any:
     # NamedTuple candidate types are also Sequence; check before the
     # generic Sequence branch so they serialize as labeled objects.
     if isinstance(value, SupportKpYoungsCandidate):
-        return {
+        out = {
             "support_kp": to_strict_jsonable(value.support_kp),
             "spur": to_strict_jsonable(value.spur),
             "stem": to_strict_jsonable(value.stem),
         }
+        if value.spur_youngs is not None:
+            out["spur_youngs"] = to_strict_jsonable(value.spur_youngs)
+        if value.stem_youngs is not None:
+            out["stem_youngs"] = to_strict_jsonable(value.stem_youngs)
+        if value.support_roll_kp is not None:
+            out["support_roll_kp"] = to_strict_jsonable(value.support_roll_kp)
+        return out
     if isinstance(value, YoungsModulusCandidate):
         return {
             "primary": to_strict_jsonable(value.primary),
@@ -1901,19 +2680,40 @@ def _candidate_first_component(candidate: Any) -> float:
 
 
 def _candidate_to_e_list(candidate: Any) -> list[float]:
-    return [
+    out = [
         _candidate_first_component(candidate),
         float(candidate.spur),
         float(candidate.stem),
     ]
+    spur_y = getattr(candidate, "spur_youngs", None)
+    stem_y = getattr(candidate, "stem_youngs", None)
+    if spur_y is not None and stem_y is not None:
+        out.extend([float(spur_y), float(stem_y)])
+    roll = getattr(candidate, "support_roll_kp", None)
+    if roll is not None:
+        out.append(float(roll))
+    spur_d = getattr(candidate, "spur_damping_ratio", None)
+    stem_d = getattr(candidate, "stem_damping_ratio", None)
+    joint_z = getattr(candidate, "support_joint_zeta", None)
+    has_damping = spur_d is not None and stem_d is not None and joint_z is not None
+    if has_damping:
+        out.extend([float(spur_d), float(stem_d), float(joint_z)])
+    primary_density = getattr(candidate, "primary_density", None)
+    if primary_density is not None and has_damping:
+        out.append(float(primary_density))
+    return out
 
 
 def _candidate_to_log10_list(candidate: Any) -> list[float]:
-    return [
-        math.log10(_candidate_first_component(candidate)),
-        math.log10(float(candidate.spur)),
-        math.log10(float(candidate.stem)),
-    ]
+    """Phenotype coords: log10 for stiffness dims (and primary_density); identity
+    for linear ζ dims."""
+    if (
+        getattr(candidate, "spur_damping_ratio", None) is not None
+        and getattr(candidate, "stem_damping_ratio", None) is not None
+        and getattr(candidate, "support_joint_zeta", None) is not None
+    ):
+        return list(log10_vector_from_candidate(candidate))
+    return [math.log10(v) for v in _candidate_to_e_list(candidate)]
 
 
 def evaluated_history_extrema(
@@ -1952,7 +2752,6 @@ def structure_cma_report_snapshot(
     replay_candidate_evaluations: int = 0,
     final_mean_evaluations: int = 0,
     physical_env_slots: int = 0,
-    scalar_retries: int = 0,
 ) -> dict[str, Any]:
     """Build a per-structure CMA report fragment."""
     try:
@@ -1968,10 +2767,13 @@ def structure_cma_report_snapshot(
                 "ask_samples_log10": [list(row) for row in record.ask_samples_log10],
                 "penalized_fitness": list(record.penalized_fitness),
                 "penalty_metadata": list(record.penalty_metadata),
-                "score_summary": generation_score_summary(
-                    record.penalty_metadata,
-                    penalized_fitness=record.penalized_fitness,
-                ),
+                "score_summary": {
+                    **generation_score_summary(
+                        record.penalty_metadata,
+                        penalized_fitness=record.penalized_fitness,
+                    ),
+                    **_eligible_mean_hold_summary(record.raw_scores),
+                },
                 "wave_seconds": (
                     None
                     if record.wave_seconds is None
@@ -1987,6 +2789,16 @@ def structure_cma_report_snapshot(
                             str(k): float(v)
                             for k, v in score.per_direction_sinkhorn.items()
                         },
+                        "mean_hold_force_err_n": score.mean_hold_force_err_n,
+                        "mean_hold_torque_err_nm": score.mean_hold_torque_err_nm,
+                        "mean_hold_woody_start_m": score.mean_hold_woody_start_m,
+                        "mean_hold_woody_bend_rad": score.mean_hold_woody_bend_rad,
+                        "per_direction_mean_hold_force_err_n": score.per_direction_mean_hold_force_err_n,
+                        "per_direction_mean_hold_torque_err_nm": score.per_direction_mean_hold_torque_err_nm,
+                        "per_direction_mean_hold_woody_start_m": score.per_direction_mean_hold_woody_start_m,
+                        "per_direction_mean_hold_woody_bend_rad": score.per_direction_mean_hold_woody_bend_rad,
+                        "per_direction_mean_hold_force_norm_n": score.per_direction_mean_hold_force_norm_n,
+                        "per_direction_mean_hold_torque_norm_nm": score.per_direction_mean_hold_torque_norm_nm,
                     }
                     for score in record.raw_scores
                 ],
@@ -2053,7 +2865,6 @@ def structure_cma_report_snapshot(
         "replay_candidate_evaluations": int(replay_candidate_evaluations),
         "final_mean_evaluations": int(final_mean_evaluations),
         "physical_env_slots": int(physical_env_slots),
-        "scalar_retries": int(scalar_retries),
         "stop_kind": state.stop_kind,
         "stop_conditions": dict(state.stop_conditions),
         "generations": generations,
@@ -2064,6 +2875,7 @@ def structure_cma_report_snapshot(
         "covariance": covariance,
         "failure": failure,
         "artifact_errors": list(state.artifact_errors),
+        "generation_artifacts": list(state.generation_artifacts),
     }
 
 

@@ -3,6 +3,7 @@
 | Field | Value |
 | ----- | ----- |
 | **Status** | Implemented |
+| **Canonical living doc:** | `docs/handbook-coupled-simulation.md` |
 | **Date** | 2026-08-07 |
 | **Amends** | `docs/superpowers/specs/2026-08-05-apple-position-only-post-grasp-weld-design.md`; resolves ROADMAP post-grasp apple orientation known issue |
 | **Code** | `FruitingSystemParams.apple_quat_xyzw`, `real_pre_grasp_params.map_pre_grasp_geometry`, `fruiting_system/build.py` chain builders |

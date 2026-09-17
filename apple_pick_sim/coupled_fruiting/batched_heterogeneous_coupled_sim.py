@@ -256,6 +256,12 @@ class BatchedHeterogeneousCoupledSim:
             self._scene.mj_solver,
             scene=self._scene,
             layout=self._scene.layout,
+            kp_null=float(self._config.controller.kp_null),
+            kd_null=float(self._config.controller.kd_null),
+            sep_ori=bool(self._config.controller.sep_ori),
+        )
+        self._scene.vic_jt_torque_slew_nm_s = float(
+            self._config.controller.joint_torque_slew_nm_s
         )
         self._scene.vic_joint_torques_configured = True
         vic.sync_target_from_state(self._scene.robot_state_0)
@@ -382,6 +388,7 @@ class BatchedHeterogeneousCoupledSim:
         bufs = self._obs_bufs
         out: dict[str, Any] = {
             "apple_pos": bufs.apple_pos,
+            "apple_pose": bufs.apple_pose,
             "proxy_pos": bufs.proxy_pos,
         }
         if include_robot:

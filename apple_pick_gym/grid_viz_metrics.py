@@ -33,6 +33,24 @@ def _as_woody_2d(source: Mapping[str, Any], key: str, name: str, n: int) -> np.n
     return np.asarray(woody[name], dtype=np.float64).reshape(-1, 3)[:n]
 
 
+def _woody_end_or_apple_2d(source: Mapping[str, Any], name: str, n: int) -> np.ndarray:
+    """Return per-frame woody end positions, falling back to ``apple_pos``.
+
+    Collector-produced replay/recorded arrays no longer persist
+    ``woody_part_end_pos`` (real bags never had the full T-junction set of
+    ends either). When absent, use ``apple_pos`` as the distal endpoint so
+    segment-position scoring degrades gracefully instead of raising.
+    """
+    end = source.get("woody_part_end_pos")
+    if isinstance(end, dict) and name in end:
+        return _as_woody_2d(source, "woody_part_end_pos", name, n)
+    if "apple_pos" not in source:
+        raise KeyError(
+            f"missing woody_part_end_pos for junction {name!r} and no apple_pos fallback"
+        )
+    return np.asarray(source["apple_pos"], dtype=np.float64).reshape(-1, 3)[:n]
+
+
 def _aggregate_rows(values: np.ndarray, *, aggregation: Literal["mean", "median"]) -> np.ndarray:
     arr = np.asarray(values, dtype=np.float64)
     if arr.ndim == 1:
@@ -51,16 +69,24 @@ def _woody_nan_dict(junction_names: Sequence[str]) -> dict[str, float]:
 
 
 def _has_woody_data(source: Mapping[str, Any], junction_names: Sequence[str]) -> bool:
+    """True if ``source`` has enough data to score woody segments.
+
+    Requires ``woody_part_start_pos`` for every junction. ``woody_part_end_pos``
+    is optional (collectors no longer persist it); when absent, ``apple_pos``
+    must be present as the distal-endpoint fallback.
+    """
     if not junction_names:
         return False
-    for key in ("woody_part_start_pos", "woody_part_end_pos"):
-        woody = source.get(key)
-        if not isinstance(woody, dict):
+    woody_start = source.get("woody_part_start_pos")
+    if not isinstance(woody_start, dict):
+        return False
+    for name in junction_names:
+        if name not in woody_start:
             return False
-        for name in junction_names:
-            if name not in woody:
-                return False
-    return True
+    woody_end = source.get("woody_part_end_pos")
+    if isinstance(woody_end, dict) and all(name in woody_end for name in junction_names):
+        return True
+    return "apple_pos" in source
 
 
 def woody_segment_pos_mse_masked(
@@ -82,9 +108,9 @@ def woody_segment_pos_mse_masked(
     out: dict[str, float] = {}
     for name in names:
         start_rep = _as_woody_2d(replay, "woody_part_start_pos", name, n)[mask]
-        end_rep = _as_woody_2d(replay, "woody_part_end_pos", name, n)[mask]
+        end_rep = _woody_end_or_apple_2d(replay, name, n)[mask]
         start_rec = _as_woody_2d(recorded, "woody_part_start_pos", name, n)[mask]
-        end_rec = _as_woody_2d(recorded, "woody_part_end_pos", name, n)[mask]
+        end_rec = _woody_end_or_apple_2d(recorded, name, n)[mask]
         rep = np.concatenate([start_rep, end_rep], axis=1)
         rec = np.concatenate([start_rec, end_rec], axis=1)
         out[name] = _mse(rep, rec)
@@ -114,9 +140,9 @@ def woody_segment_pos_mse_hold_aggregated(
     out: dict[str, float] = {}
     for name in names:
         start_rep = _as_woody_2d(replay, "woody_part_start_pos", name, n)[hold_idx]
-        end_rep = _as_woody_2d(replay, "woody_part_end_pos", name, n)[hold_idx]
+        end_rep = _woody_end_or_apple_2d(replay, name, n)[hold_idx]
         start_rec = _as_woody_2d(recorded, "woody_part_start_pos", name, n)[hold_idx]
-        end_rec = _as_woody_2d(recorded, "woody_part_end_pos", name, n)[hold_idx]
+        end_rec = _woody_end_or_apple_2d(recorded, name, n)[hold_idx]
         rep = np.concatenate(
             [
                 _aggregate_rows(start_rep, aggregation=aggregation),
@@ -156,9 +182,9 @@ def woody_segment_pos_mse_paired_holds(
         per_hold: list[float] = []
         for hold_idx in holds:
             start_rep = _as_woody_2d(replay, "woody_part_start_pos", name, n)[hold_idx]
-            end_rep = _as_woody_2d(replay, "woody_part_end_pos", name, n)[hold_idx]
+            end_rep = _woody_end_or_apple_2d(replay, name, n)[hold_idx]
             start_rec = _as_woody_2d(recorded, "woody_part_start_pos", name, n)[hold_idx]
-            end_rec = _as_woody_2d(recorded, "woody_part_end_pos", name, n)[hold_idx]
+            end_rec = _woody_end_or_apple_2d(recorded, name, n)[hold_idx]
             rep = np.concatenate(
                 [
                     _aggregate_rows(start_rep, aggregation=aggregation),

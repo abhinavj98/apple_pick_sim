@@ -28,6 +28,24 @@ from apple_pick_sim.coupled_fruiting.proxy_coupling import (
     sync_cable_body_q_prev_from_state,
 )
 
+# ``njmax``/``nconmax`` passed to ``SolverMuJoCo`` are PER-WORLD sizes:
+# mujoco_warp allocates constraint arrays as ``(nworld, njmax)`` and derives
+# its own global contact pool as ``nconmax * nworld`` internally
+# (``mujoco_warp._src.io.put_data`` / ``_resolve_batch_size``). Do not
+# multiply either by ``num_envs`` here -- that double-applies the world count
+# and makes allocation O(N^2) (see docs/superpowers/plans/
+# 2026-09-17-rl-vic-harvest-policy.md Task 0a). Measured peak nefc across
+# four independent builds (N=8 scripted pull; N=64 x3, 300 diverse-action
+# steps each) is 13-14 constraint rows/world for this gravity-compensated,
+# ground-plane-free FR3 model: 7 permanent dry-friction rows (one per arm
+# DOF) plus up to 7 momentary joint-limit rows (the theoretical max, since
+# only one bound per joint can be active at a time). Zero contacts observed
+# (no ground plane, gravity=0, plant is a separate model). 200 leaves >14x
+# headroom over the measured/theoretical peak. See
+# docs/superpowers/reports/2026-09-17-task0a-mujoco-constraint-arena-fix.md.
+_ROBOT_MUJOCO_NJMAX_PER_WORLD = 200
+_ROBOT_MUJOCO_NCONMAX_PER_WORLD = 200
+
 
 def _prepare_cable_template_builder_for_replicate(
     builder: newton.ModelBuilder,
@@ -369,11 +387,13 @@ def build_replicated_robot_model(
     mj_kw = dict(mujoco_solver_kwargs)
     mj_kw["separate_worlds"] = True
     mj_kw["use_mujoco_cpu"] = resolve_mujoco_use_cpu(device, mj_kw.get("use_mujoco_cpu"))
+    njmax = mj_kw.pop("njmax", _ROBOT_MUJOCO_NJMAX_PER_WORLD)
+    nconmax = mj_kw.pop("nconmax", _ROBOT_MUJOCO_NCONMAX_PER_WORLD)
 
     solver = newton.solvers.SolverMuJoCo(
         model,
-        njmax=max(200, 80 * num_envs),
-        nconmax=max(200, 80 * num_envs),
+        njmax=njmax,
+        nconmax=nconmax,
         **mj_kw,
     )
     _broadcast_robot_state_from_template(template_model, model)

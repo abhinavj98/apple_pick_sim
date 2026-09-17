@@ -638,6 +638,32 @@ def test_set_rod_damping_ratio_updates_damping_knobs_only():
         fs.set_rod_damping_ratio(base, "spur", -0.1)
 
 
+def test_set_rod_density_updates_mass_knobs_only():
+    fs = _import_module()
+    base = fs.sample_params(fs.load_ranges(RANGES_FIXTURE), seed=3)
+    density_new = base.primary.density * 2.0
+    out = fs.set_rod_density(base, "primary", density_new)
+    assert out.primary.density == pytest.approx(density_new)
+    assert out.primary.flexural_modulus_pa == pytest.approx(base.primary.flexural_modulus_pa)
+    assert out.primary.youngs_modulus_pa == pytest.approx(base.primary.youngs_modulus_pa)
+    assert out.primary.damping_ratio == pytest.approx(base.primary.damping_ratio)
+    # Mass doubles -> damping (which scales with sqrt(m_seg)) scales with sqrt(2),
+    # not with density directly, and not left unchanged.
+    assert out.primary.bend_damping == pytest.approx(
+        base.primary.bend_damping * (2.0**0.5)
+    )
+    assert out.primary.stretch_damping == pytest.approx(
+        base.primary.stretch_damping * (2.0**0.5)
+    )
+    # Only primary changes; spur/stem/secondary densities are untouched.
+    assert out.spur.density == pytest.approx(base.spur.density)
+    assert out.stem.density == pytest.approx(base.stem.density)
+    with pytest.raises(ValueError, match="density"):
+        fs.set_rod_density(base, "primary", 0.0)
+    with pytest.raises(ValueError, match="density"):
+        fs.set_rod_density(base, "primary", -1.0)
+
+
 def test_load_ranges_rejects_vbd_stretch_force():
     fs = _import_module()
     import copy

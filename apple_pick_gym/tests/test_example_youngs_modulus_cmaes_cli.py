@@ -1920,9 +1920,8 @@ def test_run_vic_pose_real_search_uses_kp_and_wide_e_bounds(monkeypatch, tmp_pat
         viewer="null",
     )
     module._run(args, argparse.ArgumentParser(), viewer=MagicMock())
-    kp_lo = math.log10(200.0)
+    kp_lo = module._LOG10_200_PER_M
     kp_hi = module._LOG10_4KN_PER_M
-    kp_init = math.log10(1.0e3)
     e_lo = module._LOG10_100KPA
     e_hi = module._LOG10_10GPA
     lo, hi = create_calls[0]["search_bounds_log10"]
@@ -1937,6 +1936,7 @@ def test_run_vic_pose_real_search_uses_kp_and_wide_e_bounds(monkeypatch, tmp_pat
         0.0,
         0.0,
         0.0,
+        module._LOG10_PRIMARY_DENSITY_LO,
     )
     assert hi[1:] == (
         e_hi,
@@ -1947,12 +1947,12 @@ def test_run_vic_pose_real_search_uses_kp_and_wide_e_bounds(monkeypatch, tmp_pat
         1.0,
         1.0,
         1.0,
+        module._LOG10_PRIMARY_DENSITY_HI,
     )
-    assert create_calls[0]["initial_mean_log10"][0] == pytest.approx(kp_init)
-    assert create_calls[0]["initial_mean_log10"][1:] == pytest.approx(
-        module._REAL_CMA_MEAN_LOG10[1:]
+    assert create_calls[0]["initial_mean_log10"] == pytest.approx(
+        module._REAL_CMA_MEAN_LOG10
     )
-    assert create_calls[0]["cma_stds"] == pytest.approx([1.0] * 6 + [0.5] * 3)
+    assert create_calls[0]["cma_stds"] == pytest.approx(module._REAL_CMA_STDS)
 
 
 def test_run_rejects_multiple_structures_for_vic_pose(monkeypatch, tmp_path):

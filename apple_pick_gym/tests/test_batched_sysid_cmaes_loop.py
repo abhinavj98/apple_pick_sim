@@ -926,6 +926,18 @@ def test_snapshot_xfavorite_log10_accepts_length_9():
     assert cmaes.snapshot_xfavorite_log10(Opt9()) == pytest.approx(favorite)
 
 
+def test_snapshot_xfavorite_log10_accepts_length_10():
+    """Length-10 CMA (E + roll + ζ + primary_density) must snapshot full xfavorite."""
+    favorite = (3.0, 8.7, 9.0, 9.0, 8.7, -0.1, 0.5, 0.5, 0.5, math.log10(750.0))
+
+    class Opt10:
+        @property
+        def result(self):
+            return type("R", (), {"xfavorite": list(favorite)})()
+
+    assert cmaes.snapshot_xfavorite_log10(Opt10()) == pytest.approx(favorite)
+
+
 def test_fit_uses_xfavorite_not_mean_or_xbest():
     bounds = _bounds()
 

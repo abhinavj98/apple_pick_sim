@@ -1,10 +1,14 @@
 """Dataset-driven support-k_p + flexural/axial-modulus CMA-ES fit entry point.
 
-Fits a 9-vector ``(support_kp, E_flex_spur, E_flex_stem, E_youngs_spur,
+Fits a 10-vector ``(support_kp, E_flex_spur, E_flex_stem, E_youngs_spur,
 E_youngs_stem, support_roll_kp, spur_damping_ratio, stem_damping_ratio,
-support_joint_zeta)``. Dims 0–5 are log10 stiffness; dims 6–8 are linear ζ in
-``[0, 1]``. Primary E and primary rod damping stay fixed from ground truth /
-fixture. Runs one independent bounded pycma optimizer per selected structure,
+support_joint_zeta, primary_density)``. Dims 0-5 and 9 are log10 (stiffness,
+then primary density); dims 6-8 are linear ζ in ``[0, 1]``. Primary E and
+primary rod damping stay fixed from ground truth / fixture — primary bending
+is treated as negligible, but its density (hence self-weight) is searched
+instead of assumed from a catalog default, since the support joints
+(``support_kp``/``support_roll_kp``) would otherwise have to absorb any error
+in that assumption. Runs one independent bounded pycma optimizer per selected structure,
 advances active optimizers in synchronized generation waves through fused
 structure x population x direction replay, then explicitly scores each stopped
 distribution mean. Writes ``<output>/cmaes_report.json`` atomically and
@@ -175,6 +179,14 @@ _LOG10_ROLL_MEAN = math.log10(0.75)  # proxy fixture
 _ZETA_LO = 0.0
 _ZETA_HI = 1.0
 _ZETA_MEAN = 0.5
+# Primary rod density (kg/m3): a loose physical prior, deliberately wider than
+# the 600-900 catalog default this pipeline has silently assumed until now.
+# Primary bending is treated as negligible (its modulus stays fixed), but its
+# self-weight is not — an unvalidated mass assumption forces support_kp /
+# support_roll_kp to absorb whatever error is in it. Real vic_pose only.
+_LOG10_PRIMARY_DENSITY_LO = math.log10(400.0)
+_LOG10_PRIMARY_DENSITY_HI = math.log10(1600.0)
+_LOG10_PRIMARY_DENSITY_MEAN = math.log10(750.0)  # center of the prior catalog default
 ##DO NOT USE
 _CMA_SEARCH_LOG10_LOWER = [
     2.0,
@@ -200,10 +212,10 @@ _CMA_SEARCH_LOG10_UPPER = [
 ]
 
 
-# Real vic_pose: support kp 200–4 kN/m; moduli 100 kPa–10 GPa; roll 0.1–100 N·m/rad;
-# ζ dims linear [0, 1].
+# Real vic_pose: support kp 200–4 kN/m; moduli 100 kPa–10 GPa; roll 0.5–2 N·m/rad;
+# ζ dims linear [0, 1]; primary density 400-1600 kg/m3 (log10 again).
 _REAL_CMA_SEARCH_LOG10_LOWER = [
-    _LOG10_100_PER_M,    # support_kp_log10
+    _LOG10_200_PER_M,    # support_kp_log10
     _LOG10_100KPA,       # spur_E_flex_log10
     _LOG10_100KPA,       # stem_E_flex_log10
     _LOG10_100KPA,       # spur_E_youngs_log10
@@ -212,6 +224,7 @@ _REAL_CMA_SEARCH_LOG10_LOWER = [
     _ZETA_LO,
     _ZETA_LO,
     _ZETA_LO,
+    _LOG10_PRIMARY_DENSITY_LO,  # primary_density_log10
 ]
 _REAL_CMA_SEARCH_LOG10_UPPER = [
     _LOG10_4KN_PER_M,
@@ -223,6 +236,7 @@ _REAL_CMA_SEARCH_LOG10_UPPER = [
     _ZETA_HI,
     _ZETA_HI,
     _ZETA_HI,
+    _LOG10_PRIMARY_DENSITY_HI,
 ]
 _CMA_MEAN_LOG10 = [
     _CMA_SEARCH_LOG10_LOWER[i]
@@ -239,6 +253,7 @@ _REAL_CMA_MEAN_LOG10 = [
     _ZETA_MEAN,
     _ZETA_MEAN,
     _ZETA_MEAN,
+    _LOG10_PRIMARY_DENSITY_MEAN,
 ]
 # ζ dims (6-8) live on an absolute [0, 1] box, not a multi-decade log10 span,
 # so cma_stds=1.0 there would give phenotype std = initial_sigma_log10 (0.2) —
@@ -247,6 +262,10 @@ _REAL_CMA_MEAN_LOG10 = [
 # well clear of the [0, 1] boundary from a mean-0.5 start.
 _ZETA_CMA_STD = 0.3
 _CMA_STDS = [1.0] * 6 + [_ZETA_CMA_STD] * 3
+# vic_pose's 10th dim (primary_density) is log10 again, over a box narrower than
+# support_roll_kp's (~0.48 vs ~0.6 decades) which already uses the plain 1.0
+# default without a shrink — so this dim gets 1.0 too, not a shrunk value.
+_REAL_CMA_STDS = [1.0] * 6 + [_ZETA_CMA_STD] * 3 + [1.0]
 CMA_SEARCH_PARAMS: dict[str, Any] = {
     "initial_mean_log10": list(_CMA_MEAN_LOG10),
     "initial_sigma_log10": 0.2,
@@ -293,6 +312,19 @@ def _effective_initial_mean_log10(
     else:
         dim = len(raw)
     return list(resolve_initial_mean_log10(raw, bounds, phenotype_dim=dim))
+
+
+def _effective_cma_stds(mode: str, search: dict[str, Any]) -> Any:
+    """Sim-sim uses CMA_SEARCH_PARAMS; vic_pose uses ``_REAL_CMA_STDS``.
+
+    Needed because ``_REAL_CMA_SEARCH_LOG10_*``/``_REAL_CMA_MEAN_LOG10`` carry a
+    10th (primary_density) dim that ``CMA_SEARCH_PARAMS["cma_stds"]`` (sim-sim,
+    still length 9) does not — using it directly for vic_pose would fail
+    ``validate_cma_stds``'s length check against the vic_pose phenotype_dim.
+    """
+    if mode == "vic_pose":
+        return list(_REAL_CMA_STDS)
+    return search["cma_stds"]
 
 
 def _require_ft_wrist_lpf_per_structure(
@@ -1644,7 +1676,7 @@ def _run(
     )
     try:
         cma_stds = validate_cma_stds(
-            search["cma_stds"],
+            _effective_cma_stds(mode, search),
             phenotype_dim=phenotype_dim,
         )
     except (KeyError, ValueError, TypeError) as exc:

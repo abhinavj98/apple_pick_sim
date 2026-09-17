@@ -56,7 +56,7 @@ def test_candidates_from_log10_vector_round_trip():
 def test_candidates_from_log10_vector_rejects_wrong_length():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
-    with pytest.raises(ValueError, match="3, 5, 6, or 9"):
+    with pytest.raises(ValueError, match="3, 5, 6, 9, or 10"):
         cmaes.candidates_from_log10_vector((4.0, 9.0))
 
 
@@ -84,6 +84,35 @@ def test_candidates_from_log10_vector_9d_includes_damping_ratios():
     assert c.stem_damping_ratio == pytest.approx(0.4)
     assert c.support_joint_zeta == pytest.approx(0.6)
     assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_candidates_from_log10_vector_10d_includes_primary_density():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    x = (4.0, 9.0, 8.5, 8.0, 7.5, math.log10(0.75), 0.25, 0.4, 0.6, math.log10(750.0))
+    c = cmaes.candidates_from_log10_vector(x)
+    assert c.support_roll_kp == pytest.approx(0.75)
+    assert c.spur_damping_ratio == pytest.approx(0.25)
+    assert c.stem_damping_ratio == pytest.approx(0.4)
+    assert c.support_joint_zeta == pytest.approx(0.6)
+    assert c.primary_density == pytest.approx(750.0)
+    assert cmaes.log10_vector_from_candidate(c) == pytest.approx(x)
+
+
+def test_log10_vector_from_candidate_rejects_primary_density_without_damping():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    c = cmaes.SupportKpYoungsCandidate(
+        support_kp=1e4,
+        spur=1e8,
+        stem=10**8.5,
+        spur_youngs=1e8,
+        stem_youngs=10**7.5,
+        support_roll_kp=0.75,
+        primary_density=750.0,
+    )
+    with pytest.raises(ValueError, match="primary_density"):
+        cmaes.log10_vector_from_candidate(c)
 
 
 def test_candidates_from_log10_vector_9d_rejects_zeta_outside_unit_interval():
@@ -116,6 +145,29 @@ def test_support_kp_apply_to_9d_sets_spur_stem_damping():
     assert out.primary.damping_ratio == pytest.approx(base.primary.damping_ratio)
 
 
+def test_support_kp_apply_to_10d_sets_primary_density_only():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    base = _base_primary_spur_stem()
+    density_new = base.primary.density * 1.5
+    out = cmaes.SupportKpYoungsCandidate(
+        support_kp=5e3,
+        spur=1e8,
+        stem=1e7,
+        spur_youngs=3e8,
+        stem_youngs=2e8,
+        support_roll_kp=0.75,
+        spur_damping_ratio=0.2,
+        stem_damping_ratio=0.35,
+        support_joint_zeta=0.55,
+        primary_density=density_new,
+    ).apply_to(base)
+    assert out.primary.density == pytest.approx(density_new)
+    assert out.primary.flexural_modulus_pa == pytest.approx(base.primary.flexural_modulus_pa)
+    assert out.spur.density == pytest.approx(base.spur.density)
+    assert out.stem.density == pytest.approx(base.stem.density)
+
+
 def test_resolve_initial_mean_log10_bounds_midpoint_dim9():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
@@ -130,6 +182,20 @@ def test_resolve_initial_mean_log10_bounds_midpoint_dim9():
     assert mean[6:] == pytest.approx((0.5, 0.5, 0.5))
 
 
+def test_resolve_initial_mean_log10_bounds_midpoint_dim10():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    bounds = cmaes.extract_youngs_modulus_cma_bounds(_valid_youngs_ranges())
+    mean = cmaes.resolve_initial_mean_log10(
+        "bounds_midpoint", bounds, phenotype_dim=10
+    )
+    assert len(mean) == 10
+    assert mean[:9] == pytest.approx(
+        cmaes.resolve_initial_mean_log10("bounds_midpoint", bounds, phenotype_dim=9)
+    )
+    assert mean[9] == pytest.approx(cmaes.DEFAULT_PRIMARY_DENSITY_LOG10_MIDPOINT)
+
+
 def test_normalize_search_bounds_log10_accepts_dim9():
     from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
 
@@ -140,6 +206,76 @@ def test_normalize_search_bounds_log10_accepts_dim9():
     assert len(box[0]) == 9
     assert box[0][6:] == pytest.approx((0.0, 0.0, 0.0))
     assert box[1][6:] == pytest.approx((1.0, 1.0, 1.0))
+
+
+def test_normalize_search_bounds_log10_accepts_dim10():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    lower = [2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0, 2.6]
+    upper = [6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0, 3.1]
+    box = cmaes.normalize_search_bounds_log10({"lower": lower, "upper": upper})
+    assert box is not None
+    assert len(box[0]) == 10
+    assert box[0][6:9] == pytest.approx((0.0, 0.0, 0.0))
+    assert box[1][6:9] == pytest.approx((1.0, 1.0, 1.0))
+    assert box[0][9] == pytest.approx(2.6)
+    assert box[1][9] == pytest.approx(3.1)
+
+
+def test_search_bounds_report_payload_dim9_treats_zeta_as_linear():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    lower = (2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0)
+    upper = (6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0)
+    payload = cmaes.search_bounds_report_payload((lower, upper))
+    assert payload is not None
+    assert payload["physical_min_pa"][:6] == pytest.approx([10.0**v for v in lower[:6]])
+    assert payload["physical_min_pa"][6:9] == pytest.approx([0.0, 0.0, 0.0])
+    assert payload["physical_max_pa"][6:9] == pytest.approx([1.0, 1.0, 1.0])
+
+
+def test_search_bounds_report_payload_dim10_treats_only_zeta_as_linear():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    lower = (2.0, 4.0, 4.0, 7.0, 7.0, -1.0, 0.0, 0.0, 0.0, 2.6)
+    upper = (6.0, 10.7, 10.7, 10.7, 10.7, 2.0, 1.0, 1.0, 1.0, 3.1)
+    payload = cmaes.search_bounds_report_payload((lower, upper))
+    assert payload is not None
+    # dims 0-5 log10
+    assert payload["physical_min_pa"][:6] == pytest.approx([10.0**v for v in lower[:6]])
+    assert payload["physical_max_pa"][:6] == pytest.approx([10.0**v for v in upper[:6]])
+    # dims 6-8 linear zeta, NOT 10**x
+    assert payload["physical_min_pa"][6:9] == pytest.approx([0.0, 0.0, 0.0])
+    assert payload["physical_max_pa"][6:9] == pytest.approx([1.0, 1.0, 1.0])
+    # dim 9 (primary density) is log10 again, NOT identity
+    assert payload["physical_min_pa"][9] == pytest.approx(10.0**2.6)
+    assert payload["physical_max_pa"][9] == pytest.approx(10.0**3.1)
+
+
+def test_candidate_to_e_list_includes_primary_density_when_damping_set():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    with_density = cmaes.SupportKpYoungsCandidate(
+        support_kp=1e4,
+        spur=1e8,
+        stem=10**8.5,
+        spur_youngs=1e8,
+        stem_youngs=10**7.5,
+        support_roll_kp=0.75,
+        spur_damping_ratio=0.25,
+        stem_damping_ratio=0.4,
+        support_joint_zeta=0.6,
+        primary_density=750.0,
+    )
+    e_list = cmaes._candidate_to_e_list(with_density)
+    assert len(e_list) == 10
+    assert e_list[-1] == pytest.approx(750.0)
+    log10_list = cmaes._candidate_to_log10_list(with_density)
+    assert len(log10_list) == 10
+    assert log10_list[-1] == pytest.approx(math.log10(750.0))
+
+    without_density = with_density._replace(primary_density=None)
+    assert len(cmaes._candidate_to_e_list(without_density)) == 9
 
 
 def test_resolve_initial_mean_log10_bounds_midpoint_dim6():

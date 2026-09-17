@@ -1377,6 +1377,41 @@ def set_rod_damping_ratio(
     return out
 
 
+def set_rod_density(
+    params: FruitingSystemParams,
+    segment: str,
+    density: float,
+) -> FruitingSystemParams:
+    """Return a copy with absolute density on one rod segment.
+
+    Re-derives segment mass (hence bend/stretch damping, which scale with
+    ``sqrt(m_seg)``) via :func:`rod_params_from_material`. Freezes geometry
+    (length, radius) and both moduli / damping_ratio.
+    """
+    if density <= 0.0:
+        raise ValueError("density must be positive")
+    if segment not in ("primary", "secondary", "spur", "stem"):
+        raise ValueError(f"Unknown segment {segment!r}")
+    out = copy_fruiting_params(params)
+    rod = getattr(out, segment)
+    if rod is None:
+        raise ValueError(f"Segment {segment!r} is disabled in params")
+    new_rod = rod_params_from_material(
+        rod.flexural_modulus_pa,
+        rod.youngs_modulus_pa,
+        rod.damping_ratio,
+        rod.length,
+        rod.radius,
+        float(density),
+        rod.num_segments,
+        rod.direction,
+        preload_chord_m=rod.preload_chord_m,
+        axial_preload_n=rod.axial_preload_n,
+    )
+    setattr(out, segment, new_rod)
+    return out
+
+
 def enabled_rod_segments(params: FruitingSystemParams) -> tuple[str, ...]:
     """Rod segment names present in ``params``."""
     return tuple(

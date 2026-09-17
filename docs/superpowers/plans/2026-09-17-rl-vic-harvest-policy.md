@@ -105,20 +105,20 @@ Pure-torch, no sim. Ported the damping law (not the file) from `feature/rl-gym`'
 
 ---
 
-### Task 2: Per-env arm domain randomization
+### Task 2: Per-env arm domain randomization — **DONE**
 
-**Files:** modify `apple_pick_sim/robot/fr3_robot/setup.py`; create `apple_pick_sim/robot/fr3_robot/arm_domain_randomization.py`; test `apple_pick_sim/tests/test_arm_domain_randomization.py`.
+**Files:** modified `apple_pick_sim/robot/fr3_robot/setup.py`; created `apple_pick_sim/robot/fr3_robot/arm_domain_randomization.py`; test `apple_pick_sim/tests/test_arm_domain_randomization.py`.
 
-Generalize the existing broadcast loops (`setup.py:346` and siblings) from one `values` vector to per-world values. The per-world sync is already verified end to end — `notify_model_changed(JOINT_DOF_PROPERTIES)` → `update_dof_properties_kernel` at `dim=(nworld, nv)` → `dof_armature[world, mjc_dof]`.
+Generalized the existing broadcast loops (`setup.py`'s `_set_fr3_joint_armature` / `_set_vic_passive_joint_damping` / `_set_fr3_joint_friction`) from one `values` vector to per-world `(num_worlds, num_arm_dofs)` values via a new shared `_broadcast_or_per_world_dof_values` helper — existing scalar/vector callers are untouched (verified: the 2D-array test fails on the pre-edit code, passes after; 33 tests across `test_batched_vic.py`/`test_vic_joint_torques.py`/`test_fr3_v21_props.py`/`test_fr3_usd_import.py` still pass). The per-world MuJoCo sync is verified end to end — `notify_model_changed(JOINT_DOF_PROPERTIES)` → `update_dof_properties_kernel` at `dim=(nworld, nv)` → `dof_armature[world, mjc_dof]`.
 
-- [ ] **Step 1:** Failing test — assign distinct armature/friction/damping per world, notify, then assert `mjw_model.dof_armature[w]` differs per world and matches what was written. Cover link mass/inertia via `BODY_INERTIAL_PROPERTIES`.
-- [ ] **Step 2:** Confirm failure.
-- [ ] **Step 3:** Implement per-world setters (keep the existing broadcast signatures working — additive only) plus an `ArmDomainRandomization` sampler with bounded ranges for joint dynamics, link mass/inertia, EE payload/TCP geometry (**tight band — this is sys-ID-calibrated**), and controller gains.
-- [ ] **Step 4:** Confirm pass.
-- [ ] **Step 5:** Artifact — per-world armature/friction/damping histograms plus a plot showing two envs with different arm DR responding differently to the same commanded pose step. Save to `tmp/rl_vic_viz/task2_arm_dr.png`.
-- [ ] **Step 6:** Commit.
+- [x] **Step 1:** Failing tests (9 cases) — pure-numpy sampling (shapes, range bounds, seed reproducibility, per-env distinctness) plus sim-integration (per-world 2D setter behavior, MuJoCo-side sync distinct per world, re-randomization, link-mass/inertia and EE-payload scaling).
+- [x] **Step 2:** Confirmed failure (`ModuleNotFoundError`, then one test's own bug — see below).
+- [x] **Step 3:** Implemented per-world setters (additive-only generalization) plus `ArmDomainRandomization{Ranges,Sample}` and `sample_arm_domain_randomization` / `apply_joint_dynamics_dr` / `apply_link_mass_inertia_dr` / `apply_ee_payload_dr` in the new module. **Controller gains (`kp_null`/`kd_null`) are sampled but explicitly NOT wired per-env** — `vic_joint_torques_batched.py`'s null-space law takes them as batch-uniform Python floats today; the underlying torch broadcast would work with a `(N,1)` tensor with no other math changes, but threading it through `scene.vic_jt_kp_null`/`kd_null` and consumers is a contained follow-up, out of scope for this task's file list (only `setup.py` + the new module).
+- [x] **Step 4:** Confirmed pass — 9/9 (one test had its own bug: called a setter without the `dofs_per_world` kwarg the real batched caller always passes, fixed in the test, not the implementation).
+- [x] **Step 5:** Artifact — `tmp/rl_vic_viz/task2_arm_dr.png`: per-env armature/friction/damping histograms (N=16) plus a same-commanded-twist, two-extreme-envs response plot in the full coupled sim, shown as **delta-from-start** (isolating the DR effect from each env's own distinct IK start pose — see Task 0a's IK-non-reproducibility finding). Low armature/friction (×0.3) produces a much larger, oscillatory joint-2 response (~0.35 rad) than high (×3.0, ~0.06 rad, monotonic) — exactly the expected physical direction.
+- [x] **Step 6:** Commit.
 
-**Note for the implementer:** arm DR is reassignable at any time plus a notify, so it can be re-randomized **per episode** on reset. Plant DR cannot (baked at build). Expose a `resample()` entry point for the reset path in Task 6.
+**Note for the implementer:** arm DR is reassignable at any time plus a notify, so it can be re-randomized **per episode** on reset (`apply_joint_dynamics_dr` re-verified idempotent/reassignable in the test suite). Plant DR cannot (baked at build). Task 6 should call `sample_arm_domain_randomization` + the three `apply_*` functions from its `reset()` path.
 
 ---
 

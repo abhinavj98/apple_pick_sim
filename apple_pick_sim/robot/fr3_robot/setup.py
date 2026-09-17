@@ -324,33 +324,66 @@ def zero_mujoco_joint_pd(robot_model: newton.Model) -> None:
     robot_model.joint_target_kd.assign(np.zeros(n, dtype=np.float32))
 
 
+def _broadcast_or_per_world_dof_values(
+    value: float | Sequence[float] | np.ndarray,
+    *,
+    num_arm_dofs: int,
+    num_worlds: int,
+    dtype: np.dtype,
+) -> np.ndarray:
+    """Return a ``(num_worlds, num_arm_dofs)`` array of per-world DOF values.
+
+    ``value`` may be a scalar or length-``num_arm_dofs`` sequence, broadcast to
+    every world via :func:`_arm_dof_values` (existing behavior, unchanged), or
+    an already-``(num_worlds, num_arm_dofs)`` array for per-env domain
+    randomization (new -- see
+    ``apple_pick_sim.robot.fr3_robot.arm_domain_randomization``).
+    """
+    n_arm = int(num_arm_dofs)
+    arr = np.asarray(value, dtype=dtype)
+    if arr.ndim == 2:
+        if arr.shape != (int(num_worlds), n_arm):
+            raise ValueError(
+                f"expected per-world values shaped ({num_worlds}, {n_arm}), got {arr.shape}"
+            )
+        return arr
+    values = _arm_dof_values(value, num_arm_dofs=n_arm, dtype=dtype)
+    return np.tile(values, (int(num_worlds), 1))
+
+
 def _set_fr3_joint_armature(
     robot_model: newton.Model,
-    armature: tuple[float, ...] | np.ndarray = FR3_REFLECTED_MOTOR_INERTIA_KGM2,
+    armature: float | tuple[float, ...] | np.ndarray = FR3_REFLECTED_MOTOR_INERTIA_KGM2,
     *,
     num_arm_dofs: int = _N_ARM_DOF,
     dofs_per_world: int | None = None,
 ) -> None:
-    """Assign reflected motor inertia on each world's arm DOFs (MuJoCo ``dof_armature``)."""
+    """Assign reflected motor inertia on each world's arm DOFs (MuJoCo ``dof_armature``).
+
+    ``armature`` may be a scalar/length-``num_arm_dofs`` vector broadcast to
+    every world (default), or a ``(num_worlds, num_arm_dofs)`` array for
+    per-env domain randomization.
+    """
     if robot_model.joint_armature is None:
         return
     arr = robot_model.joint_armature.numpy().copy()
-    values = np.asarray(armature, dtype=arr.dtype).reshape(-1)
     n_arm = int(num_arm_dofs)
-    if int(values.shape[0]) != n_arm:
-        raise ValueError(f"armature length {values.shape[0]} != num_arm_dofs {n_arm}")
     n = int(arr.shape[0])
     stride = int(dofs_per_world) if dofs_per_world is not None else max(n, n_arm)
     if stride < n_arm:
         raise ValueError(f"dofs_per_world {stride} < num_arm_dofs {n_arm}")
-    for start in range(0, n, stride):
-        arr[start : start + n_arm] = values
+    num_worlds = max(1, n // stride)
+    per_world = _broadcast_or_per_world_dof_values(
+        armature, num_arm_dofs=n_arm, num_worlds=num_worlds, dtype=arr.dtype
+    )
+    for w, start in enumerate(range(0, n, stride)):
+        arr[start : start + n_arm] = per_world[w]
     robot_model.joint_armature.assign(arr)
 
 
 def _set_vic_passive_joint_damping(
     robot_model: newton.Model,
-    vic_joint_damping: float | Sequence[float],
+    vic_joint_damping: float | Sequence[float] | np.ndarray,
     *,
     num_arm_dofs: int = _N_ARM_DOF,
     dofs_per_world: int | None = None,
@@ -359,23 +392,31 @@ def _set_vic_passive_joint_damping(
 
     Passive viscous damping absorbs cable-coupling disturbances in null-space modes that
     task-space VIC ``K_d`` cannot see. Default matches franka_fr3v2_custom ``mu_viscous``.
+
+    ``vic_joint_damping`` may be a scalar/length-``num_arm_dofs`` vector broadcast
+    to every world (default), or a ``(num_worlds, num_arm_dofs)`` array for
+    per-env domain randomization.
     """
     if robot_model.joint_damping is None:
         return
     damping = robot_model.joint_damping.numpy().copy()
-    values = _arm_dof_values(vic_joint_damping, num_arm_dofs=num_arm_dofs, dtype=damping.dtype)
+    n_arm = int(num_arm_dofs)
     n = int(damping.shape[0])
-    stride = int(dofs_per_world) if dofs_per_world is not None else max(n, int(num_arm_dofs))
-    if stride < int(num_arm_dofs):
-        raise ValueError(f"dofs_per_world {stride} < num_arm_dofs {num_arm_dofs}")
-    for start in range(0, n, stride):
-        damping[start : start + int(num_arm_dofs)] = values
+    stride = int(dofs_per_world) if dofs_per_world is not None else max(n, n_arm)
+    if stride < n_arm:
+        raise ValueError(f"dofs_per_world {stride} < num_arm_dofs {n_arm}")
+    num_worlds = max(1, n // stride)
+    per_world = _broadcast_or_per_world_dof_values(
+        vic_joint_damping, num_arm_dofs=n_arm, num_worlds=num_worlds, dtype=damping.dtype
+    )
+    for w, start in enumerate(range(0, n, stride)):
+        damping[start : start + n_arm] = per_world[w]
     robot_model.joint_damping.assign(damping)
 
 
 def _set_fr3_joint_friction(
     robot_model: newton.Model,
-    friction: float | Sequence[float],
+    friction: float | Sequence[float] | np.ndarray,
     *,
     num_arm_dofs: int = _N_ARM_DOF,
     dofs_per_world: int | None = None,
@@ -383,17 +424,25 @@ def _set_fr3_joint_friction(
     """Assign ``Model.joint_friction`` on arm DOFs (synced to ``mj_model.dof_frictionloss``).
 
     Default matches franka_fr3v2_custom ``mu_coulomb`` (dry Coulomb, Nm).
+
+    ``friction`` may be a scalar/length-``num_arm_dofs`` vector broadcast to
+    every world (default), or a ``(num_worlds, num_arm_dofs)`` array for
+    per-env domain randomization.
     """
     if robot_model.joint_friction is None:
         return
     fric = robot_model.joint_friction.numpy().copy()
-    values = _arm_dof_values(friction, num_arm_dofs=num_arm_dofs, dtype=fric.dtype)
+    n_arm = int(num_arm_dofs)
     n = int(fric.shape[0])
-    stride = int(dofs_per_world) if dofs_per_world is not None else max(n, int(num_arm_dofs))
-    if stride < int(num_arm_dofs):
-        raise ValueError(f"dofs_per_world {stride} < num_arm_dofs {num_arm_dofs}")
-    for start in range(0, n, stride):
-        fric[start : start + int(num_arm_dofs)] = values
+    stride = int(dofs_per_world) if dofs_per_world is not None else max(n, n_arm)
+    if stride < n_arm:
+        raise ValueError(f"dofs_per_world {stride} < num_arm_dofs {n_arm}")
+    num_worlds = max(1, n // stride)
+    per_world = _broadcast_or_per_world_dof_values(
+        friction, num_arm_dofs=n_arm, num_worlds=num_worlds, dtype=fric.dtype
+    )
+    for w, start in enumerate(range(0, n, stride)):
+        fric[start : start + n_arm] = per_world[w]
     robot_model.joint_friction.assign(fric)
 
 

@@ -90,18 +90,18 @@ Training at N≤512 does not need this task. Training above it does.
 
 ---
 
-### Task 1: 13-D delta-pose action → 19-D `vic_pose` packing
+### Task 1: 13-D delta-pose action → 19-D `vic_pose` packing — **DONE**
 
-**Files:** create `apple_pick_gym/batched_envs/harvest_action.py`; test `apple_pick_gym/tests/test_harvest_action.py`.
+**Files:** created `apple_pick_gym/batched_envs/harvest_action.py`; test `apple_pick_gym/tests/test_harvest_action.py`.
 
-Pure-torch, no sim. Port `derive_critical_damping` from `feature/rl-gym`'s `harvest_gains.py`.
+Pure-torch, no sim. Ported the damping law (not the file) from `feature/rl-gym`'s `harvest_gains.py::derive_critical_damping`.
 
-- [ ] **Step 1:** Failing tests — delta integration accumulates onto a target pose; quaternion stays normalized under repeated small rotations; `Kd = 2ζ√Kp`; bounds clamp; output is exactly 19 wide with `quat` in `wxyz` order (H2 §3 external contract).
-- [ ] **Step 2:** Confirm failure.
-- [ ] **Step 3:** Implement `HarvestActionBounds`, `integrate_delta_pose(target, delta, bounds)`, `pack_vic_pose_action(target, Kp, zeta) -> (N,19)`.
-- [ ] **Step 4:** Confirm pass.
-- [ ] **Step 5:** Artifact — plot a commanded delta sequence and the integrated target pose trajectory to `tmp/rl_vic_viz/task1_delta_integration.png`.
-- [ ] **Step 6:** Commit.
+- [x] **Step 1:** Failing tests (13 cases) — delta integration accumulates onto a target pose; quaternion stays normalized under repeated small rotations (200-step norm check + an exact quarter-turn check); `Kd = 2ζ√Kp` (incl. scalar and per-env-tensor `ζ`, and negative-stiffness clamping); bounds clamp (delta norm-clip, Kp/ζ range-clamp); wrong action width raises; output is exactly 19 wide with `quat` in `wxyz` order (H2 §3 external contract) verified via an asymmetric quaternion round-tripping unreordered; full split→integrate→pack pipeline.
+- [x] **Step 2:** Confirmed failure (`ModuleNotFoundError`).
+- [x] **Step 3:** Implemented `HarvestActionBounds` (13-D layout: `[dp(3), drot(3), Klin(3), Kang(3), zeta(1)]`), `split_harvest_action` (reuses the existing `clip_action_tensor` norm-clip — see `batched_action_twists.py` — rather than reimplementing it), `integrate_delta_pose(target, delta)` (world-frame incremental rotation via left-multiply `normalize(delta_q ⊗ quat)`, matching the existing single-env `keyboard.py::integrate_tcp_target` convention, adapted to batched torch + `wxyz`), `pack_vic_pose_action(target, linear_k, angular_k, zeta) -> (N,19)`.
+- [x] **Step 4:** Confirmed pass — 13/13 (one test had an arithmetic mistake in its own expected value, fixed; implementation was correct).
+- [x] **Step 5:** Artifact — `tmp/rl_vic_viz/task1_delta_integration.png`: position drift under a repeating commanded pattern, `‖quat‖` flat at 1.0 (±1e-4) over 120 steps, and delta norms correctly saturating at the configured clamps.
+- [x] **Step 6:** Commit.
 
 ---
 

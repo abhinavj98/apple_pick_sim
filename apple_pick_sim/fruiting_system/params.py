@@ -589,9 +589,11 @@ _SIM_BUILD_ALLOWED_KEYS = frozenset(
         "joint_angular_kp_overrides",
         "joint_linear_kp_overrides",
         "joint_roll_kp_overrides",
+        "support_dr",
     }
 )
 _VIC_GAIN_KEYS = ("linear_k", "linear_d", "angular_k", "angular_d")
+_SUPPORT_DR_KEYS = ("kp", "roll_kp", "zeta")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -605,6 +607,32 @@ class VicGainsConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class RangeF:
+    """A closed ``[min, max]`` float range (``min <= max``, both finite and >= 0)."""
+
+    min: float
+    max: float
+
+
+@dataclasses.dataclass(frozen=True)
+class SupportJointDRRanges:
+    """Per-env support-joint domain-randomization ranges from ``sim_build.support_dr``.
+
+    Fills CMA search-box knobs 8-10 (support ``k_p``, support roll ``k_p``,
+    support joint ``zeta``) that the rod-level ranges blocks do not cover --
+    see ``docs/superpowers/plans/2026-09-17-rl-vic-harvest-policy.md`` Task 3.
+    Sampling and application live in
+    ``apple_pick_gym.batched_envs.support_joint_dr``, reusing the existing
+    ``apply_per_env_support_joint_penalties`` / ``apply_per_env_support_roll_penalties``
+    helpers built for CMA.
+    """
+
+    kp: RangeF
+    roll_kp: RangeF
+    zeta: RangeF
+
+
+@dataclasses.dataclass(frozen=True)
 class SimBuildConfig:
     """Optional sim-build knobs from a ranges JSON ``sim_build`` block."""
 
@@ -615,6 +643,7 @@ class SimBuildConfig:
     joint_linear_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     joint_roll_kp_overrides: dict[str, float] = dataclasses.field(default_factory=dict)
     joint_damping_ratio: float | None = None
+    support_dr: SupportJointDRRanges | None = None
 
 
 def _coerce_xyz_triplet(raw: object, *, field: str) -> tuple[float, float, float]:
@@ -682,6 +711,32 @@ def _coerce_joint_damping_ratio(raw: object) -> float | None:
     return _coerce_nonnegative_float(raw, field="sim_build.joint_damping_ratio")
 
 
+def _coerce_range_f(raw: object, *, field: str) -> RangeF:
+    if not isinstance(raw, dict) or set(raw) != {"min", "max"}:
+        raise ValueError(f"sim_build.{field} must be a JSON object with exactly 'min'/'max'")
+    lo = _coerce_nonnegative_float(raw["min"], field=f"sim_build.{field}.min")
+    hi = _coerce_nonnegative_float(raw["max"], field=f"sim_build.{field}.max")
+    if lo > hi:
+        raise ValueError(f"sim_build.{field}.min ({lo}) must be <= max ({hi})")
+    return RangeF(min=lo, max=hi)
+
+
+def _coerce_support_dr(raw: object) -> SupportJointDRRanges:
+    if not isinstance(raw, dict):
+        raise ValueError("sim_build.support_dr must be a JSON object")
+    missing = set(_SUPPORT_DR_KEYS) - set(raw)
+    if missing:
+        raise ValueError(f"sim_build.support_dr missing required keys: {sorted(missing)}")
+    unknown = sorted(set(raw) - set(_SUPPORT_DR_KEYS))
+    if unknown:
+        raise ValueError(f"sim_build.support_dr has unknown keys: {unknown}")
+    return SupportJointDRRanges(
+        kp=_coerce_range_f(raw["kp"], field="support_dr.kp"),
+        roll_kp=_coerce_range_f(raw["roll_kp"], field="support_dr.roll_kp"),
+        zeta=_coerce_range_f(raw["zeta"], field="support_dr.zeta"),
+    )
+
+
 def _validate_sim_build(block: object) -> None:
     """Raise ValueError if ``sim_build`` is present but invalid."""
     if block is None:
@@ -714,6 +769,8 @@ def _validate_sim_build(block: object) -> None:
             "sim_build.joint_damping_ratio is mutually exclusive with "
             "joint_angular_kd_overrides / joint_linear_kd_overrides"
         )
+    if "support_dr" in block:
+        _coerce_support_dr(block["support_dr"])
 
 
 def parse_sim_build(ranges: dict) -> SimBuildConfig | None:
@@ -742,6 +799,9 @@ def parse_sim_build(ranges: dict) -> SimBuildConfig | None:
             block.get("joint_roll_kp_overrides"), field="joint_roll_kp_overrides"
         ),
         joint_damping_ratio=_coerce_joint_damping_ratio(block.get("joint_damping_ratio")),
+        support_dr=(
+            _coerce_support_dr(block["support_dr"]) if "support_dr" in block else None
+        ),
     )
 
 

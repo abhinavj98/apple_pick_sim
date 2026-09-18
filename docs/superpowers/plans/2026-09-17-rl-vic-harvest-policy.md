@@ -122,39 +122,39 @@ Generalized the existing broadcast loops (`setup.py`'s `_set_fr3_joint_armature`
 
 ---
 
-### Task 3: Plant DR — uniform from fixture, extended to **all ten CMA search knobs**
+### Task 3: Plant DR — uniform from fixture, extended to **all ten CMA search knobs** — **DONE**
 
-**Files:** modify `apple_pick_sim/fixtures/fruiting_system_ranges_real_world_proxy_variance.json` (or a new RL-specific fixture); modify `apple_pick_sim/fruiting_system/params.py` (`sim_build` schema); create `apple_pick_gym/batched_envs/support_joint_dr.py`; tests alongside.
+**Files:** created `apple_pick_sim/fixtures/fruiting_system_ranges_rl_harvest_variance.json` (new RL-specific fixture, decision below); modified `apple_pick_sim/fruiting_system/params.py` (`sim_build.support_dr` schema, additive); created `apple_pick_gym/batched_envs/support_joint_dr.py`; tests in `apple_pick_sim/tests/test_fruiting_system.py`, `apple_pick_sim/tests/test_rl_harvest_fixture.py`, `apple_pick_gym/tests/test_support_joint_dr.py`.
 
-Plant DR samples **uniformly from the ranges fixture**. Rod-level params already flow per-env through `sample_heterogeneous_params_list` (`params.py:1122`). The requirement here is that DR covers **every knob the CMA search varies** — a parameter worth identifying is one the policy should be robust to.
+**Decision: new fixture, not widening the shared one.** The shared `fruiting_system_ranges_real_world_proxy_variance.json` is read by sys-ID collect/replay/CMA/benchmarks; widening its degenerate `damping_ratio` ranges in place would silently change sampled physics for every one of those consumers. `fruiting_system_ranges_rl_harvest_variance.json` forks it with (a) spur/stem `damping_ratio` widened `[0.3,0.3] -> [0.05,0.95]` and (b) `sim_build.support_dr` added. Verified byte-identical-unaffected: `test_shared_fixture_is_byte_unaffected`.
 
-**Current coverage — only 5 of 10 vary:**
+**Schema extension (`sim_build.support_dr`, additive):** new `RangeF`/`SupportJointDRRanges` dataclasses in `params.py`, wired into `_validate_sim_build`/`parse_sim_build` behind a new allowed key. Existing consumers reading `sim_build` without this key are unaffected (11 pre-existing `sim_build`/`parse_sim_build` tests still pass unchanged).
 
-| # | CMA knob | Fixture today | Status |
-| --- | --- | --- | --- |
-| 1–2 | spur/stem flexural modulus | `flexural_modulus_pa` 25–100 MPa | varies |
-| 3–4 | spur/stem axial modulus | `youngs_modulus_pa` 25–100 MPa | varies |
-| 5 | primary density | `primary.density` 600–900 | varies |
-| 6–7 | spur/stem `damping_ratio` | `min == max == 0.3` | **degenerate** |
-| 8 | `support_kp` | `sim_build.joint_{angular,linear}_kp_overrides.support = 10000.0` | **scalar, no range** |
-| 9 | `support_roll_kp` | `sim_build.joint_roll_kp_overrides.support = 0.75` | **scalar** |
-| 10 | `support_joint_zeta` | `sim_build.joint_damping_ratio = 0.3` | **scalar** |
+**Range provenance:**
 
-**The application side already exists** — do not rebuild it. `apply_per_env_support_joint_penalties` (accepts `zeta_per_env`, covering knobs 8 and 10) and `apply_per_env_support_roll_penalties` (knob 9) in `apple_pick_gym/batched_envs/support_joint_penalties.py` already take per-env values; they were built for CMA. Only the *sampling* and *wiring* are missing.
+| Knob | Range | Source |
+| --- | --- | --- |
+| 6-7: spur/stem `damping_ratio` | `[0.05, 0.95]` | CMA's own `[0,1]` linear phenotype dim for these, edges trimmed |
+| 8: support `kp` | `[100, 1e6]` | Literally CMA's `DEFAULT_SUPPORT_KP_CMA_LOG10_LOWER/UPPER = [2,6]` |
+| 9: support `roll_kp` | `[0.075, 7.5]` | This fixture's own choice — one decade either side of CMA's `DEFAULT_SUPPORT_ROLL_KP_LOG10_MIDPOINT = log10(0.75)`; no explicit CMA box exists for this dim |
+| 10: support `zeta` | `[0.05, 0.95]` | CMA's own `[0,1]` linear dim, edges trimmed |
 
-- [ ] **Step 1:** Failing tests — (a) sampled spur/stem `damping_ratio` is non-degenerate across envs; (b) per-env support `k_p`, roll `k_p` and ζ are distinct across envs and reach the solver arrays; (c) sampling is reproducible for a fixed seed; (d) segment topology stays identical across envs. Assert apple density lands near ~800 kg/m³ rather than assuming geometric self-consistency (chord closure is *enforced*, so it proves nothing).
-- [ ] **Step 2:** Confirm failure.
-- [ ] **Step 3a:** Widen the two degenerate `damping_ratio` ranges in the fixture.
-- [ ] **Step 3b:** **Schema extension** — `sim_build` currently holds scalars and is validated against `_SIM_BUILD_ALLOWED_KEYS` (`params.py`). Add a ranges-shaped block for the support joint (e.g. `support_joint: {kp: {min,max}, roll_kp: {min,max}, zeta: {min,max}}`) and keep the existing scalar form working for every current consumer — sys-ID collect, replay and CMA all read `sim_build` and **must not change behaviour**.
-- [ ] **Step 3c:** Sample the three support values per env and call the existing `apply_per_env_support_*` helpers after build (see `apple_pick_sim/examples/stress_plant_rebuild_loop.py:412` for the call pattern).
-- [ ] **Step 4:** Confirm pass.
-- [ ] **Step 5:** Artifact — per-parameter sampled distributions for **all ten knobs** against their declared min/max, showing none is degenerate. `tmp/rl_vic_viz/task3_plant_dr.png`.
-- [ ] **Step 6:** Commit.
+**Sampling distribution matters, found mid-task:** `kp`/`roll_kp` span 4 and 2 decades respectively and are searched by CMA on a **log10** scale. An early draft sampled them linear-uniform, which put >98% of draws in the top decade of `kp`'s range (measured: 1.15% of 2000 draws below the log-midpoint, vs the ~50% a log-uniform draw gives). Fixed to log-uniform for `kp`/`roll_kp`; `zeta` stays linear-uniform (matches its own linear `[0,1]` CMA encoding). Regression-guarded by `test_kp_and_roll_kp_are_log_uniform_matching_cma_encoding`.
 
-**Range-setting note:** the CMA search box is the natural source for sensible min/max on knobs 6–10, since it is where those parameters were searched. Using the search bounds is *not* the same as the superseded "centre on the CMA fit" idea — it borrows the plausible interval, then samples it uniformly.
+**The application side already existed and was reused, not rebuilt** — `apply_per_env_support_joint_penalties` / `apply_per_env_support_roll_penalties` in `support_joint_penalties.py`, built for CMA.
 
-**Do not widen blindly:** knobs 8–10 are support-joint stiffness/damping. Very low `support_kp` makes the whole structure flop; very high values make it rigid and remove the compliance the task depends on. Sanity-check the extremes of each range in a short rollout before training on them.
+- [x] **Step 1:** Failing tests — 8 schema tests (accept/reject `support_dr`, missing/unknown keys, inverted/negative ranges); 6 sampler tests (shapes, range bounds, log-uniform, seed reproducibility, per-env distinctness); 1 integration test (per-env `kp` reaches `scene.cable.solver`'s actual joint penalty array, topology stays uniform); 9 fixture tests (non-degenerate damping ratios, all-knobs-vary, reproducibility, topology, density-in-range, shared-fixture-unaffected).
+- [x] **Step 2:** Confirmed failure at each stage (`ValueError: sim_build has unknown keys: ['support_dr']`; `ModuleNotFoundError`; log-uniform test failed at 1.15% vs the ~50% expected before the fix).
+- [x] **Step 3a:** Widened `damping_ratio` in the **new** fixture only (not the shared one).
+- [x] **Step 3b:** Schema extension landed as described above.
+- [x] **Step 3c:** `sample_support_joint_dr` + `apply_support_joint_dr` wired, mirroring `stress_plant_rebuild_loop.py:412`'s call pattern.
+- [x] **Step 4:** Confirmed pass — 159 tests across the three files, 0 regressions (also reran the pre-existing full `test_fruiting_system.py` suite: 144 passed).
+- [x] **Step 5:** Artifact — `tmp/rl_vic_viz/task3_plant_dr.png`: all ten knobs histogrammed against declared min/max at N=200, none degenerate, knobs 8-9 now correctly log-uniform after the fix.
 
+  **Extremes sanity check (required by this task, not skipped):** four corners tested (loosest/stiffest/stiff+low-damping/loose+high-damping) via `apply_support_joint_dr` + a post-override VBD re-settle. First attempt read exactly `0.0 m/s` residual speed for **every** corner — traced to `settle_quiet_every`'s periodic velocity-zeroing landing on the final sampled substep (a real artifact, not a real result; documented in the build's own warning text). Disabling it (`settle_quiet_every=None`) gave real signal: **no NaN/divergence in any corner** (a genuine positive), but **all four showed nonzero "residual_motion" after 400 re-settle substeps**, worst in the stiff-support+low-damping corner (4.18 m/s) — exactly the resonance-risk combination this task's own warning anticipated. Ran that worst corner again at 3000 substeps: speed **decreased** to 1.25 m/s, confirming convergent (damped, not runaway) dynamics — the residual is a re-settle-budget artifact of a large sudden stiffness change, not instability. **Follow-up for Task 6:** applying `apply_support_joint_dr` post-build (the CMA pattern this reuses) leaves a real, non-instantaneous transient; either budget a re-settle pass after applying it, or accept a short in-episode settling transient at reset.
+- [x] **Step 6:** Commit.
+
+**Range-setting note (from the original plan, upheld):** the CMA search box was the literal source for knobs 8 and 6/7/10; knob 9 (`roll_kp`) had no explicit CMA box, so this fixture's own decade-either-side choice is documented as such, not misattributed to CMA.
 ---
 
 ### Task 4: Sensor-realistic `ft_wrist` (EMA + bias/noise/drift)

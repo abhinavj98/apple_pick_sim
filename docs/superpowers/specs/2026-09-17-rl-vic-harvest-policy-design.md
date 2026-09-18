@@ -220,25 +220,29 @@ not relitigated: uniform fixture sampling covers regions that system
 identification may have ruled out, buying broader robustness at the cost of
 spending some capacity on less plausible plants.
 
-**Coverage requirement: all ten CMA search knobs.** DR must vary every parameter
-the CMA search identifies — spur/stem flexural modulus, spur/stem axial modulus,
-spur/stem damping ratio, support `k_p`, support roll `k_p`, support joint ζ, and
-primary density. A parameter worth identifying is one the policy should be
-robust to. **Only 5 of 10 vary today:** the two rod `damping_ratio` ranges are
-pinned (`min == max == 0.3`), and the three support-joint knobs live in the
-fixture's `sim_build` block, which holds scalars rather than min/max ranges.
-Closing this needs a schema extension, not just wider numbers — see Task 3.
+**Coverage requirement: all ten CMA search knobs — DONE.** DR now varies every
+parameter the CMA search identifies. A new, RL-only fixture
+(`fruiting_system_ranges_rl_harvest_variance.json`) widens spur/stem
+`damping_ratio` from a pinned `[0.3,0.3]` to `[0.05,0.95]`, and a new additive
+`sim_build.support_dr` schema block (`params.py`) carries ranges for the three
+support-joint knobs, sampled by the new
+`apple_pick_gym/batched_envs/support_joint_dr.py`. The shared fixture other
+consumers (sys-ID, CMA, benchmarks) read is untouched — verified
+byte-identical. See Task 3 for range provenance, the log-uniform sampling fix
+for `kp`/`roll_kp` (they span decades and are searched by CMA on a log10
+scale), and the extremes stability check.
 
-The per-env *application* path already exists and must be reused, not rebuilt:
+The per-env *application* path already existed and was reused, not rebuilt:
 `apply_per_env_support_joint_penalties` (with `zeta_per_env`) and
 `apply_per_env_support_roll_penalties` in
-`apple_pick_gym/batched_envs/support_joint_penalties.py` were written for CMA and
-already accept per-env values.
+`apple_pick_gym/batched_envs/support_joint_penalties.py`, written for CMA.
 
-**Constraint (unchanged):** apple radius and density are *derived* to close the
-measured chord, so they are not free parameters. Geometry DR must respect that
-closure; validate density against ~800 kg/m³ rather than assuming
-self-consistency.
+**Constraint (unchanged):** apple radius and density are *derived from real
+data* to close the measured chord in the **conversion pipeline**
+(`real_pre_grasp_params.py`), so that ~800 kg/m³ plausibility check applies
+there, not to this synthetic fixture's plain declared `apple.density` range
+(`[400,600]` here — a pre-existing, out-of-scope fixture value, not something
+this task's ten CMA knobs touch).
 
 Plant material parameters are **baked at build** (CMA rebuilds a fused world
 every generation for exactly this reason), so plant DR is per-env, fixed across

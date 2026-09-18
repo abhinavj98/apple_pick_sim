@@ -376,6 +376,98 @@ def test_parse_sim_build_rejects_negative_joint_damping_ratio():
 
 
 # ---------------------------------------------------------------------------
+# sim_build.support_dr (RL plant DR ranges for support kp / roll_kp / zeta --
+# CMA search-box knobs 8-10, additive; see docs/superpowers/plans/
+# 2026-09-17-rl-vic-harvest-policy.md Task 3)
+# ---------------------------------------------------------------------------
+
+
+_GOOD_SUPPORT_DR = {
+    "kp": {"min": 100.0, "max": 1_000_000.0},
+    "roll_kp": {"min": 0.075, "max": 7.5},
+    "zeta": {"min": 0.05, "max": 0.95},
+}
+
+
+def test_parse_sim_build_accepts_support_dr():
+    fs = _import_module()
+    block = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "support_dr": dict(_GOOD_SUPPORT_DR),
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), block)
+    sb = fs.parse_sim_build(fs.load_ranges(path))
+    assert sb is not None
+    assert sb.support_dr is not None
+    assert sb.support_dr.kp.min == pytest.approx(100.0)
+    assert sb.support_dr.kp.max == pytest.approx(1_000_000.0)
+    assert sb.support_dr.roll_kp.min == pytest.approx(0.075)
+    assert sb.support_dr.roll_kp.max == pytest.approx(7.5)
+    assert sb.support_dr.zeta.min == pytest.approx(0.05)
+    assert sb.support_dr.zeta.max == pytest.approx(0.95)
+
+
+def test_parse_sim_build_support_dr_absent_is_none():
+    fs = _import_module()
+    block = {"vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"])}
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), block)
+    sb = fs.parse_sim_build(fs.load_ranges(path))
+    assert sb is not None
+    assert sb.support_dr is None
+
+
+def test_parse_sim_build_rejects_support_dr_missing_key():
+    fs = _import_module()
+    bad_support_dr = {"kp": _GOOD_SUPPORT_DR["kp"], "roll_kp": _GOOD_SUPPORT_DR["roll_kp"]}
+    block = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "support_dr": bad_support_dr,
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), block)
+    with pytest.raises(ValueError, match="support_dr"):
+        fs.load_ranges(path)
+
+
+def test_parse_sim_build_rejects_support_dr_unknown_key():
+    fs = _import_module()
+    bad_support_dr = dict(_GOOD_SUPPORT_DR)
+    bad_support_dr["extra"] = {"min": 0.0, "max": 1.0}
+    block = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "support_dr": bad_support_dr,
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), block)
+    with pytest.raises(ValueError, match="support_dr"):
+        fs.load_ranges(path)
+
+
+def test_parse_sim_build_rejects_support_dr_inverted_range():
+    fs = _import_module()
+    bad_support_dr = dict(_GOOD_SUPPORT_DR)
+    bad_support_dr["kp"] = {"min": 500.0, "max": 100.0}
+    block = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "support_dr": bad_support_dr,
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), block)
+    with pytest.raises(ValueError, match="kp"):
+        fs.load_ranges(path)
+
+
+def test_parse_sim_build_rejects_support_dr_negative_bound():
+    fs = _import_module()
+    bad_support_dr = dict(_GOOD_SUPPORT_DR)
+    bad_support_dr["roll_kp"] = {"min": -1.0, "max": 7.5}
+    block = {
+        "vic_gains": dict(_GOOD_SIM_BUILD["vic_gains"]),
+        "support_dr": bad_support_dr,
+    }
+    path = _write_ranges_with_sim_build(fs.load_ranges(RANGES_FIXTURE), block)
+    with pytest.raises(ValueError, match="roll_kp"):
+        fs.load_ranges(path)
+
+
+# ---------------------------------------------------------------------------
 # Material-parameter sampling (E, ζ)
 # ---------------------------------------------------------------------------
 

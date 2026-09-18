@@ -218,18 +218,20 @@ Builds on `ApplePickBatchedBaseEnv` with `ControllerConfig(mode="vic_pose", acti
 **Global constraint added to this plan** (see the top): never run more than one `ApplePickVicHarvestEnv`/`BatchedHeterogeneousCoupledSim` build in the same pytest process.
 ---
 
-### Task 7: Reward, success freeze, fixed-length episodes
+### Task 7: Reward, success freeze, fixed-length episodes — **DONE**
 
-**Files:** port `harvest_reward.py` from `feature/rl-gym`; create `apple_pick_gym/batched_envs/harvest_episode.py`; tests alongside.
+**Files:** ported `harvest_reward.py` from `feature/rl-gym` (math unchanged, `f_threshold_n` updated 30.0 -> **5.0**); created `apple_pick_gym/batched_envs/harvest_episode.py`; also wired both into `apple_pick_vic_harvest_env.py`'s `compute_reward`/`compute_terminated` (previously Task 6's stubs) and `_actions_tensor` (frozen-env action hold), since leaving them stubbed would have left Task 6's env not actually usable. Tests: `apple_pick_gym/tests/test_harvest_reward.py`, `apple_pick_gym/tests/test_harvest_episode.py`, plus one env-level wiring smoke test added to `test_apple_pick_vic_harvest_env.py`.
 
-`F_thresh = 5 N`, success = sustained for `K` consecutive steps with no safety-cap violation. **All envs truncate together**; a succeeded env freezes (action held, reward masked) but the episode does not end for the trainer — this keeps LSTM hidden-state resets batch-uniform.
+`F_thresh = 5 N` (maintainer's explicitly provisional placeholder), success = sustained for `K` consecutive steps with no safety-cap violation. **All envs truncate together**; a succeeded env freezes (action held via `FreezeMask.apply_to_action` in `_actions_tensor`, reward masked to 0) but the episode does not end for the trainer — this keeps LSTM hidden-state resets batch-uniform. `compute_reward` and `compute_terminated` share one `success`/`safety_violation` computation (cached in `self._pending_terminated`) rather than each recomputing it, since the base env's `step()` always calls `compute_reward` first and calling `SuccessStreakTracker.update()` twice per step would double-increment the streak.
 
-- [ ] **Step 1:** Failing tests — success requires `K` *consecutive* steps (a gap resets the counter); a frozen env accrues no further reward and holds its last action; `truncated` is uniform across the batch; safety-cap violation terminates with the failure penalty and no bonus.
-- [ ] **Step 2:** Confirm failure.
-- [ ] **Step 3:** Implement the reward config, success-streak tracker, and freeze mask.
-- [ ] **Step 4:** Confirm pass.
-- [ ] **Step 5:** Artifact — reward-term decomposition over an episode plus a success/freeze timeline across envs. `tmp/rl_vic_viz/task7_reward.png`.
-- [ ] **Step 6:** Commit.
+- [x] **Step 1:** Failing tests (19 across both modules) — success requires `K` *consecutive* steps and a gap resets the counter (not just pauses it); per-env independence; a frozen env accrues no further reward and holds its last action; freeze is sticky across updates and clears on `reset()`; safety-cap violation on force *or* torque; terminal reward gives the success bonus with no penalty, or the failure penalty with **no bonus even if a success streak completed on the same step** (a safety violation is defined as a failure regardless).
+- [x] **Step 2:** Confirmed failure (`ModuleNotFoundError`, all 19).
+- [x] **Step 3:** Implemented `HarvestRewardConfig`/reward math (ported), `EpisodeConfig`/`SuccessStreakTracker`/`FreezeMask`/`check_safety_violation`/`compute_terminal_reward` (new), then wired both into the env (`info["ft_wrist"]` added as the raw/privileged channel `compute_pullout_penalty` needs, distinct from `obs["ft_wrist"]`).
+- [x] **Step 4:** Confirmed pass — 19/19 module tests on the first implementation attempt; the env-level wiring smoke test (reward no longer the Task 6 stub, `truncated` uniform every step, tracker/mask shapes correct) passed on retry (first attempt hit the same pre-existing intermittent Newton/Warp crash documented in Tasks 0a/6; cleared on an identical rerun). A regression check on `test_actions_reach_sim_as_19d_vic_pose` (touched by the `_actions_tensor` freeze-mask addition) also passed.
+
+  **Safety-cap values used:** `EpisodeConfig` defaults to 40 N / 10 N*m, matching H2's documented `DEFAULT_STEM_FORCE_CAP_N`/`DEFAULT_STEM_TORQUE_CAP_NM` (the stem-harvest transfer cap already in this codebase), not the design spec's alternative suggestion of reusing `batched_stability_monitor.py`'s separate 100 N / 40 N*m caps -- kept in scope to avoid pulling in another module. Checked against both `info["target_junction_force"]` (uncapped, so this is a real check) and `info["ft_wrist"]` (already hard-capped at the same values by the stem-harvest transfer, so this half is currently a no-op safety net, kept for robustness if the caps ever diverge).
+- [x] **Step 5:** Artifact — `tmp/rl_vic_viz/task7_reward.png`: reward-term decomposition for one env (dense terms continue evolving after freeze since freezing holds the *action*, not the physics; total step reward correctly flatlines at 0 once frozen), the success-streak counter for all 4 envs, and the freeze-mask timeline. **The rollout organically captured a genuine streak-reset event** (one env's streak climbed to 44, then a real dip below the force threshold reset it to 0, then it climbed again) -- live confirmation of the "gap resets the counter" behavior in the actual environment, not just a synthetic unit test.
+- [x] **Step 6:** Commit.
 
 ---
 

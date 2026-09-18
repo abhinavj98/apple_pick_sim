@@ -75,6 +75,14 @@ from apple_pick_gym.batched_envs.harvest_action import (
     pack_vic_pose_action,
     split_harvest_action,
 )
+from apple_pick_gym.batched_envs.harvest_episode import (
+    EpisodeConfig,
+    FreezeMask,
+    SuccessStreakTracker,
+    check_safety_violation,
+    compute_terminal_reward,
+)
+from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig, compute_dense_reward
 from apple_pick_gym.batched_envs.sensor_realism import FtSensorConfig, FtSensorModel
 from apple_pick_gym.batched_envs.support_joint_dr import apply_support_joint_dr, sample_support_joint_dr
 
@@ -120,6 +128,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         dr_seed: int = 0,
         grasp_hemisphere_pole: tuple[float, float, float] = (0.0, 0.0, -1.0),
         grasp_max_polar_angle_rad: float = np.pi / 6.0,
+        reward_config: HarvestRewardConfig | None = None,
+        episode_config: EpisodeConfig | None = None,
     ) -> None:
         from apple_pick_sim.robot.fr3_robot.arm_domain_randomization import (
             ArmDomainRandomizationRanges,
@@ -129,9 +139,12 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._arm_dr_ranges = arm_dr_ranges or ArmDomainRandomizationRanges()
         self._ft_sensor_config = ft_sensor_config or FtSensorConfig()
         self._target_junction_name = target_junction_name or self.TARGET_JUNCTION_NAME
+        self._reward_cfg = reward_config or HarvestRewardConfig()
+        self._episode_cfg = episode_config or EpisodeConfig()
         self._dr_rng = np.random.default_rng(dr_seed)
         self._last_full_obs: dict[str, Any] | None = None
         self._last_arm_dr_sample = None
+        self._pending_terminated: torch.Tensor | None = None
 
         if sim_config is None:
             from apple_pick_sim.coupled_fruiting import BatchedHeterogeneousCoupledSimConfig
@@ -205,6 +218,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._ft_sensor = FtSensorModel(
             num_envs=self.num_envs, device=self.device, config=self._ft_sensor_config
         )
+        self._success_tracker = SuccessStreakTracker(num_envs=self.num_envs, device=self.device)
+        self._freeze_mask = FreezeMask(num_envs=self.num_envs, device=self.device)
 
         self._apply_build_time_dr()
 
@@ -382,6 +397,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         woody_part_force = self._woody_part_force()
         info["woody_part_force"] = woody_part_force
         info["target_junction_force"] = woody_part_force[self._target_junction_name]
+        # Raw (privileged, un-sensor-filtered) ft_wrist for reward computation --
+        # distinct from obs["ft_wrist"], which is what the policy actually
+        # observes. Reward is train-time only, so this privilege is legitimate.
+        info["ft_wrist"] = self._last_full_obs["ft_wrist"]
         return info
 
     def _actions_tensor(self, action: Any) -> torch.Tensor:
@@ -395,6 +414,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 f"actions shape must be ({self.num_envs}, {_ACTION_DIM}), got {tuple(action.shape)}"
             )
         action = action.contiguous()
+        # Frozen (already-succeeded) envs replay their last commanded action
+        # rather than a fresh one -- see harvest_episode.py's module docstring
+        # for why this keeps LSTM hidden-state resets batch-uniform.
+        action = self._freeze_mask.apply_to_action(action, self._last_action)
 
         split = split_harvest_action(action, self._action_bounds)
         gains = torch.cat([split.linear_k, split.angular_k], dim=-1)
@@ -443,15 +466,49 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
 
         self._ft_sensor.reset()
         self._resample_joint_dynamics_dr()
+        self._success_tracker.reset()
+        self._freeze_mask.reset()
+        self._pending_terminated = None
 
         obs = self._gather_obs()
         info = self._make_info()
         return obs, info
 
     def compute_reward(self, obs: dict[str, Any], info: dict[str, Any]) -> torch.Tensor:
-        del obs, info
-        return torch.zeros((self.num_envs, 1), dtype=torch.float32, device=self.device)
+        """Dense shaping + terminal bonus/penalty, masked to 0 for already-frozen envs.
+
+        Also updates the success streak and the freeze mask, and caches the
+        resulting ``terminated`` for :meth:`compute_terminated` to return --
+        the base env's ``step()`` always calls ``compute_reward`` first, so
+        this ordering is safe and avoids double-incrementing the streak
+        tracker by calling ``.update()`` from both methods.
+        """
+        dense = compute_dense_reward(
+            obs, info, target_junction_name=self._target_junction_name, cfg=self._reward_cfg
+        )
+
+        force_norm = torch.linalg.norm(info["target_junction_force"][:, :3], dim=-1)
+        success_this_step = force_norm >= float(self._reward_cfg.f_threshold_n)
+        success_achieved = self._success_tracker.update(success_this_step, self._episode_cfg)
+
+        # Safety caps: the target junction's wrench is uncapped (privileged
+        # debug gather, not the stem-harvest transfer), so this is a real
+        # check. ft_wrist is already hard-capped by the stem-harvest transfer
+        # at the same 40 N / 10 N*m default, so that half is a no-op safety
+        # net today, kept for robustness if the caps ever diverge.
+        safety_violation = check_safety_violation(
+            info["target_junction_force"], self._episode_cfg
+        ) | check_safety_violation(info["ft_wrist"], self._episode_cfg)
+
+        terminal = compute_terminal_reward(success_achieved, safety_violation, self._reward_cfg)
+        reward = self._freeze_mask.apply_to_reward(dense + terminal)
+
+        self._pending_terminated = success_achieved | safety_violation
+        self._freeze_mask.update(self._pending_terminated)
+        return reward
 
     def compute_terminated(self, obs: dict[str, Any], info: dict[str, Any]) -> torch.Tensor:
         del obs, info
-        return torch.zeros((self.num_envs, 1), dtype=torch.bool, device=self.device)
+        if self._pending_terminated is None:
+            return torch.zeros((self.num_envs, 1), dtype=torch.bool, device=self.device)
+        return self._pending_terminated.unsqueeze(-1)

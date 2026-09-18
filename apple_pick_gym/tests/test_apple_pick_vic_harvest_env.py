@@ -129,6 +129,38 @@ class TestApplePickVicHarvestEnv:
         finally:
             env.close()
 
+    def test_reward_and_termination_are_wired_not_stubbed(self):
+        """Task 7 wiring smoke test: reward is nonzero-capable (not the Task 6
+        stub), success/freeze/safety plumb through, truncated stays uniform."""
+        from apple_pick_gym.batched_envs.harvest_episode import EpisodeConfig
+        from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig
+
+        env = _make_env(
+            reward_config=HarvestRewardConfig(f_threshold_n=5.0),
+            episode_config=EpisodeConfig(success_streak_steps=2, safety_force_cap_n=1e6, safety_torque_cap_nm=1e6),
+            max_episode_steps=5,
+        )
+        try:
+            env.reset()
+            action = torch.zeros((2, 13), dtype=torch.float32, device=env.device)
+            action[:, 2] = 1.0  # request a large +z delta (clamped) to build load
+            action[:, 6:9] = 200.0
+            action[:, 9:12] = 10.0
+            action[:, 12] = 1.0
+
+            rewards = []
+            for _ in range(5):
+                obs, reward, terminated, truncated, info = env.step(action)
+                rewards.append(reward.clone())
+                # truncated must be identical across the batch every step.
+                assert torch.all(truncated == truncated[0])
+
+            assert any(torch.any(r != 0.0) for r in rewards), "reward stayed at the Task 6 stub (all zero)"
+            assert env._success_tracker.streak.shape == (2,)
+            assert env._freeze_mask.done_mask.shape == (2,)
+        finally:
+            env.close()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

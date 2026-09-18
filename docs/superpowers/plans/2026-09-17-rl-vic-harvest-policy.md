@@ -174,18 +174,20 @@ Pure-torch, no sim dependency (like Task 1). `FtSensorModel` holds `(N,6)` EMA s
 
 ---
 
-### Task 5: Observation flattening (actor + privileged critic)
+### Task 5: Observation flattening (actor + privileged critic) — **DONE**
 
-**Files:** create `apple_pick_gym/batched_envs/harvest_obs.py`; test alongside.
+**Files:** created `apple_pick_gym/batched_envs/harvest_obs.py`; test `apple_pick_gym/tests/test_harvest_obs.py`.
 
-skrl memories are flat, and the v3 obs dict is nested (`woody_part_start_pos: dict[str, (N,3)]`). Flatten deterministically **by sorted junction name** so the layout is stable across runs and topologies.
+skrl memories are flat, and the v3 obs dict is nested (`woody_part_start_pos: dict[str, (N,3)]`). Flattens deterministically **by sorted junction name** so the layout is stable across runs and topologies with the same junction set. `flatten_actor_obs` never receives privileged inputs at all — privileged data cannot leak into the actor vector by construction, not merely by convention.
 
-- [ ] **Step 1:** Failing tests — actor vector has the documented fixed width and order; the same obs dict always flattens identically; the privileged vector is a strict superset; **no privileged field leaks into the actor vector** (assert explicitly by name).
-- [ ] **Step 2:** Confirm failure.
-- [ ] **Step 3:** Implement `flatten_actor_obs` / `flatten_critic_obs` plus a recorded layout descriptor for checkpoint compatibility.
-- [ ] **Step 4:** Confirm pass.
-- [ ] **Step 5:** Artifact — a printed layout table (field, slice, width) to `tmp/rl_vic_viz/task5_obs_layout.md`.
-- [ ] **Step 6:** Commit.
+**Layout (4-junction example, see the artifact for the full table):** actor **71-D** (`tcp_pos`(3) + `tcp_quat`(4) + `tcp_velocity`(6) + `ft_wrist`(6) + `apple_pos`(3) + `apple_quat`(4) + `robot_joint_q`(7) + junction `woody_part_start_pos`/`end_pos`(3 each) + `last_action`(13) + `step_frac`(1)); critic **130-D** = actor's 71 as an exact prefix + 59 privileged (spur/stem flexural+axial modulus, damping ratios, primary density, support `kp`/`roll_kp`/`zeta`, the 3×7-D arm-DR joint arrays + 4 arm-DR scale factors, plus every junction's wrench).
+
+- [x] **Step 1:** Failing tests (9 cases) — actor width/order matches the documented layout and is invariant to junction dict-insertion order (only sorted-name order matters); flattening is deterministic; known fields land at their documented slices; critic layout is the actor layout as an exact `(start,width)`-preserving prefix; `flatten_critic_obs`'s output has `flatten_actor_obs`'s output as an exact tensor prefix; no privileged/force field name appears in the actor layout; mutating privileged inputs after the fact does not change the actor output (pins the by-construction guarantee, not just a convention).
+- [x] **Step 2:** Confirmed failure (`ModuleNotFoundError`).
+- [x] **Step 3:** Implemented `ObsLayout`/`ObsLayoutEntry`, `actor_obs_layout`, `critic_obs_layout`, `flatten_actor_obs`, `flatten_critic_obs`.
+- [x] **Step 4:** Confirmed pass — 9/9 on the first implementation attempt.
+- [x] **Step 5:** Artifact — `tmp/rl_vic_viz/task5_obs_layout.md`: full field/start/width/slice table for both layouts, privileged fields marked.
+- [x] **Step 6:** Commit.
 
 ---
 

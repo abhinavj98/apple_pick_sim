@@ -157,16 +157,20 @@ Generalized the existing broadcast loops (`setup.py`'s `_set_fr3_joint_armature`
 **Range-setting note (from the original plan, upheld):** the CMA search box was the literal source for knobs 8 and 6/7/10; knob 9 (`roll_kp`) had no explicit CMA box, so this fixture's own decade-either-side choice is documented as such, not misattributed to CMA.
 ---
 
-### Task 4: Sensor-realistic `ft_wrist` (EMA + bias/noise/drift)
+### Task 4: Sensor-realistic `ft_wrist` (EMA + bias/noise/drift) — **DONE**
 
-**Files:** create `apple_pick_gym/batched_envs/sensor_realism.py`; test alongside.
+**Files:** created `apple_pick_gym/batched_envs/sensor_realism.py`; test `apple_pick_gym/tests/test_sensor_realism.py`.
 
-- [ ] **Step 1:** Failing tests — EMA with `a = 1 - exp(-2π·fc/f_control)` (≈0.65 at fc=10 Hz, 60 Hz control) attenuates a high-frequency input by the expected factor and passes DC unchanged; bias is constant within an episode and varies per env; state resets on `reset()`.
-- [ ] **Step 2:** Confirm failure.
-- [ ] **Step 3:** Implement a batched `FtSensorModel` holding `(N,6)` EMA state, per-env bias, per-step noise, slow drift.
-- [ ] **Step 4:** Confirm pass.
-- [ ] **Step 5:** Artifact — raw vs EMA-filtered vs noisy `ft_wrist` over a real pull, plus the measured frequency response against the analytic EMA curve. `tmp/rl_vic_viz/task4_ft_sensor.png`.
-- [ ] **Step 6:** Commit.
+Pure-torch, no sim dependency (like Task 1). `FtSensorModel` holds `(N,6)` EMA state, per-env bias, and drift, all **episode-scoped** — `reset()` reseeds every one of them (matching "bias is resampled per env per episode" / "drift is a slow per-episode walk"), with a `env_mask` for future per-env resets. The EMA is seeded with the first post-reset sample rather than 0, so there is no artificial warm-up ramp.
+
+- [x] **Step 1:** Failing tests (8 cases) — analytic `alpha` at fc=10Hz/60Hz matches ≈0.65; DC passes unchanged; Nyquist-frequency attenuation matches the discrete EMA transfer function `|H(pi)| = a/(2-a)` to <5%; bias constant within an episode, varies per env, resamples on `reset()`; no warm-up transient; drift accumulates within an episode and resets toward zero; masked reset only touches selected envs.
+- [x] **Step 2:** Confirmed failure (`ModuleNotFoundError`).
+- [x] **Step 3:** Implemented `FtSensorConfig`/`FtSensorModel` as described above.
+- [x] **Step 4:** Confirmed pass — 8/8 on the first implementation attempt.
+- [x] **Step 5:** Artifact — `tmp/rl_vic_viz/task4_ft_sensor.png`: a synthetic ramp+25Hz-chatter pull through EMA-only vs the full model (bias+noise+drift visible as an offset/jitter band around the EMA-only trace), plus a simulated sine-sweep frequency response measured against the analytic `|H(f)|` curve across 0.5-30Hz — **max abs error 0.0346** (one sweep point near 15Hz shows a small window-edge measurement artifact; everywhere else the fit is near-exact).
+- [x] **Step 6:** Commit.
+
+**Invariant restated for whoever wires this into Task 6:** this EMA is strictly a gym-observation-path model of what a real-time controller would see. It is not trying to match the real dataset's `ft_wrist_lpf` (a *zero-phase*, offline `filtfilt`, used only for CMA scoring — no online policy could reproduce that). The "No sim EMA/LPF" rule for `batched_sysid_v1` feature bags (H3) is unaffected; this module must never be wired into the sys-ID scoring path.
 
 ---
 

@@ -82,9 +82,13 @@ from apple_pick_gym.batched_envs.harvest_episode import (
     check_safety_violation,
     compute_terminal_reward,
 )
-from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig, compute_dense_reward
+from apple_pick_gym.batched_envs.harvest_reward import (
+    HarvestRewardConfig,
+    compute_dense_reward_terms,
+    weight_dense_reward_terms,
+)
 from apple_pick_gym.batched_envs.sensor_realism import FtSensorConfig, FtSensorModel
-from apple_pick_gym.batched_envs.support_joint_dr import apply_support_joint_dr, sample_support_joint_dr
+from apple_pick_gym.batched_envs.support_joint_dr import sample_support_joint_dr
 
 _ACTION_DIM = 13
 _VIC_POSE_ACTION_DIM = 19
@@ -112,7 +116,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         *,
         num_envs: int = 1,
         render_mode: str | None = None,
-        max_episode_steps: int = 240,
+        max_episode_steps: int = 500,
         max_woody_parts: int = 64,
         device: str | None = None,
         sim_config: Any | None = None,
@@ -153,12 +157,31 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             )
 
             sim_config = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=int(num_envs))
+            # Dynamic apple welded to the proxy, weld-reaction TCP harvest -- same as
+            # the sys-ID real-replay build (real_replay_sim_config, dynamic_apple=True).
             sim_config = dataclasses.replace(
                 sim_config,
                 controller=ControllerConfig(mode="vic_pose", action_dim=_VIC_POSE_ACTION_DIM),
+                robot=dataclasses.replace(
+                    sim_config.robot,
+                    gripper=dataclasses.replace(sim_config.robot.gripper, dynamic_apple=True),
+                ),
+                fruiting_system=dataclasses.replace(
+                    sim_config.fruiting_system, tcp_harvest_source="weld"
+                ),
             )
         if ranges_path is None:
             ranges_path = _RL_HARVEST_RANGES_FIXTURE
+
+        # Support-joint DR must be in the config BEFORE the build so the pre- and
+        # post-grasp settles and the episode snapshot all see the randomized
+        # kp/roll_kp/zeta. Applying it after build (and after the snapshot) is
+        # silently reverted by restore_episode_snapshot() (it restores
+        # joint_penalty_k) and never gets a settle.
+        self._last_support_dr_sample = None
+        sim_config = self._with_support_dr(
+            sim_config, ranges_path=ranges_path, num_envs=int(num_envs)
+        )
 
         if per_env_grippers is None:
             per_env_grippers = self._sample_default_grasps(
@@ -245,37 +268,41 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             GripperProxyConfig(
                 mass=PLACEHOLDER_EE_MASS_KG,
                 fix_to_apple=True,
+                dynamic_apple=True,
                 robot_facing_weld=False,
                 weld_direction=tuple(float(x) for x in directions[i]),
             )
             for i in range(int(num_envs))
         ]
 
-    def _apply_build_time_dr(self) -> None:
-        """Support-joint plant DR (Task 3) + arm link-mass/EE-payload DR (Task 2), once."""
-        from apple_pick_sim.fruiting_system.joint_kd_scaling import support_dowel_length_m
+    def _with_support_dr(self, sim_config: Any, *, ranges_path: Path | str, num_envs: int) -> Any:
+        """Sample per-env support kp/roll_kp/zeta once and bake them into ``sim_config``."""
+        from apple_pick_sim.fruiting_system import load_ranges
         from apple_pick_sim.fruiting_system.params import parse_sim_build
+
+        sim_build = parse_sim_build(load_ranges(Path(ranges_path)))
+        if sim_build is None or sim_build.support_dr is None:
+            return sim_config
+        sample = sample_support_joint_dr(sim_build.support_dr, num_envs=num_envs, rng=self._dr_rng)
+        self._last_support_dr_sample = sample
+        return dataclasses.replace(
+            sim_config,
+            fruiting_system=dataclasses.replace(
+                sim_config.fruiting_system,
+                support_kp_per_env=tuple(float(x) for x in sample.kp),
+                support_roll_kp_per_env=tuple(float(x) for x in sample.roll_kp),
+                support_zeta_per_env=tuple(float(x) for x in sample.zeta),
+            ),
+        )
+
+    def _apply_build_time_dr(self) -> None:
+        """Arm link-mass/EE-payload DR, applied once after build (arm state is not
+        part of what the plant snapshot must keep consistent)."""
         from apple_pick_sim.robot.fr3_robot.arm_domain_randomization import (
             apply_ee_payload_dr,
             apply_link_mass_inertia_dr,
             sample_arm_domain_randomization,
         )
-
-        ranges = self._sim.ranges
-        sim_build = parse_sim_build(ranges)
-        if sim_build is not None and sim_build.support_dr is not None:
-            scene = self._sim.scene
-            support_sample = sample_support_joint_dr(
-                sim_build.support_dr, num_envs=self.num_envs, rng=self._dr_rng
-            )
-            apply_support_joint_dr(
-                scene,
-                support_sample,
-                num_envs=self.num_envs,
-                joints_per_world=scene.layout.joints_per_world,
-                per_env_params=self._sim.per_env_params,
-            )
-            self._last_support_dr_sample = support_sample
 
         layout = self._sim.scene.layout
         arm_sample = sample_arm_domain_randomization(
@@ -316,19 +343,25 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._last_arm_dr_sample = sample
 
     def _harvest_observation_space(self) -> spaces.Dict:
+        """Proprioception + F/T only -- no vision-tracked geometry.
+
+        ``apple_pos``/``apple_quat``/``woody_part_start_pos``/``woody_part_end_pos``
+        were part of the sys-ID observation contract (v3), which assumes vision
+        tracking of the apple and junction geometry. The pick policy is
+        deliberately scoped to rely on F/T (``ft_wrist``) and proprioception
+        (``tcp_pos``/``tcp_quat``/``tcp_velocity``/``robot_joint_q``) only, so
+        these four fields are exposed via ``info`` instead (see
+        :meth:`_make_info`) -- available for logging, reward shaping, or a
+        future vision-augmented variant, but never fed to the policy.
+        """
         inf_box = lambda shape: spaces.Box(low=-np.inf, high=np.inf, shape=shape, dtype=np.float32)
-        junction_pos_space = spaces.Dict({name: inf_box((3,)) for name in self._junction_names})
         return spaces.Dict(
             {
                 "tcp_pos": inf_box((3,)),
                 "tcp_quat": inf_box((4,)),
                 "tcp_velocity": inf_box((6,)),
                 "ft_wrist": inf_box((6,)),
-                "apple_pos": inf_box((3,)),
-                "apple_quat": inf_box((4,)),
                 "robot_joint_q": inf_box((7,)),
-                "woody_part_start_pos": junction_pos_space,
-                "woody_part_end_pos": junction_pos_space,
                 "last_action": inf_box((_ACTION_DIM,)),
                 "step_frac": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
             }
@@ -358,25 +391,19 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             dtype=torch.float32,
             device=self.device,
         )
-        woody_start = {
-            name: full["woody_part_info"][name]["anchors_pos"][:, :3] for name in self._junction_names
-        }
-        woody_end = {
-            name: full["woody_part_info"][name]["anchors_pos"][:, 3:6] for name in self._junction_names
-        }
 
         sensor_ft = self._ft_sensor.step(full["ft_wrist"])
 
+        # Proprioception + F/T only -- apple/junction geometry is NOT fed to
+        # the policy (see _harvest_observation_space's docstring); it is
+        # still available via info (see _make_info), derived from this same
+        # `full` gather cached on self._last_full_obs.
         obs = {
             "tcp_pos": tcp_pose[:, :3],
             "tcp_quat": tcp_pose[:, 3:7],  # native (xyzw) -- matches the established v3 contract
             "tcp_velocity": full["tcp_velocity"],
             "ft_wrist": sensor_ft,
-            "apple_pos": full["apple_pos"],
-            "apple_quat": self._apple_quat_tensor(),
             "robot_joint_q": wp.to_torch(bufs.joint_q).to(device=self.device, dtype=torch.float32),
-            "woody_part_start_pos": woody_start,
-            "woody_part_end_pos": woody_end,
             "last_action": self._last_action.clone(),
             "step_frac": step_frac,
         }
@@ -401,6 +428,20 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         # distinct from obs["ft_wrist"], which is what the policy actually
         # observes. Reward is train-time only, so this privilege is legitimate.
         info["ft_wrist"] = self._last_full_obs["ft_wrist"]
+        # Vision-tracked geometry (sys-ID's v3 contract), NOT fed to the policy
+        # (see _harvest_observation_space) -- kept here for logging, reward
+        # shaping, or a future vision-augmented variant.
+        full = self._last_full_obs
+        info["apple_pos"] = full["apple_pos"]
+        info["apple_quat"] = self._apple_quat_tensor()
+        info["woody_part_start_pos"] = {
+            name: full["woody_part_info"][name]["anchors_pos"][:, :3]
+            for name in self._junction_names
+        }
+        info["woody_part_end_pos"] = {
+            name: full["woody_part_info"][name]["anchors_pos"][:, 3:6]
+            for name in self._junction_names
+        }
         return info
 
     def _actions_tensor(self, action: Any) -> torch.Tensor:
@@ -483,9 +524,13 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         this ordering is safe and avoids double-incrementing the streak
         tracker by calling ``.update()`` from both methods.
         """
-        dense = compute_dense_reward(
+        raw_terms = compute_dense_reward_terms(
             obs, info, target_junction_name=self._target_junction_name, cfg=self._reward_cfg
         )
+        weighted_terms = weight_dense_reward_terms(raw_terms, self._reward_cfg)
+        dense = (
+            weighted_terms["progress"] + weighted_terms["pullout"] + weighted_terms["collateral"]
+        ).unsqueeze(-1)
 
         force_norm = torch.linalg.norm(info["target_junction_force"][:, :3], dim=-1)
         success_this_step = force_norm >= float(self._reward_cfg.f_threshold_n)
@@ -496,15 +541,34 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         # check. ft_wrist is already hard-capped by the stem-harvest transfer
         # at the same 40 N / 10 N*m default, so that half is a no-op safety
         # net today, kept for robustness if the caps ever diverge.
-        safety_violation = check_safety_violation(
-            info["target_junction_force"], self._episode_cfg
-        ) | check_safety_violation(info["ft_wrist"], self._episode_cfg)
+        safety_junction = check_safety_violation(info["target_junction_force"], self._episode_cfg)
+        safety_wrist = check_safety_violation(info["ft_wrist"], self._episode_cfg)
+        safety_violation = safety_junction | safety_wrist
 
         terminal = compute_terminal_reward(success_achieved, safety_violation, self._reward_cfg)
         reward = self._freeze_mask.apply_to_reward(dense + terminal)
 
         self._pending_terminated = success_achieved | safety_violation
         self._freeze_mask.update(self._pending_terminated)
+
+        # Debug/logging surface (reward decomposition + termination reasons). Values are
+        # this step's; "total" is the returned (freeze-masked) reward.
+        info["reward_terms"] = {
+            "raw": raw_terms,
+            "weighted": weighted_terms,
+            "dense": dense.squeeze(-1),
+            "terminal": terminal.squeeze(-1),
+            "total": reward.reshape(self.num_envs),
+        }
+        info["episode"] = {
+            "success_this_step": success_this_step,
+            "success_achieved": success_achieved,
+            "success_streak": self._success_tracker.streak.clone(),
+            "safety_junction": safety_junction,
+            "safety_wrist": safety_wrist,
+            "frozen": self._freeze_mask.done_mask.clone(),
+        }
+        info["target_pose"] = self._target_pose.clone()
         return reward
 
     def compute_terminated(self, obs: dict[str, Any], info: dict[str, Any]) -> torch.Tensor:

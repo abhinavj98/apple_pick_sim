@@ -1,9 +1,11 @@
-"""Observation flattening: sensor-realistic actor vector + privileged critic vector.
+"""Observation flattening: proprioception+F/T actor vector + privileged critic vector.
 
-The nested v3 obs dict (woody_part_start_pos/end_pos: dict[str, (N,3)]) must
-flatten to a fixed-order (N, D) tensor, deterministically by sorted junction
-name, so the layout is stable across runs and topologies with the same
-junction set.
+The actor is scoped to proprioception and F/T only -- no vision-tracked
+geometry (apple_pos/apple_quat/woody_part_start_pos/woody_part_end_pos are
+available via info, not obs; see apple_pick_vic_harvest_env.py). The critic's
+privileged junction-wrench block (dict[str, (N,6)]) still flattens
+deterministically by sorted junction name, so its layout is stable across
+runs and topologies with the same junction set.
 """
 
 from __future__ import annotations
@@ -20,17 +22,13 @@ from apple_pick_gym.batched_envs.harvest_obs import (
 _JUNCTIONS = ["stem_apple", "primary_spur", "spur_stem", "support"]
 
 
-def _make_obs(n: int, junctions: list[str]) -> dict:
+def _make_obs(n: int) -> dict:
     return {
         "tcp_pos": torch.randn(n, 3),
         "tcp_quat": torch.randn(n, 4),
         "tcp_velocity": torch.randn(n, 6),
         "ft_wrist": torch.randn(n, 6),
-        "apple_pos": torch.randn(n, 3),
-        "apple_quat": torch.randn(n, 4),
         "robot_joint_q": torch.randn(n, 7),
-        "woody_part_start_pos": {j: torch.randn(n, 3) for j in junctions},
-        "woody_part_end_pos": {j: torch.randn(n, 3) for j in junctions},
         "last_action": torch.randn(n, 13),
         "step_frac": torch.rand(n, 1),
     }
@@ -63,50 +61,61 @@ def _make_woody_force(n: int, junctions: list[str]) -> dict:
 
 
 def test_actor_layout_has_documented_fixed_width():
-    layout = actor_obs_layout(_JUNCTIONS)
-    # 3+4+6+6+3+4+7 = 33 fixed fields, + 4 junctions * (3+3) + 13 (last_action) + 1 (step_frac)
-    expected = 33 + len(_JUNCTIONS) * 6 + 13 + 1
+    layout = actor_obs_layout()
+    # 3+4+6+6+7 = 26 fixed fields (tcp_pos/quat/velocity, ft_wrist, robot_joint_q)
+    # + 13 (last_action) + 1 (step_frac); no junction-keyed content in the actor.
+    expected = 26 + 13 + 1
     assert layout.total_width == expected
 
 
-def test_actor_layout_order_is_junction_name_sorted_not_dict_insertion_order():
+def test_actor_layout_has_no_junction_or_geometry_fields():
+    layout = actor_obs_layout()
+    names = {e.name for e in layout.entries}
+    assert names == {
+        "tcp_pos",
+        "tcp_quat",
+        "tcp_velocity",
+        "ft_wrist",
+        "robot_joint_q",
+        "last_action",
+        "step_frac",
+    }
+
+
+def test_critic_layout_order_is_junction_name_sorted_not_dict_insertion_order():
     unsorted_junctions = ["support", "stem_apple", "primary_spur", "spur_stem"]
-    layout_a = actor_obs_layout(unsorted_junctions)
-    layout_b = actor_obs_layout(list(reversed(unsorted_junctions)))
+    layout_a = critic_obs_layout(unsorted_junctions)
+    layout_b = critic_obs_layout(list(reversed(unsorted_junctions)))
     assert layout_a.entries == layout_b.entries
 
 
 def test_flatten_actor_obs_matches_layout_width():
-    obs = _make_obs(5, _JUNCTIONS)
+    obs = _make_obs(5)
     out = flatten_actor_obs(obs)
-    layout = actor_obs_layout(_JUNCTIONS)
+    layout = actor_obs_layout()
     assert out.shape == (5, layout.total_width)
 
 
 def test_flatten_actor_obs_is_deterministic_for_same_input():
-    obs = _make_obs(3, _JUNCTIONS)
+    obs = _make_obs(3)
     a = flatten_actor_obs(obs)
     b = flatten_actor_obs(obs)
     torch.testing.assert_close(a, b)
 
 
 def test_flatten_actor_obs_places_known_fields_at_documented_slices():
-    obs = _make_obs(2, _JUNCTIONS)
+    obs = _make_obs(2)
     out = flatten_actor_obs(obs)
-    layout = actor_obs_layout(_JUNCTIONS)
+    layout = actor_obs_layout()
     torch.testing.assert_close(out[:, layout.slice_for("tcp_pos")], obs["tcp_pos"])
     torch.testing.assert_close(out[:, layout.slice_for("ft_wrist")], obs["ft_wrist"])
+    torch.testing.assert_close(out[:, layout.slice_for("robot_joint_q")], obs["robot_joint_q"])
     torch.testing.assert_close(out[:, layout.slice_for("last_action")], obs["last_action"])
     torch.testing.assert_close(out[:, layout.slice_for("step_frac")], obs["step_frac"])
-    for j in _JUNCTIONS:
-        torch.testing.assert_close(
-            out[:, layout.slice_for(f"woody_part_start_pos/{j}")],
-            obs["woody_part_start_pos"][j],
-        )
 
 
 def test_critic_layout_is_actor_layout_plus_privileged_fields():
-    actor_layout = actor_obs_layout(_JUNCTIONS)
+    actor_layout = actor_obs_layout()
     critic_layout = critic_obs_layout(_JUNCTIONS)
     assert critic_layout.total_width > actor_layout.total_width
     # Strict prefix: every actor entry appears at the same (start, width) in critic.
@@ -117,7 +126,7 @@ def test_critic_layout_is_actor_layout_plus_privileged_fields():
 
 
 def test_flatten_critic_obs_has_actor_obs_as_exact_prefix():
-    obs = _make_obs(4, _JUNCTIONS)
+    obs = _make_obs(4)
     privileged = _make_privileged(4)
     woody_force = _make_woody_force(4, _JUNCTIONS)
     actor_out = flatten_actor_obs(obs)
@@ -130,10 +139,9 @@ def test_flatten_critic_obs_has_actor_obs_as_exact_prefix():
 def test_no_privileged_field_name_appears_in_actor_layout():
     """Explicit by-name check: none of the privileged/force field names leak
     into the actor's layout entries."""
-    actor_layout = actor_obs_layout(_JUNCTIONS)
+    actor_layout = actor_obs_layout()
     actor_names = {e.name for e in actor_layout.entries}
     privileged = _make_privileged(1)
-    woody_force = _make_woody_force(1, _JUNCTIONS)
     for name in privileged:
         assert name not in actor_names, f"privileged field {name!r} leaked into actor layout"
     for j in _JUNCTIONS:
@@ -143,7 +151,7 @@ def test_no_privileged_field_name_appears_in_actor_layout():
 def test_mutating_privileged_inputs_does_not_change_actor_output():
     """flatten_actor_obs never receives privileged data, so it cannot leak by
     construction; this test pins that contract."""
-    obs = _make_obs(3, _JUNCTIONS)
+    obs = _make_obs(3)
     before = flatten_actor_obs(obs).clone()
     privileged = _make_privileged(3)
     woody_force = _make_woody_force(3, _JUNCTIONS)

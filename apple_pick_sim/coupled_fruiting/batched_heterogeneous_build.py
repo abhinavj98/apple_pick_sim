@@ -182,6 +182,23 @@ def build_batched_heterogeneous_scene(
     support_roll_kp_per_env = config.fruiting_system.support_roll_kp_per_env
     support_zeta_per_env = config.fruiting_system.support_zeta_per_env
 
+    def _apply_overrides(target: Any) -> tuple[
+        dict[str, float], dict[str, float], dict[str, float], dict[str, float]
+    ]:
+        return _apply_joint_penalty_overrides(
+            target,
+            angular_kd_overrides=angular_kd_overrides,
+            linear_kd_overrides=linear_kd_overrides,
+            angular_kp_overrides=angular_kp_overrides,
+            linear_kp_overrides=linear_kp_overrides,
+            roll_kp_overrides=roll_kp_overrides,
+            joint_damping_ratio=joint_damping_ratio,
+            per_env_params=params,
+            support_kp_per_env=support_kp_per_env,
+            support_roll_kp_per_env=support_roll_kp_per_env,
+            support_zeta_per_env=support_zeta_per_env,
+        )
+
     if fix_to_apple and not vbd_only:
         gripper_weld = weld_grippers[0]
         if settled_checkpoint is not None:
@@ -220,6 +237,10 @@ def build_batched_heterogeneous_scene(
             )
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None
+            # The welded scene is a fresh build with fixture-default joint penalties;
+            # apply the per-env overrides (support DR kp/roll_kp/zeta, kd/zeta) before
+            # its post-grasp settle, or that settle runs on the wrong plant.
+            _apply_overrides(scene)
             post_stab, post_ke = _apply_post_grasp_settle(scene)
             if collect_diag:
                 stability_reports = list(post_stab)
@@ -281,6 +302,10 @@ def build_batched_heterogeneous_scene(
             )
             ik_raw = getattr(scene, "settle_ik_envelope_results", None)
             ik_results = list(ik_raw) if ik_raw else None
+            # The welded scene is a fresh build with fixture-default joint penalties;
+            # apply the per-env overrides (support DR kp/roll_kp/zeta, kd/zeta) before
+            # its post-grasp settle, or that settle runs on the wrong plant.
+            _apply_overrides(scene)
             post_stab, post_ke = _apply_post_grasp_settle(scene)
             if collect_diag and post_stab:
                 # Prefer post-grasp residual motion when that phase ran.
@@ -327,19 +352,7 @@ def build_batched_heterogeneous_scene(
         applied_linear_kd,
         applied_angular_kp,
         applied_linear_kp,
-    ) = _apply_joint_penalty_overrides(
-        scene,
-        angular_kd_overrides=angular_kd_overrides,
-        linear_kd_overrides=linear_kd_overrides,
-        angular_kp_overrides=angular_kp_overrides,
-        linear_kp_overrides=linear_kp_overrides,
-        roll_kp_overrides=roll_kp_overrides,
-        joint_damping_ratio=joint_damping_ratio,
-        per_env_params=params,
-        support_kp_per_env=support_kp_per_env,
-        support_roll_kp_per_env=support_roll_kp_per_env,
-        support_zeta_per_env=support_zeta_per_env,
-    )
+    ) = _apply_overrides(scene)
 
     if not collect_diag:
         return BatchedHeterogeneousBuildResult(

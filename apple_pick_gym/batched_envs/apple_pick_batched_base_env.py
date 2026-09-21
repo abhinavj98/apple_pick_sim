@@ -37,7 +37,7 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
         *,
         num_envs: int = 1,
         render_mode: str | None = None,
-        max_episode_steps: int = 240,
+        max_episode_steps: int = 500,
         max_woody_parts: int = 64,
         device: str | None = None,
         sim_config: Any | None = None,

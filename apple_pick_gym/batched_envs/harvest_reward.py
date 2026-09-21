@@ -27,7 +27,7 @@ import torch
 class HarvestRewardConfig:
     """Dense reward weights plus the (explicitly provisional) force threshold."""
 
-    f_threshold_n: float = 5.0
+    f_threshold_n: float = 10.0
     w_progress: float = 1.0
     w_pullout: float = 0.5
     w_collateral: float = 0.1
@@ -75,6 +75,34 @@ def compute_collateral_penalty(
     return total
 
 
+def compute_dense_reward_terms(
+    obs: dict[str, Any],
+    info: dict[str, Any],
+    *,
+    target_junction_name: str,
+    cfg: HarvestRewardConfig,
+) -> dict[str, torch.Tensor]:
+    """Raw (unweighted) dense reward terms, each shape (N,)."""
+    return {
+        "progress": compute_progress_reward(info["target_junction_force"], cfg),
+        "pullout": compute_pullout_penalty(info["ft_wrist"], obs["tcp_quat"]),
+        "collateral": compute_collateral_penalty(
+            info["woody_part_force"], target_junction_name=target_junction_name
+        ),
+    }
+
+
+def weight_dense_reward_terms(
+    terms: dict[str, torch.Tensor], cfg: HarvestRewardConfig
+) -> dict[str, torch.Tensor]:
+    """Signed weighted contributions to the dense reward, each shape (N,)."""
+    return {
+        "progress": cfg.w_progress * terms["progress"],
+        "pullout": -cfg.w_pullout * terms["pullout"],
+        "collateral": -cfg.w_collateral * terms["collateral"],
+    }
+
+
 def compute_dense_reward(
     obs: dict[str, Any],
     info: dict[str, Any],
@@ -83,10 +111,9 @@ def compute_dense_reward(
     cfg: HarvestRewardConfig,
 ) -> torch.Tensor:
     """Weighted dense shaping reward (excludes the sparse success/failure bonus), shape (N,1)."""
-    progress = compute_progress_reward(info["target_junction_force"], cfg)
-    pullout = compute_pullout_penalty(info["ft_wrist"], obs["tcp_quat"])
-    collateral = compute_collateral_penalty(
-        info["woody_part_force"], target_junction_name=target_junction_name
+    terms = compute_dense_reward_terms(
+        obs, info, target_junction_name=target_junction_name, cfg=cfg
     )
-    reward = cfg.w_progress * progress - cfg.w_pullout * pullout - cfg.w_collateral * collateral
+    weighted = weight_dense_reward_terms(terms, cfg)
+    reward = weighted["progress"] + weighted["pullout"] + weighted["collateral"]
     return reward.unsqueeze(-1)

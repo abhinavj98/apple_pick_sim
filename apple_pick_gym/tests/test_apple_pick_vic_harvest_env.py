@@ -37,6 +37,38 @@ def _make_env(num_envs: int = 2, **kwargs):
 
 @requires_fr3
 class TestApplePickVicHarvestEnv:
+    def test_support_dr_is_baked_into_build_and_snapshot(self):
+        """Support DR must be in the build config (so it is settled) and in the stored
+        snapshot -- not applied afterwards and reverted by restore_episode_snapshot()."""
+        env = _make_env(num_envs=4)
+        try:
+            sample = env._last_support_dr_sample
+            assert sample is not None
+            fs = env._sim.config.fruiting_system
+            assert fs.support_kp_per_env == tuple(float(x) for x in sample.kp)
+            assert fs.support_roll_kp_per_env == tuple(float(x) for x in sample.roll_kp)
+            assert fs.support_zeta_per_env == tuple(float(x) for x in sample.zeta)
+            assert len(set(fs.support_kp_per_env)) > 1
+
+            import warp as wp
+
+            snap = env._sim.episode_snapshot
+            live = wp.to_torch(env._sim.scene.cable.solver.joint_penalty_k)
+            torch.testing.assert_close(wp.to_torch(snap.joint_penalty_k), live)
+            env.reset()
+            torch.testing.assert_close(wp.to_torch(env._sim.scene.cable.solver.joint_penalty_k), live)
+        finally:
+            env.close()
+
+    def test_uses_dynamic_apple_with_weld_harvest_like_sysid(self):
+        env = _make_env()
+        try:
+            cfg = env._sim.config
+            assert cfg.robot.gripper.dynamic_apple is True
+            assert cfg.fruiting_system.tcp_harvest_source == "weld"
+        finally:
+            env.close()
+
     def test_action_space_is_13d(self):
         env = _make_env()
         try:
@@ -158,6 +190,38 @@ class TestApplePickVicHarvestEnv:
             assert any(torch.any(r != 0.0) for r in rewards), "reward stayed at the Task 6 stub (all zero)"
             assert env._success_tracker.streak.shape == (2,)
             assert env._freeze_mask.done_mask.shape == (2,)
+        finally:
+            env.close()
+
+    def test_info_exposes_reward_terms_and_termination_reasons(self):
+        env = _make_env()
+        try:
+            env.reset()
+            action = torch.zeros((2, 13), dtype=torch.float32, device=env.device)
+            action[:, 6:9] = 200.0
+            action[:, 9:12] = 10.0
+            action[:, 12] = 1.0
+            _obs, reward, _term, _trunc, info = env.step(action)
+
+            rt = info["reward_terms"]
+            assert set(rt["raw"]) == {"progress", "pullout", "collateral"}
+            assert set(rt["weighted"]) == {"progress", "pullout", "collateral"}
+            weighted_sum = sum(rt["weighted"].values())
+            torch.testing.assert_close(rt["dense"], weighted_sum)
+            torch.testing.assert_close(rt["total"], reward.reshape(2))
+            assert rt["total"].shape == (2,)
+
+            ep = info["episode"]
+            for key in (
+                "success_this_step",
+                "success_achieved",
+                "success_streak",
+                "safety_junction",
+                "safety_wrist",
+                "frozen",
+            ):
+                assert ep[key].shape == (2,), key
+            assert info["target_pose"].shape == (2, 7)
         finally:
             env.close()
 

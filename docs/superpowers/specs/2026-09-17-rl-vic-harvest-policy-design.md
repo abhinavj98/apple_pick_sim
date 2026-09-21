@@ -153,18 +153,22 @@ rather than 6, keeping the K/D relationship coupled per axis.
 
 ## Observation pipeline
 
-**Actor observation — sensor-realistic only.** Flattened to a fixed-order
-`(N, D)` tensor (skrl memories are flat; the nested
-`woody_part_start_pos: dict[str, (N,3)]` layout from the v3 contract must be
-flattened deterministically by junction name):
+**Actor observation — proprioception + F/T only. Superseded: no vision
+geometry.** An earlier draft of this spec put `apple_pos`/`apple_quat`/
+`woody_part_start_pos`/`woody_part_end_pos` (vision-tracked geometry, the
+sys-ID v3 observation contract) in the actor observation. The maintainer
+reversed this: those fields were for sys-ID, not for the pick policy, which
+is deliberately scoped to rely on F/T and proprioception only. The four
+fields are still produced by the env, just via `info` rather than `obs` —
+available for logging, reward shaping, or a future vision-augmented variant,
+but never fed to the policy. Flattened to a fixed-order `(N, D)` tensor
+(skrl memories are flat):
 
 | Source | Notes |
 | --- | --- |
 | `tcp_pos`, `tcp_quat`, `tcp_velocity` | Existing v3 keys |
 | `ft_wrist` | **EMA-filtered + bias/noise/drift** — see Sensor realism |
-| `apple_pos`, `apple_quat` | Existing v3 keys |
 | `robot_joint_q` | Existing v3 key |
-| `woody_part_start_pos` / `woody_part_end_pos` | Vision-tracked junction geometry |
 | `last_action` | 13-D, keeps commanded impedance Markov |
 | `step_frac` | `step_count / max_episode_steps` |
 

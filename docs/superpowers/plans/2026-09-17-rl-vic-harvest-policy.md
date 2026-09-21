@@ -190,6 +190,22 @@ skrl memories are flat, and the v3 obs dict is nested (`woody_part_start_pos: di
 - [x] **Step 5:** Artifact — `tmp/rl_vic_viz/task5_obs_layout.md`: full field/start/width/slice table for both layouts, privileged fields marked.
 - [x] **Step 6:** Commit.
 
+**Amendment (post-Task 7, during resumed verification):** the maintainer
+reversed the actor field list — `apple_pos`/`apple_quat`/
+`woody_part_start_pos`/`woody_part_end_pos` were sys-ID's vision-tracked
+geometry, not something the pick policy should rely on (proprioception + F/T
+only). Removed from `_ACTOR_FIXED_FIELDS`/the junction loops in
+`harvest_obs.py` and from `apple_pick_vic_harvest_env.py`'s
+`_harvest_observation_space`/`_gather_obs`; the four fields are now
+produced via `info` (`_make_info`) instead, unchanged in content, just not
+flattened into the policy's input. **New actor width: 40-D** (`tcp_pos`(3)
++ `tcp_quat`(4) + `tcp_velocity`(6) + `ft_wrist`(6) + `robot_joint_q`(7) +
+`last_action`(13) + `step_frac`(1), no junction-keyed content); critic
+width follows the same composition (actor's new 40 as the prefix + the
+same 59 privileged fields = 99-D for a 4-junction topology).
+`docs/superpowers/specs/2026-09-17-rl-vic-harvest-policy-design.md`'s
+Observation pipeline section and `test_harvest_obs.py` updated to match.
+
 ---
 
 ### Task 6: `ApplePickVicHarvestEnv` — **DONE**

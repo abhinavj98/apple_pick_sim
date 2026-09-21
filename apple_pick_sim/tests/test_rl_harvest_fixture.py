@@ -32,12 +32,12 @@ def test_fixture_loads_and_parses():
 def test_support_dr_ranges_match_declared_values():
     ranges = load_ranges(_RL_HARVEST_FIXTURE)
     sim_build = parse_sim_build(ranges)
-    assert sim_build.support_dr.kp.min == pytest.approx(100.0)
-    assert sim_build.support_dr.kp.max == pytest.approx(1_000_000.0)
-    assert sim_build.support_dr.roll_kp.min == pytest.approx(0.075)
-    assert sim_build.support_dr.roll_kp.max == pytest.approx(7.5)
-    assert sim_build.support_dr.zeta.min == pytest.approx(0.05)
-    assert sim_build.support_dr.zeta.max == pytest.approx(0.95)
+    assert sim_build.support_dr.kp.min == pytest.approx(184.0)
+    assert sim_build.support_dr.kp.max == pytest.approx(442.0)
+    assert sim_build.support_dr.roll_kp.min == pytest.approx(0.22)
+    assert sim_build.support_dr.roll_kp.max == pytest.approx(1.69)
+    assert sim_build.support_dr.zeta.min == pytest.approx(0.018)
+    assert sim_build.support_dr.zeta.max == pytest.approx(0.944)
 
 
 def test_shared_fixture_is_byte_unaffected():
@@ -57,25 +57,37 @@ def test_spur_stem_damping_ratio_is_non_degenerate_across_envs():
     assert len(spur_zetas) > 1, "spur damping_ratio must not be degenerate across envs"
     assert len(stem_zetas) > 1, "stem damping_ratio must not be degenerate across envs"
     for p in params:
-        assert 0.05 - 1e-6 <= p.spur.damping_ratio <= 0.95 + 1e-6
-        assert 0.05 - 1e-6 <= p.stem.damping_ratio <= 0.95 + 1e-6
+        assert 0.0 - 1e-6 <= p.spur.damping_ratio <= 1.03 + 1e-6
+        assert 0.034 - 1e-6 <= p.stem.damping_ratio <= 0.957 + 1e-6
 
 
-def test_flexural_and_axial_moduli_vary_across_envs():
-    """Knobs 1-4: spur/stem flexural and axial modulus already vary (no regression)."""
+def test_flexural_and_axial_moduli_match_mu_sigma_bounds():
+    """Knobs 1-4: spur/stem flexural and axial moduli use μ±σ with 1 MPa floor."""
     ranges = load_ranges(_RL_HARVEST_FIXTURE)
+    assert ranges["spur"]["flexural_modulus_pa"] == {"min": 1_000_000.0, "max": 158_000_000.0}
+    assert ranges["stem"]["flexural_modulus_pa"] == {"min": 1_000_000.0, "max": 490_000_000.0}
+    assert ranges["spur"]["youngs_modulus_pa"] == {"min": 1_000_000.0, "max": 1_920_000_000.0}
+    assert ranges["stem"]["youngs_modulus_pa"] == {"min": 1_000_000.0, "max": 11_600_000_000.0}
     params = sample_heterogeneous_params_list(ranges, topology_seed=11, num_envs=_NUM_ENVS)
     assert len({round(p.spur.flexural_modulus_pa, -3) for p in params}) > 1
     assert len({round(p.stem.flexural_modulus_pa, -3) for p in params}) > 1
     assert len({round(p.spur.youngs_modulus_pa, -3) for p in params}) > 1
     assert len({round(p.stem.youngs_modulus_pa, -3) for p in params}) > 1
+    for p in params:
+        assert 1_000_000.0 - 1e-3 <= p.spur.flexural_modulus_pa <= 158_000_000.0 + 1e-3
+        assert 1_000_000.0 - 1e-3 <= p.stem.flexural_modulus_pa <= 490_000_000.0 + 1e-3
+        assert 1_000_000.0 - 1e-3 <= p.spur.youngs_modulus_pa <= 1_920_000_000.0 + 1e-3
+        assert 1_000_000.0 - 1e-3 <= p.stem.youngs_modulus_pa <= 11_600_000_000.0 + 1e-3
 
 
 def test_primary_density_varies_across_envs():
-    """Knob 5: primary rod density already varies (no regression)."""
+    """Knob 5: primary rod density uses μ±σ [113, 1817] kg/m³."""
     ranges = load_ranges(_RL_HARVEST_FIXTURE)
+    assert ranges["primary"]["density"] == {"min": 113.0, "max": 1817.0}
     params = sample_heterogeneous_params_list(ranges, topology_seed=11, num_envs=_NUM_ENVS)
     assert len({round(p.primary.density, 1) for p in params}) > 1
+    for p in params:
+        assert 113.0 - 1e-6 <= p.primary.density <= 1817.0 + 1e-6
 
 
 def test_sampling_is_reproducible_for_fixed_seed():

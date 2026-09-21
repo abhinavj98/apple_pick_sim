@@ -1,15 +1,21 @@
-"""Flatten the nested v3 observation dict + privileged extras into fixed-order
-``(N, D)`` tensors for the actor (sensor-realistic) and critic (privileged).
+"""Flatten the observation dict + privileged extras into fixed-order ``(N, D)``
+tensors for the actor (proprioception + F/T) and critic (privileged).
 
-skrl memories are flat; the v3 obs contract's `woody_part_start_pos` /
-`woody_part_end_pos` are `dict[str, (N,3)]` keyed by junction name. Both
-flatten deterministically **by sorted junction name**, so the layout is
-stable across runs and across topologies that share the same junction set.
+The actor is deliberately scoped to proprioception and F/T only --
+``apple_pos``/``apple_quat``/``woody_part_start_pos``/``woody_part_end_pos``
+are vision-tracked geometry from the sys-ID v3 observation contract, and the
+pick policy does not use vision. Those fields are still produced by the env,
+just via ``info`` rather than ``obs`` (see
+``apple_pick_vic_harvest_env.py::_make_info``) -- available for logging,
+reward shaping, or a future vision-augmented variant, but not flattened here.
 
 The critic vector is always the actor vector as an exact prefix, followed by
-privileged ground truth and every junction's wrench. ``flatten_actor_obs``
-never receives privileged inputs at all, so privileged data cannot leak into
-the actor vector by construction, not merely by convention.
+privileged ground truth and every junction's wrench (``dict[str, (N,6)]`
+keyed by junction name, flattened deterministically **by sorted junction
+name** so the layout is stable across runs and topologies sharing the same
+junction set). ``flatten_actor_obs`` never receives privileged inputs at
+all, so privileged data cannot leak into the actor vector by construction,
+not merely by convention.
 """
 
 from __future__ import annotations
@@ -26,8 +32,6 @@ _ACTOR_FIXED_FIELDS: tuple[tuple[str, int], ...] = (
     ("tcp_quat", 4),
     ("tcp_velocity", 6),
     ("ft_wrist", 6),
-    ("apple_pos", 3),
-    ("apple_quat", 4),
     ("robot_joint_q", 7),
 )
 _LAST_ACTION_DIM = 13
@@ -84,46 +88,36 @@ def _build_layout(field_widths: list[tuple[str, int]]) -> ObsLayout:
     return ObsLayout(entries=tuple(entries), total_width=start)
 
 
-def _actor_field_widths(sorted_junction_names: list[str]) -> list[tuple[str, int]]:
+def _actor_field_widths() -> list[tuple[str, int]]:
     widths = list(_ACTOR_FIXED_FIELDS)
-    for jn in sorted_junction_names:
-        widths.append((f"woody_part_start_pos/{jn}", 3))
-    for jn in sorted_junction_names:
-        widths.append((f"woody_part_end_pos/{jn}", 3))
     widths.append(("last_action", _LAST_ACTION_DIM))
     widths.append(("step_frac", 1))
     return widths
 
 
-def actor_obs_layout(junction_names: list[str]) -> ObsLayout:
-    """The actor's fixed-order layout for a given (unordered) junction-name set."""
-    return _build_layout(_actor_field_widths(sorted(junction_names)))
+def actor_obs_layout() -> ObsLayout:
+    """The actor's fixed-order layout (proprioception + F/T only; no junction geometry)."""
+    return _build_layout(_actor_field_widths())
 
 
 def critic_obs_layout(junction_names: list[str]) -> ObsLayout:
-    """The critic's layout: the actor layout as an exact prefix, then privileged fields."""
+    """The critic's layout: the actor layout as an exact prefix, then privileged fields
+    (including every junction's wrench, keyed by sorted junction name)."""
     jn = sorted(junction_names)
-    widths = _actor_field_widths(jn) + list(_PRIVILEGED_FIELDS)
+    widths = _actor_field_widths() + list(_PRIVILEGED_FIELDS)
     for j in jn:
         widths.append((f"woody_part_force/{j}", 6))
     return _build_layout(widths)
 
 
-def flatten_actor_obs(
-    obs: dict[str, Any], *, junction_names: list[str] | None = None
-) -> torch.Tensor:
-    """Flatten the sensor-realistic subset of ``obs`` into a fixed-order ``(N, D)`` tensor.
+def flatten_actor_obs(obs: dict[str, Any]) -> torch.Tensor:
+    """Flatten the proprioception + F/T subset of ``obs`` into a fixed-order ``(N, D)`` tensor.
 
     ``obs["ft_wrist"]`` is expected to already be the sensor-realistic value
     (see ``apple_pick_gym.batched_envs.sensor_realism.FtSensorModel``) -- this
     function only flattens, it does not apply the sensor model itself.
     """
-    jn = sorted(junction_names) if junction_names is not None else sorted(obs["woody_part_start_pos"])
     parts = [obs[name] for name, _ in _ACTOR_FIXED_FIELDS]
-    for j in jn:
-        parts.append(obs["woody_part_start_pos"][j])
-    for j in jn:
-        parts.append(obs["woody_part_end_pos"][j])
     parts.append(obs["last_action"])
     parts.append(obs["step_frac"])
     return torch.cat(parts, dim=-1)
@@ -138,7 +132,7 @@ def flatten_critic_obs(
 ) -> torch.Tensor:
     """Actor obs (exact prefix) + privileged ground truth + every junction's wrench."""
     jn = sorted(junction_names) if junction_names is not None else sorted(woody_part_force)
-    actor_part = flatten_actor_obs(obs, junction_names=jn)
+    actor_part = flatten_actor_obs(obs)
     priv_parts = [privileged[name] for name, _ in _PRIVILEGED_FIELDS]
     force_parts = [woody_part_force[j] for j in jn]
     return torch.cat([actor_part, *priv_parts, *force_parts], dim=-1)

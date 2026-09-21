@@ -577,6 +577,16 @@ def replay_multi_structure_candidate_blocks(
                     joints_per_world=env._sim.layout.joints_per_world,
                     zeta_per_env=_slot_zetas_or_dataset(),
                 )
+            if (
+                not build_accepts_support_kp
+                and any(slot.support_kp is not None for slot in slots)
+            ) or (
+                not build_accepts_support_roll
+                and any(slot.support_roll_kp is not None for slot in slots)
+            ):
+                # The late apply above wrote solver penalty arrays that the build-time
+                # snapshot does not contain; env.reset() would restore the stale ones.
+                env._sim.capture_episode_snapshot()
 
             replay_started = time.perf_counter()
             env.reset(seed=replay_seed)

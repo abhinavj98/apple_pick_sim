@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "newton[examples]",
+    "wandb>=0.30.0",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +18,7 @@ gym = [
     "imageio-ffmpeg>=0.5.0",
     "plotly>=6.8.0",
     "pyarrow>=18.0.0",
+    "wandb>=0.30.0",
 ]
 vic = [
     "newton[torch-cu12]",

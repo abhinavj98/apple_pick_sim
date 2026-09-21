@@ -57,9 +57,9 @@ class HarvestActionBounds:
     linear_delta_m: float = 0.02
     angular_delta_rad: float = 0.1
     k_lin_min: float = 20.0
-    k_lin_max: float = 800.0
+    k_lin_max: float = 200.0
     k_ang_min: float = 2.0
-    k_ang_max: float = 80.0
+    k_ang_max: float = 40.0
     zeta_min: float = 0.3
     zeta_max: float = 2.0
 

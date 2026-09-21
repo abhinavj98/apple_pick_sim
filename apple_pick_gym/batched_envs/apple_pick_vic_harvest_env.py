@@ -92,6 +92,25 @@ from apple_pick_gym.batched_envs.support_joint_dr import sample_support_joint_dr
 
 _ACTION_DIM = 13
 _VIC_POSE_ACTION_DIM = 19
+
+
+@dataclasses.dataclass(frozen=True)
+class HoldSettleConfig:
+    """Robot-stepped settle run once after build, before the episode snapshot is stored.
+
+    The arm holds its current TCP pose with a fixed impedance while the plant relaxes, so
+    the stored snapshot is a force-balanced coupled equilibrium (arm sag = load / linear_k).
+    """
+
+    enabled: bool = True
+    linear_k: float = 100.0
+    linear_d: float = 15.0
+    angular_k: float = 10.0
+    angular_d: float = 3.0
+    max_frames: int = 240
+    check_every: int = 10
+    force_tol_n: float = 0.5
+    speed_tol_m_s: float = 1e-3
 _N_ARM_DOF = 7
 
 _RL_HARVEST_RANGES_FIXTURE = (
@@ -134,6 +153,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         grasp_max_polar_angle_rad: float = np.pi / 6.0,
         reward_config: HarvestRewardConfig | None = None,
         episode_config: EpisodeConfig | None = None,
+        hold_settle: HoldSettleConfig | None = None,
     ) -> None:
         from apple_pick_sim.robot.fr3_robot.arm_domain_randomization import (
             ArmDomainRandomizationRanges,
@@ -145,6 +165,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._target_junction_name = target_junction_name or self.TARGET_JUNCTION_NAME
         self._reward_cfg = reward_config or HarvestRewardConfig()
         self._episode_cfg = episode_config or EpisodeConfig()
+        self._hold_cfg = hold_settle or HoldSettleConfig()
+        self._hold_target_pose: torch.Tensor | None = None
         self._dr_rng = np.random.default_rng(dr_seed)
         self._last_full_obs: dict[str, Any] | None = None
         self._last_arm_dr_sample = None
@@ -245,6 +267,70 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._freeze_mask = FreezeMask(num_envs=self.num_envs, device=self.device)
 
         self._apply_build_time_dr()
+        if self._hold_cfg.enabled:
+            self._hold_settle()
+
+    def _hold_settle(self) -> None:
+        """Step arm + plant with the arm holding its pose, then re-store the snapshot.
+
+        The post-grasp settle in the build is cable-only (the arm is not stepped), so the
+        stored state is not a coupled equilibrium. Here the VIC target is the TCP pose at
+        the start; the arm settles to ``target - load / linear_k`` and the plant to its
+        balanced state. ``reset()`` then restores that snapshot and starts the episode
+        target at the *stored target* (not the sagged TCP), keeping the state balanced.
+        """
+        from apple_pick_gym.batched_envs.apple_pick_batched_base_env import ApplePickBatchedBaseEnv
+
+        cfg = self._hold_cfg
+        sim = self._sim
+        n = self.num_envs
+        sim.gather_obs()
+        tcp_pose = wp.to_torch(sim.obs_bufs.tcp_pose).to(device=self.device, dtype=torch.float32)
+        target = torch.cat([tcp_pose[:, :3], _xyzw_to_wxyz(tcp_pose[:, 3:7])], dim=-1)
+        kp = torch.tensor(
+            [cfg.linear_k] * 3 + [cfg.angular_k] * 3, dtype=torch.float32, device=self.device
+        ).expand(n, 6)
+        kd = torch.tensor(
+            [cfg.linear_d] * 3 + [cfg.angular_d] * 3, dtype=torch.float32, device=self.device
+        ).expand(n, 6)
+        sim_cfg = sim.config
+        action = sim_cfg.controller.validate_actions(
+            torch.cat([target, kp, kd], dim=-1),
+            num_envs=n,
+            device=str(self.device),
+            robot_step_mode=sim_cfg.robot.step_mode,
+        )
+
+        prev_force = None
+        converged = False
+        for frame in range(1, int(cfg.max_frames) + 1):
+            sim.step(action)
+            if frame % int(cfg.check_every) != 0:
+                continue
+            full = ApplePickBatchedBaseEnv._gather_obs(self)
+            force = torch.linalg.norm(
+                full["woody_part_info"][self._target_junction_name]["anchor_force"][:, :3], dim=-1
+            )
+            speed = torch.linalg.norm(full["tcp_velocity"][:, :3], dim=-1)
+            if (
+                prev_force is not None
+                and float((force - prev_force).abs().max()) < cfg.force_tol_n
+                and float(speed.max()) < cfg.speed_tol_m_s
+            ):
+                converged = True
+                break
+            prev_force = force
+        if not converged:
+            import warnings
+
+            warnings.warn(
+                f"hold settle not converged after {cfg.max_frames} frames "
+                f"(target-junction force {prev_force.tolist() if prev_force is not None else None})",
+                UserWarning,
+                stacklevel=2,
+            )
+        self._hold_target_pose = target.clone()
+        sim.capture_episode_snapshot()
 
     @staticmethod
     def _sample_default_grasps(
@@ -502,8 +588,13 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         # reset (next) does not have to happen before this read.
         self._sim.gather_obs()
         bufs = self._sim.obs_bufs
-        tcp_pose = wp.to_torch(bufs.tcp_pose).to(device=self.device, dtype=torch.float32)
-        self._target_pose = torch.cat([tcp_pose[:, :3], _xyzw_to_wxyz(tcp_pose[:, 3:7])], dim=-1)
+        if self._hold_target_pose is not None:
+            self._target_pose = self._hold_target_pose.clone()
+        else:
+            tcp_pose = wp.to_torch(bufs.tcp_pose).to(device=self.device, dtype=torch.float32)
+            self._target_pose = torch.cat(
+                [tcp_pose[:, :3], _xyzw_to_wxyz(tcp_pose[:, 3:7])], dim=-1
+            )
 
         self._ft_sensor.reset()
         self._resample_joint_dynamics_dr()

@@ -84,8 +84,10 @@ class TestApplePickVicHarvestEnv:
         finally:
             env.close()
 
-    def test_target_pose_initializes_to_current_tcp_pose_on_reset(self):
-        env = _make_env()
+    def test_target_pose_initializes_to_current_tcp_pose_on_reset_without_hold_settle(self):
+        from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import HoldSettleConfig
+
+        env = _make_env(hold_settle=HoldSettleConfig(enabled=False))
         try:
             env.reset()
             import warp as wp
@@ -96,6 +98,23 @@ class TestApplePickVicHarvestEnv:
             # quat: target_pose is wxyz, tcp_pose is xyzw (Warp-native) -- compare reordered.
             tcp_quat_wxyz = tcp_pose[:, [6, 3, 4, 5]]
             torch.testing.assert_close(env._target_pose[:, 3:7], tcp_quat_wxyz, atol=1e-4, rtol=0)
+        finally:
+            env.close()
+
+    def test_hold_settle_stores_equilibrium_target_used_at_reset(self):
+        env = _make_env()
+        try:
+            assert env._hold_target_pose is not None
+            env.reset()
+            torch.testing.assert_close(env._target_pose, env._hold_target_pose)
+            import warp as wp
+
+            tcp = wp.to_torch(env._sim.obs_bufs.tcp_pose).to(device=env.device, dtype=torch.float32)[:, :3]
+            # The arm holds near the stored target (sag = load / Kp, centimetres at most).
+            assert torch.all((tcp - env._hold_target_pose[:, :3]).norm(dim=-1) < 0.1)
+            # A second reset restores the same stored equilibrium, not the sagged TCP.
+            env.reset()
+            torch.testing.assert_close(env._target_pose, env._hold_target_pose)
         finally:
             env.close()
 

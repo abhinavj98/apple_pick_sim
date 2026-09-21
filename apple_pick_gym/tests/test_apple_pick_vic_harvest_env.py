@@ -84,6 +84,98 @@ class TestApplePickVicHarvestEnv:
         finally:
             env.close()
 
+    def test_controller_matches_real_collection_osc_like_sysid_replay(self):
+        """Same OSC as real_replay_sim_config's vic_pose: rotation without Lambda
+        (sep_ori) and the real kd_null, so K_ang means the same thing as on the rig."""
+        from apple_pick_gym.batched_envs.real_batched_replay_build import (
+            _REAL_OSC_KD_NULL,
+            _REAL_OSC_KP_NULL,
+            _REAL_OSC_SEP_ORI,
+        )
+
+        env = _make_env()
+        try:
+            ctrl = env._sim.config.controller
+            assert ctrl.sep_ori is _REAL_OSC_SEP_ORI
+            assert ctrl.kp_null == _REAL_OSC_KP_NULL
+            assert ctrl.kd_null == _REAL_OSC_KD_NULL
+            assert env._sim.scene.vic_jt_sep_ori is _REAL_OSC_SEP_ORI
+            assert env._sim.scene.vic_jt_kd_null == _REAL_OSC_KD_NULL
+        finally:
+            env.close()
+
+    def test_frozen_env_holds_its_target_pose(self):
+        """A frozen env replays its last gains but must not keep integrating its last delta."""
+        from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import HoldSettleConfig
+
+        # No env pre-frozen as an invalid grasp: only the explicit freeze below applies.
+        env = _make_env(
+            hold_settle=HoldSettleConfig(max_rest_pos_err_m=1e6, max_rest_wrist_force_n=1e6)
+        )
+        try:
+            env.reset()
+            action = torch.zeros((2, 13), dtype=torch.float32, device=env.device)
+            action[:, 0] = 0.01
+            action[:, 6:9] = 100.0
+            action[:, 9:12] = 10.0
+            action[:, 12] = 1.0
+            env._actions_tensor(action)
+            env._freeze_mask.update(torch.tensor([True, False], device=env.device))
+            before = env._target_pose.clone()
+            env._actions_tensor(action)
+            torch.testing.assert_close(env._target_pose[0], before[0])
+            assert float(env._target_pose[1, 0] - before[1, 0]) == pytest.approx(0.01, abs=1e-6)
+        finally:
+            env.close()
+
+    def test_broken_grasp_envs_are_flagged_and_frozen_from_reset(self):
+        """Envs whose settled TCP sits far from the hold target (failed IK grasp, apple
+        welded to a TCP centimetres away) are flagged invalid and frozen with zero reward."""
+        from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import HoldSettleConfig
+
+        # A negative tolerance marks every env invalid, exercising the wiring deterministically.
+        env = _make_env(hold_settle=HoldSettleConfig(max_rest_pos_err_m=-1.0))
+        try:
+            assert env._invalid_env_mask.tolist() == [True, True]
+            _obs, info = env.reset()
+            assert info["invalid_env"].tolist() == [True, True]
+            assert env._freeze_mask.done_mask.tolist() == [True, True]
+            action = torch.zeros((2, 13), dtype=torch.float32, device=env.device)
+            action[:, 6:9] = 100.0
+            action[:, 9:12] = 10.0
+            action[:, 12] = 1.0
+            _obs, reward, _term, _trunc, info = env.step(action)
+            assert torch.all(reward == 0.0)
+            assert info["invalid_env"].tolist() == [True, True]
+        finally:
+            env.close()
+
+    def test_broken_grasp_is_flagged_by_rest_wrist_force_alone(self):
+        """A failed grasp can settle within the position tolerance while the weld still
+        loads the wrist with >100 N, so rest wrist force is an independent criterion."""
+        from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import HoldSettleConfig
+
+        env = _make_env(
+            hold_settle=HoldSettleConfig(max_rest_pos_err_m=1e6, max_rest_wrist_force_n=-1.0)
+        )
+        try:
+            assert env._invalid_env_mask.tolist() == [True, True]
+        finally:
+            env.close()
+
+    def test_valid_grasps_are_not_flagged(self):
+        from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import HoldSettleConfig
+
+        env = _make_env(
+            hold_settle=HoldSettleConfig(max_rest_pos_err_m=1e6, max_rest_wrist_force_n=1e6)
+        )
+        try:
+            _obs, info = env.reset()
+            assert info["invalid_env"].tolist() == [False, False]
+            assert env._freeze_mask.done_mask.tolist() == [False, False]
+        finally:
+            env.close()
+
     def test_target_pose_initializes_to_current_tcp_pose_on_reset_without_hold_settle(self):
         from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import HoldSettleConfig
 

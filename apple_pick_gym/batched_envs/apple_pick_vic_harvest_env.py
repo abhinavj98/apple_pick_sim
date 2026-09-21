@@ -111,6 +111,16 @@ class HoldSettleConfig:
     check_every: int = 10
     force_tol_n: float = 0.5
     speed_tol_m_s: float = 1e-3
+    # Envs whose settled TCP sits farther than this from the hold target are flagged
+    # invalid (failed IK grasp: the apple is welded to a TCP centimetres away and the
+    # weld drags the plant with hundreds of newtons). Healthy envs settle within a few mm.
+    max_rest_pos_err_m: float = 0.02
+    # ...or whose settled wrist force exceeds this (a failed grasp can settle within
+    # the position tolerance while the weld still loads the wrist with >100 N; healthy
+    # envs rest at a few newtons).
+    max_rest_wrist_force_n: float = 20.0
+
+
 _N_ARM_DOF = 7
 
 _RL_HARVEST_RANGES_FIXTURE = (
@@ -167,6 +177,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._episode_cfg = episode_config or EpisodeConfig()
         self._hold_cfg = hold_settle or HoldSettleConfig()
         self._hold_target_pose: torch.Tensor | None = None
+        self._invalid_env_mask: torch.Tensor | None = None
         self._dr_rng = np.random.default_rng(dr_seed)
         self._last_full_obs: dict[str, Any] | None = None
         self._last_arm_dr_sample = None
@@ -174,16 +185,29 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
 
         if sim_config is None:
             from apple_pick_sim.coupled_fruiting import BatchedHeterogeneousCoupledSimConfig
+            from apple_pick_gym.batched_envs.real_batched_replay_build import (
+                _REAL_OSC_KD_NULL,
+                _REAL_OSC_KP_NULL,
+                _REAL_OSC_SEP_ORI,
+            )
             from apple_pick_sim.coupled_fruiting.batched_heterogeneous_config import (
                 ControllerConfig,
             )
 
             sim_config = BatchedHeterogeneousCoupledSimConfig.gym_defaults(num_envs=int(num_envs))
-            # Dynamic apple welded to the proxy, weld-reaction TCP harvest -- same as
-            # the sys-ID real-replay build (real_replay_sim_config, dynamic_apple=True).
+            # Dynamic apple welded to the proxy, weld-reaction TCP harvest, and the real
+            # collection OSC (rotation without Lambda, real kd_null) -- same as the sys-ID
+            # real-replay build (real_replay_sim_config, dynamic_apple=True), so K_ang
+            # means the same thing here as on the rig.
             sim_config = dataclasses.replace(
                 sim_config,
-                controller=ControllerConfig(mode="vic_pose", action_dim=_VIC_POSE_ACTION_DIM),
+                controller=ControllerConfig(
+                    mode="vic_pose",
+                    action_dim=_VIC_POSE_ACTION_DIM,
+                    kp_null=_REAL_OSC_KP_NULL,
+                    kd_null=_REAL_OSC_KD_NULL,
+                    sep_ori=_REAL_OSC_SEP_ORI,
+                ),
                 robot=dataclasses.replace(
                     sim_config.robot,
                     gripper=dataclasses.replace(sim_config.robot.gripper, dynamic_apple=True),
@@ -269,6 +293,42 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._apply_build_time_dr()
         if self._hold_cfg.enabled:
             self._hold_settle()
+        self._invalid_env_mask = self._detect_invalid_envs()
+
+    def _detect_invalid_envs(self) -> torch.Tensor:
+        """Flag envs whose stored rest state is a failed IK grasp.
+
+        Criteria: rest TCP far from the hold target, or rest wrist force too high.
+
+        These envs start the episode with the weld dragging the plant (wrist and
+        junction forces in the hundreds of newtons), so they are frozen with zero
+        reward from every reset and reported via ``info["invalid_env"]``.
+        """
+        from apple_pick_gym.batched_envs.apple_pick_batched_base_env import ApplePickBatchedBaseEnv
+
+        cfg = self._hold_cfg
+        full = ApplePickBatchedBaseEnv._gather_obs(self)
+        tcp = wp.to_torch(self._sim.obs_bufs.tcp_pose).to(device=self.device, dtype=torch.float32)
+        wrist = torch.linalg.norm(full["ft_wrist"][:, :3], dim=-1)
+        if self._hold_target_pose is None:
+            err = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
+        else:
+            err = torch.linalg.norm(tcp[:, :3] - self._hold_target_pose[:, :3], dim=-1)
+        invalid = (err > float(cfg.max_rest_pos_err_m)) | (wrist > float(cfg.max_rest_wrist_force_n))
+        if bool(invalid.any()):
+            import warnings
+
+            idx = torch.nonzero(invalid).flatten().tolist()
+            warnings.warn(
+                f"{len(idx)}/{self.num_envs} envs flagged invalid (rest TCP error "
+                f"{[round(float(err[i]), 3) for i in idx]} m, rest wrist "
+                f"{[round(float(wrist[i]), 1) for i in idx]} N; limits "
+                f"{cfg.max_rest_pos_err_m} m / {cfg.max_rest_wrist_force_n} N); "
+                f"frozen with zero reward: {idx}",
+                UserWarning,
+                stacklevel=3,
+            )
+        return invalid
 
     def _hold_settle(self) -> None:
         """Step arm + plant with the arm holding its pose, then re-store the snapshot.
@@ -507,6 +567,11 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
     def _make_info(self) -> dict[str, Any]:
         info = super()._make_info()
         info["obs_layout"] = "batched_vic_harvest"
+        info["invalid_env"] = (
+            self._invalid_env_mask.clone()
+            if self._invalid_env_mask is not None
+            else torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        )
         woody_part_force = self._woody_part_force()
         info["woody_part_force"] = woody_part_force
         info["target_junction_force"] = woody_part_force[self._target_junction_name]
@@ -541,10 +606,11 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 f"actions shape must be ({self.num_envs}, {_ACTION_DIM}), got {tuple(action.shape)}"
             )
         action = action.contiguous()
-        # Frozen (already-succeeded) envs replay their last commanded action
-        # rather than a fresh one -- see harvest_episode.py's module docstring
-        # for why this keeps LSTM hidden-state resets batch-uniform.
-        action = self._freeze_mask.apply_to_action(action, self._last_action)
+        # Frozen (already-succeeded) envs hold their target with their last gains
+        # rather than taking a fresh action -- see harvest_episode.py's module
+        # docstring for why this keeps LSTM hidden-state resets batch-uniform. The
+        # pose delta is zeroed: replaying it would keep integrating the target away.
+        action = self._freeze_mask.apply_to_delta_action(action, self._last_action, delta_dims=6)
 
         split = split_harvest_action(action, self._action_bounds)
         gains = torch.cat([split.linear_k, split.angular_k], dim=-1)
@@ -600,6 +666,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._resample_joint_dynamics_dr()
         self._success_tracker.reset()
         self._freeze_mask.reset()
+        if self._invalid_env_mask is not None:
+            self._freeze_mask.update(self._invalid_env_mask)
         self._pending_terminated = None
 
         obs = self._gather_obs()

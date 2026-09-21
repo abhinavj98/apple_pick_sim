@@ -259,13 +259,18 @@ def main() -> None:
             num_truncated += int(truncated.sum().item())
 
             if step % print_every == 0 or step == num_steps - 1:
-                target_force = info["target_junction_force"][:, :3].norm(dim=-1)
+                # Stats over valid envs only (failed-grasp envs are flagged at build).
+                valid = ~info["invalid_env"]
+                if not bool(valid.any()):
+                    valid = torch.ones_like(valid)
+                target_force = info["target_junction_force"][valid, :3].norm(dim=-1)
+                wrist_force = obs["ft_wrist"][valid, :3].norm(dim=-1)
                 print(
-                    f"step {step:4d}  reward mean={reward.mean().item(): .4f} "
-                    f"std={reward.std().item():.4f}  "
-                    f"ft_wrist |F| mean={obs['ft_wrist'][:, :3].norm(dim=-1).mean().item():.3f} N  "
+                    f"step {step:4d}  reward mean={reward[valid].mean().item(): .4f}  "
+                    f"ft_wrist |F| mean={wrist_force.mean().item():.3f} max={wrist_force.max().item():.3f} N  "
                     f"target_junction |F| mean={target_force.mean().item():.3f} max={target_force.max().item():.3f} N  "
                     f"frozen={int(env._freeze_mask.done_mask.sum().item())}/{env.num_envs} "
+                    f"invalid={int(info['invalid_env'].sum().item())} "
                     f"truncated={int(truncated.sum().item())}"
                 )
 

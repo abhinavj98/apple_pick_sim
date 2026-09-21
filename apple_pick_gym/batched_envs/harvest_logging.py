@@ -30,9 +30,13 @@ def _norm3(wrench: torch.Tensor, start: int = 0) -> torch.Tensor:
     return torch.linalg.norm(wrench[:, start : start + 3], dim=-1)
 
 
-def _add_stats(out: dict[str, float], key: str, x: torch.Tensor) -> None:
-    """Batch mean/min/max of a per-env ``(N,)`` tensor under ``key``."""
+def _add_stats(
+    out: dict[str, float], key: str, x: torch.Tensor, valid: torch.Tensor | None = None
+) -> None:
+    """Batch mean/min/max of a per-env ``(N,)`` tensor under ``key``, over ``valid`` envs."""
     x = x.detach().float().reshape(-1)
+    if valid is not None and bool(valid.any()):
+        x = x[valid.to(x.device).reshape(-1)]
     out[f"{key}/mean"] = float(x.mean())
     out[f"{key}/min"] = float(x.min())
     out[f"{key}/max"] = float(x.max())
@@ -141,38 +145,42 @@ class HarvestMetricsLogger:
         out: dict[str, float] = {}
         tr = self.trace_env_ids
         dev = obs["ft_wrist"].device
+        # Batch stats cover valid envs only: failed-grasp envs (info["invalid_env"]) sit at
+        # hundreds of newtons and would dominate them. Per-env traces are unmasked.
+        invalid = info.get("invalid_env")
+        valid = None if invalid is None else ~invalid.detach().to(dev).reshape(-1)
 
         # -- reward decomposition -------------------------------------------------------
         rt = info["reward_terms"]
         for name in ("total", "dense", "terminal"):
-            _add_stats(out, f"reward/{name}", rt[name])
+            _add_stats(out, f"reward/{name}", rt[name], valid)
             _add_traces(out, f"reward/{name}", rt[name], tr)
         for name, x in rt["raw"].items():
-            _add_stats(out, f"reward/raw/{name}", x)
+            _add_stats(out, f"reward/raw/{name}", x, valid)
             _add_traces(out, f"reward/raw/{name}", x, tr)
         for name, x in rt["weighted"].items():
-            _add_stats(out, f"reward/weighted/{name}", x)
+            _add_stats(out, f"reward/weighted/{name}", x, valid)
             _add_traces(out, f"reward/weighted/{name}", x, tr)
 
         # -- forces: every junction + target -------------------------------------------
         for name, wrench in sorted(info["woody_part_force"].items()):
             f, t = _norm3(wrench), _norm3(wrench, 3)
-            _add_stats(out, f"force/junction/{name}/F", f)
-            _add_stats(out, f"force/junction/{name}/T", t)
+            _add_stats(out, f"force/junction/{name}/F", f, valid)
+            _add_stats(out, f"force/junction/{name}/T", t, valid)
             _add_traces(out, f"force/junction/{name}/F", f, tr)
             _add_traces(out, f"force/junction/{name}/T", t, tr)
         tgt = info["target_junction_force"]
-        _add_stats(out, "force/target/F", _norm3(tgt))
-        _add_stats(out, "force/target/T", _norm3(tgt, 3))
+        _add_stats(out, "force/target/F", _norm3(tgt), valid)
+        _add_stats(out, "force/target/T", _norm3(tgt, 3), valid)
         _add_traces(out, "force/target/F", _norm3(tgt), tr)
 
         # -- wrist: sim raw vs policy-observed -------------------------------------------
         raw, seen = info["ft_wrist"], obs["ft_wrist"]
-        _add_stats(out, "wrist/raw/F", _norm3(raw))
-        _add_stats(out, "wrist/raw/T", _norm3(raw, 3))
-        _add_stats(out, "wrist/obs/F", _norm3(seen))
-        _add_stats(out, "wrist/obs/T", _norm3(seen, 3))
-        _add_stats(out, "wrist/obs_minus_raw/F", torch.linalg.norm((seen - raw)[:, :3], dim=-1))
+        _add_stats(out, "wrist/raw/F", _norm3(raw), valid)
+        _add_stats(out, "wrist/raw/T", _norm3(raw, 3), valid)
+        _add_stats(out, "wrist/obs/F", _norm3(seen), valid)
+        _add_stats(out, "wrist/obs/T", _norm3(seen, 3), valid)
+        _add_stats(out, "wrist/obs_minus_raw/F", torch.linalg.norm((seen - raw)[:, :3], dim=-1), valid)
         for i in tr:
             for k, ax in enumerate(_AXES):
                 out[f"env{i}/wrist/raw/F{ax}"] = float(raw[i, k])
@@ -183,18 +191,18 @@ class HarvestMetricsLogger:
         # -- action decode ---------------------------------------------------------------
         act = actions.detach().to(dev, torch.float32)
         split = split_harvest_action(act, self.action_bounds)
-        _add_stats(out, "action/dp_norm", _norm3(split.delta))
-        _add_stats(out, "action/drot_norm", _norm3(split.delta, 3))
-        _add_stats(out, "action/zeta", split.zeta.squeeze(-1))
-        _add_stats(out, "action/K_lin", split.linear_k.mean(dim=-1))
-        _add_stats(out, "action/K_ang", split.angular_k.mean(dim=-1))
+        _add_stats(out, "action/dp_norm", _norm3(split.delta), valid)
+        _add_stats(out, "action/drot_norm", _norm3(split.delta, 3), valid)
+        _add_stats(out, "action/zeta", split.zeta.squeeze(-1), valid)
+        _add_stats(out, "action/K_lin", split.linear_k.mean(dim=-1), valid)
+        _add_stats(out, "action/K_ang", split.angular_k.mean(dim=-1), valid)
         d_lin = derive_critical_damping(split.linear_k, split.zeta)
         d_ang = derive_critical_damping(split.angular_k, split.zeta)
-        _add_stats(out, "action/D_lin", d_lin.mean(dim=-1))
-        _add_stats(out, "action/D_ang", d_ang.mean(dim=-1))
+        _add_stats(out, "action/D_lin", d_lin.mean(dim=-1), valid)
+        _add_stats(out, "action/D_ang", d_ang.mean(dim=-1), valid)
         for k, ax in enumerate(_AXES):
-            _add_stats(out, f"action/K_lin_{ax}", split.linear_k[:, k])
-            _add_stats(out, f"action/K_ang_{ax}", split.angular_k[:, k])
+            _add_stats(out, f"action/K_lin_{ax}", split.linear_k[:, k], valid)
+            _add_stats(out, f"action/K_ang_{ax}", split.angular_k[:, k], valid)
         _add_traces(out, "action/zeta", split.zeta.squeeze(-1), tr)
         _add_traces(out, "action/K_lin", split.linear_k.mean(dim=-1), tr)
 
@@ -203,22 +211,23 @@ class HarvestMetricsLogger:
         pos_err = torch.linalg.norm(obs["tcp_pos"] - target[:, :3], dim=-1)
         tcp_wxyz = obs["tcp_quat"][:, [3, 0, 1, 2]]  # obs is xyzw, target is wxyz
         rot_err = _quat_angle(tcp_wxyz, target[:, 3:7])
-        _add_stats(out, "tracking/pos_err_m", pos_err)
-        _add_stats(out, "tracking/rot_err_rad", rot_err)
+        _add_stats(out, "tracking/pos_err_m", pos_err, valid)
+        _add_stats(out, "tracking/rot_err_rad", rot_err, valid)
         _add_traces(out, "tracking/pos_err_m", pos_err, tr)
         tcp_speed = torch.linalg.norm(obs["tcp_velocity"][:, :3], dim=-1)
-        _add_stats(out, "state/tcp_speed", tcp_speed)
+        _add_stats(out, "state/tcp_speed", tcp_speed, valid)
         if self._apple_ref is not None:
             apple_disp = torch.linalg.norm(
                 info["apple_pos"].detach().float().cpu() - self._apple_ref, dim=-1
             )
-            _add_stats(out, "state/apple_disp_m", apple_disp)
+            _add_stats(out, "state/apple_disp_m", apple_disp, valid)
             _add_traces(out, "state/apple_disp_m", apple_disp, tr)
 
         # -- episode / termination -------------------------------------------------------
         ep = info["episode"]
         n = float(self.num_envs)
         out["episode/frozen_frac"] = float(ep["frozen"].sum()) / n
+        out["episode/invalid_frac"] = 0.0 if invalid is None else float(invalid.sum()) / n
         out["episode/success_frac"] = float(ep["success_achieved"].sum()) / n
         out["episode/safety_junction_frac"] = float(ep["safety_junction"].sum()) / n
         out["episode/safety_wrist_frac"] = float(ep["safety_wrist"].sum()) / n

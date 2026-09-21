@@ -196,3 +196,19 @@ def test_reward_terms_recombine_to_dense_reward():
         total, compute_dense_reward(obs, info, target_junction_name="spur_stem", cfg=cfg)
     )
     assert torch.all(w["pullout"] <= 0) and torch.all(w["collateral"] <= 0)
+
+
+def test_batch_stats_exclude_invalid_envs_but_traces_keep_them():
+    """Failed-grasp envs (info["invalid_env"]) sit at hundreds of newtons; they must not
+    dominate batch force stats, but their per-env traces stay visible."""
+    obs, info = _obs_info()
+    info["ft_wrist"] = torch.full((_N, 6), 1.0)
+    info["ft_wrist"][0] = 500.0
+    info["invalid_env"] = torch.tensor([True] + [False] * (_N - 1))
+    lg = _logger(trace_envs=1)
+    lg.on_reset(info)
+    out = _step(lg, obs, info)
+    assert out["wrist/raw/F/max"] == pytest.approx(math.sqrt(3.0))
+    assert out["wrist/raw/F/mean"] == pytest.approx(math.sqrt(3.0))
+    assert out["env0/wrist/raw/F"] == pytest.approx(500.0 * math.sqrt(3.0))
+    assert out["episode/invalid_frac"] == pytest.approx(1.0 / _N)

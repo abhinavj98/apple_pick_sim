@@ -82,6 +82,19 @@ class FreezeMask:
         mask = self.done_mask.reshape(-1, *([1] * (action.dim() - 1)))
         return torch.where(mask, last_action, action)
 
+    def apply_to_delta_action(
+        self, action: torch.Tensor, last_action: torch.Tensor, *, delta_dims: int
+    ) -> torch.Tensor:
+        """Like :meth:`apply_to_action`, but frozen rows get a zero pose delta.
+
+        The leading ``delta_dims`` entries of a delta-pose action are integrated
+        into the target every step, so replaying them would keep a frozen env's
+        target moving; frozen envs hold their target and keep their last gains.
+        """
+        held = last_action.clone()
+        held[:, :delta_dims] = 0.0
+        return self.apply_to_action(action, held)
+
     def apply_to_reward(self, reward: torch.Tensor) -> torch.Tensor:
         mask = self.done_mask.reshape(-1, *([1] * (reward.dim() - 1)))
         return torch.where(mask, torch.zeros_like(reward), reward)

@@ -56,6 +56,21 @@ def test_freeze_mask_holds_last_action_for_frozen_envs():
     torch.testing.assert_close(out, torch.tensor([[1.0, 1.0], [9.0, 9.0]]))
 
 
+def test_freeze_mask_delta_action_holds_gains_but_zeroes_pose_delta():
+    """A delta-pose action is integrated into the target every step, so replaying the
+    last delta would keep a frozen env's target moving; it must hold the target instead."""
+    mask = FreezeMask(num_envs=2, device="cpu")
+    mask.update(torch.tensor([True, False]))
+    new_action = torch.full((2, 13), 9.0)
+    last_action = torch.arange(13, dtype=torch.float32).expand(2, 13).clone() + 1.0
+    out = mask.apply_to_delta_action(new_action, last_action, delta_dims=6)
+    # Frozen env 0: zero pose delta, last gains/zeta held.
+    torch.testing.assert_close(out[0, :6], torch.zeros(6))
+    torch.testing.assert_close(out[0, 6:], last_action[0, 6:])
+    # Live env 1: untouched.
+    torch.testing.assert_close(out[1], new_action[1])
+
+
 def test_freeze_mask_masks_reward_for_frozen_envs_only():
     mask = FreezeMask(num_envs=2, device="cpu")
     mask.update(torch.tensor([True, False]))

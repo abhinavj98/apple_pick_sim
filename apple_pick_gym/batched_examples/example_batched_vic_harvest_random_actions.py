@@ -91,6 +91,12 @@ def _make_parser() -> argparse.ArgumentParser:
         "their full random range.",
     )
     p.add_argument(
+        "--zero-actions",
+        action="store_true",
+        help="Send an all-zeros 13-D action every step (no pose delta; gains/zeta clamp to their "
+        "lower bounds) instead of random actions -- the no-action baseline.",
+    )
+    p.add_argument(
         "--record-video",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -159,7 +165,7 @@ def main() -> None:
                 "num_envs": int(args.num_envs),
                 "num_steps": int(args.num_steps),
                 "seed": int(args.seed),
-                "policy": "uniform_random",
+                "policy": "zero" if args.zero_actions else "uniform_random",
                 "action_scale": float(args.action_scale),
                 "record_video": bool(args.record_video),
             },
@@ -239,7 +245,10 @@ def main() -> None:
             # after Newton's --num-frames (default 100), which would cut --num-steps short.
             if graphical and not viewer.is_running():
                 break
-            actions = _sample_random_actions(env, generator, float(args.action_scale))
+            if args.zero_actions:
+                actions = torch.zeros((env.num_envs, 13), dtype=torch.float32, device=env.device)
+            else:
+                actions = _sample_random_actions(env, generator, float(args.action_scale))
             obs, reward, terminated, truncated, info = env.step(actions)
             steps_run += 1
             if sink is not None:

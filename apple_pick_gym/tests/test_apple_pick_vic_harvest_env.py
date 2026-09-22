@@ -60,25 +60,35 @@ class TestApplePickVicHarvestEnv:
         finally:
             env.close()
 
-    def test_world_specs_round_trip_rebuilds_identical_worlds(self):
+    def test_world_specs_round_trip_rebuilds_identical_worlds(self, tmp_path):
         """export_world_specs -> world_specs_to_env_kwargs rebuilds the same plant, grasp,
-        support-joint DR and build-time arm DR (what a screened world set relies on)."""
-        from apple_pick_gym.batched_envs.world_set import world_specs_to_env_kwargs
+        support-joint DR and build-time arm DR (what a screened world set relies on).
+        The source build runs in a subprocess: one build per OS process."""
+        import subprocess
+        import sys
+
+        from apple_pick_gym.batched_envs.world_set import load_world_set, world_specs_to_env_kwargs
         from apple_pick_sim.fruiting_system.params import fruiting_params_to_json
 
-        env = _make_env(dr_seed=3)
+        src = tmp_path / "src.jsonl"
+        subprocess.run(
+            [sys.executable, "-m", "apple_pick_gym.batched_examples.example_screen_harvest_worlds",
+             "sample", "--num-envs", "2", "--seed", "3", "--device", "cpu", "--out", str(src),
+             "--hold-steps", "1", "--pull-rest-steps", "1", "--pull-ramp-steps", "1",
+             "--pull-hold-steps", "1", "--pull-settle-steps", "1", "--num-pull-episodes", "1"],
+            check=True, capture_output=True, text=True,
+        )
+        specs = load_world_set(src)
+        assert [s.world_id for s in specs] == ["s3_e0", "s3_e1"]
+        kwargs = {k: v for k, v in world_specs_to_env_kwargs(specs).items() if k != "num_envs"}
+        rebuilt = _make_env(dr_seed=99, **kwargs)
         try:
-            specs = env.export_world_specs(prefix="t")
-        finally:
-            env.close()
-        assert [s.world_id for s in specs] == ["t_e0", "t_e1"]
-        rebuilt = _make_env(dr_seed=99, **{k: v for k, v in world_specs_to_env_kwargs(specs).items() if k != "num_envs"})
-        try:
-            again = rebuilt.export_world_specs(prefix="t")
+            again = rebuilt.export_world_specs(prefix="s3")
             assert [fruiting_params_to_json(p) for p in rebuilt._sim.per_env_params] == [
                 s.params_json for s in specs
             ]
             for a, b in zip(specs, again):
+                assert a.world_id == b.world_id
                 assert a.weld_direction == b.weld_direction
                 assert a.support_kp == pytest.approx(b.support_kp)
                 assert a.support_roll_kp == pytest.approx(b.support_roll_kp)

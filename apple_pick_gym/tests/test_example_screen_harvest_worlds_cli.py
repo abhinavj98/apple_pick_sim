@@ -27,13 +27,23 @@ def test_parser_defaults_and_modes():
     assert (b.mode, b.from_set, b.chunk_size, b.chunk_index) == ("rescreen", "x.jsonl", 4, 2)
 
 
+def _run_cli(*args: str) -> None:
+    """One build per OS process (docs/in-process-rebuild-heap-corruption.md)."""
+    import subprocess
+    import sys
+
+    cmd = [sys.executable, "-m", "apple_pick_gym.batched_examples.example_screen_harvest_worlds", *args]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
 @requires_fr3
 def test_sample_then_rescreen_end_to_end_on_cpu(tmp_path):
-    from apple_pick_gym.batched_examples.example_screen_harvest_worlds import main
-    from apple_pick_gym.batched_envs.world_set import load_world_set
+    import dataclasses
+
+    from apple_pick_gym.batched_envs.world_set import load_world_set, save_world_set
 
     p1 = tmp_path / "pass1.jsonl"
-    main(["sample", "--num-envs", "2", "--seed", "5", "--device", "cpu", "--out", str(p1), *_SHORT])
+    _run_cli("sample", "--num-envs", "2", "--seed", "5", "--device", "cpu", "--out", str(p1), *_SHORT)
     specs = load_world_set(p1)
     assert [s.world_id for s in specs] == ["s5_e0", "s5_e1"]
     for s in specs:
@@ -42,14 +52,11 @@ def test_sample_then_rescreen_end_to_end_on_cpu(tmp_path):
         assert s.screening["passed"] == rec["passed"]
 
     # Force both through to pass 2 regardless of the (tiny-step) pass-1 outcome.
-    from apple_pick_gym.batched_envs.world_set import save_world_set
-    import dataclasses
-
     forced = [dataclasses.replace(s, screening={**s.screening, "passed": True}) for s in specs]
     save_world_set(p1, forced)
     p2 = tmp_path / "pass2.jsonl"
-    main(["rescreen", "--from-set", str(p1), "--shuffle-seed", "0", "--chunk-size", "2", "--chunk-index", "0",
-          "--device", "cpu", "--out", str(p2), *_SHORT])
+    _run_cli("rescreen", "--from-set", str(p1), "--shuffle-seed", "0", "--chunk-size", "2",
+             "--chunk-index", "0", "--device", "cpu", "--out", str(p2), *_SHORT)
     again = load_world_set(p2)
     assert sorted(s.world_id for s in again) == ["s5_e0", "s5_e1"]
     for s in again:

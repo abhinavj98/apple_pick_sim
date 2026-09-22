@@ -60,6 +60,34 @@ class TestApplePickVicHarvestEnv:
         finally:
             env.close()
 
+    def test_world_specs_round_trip_rebuilds_identical_worlds(self):
+        """export_world_specs -> world_specs_to_env_kwargs rebuilds the same plant, grasp,
+        support-joint DR and build-time arm DR (what a screened world set relies on)."""
+        from apple_pick_gym.batched_envs.world_set import world_specs_to_env_kwargs
+        from apple_pick_sim.fruiting_system.params import fruiting_params_to_json
+
+        env = _make_env(dr_seed=3)
+        try:
+            specs = env.export_world_specs(prefix="t")
+        finally:
+            env.close()
+        assert [s.world_id for s in specs] == ["t_e0", "t_e1"]
+        rebuilt = _make_env(dr_seed=99, **{k: v for k, v in world_specs_to_env_kwargs(specs).items() if k != "num_envs"})
+        try:
+            again = rebuilt.export_world_specs(prefix="t")
+            assert [fruiting_params_to_json(p) for p in rebuilt._sim.per_env_params] == [
+                s.params_json for s in specs
+            ]
+            for a, b in zip(specs, again):
+                assert a.weld_direction == b.weld_direction
+                assert a.support_kp == pytest.approx(b.support_kp)
+                assert a.support_roll_kp == pytest.approx(b.support_roll_kp)
+                assert a.support_zeta == pytest.approx(b.support_zeta)
+                assert a.arm_link_mass_scale == pytest.approx(b.arm_link_mass_scale)
+                assert a.arm_ee_inertia_scale == pytest.approx(b.arm_ee_inertia_scale)
+        finally:
+            rebuilt.close()
+
     def test_default_ranges_are_the_real_data_fixture(self):
         from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import (
             _RL_HARVEST_RANGES_FIXTURE,

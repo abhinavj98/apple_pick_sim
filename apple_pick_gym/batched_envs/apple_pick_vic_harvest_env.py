@@ -169,7 +169,12 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         reward_config: HarvestRewardConfig | None = None,
         episode_config: EpisodeConfig | None = None,
         hold_settle: HoldSettleConfig | None = None,
+        support_dr_sample: Any | None = None,
+        arm_build_dr_scales: dict[str, Any] | None = None,
     ) -> None:
+        """``support_dr_sample`` / ``arm_build_dr_scales`` (with ``per_env_params`` and
+        ``per_env_grippers``) rebuild exact worlds from a screened world set -- see
+        :func:`apple_pick_gym.batched_envs.world_set.world_specs_to_env_kwargs`."""
         from apple_pick_sim.robot.fr3_robot.arm_domain_randomization import (
             ArmDomainRandomizationRanges,
         )
@@ -186,6 +191,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._dr_rng = np.random.default_rng(dr_seed)
         self._last_full_obs: dict[str, Any] | None = None
         self._last_arm_dr_sample = None
+        self._arm_build_dr_scales = arm_build_dr_scales
+        self._arm_build_dr_sample = None
         self._pending_terminated: torch.Tensor | None = None
 
         if sim_config is None:
@@ -231,7 +238,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         # joint_penalty_k) and never gets a settle.
         self._last_support_dr_sample = None
         sim_config = self._with_support_dr(
-            sim_config, ranges_path=ranges_path, num_envs=int(num_envs)
+            sim_config,
+            ranges_path=ranges_path,
+            num_envs=int(num_envs),
+            sample=support_dr_sample,
         )
 
         if per_env_grippers is None:
@@ -241,6 +251,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 max_polar_angle_rad=grasp_max_polar_angle_rad,
                 seed=dr_seed,
             )
+        self._per_env_grippers = list(per_env_grippers)
 
         super().__init__(
             num_envs=num_envs,
@@ -426,15 +437,20 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             for i in range(int(num_envs))
         ]
 
-    def _with_support_dr(self, sim_config: Any, *, ranges_path: Path | str, num_envs: int) -> Any:
-        """Sample per-env support kp/roll_kp/zeta once and bake them into ``sim_config``."""
+    def _with_support_dr(
+        self, sim_config: Any, *, ranges_path: Path | str, num_envs: int, sample: Any | None = None
+    ) -> Any:
+        """Sample (or take the given) per-env support kp/roll_kp/zeta and bake them into ``sim_config``."""
         from apple_pick_sim.fruiting_system import load_ranges
         from apple_pick_sim.fruiting_system.params import parse_sim_build
 
-        sim_build = parse_sim_build(load_ranges(Path(ranges_path)))
-        if sim_build is None or sim_build.support_dr is None:
-            return sim_config
-        sample = sample_support_joint_dr(sim_build.support_dr, num_envs=num_envs, rng=self._dr_rng)
+        if sample is None:
+            sim_build = parse_sim_build(load_ranges(Path(ranges_path)))
+            if sim_build is None or sim_build.support_dr is None:
+                return sim_config
+            sample = sample_support_joint_dr(sim_build.support_dr, num_envs=num_envs, rng=self._dr_rng)
+        elif len(sample.kp) != num_envs:
+            raise ValueError(f"support_dr_sample has {len(sample.kp)} envs, expected {num_envs}")
         self._last_support_dr_sample = sample
         return dataclasses.replace(
             sim_config,
@@ -459,6 +475,13 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         arm_sample = sample_arm_domain_randomization(
             self._arm_dr_ranges, num_envs=self.num_envs, rng=self._dr_rng
         )
+        if self._arm_build_dr_scales is not None:
+            overrides = {k: np.asarray(v, dtype=np.float32) for k, v in self._arm_build_dr_scales.items()}
+            for k, v in overrides.items():
+                if v.shape != (self.num_envs,):
+                    raise ValueError(f"arm_build_dr_scales[{k!r}] shape {v.shape}, expected ({self.num_envs},)")
+            arm_sample = dataclasses.replace(arm_sample, **overrides)
+        self._arm_build_dr_sample = arm_sample
         apply_link_mass_inertia_dr(
             self._sim.scene.robot_model,
             self._sim.scene.mj_solver,
@@ -473,6 +496,30 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             robot_bodies_per_world=layout.robot_bodies_per_world,
             num_envs=self.num_envs,
         )
+
+    def export_world_specs(self, *, prefix: str) -> list[Any]:
+        """One :class:`WorldSpec` per env (plant, grasp, build-time DR) for a world set."""
+        from apple_pick_gym.batched_envs.world_set import WorldSpec
+        from apple_pick_sim.fruiting_system.params import fruiting_params_to_json
+
+        sup, arm = self._last_support_dr_sample, self._arm_build_dr_sample
+        if sup is None or arm is None:
+            raise RuntimeError("support/arm build-time DR samples are not recorded")
+        return [
+            WorldSpec(
+                world_id=f"{prefix}_e{i}",
+                params_json=fruiting_params_to_json(params),
+                weld_direction=tuple(float(x) for x in self._per_env_grippers[i].weld_direction),
+                support_kp=float(sup.kp[i]),
+                support_roll_kp=float(sup.roll_kp[i]),
+                support_zeta=float(sup.zeta[i]),
+                arm_link_mass_scale=float(arm.link_mass_scale[i]),
+                arm_link_inertia_scale=float(arm.link_inertia_scale[i]),
+                arm_ee_mass_scale=float(arm.ee_mass_scale[i]),
+                arm_ee_inertia_scale=float(arm.ee_inertia_scale[i]),
+            )
+            for i, params in enumerate(self._sim.per_env_params)
+        ]
 
     def _resample_joint_dynamics_dr(self) -> None:
         """Arm joint dynamics (armature/friction/damping) resample every reset."""

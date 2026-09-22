@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import warnings
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from apple_pick_sim.coupled_fruiting.proxy_coupling import sync_solver_body_q_prev_from_state
@@ -219,3 +222,69 @@ class EpisodeStateSnapshot:
         else:
             seed_dt = _DEFAULT_COUPLING_SEED_DT
         seed_lagged_coupling_from_rest_harvest(scene, seed_dt)
+
+
+# -- on-disk persistence -------------------------------------------------------------------
+# A snapshot saved from one build restores into a *fresh* build of the same worlds: the
+# model arrays (masses, weld offsets, support gains) are deterministic given the per-env
+# params/grasps, and everything build-to-build variable (IK arm configuration, settled plant
+# pose, AVBD pretension) is state captured here.
+
+_SNAPSHOT_NPZ_SCHEMA = "episode_state_snapshot_npz_v1"
+_REQUIRED_SNAPSHOT_FIELDS = (
+    "robot_body_q",
+    "robot_body_qd",
+    "robot_joint_q",
+    "robot_joint_qd",
+    "model_joint_q",
+    "model_joint_qd",
+    "cable_body_q_0",
+    "cable_body_qd_0",
+    "cable_body_q_1",
+    "cable_body_qd_1",
+)
+
+
+def snapshot_arrays(snap: EpisodeStateSnapshot) -> dict[str, np.ndarray]:
+    """Host copies of every present array in ``snap`` (flat float/int numpy)."""
+    out = {}
+    for f in dataclasses.fields(snap):
+        arr = getattr(snap, f.name)
+        if arr is not None:
+            out[f.name] = arr.numpy()
+    return out
+
+
+def assign_snapshot_arrays(snap: EpisodeStateSnapshot, arrays: dict[str, np.ndarray]) -> None:
+    """Overwrite ``snap``'s device arrays in place from ``arrays`` (shape/dtype checked)."""
+    for name in _REQUIRED_SNAPSHOT_FIELDS:
+        if name not in arrays:
+            raise ValueError(f"snapshot arrays missing required field {name!r}")
+    for f in dataclasses.fields(snap):
+        target = getattr(snap, f.name)
+        if f.name not in arrays or target is None:
+            continue
+        src = np.asarray(arrays[f.name])
+        host = target.numpy()
+        if src.shape != host.shape:
+            raise ValueError(f"snapshot field {f.name!r} shape {src.shape} != build's {host.shape}")
+        target.assign(src.astype(host.dtype, copy=False))
+
+
+def save_snapshot_npz(snap: EpisodeStateSnapshot, path: Any, *, metadata: dict[str, Any]) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {f"arr__{k}": v for k, v in snapshot_arrays(snap).items()}
+    payload["schema"] = np.array(_SNAPSHOT_NPZ_SCHEMA)
+    payload["metadata_json"] = np.array(json.dumps(metadata, sort_keys=True))
+    np.savez_compressed(path, **payload)
+
+
+def load_snapshot_npz(path: Any) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    with np.load(path, allow_pickle=False) as data:
+        schema = str(data["schema"].item())
+        if schema != _SNAPSHOT_NPZ_SCHEMA:
+            raise ValueError(f"unsupported snapshot schema {schema!r}")
+        arrays = {k[len("arr__"):]: np.asarray(data[k]) for k in data.files if k.startswith("arr__")}
+        metadata = json.loads(str(data["metadata_json"].item()))
+    return arrays, metadata

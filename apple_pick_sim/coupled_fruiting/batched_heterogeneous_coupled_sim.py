@@ -422,6 +422,31 @@ class BatchedHeterogeneousCoupledSim:
         self._episode_snapshot = EpisodeStateSnapshot.capture(self)
         return self._episode_snapshot
 
+    def save_episode_snapshot(self, path: Any, *, metadata: dict[str, Any]) -> None:
+        """Write the captured episode baseline to ``path`` (npz) for reuse in a new process."""
+        from apple_pick_sim.coupled_fruiting.episode_state_snapshot import save_snapshot_npz
+
+        if self._episode_snapshot is None:
+            raise RuntimeError("no episode snapshot; call capture_episode_snapshot() first")
+        save_snapshot_npz(self._episode_snapshot, path, metadata=metadata)
+
+    def load_episode_snapshot(self, path: Any) -> dict[str, Any]:
+        """Restore a saved baseline into this (same-worlds) build and make it the reset state.
+
+        Returns the snapshot's metadata. Shapes must match this build exactly.
+        """
+        from apple_pick_sim.coupled_fruiting.episode_state_snapshot import (
+            assign_snapshot_arrays,
+            load_snapshot_npz,
+        )
+
+        arrays, metadata = load_snapshot_npz(path)
+        snap = EpisodeStateSnapshot.capture(self)
+        assign_snapshot_arrays(snap, arrays)
+        snap.restore(self)
+        self._episode_snapshot = snap
+        return metadata
+
     def restore_episode_snapshot(self) -> None:
         """Restore physics to the last captured episode baseline."""
         if self._episode_snapshot is None:

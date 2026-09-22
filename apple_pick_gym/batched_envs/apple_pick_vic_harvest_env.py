@@ -171,10 +171,15 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         hold_settle: HoldSettleConfig | None = None,
         support_dr_sample: Any | None = None,
         arm_build_dr_scales: dict[str, Any] | None = None,
+        episode_snapshot_path: Path | str | None = None,
     ) -> None:
         """``support_dr_sample`` / ``arm_build_dr_scales`` (with ``per_env_params`` and
         ``per_env_grippers``) rebuild exact worlds from a screened world set -- see
-        :func:`apple_pick_gym.batched_envs.world_set.world_specs_to_env_kwargs`."""
+        :func:`apple_pick_gym.batched_envs.world_set.world_specs_to_env_kwargs`.
+
+        ``episode_snapshot_path`` (a :meth:`save_world_snapshot` file for these same
+        worlds) replaces the hold settle: the vetted settled state is restored and becomes
+        the reset baseline, so training does not depend on this build's settle outcome."""
         from apple_pick_sim.robot.fr3_robot.arm_domain_randomization import (
             ArmDomainRandomizationRanges,
         )
@@ -307,9 +312,12 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._freeze_mask = FreezeMask(num_envs=self.num_envs, device=self.device)
 
         self._apply_build_time_dr()
-        if self._hold_cfg.enabled:
-            self._hold_settle()
-        self._invalid_env_mask = self._detect_invalid_envs()
+        if episode_snapshot_path is not None:
+            self.load_world_snapshot(episode_snapshot_path)
+        else:
+            if self._hold_cfg.enabled:
+                self._hold_settle()
+            self._invalid_env_mask = self._detect_invalid_envs()
 
     def _detect_invalid_envs(self) -> torch.Tensor:
         """Flag envs whose stored rest state is a failed IK grasp.
@@ -496,6 +504,48 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             robot_bodies_per_world=layout.robot_bodies_per_world,
             num_envs=self.num_envs,
         )
+
+    def _world_fingerprints(self) -> list[str]:
+        """Per env: hash of the exact plant params + grasp direction (snapshot pairing key)."""
+        import hashlib
+
+        from apple_pick_sim.fruiting_system.params import fruiting_params_to_json
+
+        out = []
+        for params, gripper in zip(self._sim.per_env_params, self._per_env_grippers):
+            weld = ",".join(f"{float(x):.6f}" for x in gripper.weld_direction)
+            payload = (fruiting_params_to_json(params) + "|" + weld).encode()
+            out.append(hashlib.sha256(payload).hexdigest()[:16])
+        return out
+
+    def save_world_snapshot(self, path: Path | str) -> None:
+        """Save the settled episode baseline (+ hold target, invalid mask) for these worlds."""
+        if self._hold_target_pose is None:
+            raise RuntimeError("no hold target: build with hold settle enabled before saving")
+        self._sim.save_episode_snapshot(
+            path,
+            metadata={
+                "schema": "harvest_world_snapshot_v1",
+                "num_envs": int(self.num_envs),
+                "world_fingerprints": self._world_fingerprints(),
+                "hold_target_pose": self._hold_target_pose.detach().cpu().tolist(),
+                "invalid_env": self._invalid_env_mask.detach().cpu().tolist(),
+            },
+        )
+
+    def load_world_snapshot(self, path: Path | str) -> None:
+        """Restore a :meth:`save_world_snapshot` file built from these exact worlds."""
+        from apple_pick_sim.coupled_fruiting.episode_state_snapshot import load_snapshot_npz
+
+        _arrays, meta = load_snapshot_npz(path)
+        if meta.get("world_fingerprints") != self._world_fingerprints():
+            raise ValueError(f"snapshot {path} was saved for different worlds than this env")
+        self._sim.load_episode_snapshot(path)
+        self._hold_target_pose = torch.tensor(
+            meta["hold_target_pose"], dtype=torch.float32, device=self.device
+        )
+        saved_invalid = torch.tensor(meta["invalid_env"], dtype=torch.bool, device=self.device)
+        self._invalid_env_mask = saved_invalid | self._detect_invalid_envs()
 
     def export_world_specs(self, *, prefix: str) -> list[Any]:
         """One :class:`WorldSpec` per env (plant, grasp, build-time DR) for a world set."""

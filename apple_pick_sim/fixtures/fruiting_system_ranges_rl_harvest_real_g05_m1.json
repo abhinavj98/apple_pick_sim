@@ -1,0 +1,173 @@
+{
+  "_comment": "RL harvest DR fixture generated from real sys-ID data (24 CMA runs over structures ['02', '03', '04', '06', '07', '08', '09', '10']). Materials: CMA final-mean mu +- 1.0 sigma (log10 for moduli and support kp/roll_kp, linear for zetas and primary density). Geometry: per-structure real params, mu +- 0.5 sigma. Invariant quantities are pinned.",
+  "args": {
+    "spur_attach_fraction": 0.5,
+    "fruiting_base_pos": [
+      0.032469866352777446,
+      0.682611178256144,
+      0.5872301227038978
+    ],
+    "robot_base_pos": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "sim_build": {
+    "vic_gains": {
+      "linear_k": 100.0,
+      "linear_d": 20.0,
+      "angular_k": 10.0,
+      "angular_d": 3.0
+    },
+    "joint_damping_ratio": 0.3,
+    "joint_angular_kp_overrides": {
+      "support": 10000.0
+    },
+    "joint_linear_kp_overrides": {
+      "support": 10000.0
+    },
+    "joint_roll_kp_overrides": {
+      "support": 0.75
+    },
+    "support_dr": {
+      "kp": {
+        "min": 186.1624769704448,
+        "max": 301.61970157669913
+      },
+      "roll_kp": {
+        "min": 0.4839491661247771,
+        "max": 1.0130909099379635
+      },
+      "zeta": {
+        "min": 0.251276711418729,
+        "max": 0.7818822221537912
+      }
+    }
+  },
+  "primary": {
+    "num_segments": {
+      "min": 4,
+      "max": 4
+    },
+    "length": {
+      "min": 0.827,
+      "max": 0.827
+    },
+    "radius": {
+      "min": 0.0125,
+      "max": 0.0125
+    },
+    "density": {
+      "min": 324.8310756668913,
+      "max": 1229.4414631906493
+    },
+    "azimuth_deg": {
+      "min": 0.0,
+      "max": 0.0
+    },
+    "elevation_deg": {
+      "min": 0.0,
+      "max": 0.0
+    },
+    "youngs_modulus_pa": {
+      "min": 5000000000.3,
+      "max": 5000000000.8
+    },
+    "damping_ratio": {
+      "min": 0.3,
+      "max": 0.3
+    },
+    "flexural_modulus_pa": {
+      "min": 5000000000.3,
+      "max": 5000000000.8
+    }
+  },
+  "secondary": null,
+  "spur": {
+    "num_segments": {
+      "min": 6,
+      "max": 6
+    },
+    "length": {
+      "min": 0.0891547703960372,
+      "max": 0.10584522960396281
+    },
+    "radius": {
+      "min": 0.004263052915193331,
+      "max": 0.005836947084806669
+    },
+    "density": {
+      "min": 2867.951985959354,
+      "max": 8221.424330788366
+    },
+    "elevation_delta_deg": {
+      "min": -90.0,
+      "max": -90.0
+    },
+    "lateral_delta_deg": {
+      "min": 90.0,
+      "max": 90.0
+    },
+    "youngs_modulus_pa": {
+      "min": 49337474.00351147,
+      "max": 1068575198.2091422
+    },
+    "damping_ratio": {
+      "min": 0.19607341279138502,
+      "max": 0.7229948787330086
+    },
+    "flexural_modulus_pa": {
+      "min": 1801823.66372286,
+      "max": 45182675.658027396
+    }
+  },
+  "stem": {
+    "num_segments": {
+      "min": 6,
+      "max": 6
+    },
+    "length": {
+      "min": 0.013732450830493233,
+      "max": 0.014767549169506764
+    },
+    "radius": {
+      "min": 0.0009,
+      "max": 0.0009
+    },
+    "density": {
+      "min": 1000.0,
+      "max": 1000.0
+    },
+    "elevation_delta_deg": {
+      "min": 15.8093957865293,
+      "max": 40.440604213470685
+    },
+    "lateral_delta_deg": {
+      "min": 32.960287372195545,
+      "max": 79.53971262780445
+    },
+    "youngs_modulus_pa": {
+      "min": 23337208.285533074,
+      "max": 5704421583.093971
+    },
+    "damping_ratio": {
+      "min": 0.2522675506487783,
+      "max": 0.7684148441129943
+    },
+    "flexural_modulus_pa": {
+      "min": 28194834.354336854,
+      "max": 199984045.9871733
+    }
+  },
+  "apple": {
+    "radius": {
+      "min": 0.03002811797253291,
+      "max": 0.03354793151100356
+    },
+    "density": {
+      "min": 1614.4734757204353,
+      "max": 2241.8383335173867
+    }
+  }
+}

@@ -257,6 +257,15 @@ Builds on `ApplePickBatchedBaseEnv` with `ControllerConfig(mode="vic_pose", acti
 
 **Dependency check (done 2026-09-17):** `uv pip install --dry-run "skrl>=1.4"` resolves to **skrl 2.1.0**, pulling `tensorboard` 2.21 (reuse it for the Task 9 learning curves rather than adding another logger). **Caution:** most skrl recurrent-PPO examples online target the 1.x API; check the 2.x docs for the installed version instead of copying a 1.x recipe.
 
+**Prep findings (2026-09-21, skrl 2.1.0 installed via the new `rl` extra — read from the installed source, not 1.x examples):**
+
+- **Privileged critic is native.** The skrl `Wrapper` exposes `state_space` / `state()`; `PPO_RNN.act()` and the value pass get `observations` and `states` separately. So the actor consumes `flatten_actor_obs` (observation) and the critic consumes `flatten_critic_obs` (state) — separation by construction.
+- **Nothing builds the critic's `privileged` dict yet.** Add an env method returning the per-env plant DR sample (`per_env_params` + `_last_support_dr_sample`) and arm DR sample (`_last_arm_dr_sample`) in the `_PRIVILEGED_FIELDS` order. Moduli / kp are raw SI (up to ~1e10): feed **log10** for those, then skrl `RunningStandardScaler` on both observation and state.
+- **Autoreset is the wrapper's job.** `SequentialTrainer` never calls `reset()` when `num_envs > 1`; the wrapper resets the whole batch on the synchronized truncation step and returns the new episode's first obs as `next_observations` (IsaacLab-style; the truncation bootstrap then uses the reset obs — standard, accepted).
+- **Terminated must be one-shot.** `PPO_RNN` zeroes each env's LSTM state on `terminated | truncated` and cuts the GAE bootstrap on `terminated`. Today `compute_terminated` returns `success_achieved | safety_violation` on *every* step once an env is frozen, so frozen envs would reset their LSTM every step. Change: emit `terminated` only on the freeze edge; frozen envs keep stepping with reward 0 and a `frozen` flag in the critic state, so the critic learns V≈0 there and their (held-action) samples carry ~zero advantage.
+- **Normalize the action space.** The 13-D box mixes ±0.02 m deltas with K in [20, 200]; the wrapper exposes `[-1, 1]^13` to the Gaussian policy and maps affinely (K log-affine) to the env bounds.
+- **Logging:** skrl `experiment.wandb=True` (+ its TensorBoard writer); add episode success rate and invalid-env fraction via `track_data`.
+
 - [ ] **Step 1:** Failing tests — the wrapper exposes skrl's expected API over the batched env; actor and critic hidden state have the right shapes and **reset on episode boundaries**; a checkpoint round-trips *both* networks' hidden-state specs and the Task 5 obs layout.
 - [ ] **Step 2:** Confirm failure.
 - [ ] **Step 3:** Implement. Keep the privileged critic path strictly separate from the actor's observation.

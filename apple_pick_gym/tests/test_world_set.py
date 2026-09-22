@@ -94,3 +94,22 @@ def test_jsonl_lines_are_plain_json(tmp_path):
     row = json.loads(path.read_text().splitlines()[0])
     assert row["world_id"] == "s7_b0_e0"
     assert isinstance(row["params_json"], str)
+
+
+def test_coverage_report_flags_knobs_where_rejections_concentrate():
+    from apple_pick_gym.batched_envs.world_set import world_set_coverage, world_spec_knobs
+
+    specs = [
+        _spec(i, support_kp=100.0 + 10 * i, screening={"passed": i < 7}) for i in range(10)
+    ]
+    knobs = world_spec_knobs(specs[0])
+    assert {"support_kp", "spur.youngs_modulus_pa", "stem.elevation_deg", "apple_radius", "weld_polar_deg"} <= set(knobs)
+
+    rows = {r["knob"]: r for r in world_set_coverage(specs)}
+    kp = rows["support_kp"]
+    assert kp["n_candidates"] == 10 and kp["n_accepted"] == 7
+    assert kp["candidate_min"] == 100.0 and kp["candidate_max"] == 190.0
+    assert kp["accepted_max"] == 160.0
+    # all three rejections sit in the top tercile of support_kp
+    assert kp["reject_rate_by_tercile"][2] > 0.5
+    assert kp["reject_rate_by_tercile"][0] == 0.0

@@ -18,6 +18,13 @@ world is accepted only if it passes both::
         --chunk-size 128 --chunk-index 0 --out tmp/harvest_worlds/pass2.jsonl
 
 The accepted set is ``load_world_set(pass2, passed_only=True)``.
+
+**Report** coverage of any screened files (candidate vs accepted range and
+rejection rate per tercile of every randomized knob -- catches screening that
+quietly biases the set toward easy plants)::
+
+    uv run python apple_pick_gym/batched_examples/example_screen_harvest_worlds.py \\
+        report tmp/harvest_worlds/pass1_s*.jsonl --out-md tmp/harvest_worlds/pass1_coverage.md
 """
 
 from __future__ import annotations
@@ -43,6 +50,9 @@ _CFG_FIELDS = (
 def make_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="mode", required=True)
+    rp = sub.add_parser("report")
+    rp.add_argument("sets", nargs="+", help="Screened JSONL files (a world's latest record decides).")
+    rp.add_argument("--out-md", default=None)
     for name in ("sample", "rescreen"):
         sp = sub.add_parser(name)
         sp.add_argument("--out", required=True, help="JSONL to append screened worlds to.")
@@ -78,6 +88,37 @@ def _record(i: int, passed: np.ndarray, reasons: list[list[str]], metrics: dict[
     return rec
 
 
+def _report(paths: Sequence[str], out_md: str | None) -> str:
+    from pathlib import Path
+
+    from apple_pick_gym.batched_envs.world_set import load_world_set, world_set_coverage
+
+    by_id = {}
+    for path in paths:
+        for spec in load_world_set(path):
+            by_id[spec.world_id] = spec
+    specs = list(by_id.values())
+    rows = world_set_coverage(specs)
+    n_acc = sum(s.passed for s in specs)
+    lines = [
+        f"{n_acc}/{len(specs)} worlds accepted",
+        "",
+        "| knob | candidate range | accepted range | reject rate low / mid / high tercile |",
+        "| --- | --- | --- | --- |",
+    ]
+    for r in rows:
+        rates = " / ".join(f"{x:.0%}" for x in r["reject_rate_by_tercile"])
+        lines.append(
+            f"| {r['knob']} | {r['candidate_min']:.4g} .. {r['candidate_max']:.4g} "
+            f"| {r['accepted_min']:.4g} .. {r['accepted_max']:.4g} | {rates} |"
+        )
+    text = "\n".join(lines)
+    print(text)
+    if out_md:
+        Path(out_md).write_text(text + "\n")
+    return text
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import ApplePickVicHarvestEnv
     from apple_pick_gym.batched_envs.harvest_world_screening import (
@@ -91,6 +132,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     args = make_parser().parse_args(argv)
+    if args.mode == "report":
+        _report(args.sets, args.out_md)
+        return
     cfg = ScreeningConfig(**{f: getattr(args, f) for f in _CFG_FIELDS})
     common = dict(device=args.device, episode_config=screening_episode_config(cfg), max_episode_steps=10**6)
     t0 = time.time()

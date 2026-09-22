@@ -55,3 +55,10 @@ def test_sample_then_rescreen_end_to_end_on_cpu(tmp_path):
     for s in again:
         assert "pass1" in s.screening and "pass2" in s.screening
         assert s.screening["passed"] == (s.screening["pass1"]["passed"] and s.screening["pass2"]["passed"])
+
+
+def test_report_mode_parses_multiple_sets():
+    from apple_pick_gym.batched_examples.example_screen_harvest_worlds import make_parser
+
+    a = make_parser().parse_args(["report", "a.jsonl", "b.jsonl", "--out-md", "r.md"])
+    assert (a.mode, a.sets, a.out_md) == ("report", ["a.jsonl", "b.jsonl"], "r.md")

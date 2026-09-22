@@ -123,3 +123,66 @@ def world_specs_to_env_kwargs(specs: Sequence[WorldSpec]) -> dict[str, Any]:
             for sample_key, spec_key in _ARM_BUILD_SCALE_FIELDS
         },
     }
+
+
+_ROD_KNOBS = ("length", "radius", "density", "youngs_modulus_pa", "flexural_modulus_pa", "damping_ratio")
+
+
+def world_spec_knobs(spec: WorldSpec) -> dict[str, float]:
+    """Flat named randomized quantities of one world (for coverage / bias reports)."""
+    from apple_pick_sim.fruiting_system.params import fruiting_params_from_json
+
+    p = fruiting_params_from_json(spec.params_json)
+    knobs: dict[str, float] = {}
+    for rod_name in ("primary", "spur", "stem"):
+        rod = getattr(p, rod_name, None)
+        if rod is None:
+            continue
+        for k in _ROD_KNOBS:
+            knobs[f"{rod_name}.{k}"] = float(getattr(rod, k))
+        knobs[f"{rod_name}.elevation_deg"] = math.degrees(math.asin(max(-1.0, min(1.0, rod.direction[2]))))
+    if p.apple_radius is not None:
+        knobs["apple_radius"] = float(p.apple_radius)
+    if p.apple_density is not None:
+        knobs["apple_density"] = float(p.apple_density)
+    for f in ("support_kp", "support_roll_kp", "support_zeta") + tuple(s for _, s in _ARM_BUILD_SCALE_FIELDS):
+        knobs[f] = float(getattr(spec, f))
+    knobs["weld_polar_deg"] = math.degrees(math.acos(max(-1.0, min(1.0, -spec.weld_direction[2]))))
+    return knobs
+
+
+def world_set_coverage(specs: Sequence[WorldSpec]) -> list[dict[str, Any]]:
+    """Per knob: candidate vs accepted range, and rejection rate per candidate tercile.
+
+    A rejection rate concentrated in one tercile means screening biases the
+    accepted set away from that end of the knob's range.
+    """
+    if not specs:
+        return []
+    table = [world_spec_knobs(s) for s in specs]
+    accepted = np.array([s.passed for s in specs], dtype=bool)
+    rows = []
+    for knob in table[0]:
+        v = np.array([t[knob] for t in table], dtype=np.float64)
+        if np.ptp(v) <= 1e-9 * max(1.0, float(np.abs(v).max())):
+            continue  # pinned knob: nothing to cover
+        edges = np.quantile(v, [1 / 3, 2 / 3])
+        tercile = np.searchsorted(edges, v, side="left")
+        rates = []
+        for b in range(3):
+            m = tercile == b
+            rates.append(float((~accepted[m]).mean()) if m.any() else float("nan"))
+        acc = v[accepted]
+        rows.append(
+            {
+                "knob": knob,
+                "n_candidates": int(v.size),
+                "n_accepted": int(accepted.sum()),
+                "candidate_min": float(v.min()),
+                "candidate_max": float(v.max()),
+                "accepted_min": float(acc.min()) if acc.size else float("nan"),
+                "accepted_max": float(acc.max()) if acc.size else float("nan"),
+                "reject_rate_by_tercile": rates,
+            }
+        )
+    return rows

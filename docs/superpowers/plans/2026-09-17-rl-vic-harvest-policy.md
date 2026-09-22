@@ -257,6 +257,8 @@ Builds on `ApplePickBatchedBaseEnv` with `ControllerConfig(mode="vic_pose", acti
 
 **Dependency check (done 2026-09-17):** `uv pip install --dry-run "skrl>=1.4"` resolves to **skrl 2.1.0**, pulling `tensorboard` 2.21 (reuse it for the Task 9 learning curves rather than adding another logger). **Caution:** most skrl recurrent-PPO examples online target the 1.x API; check the 2.x docs for the installed version instead of copying a 1.x recipe.
 
+**Training worlds come from a screened stable set (maintainer decision, 2026-09-21).** Step 1 is done: `apple_pick_gym/world_sets/harvest_worlds_v1.jsonl` holds **587 worlds** (plant + grasp + build-time DR) that passed two independent screening builds out of 640 candidates -- build/rest check, 2 s zero-action hold, and three sys-ID-style 3 cm pulls at the real gains (passing pulls: 7.4 N median wrist, real rig 4-11 N). Coverage keeps every knob's full range (`harvest_worlds_v1_coverage.md`; mild under-representation of light primaries, the most-leaning stems and soft stem bending). The trainer builds its N envs with `world_specs_to_env_kwargs(subset)`; tools: `world_set.py`, `harvest_world_screening.py`, `example_screen_harvest_worlds.py`.
+
 **Prep findings (2026-09-21, skrl 2.1.0 installed via the new `rl` extra — read from the installed source, not 1.x examples):**
 
 - **Privileged critic is native.** The skrl `Wrapper` exposes `state_space` / `state()`; `PPO_RNN.act()` and the value pass get `observations` and `states` separately. So the actor consumes `flatten_actor_obs` (observation) and the critic consumes `flatten_critic_obs` (state) — separation by construction.

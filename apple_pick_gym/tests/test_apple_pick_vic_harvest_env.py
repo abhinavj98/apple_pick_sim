@@ -60,6 +60,14 @@ class TestApplePickVicHarvestEnv:
         finally:
             env.close()
 
+    def test_default_ranges_are_the_real_data_fixture(self):
+        from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import (
+            _RL_HARVEST_RANGES_FIXTURE,
+        )
+
+        assert _RL_HARVEST_RANGES_FIXTURE.name == "fruiting_system_ranges_rl_harvest_real_g05_m1.json"
+        assert _RL_HARVEST_RANGES_FIXTURE.exists()
+
     def test_uses_dynamic_apple_with_weld_harvest_like_sysid(self):
         env = _make_env()
         try:

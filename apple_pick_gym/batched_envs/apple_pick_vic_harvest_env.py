@@ -13,7 +13,7 @@ rationale):
 
 - **Plant** (spur/stem moduli, damping ratios, primary density, support
   kp/roll_kp/zeta) is baked at build from
-  ``fruiting_system_ranges_rl_harvest_variance.json`` and the new
+  ``fruiting_system_ranges_rl_harvest_real_g05_m1.json`` (real sys-ID data) and the
   ``sim_build.support_dr`` block. Fixed for the run, matching the plan's
   "plant DR cannot be re-randomized; baked at build" note.
 - **Arm joint dynamics** (armature, friction, damping) resample on every
@@ -127,8 +127,13 @@ _RL_HARVEST_RANGES_FIXTURE = (
     Path(__file__).resolve().parent.parent.parent
     / "apple_pick_sim"
     / "fixtures"
-    / "fruiting_system_ranges_rl_harvest_variance.json"
+    / "fruiting_system_ranges_rl_harvest_real_g05_m1.json"
 )
+# Real sys-ID data (make_rl_harvest_real_fixture.py): CMA materials mu +- 1 sigma, real
+# structure geometry mu +- 0.5 sigma, stem angles uniform over the real range, and the robot
+# base 0.2 m toward the plant so every default grasp is IK-reachable. The older
+# fruiting_system_ranges_rl_harvest_variance.json put CMA moduli (identified on thin real
+# rods) onto 2-4x thicker rods, which made the plant far too stiff and unstable.
 
 
 def _xyzw_to_wxyz(quat_xyzw: torch.Tensor) -> torch.Tensor:

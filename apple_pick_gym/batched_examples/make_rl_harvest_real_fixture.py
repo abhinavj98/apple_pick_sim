@@ -8,7 +8,7 @@ same structures, linear mu +- k sigma; ``args.fruiting_base_pos`` is the real me
     uv run python apple_pick_gym/batched_examples/make_rl_harvest_real_fixture.py \\
         --sysid-root ../apple_pick_sim-dynamic-apple \\
         --base-fixture apple_pick_sim/fixtures/fruiting_system_ranges_rl_harvest_variance.json \\
-        --k-geom 0.5 --k-mat 1.0 \\
+        --k-geom 0.5 --k-mat 1.0 --robot-base-pos 0 0.2 0 \\
         --out apple_pick_sim/fixtures/fruiting_system_ranges_rl_harvest_real_g05_m1.json
 """
 
@@ -56,6 +56,21 @@ def main():
     p.add_argument("--base-fixture", required=True)
     p.add_argument("--k-geom", type=float, default=0.5)
     p.add_argument("--k-mat", type=float, default=1.0)
+    p.add_argument(
+        "--stem-angles",
+        choices=("uniform", "sigma"),
+        default="uniform",
+        help="uniform: stem elevation/lateral deltas span the observed real min..max (the real "
+        "stems form separate clusters, so mu +- k sigma would only sample between them); "
+        "sigma: mu +- k-geom sigma like the other geometry.",
+    )
+    p.add_argument(
+        "--robot-base-pos",
+        type=float,
+        nargs=3,
+        default=None,
+        help="Override args.robot_base_pos (FR3 root, world) -- e.g. move the robot toward the plant.",
+    )
     p.add_argument("--out", required=True)
     a = p.parse_args()
     root = Path(a.sysid_root)
@@ -111,9 +126,12 @@ def main():
         f"RL harvest DR fixture generated from real sys-ID data ({len(final)} CMA runs over structures "
         f"{sorted(structs)}). Materials: CMA final-mean mu +- {a.k_mat} sigma (log10 for moduli and "
         f"support kp/roll_kp, linear for zetas and primary density). Geometry: per-structure real "
-        f"params, mu +- {kg} sigma. Invariant quantities are pinned."
+        f"params, mu +- {kg} sigma (stem angles: {a.stem_angles}). Invariant quantities are pinned. "
+        f"robot_base_pos: {out['args'].get('robot_base_pos')}."
     )
     out["args"]["fruiting_base_pos"] = [float(x) for x in np.mean(bases, axis=0)]
+    if a.robot_base_pos is not None:
+        out["args"]["robot_base_pos"] = [float(x) for x in a.robot_base_pos]
 
     pr = out["primary"]
     pr["length"] = rng_lin(col(("primary", "length")), kg)
@@ -134,8 +152,12 @@ def main():
     st["length"] = rng_lin(col(("stem", "length")), kg, lo_clip=1e-3)
     st["radius"] = rng_lin(col(("stem", "radius")), kg, lo_clip=2e-4)
     st["density"] = rng_lin(col(("stem", "density")), kg, lo_clip=1.0)
-    st["elevation_delta_deg"] = rng_lin(stem_el, kg, lo_clip=0.0, hi_clip=90.0)
-    st["lateral_delta_deg"] = rng_lin(stem_lat, kg)
+    if a.stem_angles == "uniform":
+        st["elevation_delta_deg"] = {"min": float(stem_el.min()), "max": float(stem_el.max())}
+        st["lateral_delta_deg"] = {"min": float(stem_lat.min()), "max": float(stem_lat.max())}
+    else:
+        st["elevation_delta_deg"] = rng_lin(stem_el, kg, lo_clip=0.0, hi_clip=90.0)
+        st["lateral_delta_deg"] = rng_lin(stem_lat, kg)
     st["youngs_modulus_pa"] = mat["E_youngs_stem"]
     st["flexural_modulus_pa"] = mat["E_flex_stem"]
     st["damping_ratio"] = mat["stem_damping_ratio"]

@@ -122,3 +122,35 @@ if __name__ == "__main__":
     import pytest
 
     pytest.main([__file__, "-v"])
+
+
+def test_per_channel_std_scales_force_and_torque_separately():
+    """Force (N) and torque (N*m) differ by ~2 orders of magnitude; one scalar std cannot
+    model both, so every std/clip also accepts a 6-tuple [Fx,Fy,Fz,Tx,Ty,Tz]."""
+    std = (2.0, 2.0, 2.0, 0.01, 0.01, 0.01)
+    cfg = FtSensorConfig(bias_std=std, noise_std=0.0, drift_std=0.0)
+    model = FtSensorModel(num_envs=4000, device="cpu", config=cfg, generator=torch.Generator().manual_seed(0))
+    model.reset()
+    out = model.step(torch.zeros(4000, 6))
+    measured = out.std(dim=0)
+    torch.testing.assert_close(measured, torch.tensor(std), rtol=0.1, atol=0.0)
+
+
+def test_per_channel_drift_clip():
+    clip = (1.0, 1.0, 1.0, 0.01, 0.01, 0.01)
+    cfg = FtSensorConfig(bias_std=0.0, noise_std=0.0, drift_std=10.0, drift_clip=clip)
+    model = FtSensorModel(num_envs=8, device="cpu", config=cfg, generator=torch.Generator().manual_seed(1))
+    model.reset()
+    for _ in range(20):
+        out = model.step(torch.zeros(8, 6))
+    assert torch.all(out.abs() <= torch.tensor(clip) + 1e-6)
+    assert torch.all(out[:, 3:].abs().amax(dim=0) > 0.009)
+
+
+def test_rl_training_preset_turns_sensor_dr_on():
+    cfg = FtSensorConfig.rl_training()
+    assert cfg.control_hz == 60.0 and cfg.cutoff_hz == 10.0
+    for field in (cfg.bias_std, cfg.noise_std, cfg.drift_std, cfg.drift_clip):
+        vals = torch.as_tensor(field, dtype=torch.float32)
+        assert vals.shape == (6,) and bool(torch.all(vals > 0))
+        assert bool(torch.all(vals[:3] > 10 * vals[3:]))  # forces >> torques

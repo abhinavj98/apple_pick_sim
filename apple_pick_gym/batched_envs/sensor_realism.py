@@ -23,20 +23,53 @@ import math
 import torch
 
 
+Std = float | tuple[float, float, float, float, float, float]
+
+
 @dataclasses.dataclass(frozen=True)
 class FtSensorConfig:
-    """EMA corner frequency plus bias/noise/drift magnitudes for the (N,6) ft_wrist channel."""
+    """EMA corner frequency plus bias/noise/drift magnitudes for the (N,6) ft_wrist channel.
+
+    Every std / clip is a scalar (all six channels) or a 6-tuple ``[Fx,Fy,Fz,Tx,Ty,Tz]``
+    -- forces (N) and torques (N*m) differ by orders of magnitude. The all-zero default
+    is the noise-free EMA; RL training uses :meth:`rl_training`.
+    """
 
     control_hz: float = 60.0
     cutoff_hz: float = 10.0
-    bias_std: float = 0.0
-    noise_std: float = 0.0
-    drift_std: float = 0.0
-    drift_clip: float | None = None
+    bias_std: Std = 0.0
+    noise_std: Std = 0.0
+    drift_std: Std = 0.0
+    drift_clip: Std | None = None
 
     @property
     def alpha(self) -> float:
         return 1.0 - math.exp(-2.0 * math.pi * self.cutoff_hz / self.control_hz)
+
+    @classmethod
+    def rl_training(cls) -> FtSensorConfig:
+        """Sensor DR on: per-episode bias, per-step noise, slow bounded drift.
+
+        A starting point, not a calibration: bias 0.5 N / 0.02 N*m and noise 0.2 N /
+        0.005 N*m per channel are typical of a wrist F/T or joint-torque-estimated
+        wrench at 60 Hz; drift is a 0.01 N/step walk bounded at 1 N (torque 0.0005 /
+        0.05 N*m). Revisit against the real rig's quiescent ft_wrist.
+        """
+        return cls(
+            bias_std=(0.5, 0.5, 0.5, 0.02, 0.02, 0.02),
+            noise_std=(0.2, 0.2, 0.2, 0.005, 0.005, 0.005),
+            drift_std=(0.01, 0.01, 0.01, 0.0005, 0.0005, 0.0005),
+            drift_clip=(1.0, 1.0, 1.0, 0.05, 0.05, 0.05),
+        )
+
+
+def _channel_tensor(value: Std, device: torch.device) -> torch.Tensor:
+    t = torch.as_tensor(value, dtype=torch.float32, device=device)
+    if t.ndim == 0:
+        return t.expand(6).clone()
+    if t.shape != (6,):
+        raise ValueError(f"per-channel sensor std must be a scalar or 6 values, got shape {tuple(t.shape)}")
+    return t
 
 
 class FtSensorModel:
@@ -61,6 +94,15 @@ class FtSensorModel:
         self.config = config
         self.alpha = float(config.alpha)
         self._generator = generator
+        self._bias_std = _channel_tensor(config.bias_std, self.device)
+        self._noise_std = _channel_tensor(config.noise_std, self.device)
+        self._drift_std = _channel_tensor(config.drift_std, self.device)
+        self._drift_clip = (
+            None if config.drift_clip is None else _channel_tensor(config.drift_clip, self.device)
+        )
+        # Host-side flags, so step() never syncs on a device-tensor comparison.
+        self._drift_on = bool(torch.any(self._drift_std > 0.0))
+        self._noise_on = bool(torch.any(self._noise_std > 0.0))
 
         self._ema = torch.zeros((self.num_envs, 6), device=self.device)
         self._bias = torch.zeros((self.num_envs, 6), device=self.device)
@@ -82,7 +124,7 @@ class FtSensorModel:
         self._ema[env_mask] = 0.0
         self._initialized[env_mask] = False
         self._drift[env_mask] = 0.0
-        self._bias[env_mask] = self._randn((n, 6)) * self.config.bias_std
+        self._bias[env_mask] = self._randn((n, 6)) * self._bias_std
 
     def step(self, raw: torch.Tensor) -> torch.Tensor:
         """``raw`` is ``(N, 6)``; returns the sensor-realistic ``(N, 6)`` observation."""
@@ -91,16 +133,14 @@ class FtSensorModel:
         self._ema = ema_new
         self._initialized = torch.ones_like(self._initialized)
 
-        if self.config.drift_std > 0.0:
-            self._drift = self._drift + self._randn(raw.shape) * self.config.drift_std
-            if self.config.drift_clip is not None:
-                self._drift = torch.clamp(
-                    self._drift, -self.config.drift_clip, self.config.drift_clip
-                )
+        if self._drift_on:
+            self._drift = self._drift + self._randn(raw.shape) * self._drift_std
+            if self._drift_clip is not None:
+                self._drift = torch.maximum(torch.minimum(self._drift, self._drift_clip), -self._drift_clip)
 
         noise = (
-            self._randn(raw.shape) * self.config.noise_std
-            if self.config.noise_std > 0.0
+            self._randn(raw.shape) * self._noise_std
+            if self._noise_on
             else torch.zeros_like(raw)
         )
         return self._ema + self._bias + noise + self._drift

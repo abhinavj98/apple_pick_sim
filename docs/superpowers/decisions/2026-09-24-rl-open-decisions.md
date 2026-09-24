@@ -973,3 +973,19 @@ D15 went on to 0.71.
 - Fresh runs are directly comparable to the D8b seeds; the only change is the weight.
 - Weight 1.0, not 2.0: at 2.0 a 38 N pull scores 20-76 = -56, worse than failing (-40). That
   invites the passive drift seen in D16.
+
+**D8b seeds final (212 updates, ckpt_13568; best == last; gate 2/5 each vs `runs/eval_d8b`).**
+
+| seed | success | safety | collateral / success mean, median | p10 / p90 | < 15 N | < 22 N | torque share | peak TCP |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| s0 | 0.972 | 2.8% | 30.7, 32.2 N | 11.5 / 45.5 N | 16% | 26% | 0.56 | 0.36 m/s |
+| s1 | 0.760 | 4.7% | 31.0, 34.1 N | 10.0 / 45.5 N | 21% | 27% | 0.64 | 0.25 m/s |
+| s2 | 0.996 | 0.4% | 34.8, 35.7 N | 20.9 / 46.8 N | 4% | 12% | 0.50 | 0.38 m/s |
+
+- All three pass beats_random and collateral_vs_random. They fail success / safety / collateral,
+  because scripted_pull is near-perfect under D8b (0.998 / 0.2%) and the collateral bar is 22.2 N.
+- Success-conditioned collateral is **bimodal**: a bend mode (~10 N) and a pull mode (~35-46 N).
+  The mean hides it. s0 and s1 already put 16-21% of successes below 15 N.
+- s2 is the most reliable and safe learned policy so far, but it is almost all pull.
+- D13b (weight 1.0, fresh pc1 seeds) now aims to move mass into a bend mode the policy can already
+  reach. The signal is the < 15 N / < 22 N fractions and the median, not the mean.

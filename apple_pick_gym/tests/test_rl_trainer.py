@@ -180,3 +180,14 @@ def test_wrapper_sanitizes_non_finite_policy_actions():
     obs, r, *_rest, info = w.step(a)
     assert bool(torch.isfinite(obs).all()) and bool(torch.isfinite(r).all())
     assert float(info["log"]["Step / nonfinite actions"]) == 2.0
+
+
+def test_new_wandb_run_id_is_wandb_style_and_does_not_need_wandb_util():
+    """wandb 0.30 dropped ``wandb.util.generate_id``; the trainer must mint run ids itself."""
+    import re
+
+    from apple_pick_gym.rl.trainer import _new_wandb_run_id
+
+    ids = {_new_wandb_run_id() for _ in range(50)}
+    assert len(ids) == 50
+    assert all(re.fullmatch(r"[a-z0-9]{8}", i) for i in ids)

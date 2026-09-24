@@ -317,6 +317,19 @@ def build_agent(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, run_dir: Path,
     return agent
 
 
+def _new_wandb_run_id() -> str:
+    """An 8-char lowercase alphanumeric run id, the same shape wandb mints.
+
+    ``wandb.util.generate_id`` was removed in wandb 0.30, so the id is generated here rather
+    than through wandb's (moving) internals.
+    """
+    import secrets
+    import string
+
+    alphabet = string.ascii_lowercase + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(8))
+
+
 def build_training(cfg: TrainConfig, *, wandb_run_id: str | None = None):
     """``(wrapper, agent)`` for ``cfg`` (agent not yet ``init``-ed)."""
     from skrl.utils import set_seed
@@ -436,9 +449,7 @@ def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: in
     if ckpt_path is not None:
         wandb_run_id = json.loads((ckpt_path / "meta.json").read_text()).get("wandb_run_id")
     if cfg.wandb and wandb_run_id is None:
-        import wandb
-
-        wandb_run_id = wandb.util.generate_id()
+        wandb_run_id = _new_wandb_run_id()
 
     wrapper, agent = build_training(cfg, wandb_run_id=wandb_run_id)
     cfg.save_json(run_dir / "config.json")

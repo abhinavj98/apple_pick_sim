@@ -191,3 +191,27 @@ def test_d7_progress_uses_per_env_thresholds_from_info():
     }
     terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
     torch.testing.assert_close(terms["progress"], torch.tensor([0.5, 1.0]))
+
+
+def test_d9_pullout_hinge_charges_only_force_above_the_grip_capacity():
+    from apple_pick_gym.batched_envs.harvest_reward import compute_pullout_penalty
+
+    q = torch.tensor([[0.0, 0.0, 0.0, 1.0]] * 3)  # ee z = world z
+    ft = torch.tensor([[0.0, 0.0, 0.1, 0, 0, 0], [0.0, 0.0, 8.0, 0, 0, 0], [0.0, 0.0, 14.0, 0, 0, 0]])
+    torch.testing.assert_close(compute_pullout_penalty(ft, q), torch.tensor([0.1, 8.0, 14.0]))  # default: no hinge
+    torch.testing.assert_close(compute_pullout_penalty(ft, q, threshold_n=10.0), torch.tensor([0.0, 0.0, 4.0]))
+
+
+def test_d9_dense_terms_use_the_configured_pullout_hinge():
+    from apple_pick_gym.batched_envs.harvest_reward import compute_dense_reward_terms
+
+    cfg = HarvestRewardConfig(pullout_threshold_n=10.0)
+    w = torch.zeros(1, 6)
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
+    info = {
+        "target_junction_wrench": w,
+        "ft_wrist": torch.tensor([[0.0, 0.0, 12.0, 0.0, 0.0, 0.0]]),
+        "woody_part_force": {"spur_stem": w, "other": torch.zeros(1, 6)},
+    }
+    terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
+    torch.testing.assert_close(terms["pullout"], torch.tensor([2.0]))

@@ -42,6 +42,9 @@ class HarvestRewardConfig:
     detach: DetachEnvelopeConfig = dataclasses.field(default_factory=DetachEnvelopeConfig)
     w_progress: float = 1.0
     w_pullout: float = 0.5
+    # [D9] grip capacity: only wrist force along the grip axis above this counts as pull-out
+    # (0 = every newton counts, the original behaviour)
+    pullout_threshold_n: float = 0.0
     w_collateral: float = 0.1
     # Slack: a constant cost per live (not-yet-frozen) step, so the policy is paid to detach
     # sooner rather than later. 0.01 * 500 steps = -5 at most, half the success bonus.
@@ -80,13 +83,14 @@ def compute_progress_reward(
     return torch.clamp(u, min=0.0, max=1.0)
 
 
-def compute_pullout_penalty(ft_wrist: torch.Tensor, tcp_quat: torch.Tensor) -> torch.Tensor:
-    """``relu(F_tcp . ee_z_world)``, shape (N,) -- force along the EE's local +z (grip) axis."""
+def compute_pullout_penalty(ft_wrist: torch.Tensor, tcp_quat: torch.Tensor, *, threshold_n: float = 0.0) -> torch.Tensor:
+    """``relu(F_tcp . ee_z_world - threshold_n)``, shape (N,) -- force along the EE's local +z (grip)
+    axis beyond what the grip holds ([D9] ``threshold_n``)."""
     ee_z_local = torch.zeros_like(ft_wrist[:, :3])
     ee_z_local[:, 2] = 1.0
     ee_z_world = quat_rotate_vector(tcp_quat, ee_z_local)
     along_z = torch.sum(ft_wrist[:, :3] * ee_z_world, dim=-1)
-    return torch.clamp(along_z, min=0.0)
+    return torch.clamp(along_z - float(threshold_n), min=0.0)
 
 
 def compute_collateral_penalty(
@@ -133,7 +137,7 @@ def compute_dense_reward_terms(
             stem_axis=info.get("target_junction_axis"),
             thresholds=info.get("detach_thresholds"),
         ),
-        "pullout": compute_pullout_penalty(info["ft_wrist"], obs["tcp_quat"]),
+        "pullout": compute_pullout_penalty(info["ft_wrist"], obs["tcp_quat"], threshold_n=cfg.pullout_threshold_n),
         "collateral": compute_collateral_penalty(
             info["woody_part_force"],
             target_junction_name=target_junction_name,

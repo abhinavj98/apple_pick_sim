@@ -47,12 +47,15 @@ class EnvConfig:
     success_streak_steps: int = 3
     safety_force_cap_n: float = 40.0
     safety_torque_cap_nm: float = 10.0
-    # reward weights
-    w_progress: float = 1.0
+    # reward weights. [D9] rebalanced from (1, 0.5 @ 0 N, 0.1, 10, -20): under D8 those ranked the
+    # zero policy (-37) above scripted_pull (-126) -- dense pull-out / collateral costs per step
+    # dwarfed the one-off +10 -- so PPO settled on not pulling. Now a clean pick > scripted > zero.
+    w_progress: float = 10.0  # delta progress telescopes to 10 * (u_end - u_0); cannot be farmed
     w_pullout: float = 0.5
-    w_collateral: float = 0.1
-    success_bonus: float = 10.0
-    failure_penalty: float = -20.0
+    pullout_threshold_n: float = 10.0  # grip capacity stand-in: only force beyond it counts
+    w_collateral: float = 0.02
+    success_bonus: float = 20.0
+    failure_penalty: float = -40.0
     w_slack: float = 0.01  # per live step
     progress_mode: Literal["absolute", "delta"] = "delta"  # see HarvestRewardConfig.progress_mode
     # VIC target leash: bounds the commanded wrench to K_max * offset (200 N/m * 0.15 m = 30 N)
@@ -81,6 +84,8 @@ class PPOConfig:
     gae_lambda: float = 0.95
     learning_rate: float = 3e-4
     kl_adaptive_lr_threshold: float | None = 0.01  # KLAdaptiveLR target KL; None = fixed lr
+    # [D10] LR floor for the KL-adaptive schedule (skrl's default 1e-6 let it fall ~25x in 18 GPU updates)
+    kl_adaptive_min_lr: float = 1e-4
     ratio_clip: float = 0.2
     value_clip: float = 0.2
     grad_norm_clip: float = 1.0

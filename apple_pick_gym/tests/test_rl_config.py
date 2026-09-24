@@ -86,3 +86,50 @@ def test_d8_target_speed_cap_matches_the_rig_and_reaches_the_env():
     assert cfg.env.linear_delta_m == 0.002 and cfg.env.angular_delta_rad == 0.01
     env = build_env(dataclasses.replace(cfg.env, kind="surrogate", num_envs=4, device="cpu"), seed=0)
     assert env.action_bounds.linear_delta_m == 0.002 and env.action_bounds.angular_delta_rad == 0.01
+
+
+def test_d10_kl_adaptive_lr_has_a_floor():
+    # [D10] the KL-adaptive schedule cut the LR ~25x within 18 updates (4e-5) on GPU; skrl's floor is 1e-6
+    cfg = TrainConfig()
+    assert cfg.ppo.kl_adaptive_min_lr == 1e-4
+
+
+def test_d10_min_lr_reaches_the_scheduler(tmp_path):
+    from pathlib import Path
+
+    from apple_pick_gym.rl.trainer import build_training
+
+    cfg = dataclasses.replace(
+        TrainConfig.load_json(Path(__file__).resolve().parent.parent / "rl" / "configs" / "surrogate_smoke.json"),
+        run_dir=str(tmp_path / "run"),
+    )
+    _wrapper, agent = build_training(cfg)
+    assert agent.scheduler.min_lr == 1e-4
+
+
+def test_d9_training_reward_balance_ranks_a_clean_pick_above_scripted_pull_above_zero():
+    # [D9] under D8 the old weights ranked zero (-37) above scripted_pull (-126): pulling paid
+    # dense per-step pull-out / collateral costs far above the +10 bonus -> passive optimum.
+    cfg = TrainConfig().env
+    assert (cfg.w_progress, cfg.w_pullout, cfg.pullout_threshold_n) == (10.0, 0.5, 10.0)
+    assert (cfg.w_collateral, cfg.success_bonus, cfg.failure_penalty, cfg.w_slack) == (0.02, 20.0, -40.0, 0.01)
+    from apple_pick_gym.rl.trainer import build_env
+
+    env = build_env(dataclasses.replace(cfg, kind="surrogate", num_envs=2, device="cpu"), seed=0)
+    r = env._reward_cfg
+    assert r.pullout_threshold_n == 10.0 and r.w_progress == 10.0 and r.success_bonus == 20.0
+    # GPU eval_d8 per-episode sums (old weights) re-weighted: collateral N*steps = sum/0.1, slack steps = sum/0.01
+    def ret(progress_u, coll_sum_old, slack_sum_old, success, safety=0.0, pullout_above_hinge=0.0):
+        return (
+            cfg.w_progress * progress_u
+            - cfg.w_pullout * pullout_above_hinge
+            - cfg.w_collateral * (coll_sum_old / 0.1)
+            - cfg.w_slack * (slack_sum_old / 0.01)
+            + cfg.success_bonus * success
+            + cfg.failure_penalty * safety
+        )
+
+    zero = ret(0.0, 6.23, 5.00, 0.0)
+    scripted = ret(0.68, 56.03, 0.31, 1.0, pullout_above_hinge=5.0)
+    clean = ret(0.67, 22.34, 0.42, 0.90, safety=0.10)
+    assert clean > scripted > zero, (clean, scripted, zero)

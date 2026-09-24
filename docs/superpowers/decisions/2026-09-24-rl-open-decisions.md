@@ -14,6 +14,8 @@ hyperparameters beyond what is listed.
 | D6 | Gate compares collateral per *successful* pick | done |
 | D7 | Per-env F_max / tau_max draws | parked (plumbing, off) |
 | D8 | Cap VIC target speed to the real rig (2 mm/step, 0.01 rad/step at 60 Hz) | done |
+| D9 | Reward rebalance so a pick beats standing still | done |
+| D10 | LR floor 1e-4 for the KL-adaptive schedule | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -383,3 +385,42 @@ clean: 0 nonfinite envs, no NaN, 5.4 GB.
   - collateral per success <= 22.2 N (0.5x scripted pull);
   - collateral < 35.8 N (random). That bar comes from only ~5% of envs, so it is noisy, but the
     0.5x-scripted clause is the binding one anyway.
+
+## D9 -- Reward rebalance: a pick must beat standing still
+
+**Finding (D8 long run, stopped after 3 episodes).**
+- Return rose while junction force fell and success stayed ~2%: PPO was learning not to pull.
+- Per-episode term sums (GPU eval_d8, old weights):
+
+| policy | progress | pull-out | collateral | slack | terminal | return |
+| --- | --- | --- | --- | --- | --- | --- |
+| zero | 0 | -26 | -6 | -5 | 0 | -37 |
+| scripted_pull | 0.68 | -81 | -56 | -0.3 | +10 | -126 |
+| pre-D8 learned | 0.67 | -2 | -22 | -0.4 | +7 | -17 |
+
+So the reward ranked zero above scripted_pull. Three causes:
+- Pull-out charged every newton along the grip axis, even the 0.1 N at rest (-26 over 500 steps).
+- Collateral summed every step with weight 0.1.
+- The one-off +10 bonus and ~0.7 of progress were too small to pay for either.
+
+**Choice (training config `EnvConfig`; the library `HarvestRewardConfig` defaults are unchanged).**
+- `pullout_threshold_n = 10`: pull-out counts only beyond a grip-capacity stand-in.
+- `w_collateral = 0.02`.
+- `w_progress = 10`: delta progress telescopes to 10 * (u_end - u_0), so it cannot be farmed.
+- `success_bonus = 20`, `failure_penalty = -40`.
+- `w_slack` and `w_pullout` unchanged.
+
+Re-weighting the same sums gives: clean learned pick ~ +16, scripted_pull ~ +10, zero ~ -6, and
+random far below. A test pins that ordering.
+
+**Open.** 10 N is a stand-in, not a measured grip capacity. The maintainer should set it from the
+gripper.
+
+**Revert.** Set the old values in the config: (1, 0.5 @ 0 N, 0.1, 10, -20).
+
+## D10 -- LR floor for the KL-adaptive schedule
+
+`PPOConfig.kl_adaptive_min_lr = 1e-4`. The KL-adaptive schedule took the LR from 3e-4 to 4e-5
+within 18 GPU updates (KL 0.014 > 0.01 target), and skrl's default floor is 1e-6. That makes
+escaping any plateau slow. With the floor, the schedule still adapts above it. KL per update is
+now logged (`Policy / KL (mean)`).

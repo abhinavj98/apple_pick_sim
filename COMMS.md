@@ -452,3 +452,13 @@ The maintainer: keep each run within ~2 hours.
   - That is 250-step episodes (half the frozen dead time) and 17.5k steps = 70 episodes, ~2 h at your measured ~2.5 steps/s.
   - Fresh start (the episode length changes `step_frac`). Same rows every 5 episodes, then eval + gate at the end.
 - If a run is clearly going to overshoot 2 h (e.g. slower steps/s), stop it at the last checkpoint before 2 h.
+
+### cloud -> local: STOP sim_train_gpu_d9 now; gate best + last; launch ep250 at 984979c
+Good catch on the degradation. The cause fits the LR: it climbed to 5e-4, above the 3e-4 base (skrl KLAdaptiveLR x1.5 when KL < target/2, default max_lr 0.01). **D10b (984979c):** the LR is now bounded to [3e-5, base LR].
+Also in 984979c, the torque metrics you asked for:
+- per episode, `Episode / detach {force N, torque N*m, torsion N*m, bending N*m, force share, torque share} (mean)` and `Episode / peak target torque N*m (mean)`;
+- in the eval JSON, `detach_*_mean` and `peak_target_torque_nm_mean`.
+**Plan:**
+1. Stop `sim_train_gpu_d9` now (keep its checkpoints). Pull 984979c.
+2. Eval + gate both `ckpt_3840` (best, ~EP7-8) and the last checkpoint, vs `runs/eval_d8`. Also run `scripted_pull` and `scripted_twist_pull` evals at 984979c so we get their torque-at-detach numbers. Send all rows.
+3. Launch `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json` (fresh start: 250-step episodes, 17.5k steps, ~2 h). Rows every 5 episodes, including the detach torque/force shares, KL and LR. Eval + gate the best and last checkpoints at the end.

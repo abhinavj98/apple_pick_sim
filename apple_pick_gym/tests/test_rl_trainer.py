@@ -39,7 +39,7 @@ def test_training_runs_logs_and_checkpoints(tmp_path):
     updates = [h for h in hist if h["kind"] == "update"]
     assert len(updates) == 3
     for h in updates:
-        for key in ("Loss / Policy loss", "Loss / Value loss", "Policy / Standard deviation"):
+        for key in ("Loss / Policy loss", "Loss / Value loss", "Policy / Standard deviation", "Policy / KL (mean)"):
             assert math.isfinite(h[key]), key
     episodes = [h for h in hist if h["kind"] == "episode"]
     assert len(episodes) == cfg.timesteps // cfg.env.max_episode_steps

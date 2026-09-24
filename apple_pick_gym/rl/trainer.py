@@ -111,6 +111,22 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
     )
 
 
+def _kl_tracking_scheduler():
+    from skrl.resources.schedulers.torch import KLAdaptiveLR
+
+    class KLTrackingAdaptiveLR(KLAdaptiveLR):
+        """``KLAdaptiveLR`` that keeps the last epoch-mean KL it was stepped with (for logging)."""
+
+        last_kl: float | None = None
+
+        def step(self, kl=None, *, epoch=None):
+            if kl is not None:
+                self.last_kl = float(kl)
+            return super().step(kl, epoch=epoch)
+
+    return KLTrackingAdaptiveLR
+
+
 def _ppo_rnn_class():
     from skrl.agents.torch.ppo import PPO_RNN
 
@@ -118,6 +134,12 @@ def _ppo_rnn_class():
         """``PPO_RNN`` that also hands every TensorBoard write to a history callback."""
 
         history_callback = None
+
+        def update(self, *, timestep: int, timesteps: int) -> None:
+            super().update(timestep=timestep, timesteps=timesteps)
+            kl = getattr(self.scheduler, "last_kl", None)
+            if kl is not None:
+                self.track_data("Policy / KL (mean)", kl)
 
         def write_tracking_data(self, *, timestep: int, timesteps: int) -> None:
             if self.history_callback is not None:
@@ -136,7 +158,6 @@ def _ppo_rnn_class():
 def build_agent(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, run_dir: Path, wandb_run_id: str | None = None):
     from skrl.memories.torch import RandomMemory
     from skrl.resources.preprocessors.torch import RunningStandardScaler
-    from skrl.resources.schedulers.torch import KLAdaptiveLR
 
     device = wrapper.device
     n = wrapper.num_envs
@@ -175,7 +196,7 @@ def build_agent(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, run_dir: Path,
         ),
     )
     if p.kl_adaptive_lr_threshold is not None:
-        agent_cfg["learning_rate_scheduler"] = KLAdaptiveLR
+        agent_cfg["learning_rate_scheduler"] = _kl_tracking_scheduler()
         agent_cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": p.kl_adaptive_lr_threshold}
     if p.running_standard_scaler:
         agent_cfg["observation_preprocessor"] = RunningStandardScaler

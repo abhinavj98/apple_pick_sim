@@ -58,7 +58,7 @@
 - [ ] **Plan Task 9 baselines on GPU** — `scripted_pull` / `zero` / `random` on the train snapshot; stop and revisit envelope / reward if scripted pull never detaches
 - [ ] **Plan Task 10** — `sim_smoke_gpu.json` (~3M samples) with one `--resume latest` mid-run
 - [ ] **Plan Task 3** — held-out world set + snapshot; **Task 11** capstone + gate (beat scripted pull on held-out, no worse safety)
-- [ ] Reward / PPO tuning with the maintainer (weights, streak, `delta` as default?)
+- [ ] Reward / PPO tuning with the maintainer (weights, streak, slack); `delta` progress + slack are now defaults
 
 **Blocker found:** the real harvest env's batched arm does **not** integrate on a CPU Warp device (Newton MuJoCo-CPU backend, `separate_worlds`) — CPU is wiring-only. See H6 §10.
 

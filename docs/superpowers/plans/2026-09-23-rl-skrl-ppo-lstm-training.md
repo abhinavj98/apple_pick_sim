@@ -26,7 +26,7 @@ Living contracts are now in H6 `docs/handbook-rl-policy.md`; this section record
 Findings that change the plan:
 
 - **Real env needs CUDA.** On CPU the batched arm never moves (Newton MuJoCo-CPU does not integrate replicated arms), so every CPU sim test is wiring-only.
-- **Use `progress_mode="delta"`.** With absolute progress the surrogate policy learned to hover under the envelope (success 0.68 -> 0.37 while return rose); delta reached 1.00.
+- **`progress_mode="delta"` is now the default (plus a per-step slack cost).** With absolute progress the surrogate policy learned to hover under the envelope (success 0.68 -> 0.37 while return rose); delta reached 1.00.
 - **Scripted pull direction is `+weld`** (grasps approach from below; `-weld` pushes the apple up and buckles the stem), not "-weld" as written below.
 - The surrogate's explicit damping diverged at zeta=2 (fixed, regression-tested); the wrapper now sanitizes non-finite rows.
 

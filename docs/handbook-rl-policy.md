@@ -72,21 +72,23 @@ shared by the real env and the surrogate):
 
 | Term | Formula | Default weight |
 | --- | --- | --- |
-| progress | `absolute`: `u_t`; `delta`: `u_t − u_{t−1}`, with `u = clip(detach_utilization, 0, 1)` | `w_progress = 1.0` |
+| progress | `delta` (**default**): `u_t − u_{t−1}`; `absolute`: `u_t`, with `u = clip(detach_utilization, 0, 1)` | `w_progress = 1.0` |
 | pull-out | `−relu(F_wrist · ee_z)` (raw wrist force along the grasp axis) | `w_pullout = 0.5` |
 | collateral | `−Σ_{j ≠ spur_stem} relu(‖F_j‖ − ‖F_j‖_rest)`; the rest baseline is recorded at reset (`info["collateral_baseline_norm"]`) | `w_collateral = 0.1` |
+| slack | `−1` per live (not-yet-frozen) step: a time cost, so detaching sooner pays; ≤ −5 over a 500-step episode | `w_slack = 0.01` |
 | terminal | `+success_bonus` on the success edge; `failure_penalty` on a safety violation (no bonus even if the streak also completes) | `+10 / −20` |
 
 Safety is the anchor-frame target wrench or the raw wrist wrench exceeding 40 N / 10 N·m.
 
-**Use `progress_mode="delta"` for training (finding, 2026-09-24).** With `absolute`
-progress, hovering just under the envelope out-earns detaching. Success freezes the env,
-so reward after it is 0, and recurrent PPO cuts the return at the freeze edge. On the
-surrogate, `absolute` reached 0.68 success, then *declined* to ~0.37 while the return
-kept rising. `delta` reached 1.00 success in the same budget
-(`tmp/rl_vic_viz/surrogate_learning_curves.png`). `delta` is potential-style shaping:
-an episode's progress terms telescope to `u_last − u_0`. The env default stays
-`absolute` pending reward tuning; every checked-in RL config sets `delta`.
+**Why `delta` is the default (finding, 2026-09-24).** With `absolute` progress, hovering
+just under the envelope out-earns detaching. Success freezes the env, so reward after it
+is 0, and recurrent PPO cuts the return at the freeze edge. On the surrogate, `absolute`
+reached 0.68 success, then *declined* to ~0.37 while the return kept rising. `delta`
+reached 1.00 success in the same budget (`tmp/rl_vic_viz/surrogate_learning_curves.png`).
+`delta` is potential-style shaping: an episode's progress terms telescope to
+`u_last − u_0`, so the success bonus and the slack cost are what drive the policy to
+detach, and to detach quickly. With slack on, the CPU smoke goes from 0.02 to 1.00 success
+in 10 episodes while mean steps-to-success fall from 78 to 48.
 
 Reward reads privileged signals (uncapped junction wrenches, raw F/T). That is legitimate
 because reward is not part of the deployed policy. F_max = 20 N is below the 40 N
@@ -292,7 +294,7 @@ damping implicitly: D = 2ζ√K is sized for unit inertia and diverged explicitl
 - **Real-env throughput and stability at N = 2000 are unmeasured** (plan Task 2). N = 512
   was 1.5k env-steps/s on an RTX 4090. N = 1024 had a silent build crash (design spec).
 - **Held-out world set not built** (plan Task 3).
-- **Reward is untuned.** Use `delta` progress. Weights, streak length and F_max/τ_max
+- **Reward is untuned.** `delta` progress and a 0.01 slack cost are the defaults. Weights, streak length and F_max/τ_max
   are the maintainer's to tune. At rest the torque term already uses 20–70% of the
   envelope index on some worlds, and it is noisy step to step.
 - **Scripted pull direction verified only by geometry** (TCP below apple, weld ≈ −z).

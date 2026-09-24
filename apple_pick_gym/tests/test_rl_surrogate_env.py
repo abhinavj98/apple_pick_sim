@@ -216,3 +216,26 @@ def test_split_envelope_uses_the_stem_axis_and_twist_counts_as_torsion():
     # twisting about the grasp axis loads torsion; bending (the horizontal rest moment) stays put
     assert float((tors - tors0).mean()) > 0.01
     torch.testing.assert_close(bend, bend0, atol=2e-3, rtol=0)
+
+
+def test_d7_envelope_thresholds_resample_per_reset_and_drive_the_index():
+    from apple_pick_gym.batched_envs.harvest_detach import DetachEnvelopeConfig, detach_index
+    from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig
+
+    cfg = HarvestRewardConfig(detach=DetachEnvelopeConfig(f_max_range_n=(15.0, 25.0), tau_max_range_nm=(0.04, 0.12)))
+    env = _env(reward_config=cfg)
+    _, info = env.reset()
+    th0 = info["detach_thresholds"].clone()
+    assert th0.shape == (N, 2) and float(th0[:, 0].min()) >= 15.0 and float(th0[:, 0].max()) <= 25.0
+    _, _, _, _, info = env.step(_action())
+    torch.testing.assert_close(info["detach_thresholds"], th0)  # fixed within an episode
+    torch.testing.assert_close(
+        info["detach_index"], detach_index(info["target_junction_wrench"], cfg.detach, thresholds=th0)
+    )
+    _, info = env.reset()
+    assert not torch.equal(info["detach_thresholds"], th0)  # resampled per reset
+
+
+def test_d7_nominal_thresholds_without_ranges():
+    _, info = _env().reset()
+    torch.testing.assert_close(info["detach_thresholds"], torch.tensor([[20.0, 0.05]] * N))

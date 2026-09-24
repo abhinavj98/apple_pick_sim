@@ -46,7 +46,7 @@ from apple_pick_gym.batched_envs.harvest_action import (
     leash_target_pose,
     split_harvest_action,
 )
-from apple_pick_gym.batched_envs.harvest_detach import detach_index
+from apple_pick_gym.batched_envs.harvest_detach import detach_index, envelope_thresholds
 from apple_pick_gym.batched_envs.harvest_episode import EpisodeConfig, FreezeMask, SuccessStreakTracker
 from apple_pick_gym.batched_envs.harvest_obs import _PRIVILEGED_FIELDS
 from apple_pick_gym.batched_envs.harvest_outcome import evaluate_harvest_step
@@ -134,6 +134,8 @@ class SurrogateHarvestEnv:
         self._q_rest = torch.as_tensor(self._rng.uniform(-1.0, 1.0, size=(1, 7)), dtype=torch.float32, device=self.device)
         self._arm_sample: dict[str, torch.Tensor] | None = None
         self._step_count = 0
+        det = self._reward_cfg.detach  # [D7] nominal until the first reset draws per-env limits
+        self._thresholds = torch.tensor([[float(det.f_max_n), float(det.tau_max_nm)]] * self.num_envs, device=self.device)
 
     def reseed_episode_rng(self, seed: int) -> None:
         """Reseed the per-reset DR stream (arm draws); the per-env plant is unaffected."""
@@ -212,6 +214,7 @@ class SurrogateHarvestEnv:
         self._kp = torch.zeros(n, 6, device=dev)
         self._kd = torch.zeros(n, 6, device=dev)
         self._resample_arm()
+        self._thresholds = envelope_thresholds(self._reward_cfg.detach, n, self._rng, device=dev)  # [D7]
         self._ft_sensor.reset()
         self._tracker.reset()
         self._freeze.reset()
@@ -222,7 +225,10 @@ class SurrogateHarvestEnv:
         }
         info["collateral_baseline_norm"] = self._collateral_baseline
         self._progress_prev = compute_progress_reward(
-            info["target_junction_wrench"], self._reward_cfg, stem_axis=info["target_junction_axis"]
+            info["target_junction_wrench"],
+            self._reward_cfg,
+            stem_axis=info["target_junction_axis"],
+            thresholds=info["detach_thresholds"],
         )
         return obs, info
 
@@ -343,7 +349,8 @@ class SurrogateHarvestEnv:
             "target_junction_force": target_wrench,
             "target_junction_wrench": target_wrench,
             "target_junction_axis": self.weld.clone(),  # the surrogate's stem axis is the grasp axis
-            "detach_index": detach_index(target_wrench, self._reward_cfg.detach, stem_axis=self.weld),
+            "detach_thresholds": self._thresholds,
+            "detach_index": detach_index(target_wrench, self._reward_cfg.detach, stem_axis=self.weld, thresholds=self._thresholds),
             "ft_wrist": ft_raw,
         }
         return obs, info

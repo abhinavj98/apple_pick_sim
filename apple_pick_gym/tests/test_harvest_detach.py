@@ -182,3 +182,50 @@ def test_stem_root_statics_shift():
     A = torch.tensor([[0.0024, 0.0, 0.0]])
     J = torch.zeros(1, 3)
     torch.testing.assert_close(shift_moment(M_A, F, from_point=A, to_point=J), torch.tensor([[0.001, 0.012, 0.0]]))
+
+
+# --- [D7] per-env envelope thresholds (F_max / tau_max are rough estimates)
+import numpy as np  # noqa: E402
+
+from apple_pick_gym.batched_envs.harvest_detach import (  # noqa: E402
+    DetachEnvelopeConfig,
+    detach_index,
+    detach_utilization,
+    envelope_thresholds,
+)
+
+
+def test_d7_no_ranges_gives_the_nominal_thresholds():
+    cfg = DetachEnvelopeConfig()
+    th = envelope_thresholds(cfg, 4, np.random.default_rng(0), device="cpu")
+    assert th.shape == (4, 2)
+    torch.testing.assert_close(th, torch.tensor([[20.0, 0.05]] * 4))
+
+
+def test_d7_ranges_sample_per_env_within_bounds_uniform_force_log_uniform_torque():
+    cfg = DetachEnvelopeConfig(f_max_range_n=(15.0, 25.0), tau_max_range_nm=(0.04, 0.12))
+    th = envelope_thresholds(cfg, 20000, np.random.default_rng(0), device="cpu")
+    f, t = th[:, 0], th[:, 1]
+    assert float(f.min()) >= 15.0 and float(f.max()) <= 25.0
+    assert float(t.min()) >= 0.04 and float(t.max()) <= 0.12
+    assert abs(float(f.mean()) - 20.0) < 0.2  # uniform
+    assert abs(float(torch.log(t).mean()) - 0.5 * (math.log(0.04) + math.log(0.12))) < 0.01  # log-uniform
+    assert len(set(f[:10].tolist())) == 10  # per env
+
+
+def test_d7_index_uses_per_env_thresholds():
+    cfg = DetachEnvelopeConfig()
+    w = torch.tensor([[20.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.05, 0.0, 0.0]])
+    th = torch.tensor([[10.0, 0.05], [20.0, 0.1]])
+    torch.testing.assert_close(detach_index(w, cfg, thresholds=th), torch.tensor([4.0, 0.25]))
+    torch.testing.assert_close(detach_utilization(w, cfg, thresholds=th), torch.tensor([2.0, 0.5]))
+    torch.testing.assert_close(detach_index(w, cfg), torch.tensor([1.0, 1.0]))  # nominal unchanged
+
+
+def test_d7_ranges_are_validated():
+    with pytest.raises(ValueError):
+        DetachEnvelopeConfig(f_max_range_n=(25.0, 15.0))
+    with pytest.raises(ValueError):
+        DetachEnvelopeConfig(tau_max_range_nm=(0.0, 0.1))
+    with pytest.raises(ValueError):  # the split envelope keeps fixed limits
+        DetachEnvelopeConfig(torque_mode="split", f_max_range_n=(15.0, 25.0))

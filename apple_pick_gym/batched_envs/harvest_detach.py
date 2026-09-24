@@ -30,8 +30,10 @@ torque for a fixed joint).
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Literal
 
+import numpy as np
 import torch
 
 
@@ -61,6 +63,13 @@ class DetachEnvelopeConfig:
     # "junction_readout": the rigid fixed joint's AVBD constraint wrench, which carries a
     #   +-0.03 N*m step-to-step solver-noise floor.
     wrench_source: Literal["stem_elastic", "junction_readout"] = "stem_elastic"
+    # [D7] F_max / tau_max are rough estimates. With a range set, every env draws its own limit
+    # at each reset (force uniform, torque log-uniform; see :func:`envelope_thresholds`), so the
+    # policy learns to keep loading until the apple comes off instead of fitting one guessed
+    # threshold. ``None`` keeps the fixed ``f_max_n`` / ``tau_max_nm``. The actor never sees
+    # the draw; the privileged critic does. Total-moment envelope only.
+    f_max_range_n: tuple[float, float] | None = None
+    tau_max_range_nm: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         for name in ("f_max_n", "tau_max_nm", "torsion_max_nm", "bending_max_nm"):
@@ -70,6 +79,35 @@ class DetachEnvelopeConfig:
             raise ValueError(f"unknown torque_mode {self.torque_mode!r}")
         if self.wrench_source not in ("stem_elastic", "junction_readout"):
             raise ValueError(f"unknown wrench_source {self.wrench_source!r}")
+        for name in ("f_max_range_n", "tau_max_range_nm"):
+            rng = getattr(self, name)
+            if rng is None:
+                continue
+            if len(rng) != 2 or not 0.0 < float(rng[0]) <= float(rng[1]):
+                raise ValueError(f"{name} must be (lo, hi) with 0 < lo <= hi, got {rng}")
+            if self.torque_mode != "total":
+                raise ValueError(f"{name} is only supported with torque_mode='total'")
+
+
+def envelope_thresholds(
+    cfg: DetachEnvelopeConfig, n: int, rng: np.random.Generator, *, device: torch.device | str
+) -> torch.Tensor:
+    """[D7] Per-env ``(n, 2)`` ``[f_max, tau_max]`` for one episode.
+
+    Without a range the nominal value is used (and ``rng`` is not consumed for it). ``f_max``
+    is uniform over ``f_max_range_n``; ``tau_max`` is log-uniform over ``tau_max_range_nm``
+    (its guess is uncertain by a factor, not by an offset).
+    """
+    if cfg.f_max_range_n is None:
+        f = np.full(n, float(cfg.f_max_n))
+    else:
+        f = rng.uniform(float(cfg.f_max_range_n[0]), float(cfg.f_max_range_n[1]), size=n)
+    if cfg.tau_max_range_nm is None:
+        t = np.full(n, float(cfg.tau_max_nm))
+    else:
+        lo, hi = (math.log(float(v)) for v in cfg.tau_max_range_nm)
+        t = np.exp(rng.uniform(lo, hi, size=n))
+    return torch.as_tensor(np.stack([f, t], axis=-1), dtype=torch.float32, device=device)
 
 
 def split_torque(torque: torch.Tensor, stem_axis: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -80,12 +118,22 @@ def split_torque(torque: torch.Tensor, stem_axis: torch.Tensor) -> tuple[torch.T
 
 
 def detach_index(
-    wrench: torch.Tensor, cfg: DetachEnvelopeConfig, *, stem_axis: torch.Tensor | None = None
+    wrench: torch.Tensor,
+    cfg: DetachEnvelopeConfig,
+    *,
+    stem_axis: torch.Tensor | None = None,
+    thresholds: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Envelope index of ``(N, 6)`` ``[F, tau]`` wrenches, shape ``(N,)`` (detach at ``>= 1``)."""
-    f = torch.linalg.norm(wrench[:, :3], dim=-1) / float(cfg.f_max_n)
+    """Envelope index of ``(N, 6)`` ``[F, tau]`` wrenches, shape ``(N,)`` (detach at ``>= 1``).
+
+    ``thresholds`` (``(N, 2)`` ``[f_max, tau_max]``, [D7]) overrides the config's limits per env;
+    in ``split`` mode only its force column is used.
+    """
+    f_max = float(cfg.f_max_n) if thresholds is None else thresholds[:, 0].to(wrench)
+    f = torch.linalg.norm(wrench[:, :3], dim=-1) / f_max
     if cfg.torque_mode == "total":
-        t = torch.linalg.norm(wrench[:, 3:6], dim=-1) / float(cfg.tau_max_nm)
+        tau_max = float(cfg.tau_max_nm) if thresholds is None else thresholds[:, 1].to(wrench)
+        t = torch.linalg.norm(wrench[:, 3:6], dim=-1) / tau_max
         return f * f + t * t
     if stem_axis is None:
         raise ValueError("torque_mode='split' needs stem_axis (N, 3)")
@@ -96,10 +144,14 @@ def detach_index(
 
 
 def detach_utilization(
-    wrench: torch.Tensor, cfg: DetachEnvelopeConfig, *, stem_axis: torch.Tensor | None = None
+    wrench: torch.Tensor,
+    cfg: DetachEnvelopeConfig,
+    *,
+    stem_axis: torch.Tensor | None = None,
+    thresholds: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """``sqrt(detach_index)``: radial fraction of the envelope in use (1 = on the envelope)."""
-    return torch.sqrt(detach_index(wrench, cfg, stem_axis=stem_axis))
+    return torch.sqrt(detach_index(wrench, cfg, stem_axis=stem_axis, thresholds=thresholds))
 
 
 def shift_moment(

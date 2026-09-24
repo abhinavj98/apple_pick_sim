@@ -173,3 +173,21 @@ if __name__ == "__main__":
     import pytest
 
     pytest.main([__file__, "-v"])
+
+
+def test_d7_progress_uses_per_env_thresholds_from_info():
+    from apple_pick_gym.batched_envs.harvest_reward import compute_dense_reward_terms
+
+    cfg = HarvestRewardConfig()
+    w = torch.tensor([[10.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * 2)
+    th = torch.tensor([[20.0, 0.05], [10.0, 0.05]])
+    torch.testing.assert_close(compute_progress_reward(w, cfg, thresholds=th), torch.tensor([0.5, 1.0]))
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]] * 2)}
+    info = {
+        "target_junction_wrench": w,
+        "detach_thresholds": th,
+        "ft_wrist": torch.zeros(2, 6),
+        "woody_part_force": {"spur_stem": w, "other": torch.zeros(2, 6)},
+    }
+    terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
+    torch.testing.assert_close(terms["progress"], torch.tensor([0.5, 1.0]))

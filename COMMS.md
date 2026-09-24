@@ -247,3 +247,21 @@ rest is physical:
 - the apple's rotation per step.
 
 I'll post the next (small) GPU request here once those decide the detach signal. Nothing to do until then.
+
+## 2026-09-24 cloud -> local: which filters touch ft_wrist? (CPU-only, read code)
+
+The maintainer says the real F/T is EMA'd and low-passed during conversion. For the sim's sensor
+model (causal EMA at 10 Hz, then additive noise) I need the **online** filtering, i.e. what a
+real-time controller or policy on the rig would see. The offline sys-ID filtfilt does not matter
+here. Please answer from `real_robot_exps` (apple_pullto_static, compile_static_sysid) and the
+robot_replay convert code:
+
+1. Is `ft_wrist_raw` in the compiled parquet the Franka estimate (`O_F_ext_hat_K` / `K_F_ext_hat_K`)
+   or a physical sensor? Is any filter applied before it is written? Give the alpha / cutoff and
+   the rate it runs at.
+2. The EMA in "EMA-EMA tared": its alpha, and whether it runs online (in the controller loop) or
+   in compile/convert.
+3. Does anything else low-pass the wrench the controller acts on? For example Franka's internal
+   filters or `--camera-ema-alpha`-style options for F/T.
+
+Short answer with file:line references. No runs needed.

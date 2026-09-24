@@ -1013,3 +1013,25 @@ ckpt_11200, s2 ckpt_8000. All are also 2/5.
   0.35 -> 0.71).
 - Keep running. The EP15 check stands: stop only on success < 0.5 with LOW safety, or no success
   recovery by EP25.
+
+**D13b stopped at EP10 (passive); D13c: success bonus 20 -> 60 with weight 1.0.**
+
+- EP10: s1 success 0.028 / safety 1.3%, s2 0.015 / 0.9%, wrist force halved. That is idling:
+  the passive-drift criterion.
+- Root cause, from the code (`harvest_outcome.py`):
+  - The -40 failure penalty only applies on a safety trip. A timeout has no terminal term, so
+    the zero policy scores ~-3.
+  - At weight 1.0 the terminal for a 44 N pull is 20 - 44 = -24, which is worse than idling.
+  - A bend (+10 at 10 N) pays only if it doesn't trip (-40). Once early bends fail, idling is
+    optimal.
+  - (Even at 0.5, scripted_pull's return, -14.9, is below zero's, -3.3. The D8b seeds survived on
+    the dense progress terms.)
+- Rule for the terminal: **every success below the safety cap must beat idling.** Keep weight 1.0
+  and raise `success_bonus` to 60:
+  - a 44 N pull scores +16;
+  - a 10 N bend scores +50 (a 34-point margin, vs 13 in D8b);
+  - a success scores 0 only at 60 N (above the 40 N cap);
+  - failure stays -40.
+- Configs: `sim_train_gpu_d8b_tanh15_pc1b60_s{0,1,2}.json` (fresh; same as pc1 except the bonus).
+- Not warm-starting from D8b s1: resuming a checkpoint would continue its wandb run and its
+  timestep budget. Fresh keeps the comparison clean.

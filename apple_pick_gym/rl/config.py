@@ -46,7 +46,8 @@ class EnvConfig:
     w_collateral: float = 0.1
     success_bonus: float = 10.0
     failure_penalty: float = -20.0
-    progress_mode: Literal["absolute", "delta"] = "absolute"  # see HarvestRewardConfig.progress_mode
+    w_slack: float = 0.01  # per live step
+    progress_mode: Literal["absolute", "delta"] = "delta"  # see HarvestRewardConfig.progress_mode
     # VIC target leash: bounds the commanded wrench to K_max * offset (200 N/m * 0.15 m = 30 N)
     max_target_pos_offset_m: float | None = 0.15
     max_target_rot_offset_rad: float | None = 0.5

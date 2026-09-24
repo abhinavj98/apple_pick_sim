@@ -50,7 +50,7 @@ def test_obs_and_info_follow_the_real_env_contract():
     assert r.shape == term.shape == trunc.shape == (N, 1)
     for key in ("frozen", "success_achieved", "safety_junction", "safety_wrist", "success_streak", "terminated_edge"):
         assert info["episode"][key].shape == (N,), key
-    assert set(info["reward_terms"]["raw"]) == {"progress", "pullout", "collateral"}
+    assert set(info["reward_terms"]["raw"]) == {"progress", "pullout", "collateral", "slack"}
     assert env.target_junction_name == "spur_stem"
 
 
@@ -189,7 +189,7 @@ def test_stays_finite_under_extreme_impedance_and_random_actions():
 def test_delta_progress_telescopes_over_an_episode():
     from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig
 
-    env = _env(reward_config=HarvestRewardConfig(progress_mode="delta", w_pullout=0.0, w_collateral=0.0), steps=30)
+    env = _env(reward_config=HarvestRewardConfig(progress_mode="delta", w_pullout=0.0, w_collateral=0.0, w_slack=0.0), steps=30)
     _, info0 = env.reset()
     from apple_pick_gym.batched_envs.harvest_reward import compute_progress_reward
 

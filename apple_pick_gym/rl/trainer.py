@@ -50,6 +50,7 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         w_progress=env_cfg.w_progress,
         w_pullout=env_cfg.w_pullout,
         w_collateral=env_cfg.w_collateral,
+        w_slack=env_cfg.w_slack,
         success_bonus=env_cfg.success_bonus,
         failure_penalty=env_cfg.failure_penalty,
         progress_mode=env_cfg.progress_mode,

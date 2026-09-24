@@ -30,6 +30,27 @@ def test_default_success_is_the_20n_0p05nm_envelope():
     assert not hasattr(cfg, "f_threshold_n")
 
 
+def test_default_progress_is_delta_and_slack_is_on():
+    cfg = HarvestRewardConfig()
+    assert cfg.progress_mode == "delta"
+    assert cfg.w_slack > 0.0
+
+
+def test_slack_is_a_constant_per_step_cost():
+    from apple_pick_gym.batched_envs.harvest_reward import compute_dense_reward_terms, weight_dense_reward_terms
+
+    cfg = HarvestRewardConfig(w_slack=0.02)
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(2, 1)}
+    info = {
+        "target_junction_wrench": torch.zeros(2, 6),
+        "ft_wrist": torch.zeros(2, 6),
+        "woody_part_force": {"spur_stem": torch.zeros(2, 6), "stem_apple": torch.zeros(2, 6)},
+    }
+    raw = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
+    torch.testing.assert_close(raw["slack"], torch.ones(2))
+    torch.testing.assert_close(weight_dense_reward_terms(raw, cfg)["slack"], torch.full((2,), -0.02))
+
+
 def test_progress_reward_is_envelope_utilization_clipped_at_one():
     cfg = HarvestRewardConfig()
     wrench = torch.tensor(
@@ -115,7 +136,7 @@ def test_collateral_penalty_raises_when_only_target_junction_present():
 
 
 def test_dense_reward_combines_weighted_terms():
-    cfg = HarvestRewardConfig(w_progress=1.0, w_pullout=0.5, w_collateral=0.1)
+    cfg = HarvestRewardConfig(w_progress=1.0, w_pullout=0.5, w_collateral=0.1, w_slack=0.01)
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
     info = {
         # anchor-frame target wrench, on the envelope -> progress=1.0
@@ -127,13 +148,13 @@ def test_dense_reward_combines_weighted_terms():
         },
     }
     reward = compute_dense_reward(obs, info, target_junction_name="spur_stem", cfg=cfg)
-    expected = 1.0 * 1.0 - 0.5 * 2.0 - 0.1 * 5.0
+    expected = 1.0 * 1.0 - 0.5 * 2.0 - 0.1 * 5.0 - 0.01  # absolute-weighted progress; slack per step
     assert reward.shape == (1, 1)
     torch.testing.assert_close(reward, torch.tensor([[expected]]))
 
 
 def test_dense_reward_uses_collateral_baseline_from_info():
-    cfg = HarvestRewardConfig(w_progress=0.0, w_pullout=0.0, w_collateral=1.0)
+    cfg = HarvestRewardConfig(w_progress=0.0, w_pullout=0.0, w_collateral=1.0, w_slack=0.0)
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
     info = {
         "target_junction_wrench": torch.zeros(1, 6),

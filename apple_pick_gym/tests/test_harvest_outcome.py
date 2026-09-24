@@ -40,7 +40,7 @@ def _run(seq, **kw):
             evaluate_harvest_step(
                 obs,
                 info,
-                reward_cfg=HarvestRewardConfig(),
+                reward_cfg=HarvestRewardConfig(progress_mode="absolute", w_slack=0.0),
                 episode_cfg=EpisodeConfig(success_streak_steps=2, **kw),
                 tracker=tracker,
                 freeze_mask=mask,
@@ -71,7 +71,7 @@ def test_safety_violation_is_a_penalized_terminal_failure():
 
 def test_reward_terms_and_total_are_reported():
     out = _run([_info([10.0, 10.0, 10.0], other=(3.0, 3.0, 3.0))])[0]
-    assert set(out.reward_terms["raw"]) == {"progress", "pullout", "collateral"}
+    assert set(out.reward_terms["raw"]) == {"progress", "pullout", "collateral", "slack"}
     torch.testing.assert_close(out.reward_terms["raw"]["progress"], torch.full((N,), 0.5))
     torch.testing.assert_close(out.reward_terms["raw"]["collateral"], torch.full((N,), 3.0))
     torch.testing.assert_close(out.reward_terms["total"], out.reward.flatten())
@@ -84,7 +84,7 @@ def test_envs_frozen_before_the_step_get_zero_reward_and_no_edge():
     o = evaluate_harvest_step(
         obs,
         _info([30.0, 30.0, 30.0]),
-        reward_cfg=HarvestRewardConfig(),
+        reward_cfg=HarvestRewardConfig(progress_mode="absolute"),
         episode_cfg=EpisodeConfig(success_streak_steps=1),
         tracker=tracker,
         freeze_mask=mask,
@@ -100,7 +100,7 @@ def test_delta_progress_rewards_the_increase_in_utilization_not_hovering():
     for the rest of the episode out-earns the success bonus because success freezes reward."""
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(N, 1)}
     tracker, mask = SuccessStreakTracker(N, "cpu"), FreezeMask(N, "cpu")
-    cfg = HarvestRewardConfig(w_pullout=0.0, w_collateral=0.0, progress_mode="delta")
+    cfg = HarvestRewardConfig(w_pullout=0.0, w_collateral=0.0, w_slack=0.0, progress_mode="delta")
     prev = torch.full((N,), 0.25)
     rewards = []
     for f in ([10.0] * N, [18.0] * N, [18.0] * N):
@@ -122,3 +122,16 @@ def test_delta_progress_needs_the_previous_utilization():
             obs, _info([1.0] * N), reward_cfg=HarvestRewardConfig(progress_mode="delta"), episode_cfg=EpisodeConfig(),
             tracker=SuccessStreakTracker(N, "cpu"), freeze_mask=FreezeMask(N, "cpu"), target_junction_name=TJ,
         )
+
+
+def test_slack_costs_every_live_step_and_nothing_once_frozen():
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(N, 1)}
+    tracker, mask = SuccessStreakTracker(N, "cpu"), FreezeMask(N, "cpu")
+    mask.update(torch.tensor([True, False, False]))
+    cfg = HarvestRewardConfig(w_progress=0.0, w_pullout=0.0, w_collateral=0.0, w_slack=0.05)
+    o = evaluate_harvest_step(
+        obs, _info([1.0] * N), reward_cfg=cfg, episode_cfg=EpisodeConfig(), tracker=tracker, freeze_mask=mask,
+        target_junction_name=TJ, progress_prev=torch.zeros(N),
+    )
+    torch.testing.assert_close(o.reward.flatten(), torch.tensor([0.0, -0.05, -0.05]))
+    torch.testing.assert_close(o.reward_terms["weighted"]["slack"], torch.full((N,), -0.05))

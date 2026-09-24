@@ -4,9 +4,10 @@ Ported from ``feature/rl-gym``'s ``harvest_reward.py``; the progress term now
 uses the combined force + torque detach envelope (``harvest_detach.py``,
 maintainer decision 2026-09-24) instead of a force-only threshold:
 
-- **progress** = ``clip(sqrt((|F|/F_max)^2 + (|tau|/tau_max)^2), 0, 1)`` of the
-  target (spur-stem) junction's anchor-frame wrench -- the radial fraction of
-  the detach envelope in use. Success is the same envelope at ``>= 1``.
+- **progress** = the step's increase (``progress_mode="delta"``, default) in
+  ``u = clip(sqrt((|F|/F_max)^2 + (|tau|/tau_max)^2), 0, 1)`` of the target
+  (spur-stem) junction's anchor-frame wrench -- the radial fraction of the detach
+  envelope in use -- or ``u`` itself (``"absolute"``). Success is the envelope at ``>= 1``.
 - **pullout** = ``relu(F_wrist . ee_z)``, force along the gripper axis.
 - **collateral** = ``sum_j relu(|F_j| - |F_j|_rest)`` over the non-target
   junctions. The rest baseline (``info["collateral_baseline_norm"]``, recorded
@@ -14,6 +15,7 @@ maintainer decision 2026-09-24) instead of a force-only threshold:
   rest, so the term measures load the *policy* adds to the spur, primary and
   supports -- the objective is enough load at the spur-stem junction and as
   little extra as possible everywhere else.
+- **slack** = a constant ``-w_slack`` per live step (a time cost: detach sooner).
 
 Reward is privileged (train-time only): it reads uncapped junction wrenches
 and raw ``ft_wrist`` from ``info``, not the sensor-realistic
@@ -41,14 +43,17 @@ class HarvestRewardConfig:
     w_progress: float = 1.0
     w_pullout: float = 0.5
     w_collateral: float = 0.1
+    # Slack: a constant cost per live (not-yet-frozen) step, so the policy is paid to detach
+    # sooner rather than later. 0.01 * 500 steps = -5 at most, half the success bonus.
+    w_slack: float = 0.01
     success_bonus: float = 10.0
     failure_penalty: float = -20.0
-    # "absolute": w_progress * u_t every step. "delta": w_progress * (u_t - u_{t-1}), a
-    # potential-style shaping that pays for *increasing* envelope utilization, so hovering
-    # just below the envelope earns ~0 and the success bonus is what pays. With "absolute",
-    # hovering can out-earn detaching, because success freezes the env (reward 0 after) and
-    # recurrent PPO cuts the return at the freeze edge.
-    progress_mode: Literal["absolute", "delta"] = "absolute"
+    # "delta" (default): w_progress * (u_t - u_{t-1}), a potential-style shaping that pays for
+    # *increasing* envelope utilization, so hovering just below the envelope earns ~0 and the
+    # success bonus is what pays. "absolute": w_progress * u_t every step -- hovering then
+    # out-earns detaching, because success freezes the env (reward 0 after) and recurrent PPO
+    # cuts the return at the freeze edge (measured on the surrogate: success 0.68 -> 0.37).
+    progress_mode: Literal["absolute", "delta"] = "delta"
 
 
 def quat_rotate_vector(quat_xyzw: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
@@ -106,7 +111,7 @@ def compute_dense_reward_terms(
     target_junction_name: str,
     cfg: HarvestRewardConfig,
 ) -> dict[str, torch.Tensor]:
-    """Raw (unweighted) dense reward terms, each shape (N,).
+    """Raw (unweighted) dense reward terms, each shape (N,); ``slack`` is 1 per step.
 
     Reads ``info["target_junction_wrench"]`` (anchor-frame target wrench),
     ``info["ft_wrist"]``, ``info["woody_part_force"]`` and, if present,
@@ -120,17 +125,23 @@ def compute_dense_reward_terms(
             target_junction_name=target_junction_name,
             baseline_norm=info.get("collateral_baseline_norm"),
         ),
+        "slack": torch.ones_like(info["target_junction_wrench"][:, 0]),
     }
 
 
 def weight_dense_reward_terms(
     terms: dict[str, torch.Tensor], cfg: HarvestRewardConfig
 ) -> dict[str, torch.Tensor]:
-    """Signed weighted contributions to the dense reward, each shape (N,)."""
+    """Signed weighted contributions to the dense reward, each shape (N,).
+
+    Progress is weighted as ``absolute`` here; ``progress_mode="delta"`` needs the previous
+    step's utilization and is applied by ``harvest_outcome.evaluate_harvest_step``.
+    """
     return {
         "progress": cfg.w_progress * terms["progress"],
         "pullout": -cfg.w_pullout * terms["pullout"],
         "collateral": -cfg.w_collateral * terms["collateral"],
+        "slack": -cfg.w_slack * terms["slack"],
     }
 
 
@@ -146,5 +157,5 @@ def compute_dense_reward(
         obs, info, target_junction_name=target_junction_name, cfg=cfg
     )
     weighted = weight_dense_reward_terms(terms, cfg)
-    reward = weighted["progress"] + weighted["pullout"] + weighted["collateral"]
+    reward = sum(weighted.values())
     return reward.unsqueeze(-1)

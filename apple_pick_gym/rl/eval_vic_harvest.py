@@ -94,6 +94,7 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         "reward_progress_sum": "Episode / reward progress (sum)",
         "reward_pullout_sum": "Episode / reward pullout (sum)",
         "reward_collateral_sum": "Episode / reward collateral (sum)",
+        "reward_slack_sum": "Episode / reward slack (sum)",
         "reward_terminal_sum": "Episode / reward terminal (sum)",
         "k_lin_mean": "Episode / K_lin used (mean)",
         "k_ang_mean": "Episode / K_ang used (mean)",

@@ -59,7 +59,7 @@ class _EpisodeStats:
         self.invalid = invalid.clone()
         self.ret, self.steps = z(), 0
         self.peak_idx, self.peak_force, self.peak_coll, self.peak_wrist = z(), z(), z(), z()
-        self.terms = {k: z() for k in ("progress", "pullout", "collateral", "terminal")}
+        self.terms = {k: z() for k in ("progress", "pullout", "collateral", "slack", "terminal")}
         self.success = torch.zeros(self.n, dtype=torch.bool, device=self.device)
         self.safety = torch.zeros_like(self.success)
         self.steps_to_success = torch.full((self.n,), float("nan"), device=self.device)
@@ -75,7 +75,7 @@ class _EpisodeStats:
         self.peak_force = m(self.peak_force, torch.linalg.norm(info["target_junction_wrench"][:, :3], dim=-1))
         self.peak_coll = m(self.peak_coll, rt["raw"]["collateral"])
         self.peak_wrist = m(self.peak_wrist, torch.linalg.norm(info["ft_wrist"][:, :3], dim=-1))
-        for k in ("progress", "pullout", "collateral"):
+        for k in ("progress", "pullout", "collateral", "slack"):
             self.terms[k] += torch.where(live, rt["weighted"][k], torch.zeros_like(rt["weighted"][k]))
         self.terms["terminal"] += torch.where(live, rt["terminal"], torch.zeros_like(rt["terminal"]))
         safe = ep["safety_junction"] | ep["safety_wrist"]
@@ -108,6 +108,7 @@ class _EpisodeStats:
             "Episode / reward progress (sum)": s(self.terms["progress"]),
             "Episode / reward pullout (sum)": s(self.terms["pullout"]),
             "Episode / reward collateral (sum)": s(self.terms["collateral"]),
+            "Episode / reward slack (sum)": s(self.terms["slack"]),
             "Episode / reward terminal (sum)": s(self.terms["terminal"]),
             "Episode / K_lin used (mean)": s(per_live(self.k_lin)),
             "Episode / K_ang used (mean)": s(per_live(self.k_ang)),

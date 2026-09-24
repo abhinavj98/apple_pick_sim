@@ -191,11 +191,11 @@ def test_reward_terms_recombine_to_dense_reward():
     }
     terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
     w = weight_dense_reward_terms(terms, cfg)
-    total = (w["progress"] + w["pullout"] + w["collateral"]).unsqueeze(-1)
+    total = sum(w.values()).unsqueeze(-1)
     torch.testing.assert_close(
         total, compute_dense_reward(obs, info, target_junction_name="spur_stem", cfg=cfg)
     )
-    assert torch.all(w["pullout"] <= 0) and torch.all(w["collateral"] <= 0)
+    assert torch.all(w["pullout"] <= 0) and torch.all(w["collateral"] <= 0) and torch.all(w["slack"] < 0)
 
 
 def test_batch_stats_exclude_invalid_envs_but_traces_keep_them():

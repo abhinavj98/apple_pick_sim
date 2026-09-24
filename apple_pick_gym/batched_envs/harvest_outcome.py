@@ -3,8 +3,9 @@
 Shared by ``ApplePickVicHarvestEnv.compute_reward`` and the RL surrogate env so both
 have the same episode semantics:
 
-- dense reward = weighted progress (detach-envelope utilization, or its per-step increase
-  with ``progress_mode="delta"``) + pull-out + collateral terms (``harvest_reward``);
+- dense reward = weighted progress (the per-step increase in detach-envelope utilization,
+  or ``progress_mode="absolute"`` utilization) + pull-out + collateral + slack terms
+  (``harvest_reward``);
 - success = ``info["detach_index"] >= 1`` for ``success_streak_steps`` consecutive steps;
 - safety = the target junction's anchor-frame wrench or the raw wrist wrench over the caps;
 - terminal = success bonus or failure penalty (``compute_terminal_reward``);
@@ -66,7 +67,7 @@ def evaluate_harvest_step(
         weighted_terms["progress"] = reward_cfg.w_progress * (raw_terms["progress"] - progress_prev.to(raw_terms["progress"]))
     elif reward_cfg.progress_mode != "absolute":
         raise ValueError(f"unknown progress_mode {reward_cfg.progress_mode!r}")
-    dense = (weighted_terms["progress"] + weighted_terms["pullout"] + weighted_terms["collateral"]).unsqueeze(-1)
+    dense = sum(weighted_terms.values()).unsqueeze(-1)
 
     success_this_step = info["detach_index"] >= 1.0
     success_achieved = tracker.update(success_this_step, episode_cfg)

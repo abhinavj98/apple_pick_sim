@@ -663,3 +663,13 @@ Agreed: collateral has plateaued at 35-37 N.
 - **Eval JSON:** `peak_collateral_n_success_{median,p10,p90,frac_below_15n,frac_below_22n}`. These are exact for `--episodes 1`; for more episodes they are a win-weighted mean of the per-episode values.
 - Tested; the fast RL suite passes (104).
 - Pull before the segment 2 evals. The D13b pc1 runs will also log them to wandb every update.
+
+### cloud -> local: STOP D13b now; launch D13c (success bonus 60)
+Agreed: D13b is passive. Stop all three now (don't wait for EP15). Keep their checkpoints and metrics.
+**Root cause** (harvest_outcome.py): the -40 failure penalty only fires on a safety trip; a timeout has no terminal term (zero ~ -3). At weight 1.0 a 44 N pull scores 20 - 44 = -24, which is worse than idling. Once early bends fail, idling is optimal.
+**D13c:** keep weight 1.0 and raise `success_bonus` to 60. A 44 N pull then scores +16, a 10 N bend +50, and failure stays -40. Every success below the cap now beats idling, and the bend margin is 34 points (vs 13 in D8b).
+Launch fresh, parallel, wandb + video, 2 h cap:
+`train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_d8b_tanh15_pc1b60_s{0,1,2}.json --max-updates 112`
+Rows every 5 episodes, same fields plus the collS distribution. Stop criteria:
+- passive: success < 0.3 with safety < 3% at EP10 -> stop and report;
+- otherwise run the full segment, then eval + gate last and best.

@@ -165,3 +165,22 @@ def test_is_fast_enough_for_cpu_training():
     rate = 256 * 100 / (time.perf_counter() - t0)
     assert rate > 5_000, f"{rate:.0f} env-steps/s"
     assert math.isfinite(rate)
+
+
+def test_stays_finite_under_extreme_impedance_and_random_actions():
+    """Regression: explicit damping diverged at zeta=2 on the light rotational inertia."""
+    env = _env(action_bounds=HarvestActionBounds(max_target_pos_offset_m=0.15, max_target_rot_offset_rad=0.5), steps=200)
+    b = env.action_bounds
+    env.reset()
+    g = torch.Generator().manual_seed(0)
+    for t in range(200):
+        a = torch.rand(N, 13, generator=g) * 2 - 1
+        a[:, :3] *= b.linear_delta_m
+        a[:, 3:6] *= b.angular_delta_rad
+        a[:, 6:9] = b.k_lin_max if t % 2 else b.k_lin_min
+        a[:, 9:12] = b.k_ang_max
+        a[:, 12] = b.zeta_max if t % 3 else b.zeta_min
+        obs, r, _, _, info = env.step(a)
+        for k, v in obs.items():
+            assert bool(torch.isfinite(v).all()), (t, k)
+        assert bool(torch.isfinite(r).all()) and bool(torch.isfinite(info["detach_index"]).all())

@@ -17,6 +17,10 @@ Contract with skrl's ``PPO_RNN`` / trainer (read from the installed 2.1 source):
   ``time_limit_bootstrap=False``. Without this the last step would bootstrap from the next
   episode's reset value.
 - **terminated** otherwise comes from the env and fires once per env, on the freeze edge.
+- **Non-finite guard.** An env row whose observation, critic state or reward is not
+  finite (a world that blew up) is zeroed and gets reward 0, and the count is logged as
+  ``Step / nonfinite envs`` -- one bad world must not turn the whole PPO batch into NaN.
+  A persistently non-zero count is a simulator problem to investigate, not to train on.
 - **Logging.** Per-episode summaries (success / safety rate over valid envs, return,
   peak loads, reward-term sums, impedance usage) are emitted once per episode, and a few
   per-step signals every step, as scalar tensors in ``info["log"]`` (point the trainer's
@@ -66,7 +70,7 @@ class _EpisodeStats:
         ep, rt = info["episode"], info["reward_terms"]
         live = ~ep["frozen"] | terminated  # not frozen before this step
         self.ret += reward.reshape(-1)
-        m = lambda cur, new: torch.where(live, torch.maximum(cur, new), cur)
+        m = lambda cur, new: torch.where(live, torch.maximum(cur, torch.nan_to_num(new, nan=0.0, posinf=0.0)), cur)
         self.peak_idx = m(self.peak_idx, info["detach_index"])
         self.peak_force = m(self.peak_force, torch.linalg.norm(info["target_junction_wrench"][:, :3], dim=-1))
         self.peak_coll = m(self.peak_coll, rt["raw"]["collateral"])
@@ -168,6 +172,9 @@ class HarvestSkrlWrapper(Wrapper):
             success_streak_steps=int(self._env.episode_config.success_streak_steps),
             invalid=self._env.invalid_env_mask,
         ).to(self.device, torch.float32)
+        self._nonfinite = ~(torch.isfinite(self._obs).all(-1) & torch.isfinite(self._state).all(-1))
+        self._obs = torch.nan_to_num(self._obs, nan=0.0, posinf=0.0, neginf=0.0)
+        self._state = torch.nan_to_num(self._state, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _on_reset(self, obs: dict[str, Any], info: dict[str, Any]) -> None:
         # Build-time DR (plant, support, geometry) is fixed; arm joint DR resamples each reset.
@@ -186,12 +193,14 @@ class HarvestSkrlWrapper(Wrapper):
     def step(self, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Any]:
         env_action = self._scaler.to_env(actions.to(self.device, torch.float32))
         obs, reward, terminated, truncated, info = self._env.step(env_action)
-        reward = reward.reshape(-1, 1).to(torch.float32)
         terminated = terminated.reshape(-1, 1).bool()
         truncated = truncated.reshape(-1, 1).bool()
+        reward = reward.reshape(-1, 1).to(torch.float32)
+        bad_reward = ~torch.isfinite(reward).all(-1)
+        reward = torch.where(bad_reward.unsqueeze(-1), torch.zeros_like(reward), reward)
         self._stats.update(reward, info, terminated.flatten(), env_action)
         log = {
-            "Step / detach index (mean)": info["detach_index"].float().mean(),
+            "Step / detach index (mean)": torch.nan_to_num(info["detach_index"].float()).mean(),
             "Step / frozen fraction": info["episode"]["frozen"].float().mean(),
         }
         if bool(truncated.any()):
@@ -204,6 +213,9 @@ class HarvestSkrlWrapper(Wrapper):
             self._on_reset(obs, reset_info)
         else:
             self._refresh(obs, info)
+            bad_reward = bad_reward | self._nonfinite
+            reward = torch.where(bad_reward.unsqueeze(-1), torch.zeros_like(reward), reward)
+        log["Step / nonfinite envs"] = bad_reward.float().sum()
         info["log"] = log
         return self._obs, reward, terminated, truncated, info
 

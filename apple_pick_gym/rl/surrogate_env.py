@@ -281,13 +281,17 @@ class SurrogateHarvestEnv:
         m = self._arm.mass_kg * self._arm_sample["mass_scale"].unsqueeze(-1)
         inertia = self._arm.inertia_kgm2 * self._arm_sample["mass_scale"].unsqueeze(-1)
         dscale = self._arm_sample["damping_scale"].unsqueeze(-1)
+        d_lin = dscale * self._kd[:, :3]
+        d_ang = dscale * self._kd[:, 3:]
         for _ in range(self._substeps):
             f_plant, t_plant, _, _ = self._plant_wrench_on_tcp()
-            f_arm = self._kp[:, :3] * (self._target[:, :3] - self._x) - dscale * self._kd[:, :3] * self._v
+            f_spring = self._kp[:, :3] * (self._target[:, :3] - self._x)
             rot_err = _quat_to_rotvec_wxyz(_quat_mul_wxyz(self._target[:, 3:], _quat_conj_wxyz(self._q)))
-            t_arm = self._kp[:, 3:] * rot_err - dscale * self._kd[:, 3:] * self._w
-            self._v = self._v + h * (f_arm + f_plant) / m
-            self._w = self._w + h * (t_arm + t_plant) / inertia
+            t_spring = self._kp[:, 3:] * rot_err
+            # Damping is integrated implicitly: D = 2 zeta sqrt(K) is sized for unit inertia, and
+            # explicit Euler diverges once h*D/I > 2 (zeta = 2 at I = 0.02 kg m^2 is h*D/I ~ 3).
+            self._v = (self._v + h * (f_spring + f_plant) / m) / (1.0 + h * d_lin / m)
+            self._w = (self._w + h * (t_spring + t_plant) / inertia) / (1.0 + h * d_ang / inertia)
             self._x = self._x + h * self._v
             dq = _rotvec_to_quat_wxyz(self._w * h)
             self._q = _quat_mul_wxyz(dq, self._q)

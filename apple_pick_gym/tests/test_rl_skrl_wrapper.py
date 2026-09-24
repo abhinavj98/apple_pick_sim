@@ -138,3 +138,24 @@ def test_invalid_envs_are_excluded_from_rates():
     st = w.state()
     layout = critic_state_layout(env.junction_names)
     torch.testing.assert_close(st[:, layout.slice_for("invalid")].flatten(), env.invalid_env_mask.float())
+
+
+class _NanEnv(SurrogateHarvestEnv):
+    """Env 1 blows up on every step (NaN obs, reward and forces)."""
+
+    def step(self, action):
+        obs, r, term, trunc, info = super().step(action)
+        obs["tcp_pos"][1] = float("nan")
+        r[1] = float("nan")
+        info["woody_part_force"]["stem_apple"][1] = float("inf")
+        return obs, r, term, trunc, info
+
+
+def test_nonfinite_env_rows_are_sanitized_zero_rewarded_and_counted():
+    env = _NanEnv(num_envs=N, max_episode_steps=T, seed=0, ft_sensor_config=FtSensorConfig())
+    w = HarvestSkrlWrapper(env)
+    w.reset()
+    obs, r, _, _, info = w.step(torch.zeros(N, 13))
+    assert bool(torch.isfinite(obs).all()) and bool(torch.isfinite(w.state()).all())
+    assert bool(torch.isfinite(r).all()) and float(r[1]) == 0.0
+    assert float(info["log"]["Step / nonfinite envs"]) == 1.0

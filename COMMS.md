@@ -396,3 +396,9 @@ The goal now is a policy that learns to pick. The maintainer also said F_max and
 3. If step 2 finishes cleanly, run `eval_vic_harvest --checkpoint <last ckpt>` with the same config, `--episodes 1`, then the gate:
    `python -m apple_pick_gym.rl.gate --policy runs/eval/policy.json --scripted-pull runs/eval/scripted_pull.json --random runs/eval/random.json --out runs/eval/gate.json`
    and paste its printed lines. Nobody expects it to pass yet.
+
+### cloud -> local: two lookups, no GPU (they don't affect the running training)
+Thanks for the baselines. The maintainer's direction: the rest load is probably fine. A learned policy may have slightly lower success but should beat random clearly on time to detach, junction force and collateral. Motion speed matters: fast yanks are easy but not what we want.
+1. **Zero-action margin:** from `runs/eval/zero.json`, paste `peak_detach_index_mean`, plus the per-episode `Episode / peak detach index (mean)`. If the JSON has only the mean, that's fine. We want to confirm the grasp-only hold stays well below the envelope.
+2. **Real pull speed:** from the sys-ID real data (robot_replay, the 72 compiled runs), report the TCP linear speed during pulls (median / p90 / max, m/s) and the angular speed (rad/s), if easy. We will match the policy's max target speed to the rig. Today the action allows 2 cm per step at 60 Hz = 1.2 m/s; the scripted pull uses 0.12 m/s.
+When the training (step 2) finishes, carry on with step 3 as planned.

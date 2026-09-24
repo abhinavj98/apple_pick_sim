@@ -52,6 +52,7 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         w_collateral=env_cfg.w_collateral,
         success_bonus=env_cfg.success_bonus,
         failure_penalty=env_cfg.failure_penalty,
+        progress_mode=env_cfg.progress_mode,
     )
     episode = EpisodeConfig(
         success_streak_steps=env_cfg.success_streak_steps,

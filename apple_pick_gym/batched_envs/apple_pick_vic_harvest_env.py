@@ -83,7 +83,11 @@ from apple_pick_gym.batched_envs.harvest_episode import (
     SuccessStreakTracker,
 )
 from apple_pick_gym.batched_envs.harvest_outcome import evaluate_harvest_step
-from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig, quat_rotate_vector
+from apple_pick_gym.batched_envs.harvest_reward import (
+    HarvestRewardConfig,
+    compute_progress_reward,
+    quat_rotate_vector,
+)
 from apple_pick_gym.batched_envs.sensor_realism import FtSensorConfig, FtSensorModel
 from apple_pick_gym.batched_envs.support_joint_dr import sample_support_joint_dr
 
@@ -198,6 +202,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._pending_terminated: torch.Tensor | None = None
         self._last_tcp_pose_wxyz: torch.Tensor | None = None
         self._collateral_baseline_norm: dict[str, torch.Tensor] | None = None
+        self._progress_prev: torch.Tensor | None = None
 
         if sim_config is None:
             from apple_pick_sim.coupled_fruiting import BatchedHeterogeneousCoupledSimConfig
@@ -831,6 +836,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             if name != self._target_junction_name
         }
         info["collateral_baseline_norm"] = self._collateral_baseline_norm
+        self._progress_prev = compute_progress_reward(info["target_junction_wrench"], self._reward_cfg)
         return obs, info
 
     def privileged_fields(self) -> dict[str, torch.Tensor]:
@@ -899,7 +905,9 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             tracker=self._success_tracker,
             freeze_mask=self._freeze_mask,
             target_junction_name=self._target_junction_name,
+            progress_prev=self._progress_prev,
         )
+        self._progress_prev = outcome.progress
         self._pending_terminated = outcome.terminated
         # Debug/logging surface (reward decomposition + termination reasons). Values are
         # this step's; "total" is the returned (freeze-masked) reward.

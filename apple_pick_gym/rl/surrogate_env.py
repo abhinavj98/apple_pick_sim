@@ -51,7 +51,7 @@ from apple_pick_gym.batched_envs.harvest_episode import EpisodeConfig, FreezeMas
 from apple_pick_gym.batched_envs.harvest_obs import _PRIVILEGED_FIELDS
 from apple_pick_gym.batched_envs.harvest_outcome import evaluate_harvest_step
 from apple_pick_gym.batched_envs.harvest_privileged import PLANT_GEOMETRY_FIELDS
-from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig
+from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig, compute_progress_reward
 from apple_pick_gym.batched_envs.sensor_realism import FtSensorConfig, FtSensorModel
 
 JUNCTION_NAMES = ("primary_spur", "spur_stem", "stem_apple", "primary_support_left", "primary_support_right")
@@ -217,6 +217,7 @@ class SurrogateHarvestEnv:
             j: torch.linalg.norm(w[:, :3], dim=-1).clone() for j, w in info["woody_part_force"].items() if j != self.TARGET_JUNCTION_NAME
         }
         info["collateral_baseline_norm"] = self._collateral_baseline
+        self._progress_prev = compute_progress_reward(info["target_junction_wrench"], self._reward_cfg)
         return obs, info
 
     def step(self, action: torch.Tensor):
@@ -251,7 +252,9 @@ class SurrogateHarvestEnv:
             tracker=self._tracker,
             freeze_mask=self._freeze,
             target_junction_name=self.TARGET_JUNCTION_NAME,
+            progress_prev=self._progress_prev,
         )
+        self._progress_prev = outcome.progress
         info["reward_terms"] = outcome.reward_terms
         info["episode"] = outcome.episode
         info["target_pose"] = self._target.clone()

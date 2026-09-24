@@ -3,6 +3,7 @@ env and the RL surrogate env (pure torch)."""
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from apple_pick_gym.batched_envs.harvest_episode import EpisodeConfig, FreezeMask, SuccessStreakTracker
@@ -91,3 +92,33 @@ def test_envs_frozen_before_the_step_get_zero_reward_and_no_edge():
     )
     assert o.terminated.tolist() == [False, True, True]
     assert float(o.reward[0]) == 0.0
+
+
+def test_delta_progress_rewards_the_increase_in_utilization_not_hovering():
+    """progress_mode='delta': reward w*(u_t - u_{t-1}), so hovering below the envelope earns ~0
+    and detaching (the terminal bonus) is what pays -- with 'absolute', hovering at u~0.9
+    for the rest of the episode out-earns the success bonus because success freezes reward."""
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(N, 1)}
+    tracker, mask = SuccessStreakTracker(N, "cpu"), FreezeMask(N, "cpu")
+    cfg = HarvestRewardConfig(w_pullout=0.0, w_collateral=0.0, progress_mode="delta")
+    prev = torch.full((N,), 0.25)
+    rewards = []
+    for f in ([10.0] * N, [18.0] * N, [18.0] * N):
+        o = evaluate_harvest_step(
+            obs, _info(f), reward_cfg=cfg, episode_cfg=EpisodeConfig(), tracker=tracker, freeze_mask=mask,
+            target_junction_name=TJ, progress_prev=prev,
+        )
+        prev = o.progress
+        rewards.append(o.reward.flatten())
+    torch.testing.assert_close(rewards[0], torch.full((N,), 0.25))  # 0.25 -> 0.5
+    torch.testing.assert_close(rewards[1], torch.full((N,), 0.4))  # 0.5 -> 0.9
+    torch.testing.assert_close(rewards[2], torch.zeros(N))  # hovering pays nothing
+
+
+def test_delta_progress_needs_the_previous_utilization():
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(N, 1)}
+    with pytest.raises(ValueError, match="progress_prev"):
+        evaluate_harvest_step(
+            obs, _info([1.0] * N), reward_cfg=HarvestRewardConfig(progress_mode="delta"), episode_cfg=EpisodeConfig(),
+            tracker=SuccessStreakTracker(N, "cpu"), freeze_mask=FreezeMask(N, "cpu"), target_junction_name=TJ,
+        )

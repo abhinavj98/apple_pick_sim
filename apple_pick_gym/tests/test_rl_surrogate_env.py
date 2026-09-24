@@ -184,3 +184,18 @@ def test_stays_finite_under_extreme_impedance_and_random_actions():
         for k, v in obs.items():
             assert bool(torch.isfinite(v).all()), (t, k)
         assert bool(torch.isfinite(r).all()) and bool(torch.isfinite(info["detach_index"]).all())
+
+
+def test_delta_progress_telescopes_over_an_episode():
+    from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig
+
+    env = _env(reward_config=HarvestRewardConfig(progress_mode="delta", w_pullout=0.0, w_collateral=0.0), steps=30)
+    _, info0 = env.reset()
+    from apple_pick_gym.batched_envs.harvest_reward import compute_progress_reward
+
+    u0 = compute_progress_reward(info0["target_junction_wrench"], env._reward_cfg)
+    total = torch.zeros(N)
+    for _ in range(30):
+        _, _, _, _, info = env.step(_action(dp=env.weld * 0.001))
+        total += info["reward_terms"]["weighted"]["progress"]
+    torch.testing.assert_close(total, info["reward_terms"]["raw"]["progress"] - u0, atol=1e-4, rtol=0)

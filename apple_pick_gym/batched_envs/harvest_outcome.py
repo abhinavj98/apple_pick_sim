@@ -3,8 +3,8 @@
 Shared by ``ApplePickVicHarvestEnv.compute_reward`` and the RL surrogate env so both
 have the same episode semantics:
 
-- dense reward = weighted progress (detach-envelope utilization) + pull-out +
-  collateral terms (``harvest_reward``);
+- dense reward = weighted progress (detach-envelope utilization, or its per-step increase
+  with ``progress_mode="delta"``) + pull-out + collateral terms (``harvest_reward``);
 - success = ``info["detach_index"] >= 1`` for ``success_streak_steps`` consecutive steps;
 - safety = the target junction's anchor-frame wrench or the raw wrist wrench over the caps;
 - terminal = success bonus or failure penalty (``compute_terminal_reward``);
@@ -37,6 +37,7 @@ from apple_pick_gym.batched_envs.harvest_reward import (
 class HarvestStepOutcome:
     reward: torch.Tensor  # (N, 1), freeze-masked
     terminated: torch.Tensor  # (N,) bool, the freeze edge
+    progress: torch.Tensor  # (N,) this step's envelope utilization (next step's progress_prev)
     reward_terms: dict[str, Any]
     episode: dict[str, torch.Tensor]
 
@@ -50,10 +51,21 @@ def evaluate_harvest_step(
     tracker: SuccessStreakTracker,
     freeze_mask: FreezeMask,
     target_junction_name: str,
+    progress_prev: torch.Tensor | None = None,
 ) -> HarvestStepOutcome:
-    """Update ``tracker`` / ``freeze_mask`` in place and return this step's outcome."""
+    """Update ``tracker`` / ``freeze_mask`` in place and return this step's outcome.
+
+    ``progress_prev`` (``(N,)``, the previous step's -- or the reset state's -- envelope
+    utilization) is required for ``reward_cfg.progress_mode == "delta"``.
+    """
     raw_terms = compute_dense_reward_terms(obs, info, target_junction_name=target_junction_name, cfg=reward_cfg)
     weighted_terms = weight_dense_reward_terms(raw_terms, reward_cfg)
+    if reward_cfg.progress_mode == "delta":
+        if progress_prev is None:
+            raise ValueError("progress_mode='delta' needs progress_prev (last step's envelope utilization)")
+        weighted_terms["progress"] = reward_cfg.w_progress * (raw_terms["progress"] - progress_prev.to(raw_terms["progress"]))
+    elif reward_cfg.progress_mode != "absolute":
+        raise ValueError(f"unknown progress_mode {reward_cfg.progress_mode!r}")
     dense = (weighted_terms["progress"] + weighted_terms["pullout"] + weighted_terms["collateral"]).unsqueeze(-1)
 
     success_this_step = info["detach_index"] >= 1.0
@@ -77,6 +89,7 @@ def evaluate_harvest_step(
     return HarvestStepOutcome(
         reward=reward,
         terminated=terminated,
+        progress=raw_terms["progress"].detach().clone(),
         reward_terms={
             "raw": raw_terms,
             "weighted": weighted_terms,

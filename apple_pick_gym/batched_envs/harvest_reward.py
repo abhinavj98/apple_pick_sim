@@ -26,7 +26,7 @@ harvest cap, so ``obs["ft_wrist"]`` stays informative up to detachment.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from typing import Any, Literal
 
 import torch
 
@@ -43,6 +43,12 @@ class HarvestRewardConfig:
     w_collateral: float = 0.1
     success_bonus: float = 10.0
     failure_penalty: float = -20.0
+    # "absolute": w_progress * u_t every step. "delta": w_progress * (u_t - u_{t-1}), a
+    # potential-style shaping that pays for *increasing* envelope utilization, so hovering
+    # just below the envelope earns ~0 and the success bonus is what pays. With "absolute",
+    # hovering can out-earn detaching, because success freezes the env (reward 0 after) and
+    # recurrent PPO cuts the return at the freeze edge.
+    progress_mode: Literal["absolute", "delta"] = "absolute"
 
 
 def quat_rotate_vector(quat_xyzw: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:

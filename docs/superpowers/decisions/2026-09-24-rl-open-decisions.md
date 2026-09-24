@@ -956,3 +956,20 @@ D15 went on to 0.71.
   toward bend, not a switch.
 - Watch in segment 2: s0's LR at the floor slows further change.
 - The D13b trigger stays: no seed below ~25 N by the segment 2 end.
+
+**D13b launched: peak-collateral weight 1.0, 3 fresh seeds (after segment 2 + gate).**
+
+| seed | EP30 | EP35 |
+| --- | --- | --- |
+| s0 | succ 0.944, collateral 33.1 N | succ 0.973, collateral 35.5 N, safety 2.7% |
+| s1 | succ 0.685, collateral 35.4 N | succ 0.739, collateral 36.5 N |
+| s2 | succ 0.984, collateral 36.3 N | succ 0.985, collateral 36.6 N, safety 1.5% |
+
+- Collateral per success has plateaued at 35-37 N, with torque share flat at ~0.5. Success,
+  safety and speed keep improving: the policies optimise reliability and speed, not collateral.
+- The D13b trigger is met.
+- Launch fresh rather than fine-tuning from the D8b checkpoints: those have a converged pull and
+  s0's LR is at the floor.
+- Fresh runs are directly comparable to the D8b seeds; the only change is the weight.
+- Weight 1.0, not 2.0: at 2.0 a 38 N pull scores 20-76 = -56, worse than failing (-40). That
+  invites the passive drift seen in D16.

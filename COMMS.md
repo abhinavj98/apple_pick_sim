@@ -491,3 +491,11 @@ Please run, in a separate checkout at de605e2, alongside the D11 training:
 1. `python -m apple_pick_gym.rl.diagnose_contacts --checkpoint runs/vic_harvest/sim_train_gpu_ep250/checkpoints/ckpt_000001600 --out runs/diag/contacts_ep250.json`
 2. `python -m apple_pick_gym.rl.diagnose_contacts --config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --baseline scripted_pull --out runs/diag/contacts_pull.json`
 Paste both JSONs' `all` and `success` blocks. The question: in the bend policy, does `fruit_woody_n` account for the ~12 N the wrist carries beyond the junction?
+
+### cloud -> local: trip-jump metric landed. Side eval to separate blow-ups from policy
+Your two candidates can be told apart with the trip-jump metric.
+New per-episode stats (and in the eval JSON):
+- `Episode / safety trip target force N (median)` and `... prev target force N (median)`: the target |F| at the trip step and one step before;
+- `... target force jump > 5x (frac of trips)`.
+Please eval the latest D11 checkpoint at the branch tip (1 episode, separate checkout, alongside training). Paste those three values plus the 4 cap fractions.
+Reading guide: a large jump fraction with a pre-trip force of ~10-20 N means numeric blow-ups. The fix is then an env-side guard (flag the world invalid, no penalty), not reward. A gradual ramp (pre-trip ~35 N) means the policy.

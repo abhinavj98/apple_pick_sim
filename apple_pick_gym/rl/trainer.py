@@ -115,6 +115,14 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
     )
 
 
+class TrainingDiverged(RuntimeError):
+    """An update left non-finite policy / value weights; training stops before checkpointing them."""
+
+
+def _models_finite(agent) -> bool:
+    return all(bool(torch.isfinite(p).all()) for m in (agent.policy, agent.value) for p in m.parameters())
+
+
 def _kl_tracking_scheduler():
     from skrl.resources.schedulers.torch import KLAdaptiveLR
 
@@ -346,6 +354,13 @@ def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: in
             obs, states = next_obs, next_states
             if (timestep + 1) % cfg.ppo.rollouts == 0:
                 updates += 1
+                if not _models_finite(agent):
+                    metrics.write(json.dumps({"kind": "diverged", "timestep": timestep + 1, "updates": updates}) + "\n")
+                    metrics.flush()
+                    raise TrainingDiverged(
+                        f"non-finite policy/value weights after update {updates} (timestep {timestep + 1}); "
+                        f"last healthy checkpoint: {last_ckpt}"
+                    )
                 if updates % cfg.checkpoint_every_updates == 0 or timestep + 1 == stop_at:
                     last_ckpt = save_checkpoint(
                         run_dir / "checkpoints", agent, wrapper, cfg,

@@ -652,3 +652,23 @@ reward, so this only keeps its garbage out of the scaler statistics and the PPO 
 run predates D12/D14, which explains its spikes.
 
 **Revert.** Drop the `_held` block in `HarvestSkrlWrapper._refresh`.
+
+## D11 run: died of NaN; divergence guards
+
+**Outcome.** The D11 run (d08e65d, pre-D12/D14) went NaN at update t=12544: all losses, KL and std
+NaN, then non-finite envs 1498 -> 1997. Before that its KL had reached 17-31. This is the endpoint
+of the scaler contamination that D14 removes.
+
+**Pre-NaN checkpoints (eval at 4096c9e).**
+
+| ckpt | success | safety | steps | collateral / success | torque share | gate |
+| --- | --- | --- | --- | --- | --- | --- |
+| 8000 | 0.896 | 0.024 | 63 | 32.8 N | 0.56 | 2/5 |
+| 11200 | 0.851 | 0.039 | 61 | 26.8 N | 0.65 | 2/5 |
+
+**Guards added.**
+- The wrapper sanitises actions: non-finite becomes 0 or +-1, clamped to the box, and
+  `Step / nonfinite actions` counts them. A NaN policy output can no longer poison the sim.
+- `run_training` checks the policy/value weights after every update. If any is non-finite, it
+  writes a `{"kind": "diverged"}` metrics row and raises `TrainingDiverged`, naming the last
+  healthy checkpoint. Nothing is saved from the poisoned update on.

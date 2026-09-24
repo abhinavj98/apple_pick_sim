@@ -128,3 +128,49 @@ def test_resume_reseeds_episode_rng_instead_of_replaying_the_start(tmp_path):
     reseed_for_resume(w2, cfg, start_timestep=32)
     w2.reset()
     torch.testing.assert_close(w2._env.privileged_fields()["arm_friction"], resumed)
+
+
+def test_training_stops_at_the_first_non_finite_update_and_keeps_the_last_healthy_checkpoint(tmp_path, monkeypatch):
+    # GPU D11 run: losses went NaN at an update and it kept running (and checkpointing) for ~1 h
+    from apple_pick_gym.rl import trainer as trainer_mod
+
+    base_factory = trainer_mod._ppo_rnn_class
+    calls = {"n": 0}
+
+    def factory():
+        base = base_factory()
+
+        class Poisoned(base):
+            def update(self, *, timestep: int, timesteps: int) -> None:
+                super().update(timestep=timestep, timesteps=timesteps)
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    with torch.no_grad():
+                        next(self.policy.parameters()).fill_(float("nan"))
+
+        return Poisoned
+
+    monkeypatch.setattr(trainer_mod, "_ppo_rnn_class", factory)
+    cfg = _cfg(tmp_path)  # 3 updates, checkpoint every update
+    with pytest.raises(trainer_mod.TrainingDiverged, match="ckpt_000000016"):
+        run_training(cfg)
+    ckpts = sorted(p.name for p in (tmp_path / "run" / "checkpoints").iterdir())
+    assert ckpts == ["ckpt_000000016"]  # nothing saved from the poisoned update on
+    rows = [json.loads(l) for l in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
+    assert rows[-1]["kind"] == "diverged" and rows[-1]["timestep"] == 32
+
+
+def test_wrapper_sanitizes_non_finite_policy_actions():
+    from apple_pick_gym.batched_envs.sensor_realism import FtSensorConfig
+    from apple_pick_gym.rl.skrl_wrapper import HarvestSkrlWrapper
+    from apple_pick_gym.rl.surrogate_env import SurrogateHarvestEnv
+
+    env = SurrogateHarvestEnv(num_envs=4, max_episode_steps=8, seed=0, ft_sensor_config=FtSensorConfig())
+    w = HarvestSkrlWrapper(env)
+    w.reset()
+    a = torch.zeros(4, 13)
+    a[1] = float("nan")
+    a[2, 0] = float("inf")
+    obs, r, *_rest, info = w.step(a)
+    assert bool(torch.isfinite(obs).all()) and bool(torch.isfinite(r).all())
+    assert float(info["log"]["Step / nonfinite actions"]) == 2.0

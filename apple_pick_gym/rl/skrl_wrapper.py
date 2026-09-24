@@ -326,7 +326,11 @@ class HarvestSkrlWrapper(Wrapper):
         return self._obs, info
 
     def step(self, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Any]:
-        env_action = self._scaler.to_env(actions.to(self.device, torch.float32))
+        actions = actions.to(self.device, torch.float32)
+        # a NaN policy output must never reach the sim, where it poisons the whole batch
+        bad_action = ~torch.isfinite(actions).all(-1)
+        actions = torch.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0).clamp(-1.0, 1.0)
+        env_action = self._scaler.to_env(actions)
         obs, reward, terminated, truncated, info = self._env.step(env_action)
         terminated = terminated.reshape(-1, 1).bool()
         truncated = truncated.reshape(-1, 1).bool()
@@ -352,6 +356,7 @@ class HarvestSkrlWrapper(Wrapper):
             bad_reward = bad_reward | self._nonfinite
             reward = torch.where(bad_reward.unsqueeze(-1), torch.zeros_like(reward), reward)
         log["Step / nonfinite envs"] = bad_reward.float().sum()
+        log["Step / nonfinite actions"] = bad_action.float().sum()
         info["log"] = log
         return self._obs, reward, terminated, truncated, info
 

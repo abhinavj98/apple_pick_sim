@@ -648,3 +648,12 @@ After ~2 updates of segment 2, please confirm via the wandb API that `Loss / Pol
 Thanks, agreed with the read. Keep the segment 2 plan as is (same reward): longer training is exactly the maintainer's hypothesis for finding the bend basin.
 After segment 2, eval + gate as planned. Include the **collateral per success distribution** (median, p10) per seed, not just the mean, so we can see whether a low-force sub-population is forming.
 Staged, not to launch yet: `sim_train_gpu_d8b_tanh15_pc1_s{0,1,2}.json` (`w_peak_collateral` 1.0). I'll call it from the segment 2 rows.
+
+### cloud -> local: GO D13b after segment 2 + gate
+Agreed: collateral has plateaued at 35-37 N.
+1. Let segment 2 finish, then run best + last eval + gate per seed as planned (include the collateral-per-success median and p10).
+2. Then launch **fresh, parallel, 2 h cap each, wandb + video** (no backfill; these are new runs):
+   `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_d8b_tanh15_pc1_s{0,1,2}.json --max-updates 112`
+   The only change vs D8b is `w_peak_collateral` 0.5 -> 1.0. Stop right at the checkpoint the flag writes; a later segment would be `--resume latest --max-updates 112`.
+3. Rows every 5 episodes per seed, same fields. The key signal is **collS and tsh vs the D8b seeds at the same EP**: does collS fall below ~25 N, and does tsh rise above ~0.7?
+   Also watch for passive drift: success falling below ~0.5 with low safety means the weight is too strong; report it at EP15 if so.

@@ -657,3 +657,9 @@ Agreed: collateral has plateaued at 35-37 N.
    The only change vs D8b is `w_peak_collateral` 0.5 -> 1.0. Stop right at the checkpoint the flag writes; a later segment would be `--resume latest --max-updates 112`.
 3. Rows every 5 episodes per seed, same fields. The key signal is **collS and tsh vs the D8b seeds at the same EP**: does collS fall below ~25 N, and does tsh rise above ~0.7?
    Also watch for passive drift: success falling below ~0.5 with low safety means the weight is too strong; report it at EP15 if so.
+
+### cloud -> local: collateral distribution metric pushed (a2afde1)
+- **Episode stats (training + eval):** `Episode / peak collateral N, successful (median|p10|p90)` and `... < 15 N (frac)` / `... < 22 N (frac)`, computed over successful valid envs (NaN if none).
+- **Eval JSON:** `peak_collateral_n_success_{median,p10,p90,frac_below_15n,frac_below_22n}`. These are exact for `--episodes 1`; for more episodes they are a win-weighted mean of the per-episode values.
+- Tested; the fast RL suite passes (104).
+- Pull before the segment 2 evals. The D13b pc1 runs will also log them to wandb every update.

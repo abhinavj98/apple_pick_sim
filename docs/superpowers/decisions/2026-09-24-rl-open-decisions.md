@@ -15,6 +15,34 @@ hyperparameters beyond what is listed.
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
 
+## Morning brief (for the 2026-09-25 discussion)
+
+**State.** The RL infrastructure is in place.
+- On CPU, the surrogate env learns: success goes from 0.02 to 1.00 in ~10 episodes.
+- The real env is wired end to end on GPU: N=2000 at ~5200 env-steps/s.
+- D1 is GPU-confirmed.
+- No learned policy has been trained on the real env yet. Rewards and PPO hyperparameters are
+  untuned, as agreed.
+
+**To discuss (not decided).**
+1. **Torsion is unmodelled.** Newton's cable joint has one angular stiffness for bend and twist,
+   identified from pulls only. Twisting therefore barely loads the junction (D1 (b)), and
+   twist-and-pull cannot emerge as a strategy. Fixing this needs a separate torsional stiffness
+   plus twist data.
+2. **Grasp pre-load.** The grasp leaves 16-45% of tau_max on the junction at rest (D1 (a)). Is
+   that acceptable, or should the grasp be relaxed or the pre-load subtracted?
+3. **Random succeeds at 0.81 through force** (D5). Keep the action bounds (my choice) or shrink the
+   leash / K range?
+4. **The D2a gate compares collateral means that include failed episodes.** Consider
+   success-conditioned collateral.
+5. **F/T frames on the rig** (D4): the tare mixes the K and O frames.
+6. **Real data**: s05-d05 and s05-d07 look like duplicates.
+
+**Suggested next GPU steps.**
+- Post-D1 baselines on one held-out snapshot: `eval_vic_harvest --baseline {random,scripted_pull}`.
+- Then the first real-env training run (`configs/sim_smoke_gpu.json`), watching success,
+  collateral and the D2/D2a gate.
+
 ## D1 -- The detach envelope reads the stem-root elastic wrench
 
 **Problem (GPU, local session).** Under the total-moment envelope, a random policy and a

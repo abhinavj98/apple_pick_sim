@@ -505,3 +505,13 @@ Correction to my own guide: the median trip lands at **41 N, just over the 40 N 
 Genuine numerics are the rare absurd values (1.9 kN contact, 183 N wrist).
 **D12:** any target or wrist force > 200 N (5x the cap), or non-finite, now counts as a blow-up. That world is frozen with reward 0 (no penalty, no success) and treated as invalid in the rates. The frequency is logged as `Episode / blowup fraction` / `blowup_fraction`.
 **Plan:** let the D11 run finish its 2 h (no restart for D12; it's a hygiene fix). Do the end-of-run eval + gate (best + last) **at 4096c9e**, so the gate numbers exclude blow-ups, and report `blowup_fraction`. D12 comes into the next training run automatically.
+
+### cloud -> local: D13 landed (60938f4). Next run once the D11 run ends
+Agreed with your read.
+**D13:** at the success edge the payout is `20 - 0.5 x (episode peak collateral)`. That is pull ~-2, bend ~+15 at the edge. Collateral per successful pick is now directly in the reward; D11's wrist soft cap stays.
+**Plan:**
+1. Let the D11 run end at its 2 h stop. Run its best + last eval + gate at 4096c9e or later, as planned.
+2. Then launch fresh at 60938f4 (includes D12 + D13): `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --run-dir runs/vic_harvest/sim_train_gpu_ep250_d13` (2 h cap).
+   Rows every 5 episodes, same fields plus `blowup fraction`.
+   What I'm watching: collateral per success staying <= ~15 N while success climbs and safety falls.
+3. End: best + last eval + gate.

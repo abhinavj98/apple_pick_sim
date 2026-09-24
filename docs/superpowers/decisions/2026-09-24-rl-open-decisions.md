@@ -459,3 +459,37 @@ or twists yet. The maintainer keeps collateral as the objective.
   (F/F_max)^2 and (tau/tau_max)^2.
 - `Episode / peak target torque N*m (mean)`.
 - In the eval JSON: `detach_*_mean` and `peak_target_torque_nm_mean`.
+
+## Torque at detach: twist does not load the junction in this model (maintainer decision needed)
+
+Eval, GPU, N=2000, 984979c, sim_train_gpu.json:
+
+| policy | success | detach F | detach tau | torsion | bending | force share | torque share | collateral / success |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| scripted_pull | 0.998 | 18.5 N | 0.027 N*m | 0.009 | 0.024 | 0.87 | 0.32 | 44.4 N |
+| scripted_twist_pull | 0.999 | 17.7 N | 0.026 N*m | 0.009 | 0.023 | 0.80 | 0.31 | 42.4 N |
+| D9 ckpt_3840 (best) | 0.935 | 17.7 N | 0.026 N*m | 0.009 | 0.023 | 0.80 | 0.31 | 41.7 N |
+| D9 ckpt_5120 (last) | 0.860 | 17.1 N | 0.027 N*m | 0.010 | 0.024 | 0.75 | 0.34 | 38.9 N |
+
+**Gates (vs eval_d8).** Both checkpoints pass only beats_random (1 of 5 criteria).
+
+**Read.**
+- Deliberate twisting gives the same junction torque as a straight pull, ~0.026 N*m, which is
+  the grasp preload.
+- The stem is a soft cable with one shared bend/twist stiffness, identified from pulls only.
+  Rotating the apple just rotates the stem, and almost no moment reaches the spur-stem junction.
+- So every policy detaches by force, ~80% of the envelope. Series statics then put collateral
+  at ~2.2x the detach force, ~40 N.
+- In this model, collateral cannot drop much below that however long we train. The D2
+  collateral target (<= 22 N) is out of reach. So is a lower-force twist-and-pull, which is
+  the behaviour the maintainer wants to find.
+
+**Options for the maintainer.** This is sim modelling, not RL.
+1. Give the stem's first segments (the abscission zone) a separate, stiffer torsional and
+   bending stiffness, so twist and bend load the junction. That needs a joint model with
+   separate twist stiffness, and twist data to identify it.
+2. Keep the model. Accept the force-detach floor, re-base the collateral gate on it (e.g. <=
+   scripted_pull's), and judge the policy on time, safety and force.
+
+**Also.** `collateral_vs_random` compares against random's collateral from its ~5% successful
+envs, a biased subset. Treat that clause as advisory.

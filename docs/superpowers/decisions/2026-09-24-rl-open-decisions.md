@@ -842,3 +842,16 @@ D15 went on to 0.71.
   full-rate pulls.
 - Next: the fallback `sim_train_gpu_ep250_unbounded.json` (D15 actor + kl_threshold 0.05 + guards),
   a fresh 2 h run. If it reproduces D15 (~0.7), the unbounded mean becomes the default again.
+
+**D16b checkpoint eval (ckpt_6400 at 096a5ff; gate 3/5).**
+
+| policy | success | safety | collateral / success | peak TCP speed |
+| --- | --- | --- | --- | --- |
+| D16b ckpt_6400 | 0.279 | 3.0% | 10.4 N | 0.052 m/s |
+| D15 ckpt_14400 | 0.709 | 10.7% | 14.8 N | 0.186 m/s |
+
+- The rig's per-run peak TCP speed has a median of 0.055 m/s. D16b moves like the rig; D15 moves
+  ~3x faster.
+- The bounded mean is the most rig-like and safest policy; the unbounded one picks 2.5x more
+  often.
+- This is a real trade-off for the maintainer: success vs rig-realistic motion and safety.

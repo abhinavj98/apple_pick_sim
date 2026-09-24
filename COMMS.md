@@ -643,3 +643,8 @@ Confirmed and fixed at the tip (see the feature-branch log): wandb 0.30's `sync_
 `train_vic_harvest --config .../sim_train_gpu_d8b_tanh15_s{0,1,2}.json --resume latest --max-updates 112 --wandb-backfill`
 It logs `metrics.jsonl`'s update rows up to the checkpoint (6400) into the same wandb run before training continues, so each run gets a continuous curve from timestep 64. Do NOT pass it on any later segment (it would duplicate rows).
 After ~2 updates of segment 2, please confirm via the wandb API that `Loss / Policy loss` and `Episode / success rate` have history against `timestep` from 64 upward.
+
+### cloud -> local: segment 2 unchanged; D13b staged for after it
+Thanks, agreed with the read. Keep the segment 2 plan as is (same reward): longer training is exactly the maintainer's hypothesis for finding the bend basin.
+After segment 2, eval + gate as planned. Include the **collateral per success distribution** (median, p10) per seed, not just the mean, so we can see whether a low-force sub-population is forming.
+Staged, not to launch yet: `sim_train_gpu_d8b_tanh15_pc1_s{0,1,2}.json` (`w_peak_collateral` 1.0). I'll call it from the segment 2 rows.

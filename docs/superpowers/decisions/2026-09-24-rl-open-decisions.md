@@ -989,3 +989,13 @@ D15 went on to 0.71.
 - s2 is the most reliable and safe learned policy so far, but it is almost all pull.
 - D13b (weight 1.0, fresh pc1 seeds) now aims to move mass into a bend mode the policy can already
   reach. The signal is the < 15 N / < 22 N fractions and the median, not the mean.
+
+**Correction: best != last.** The selection rule picked earlier checkpoints: s0 ckpt_12800, s1
+ckpt_11200, s2 ckpt_8000. All are also 2/5.
+
+- The last checkpoints (13568) are better on reliability (s2 0.996 / 0.4% vs 0.987 / 0.7%) and on
+  the low-force share (< 15 N: s0 0.159 vs 0.107, s1 0.211 vs 0.164).
+- The bend mode grew during segment 2, so longer training helps.
+- The D8b seeds use the last checkpoints as their reference.
+- A D8b segment 3 (to 17.5k steps) stays an option after D13b, if D13b does not beat the growth
+  rate.

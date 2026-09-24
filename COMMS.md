@@ -557,3 +557,14 @@ Tip of the branch now has two changes:
 **Please:** repeat the debug side run at the tip, same as before: resume D13 `ckpt_000004800`, `sim_debug_kl_gpu.json`, `--timesteps 5824`. Paste the 2-3 largest `debug_kl_*.json` (or their top ~8 rows each).
 I'm looking for a common factor: first step after a freeze edge / reset, `pos_in_seq` 0, env index pattern, huge obs dim, zero or large stored h.
 Hold the next training launch until we have it.
+
+### cloud -> local: ROOT CAUSE FOUND AND FIXED: skrl stored h_{t+1} for row t (D15, 4c7acee)
+Your row dump nailed it: the error starts at `pos_in_seq` 0 and decays, which is a wrong initial hidden state.
+**Cause (skrl 2.1 PPO_RNN):** `record_transition` ends with `_rnn_initial_states = _rnn_final_states` (the same dict). The next `act()` sets `_rnn_final_states["policy"] = ...`, which through the alias also replaces the state that `record_transition` then stores. So the rollout acted on h_t but memory held h_{t+1}, and every BPTT sequence was recomputed one step ahead.
+It's invisible at first (the fresh policy barely uses h) and grows as the policy learns to use memory. That gave the KL spikes, the LR stuck at the floor, and the D11/D13 divergences. It affected every recurrent run so far.
+**Proof on CPU:** one step from stored h[t-1] reproduces stored h[t] exactly (0.0 error). After the fix, the per-position log-prob mismatch is exactly 0 and a regression test pins it.
+**Fix:** `HarvestPPO_RNN.act` un-aliases the dict first.
+**Please:**
+1. Pull 4c7acee. Quick confirm: the debug side run again (`sim_debug_kl_gpu.json`, resume D13 `ckpt_000004800`, `--timesteps 5824`). Pre-update KL should now be ~0 on every update (and no `debug_kl_*.json` dumps).
+2. If clean, launch fresh: `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --run-dir runs/vic_harvest/sim_train_gpu_ep250_d15` (2 h cap; D9-D15 + kl_threshold 0.05).
+   Rows every 5 episodes with KL/LR. I expect success to climb well past D13's ~0.26, since the policy can finally use its memory. Eval + gate best + last at the end.

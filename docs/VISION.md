@@ -5,7 +5,7 @@
 
 | Field             | Value          |
 | ----------------- | -------------- |
-| **Last reviewed** | 2026-07-17     |
+| **Last reviewed** | 2026-09-24     |
 | **Owner**         | Abhinav        |
 | **Related**       | `./ROADMAP.md` |
 
@@ -35,7 +35,7 @@ Build an apple-picking simulator whose parameters are grounded in and refined ag
 5. **Digital-twin scene reconstruction:** Use calibrated geometry observations and named fixture catalogs to rebuild fruiting-system topology, base poses, apple/stem frames, and grasp transforms before tuning dynamics.
 6. **Real-world data:** Collect trajectories with the same (or closely matched) policy and sensing assumptions used in simulation, so datasets align across the sim–real gap.
 7. **Calibration loop:** First verify parameter recovery and held-out improvement in sim-to-sim experiments, then use real-world observations together with gradients, sensitivity information, or black-box objectives to update physical and scene parameters where agreement matters for manipulation.
-8. **Manipulation Policy:** Then learn a final apple-picking policy via RL in this fine-tuned simulation
+8. **Manipulation Policy:** Then learn a final apple-picking policy via RL in this fine-tuned simulation. Concretely ([M5], H6 `docs/handbook-rl-policy.md`): a recurrent **variable-impedance (VIC)** policy that, from a grasped apple and using only proprioception and a realistic wrist F/T signal, loads the **spur–stem junction** past its combined force–torque **detach envelope** \((F/F_{max})^2 + (\tau/\tau_{max})^2 \ge 1\) (\(F_{max} = 20\) N, \(\tau_{max} = 0.05\) N·m) while adding as little load as possible to every other junction (spur, primary, supports, apple–stem) — exploiting the twist-and-pull synergy a human picker uses. It is trained with domain randomization over the calibrated plant, the arm and the F/T sensor so it transfers to the real rig's `vic_pose` interface without a conversion layer.
 
 
 
@@ -51,6 +51,7 @@ Build an apple-picking simulator whose parameters are grounded in and refined ag
 | Digital-twin reconstruction   | A named fixture built from calibration observations recreates geometry/topology well enough for replay and parameter tuning     | Start with sim-to-sim ground truth fixtures before real-world reconstruction                                       |
 | Sim-to-sim calibration        | Recovered material parameters or predicted behavior improve on held-out simulated structures or trajectories              | Required before real-data collection becomes the acceptance dependency                                             |
 | Real-data calibration         | Quantitative comparison (e.g. force, pose, or event error) drops on a held-out real segment after calibration             | Ultimate sim-to-real criterion after M4 data collection; exact metric chosen in roadmap                            |
+| Learned pick policy ([M5])    | On held-out screened worlds, the learned VIC policy's detach success rate (envelope reached at the spur–stem junction) beats a scripted pull, with no worse safety-violation rate and lower collateral junction load; learning curves (reward, success) rise | Sim-internal; infrastructure first proven on a CPU surrogate (learning smoke), then on the CUDA sim (H6)            |
 
 
 
@@ -105,6 +106,9 @@ Explicit boundaries so work does not expand by default.
 | **Fruiting system**                   | The branch, stem, leaf, and fruit arrangement treated as one configurable scene or asset family.                                                                                                               |
 | **Sim-to-real**                       | Closing the gap between simulated and physical behavior (forces, timing, contacts, sensing).                                                                                                                   |
 | **Zero-payload gravity compensation** | Arm feedforward cancels link gravity only; fruit mass is treated as an external EE load (sim: Model A zero-g + stem harvest; real: no apple term in gravity comp).                                             |
+| **Detach envelope**                   | The elliptical combined-loading failure criterion \((F/F_{max})^2 + (\tau/\tau_{max})^2 \ge 1\) at the spur–stem junction that defines fruit detachment (success) for the pick policy; torque taken at the joint anchor. See H6.                                  |
+| **VIC**                               | Variable-impedance control: the policy commands a pose target plus stiffness (and a damping ratio, \(D = 2\zeta\sqrt{K}\)) rather than torques or positions; the same `vic_pose` interface as the real rig (H2).                                          |
+| **Domain randomization (DR)**         | Training over randomized plant materials/geometry, support joints, grasp, arm dynamics and F/T sensor bias/noise/drift so the policy is robust to what calibration leaves uncertain; the critic sees every draw (privileged), the actor does not. |
 | **Fisher information**                | In this vision, a quantitative notion of how informative trajectories are for estimating parameters or reducing uncertainty; used to shape learning objectives, not as a one-line substitute for task success. |
 
 

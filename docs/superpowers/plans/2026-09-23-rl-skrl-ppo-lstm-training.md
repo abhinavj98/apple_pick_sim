@@ -3,6 +3,33 @@
 > Expands Tasks 8–9 of `docs/superpowers/plans/2026-09-17-rl-vic-harvest-policy.md` (design spec: `docs/superpowers/specs/2026-09-17-rl-vic-harvest-policy-design.md`).
 > **Worktree / branch:** `.claude/worktrees/rl-skrl-ppo` on `feature/rl-skrl-ppo`, forked from `fix/harvest-vic-forces`.
 
+## Status (2026-09-24, branch `feature/rl-skrl-ppo`)
+
+Living contracts are now in H6 `docs/handbook-rl-policy.md`; this section records what the plan's tasks became.
+
+| Task | Status | Notes |
+| --- | --- | --- |
+| 0 Worktree | Done | Cloud session on the branch itself |
+| 1 Env fixes | **Done** | Freeze-edge `terminated`; plus the maintainer's **detach envelope** `(F/20 N)^2 + (tau/0.05 N m)^2 >= 1` (anchor-frame torque) replacing `f_threshold_n`; collateral vs rest baseline; target leash; shared `harvest_outcome.evaluate_harvest_step`; `privileged_fields()` / `plant_geometry()`; CPU warning |
+| 2 N=2000 throughput | Open (CUDA) | |
+| 3 Held-out world set | Open (CUDA for the snapshot) | |
+| 4 Action scaling + privileged state | **Done** | `privileged_state.py` became `batched_envs/harvest_privileged.py` (+ geometry) and `rl/critic_state.py` |
+| 5 LSTM models | **Done** | Step/sequence equivalence with mid-sequence resets tested |
+| 6 Wrapper | **Done** | Fast tests on the surrogate (it *is* the plan's `FakeHarvestEnv`); slow real-env wiring via the CLI (`test_rl_sim_wiring.py`); added non-finite guard |
+| 7 Memory-task pipeline proof | **Replaced** | by the surrogate learning smoke (`test_rl_smoke_training.py`), which exercises the same BPTT / reset / GAE path on the harvest contract itself |
+| 8 Checkpointing + CLI | **Done** | Campaign supervisor (fresh process per segment) not written; `--resume latest` is the building block |
+| 9 Baselines + eval CLI | **Done (code)** | GPU baseline numbers open |
+| 10 Smoke training | CPU surrogate **done**; GPU open | `configs/sim_smoke_gpu.json` |
+| 11 Capstone | Open | |
+| 12 Docs | **Done** | H6, ROADMAP [M5], VISION, CODEBASE_GUIDE, FEATURES |
+
+Findings that change the plan:
+
+- **Real env needs CUDA.** On CPU the batched arm never moves (Newton MuJoCo-CPU does not integrate replicated arms), so every CPU sim test is wiring-only.
+- **Use `progress_mode="delta"`.** With absolute progress the surrogate policy learned to hover under the envelope (success 0.68 -> 0.37 while return rose); delta reached 1.00.
+- **Scripted pull direction is `+weld`** (grasps approach from below; `-weld` pushes the apple up and buckles the stem), not "-weld" as written below.
+- The surrogate's explicit damping diverged at zeta=2 (fixed, regression-tested); the wrapper now sanitizes non-finite rows.
+
 ## Context
 
 The harvest env stack is done and the screened worlds look stable. It lives on `fix/harvest-vic-forces`, not `main`, and covers:

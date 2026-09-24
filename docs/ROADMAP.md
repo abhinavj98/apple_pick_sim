@@ -4,10 +4,10 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-08-17 |
+| **Last updated** | 2026-09-24 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[M4].0** 1×8 holdout pipeline shipped; **Task 9 GPU science gate FAILED** (val torque magnitude; Sinkhorn + TCP passed) |
+| **Active work**  | **[M5]** RL harvest policy — skrl recurrent-PPO infrastructure proven on CPU (surrogate learning smoke); real-sim training needs CUDA (H6 `docs/handbook-rl-policy.md`). **[M4].0** status unchanged (Task 9 science gate failed on val torque magnitude). |
 
 ---
 
@@ -35,12 +35,34 @@
 | **[V].3** | Done | Sim API + batched gym (V.3.1–V.3.5) |
 | **[V].4** | Done | Parallel collect, batched replay, in-process MSE/Wasserstein grid, tooling |
 | **[V].5** | Infra Done | V.5.1–V.5.2 Done; **V.5.3 held-out deferred** while **M4.0** starts |
-| **[M4]** | **Now** | **M4.0** real `robot_replay` → CMA-ES (`vic_pose`); further real collection later |
-| **[M5]** | Later | Final pick policy |
+| **[M4]** | Paused | **M4.0** real `robot_replay` → CMA-ES (`vic_pose`) shipped plumbing; science gate failed (torque); further real collection later |
+| **[M5]** | **Now** | VIC pick policy via skrl recurrent PPO: detach envelope at the spur–stem junction, DR, privileged LSTM critic (H6 `docs/handbook-rl-policy.md`) |
 
 ---
 
 ## Current focus
+
+**[M5] — learned VIC harvest policy (maintainer direction 2026-09-24).** Sys-ID is treated as good enough; the next deliverable is RL **infrastructure** that trains a recurrent VIC policy to detach the apple at the spur–stem junction — success is the elliptical envelope \((F/20\,\mathrm{N})^2 + (\tau/0.05\,\mathrm{N\,m})^2 \ge 1\) (torque at the joint anchor) — with low load on every other junction. Reward and PPO tuning come *after* the infrastructure is proven. Contracts, DR and commands: H6 `docs/handbook-rl-policy.md`. Plan: `docs/superpowers/plans/2026-09-23-rl-skrl-ppo-lstm-training.md`.
+
+**Done (branch `feature/rl-skrl-ppo`):**
+
+- [x] Detach envelope + anchor-frame junction torque; envelope-based progress / success; collateral vs rest baseline; opt-in `delta` progress (fixes "hover under the envelope" — measured)
+- [x] One-shot `terminated` (freeze edge), VIC target leash, shared `evaluate_harvest_step`, privileged DR fields, per-channel F/T sensor DR preset
+- [x] `apple_pick_gym/rl/`: action scaling, LSTM actor / privileged LSTM critic, skrl wrapper (auto-reset, time-limit semantics, non-finite guard, episode stats), config, trainer, checkpoints with layout sidecar, train / eval CLIs, baselines, analytic surrogate env
+- [x] CPU learning smoke on the surrogate (success 0 → 1.0, collateral ↓); real-env wiring through the CLI on CPU; DR resampling verified on a real build
+
+**Next up (ordered; needs CUDA):**
+
+- [ ] **GPU wiring** — `sim_wiring_gpu.json` (64 worlds, hold settle): arm moves, finite losses, `Step / nonfinite envs` = 0
+- [ ] **Plan Task 2** — N=2000 throughput / stability from the committed all-2000 snapshot (stop and report if it crashes repeatedly or needs > ~20 GB)
+- [ ] **Plan Task 9 baselines on GPU** — `scripted_pull` / `zero` / `random` on the train snapshot; stop and revisit envelope / reward if scripted pull never detaches
+- [ ] **Plan Task 10** — `sim_smoke_gpu.json` (~3M samples) with one `--resume latest` mid-run
+- [ ] **Plan Task 3** — held-out world set + snapshot; **Task 11** capstone + gate (beat scripted pull on held-out, no worse safety)
+- [ ] Reward / PPO tuning with the maintainer (weights, streak, `delta` as default?)
+
+**Blocker found:** the real harvest env's batched arm does **not** integrate on a CPU Warp device (Newton MuJoCo-CPU backend, `separate_worlds`) — CPU is wiring-only. See H6 §10.
+
+### [M4].0 status (not current focus)
 
 **Next slice:** decide how to treat the **Task 9 torque-magnitude fail** on s09 holdout (sim \(\lvert\tau\rvert\) ~15–70× too small on val dirs 0/1/3). Folder convert, per-direction weld/gripper/joints, last-action pad + truncate-before-features, and opt-in holdout CMA (`--direction-split-seed`) are shipped (Tasks 1–8). Task 9 **ran** shipped knobs (pop 15 / gen 10, ~32 min RTX 4090): train Sinkhorn 22.54→17.08, val Sinkhorn 23.63→17.13, TCP magnitude+trend pass; `force_magnitude_ok` fails all three val dirs on **torque ratio** (0.073 / 0.014 / 0.044). **Do not claim the science gate passed.** Use H3 `docs/handbook-sysid-scoring.md` for signed \(F_\parallel\) / \(x_{\mathrm{hold0}}\) gates and one-hot width, H4 `docs/handbook-real-replay.md` for convert/replay, and H5 `docs/handbook-youngs-cma.md` for holdout flags / `holdout_report.json`. Slices 0–3 delivered USD `/fr3/ee` COM + inertia → convert-time `R(tcp) @` F/T (no second negate) → two-start woody + `apple_pos` → scalar `hold_number` from `hold_index`. Convert writes unfiltered world `ft_wrist` plus scored `ft_wrist_lpf` (10 Hz `filtfilt` + 30 Hz block-mean). **No sim EMA/LPF. 19D `action` in bags/replay; not in Sinkhorn `STATE_VECTOR`.** Bit-1/2 Done (convert + open-loop FR3 + 19D pose packing + `example_replay_real_batched.py`). **Bit-3 slice 1 Done:** shared real-replay `build_env_fn` + grid opt-in (`vic_pose` / 19D from dataset metadata); sim-sim twist default preserved.
 
@@ -222,6 +244,14 @@ Fixed topology per batch (`num_segments`, `omit`); per-env `FruitingSystemParams
 | **V.5.2** | Done | CMA-ES loop verified (tests + CUDA 5×5 acceptance) |
 | **V.5.3** | Deferred | Held-out sim-sim validation (after M4.0 or when directed) |
 
+### [M5] Pick policy
+
+| Slice | Status | Deliverable |
+| ----- | ------ | ----------- |
+| **M5.0** harvest env | Done | `ApplePickVicHarvestEnv`: 13-D delta-pose VIC action, sensor-realistic F/T, arm + plant DR, screened world sets + settled snapshots |
+| **M5.1** RL infrastructure | Done (CPU) | Detach envelope, skrl `PPO_RNN` stack under `apple_pick_gym/rl/`, surrogate learning smoke, CLIs, checkpoints (H6) |
+| **M5.2** GPU training | Next | N=2000 throughput, baselines, smoke run, held-out set, capstone gate |
+
 ### [M4] Real-data calibration
 
 | Slice | Status | Deliverable |
@@ -244,7 +274,8 @@ Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_co
 - Optional cleanup: CLI `--score-mmd`; V.4.2.1 infer-only fidelity floor on `batched_sysid_v1`
 - **Scope changes** — additional manipulators/crops; triangle mesh import (P0 stays capsules)
 - **V.5.3** held-out sim-sim validation — deferred behind **M4.0**
-- **[M4.1+]** broader real-data pipeline, **[M5]** final pick policy — after M4.0
+- **[M4.1+]** broader real-data pipeline — after M4.0
+- **[M5] follow-ups** — per-episode null-space gain DR, per-reset link-mass DR, plant base-pose DR, action latency, masked PPO for frozen samples, CUDA-graph capture, campaign supervisor, real per-env `reset_idx`
 
 ---
 
@@ -267,6 +298,16 @@ Canonical entry point: `apple_pick_sim/examples/example_batched_heterogeneous_co
 ```bash
 # Install / sync (repo root; path-depends on newton/)
 uv sync --extra gym --extra vic --extra dev
+
+# RL extra (skrl) for [M5]
+uv sync --extra gym --extra vic --extra dev --extra rl
+
+# [M5] RL stack (H6): fast suite, CPU learning smoke, real-env builds one per process
+uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_rl_*.py apple_pick_gym/tests/test_harvest_*.py apple_pick_gym/tests/test_sensor_realism.py apple_pick_gym/tests/test_train_vic_harvest_cli.py apple_pick_gym/tests/test_eval_vic_harvest_cli.py -q -m "not slow"
+uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_rl_smoke_training.py -q
+uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_harvest_env_rl_contract.py -q
+uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_rl_sim_wiring.py -q
+uv run python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/configs/surrogate_smoke.json
 
 # Fast test gate (excludes @pytest.mark.slow)
 uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/ -q -m "not slow"

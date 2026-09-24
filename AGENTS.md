@@ -6,7 +6,7 @@ Read these **before** substantial implementation work. They apply to automated a
 
 1. **`docs/VISION.md`** — Intent, scope, non-goals, success criteria, ambiguity defaults.
 2. **`docs/ROADMAP.md`** — Current focus, milestones, ordered next slices, validation commands, when to stop and ask.
-3. **Living handbooks (H1–H5)** — subsystem contracts; start from **`docs/FEATURES.md`** or the Document index in **`docs/CODEBASE_GUIDE.md`**.
+3. **Living handbooks (H1–H6)** — subsystem contracts; start from **`docs/FEATURES.md`** or the Document index in **`docs/CODEBASE_GUIDE.md`**.
 4. **`docs/CODEBASE_GUIDE.md`** — Map of the codebase and the full `docs/` set; read this before searching for "which doc covers X."
 5. **Post-grasp VIC (when relevant):** **`docs/handbook-variable-impedance.md`** — dynamic arm, total TCP wrench, `vic` / `vic_pose`.
 6. **`.cursor/rules/`** — Persistent project rules (environment, TDD, tooling, Newton layout, **GPU/Warp parallelism**). Obey them unless the maintainer overrides them for a specific task.
@@ -20,6 +20,7 @@ If **vision**, **roadmap**, and **code** disagree, **stop** and report the confl
 | `apple_pick_sim/` | Project-local simulation code; runnable examples in `examples/`. |
 | `apple_pick_sim/examples/example_batched_heterogeneous_coupled_sim.py` | Canonical batched heterogeneous coupled simulation demo (V.3.2). |
 | `apple_pick_gym/` | Gymnasium adapter; `batched_envs/` + `batched_examples/` for parallel collect / MMD grid. |
+| `apple_pick_gym/rl/` | [M5] skrl recurrent-PPO training stack for the VIC harvest policy (H6 `docs/handbook-rl-policy.md`). The real harvest env needs CUDA; use the surrogate env for CPU checks. |
 | `newton/` | Upstream Newton **git submodule**; treat as vendored unless the task is explicitly to patch or sync it. |
 | `docs/` | Project vision and roadmap (this repo’s planning docs, not `newton/docs/`). |
 

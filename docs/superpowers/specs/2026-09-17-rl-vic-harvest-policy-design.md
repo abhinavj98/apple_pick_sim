@@ -301,6 +301,8 @@ deferring the base-pose axis.
 
 ## Reward and termination
 
+> **Superseded (2026-09-24):** success is now the elliptical force + torque detach envelope at the spur–stem junction, \((F/20\,\mathrm{N})^2 + (\tau/0.05\,\mathrm{N\,m})^2 \ge 1\) (torque at the joint anchor), progress is envelope utilization, collateral is measured against rest, and `terminated` fires once on the freeze edge. Current contract: H6 `docs/handbook-rl-policy.md` §2 and §4.
+
 ```text
 r_t = w1*r_progress - w2*r_pullout - w3*r_collateral - w4*r_safety + b_success
 ```

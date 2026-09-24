@@ -251,7 +251,7 @@ Builds on `ApplePickBatchedBaseEnv` with `ControllerConfig(mode="vic_pose", acti
 
 ---
 
-### Task 8: skrl integration — recurrent PPO, privileged critic
+### Task 8: skrl integration — recurrent PPO, privileged critic — **DONE (CPU); see `2026-09-23-rl-skrl-ppo-lstm-training.md` and H6**
 
 **Files:** add an `rl` extra to `pyproject.toml`; create `apple_pick_gym/rl/` (skrl env wrapper, LSTM actor, privileged LSTM critic, trainer entry point); tests alongside.
 
@@ -277,7 +277,7 @@ Builds on `ApplePickBatchedBaseEnv` with `ControllerConfig(mode="vic_pose", acti
 
 ---
 
-### Task 9: Training entry point, logging, and the learning-curve gate
+### Task 9: Training entry point, logging, and the learning-curve gate — **entry point / logging DONE; GPU learning-curve gate open (H6, ROADMAP [M5])**
 
 **Files:** create `apple_pick_gym/rl/train_vic_harvest.py`; a CLI test.
 
@@ -297,7 +297,7 @@ Builds on `ApplePickBatchedBaseEnv` with `ControllerConfig(mode="vic_pose", acti
 - CUDA graph capture of `coupled_substep` — the largest throughput lever; the code is already written to be capture-safe (`scene.py:592-594`) but no capture exists.
 - Investigate the **silent N=1024 build crash** remaining after Task 0a (reproduce under `faulthandler` / `cuda-gdb`; suspect the documented `close()`-path heap corruption).
 - Real per-env `reset_idx` on `BatchedHeterogeneousCoupledSim`.
-- Reward revisit: combined force + torque success criterion (maintainer flagged).
+- ~~Reward revisit: combined force + torque success criterion~~ — **done 2026-09-24**: elliptical detach envelope, H6 §2.1.
 - Per-env plant base pose relative to the robot.
 - Reach-and-grasp before harvest; real stem-detach physics.
 - 30 Hz policy rate or action-repeat for deployment parity with the real rig.

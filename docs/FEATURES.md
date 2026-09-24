@@ -22,3 +22,7 @@ sequencing. This page intentionally does not repeat either.
 For the complete repository and documentation map, see
 `docs/CODEBASE_GUIDE.md`. Dated files under `docs/superpowers/{specs,plans}/`
 are design archives, not additional living contracts.
+| Harvest env (post-grasp VIC, DR, freeze / one-shot terminated) | [H6: RL policy](handbook-rl-policy.md) | `apple_pick_gym/batched_envs/apple_pick_vic_harvest_env.py::ApplePickVicHarvestEnv` |
+| Spur–stem detach envelope and harvest reward | [H6: RL policy](handbook-rl-policy.md) | `apple_pick_gym/batched_envs/harvest_detach.py`, `harvest_outcome.py`, `harvest_reward.py` |
+| skrl recurrent PPO training / eval / checkpoints | [H6: RL policy](handbook-rl-policy.md) | `apple_pick_gym/rl/train_vic_harvest.py`, `trainer.py`, `eval_vic_harvest.py` |
+| CPU surrogate harvest env (infra testing) | [H6: RL policy](handbook-rl-policy.md) | `apple_pick_gym/rl/surrogate_env.py::SurrogateHarvestEnv` |

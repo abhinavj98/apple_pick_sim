@@ -8,14 +8,14 @@ This guide describes **structure**, not **status**. For "what's done / what's ne
 
 | Field | Value |
 | ----- | ----- |
-| **Last reviewed** | 2026-08-14 (H1–H5 index; removed handbook stubs and absorbed living duplicates) |
+| **Last reviewed** | 2026-09-24 (H6 RL policy handbook + `apple_pick_gym/rl/`) |
 | **Owner** | Abhinav |
 
 ## How to read this repository
 
 1. **`docs/VISION.md`** — why this project exists, scope, non-goals, success criteria. Read once, revisit rarely.
 2. **`docs/ROADMAP.md`** — the single source of truth for status: what's shipped, what's active, what's next, validation commands. Every other doc in this repo should defer to it for sequencing.
-3. **The H1–H5 handbooks** — living subsystem contracts, selected from the [Document index](#document-index) below.
+3. **The H1–H6 handbooks** — living subsystem contracts, selected from the [Document index](#document-index) below.
 4. **This file** — architecture map + full doc index.
 5. **Code** — once a handbook points you at a module, read the code; docs describe intent and contracts, not line-by-line behavior.
 
@@ -78,12 +78,13 @@ If a doc's status claim and the actual code/tests disagree, trust the code and t
 | `apple_pick_gym/viz/` | CMA persist real-vs-sim plots (`cma_force_plots.py`: Fx/Fy/Fz, Tx/Ty/Tz, TCP XYZ, woody-start XYZ from `structure_XXX/generations`) |
 | `scripts/` | Staged sys-ID helpers: `collect_and_rank_sysid_gt.sh`, `gate_sysid_gt_sinkhorn.sh`, `gate_youngs_modulus_sysid.sh` (multi-seed ranking gate), `gate_youngs_modulus_cmaes.sh` (multi-seed CMA integrity gate) |
 | `robot_replay/` | Real-robot sys-ID episodes + convert CLI; pre-grasp rebuild / post-grasp weld contract in `README.md` (woody via `rest_snapshot_during_run`) |
+| `apple_pick_gym/rl/` | [M5] skrl recurrent-PPO stack for the VIC harvest policy: `skrl_wrapper.py`, `models.py` (LSTM actor / privileged LSTM critic), `critic_state.py`, `trainer.py`, `checkpoint.py`, `train_vic_harvest.py` / `eval_vic_harvest.py` CLIs, `baselines.py`, `surrogate_env.py` (CPU stand-in), `configs/*.json` — H6 |
 | `newton/` | Upstream Newton submodule — vendored, match its patterns rather than inventing APIs |
 | `docs/` | Living handbooks and supporting references (below); `docs/superpowers/{specs,plans}/` and `docs/specs/` are dated design archives |
 
 ## Document index
 
-Start with the five living domain handbooks. They own current subsystem
+Start with the six living domain handbooks. They own current subsystem
 contracts; `docs/ROADMAP.md` alone owns status and sequencing.
 
 ### Start here
@@ -92,7 +93,7 @@ contracts; `docs/ROADMAP.md` alone owns status and sequencing.
 - `docs/VISION.md` — intent, scope, non-goals, success criteria (rarely changes).
 - `docs/FEATURES.md` — short feature → handbook → code-entry lookup.
 
-### Living domain handbooks (H1–H5)
+### Living domain handbooks (H1–H6)
 
 - **H1 — `docs/handbook-coupled-simulation.md`** — two-model
   MuJoCo/VBD ownership, public batched API, settle→weld, wrench/payload
@@ -116,6 +117,12 @@ contracts; `docs/ROADMAP.md` alone owns status and sequencing.
   real-data handoff. Code starts in
   `apple_pick_gym/batched_envs/batched_sysid_cmaes.py` and the Young's
   examples/reports.
+- **H6 — `docs/handbook-rl-policy.md`** — [M5] harvest task (spur–stem
+  detach envelope, reward, freeze / one-shot `terminated`), 13-D VIC action
+  and target leash, actor / privileged critic layouts, domain randomization,
+  skrl `PPO_RNN` contract, surrogate env, train / eval commands. Code starts in
+  `apple_pick_gym/batched_envs/apple_pick_vic_harvest_env.py`,
+  `harvest_{detach,outcome,reward}.py`, and `apple_pick_gym/rl/`.
 
 ### Supporting references (unique math / protocol only)
 
@@ -157,6 +164,8 @@ and experiment notes that H1–H5 summarize rather than duplicate.
 | Batched digital-twin fidelity (V.4.2.1) | Helpers and `--infer-params` shipped; an infer-only fidelity floor is optional deferred cleanup, not Current focus. | `docs/ROADMAP.md`, `docs/digital-twin.md`, H4 |
 | `real_world_proxy.json` topology | The nominal fixture uses `linear_chain`; its variance counterpart defaults to `t_junction`, so the two fixtures build different topologies. | `docs/real-world-proxy.md`, H1 |
 | Held-out sim-sim validation (V.5.3) | Deferred until after M4.0 or explicit maintainer direction. | `docs/ROADMAP.md`, H5 |
+| Harvest env on CPU | The batched FR3 arm does not integrate on a CPU Warp device (Newton MuJoCo-CPU, `separate_worlds`): the TCP never moves. CPU is wiring-only; RL on the real env needs CUDA. | H6 §10 |
+| [M5] GPU training | Infrastructure is proven on the CPU surrogate; N=2000 throughput, baselines, smoke run, held-out set and the capstone gate are open. | `docs/ROADMAP.md`, H6 |
 | In-process rebuild heap corruption | Open, not root-caused. Rebuilding and stepping many scenes in one process intermittently corrupts host object state (SIGSEGV / bogus `code`/`function` attribute errors). Use process-isolated eval waves; `--no-isolated-eval-waves` is unsafe. | `docs/in-process-rebuild-heap-corruption.md`, H5 |
 
 ## Conventions worth knowing before editing docs or code

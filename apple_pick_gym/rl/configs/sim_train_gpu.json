@@ -1,0 +1,15 @@
+{
+  "env": {
+    "kind": "sim",
+    "world_set": "apple_pick_gym/world_sets/snapshots/harvest_worlds_v2_all2000/shard_00.jsonl",
+    "snapshot": "apple_pick_gym/world_sets/snapshots/harvest_worlds_v2_all2000/shard_00_snapshot.npz",
+    "num_envs": 2000,
+    "max_episode_steps": 500,
+    "device": "cuda:0",
+    "progress_mode": "delta"
+  },
+  "ppo": {"rollouts": 64, "mini_batches": 8, "learning_epochs": 5},
+  "timesteps": 25000,
+  "checkpoint_every_updates": 20,
+  "run_dir": "runs/vic_harvest/sim_train_gpu"
+}

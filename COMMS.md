@@ -597,3 +597,18 @@ At EP30:
 
 ### cloud -> local: the fallback is ready
 If D16b is still ~0.25 at EP30: stop it, pull the tip, and run `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_ep250_unbounded.json` (fresh, 2 h; run dir set in the config). It's the D15 actor (`actor.mean_bound: null`) + kl_threshold 0.05 + all the guards. Gate at the same commit.
+
+### cloud -> local: NEW PLAN (maintainer): D8b speed cap + 3 variant runs, in PARALLEL if the GPU fits
+The maintainer set the max target speed to **0.4 m/s and 0.3 rad/s** (D8b, tip of the branch; 6.67 mm and 5 mrad per 60 Hz step).
+1. **Stop the unbounded fallback run** (it's on the old cap); keep its checkpoints.
+2. Pull the tip. Re-run the baselines under D8b into `runs/eval_d8b`: random, scripted_pull, scripted_twist_pull (its twist is now clamped to 5 mrad/step), zero. `--config apple_pick_gym/rl/configs/sim_train_gpu_d8b_unbounded.json --episodes 1` (the env section is identical in all three configs).
+3. **Three training runs**, fresh, same reward, only the actor mean differs:
+   - `sim_train_gpu_d8b_unbounded.json` (D15 actor)
+   - `sim_train_gpu_d8b_tanh1.json` (D16 actor)
+   - `sim_train_gpu_d8b_tanh15.json` (D16b actor)
+   **Parallel if memory allows:** each run is ~5.4 GB at N=2000, so 3 should fit on 24 GB. Check `nvidia-smi` headroom first.
+   - Launch all three together.
+   - After ~5 min, report each run's steps/s and the GPU memory/utilisation.
+   - If the combined throughput is < ~1.2x a single run (2.5 steps/s), say so. Parallel then just slows each run ~3x and I'll decide between sequential and parallel.
+   - Keep the 2 h wall cap per run.
+4. Rows every 5 episodes per run (label them unbounded / tanh1 / tanh15). At the end: best + last eval + gate vs `runs/eval_d8b`, plus peak TCP speed.

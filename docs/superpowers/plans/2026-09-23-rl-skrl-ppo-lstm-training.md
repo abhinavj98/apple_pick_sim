@@ -7,7 +7,7 @@
 
 The harvest env stack is done and the screened worlds look stable. It lives on `fix/harvest-vic-forces`, not `main`, and covers:
 - `ApplePickVicHarvestEnv`: 13-D delta-pose VIC action, a 40-D actor obs, arm and plant DR, the F/T sensor EMA, reward, and freeze logic.
-- 2000 screened worlds (`harvest_worlds_v2`) with settled snapshots, including a single all-2000 snapshot at `~/.cache/apple_pick_sim/world_sets/harvest_worlds_v2_all2000/shard_00*`.
+- 2000 screened worlds (`harvest_worlds_v2`) with settled snapshots, including a single all-2000 snapshot committed at `apple_pick_gym/world_sets/snapshots/harvest_worlds_v2_all2000/shard_00*` (also in `~/.cache/apple_pick_sim/world_sets/harvest_worlds_v2_all2000/`).
 
 Tasks 8–9 of `docs/superpowers/plans/2026-09-17-rl-vic-harvest-policy.md` are still open: the skrl recurrent-PPO integration and the training run with its learning-curve gate. `apple_pick_gym/rl/` does not exist yet. This plan expands those two tasks into executable steps against skrl **2.1.0**, which is already installed through the `rl` extra. I read its source rather than relying on 1.x examples.
 

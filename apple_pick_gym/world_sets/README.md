@@ -36,3 +36,21 @@ env = ApplePickVicHarvestEnv(episode_snapshot_path=d / "shard_00_snapshot.npz",
 Build + restore of a 500-world shard takes ~1 min. Snapshots are tied to their worlds by a
 hash of the exact params + grasp and refuse to load into any other set. Rebuild them (same
 command, same `--order-seed`) if the sim/build code changes.
+
+## Committed snapshot: all 2000 worlds in one build (RL training set)
+
+`snapshots/harvest_worlds_v2_all2000/` is committed to the repo (~11 MB) so training does not
+depend on a local cache. It is a single N=2000 shard of `harvest_worlds_v2.jsonl`:
+
+- `shard_00.jsonl` -- all 2000 worlds, in the snapshot's env order (a reordering of v2)
+- `shard_00_snapshot.npz` -- the settled baseline; 3 worlds are marked invalid and masked
+
+Built on 2026-09-22 with `example_build_world_snapshots.py --shard-size 2000 --shard-index 0`
+from branch `fix/harvest-vic-forces` at `a750dba`. Load it the same way as a shard, with
+`d = Path("apple_pick_gym/world_sets/snapshots/harvest_worlds_v2_all2000")`.
+
+**Staleness:** the snapshot is a settled sim state, valid only for the sim/build code it was
+built with. Its fingerprint check only catches changed worlds, not changed physics, so after
+any change to the build path, solver settings or the Newton pin, rebuild it with the command
+above (using `--retries 4`) and commit the new files. Each rebuild adds ~11 MB to git history,
+so rebuild only when the code actually changed.

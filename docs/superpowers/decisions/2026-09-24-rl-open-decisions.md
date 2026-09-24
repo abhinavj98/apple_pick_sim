@@ -548,3 +548,29 @@ contact. Pressing the fruit into the tree bruises it in reality, and its realism
 contact model. Worth checking contact forces before trusting the bend strategy.
 
 **Revert.** `w_wrist = 0`.
+
+## Contact check: the bend detach does not press the fruit into the tree
+
+`rl/diagnose_contacts.py` (de605e2), GPU, N=2000, 1 episode. Episode peaks, median / p90:
+
+| policy, envs | fruit-woody contact | fruit-gripper contact | wrist force |
+| --- | --- | --- | --- |
+| ep250 ckpt_1600 (bend), successful (519) | 0 / 0 N | 0 / 0 N | 16.2 / 31.5 N |
+| ep250 ckpt_1600 (bend), all | 0 / 6.6 N | 0 / 0 N | 23.7 / 39.8 N |
+| scripted_pull, successful (1987) | 0 / 0 N | 0 / 0 N | 20.3 / 23.4 N |
+
+- Every world has 8-10 fruit-woody contact pairs (not filtered), but they carry ~no force in
+  successful picks.
+- The bend strategy does not rely on pressing the apple into the branch.
+- The wrist-junction gap (16 N vs 10.4 N at detach) fits statics: the stem + apple weight
+  (~2.6 N), plus arm dynamics and peaks that are not simultaneous.
+
+**Gate of the pre-D11 bend checkpoint (vs eval_d8): 3 of 5.**
+- Pass: collateral 10.2 <= 22.2 N; beats_random; collateral_vs_random.
+- Fail: success 0.41 and safety 0.13. D11 targets exactly these.
+
+**Flag: isolated solver blow-ups.** In both policies a few single worlds show absurd values:
+fruit-woody up to 1923 N, fruit-proxy 842 N, wrist 183 N. The medians are unaffected, but such
+worlds can count as safety failures and inject huge rewards. The non-finite guard only catches
+NaN/inf. Candidate follow-up: flag worlds whose plant wrench jumps beyond a physical bound as
+invalid for the rest of the episode.

@@ -147,6 +147,15 @@ def _ppo_rnn_class():
 
         history_callback = None
 
+        def act(self, observations, states, *, timestep: int, timesteps: int):
+            # skrl PPO_RNN bug: record_transition ends with `_rnn_initial_states = _rnn_final_states`
+            # (the same dict), so act()'s `_rnn_final_states["policy"] = ...` also overwrote the state
+            # record_transition then stored -- memory held h_{t+1} for row t, and every BPTT sequence
+            # was recomputed one step ahead (KL spikes, then divergence on GPU). Un-alias first.
+            if self._rnn and self._rnn_initial_states is self._rnn_final_states:
+                self._rnn_final_states = dict(self._rnn_final_states)
+            return super().act(observations, states, timestep=timestep, timesteps=timesteps)
+
         debug_kl = False
 
         debug_dir = None

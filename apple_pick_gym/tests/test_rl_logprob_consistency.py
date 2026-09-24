@@ -70,8 +70,8 @@ def test_recurrent_log_probs_match_the_rollout_when_episodes_end_mid_sequence(tm
     trainer_mod.run_training(cfg)
     stored, recomputed = seen["stored"], seen["recomputed"]
     assert stored.shape == recomputed.shape and stored.numel() == 32 * 4
-    # float32: batched vs step-by-step LSTM differ by ~1e-3 on a ~-7 log-prob (KL ~1e-7)
-    torch.testing.assert_close(recomputed, stored, atol=2e-3, rtol=5e-4)
+    # (was ~1e-3 at sequence starts before the skrl rnn-state aliasing fix)
+    torch.testing.assert_close(recomputed, stored, atol=1e-4, rtol=1e-4)
 
 
 def test_scaler_update_inside_the_update_shifts_every_row():
@@ -158,3 +158,51 @@ def test_kl_early_stop_is_on_by_default_and_reaches_the_agent(tmp_path):
     assert cfg.ppo.kl_threshold == 0.05
     _w, agent = build_training(cfg)
     assert agent.cfg.kl_threshold == 0.05
+
+
+def test_stored_rnn_state_is_the_state_the_policy_acted_on(tmp_path, monkeypatch):
+    # skrl PPO_RNN bug: record_transition ends with `_rnn_initial_states = _rnn_final_states` (one dict),
+    # so the next act()'s `_rnn_final_states["policy"] = ...` overwrites the state about to be stored:
+    # memory held h_{t+1} for row t. The update then restarted every BPTT sequence one step ahead --
+    # log-prob mismatch at sequence starts that grew with training (GPU KL spikes -> divergence).
+    seen = {}
+    base_factory = trainer_mod._ppo_rnn_class
+
+    def factory():
+        base = base_factory()
+
+        class Probe(base):
+            def update(self, *, timestep: int, timesteps: int) -> None:
+                mem = self.memory
+                obs = self._observation_preprocessor(mem.get_tensor_by_name("observations"))
+                h, c = mem.get_tensor_by_name("rnn_policy_0"), mem.get_tensor_by_name("rnn_policy_1")
+                ended = (mem.get_tensor_by_name("terminated") | mem.get_tensor_by_name("truncated")).squeeze(-1).bool()
+                tower = self.policy.tower
+                errs = []
+                with torch.no_grad():
+                    for t in range(mem.memory_size - 1):
+                        f = tower.pre(obs[t]).unsqueeze(1)
+                        _, (h1, _) = tower.lstm(f, (h[t].transpose(0, 1).contiguous(), c[t].transpose(0, 1).contiguous()))
+                        ok = ~ended[t]
+                        errs.append(float((h1.transpose(0, 1)[ok] - h[t + 1][ok]).abs().max()) if ok.any() else 0.0)
+                seen.setdefault("step_err", []).append(max(errs))
+                stored, recomputed = _recompute_log_prob(self)
+                seen.setdefault("max_dlogp", []).append(float((recomputed - stored).abs().max()))
+                super().update(timestep=timestep, timesteps=timesteps)
+
+        return Probe
+
+    monkeypatch.setattr(trainer_mod, "_ppo_rnn_class", factory)
+    net = RecurrentNetConfig(pre_mlp=(64,), lstm_hidden=64, post_mlp=(64,), sequence_length=8)
+    cfg = TrainConfig(
+        env=EnvConfig(kind="surrogate", num_envs=16, max_episode_steps=13, device="cpu"),
+        ppo=PPOConfig(rollouts=16, mini_batches=2, learning_epochs=3, learning_rate=1e-3),
+        actor=net,
+        critic=net,
+        timesteps=16 * 5,
+        checkpoint_every_updates=100,
+        run_dir=str(tmp_path / "run"),
+    )
+    trainer_mod.run_training(cfg)
+    assert max(seen["step_err"]) < 1e-5, seen["step_err"]  # stored h follows the LSTM recurrence
+    assert max(seen["max_dlogp"]) < 1e-3, seen["max_dlogp"]  # after several updates, still consistent

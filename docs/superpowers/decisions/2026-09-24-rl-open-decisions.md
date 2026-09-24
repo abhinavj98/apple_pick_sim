@@ -21,6 +21,7 @@ hyperparameters beyond what is listed.
 | D12 | Solver blow-up guard (> 200 N or non-finite): freeze, no penalty, invalid | done |
 | D13 | Charge -0.5 x episode peak collateral at the success edge | done |
 | D14 | Hold a blown-up world's last good obs/state (keeps the obs scaler clean) | done |
+| D15 | Fix skrl PPO_RNN storing h_{t+1} for row t (rnn-state dict aliasing) | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -702,3 +703,36 @@ The run was stopped at ~6600, while the deterministic policy was still intact.
   around it, obs magnitude and argmax dim, stored LSTM-state norm) to `debug_kl_<t>.json` when
   the pre-update KL > 0.05.
 - skrl's `kl_threshold` early stop is on at 0.05 (`PPOConfig.kl_threshold`) as a safety net.
+
+## D15 -- skrl PPO_RNN stored the wrong LSTM state: the cause of the KL spikes and divergences
+
+**Evidence.**
+- GPU row dump (`debug_kl`, real env): the stored-vs-recomputed log-prob gap (no gradient step)
+  sits on BPTT sequence starts (`pos_in_seq` 0) and decays over the next 1-4 steps of the same
+  env. That is the signature of a wrong initial hidden state.
+- CPU surrogate, bigger net: the per-position gap is ~20x larger at position 0 and grows with
+  every update.
+- The stored h[t+1] does not equal one LSTM step from (h[t], obs[t]): error 0.18-0.37.
+- One step from (stored h[t-1], obs[t]) reproduces stored h[t] **exactly**.
+- `_rnn_initial_states is _rnn_final_states` is True.
+
+**Cause (skrl 2.1).**
+- `record_transition` ends with `self._rnn_initial_states = self._rnn_final_states`, making them
+  one dict.
+- The next `act()` writes `self._rnn_final_states["policy"] = outputs["rnn"]`. Through the
+  alias, that also replaces the initial state that `record_transition` stores right after.
+- The rollout acted on h_t but memory held h_{t+1}. The update restarted every sequence one step
+  ahead.
+- The error is invisible at first: the fresh policy barely uses h, because the mean head is
+  initialised x0.01. It grows as the policy learns to use its memory. That gave the KL spikes, the
+  LR pinned at its floor, and the D11/D13 divergences.
+
+**Fix.** `HarvestPPO_RNN.act` un-aliases the dict before calling `super().act`.
+- `test_rl_logprob_consistency.py::test_stored_rnn_state_is_the_state_the_policy_acted_on` pins it:
+  stored h follows the LSTM recurrence to < 1e-5, and log-probs match after several updates.
+- The first consistency test is back to 1e-4 tolerance. Its earlier 1e-3 mismatch was at a
+  sequence start: this bug.
+- Per-position gap after the fix: exactly 0.
+
+**Consequence.** Every recurrent run so far trained on corrupted sequence starts. Results from D9
+onward should be re-established on the fixed code; the D13 reward settings are the starting point.

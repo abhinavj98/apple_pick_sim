@@ -110,6 +110,10 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
     out["peak_collateral_n_success_mean"] = (
         float(sum(w * c for w, c in won) / sum(w for w, _ in won)) if won else float("nan")
     )
+    for k in per_episode[0]:
+        if k.startswith("Episode / peak force ") and k.endswith(" N (mean)"):
+            name = k[len("Episode / peak force ") : -len(" N (mean)")]
+            out[f"peak_force_{name}_n_mean"] = float(np.mean([e[k] for e in per_episode]))
     out["episodes"] = per_episode
     return out
 

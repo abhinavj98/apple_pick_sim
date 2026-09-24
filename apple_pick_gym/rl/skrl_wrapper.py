@@ -65,6 +65,7 @@ class _EpisodeStats:
         self.steps_to_success = torch.full((self.n,), float("nan"), device=self.device)
         self.k_lin, self.k_ang, self.zeta, self.live_steps = z(), z(), z(), z()
         self.peak_speed, self.sum_speed = z(), z()
+        self.peak_junction: dict[str, torch.Tensor] = {}
 
     def update(
         self,
@@ -96,6 +97,9 @@ class _EpisodeStats:
         self.k_ang += lf * env_action[:, 9:12].mean(-1)
         self.zeta += lf * env_action[:, 12]
         self.live_steps += lf
+        for name, wr in info["woody_part_force"].items():
+            cur = self.peak_junction.get(name, torch.zeros(self.n, device=self.device))
+            self.peak_junction[name] = m(cur, torch.linalg.norm(wr[:, :3].to(cur), dim=-1))
         if tcp_speed is not None:
             sp = torch.nan_to_num(tcp_speed.reshape(-1).to(self.peak_speed), nan=0.0, posinf=0.0)
             self.peak_speed = m(self.peak_speed, sp)
@@ -130,6 +134,7 @@ class _EpisodeStats:
             "Episode / zeta used (mean)": s(per_live(self.zeta)),
             "Episode / peak TCP speed m/s (mean)": s(self.peak_speed),
             "Episode / mean TCP speed m/s (mean)": s(per_live(self.sum_speed)),
+            **{f"Episode / peak force {k} N (mean)": s(v) for k, v in self.peak_junction.items()},
         }
 
 

@@ -193,3 +193,15 @@ def test_episode_stats_report_tcp_speed():
     moving = info["log"]
     peak, mean = float(moving["Episode / peak TCP speed m/s (mean)"]), float(moving["Episode / mean TCP speed m/s (mean)"])
     assert peak > 0.01 and 0.0 < mean <= peak + 1e-6
+
+
+def test_episode_stats_report_peak_force_per_junction():
+    # which junctions the collateral load sits on (series statics: stem_apple / primary_spur carry the pull)
+    env, w = _wrapped()
+    w.reset()
+    for _ in range(T):
+        _, _, _, _, info = w.step(torch.zeros(N, 13))
+    log = info["log"]
+    for name in env.junction_names:
+        v = log[f"Episode / peak force {name} N (mean)"]
+        assert isinstance(v, torch.Tensor) and v.numel() == 1 and float(v) >= 0.0

@@ -150,7 +150,7 @@ def test_initial_log_std_is_configurable_and_clipped():
     torch.testing.assert_close(actor.log_std_parameter.detach(), torch.full((ACT,), -0.5))
 
 
-def test_d16_actor_mean_stays_inside_the_action_box():
+def test_d16_actor_mean_is_bounded_just_beyond_the_action_box():
     # [D16] with an unbounded mean and clip_actions, a mean drifting outside [-1, 1] leaves the clipped
     # action deep in the Gaussian tail, where its log-prob swings by nats for tiny parameter steps
     # (GPU: post-update KL 8 -> 7080 with exact stored data). tanh keeps the mean inside the box.
@@ -161,7 +161,9 @@ def test_d16_actor_mean_stays_inside_the_action_box():
     obs = torch.randn(N, OBS) * 10.0
     _, out = actor.act({"observations": obs, "states": torch.zeros(N, STATE), "rnn": _zero_rnn(actor, N)}, role="policy")
     mean = out["mean_actions"]
-    assert float(mean.abs().max()) <= 1.0
+    # [D16b] bound 1.5: full-rate (edge) actions stay easy to sample, the clipped action stays
+    # within ~1.1 std of the mean instead of deep in the tail
+    assert 1.0 < float(mean.abs().max()) <= 1.5
 
 
 def test_d16_log_prob_of_a_boundary_action_is_smooth_in_the_parameters():
@@ -175,3 +177,13 @@ def test_d16_log_prob_of_a_boundary_action_is_smooth_in_the_parameters():
         actor.mean_head.bias.add_(0.01)
         _, b = actor.act(inputs, role="policy")
     assert float((b["log_prob"] - a["log_prob"]).abs().max()) < 0.05
+
+
+def test_d16b_mean_can_reach_the_box_edge_without_saturating():
+    # plain tanh needs a saturated pre-activation (vanishing gradient) to command a full-scale action;
+    # the 1.5 bound reaches a mean of ~1 with a usable gradient
+    b = RecurrentNetConfig().mean_bound
+    x = torch.tensor(b * float(torch.atanh(torch.tensor(1.0 / b))), requires_grad=True)  # gives mean = 1
+    mean = b * torch.tanh(x / b)
+    mean.backward()
+    assert abs(float(mean) - 1.0) < 1e-5 and float(x.grad) > 0.5

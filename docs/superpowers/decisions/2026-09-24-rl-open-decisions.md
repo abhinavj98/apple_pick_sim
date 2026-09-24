@@ -22,7 +22,8 @@ hyperparameters beyond what is listed.
 | D13 | Charge -0.5 x episode peak collateral at the success edge | done |
 | D14 | Hold a blown-up world's last good obs/state (keeps the obs scaler clean) | done |
 | D15 | Fix skrl PPO_RNN storing h_{t+1} for row t (rnn-state dict aliasing) | done, GPU-confirmed |
-| D16 | tanh-squash the actor mean into the action box | done |
+| D16 | tanh-squash the actor mean into the action box | superseded by D16b |
+| D16b | Actor mean bounded at +-1.5 (1.5 tanh(x/1.5)) | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -798,3 +799,30 @@ same weights now give different means. The running D15 run is pre-D16.
 **Open (maintainer).** The peak TCP speed of 0.19 m/s exceeds the 0.12 m/s D8 target-speed cap,
 because the cap is on the VIC target and the TCP can overshoot, likely at the detach snap. It is
 within the rig's per-run peak maximum (0.21) but well above its median peak (0.055).
+
+## D16b -- Bound the mean at +-1.5, not +-1
+
+**Finding (D16 run, plain tanh).** Numerics were clean: no NaN, KL <= 0.015, LR at base, actions
+at the box edge ~4.4%. But the policy drifted passive:
+
+| episode | D16 success | D16 safety | D15 success (same reward) |
+| --- | --- | --- | --- |
+| 5 | 0.29 | 21.7% | 0.35 |
+| 10 | 0.24 | 8.0% | 0.35 |
+| 15 | 0.15 | 4.4% | 0.34 |
+
+D15 went on to 0.71.
+
+**Read.**
+- The only difference from D15 is the tanh. Under D8 the useful pulls are full-rate: a 2 mm/step
+  target move is action 1.0.
+- With a bound of exactly 1, commanding that needs a saturated tanh, where the gradient vanishes.
+  The policy retreats to smaller, safer actions.
+
+**Choice.** `mean = 1.5 * tanh(x / 1.5)` (`RecurrentNetConfig.mean_bound = 1.5`).
+- Edge actions stay easy to sample: a mean of 1 has a gradient of 0.56.
+- The clipped action stays within ~1.1 std (std ~0.45) of the mean, never deep in the tail
+  that caused the KL spikes.
+- The D16 run was stopped; relaunched as D16b.
+
+**Revert.** `mean_bound` large (e.g. 1e3) ~ unbounded.

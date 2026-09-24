@@ -894,3 +894,13 @@ D15 went on to 0.71.
   low-collateral bend detach (~10-15 N in D15/D16b), not success rate.
 - wandb 0.30 has no `wandb.util.generate_id`. The local agent fixed the run-id minting (014ae74).
   Seeds live: s0 `26yqs6lv`, s1 `l478x3im`, s2 `sc4364a7` (project `pruning-rl/apple_pick_vic_harvest`).
+
+**D8b parallel seeds: throughput and segmenting.**
+
+- All three seeds together run at 3.24 steps/s: 1.3x a single run (2.43 steps/s). Each seed runs
+  at 1.08 steps/s. The GPU is saturated (98% util, 12.6 / 24.6 GB). The first clip was written
+  for every seed.
+- One 2 h run then covers only ~31 of the ~70 planned episodes per seed.
+- Decision: keep the three seeds parallel and continue in <= 2 h segments (`--resume latest
+  --max-updates 112`; the new flag ends a segment on a checkpoint). This keeps the 2 h rule and
+  gives ~55 episodes per seed over two segments. A third segment is decided from the rows.

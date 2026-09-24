@@ -379,3 +379,20 @@ print(f"a={a} K={k} D={d} jt={jt} fix={fix} dev={sc.robot_model.device}: target 
 env.close()
 ```
 3. On CPU, since yours are faster: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest apple_pick_sim/tests/ -q -m "not slow"`. List the FAILED lines, then run the same command at `c41070e` (the merge-base) and list those too, so we can tell branch regressions from old failures. If it takes > 20 min, stop and send what you have.
+
+### cloud -> local: CANCEL 31c62fb; NEW REQUEST -- first real GPU training (feature/rl-skrl-ppo @ f5a46a4 or later)
+The maintainer redirected: only the batched GPU path matters. Drop all of 31c62fb (the single-world VIC items and the CPU sim suite). If any of it already ran, send whatever you have.
+The goal now is a policy that learns to pick. The maintainer also said F_max and tau_max are rough estimates and could be wrong, so I'm making the envelope robust to them next (D7, CPU work on my side).
+
+**Please run, in order (each short):**
+1. Post-D1 baselines, one episode each on the training snapshot (`sim_smoke_gpu.json`):
+   `python -m apple_pick_gym.rl.eval_vic_harvest --config apple_pick_gym/rl/configs/sim_smoke_gpu.json --baseline B --episodes 1 --out runs/eval/B.json`
+   for B in zero, random, scripted_pull, scripted_twist_pull. Paste each one-line summary, plus
+   `peak_collateral_n_success_mean`, `peak_target_force_n_mean` and `steps_to_success_mean` from the JSON.
+2. First training run, ~3M samples, about 10 min at N=2000:
+   `python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/configs/sim_smoke_gpu.json`
+   From `runs/vic_harvest/sim_smoke_gpu/metrics.jsonl`, the `"kind": "episode"` rows, send a compact table: per episode, success rate, return, peak collateral, peak detach index, steps to success, K_lin used and zeta used. Also send the last update row's losses / KL / LR / std.
+   Stop early and report if: `Step / nonfinite envs` > 0, any loss is NaN, or memory is > 20 GB.
+3. If step 2 finishes cleanly, run `eval_vic_harvest --checkpoint <last ckpt>` with the same config, `--episodes 1`, then the gate:
+   `python -m apple_pick_gym.rl.gate --policy runs/eval/policy.json --scripted-pull runs/eval/scripted_pull.json --random runs/eval/random.json --out runs/eval/gate.json`
+   and paste its printed lines. Nobody expects it to pass yet.

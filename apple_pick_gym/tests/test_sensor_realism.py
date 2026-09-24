@@ -153,4 +153,11 @@ def test_rl_training_preset_turns_sensor_dr_on():
     for field in (cfg.bias_std, cfg.noise_std, cfg.drift_std, cfg.drift_clip):
         vals = torch.as_tensor(field, dtype=torch.float32)
         assert vals.shape == (6,) and bool(torch.all(vals > 0))
-        assert bool(torch.all(vals[:3] > 10 * vals[3:]))  # forces >> torques
+
+
+def test_rl_training_noise_matches_the_real_rig():
+    """Per-channel noise measured on the real rig's quiet unloaded holds (s02, 32 segments,
+    ft_wrist_raw, 60 Hz block mean): F ~0.10-0.12 N, Tx/Ty ~0.033-0.050 N*m, Tz ~0.004 N*m."""
+    noise = torch.as_tensor(FtSensorConfig.rl_training().noise_std)
+    torch.testing.assert_close(noise, torch.tensor([0.12, 0.11, 0.12, 0.04, 0.05, 0.005]))
+    assert float(noise[3]) > 5 * float(noise[5])  # Tx/Ty are an order noisier than Tz

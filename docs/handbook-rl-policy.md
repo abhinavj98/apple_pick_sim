@@ -172,7 +172,7 @@ layouts and refuse to load into a build whose layout differs (§8).
 | Grasp | weld (approach/pull) direction, 30° cone around straight down | per env, at build | world set | yes (geometry) |
 | Arm, build-time | link mass/inertia ×[0.9, 1.1], EE payload ×[0.95, 1.05] | per env, once after build | world set | yes |
 | Arm, per episode | joint armature ×[0.7, 1.3], Coulomb friction ×[0.5, 1.5], viscous damping ×[0.7, 1.3] | **every reset** | `_resample_joint_dynamics_dr` | yes |
-| F/T sensor | 10 Hz causal EMA + per-episode bias (0.5 N / 0.02 N·m) + per-step noise (0.2 N / 0.005 N·m) + bounded drift | **every reset** (bias, drift) / step (noise) | `FtSensorConfig.rl_training()` (training default; the env default is noise-free) | raw F/T yes |
+| F/T sensor | 10 Hz causal EMA + per-episode bias (0.5 N / 0.05 N·m, estimate) + per-step noise **measured on the real rig** (0.12 N; Tx/Ty 0.04–0.05, Tz 0.005 N·m) + bounded drift (estimate) | **every reset** (bias, drift) / step (noise) | `FtSensorConfig.rl_training()` (training default; the env default is noise-free) | raw F/T yes |
 
 **Verified (2026-09-24).** `test_harvest_env_rl_contract.py` (real build) checks that
 support DR is per env and in the build, that arm joint DR and the F/T bias change on every

@@ -50,16 +50,21 @@ class FtSensorConfig:
     def rl_training(cls) -> FtSensorConfig:
         """Sensor DR on: per-episode bias, per-step noise, slow bounded drift.
 
-        A starting point, not a calibration: bias 0.5 N / 0.02 N*m and noise 0.2 N /
-        0.005 N*m per channel are typical of a wrist F/T or joint-torque-estimated
-        wrench at 60 Hz; drift is a 0.01 N/step walk bounded at 1 N (torque 0.0005 /
-        0.05 N*m). Revisit against the real rig's quiescent ft_wrist.
+        **Noise is measured on the real rig** (2026-09-24, s02 unloaded baseline holds, arm still,
+        32 x 0.5 s segments of ``ft_wrist_raw``, linear-detrended, 16-sample block mean ~ 60 Hz):
+        std ``[0.116, 0.100, 0.107] N`` and ``[0.033, 0.050, 0.0043] N*m`` -> rounded to
+        ``(0.12, 0.11, 0.12, 0.04, 0.05, 0.005)``. The real noise is not white (60 Hz averaging
+        barely reduces it); per-step white noise plus the drift walk is the approximation used here.
+
+        **Bias and drift are not measurable** from the sys-ID data (no stationary loaded rest; the
+        unloaded holds carry pose-dependent tool gravity), so they stay estimates: bias 0.5 N /
+        0.05 N*m (Tz 0.005), drift a bounded walk. Revisit with a dedicated stationary recording.
         """
         return cls(
-            bias_std=(0.5, 0.5, 0.5, 0.02, 0.02, 0.02),
-            noise_std=(0.2, 0.2, 0.2, 0.005, 0.005, 0.005),
-            drift_std=(0.01, 0.01, 0.01, 0.0005, 0.0005, 0.0005),
-            drift_clip=(1.0, 1.0, 1.0, 0.05, 0.05, 0.05),
+            bias_std=(0.5, 0.5, 0.5, 0.05, 0.05, 0.005),
+            noise_std=(0.12, 0.11, 0.12, 0.04, 0.05, 0.005),
+            drift_std=(0.01, 0.01, 0.01, 0.001, 0.001, 0.0001),
+            drift_clip=(1.0, 1.0, 1.0, 0.1, 0.1, 0.01),
         )
 
 

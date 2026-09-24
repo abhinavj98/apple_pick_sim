@@ -13,6 +13,15 @@ Read these **before** substantial implementation work. They apply to automated a
 
 If **vision**, **roadmap**, and **code** disagree, **stop** and report the conflict instead of silently choosing a direction.
 
+## File deletion (always enforced)
+
+Deleting files is allowed **only strictly inside `/tmp`**. This applies to `rm`, `rmdir`, `unlink`, `shred`,
+`find -delete` / `-exec rm`, `xargs rm` and `git clean -f`. Everything else needs the maintainer's
+explicit OK. Claude Code enforces this with the project `PreToolUse` hook
+`.claude/hooks/block_rm_outside_tmp.py`, registered in `.claude/settings.json` and tested in
+`apple_pick_gym/tests/test_claude_rm_guard.py`. Do not work around a denial (for example by
+deleting from Python). Other agents must follow the same rule by hand.
+
 ## Repository layout
 
 | Path | Role |

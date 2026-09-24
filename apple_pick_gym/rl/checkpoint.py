@@ -43,7 +43,9 @@ def _rnn_spec(model) -> dict[str, Any]:
     return {"sequence_length": spec["sequence_length"], "sizes": [[s[0], s[2]] for s in spec["sizes"]]}
 
 
-def checkpoint_meta(agent, wrapper, cfg, *, timestep: int, updates: int, wandb_run_id: str | None) -> dict[str, Any]:
+def checkpoint_meta(
+    agent, wrapper, cfg, *, timestep: int, updates: int, wandb_run_id: str | None, init_from: str | None = None
+) -> dict[str, Any]:
     return {
         "schema": _META_SCHEMA,
         "timestep": int(timestep),
@@ -53,16 +55,21 @@ def checkpoint_meta(agent, wrapper, cfg, *, timestep: int, updates: int, wandb_r
         "action_bounds": dataclasses.asdict(wrapper.action_scaler.bounds),
         "rnn": {"policy": _rnn_spec(agent.policy), "value": _rnn_spec(agent.value)},
         "wandb_run_id": wandb_run_id,
+        "init_from": init_from,
         "git_sha": _git_sha(),
         "config": cfg.to_dict(),
     }
 
 
-def save_checkpoint(directory, agent, wrapper, cfg, *, timestep: int, updates: int, wandb_run_id: str | None) -> Path:
+def save_checkpoint(
+    directory, agent, wrapper, cfg, *, timestep: int, updates: int, wandb_run_id: str | None, init_from: str | None = None
+) -> Path:
     path = Path(directory) / f"ckpt_{int(timestep):09d}"
     path.mkdir(parents=True, exist_ok=True)
     agent.save(str(path / "agent.pt"))
-    meta = checkpoint_meta(agent, wrapper, cfg, timestep=timestep, updates=updates, wandb_run_id=wandb_run_id)
+    meta = checkpoint_meta(
+        agent, wrapper, cfg, timestep=timestep, updates=updates, wandb_run_id=wandb_run_id, init_from=init_from
+    )
     (path / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     return path
 

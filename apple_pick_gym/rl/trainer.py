@@ -477,13 +477,24 @@ def _build_train_video(
 
 
 def run_training(
-    cfg: TrainConfig, *, resume: str | None = None, max_updates: int | None = None, wandb_backfill: bool = False
+    cfg: TrainConfig,
+    *,
+    resume: str | None = None,
+    max_updates: int | None = None,
+    wandb_backfill: bool = False,
+    init_from: str | None = None,
 ) -> TrainResult:
     """Train until ``cfg.timesteps`` (or ``max_updates`` more updates). ``resume``: ``"latest"`` or a checkpoint dir.
 
     ``wandb_backfill``: on resume, first log ``metrics.jsonl``'s update rows up to the checkpoint to
     wandb (for earlier segments whose scalars never reached it). Use once per run.
+
+    ``init_from``: a checkpoint of ANOTHER run whose weights, optimizer and scalers start this
+    one. Unlike ``resume`` it is a new run: timestep 0, this ``run_dir``, a fresh wandb id, and
+    ``cfg`` (e.g. a changed reward) as is. Recorded in ``metrics.jsonl`` and checkpoint meta.
     """
+    if init_from and resume:
+        raise ValueError("init_from starts a new run; it cannot be combined with resume")
     from skrl.trainers.torch import SequentialTrainerCfg
 
     run_dir = Path(cfg.run_dir)
@@ -518,6 +529,13 @@ def run_training(
     agent.history_callback = _history
     agent.init(trainer_cfg=SequentialTrainerCfg(timesteps=cfg.timesteps))
     start, updates = 0, 0
+    if init_from:
+        src_meta = load_checkpoint(init_from, agent, wrapper, cfg)
+        metrics.write(
+            json.dumps({"kind": "init_from", "checkpoint": str(init_from), "source_timestep": int(src_meta["timestep"])})
+            + "\n"
+        )
+        metrics.flush()
     if ckpt_path is not None:
         meta = load_checkpoint(ckpt_path, agent, wrapper, cfg)
         start, updates = int(meta["timestep"]), int(meta["updates"])
@@ -590,6 +608,7 @@ def run_training(
                     last_ckpt = save_checkpoint(
                         run_dir / "checkpoints", agent, wrapper, cfg,
                         timestep=timestep + 1, updates=updates, wandb_run_id=wandb_run_id,
+                        init_from=str(init_from) if init_from else None,
                     )
         timestep = stop_at
     finally:

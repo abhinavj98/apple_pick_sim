@@ -1046,3 +1046,20 @@ ckpt_11200, s2 ckpt_8000. All are also 2/5.
   2. an entropy bonus;
   3. a warm start from D8b s1 (needs a fresh wandb id and timestep reset, i.e. a small
      init-from-checkpoint path).
+
+**D13c stopped at EP10 (a fast-pull clone). D13d: warm start from D8b s1, three arms.**
+
+- D13c EP10: success 0.94-0.99, 32-57 steps, collateral 42-45 N, < 15 N at 0-7%. That is
+  scripted_pull, faster. A reliable +16 pull leaves no gradient toward a bend that is rarely
+  sampled.
+- With D13b (bend found, success ~0), this brackets the problem. The bend basin is reached only
+  when pulls stop paying, and a from-scratch policy then fails its early bends and goes idle.
+- Fix exploration, not the payout: start from D8b s1 ckpt_13568, which already succeeds by
+  bending on 21% of successes (0.76 success, torque share 0.64).
+- New `--init-from <ckpt>`: loads weights, optimizer and scalers from another run, then starts a
+  NEW run (timestep 0, own run dir, fresh wandb id, the given config).
+- Arms, all from the same checkpoint, parallel, 2 h cap:
+  - `sim_train_gpu_d8b_ws_s1_pc1b60.json`: weight 1.0, bonus 60 (pull +16, bend +50);
+  - `sim_train_gpu_d8b_ws_s1_pc1b40.json`: weight 1.0, bonus 40 (pull -4 ~ idle, bend +30);
+  - control: D8b s1 segment 3 with the unchanged reward (`--resume latest --max-updates 61`, to
+    17.5k steps). This separates the reward change from plain extra training.

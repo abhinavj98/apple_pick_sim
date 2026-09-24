@@ -35,6 +35,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--resume", help="'latest' or a checkpoint directory")
     p.add_argument("--dry-run", action="store_true", help="one rollout + one PPO update, then exit")
     p.add_argument(
+        "--init-from",
+        help="checkpoint of another run to start this NEW run from (weights, optimizer, scalers; timestep 0)",
+    )
+    p.add_argument(
         "--max-updates", type=int,
         help="stop after this many more PPO updates, with a checkpoint (a wall-capped segment; continue with --resume latest)",
     )
@@ -132,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         resume=args.resume,
         max_updates=1 if args.dry_run else args.max_updates,
         wandb_backfill=args.wandb_backfill,
+        init_from=args.init_from,
     )
     print(
         f"trained timesteps {result.start_timestep} -> {result.timestep} ({result.updates} updates); "

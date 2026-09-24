@@ -93,7 +93,7 @@ def test_cli_max_updates_is_passed_to_run_training(monkeypatch):
         last_checkpoint = run_dir = None
         episodes = []
 
-    def fake(cfg, *, resume=None, max_updates=None, wandb_backfill=False):
+    def fake(cfg, *, resume=None, max_updates=None, wandb_backfill=False, init_from=None):
         seen["max_updates"] = max_updates
         seen["backfill"] = wandb_backfill
         return R()

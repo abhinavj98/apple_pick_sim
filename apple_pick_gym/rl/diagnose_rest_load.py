@@ -82,7 +82,10 @@ def diagnose(env) -> dict:
     parent, child = model.joint_parent.numpy(), model.joint_child.numpy()
     labels = list(getattr(model, "body_label", []) or [])
     roots = env._target_child_body.cpu().numpy()
-    subtrees = [descendants(int(r), parent, child) for r in roots]
+    # The gripper proxy is welded to the apple but held by the arm: its weight is not hanging load.
+    # It reaches the apple through the weld, whose reaction is the wrist wrench below.
+    is_proxy = lambda b: b < len(labels) and "proxy" in labels[b]
+    subtrees = [[b for b in descendants(int(r), parent, child) if not is_proxy(b)] for r in roots]
     width = max(len(s) for s in subtrees)
     idx = torch.zeros(n, width, dtype=torch.long)
     live = torch.zeros(n, width)
@@ -134,6 +137,7 @@ def diagnose(env) -> dict:
         "num_envs": n,
         "valid_envs": int(valid.sum()),
         "subtree_bodies_env0": [labels[b] if b < len(labels) else str(b) for b in subtrees[0]],
+        "subtree_body_mass_env0_kg": [float(body_mass[b]) for b in subtrees[0]],
         "subtree_mass_kg": _stats(v(mass.sum(1))),
         "gravity": [float(x) for x in g],
         "junction_torque_stem_nm": _stats(v(norm(w_j[:, 3:]))),

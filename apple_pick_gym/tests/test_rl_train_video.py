@@ -93,8 +93,9 @@ def test_cli_max_updates_is_passed_to_run_training(monkeypatch):
         last_checkpoint = run_dir = None
         episodes = []
 
-    def fake(cfg, *, resume=None, max_updates=None):
+    def fake(cfg, *, resume=None, max_updates=None, wandb_backfill=False):
         seen["max_updates"] = max_updates
+        seen["backfill"] = wandb_backfill
         return R()
 
     monkeypatch.setattr(trainer, "run_training", fake)
@@ -104,4 +105,6 @@ def test_cli_max_updates_is_passed_to_run_training(monkeypatch):
     cli.main(args + ["--max-updates", "7", "--dry-run"])
     assert seen["max_updates"] == 1
     cli.main(args)
-    assert seen["max_updates"] is None
+    assert seen["max_updates"] is None and seen["backfill"] is False
+    cli.main(args + ["--wandb-backfill"])
+    assert seen["backfill"] is True

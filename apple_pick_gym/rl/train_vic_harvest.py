@@ -64,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--wandb", dest="wandb", action="store_true", default=None)
     w.add_argument("--no-wandb", dest="wandb", action="store_false")
     g.add_argument("--wandb-project")
+    g.add_argument(
+        "--wandb-backfill", action="store_true",
+        help="with --resume: first log metrics.jsonl update rows up to the checkpoint to wandb (once per run)",
+    )
     g.add_argument("--video-every", type=int, help="record one env every N episodes (0 = off; CUDA)")
     return p
 
@@ -123,7 +127,12 @@ def main(argv: list[str] | None = None) -> int:
             "backend, which does not integrate replicated arms (the TCP never moves). Use --env surrogate "
             "for CPU training, or --allow-cpu-sim for a wiring-only check."
         )
-    result = run_training(cfg, resume=args.resume, max_updates=1 if args.dry_run else args.max_updates)
+    result = run_training(
+        cfg,
+        resume=args.resume,
+        max_updates=1 if args.dry_run else args.max_updates,
+        wandb_backfill=args.wandb_backfill,
+    )
     print(
         f"trained timesteps {result.start_timestep} -> {result.timestep} ({result.updates} updates); "
         f"last checkpoint: {result.last_checkpoint}; run dir: {result.run_dir}"

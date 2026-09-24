@@ -286,7 +286,11 @@ def build_agent(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, run_dir: Path,
             write_interval=p.rollouts,  # one TensorBoard / history row per PPO update
             checkpoint_interval=0,  # this repo's checkpoints (with meta.json) instead
             wandb=cfg.wandb,
-            wandb_kwargs=dict(project=cfg.wandb_project, id=wandb_run_id, resume="allow", dir=str(run_dir)),
+            # sync_tensorboard off: under wandb 0.30 it forwarded none of skrl's scalars (D8b); the
+            # trainer logs them itself through WandbSink, keyed on "timestep".
+            wandb_kwargs=dict(
+                project=cfg.wandb_project, id=wandb_run_id, resume="allow", dir=str(run_dir), sync_tensorboard=False
+            ),
         ),
     )
     if p.kl_adaptive_lr_threshold is not None:
@@ -365,6 +369,47 @@ class TrainResult:
     episodes: list[dict[str, float]]
 
 
+class WandbSink:
+    """Log rows to the active wandb run against a ``timestep`` x-axis (no-op without a run).
+
+    Every row carries ``timestep`` and ``define_metric("*", step_metric="timestep")`` plots all
+    keys against it, so rows logged out of order (a resume backfill, videos) never collide with
+    wandb's internal ``_step``.
+    """
+
+    def __init__(self) -> None:
+        self._defined = False
+
+    def log(self, timestep: int, data: dict) -> None:
+        import wandb
+
+        if wandb.run is None:
+            return
+        if not self._defined:
+            wandb.define_metric("timestep")
+            wandb.define_metric("*", step_metric="timestep")
+            self._defined = True
+        wandb.log({**data, "timestep": int(timestep)})
+
+
+def backfill_wandb(metrics_path: Path | str, *, upto_timestep: int, sink: WandbSink) -> int:
+    """Log the ``update`` rows of ``metrics.jsonl`` with ``timestep <= upto_timestep``; returns the count.
+
+    For a run whose earlier segment never reached wandb: rows after the resume checkpoint are
+    re-trained and logged live, so they are skipped.
+    """
+    n = 0
+    for line in Path(metrics_path).read_text().splitlines():
+        row = json.loads(line)
+        if row.get("kind") != "update" or int(row["timestep"]) > int(upto_timestep):
+            continue
+        t = int(row.pop("timestep"))
+        row.pop("kind")
+        sink.log(t, row)
+        n += 1
+    return n
+
+
 class TrainVideo:
     """Record episodes during training: the whole batch resets every ``episode_steps`` steps.
 
@@ -406,7 +451,7 @@ class TrainVideo:
 
 
 def _build_train_video(
-    cfg: TrainConfig, wrapper: HarvestSkrlWrapper, run_dir: Path, *, start_timestep: int
+    cfg: TrainConfig, wrapper: HarvestSkrlWrapper, run_dir: Path, *, start_timestep: int, sink: WandbSink | None
 ) -> TrainVideo | None:
     if cfg.video_every <= 0:
         return None
@@ -416,11 +461,10 @@ def _build_train_video(
 
     def _log(path: Path, ep: int, timestep: int) -> None:
         print(f"[video] episode {ep}: {path}", flush=True)
-        if cfg.wandb:
+        if sink is not None:
             import wandb
 
-            if wandb.run is not None:
-                wandb.log({"Video / episode": wandb.Video(str(path), format="mp4"), "Video / episode index": ep})
+            sink.log(timestep, {"Video / episode": wandb.Video(str(path), format="mp4"), "Video / episode index": ep})
 
     recorder = HarvestVideoRecorder(run_dir / "videos", record_every=cfg.video_every, seed=cfg.seed)
     return TrainVideo(
@@ -432,8 +476,14 @@ def _build_train_video(
     )
 
 
-def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: int | None = None) -> TrainResult:
-    """Train until ``cfg.timesteps`` (or ``max_updates`` more updates). ``resume``: ``"latest"`` or a checkpoint dir."""
+def run_training(
+    cfg: TrainConfig, *, resume: str | None = None, max_updates: int | None = None, wandb_backfill: bool = False
+) -> TrainResult:
+    """Train until ``cfg.timesteps`` (or ``max_updates`` more updates). ``resume``: ``"latest"`` or a checkpoint dir.
+
+    ``wandb_backfill``: on resume, first log ``metrics.jsonl``'s update rows up to the checkpoint to
+    wandb (for earlier segments whose scalars never reached it). Use once per run.
+    """
     from skrl.trainers.torch import SequentialTrainerCfg
 
     run_dir = Path(cfg.run_dir)
@@ -453,13 +503,17 @@ def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: in
 
     wrapper, agent = build_training(cfg, wandb_run_id=wandb_run_id)
     cfg.save_json(run_dir / "config.json")
-    metrics = (run_dir / "metrics.jsonl").open("a")
+    metrics_path = run_dir / "metrics.jsonl"
+    metrics = metrics_path.open("a")
     episodes: list[dict[str, float]] = []
+    sink = WandbSink() if cfg.wandb else None
 
     def _history(timestep: int, row: dict[str, float]) -> None:
         if any(k.startswith("Loss /") for k in row):
             metrics.write(json.dumps({"kind": "update", "timestep": int(timestep), **row}) + "\n")
             metrics.flush()
+        if sink is not None and row:
+            sink.log(int(timestep), row)
 
     agent.history_callback = _history
     agent.init(trainer_cfg=SequentialTrainerCfg(timesteps=cfg.timesteps))
@@ -468,11 +522,14 @@ def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: in
         meta = load_checkpoint(ckpt_path, agent, wrapper, cfg)
         start, updates = int(meta["timestep"]), int(meta["updates"])
         reseed_for_resume(wrapper, cfg, start_timestep=start)
+        if wandb_backfill and sink is not None:
+            n = backfill_wandb(metrics_path, upto_timestep=start, sink=sink)
+            print(f"[wandb] backfilled {n} update rows up to timestep {start}", flush=True)
     agent.enable_training_mode(True)
     agent.enable_models_training_mode(False)
 
     last_ckpt = ckpt_path
-    video = _build_train_video(cfg, wrapper, run_dir, start_timestep=start)
+    video = _build_train_video(cfg, wrapper, run_dir, start_timestep=start, sink=sink)
     obs, _ = wrapper.reset()
     states = wrapper.state()
     t_env = t_act = 0.0

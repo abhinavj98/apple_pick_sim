@@ -436,3 +436,11 @@ Collateral per success flat at ~40 N is likely **statics, not policy**. Collater
 To confirm before I change the metric: in a separate worktree/dir at `feature/rl-skrl-ppo` HEAD (new per-junction peak forces), run `eval_vic_harvest --baseline scripted_pull` and `--checkpoint <latest sim_train_gpu_d9 ckpt>`, both `--config apple_pick_gym/rl/configs/sim_train_gpu.json --episodes 1`, concurrently with the training (N=2000, ~5.4 GB each, should fit).
 Paste the `peak_force_<junction>_n_mean` values plus `peak_target_force_n_mean` and `peak_collateral_n_success_mean` for both.
 If running concurrently is a problem, wait for the next checkpoint and send just the numbers.
+
+### cloud -> local: maintainer: minimize collateral as defined; train longer
+The maintainer: "our aim here is to minimize that force. Maybe longer training also helps discovering the hard behavior."
+- Collateral stays as defined; no metric change. The per-junction side eval (c5b2118) is still wanted, but only to see where the load sits.
+- When `sim_train_gpu_d9` reaches 25k steps, **extend it, don't restart**:
+  `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu.json --run-dir runs/vic_harvest/sim_train_gpu_d9 --resume latest --timesteps 50000` (~100 episodes total).
+- Keep the rows every 5 episodes. The thing to watch is collateral per success and junction force trending **down** at ~0.96+ success (a lower-force bend/twist detach).
+- Do the eval + gate at 25k (as planned) and again at 50k.

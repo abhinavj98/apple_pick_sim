@@ -63,7 +63,7 @@ def test_defaults_follow_the_plan():
     assert cfg.env.max_target_pos_offset_m is not None  # VIC target leash on for training
 
 
-@pytest.mark.parametrize("name", ["surrogate_smoke.json", "sim_wiring_cpu.json", "sim_wiring_gpu.json", "sim_smoke_gpu.json", "sim_train_gpu.json", "sim_train_gpu_ep250.json", "sim_debug_kl_gpu.json"])
+@pytest.mark.parametrize("name", ["surrogate_smoke.json", "sim_wiring_cpu.json", "sim_wiring_gpu.json", "sim_smoke_gpu.json", "sim_train_gpu.json", "sim_train_gpu_ep250.json", "sim_debug_kl_gpu.json", "sim_train_gpu_ep250_unbounded.json"])
 def test_checked_in_configs_load_and_validate(name):
     from pathlib import Path
 
@@ -153,3 +153,10 @@ def test_d13_training_config_charges_peak_collateral_at_success():
     assert cfg.w_peak_collateral == 0.5
     env = build_env(dataclasses.replace(cfg, kind="surrogate", num_envs=2, device="cpu"), seed=0)
     assert env._reward_cfg.w_peak_collateral == 0.5
+
+
+def test_unbounded_fallback_config_sets_mean_bound_none():
+    from pathlib import Path
+
+    cfg = TrainConfig.load_json(Path(__file__).resolve().parent.parent / "rl" / "configs" / "sim_train_gpu_ep250_unbounded.json")
+    assert cfg.actor.mean_bound is None and cfg.ppo.kl_threshold == 0.05

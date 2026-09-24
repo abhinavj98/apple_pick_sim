@@ -45,7 +45,7 @@ class RecurrentNetConfig:
     min_log_std: float = -5.0
     max_log_std: float = 0.5
     # [D16b] actor mean = mean_bound * tanh(x / mean_bound): bounded just beyond the [-1, 1] box
-    mean_bound: float = 1.5
+    mean_bound: float | None = 1.5  # None: unbounded (D15 behaviour)
 
 
 def _mlp(in_dim: int, sizes: tuple[int, ...]) -> tuple[nn.Sequential, int]:
@@ -147,8 +147,12 @@ class LstmGaussianActor(GaussianMixin, Model):
         # spikes of 8-7080 with exact stored data). A bound of exactly 1 (plain tanh) needs a
         # saturated tanh to command full-rate actions -- the D16 run drifted passive. 1.5 keeps edge
         # actions easy to sample and the clipped action within ~1.1 std of the mean.
-        b = float(self.cfg.mean_bound)
-        mean = b * torch.tanh(self.mean_head(feats) / b)
+        raw = self.mean_head(feats)
+        if self.cfg.mean_bound is None:
+            mean = raw
+        else:
+            b = float(self.cfg.mean_bound)
+            mean = b * torch.tanh(raw / b)
         return mean, {"log_std": self.log_std_parameter.expand_as(mean), "rnn": rnn}
 
 

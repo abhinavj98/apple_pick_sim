@@ -187,3 +187,16 @@ def test_d16b_mean_can_reach_the_box_edge_without_saturating():
     mean = b * torch.tanh(x / b)
     mean.backward()
     assert abs(float(mean) - 1.0) < 1e-5 and float(x.grad) > 0.5
+
+
+def test_mean_bound_none_is_the_unbounded_d15_actor():
+    torch.manual_seed(0)
+    o, st, a = _spaces()
+    actor = LstmGaussianActor(
+        observation_space=o, state_space=st, action_space=a, device="cpu", num_envs=N, cfg=_cfg(mean_bound=None)
+    )
+    actor.eval()
+    with torch.no_grad():
+        actor.mean_head.bias.fill_(50.0)
+    _, out = actor.act({"observations": torch.randn(N, OBS), "states": torch.zeros(N, STATE), "rnn": _zero_rnn(actor, N)}, role="policy")
+    assert float(out["mean_actions"].min()) > 40.0

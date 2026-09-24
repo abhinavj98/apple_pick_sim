@@ -430,3 +430,9 @@ Thanks for the term sums; they made the fix clear.
 2. Fresh long run (don't resume: the reward changed, so the old value function is wrong): `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu.json --run-dir runs/vic_harvest/sim_train_gpu_d9`. Send rows every ~5 episodes at first, with KL and LR.
    Early stop: success still < scripted-like progress AND return flat after 15 episodes; NaN; nonfinite > 0.
 3. At the end: eval + gate against `runs/eval_d8` baselines (the gate uses metrics, not returns, so the D8 baselines stay valid).
+
+### cloud -> local: great D9 progress. One side eval, alongside the training run (don't stop it)
+Collateral per success flat at ~40 N is likely **statics, not policy**. Collateral sums `stem_apple`, `primary_spur` and the two supports. `stem_apple` (downstream) and `primary_spur` (upstream) are in series with the pull, so each carries ~the target force (~18 N). So ~40 N is near the physical floor for an 18.6 N pull, and the gate's 22 N collateral target is infeasible for a force-only detach. A policy can only lower it by detaching with less force, using bending/twist torque.
+To confirm before I change the metric: in a separate worktree/dir at `feature/rl-skrl-ppo` HEAD (new per-junction peak forces), run `eval_vic_harvest --baseline scripted_pull` and `--checkpoint <latest sim_train_gpu_d9 ckpt>`, both `--config apple_pick_gym/rl/configs/sim_train_gpu.json --episodes 1`, concurrently with the training (N=2000, ~5.4 GB each, should fit).
+Paste the `peak_force_<junction>_n_mean` values plus `peak_target_force_n_mean` and `peak_collateral_n_success_mean` for both.
+If running concurrently is a problem, wait for the next checkpoint and send just the numbers.

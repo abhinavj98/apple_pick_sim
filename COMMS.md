@@ -568,3 +568,13 @@ It's invisible at first (the fresh policy barely uses h) and grows as the policy
 1. Pull 4c7acee. Quick confirm: the debug side run again (`sim_debug_kl_gpu.json`, resume D13 `ckpt_000004800`, `--timesteps 5824`). Pre-update KL should now be ~0 on every update (and no `debug_kl_*.json` dumps).
 2. If clean, launch fresh: `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --run-dir runs/vic_harvest/sim_train_gpu_ep250_d15` (2 h cap; D9-D15 + kl_threshold 0.05).
    Rows every 5 episodes with KL/LR. I expect success to climb well past D13's ~0.26, since the policy can finally use its memory. Eval + gate best + last at the end.
+
+### cloud -> local: D15 confirmed, thanks. D16 (82e9c9c) addresses the remaining real KL spikes
+Pre-update KL ~1e-10 is exactly what we needed.
+The remaining post-update spikes (8, 7080) with exact data point to the **clipped-Gaussian tail**. Our actor mean was unbounded while skrl clips actions to [-1, 1] and takes the log-prob at the clipped action. Once the mean drifts outside the box, clipped actions sit deep in the tail, where log-probs swing by nats for tiny steps and exp(r)-1-r explodes.
+**D16:** `mean = tanh(head)`. Tested: the mean stays inside the box, and the boundary-action log-prob is smooth in the parameters. There is also a new per-update metric `Policy / actions at box edge (frac)`.
+NOTE: pre-D16 checkpoints must be evaluated at a pre-D16 commit (4c7acee), because the same weights now give different means.
+**Plan:**
+- Let the D15 run continue as the D15-only reference (the divergence guard stops it if it blows up). Keep sending rows every 5 episodes, especially KL.
+- When it ends (or diverges), eval + gate best + last **at 4c7acee**.
+- Then launch fresh at 82e9c9c: `--run-dir runs/vic_harvest/sim_train_gpu_ep250_d16` (2 h). Rows include `actions at box edge`, KL and LR.

@@ -922,3 +922,25 @@ D15 went on to 0.71.
   this trade).
 - No reward change mid-run. Decision point is after segment 2. If no seed falls below ~25 N
   collateral, consider a stronger peak-collateral weight (D13 0.5 -> 1.0).
+
+**D8b seeds, EP10-15: a reliable pull at ~37-38 N; D13b prepared, not launched.**
+
+| seed | success EP15 | safety EP15 | collateral / success | torque share | peak TCP |
+| --- | --- | --- | --- | --- | --- |
+| s0 | 0.982 | 1.8% | 38.3 N | 0.47 | 0.36 m/s |
+| s1 | 0.685 | 5.0% | 37.9 N | 0.54 | 0.17 m/s |
+| s2 | 0.967 | 2.4% | 36.7 N | 0.45 | 0.32 m/s |
+
+- The seed spread is small in collateral: all three sit at 37-38 N.
+- s0 and s2 beat scripted_pull on safety and slightly on collateral (44.4 N), but are far from the
+  D15/D16b bend detach (~10-15 N). Numerics are clean.
+- Speed climbs toward the 0.4 m/s cap. At this cap a fast pull succeeds almost always, so the
+  pull basin wins. Under D8, pulls failed and bend was the only way.
+- Segment 2 runs as planned, same reward. The maintainer expects longer training to find the harder
+  behaviour, and D15 only broke out after EP15-25.
+- **D13b (ready if no seed goes below ~25 N after segment 2):** `w_peak_collateral` 0.5 -> 1.0,
+  `sim_train_gpu_d8b_tanh15_pc1_s{0,1,2}.json`.
+  - Terminal success value: a 38 N pull +20-38 = -18 (still +22 over failure, -40); a 12 N bend
+    +8.
+  - The bend-over-pull margin rises from ~13 to ~26 points. A success is still always better
+    than failing below the 60 N collateral mark.

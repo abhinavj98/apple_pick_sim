@@ -91,7 +91,7 @@ def test_d8_target_speed_cap_matches_the_rig_and_reaches_the_env():
 def test_d10_kl_adaptive_lr_has_a_floor():
     # [D10] the KL-adaptive schedule cut the LR ~25x within 18 updates (4e-5) on GPU; skrl's floor is 1e-6
     cfg = TrainConfig()
-    assert cfg.ppo.kl_adaptive_min_lr == 1e-4
+    assert cfg.ppo.kl_adaptive_min_lr == 3e-5
 
 
 def test_d10_min_lr_reaches_the_scheduler(tmp_path):
@@ -104,7 +104,9 @@ def test_d10_min_lr_reaches_the_scheduler(tmp_path):
         run_dir=str(tmp_path / "run"),
     )
     _wrapper, agent = build_training(cfg)
-    assert agent.scheduler.min_lr == 1e-4
+    assert agent.scheduler.min_lr == 3e-5
+    # [D10b] ceiling = the base LR: on GPU the schedule climbed to 5e-4 (> 3e-4 base) as the run degraded
+    assert agent.scheduler.max_lr == cfg.ppo.learning_rate
 
 
 def test_d9_training_reward_balance_ranks_a_clean_pick_above_scripted_pull_above_zero():

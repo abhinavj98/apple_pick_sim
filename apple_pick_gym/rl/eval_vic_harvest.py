@@ -114,6 +114,17 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         if k.startswith("Episode / peak force ") and k.endswith(" N (mean)"):
             name = k[len("Episode / peak force ") : -len(" N (mean)")]
             out[f"peak_force_{name}_n_mean"] = float(np.mean([e[k] for e in per_episode]))
+    for label, key in (
+        ("force N", "detach_force_n_mean"),
+        ("torque N*m", "detach_torque_nm_mean"),
+        ("torsion N*m", "detach_torsion_nm_mean"),
+        ("bending N*m", "detach_bending_nm_mean"),
+        ("force share", "detach_force_share_mean"),
+        ("torque share", "detach_torque_share_mean"),
+    ):
+        vals = [e[f"Episode / detach {label} (mean)"] for e in per_episode if np.isfinite(e.get(f"Episode / detach {label} (mean)", np.nan))]
+        out[key] = float(np.mean(vals)) if vals else float("nan")
+    out["peak_target_torque_nm_mean"] = float(np.mean([e["Episode / peak target torque N*m (mean)"] for e in per_episode]))
     out["episodes"] = per_episode
     return out
 

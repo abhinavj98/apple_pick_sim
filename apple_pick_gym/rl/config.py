@@ -84,8 +84,11 @@ class PPOConfig:
     gae_lambda: float = 0.95
     learning_rate: float = 3e-4
     kl_adaptive_lr_threshold: float | None = 0.01  # KLAdaptiveLR target KL; None = fixed lr
-    # [D10] LR floor for the KL-adaptive schedule (skrl's default 1e-6 let it fall ~25x in 18 GPU updates)
-    kl_adaptive_min_lr: float = 1e-4
+    # [D10] LR floor for the KL-adaptive schedule (skrl's default 1e-6 let it fall ~25x in 18 GPU updates).
+    # [D10b] 1e-4 -> 3e-5: pinned at 1e-4 the KL ran at ~3.5x its 0.01 target and success wobbled.
+    kl_adaptive_min_lr: float = 3e-5
+    # [D10b] ceiling: None = learning_rate. skrl's default 0.01 let it climb to 5e-4 while success fell
+    kl_adaptive_max_lr: float | None = None
     ratio_clip: float = 0.2
     value_clip: float = 0.2
     grad_norm_clip: float = 1.0

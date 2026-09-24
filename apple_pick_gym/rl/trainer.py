@@ -198,7 +198,11 @@ def build_agent(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, run_dir: Path,
     )
     if p.kl_adaptive_lr_threshold is not None:
         agent_cfg["learning_rate_scheduler"] = _kl_tracking_scheduler()
-        agent_cfg["learning_rate_scheduler_kwargs"] = {"kl_threshold": p.kl_adaptive_lr_threshold, "min_lr": p.kl_adaptive_min_lr}
+        agent_cfg["learning_rate_scheduler_kwargs"] = {
+            "kl_threshold": p.kl_adaptive_lr_threshold,
+            "min_lr": p.kl_adaptive_min_lr,
+            "max_lr": p.learning_rate if p.kl_adaptive_max_lr is None else p.kl_adaptive_max_lr,
+        }
     if p.running_standard_scaler:
         agent_cfg["observation_preprocessor"] = RunningStandardScaler
         agent_cfg["observation_preprocessor_kwargs"] = {"size": wrapper.observation_space, "device": device}

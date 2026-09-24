@@ -37,6 +37,7 @@ import torch
 
 from skrl.envs.wrappers.torch.base import Wrapper
 
+from apple_pick_gym.batched_envs.harvest_detach import split_torque
 from apple_pick_gym.batched_envs.harvest_obs import actor_obs_layout, flatten_actor_obs
 from apple_pick_gym.batched_envs.harvest_privileged import PLANT_GEOMETRY_FIELDS
 from apple_pick_gym.rl.action_scaling import HarvestActionScaler
@@ -47,11 +48,22 @@ def _box(width: int) -> gymnasium.spaces.Box:
     return gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(width,), dtype=np.float32)
 
 
+_DETACH_LABELS = (
+    ("force", "force N"),
+    ("torque", "torque N*m"),
+    ("torsion", "torsion N*m"),
+    ("bending", "bending N*m"),
+    ("force_share", "force share"),
+    ("torque_share", "torque share"),
+)
+
+
 class _EpisodeStats:
     """Per-env running episode statistics, summarized over valid envs at the time limit."""
 
-    def __init__(self, num_envs: int, device: torch.device) -> None:
+    def __init__(self, num_envs: int, device: torch.device, *, detach: Any = None) -> None:
         self.n, self.device = int(num_envs), device
+        self.detach = detach  # DetachEnvelopeConfig, for the force / torque shares at detach
         self.reset(torch.zeros(self.n, dtype=torch.bool, device=device))
 
     def reset(self, invalid: torch.Tensor) -> None:
@@ -66,6 +78,9 @@ class _EpisodeStats:
         self.k_lin, self.k_ang, self.zeta, self.live_steps = z(), z(), z(), z()
         self.peak_speed, self.sum_speed = z(), z()
         self.peak_junction: dict[str, torch.Tensor] = {}
+        self.peak_tau = z()
+        nan = lambda: torch.full((self.n,), float("nan"), device=self.device)
+        self.at_detach = {k: nan() for k in ("force", "torque", "torsion", "bending", "force_share", "torque_share")}
 
     def update(
         self,
@@ -90,6 +105,33 @@ class _EpisodeStats:
         safe = ep["safety_junction"] | ep["safety_wrist"]
         won = terminated & ep["success_achieved"] & ~safe
         self.steps_to_success = torch.where(won & ~self.success, torch.full_like(self.steps_to_success, self.steps), self.steps_to_success)
+        tw = torch.nan_to_num(info["target_junction_wrench"].to(self.peak_tau), nan=0.0, posinf=0.0)
+        f_n, t_n = torch.linalg.norm(tw[:, :3], dim=-1), torch.linalg.norm(tw[:, 3:6], dim=-1)
+        self.peak_tau = m(self.peak_tau, t_n)
+        edge = won & ~self.success
+        if bool(edge.any()):
+            axis = info.get("target_junction_axis")
+            if axis is not None:
+                tors, bend = split_torque(tw[:, 3:6], axis.to(tw))
+            else:
+                tors = bend = torch.full_like(t_n, float("nan"))
+            th = info.get("detach_thresholds")
+            if th is not None:
+                f_max, tau_max = th[:, 0].to(tw), th[:, 1].to(tw)
+            elif self.detach is not None:
+                f_max, tau_max = float(self.detach.f_max_n), float(self.detach.tau_max_nm)
+            else:
+                f_max = tau_max = float("nan")
+            vals = {
+                "force": f_n,
+                "torque": t_n,
+                "torsion": tors,
+                "bending": bend,
+                "force_share": (f_n / f_max) ** 2,
+                "torque_share": (t_n / tau_max) ** 2,
+            }
+            for k, v in vals.items():
+                self.at_detach[k] = torch.where(edge, v, self.at_detach[k])
         self.success |= won
         self.safety |= terminated & safe
         lf = live.float()
@@ -111,6 +153,7 @@ class _EpisodeStats:
         per_live = lambda x: x / self.live_steps.clamp_min(1.0)
         won = self.success & valid
         stt = self.steps_to_success[won].mean() if bool(won.any()) else torch.tensor(float(self.steps), device=self.device)
+        won_mean = lambda x: x[won].mean() if bool(won.any()) else torch.tensor(float("nan"), device=self.device)
         # [D6] load on the tree per successful pick; NaN when no valid env succeeded
         coll_won = self.peak_coll[won].mean() if bool(won.any()) else torch.tensor(float("nan"), device=self.device)
         return {
@@ -135,6 +178,8 @@ class _EpisodeStats:
             "Episode / peak TCP speed m/s (mean)": s(self.peak_speed),
             "Episode / mean TCP speed m/s (mean)": s(per_live(self.sum_speed)),
             **{f"Episode / peak force {k} N (mean)": s(v) for k, v in self.peak_junction.items()},
+            "Episode / peak target torque N*m (mean)": s(self.peak_tau),
+            **{f"Episode / detach {label} (mean)": won_mean(self.at_detach[k]) for k, label in _DETACH_LABELS},
         }
 
 
@@ -149,7 +194,7 @@ class HarvestSkrlWrapper(Wrapper):
         self._obs_space = _box(actor_obs_layout().total_width)
         self._state_space = _box(self._layout.total_width)
         self._action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(13,), dtype=np.float32)
-        self._stats = _EpisodeStats(env.num_envs, self.device)
+        self._stats = _EpisodeStats(env.num_envs, self.device, detach=getattr(getattr(env, "_reward_cfg", None), "detach", None))
         self._obs: torch.Tensor | None = None
         self._state: torch.Tensor | None = None
         self._privileged: dict[str, torch.Tensor] | None = None

@@ -205,3 +205,39 @@ def test_episode_stats_report_peak_force_per_junction():
     for name in env.junction_names:
         v = log[f"Episode / peak force {name} N (mean)"]
         assert isinstance(v, torch.Tensor) and v.numel() == 1 and float(v) >= 0.0
+
+
+def test_episode_stats_report_target_wrench_at_detach_and_peak_torque():
+    # [maintainer] how the target junction fails: force vs torque (torsion / bending) at the detach step
+    from apple_pick_gym.batched_envs.harvest_detach import DetachEnvelopeConfig
+    from apple_pick_gym.rl.skrl_wrapper import _EpisodeStats
+
+    st = _EpisodeStats(2, torch.device("cpu"), detach=DetachEnvelopeConfig())
+    w = torch.tensor([[16.0, 0.0, 0.0, 0.03, 0.0, 0.04], [2.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+    info = {
+        "episode": {
+            "frozen": torch.tensor([False, False]),
+            "success_achieved": torch.tensor([True, False]),
+            "safety_junction": torch.tensor([False, False]),
+            "safety_wrist": torch.tensor([False, False]),
+        },
+        "reward_terms": {
+            "raw": {"collateral": torch.zeros(2)},
+            "weighted": {k: torch.zeros(2) for k in ("progress", "pullout", "collateral", "slack")},
+            "terminal": torch.zeros(2),
+        },
+        "detach_index": torch.ones(2),
+        "target_junction_wrench": w,
+        "target_junction_axis": torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]),
+        "ft_wrist": torch.zeros(2, 6),
+        "woody_part_force": {},
+    }
+    st.update(torch.zeros(2, 1), info, torch.tensor([True, False]), torch.zeros(2, 13))
+    s = st.summary()
+    assert float(s["Episode / detach force N (mean)"]) == pytest.approx(16.0)
+    assert float(s["Episode / detach torque N*m (mean)"]) == pytest.approx(0.05)
+    assert float(s["Episode / detach torsion N*m (mean)"]) == pytest.approx(0.04)
+    assert float(s["Episode / detach bending N*m (mean)"]) == pytest.approx(0.03)
+    assert float(s["Episode / detach force share (mean)"]) == pytest.approx(0.64)  # (16/20)^2
+    assert float(s["Episode / detach torque share (mean)"]) == pytest.approx(1.0)  # (0.05/0.05)^2
+    assert float(s["Episode / peak target torque N*m (mean)"]) == pytest.approx(0.025)  # mean of 0.05, 0

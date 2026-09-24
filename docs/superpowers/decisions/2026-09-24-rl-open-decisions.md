@@ -15,7 +15,8 @@ hyperparameters beyond what is listed.
 | D7 | Per-env F_max / tau_max draws | parked (plumbing, off) |
 | D8 | Cap VIC target speed to the real rig (2 mm/step, 0.01 rad/step at 60 Hz) | done |
 | D9 | Reward rebalance so a pick beats standing still | done |
-| D10 | LR floor 1e-4 for the KL-adaptive schedule | done |
+| D10 | LR floor 1e-4 for the KL-adaptive schedule | superseded by D10b |
+| D10b | KL-adaptive LR bounded to [3e-5, base LR] | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -424,3 +425,37 @@ gripper.
 within 18 GPU updates (KL 0.014 > 0.01 target), and skrl's default floor is 1e-6. That makes
 escaping any plateau slow. With the floor, the schedule still adapts above it. KL per update is
 now logged (`Policy / KL (mean)`).
+
+## D9 long run: per-junction statics, torque, and why it degraded
+
+**Per-junction peak forces (GPU, N=2000).**
+
+| policy | primary_spur | spur_stem | stem_apple | each support | collateral / success |
+| --- | --- | --- | --- | --- | --- |
+| scripted_pull | 20.8 N | 18.8 N | 17.9 N | 13 N | 44.4 N |
+| D9 ckpt_2560 | 19.6 N | 17.7 N | 17.1 N | 12.5 N | 42.2 N |
+
+Series statics: `stem_apple` and `primary_spur` each carry about the target force. So collateral
+tracks the detach *force*. It can only fall if the policy detaches with less force, i.e. with
+torque. The torque at the target is ~0.03 N*m for every policy (the grasp preload): nobody bends
+or twists yet. The maintainer keeps collateral as the objective.
+
+**Degradation.**
+- Success peaked at EP6: 0.986, safety 0.4%, 97 steps.
+- By EP10 it had fallen to 0.879 success, 6.1% safety, 177 steps. Collateral stayed flat.
+- The LR had climbed to 5e-4, above the 3e-4 base: skrl's KLAdaptiveLR multiplies the LR by 1.5
+  whenever KL < target/2, with a default max_lr of 0.01.
+
+## D10b -- Bound the KL-adaptive LR to [3e-5, base LR]
+
+- `kl_adaptive_min_lr = 3e-5`. Pinned at 1e-4, the KL ran at ~3.5x target.
+- `kl_adaptive_max_lr = None` means the ceiling is the base `learning_rate`.
+- The schedule can now only slow learning below the tuned base, never push it above.
+
+## New episode metrics for torque at detach
+
+- `Episode / detach {force N, torque N*m, torsion N*m, bending N*m, force share, torque share} (mean)`:
+  target junction values at the detach step, averaged over successful envs. The shares are
+  (F/F_max)^2 and (tau/tau_max)^2.
+- `Episode / peak target torque N*m (mean)`.
+- In the eval JSON: `detach_*_mean` and `peak_target_torque_nm_mean`.

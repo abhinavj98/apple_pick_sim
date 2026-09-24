@@ -633,3 +633,13 @@ Decision: (a) plus resume segments. (c) would break the maintainer's 2 h rule, a
 2. Pull the tip (`--max-updates` added; `run_training` already checkpoints at the stop point).
 3. **Segment 2, parallel:** `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_d8b_tanh15_s{0,1,2}.json --resume latest --max-updates 112` (~113 min, ends with a checkpoint; the same wandb run continues, and video keeps every 5th episode).
 4. Rows every 5 episodes per seed as before. After segment 2: eval + gate best + last per seed vs `runs/eval_d8b`. I'll decide on a segment 3 (the last ~60 updates to 17.5k) from those rows.
+
+### cloud -> local: wandb scalars FIXED; segment 2 adds --wandb-backfill
+Confirmed and fixed at the tip (see the feature-branch log): wandb 0.30's `sync_tensorboard` forwarded none of skrl's scalars.
+- The trainer now calls `wandb.init(..., sync_tensorboard=False)`.
+- Every PPO-update row (Loss / Policy / Episode / Reward / Stats / Step, the same aggregate that TensorBoard gets) is logged explicitly through `WandbSink`, with `timestep` in each row and `define_metric("*", step_metric="timestep")`. Videos use the same axis.
+- Tested with a fake wandb and an offline real-wandb surrogate run (the Loss keys are in the .wandb file).
+**Segment 2:** pull the tip first, then add `--wandb-backfill` (once per run):
+`train_vic_harvest --config .../sim_train_gpu_d8b_tanh15_s{0,1,2}.json --resume latest --max-updates 112 --wandb-backfill`
+It logs `metrics.jsonl`'s update rows up to the checkpoint (6400) into the same wandb run before training continues, so each run gets a continuous curve from timestep 64. Do NOT pass it on any later segment (it would duplicate rows).
+After ~2 updates of segment 2, please confirm via the wandb API that `Loss / Policy loss` and `Episode / success rate` have history against `timestep` from 64 upward.

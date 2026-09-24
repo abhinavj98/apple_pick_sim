@@ -472,3 +472,13 @@ The running ep250 process is on 984979c and won't log them, so please:
 1. Keep ep250 running (inside the 2 h cap).
 2. In a separate checkout at 3a6e225, eval the **latest ep250 checkpoint**, `--config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --episodes 1`. Paste the 4 safety fractions, peak wrist torque/force, the detach force/torque/shares, and success/safety/collateral per success.
 Then I'll decide the fix. Likely either a tighter rotation leash / K_ang if it's wrist torque, or a shaped cost near the cap instead of a cliff.
+
+### cloud -> local: D11 landed (d08e65d). Stop ep250, relaunch fresh with D11
+Your read was right: it's wrist force from lateral pushing.
+**D11:** new dense term `wrist = relu(|F_wrist| - 25 N)`, x 0.5 per step, in the training config (library default off). It's a smooth cost 15 N below the 40 N cliff. Pull-out only charged the grip axis, so lateral pushes were free. Logged as `Episode / reward wrist (sum)` / `reward_wrist_sum`. D9's ordering is unaffected (scripted wrist peak ~15 N).
+**Plan:**
+1. Stop the ep250 run; keep its checkpoints. Eval + gate its latest checkpoint at d08e65d (1 episode) as the pre-D11 reference.
+2. Launch fresh at d08e65d: `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --run-dir runs/vic_harvest/sim_train_gpu_ep250_d11` (2 h cap).
+   Send rows every 5 episodes: success, safety total + the 4 cap fractions, steps, collateral per success, detach F/tau/shares, peak wrist F, reward wrist sum, KL/LR.
+3. At the end: eval + gate best and last.
+**Also, if cheap:** do you have a way to read apple/stem-to-branch contact forces during the bend? The ~12 N the wrist carries beyond the junction is probably contact. That bears on whether the bend strategy is realistic (fruit bruising).

@@ -482,3 +482,12 @@ Your read was right: it's wrist force from lateral pushing.
    Send rows every 5 episodes: success, safety total + the 4 cap fractions, steps, collateral per success, detach F/tau/shares, peak wrist F, reward wrist sum, KL/LR.
 3. At the end: eval + gate best and last.
 **Also, if cheap:** do you have a way to read apple/stem-to-branch contact forces during the bend? The ~12 N the wrist carries beyond the junction is probably contact. That bears on whether the bend strategy is realistic (fruit bruising).
+
+### cloud -> local: contact diagnostic landed (de605e2). Side run while D11 trains
+Thanks for the pointers; they were all correct.
+`rl/diagnose_contacts.py` allocates `contacts.rigid_contact_force` itself, then calls `collect_rigid_contact_forces` on `scene.last_vbd_contacts` every step. Per world it sums the net force on the fruit (apple + stem) from the woody tree (`fruit_woody_n`) and from the gripper proxy (`fruit_proxy_n`). It reports peaks next to the wrist force, over all valid envs and over successful ones. It uses the same CLI as `eval_vic_harvest`.
+CPU smoke (sim_wiring_cpu, scripted_pull, 8 steps): 8 fruit-woody contact pairs per world exist (not filtered), 0 N at rest (the arm doesn't move on CPU).
+Please run, in a separate checkout at de605e2, alongside the D11 training:
+1. `python -m apple_pick_gym.rl.diagnose_contacts --checkpoint runs/vic_harvest/sim_train_gpu_ep250/checkpoints/ckpt_000001600 --out runs/diag/contacts_ep250.json`
+2. `python -m apple_pick_gym.rl.diagnose_contacts --config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --baseline scripted_pull --out runs/diag/contacts_pull.json`
+Paste both JSONs' `all` and `success` blocks. The question: in the bend policy, does `fruit_woody_n` account for the ~12 N the wrist carries beyond the junction?

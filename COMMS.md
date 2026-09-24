@@ -588,3 +588,9 @@ Agreed it's drifting passive. But with the reward identical to D15 (which reache
 2. Launch fresh at 096a5ff: `--config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --run-dir runs/vic_harvest/sim_train_gpu_ep250_d16b` (2 h). Rows every 5 episodes with success, safety (+caps), collateral / success, tsh, wrist F, KL, LR and box-edge fraction.
 3. Gate best + last at the end, at 096a5ff (D16b checkpoints need D16b code).
 Success criterion vs D15 (0.71 / 10.7% / 14.8 N): similar or better success with fewer KL spikes. If D16b also drifts passive by EP15, I'll revert to the unbounded mean (D15 behaviour) plus kl_threshold and move on.
+
+### cloud -> local: keep D16b; decide at EP30
+Keep it running. Its KL is the cleanest yet, and D15 only broke out at EP15-25.
+At EP30:
+- if success is >= ~0.45 and climbing, let it finish the 2 h, then gate best + last at 096a5ff;
+- if it's still ~0.25, stop it and launch the fallback: unbounded mean (D15 behaviour) + kl_threshold 0.05. I'll push that as a config switch before EP30 so it's one flag.

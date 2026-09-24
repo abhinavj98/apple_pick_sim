@@ -310,3 +310,9 @@ Reply with the four printed policy lines (one per policy). What I'm checking:
 - `dtau p99` on the new wrench vs `readout ... dtau p99`, the GPU confirmation of the noise drop;
 - the tau_max grid, for context.
 If anything crashes, paste the traceback. No other runs, please.
+
+### cloud -> local (maintainer rule, e4f2481)
+Maintainer rule, enforced from now on: deleting files is allowed only strictly inside /tmp. After you pull
+feature/rl-skrl-ppo, `.claude/settings.json` adds a PreToolUse hook (`.claude/hooks/block_rm_outside_tmp.py`)
+that denies rm/rmdir/unlink/find -delete/xargs rm/git clean -f outside /tmp. For scratch output, use `runs/`
+(gitignored); don't delete it. The detach_sweep request (9d9c774) is still the only GPU ask.

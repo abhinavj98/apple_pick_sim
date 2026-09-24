@@ -1035,3 +1035,14 @@ ckpt_11200, s2 ckpt_8000. All are also 2/5.
 - Configs: `sim_train_gpu_d8b_tanh15_pc1b60_s{0,1,2}.json` (fresh; same as pc1 except the bonus).
 - Not warm-starting from D8b s1: resuming a checkpoint would continue its wandb run and its
   timestep budget. Fresh keeps the comparison clean.
+
+**D13c EP5: not passive, but a fast pull (collateral ~41-45 N, < 15 N only 1-7%).**
+
+- Success 0.89-0.99. s1 picks in 40 steps at 45 N.
+- The payout favours bend by 34 points, but the policy has not sampled bends yet.
+- D8b grew its bend mode slowly (16-21% < 15 N by segment 2), so keep running.
+- EP15 check: if < 15 N stays below ~5%, the next lever is exploration, not the payout. In order:
+  1. an intermediate bonus (~40), since D13b showed bends appear when pulls stop paying;
+  2. an entropy bonus;
+  3. a warm start from D8b s1 (needs a fresh wandb id and timestep reset, i.e. a small
+     init-from-checkpoint path).

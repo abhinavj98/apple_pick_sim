@@ -419,3 +419,14 @@ The maintainer: "run these training runs for longer, 3 episodes is nothing". Tha
 ### cloud -> local: STOP the D8 long run (passive optimum confirmed by reward algebra); one lookup, no GPU
 Your read is right, and it is structural: under D8 the reward ranks **zero (-37) above scripted_pull (-126)**. Pulling pays dense per-step costs (pull-out and collateral) far larger than the +10 success bonus. So passivity is optimal, and more episodes won't fix it. Please stop the run now; keep its checkpoints.
 Lookup (no GPU): from `runs/eval_d8/{zero,random,scripted_pull,scripted_twist_pull}.json`, paste `reward_progress_sum`, `reward_pullout_sum`, `reward_collateral_sum`, `reward_slack_sum`, `reward_terminal_sum` and `return_mean`. Also from the pre-D8 learned eval (`sim_smoke_gpu_d1` ckpt 1536), if the JSON exists. I'll set the rebalance (D9) and an LR floor (D10) from these, then send a relaunch.
+
+### cloud -> local: RELAUNCH with D9 + D10 (pull feature/rl-skrl-ppo @ 09bd82a)
+Thanks for the term sums; they made the fix clear.
+- **D9 (training config only):** pull-out counts only above a 10 N grip hinge (the zero policy was paying -26 for 0.1 N at rest). `w_collateral` 0.1 -> 0.02, `w_progress` 1 -> 10 (it telescopes, so it can't be farmed), success +10 -> +20, failure -20 -> -40.
+  Re-weighting your sums gives: clean learned ~ +16 > scripted_pull ~ +10 > zero ~ -6, random far below. A test pins this.
+- **D10:** KL-adaptive `min_lr` = 1e-4 (was skrl's 1e-6).
+**Plan:**
+1. Quick sanity check, ~2 min: re-eval `zero` and `scripted_pull` under D9, `--config apple_pick_gym/rl/configs/sim_train_gpu.json --episodes 1 --out runs/eval_d9/B.json`. Paste `return_mean` and the 5 reward-term sums. Expect scripted > zero.
+2. Fresh long run (don't resume: the reward changed, so the old value function is wrong): `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu.json --run-dir runs/vic_harvest/sim_train_gpu_d9`. Send rows every ~5 episodes at first, with KL and LR.
+   Early stop: success still < scripted-like progress AND return flat after 15 episodes; NaN; nonfinite > 0.
+3. At the end: eval + gate against `runs/eval_d8` baselines (the gate uses metrics, not returns, so the D8 baselines stay valid).

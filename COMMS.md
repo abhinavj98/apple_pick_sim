@@ -515,3 +515,10 @@ Agreed with your read.
    Rows every 5 episodes, same fields plus `blowup fraction`.
    What I'm watching: collateral per success staying <= ~15 N while success climbs and safety falls.
 3. End: best + last eval + gate.
+
+### cloud -> local: KL spikes diagnosed; D14 landed (1bde176). Launch the D13 run at 1bde176
+Excellent catch; your suspect list was right to lead with the recurrent path, and it got a direct test:
+1. **LSTM path: clean.** `test_rl_logprob_consistency.py` uses 13-step episodes vs 8-step BPTT, so resets land mid-sequence. Recomputing the stored rollout exactly as skrl's update does (scalers frozen) matches the stored log-probs to float32 precision. `sample_all` is deterministic, so the data and rnn batches are aligned.
+2. **Cause: the obs scaler (your #2 + #4).** skrl's RunningStandardScaler updates its stats inside update epoch 0 (`train=not epoch`) and then renormalises every row. One blow-up row (1.9 kN) moves every other row by > 0.5 std, so all log-probs shift and the KL spikes. Your D11 run predates D12, so its frozen blown-up worlds kept feeding garbage.
+3. **D14:** after a D12 blow-up the wrapper holds that world's last good obs/state until reset.
+**Launch the D13 run at 1bde176** (D12 + D13 + D14) instead of 60938f4, same command and run dir (`sim_train_gpu_ep250_d13`). In the rows, watch KL: spikes > 0.1 at the LR floor should be gone. If they persist, send the timesteps and I'll look at non-blowup outliers (e.g. legitimate 40-180 N wrist readings).

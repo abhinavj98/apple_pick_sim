@@ -135,6 +135,10 @@ class SurrogateHarvestEnv:
         self._arm_sample: dict[str, torch.Tensor] | None = None
         self._step_count = 0
 
+    def reseed_episode_rng(self, seed: int) -> None:
+        """Reseed the per-reset DR stream (arm draws); the per-env plant is unaffected."""
+        self._rng = np.random.default_rng(int(seed))
+
     # ------------------------------------------------------------------ properties
     @property
     def action_bounds(self) -> HarvestActionBounds:

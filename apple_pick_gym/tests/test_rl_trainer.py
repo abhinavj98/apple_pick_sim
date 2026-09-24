@@ -105,3 +105,26 @@ def test_save_checkpoint_writes_meta_sidecar(tmp_path):
     for key in ("actor_layout", "critic_layout", "action_bounds", "rnn", "timestep", "git_sha", "config"):
         assert key in meta, key
     assert meta["rnn"]["policy"]["sequence_length"] == 8
+
+
+def test_resume_reseeds_episode_rng_instead_of_replaying_the_start(tmp_path):
+    """A resumed segment must not replay the arm-DR / F/T sensor draws of timestep 0."""
+    from apple_pick_gym.rl.trainer import reseed_for_resume
+
+    cfg = _cfg(tmp_path)
+    w0, _ = build_training(cfg)
+    w0.reset()
+    fresh = w0._env.privileged_fields()["arm_friction"].clone()
+    fresh_bias = w0._env._ft_sensor._bias.clone()
+
+    w1, _ = build_training(cfg)
+    reseed_for_resume(w1, cfg, start_timestep=32)
+    w1.reset()
+    resumed = w1._env.privileged_fields()["arm_friction"]
+    assert not torch.allclose(resumed, fresh)
+    assert not torch.equal(w1._env._ft_sensor._bias, fresh_bias)
+
+    w2, _ = build_training(cfg)  # same (seed, timestep) -> same draws: resumes are reproducible
+    reseed_for_resume(w2, cfg, start_timestep=32)
+    w2.reset()
+    torch.testing.assert_close(w2._env.privileged_fields()["arm_friction"], resumed)

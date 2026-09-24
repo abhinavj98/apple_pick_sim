@@ -197,6 +197,20 @@ def build_training(cfg: TrainConfig, *, wandb_run_id: str | None = None):
     return wrapper, agent
 
 
+def reseed_for_resume(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, start_timestep: int) -> int:
+    """Derive a fresh episode-RNG seed from ``(cfg.seed, start_timestep)`` and apply it.
+
+    Without this a resumed segment re-runs ``set_seed(cfg.seed)`` and replays the per-reset arm
+    DR and F/T sensor draws of timestep 0. Deterministic in ``(seed, timestep)``, so a resume is
+    reproducible. Returns the derived seed.
+    """
+    derived = int(np.random.SeedSequence([int(cfg.seed), int(start_timestep)]).generate_state(1)[0])
+    torch.manual_seed(derived)
+    np.random.seed(derived)
+    wrapper._env.reseed_episode_rng(derived)
+    return derived
+
+
 @dataclasses.dataclass
 class TrainResult:
     start_timestep: int
@@ -244,6 +258,7 @@ def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: in
     if ckpt_path is not None:
         meta = load_checkpoint(ckpt_path, agent, wrapper, cfg)
         start, updates = int(meta["timestep"]), int(meta["updates"])
+        reseed_for_resume(wrapper, cfg, start_timestep=start)
     agent.enable_training_mode(True)
     agent.enable_models_training_mode(False)
 

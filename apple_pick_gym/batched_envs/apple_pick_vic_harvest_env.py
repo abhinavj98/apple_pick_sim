@@ -861,6 +861,13 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             device=self.device,
         )
 
+    def reseed_episode_rng(self, seed: int) -> None:
+        """Reseed the per-reset DR stream (arm joint dynamics). Build-time DR is unaffected.
+
+        The F/T sensor model draws from torch's global RNG; the trainer reseeds that too.
+        """
+        self._dr_rng = np.random.default_rng(int(seed))
+
     @property
     def action_bounds(self) -> HarvestActionBounds:
         return self._action_bounds

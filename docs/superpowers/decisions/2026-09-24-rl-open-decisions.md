@@ -340,3 +340,28 @@ envelope (the CPU learning smoke stalled at return -1.05). It checks the learnin
 realism.
 
 **Revert.** Set `linear_delta_m=0.02` and `angular_delta_rad=0.1` in the config.
+
+## First real training on the D1 signal (pre-D8 reference)
+
+Run: `sim_smoke_gpu.json` @ f5a46a4, N=2000, 1536 steps (3 episodes), 24 updates. The run was
+clean: 0 nonfinite envs, no NaN, 5.4 GB.
+
+| episode end | success | safety | return | steps to success | junction F | collateral / success | peak wrist F |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| t=500 | 0.920 | 0.080 | -166.7 | 85.8 | 18.6 N | 41.0 N | 20.9 N |
+| t=1000 | 0.848 | 0.152 | -58.6 | 68.6 | 18.5 N | 29.6 N | 26.2 N |
+| t=1500 | 0.902 | 0.098 | -36.8 | 50.4 | 19.7 N | 30.4 N | 24.4 N |
+| eval (ckpt 1536) | 0.905 | 0.095 | -16.9 | 43.3 | 19.5 N | 26.8 N | 22.7 N |
+
+**Gate vs the pre-D8 baselines.**
+- Passes only collateral_vs_random: 26.8 < 42.0 N.
+- Fails success (0.905 vs 0.998), safety (0.095 vs 0.002), collateral (26.8 vs 22.2 N) and
+  beats_random (0.905 vs 0.941).
+
+**Read.**
+- It learns on the real signal. Detaches take half the steps, collateral per success drops by a
+  third, and the pull-out penalty mostly disappears.
+- Safety is the problem: 8-15%, with the wrist force rising. That fits fast target yanks
+  under the old 1.2 m/s bound, which D8 now caps.
+- The KL-adaptive schedule had already cut the LR to 9e-5 by update 24. Watch that in the long
+  run; the update row has no KL key yet.

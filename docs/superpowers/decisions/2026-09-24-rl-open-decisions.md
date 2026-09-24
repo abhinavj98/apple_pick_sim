@@ -766,3 +766,18 @@ on all 16 updates, with 0 dumps. The stored-data mismatch is gone.
 same weights now give different means. The running D15 run is pre-D16.
 
 **Revert.** Drop the `torch.tanh`.
+
+## D15 run (4c7acee): the memory fix lifts success past the D13 plateau
+
+| episode | success | safety | steps | collateral / success | torque share | wrist F | KL | LR |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 5 | 0.354 | 0.281 | 123 | 9.9 N | 0.91 | 25.6 N | 0.010 | 3e-4 |
+| 10 | 0.346 | 0.162 | 129 | 11.9 N | 0.90 | 18.8 N | 0.015 | 3e-4 |
+| 15 | 0.342 | 0.141 | 122 | 10.1 N | 0.92 | 17.4 N | 0.016 | 1.3e-4 |
+| 20 | 0.430 | 0.107 | 103 | 12.0 N | 0.89 | 16.4 N | 0.085 | 3e-5 |
+| 25 | 0.554 | 0.102 | 84 | 12.2 N | 0.89 | 18.0 N | 0.079 | 3e-5 |
+
+- D13 at EP20/25 had success 0.24/0.23. The D15 run keeps climbing while collateral stays ~12 N
+  with a bend detach. Safety is down to ~10%, mostly wrist force.
+- No NaN, no divergence, no KL > 0.5. KL creeps to ~0.08 with the LR at its floor, which D16
+  (tanh mean) targets.

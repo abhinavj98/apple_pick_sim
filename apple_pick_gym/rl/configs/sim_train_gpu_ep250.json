@@ -13,7 +13,7 @@
     "mini_batches": 8,
     "learning_epochs": 5
   },
-  "timesteps": 150000,
-  "checkpoint_every_updates": 50,
+  "timesteps": 17500,
+  "checkpoint_every_updates": 25,
   "run_dir": "runs/vic_harvest/sim_train_gpu_ep250"
 }

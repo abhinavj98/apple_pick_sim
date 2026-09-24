@@ -63,7 +63,7 @@ def test_defaults_follow_the_plan():
     assert cfg.env.max_target_pos_offset_m is not None  # VIC target leash on for training
 
 
-@pytest.mark.parametrize("name", ["surrogate_smoke.json", "sim_wiring_cpu.json", "sim_wiring_gpu.json", "sim_smoke_gpu.json", "sim_train_gpu.json", "sim_train_gpu_ep250.json"])
+@pytest.mark.parametrize("name", ["surrogate_smoke.json", "sim_wiring_cpu.json", "sim_wiring_gpu.json", "sim_smoke_gpu.json", "sim_train_gpu.json", "sim_train_gpu_ep250.json", "sim_debug_kl_gpu.json"])
 def test_checked_in_configs_load_and_validate(name):
     from pathlib import Path
 

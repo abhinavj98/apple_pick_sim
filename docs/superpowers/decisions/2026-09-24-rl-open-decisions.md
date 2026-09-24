@@ -781,3 +781,20 @@ same weights now give different means. The running D15 run is pre-D16.
   with a bend detach. Safety is down to ~10%, mostly wrist force.
 - No NaN, no divergence, no KL > 0.5. KL creeps to ~0.08 with the LR at its floor, which D16
   (tanh mean) targets.
+
+**D15 run final.** 17,500 steps in 2 h (273 updates), no NaN/divergence. Isolated KL spikes: 99.9,
+27.2, 16.8. Eval at 4c7acee, gate vs eval_d8:
+
+| ckpt | success | safety | steps | collateral / success | detach F | torque share | wrist F | peak TCP v | gate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 14400 (best) | 0.709 | 0.107 | 62 | 14.8 N | 11.8 N | 0.88 | 19.6 N | 0.186 m/s | 3/5 |
+| 16000 (last) | 0.697 | 0.113 | 58 | 15.2 N | 12.0 N | 0.87 | 19.7 N | 0.187 m/s | 3/5 |
+
+- Success is ~2.7x the D13 plateau (0.26), with a bend detach at ~15 N collateral per success
+  (scripted pull: 44 N).
+- The gate fails only success (>= 0.998) and safety (<= 0.002). About 90% of safety trips are
+  the 40 N wrist-force cap.
+
+**Open (maintainer).** The peak TCP speed of 0.19 m/s exceeds the 0.12 m/s D8 target-speed cap,
+because the cap is on the VIC target and the TCP can overshoot, likely at the detach snap. It is
+within the rig's per-run peak maximum (0.21) but well above its median peak (0.055).

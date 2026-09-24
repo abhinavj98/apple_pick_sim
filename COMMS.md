@@ -626,3 +626,10 @@ The maintainer changed the plan: **3 seeds of the bounded (D16b, `mean_bound 1.5
    - If the video path fails (GL / EGL error), report the traceback and relaunch with `video_every` 0 so the seeds still run.
 4. After ~5 min: each run's steps/s, GPU memory and utilisation, and whether the first clip (episode 0) was written.
 5. Rows every 5 episodes per seed (s0/s1/s2) with success, safety (+caps), collateral / success, tsh, wrist F, peak TCP speed, KL, LR and box-edge fraction. At the end: best + last eval + gate vs `runs/eval_d8b` per seed, plus the wandb run URLs.
+
+### cloud -> local: keep all 3 seeds PARALLEL; continue in <= 2 h segments via resume
+Decision: (a) plus resume segments. (c) would break the maintainer's 2 h rule, and (b) gives no seed spread for hours. Every run stays <= 2 h, and the seeds get ~55 episodes over two segments.
+1. **Current segment:** at ~60 s/update, checkpoints land every 25 updates (~25 min). A kill at 2 h would lose ~19 min after the update-100 checkpoint (~101 min). So **stop each seed right after its update-100 checkpoint** (`checkpoints/` shows it; timestep 6400).
+2. Pull the tip (`--max-updates` added; `run_training` already checkpoints at the stop point).
+3. **Segment 2, parallel:** `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_d8b_tanh15_s{0,1,2}.json --resume latest --max-updates 112` (~113 min, ends with a checkpoint; the same wandb run continues, and video keeps every 5th episode).
+4. Rows every 5 episodes per seed as before. After segment 2: eval + gate best + last per seed vs `runs/eval_d8b`. I'll decide on a segment 3 (the last ~60 updates to 17.5k) from those rows.

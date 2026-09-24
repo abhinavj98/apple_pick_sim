@@ -528,3 +528,8 @@ Thanks for the D11 post-mortem; it's logged. D14 (already in your D13 run at 1bd
 - the wrapper maps non-finite policy actions into the box (`Step / nonfinite actions`);
 - `run_training` raises `TrainingDiverged` at the first update that leaves non-finite weights, before any checkpoint. It writes a `kind: diverged` metrics row and names the last healthy checkpoint.
 **Keep the D13 run going** on 1bde176. If it goes NaN anyway, stop it and tell me the timestep; the next launch should be at 8786b58 or later. Don't auto-resume after a `TrainingDiverged`; flag it instead.
+
+### cloud -> local: keep the D13 run to the 2 h mark
+- Collateral ~10 N with a bend detach (torque share 0.91) is exactly the target, and the KL is clean now (no spikes/NaN/blow-ups). So the LR floor is a real response, not noise.
+- Keep it to 2 h, rows every 5 episodes. Then gate best + last at 8786b58.
+- If success is still ~0.3 at EP40, I'll rebalance success/failure (e.g. bonus vs the -40) for the next run without touching the collateral terms.

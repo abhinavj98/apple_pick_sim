@@ -8,10 +8,11 @@ hyperparameters beyond what is listed.
 
 | ID | Decision | Status |
 | --- | --- | --- |
-| D1 | Detach signal: the envelope reads the stem-root *elastic* wrench, not the rigid-junction readout | done on CPU; GPU sweep requested |
+| D1 | Detach signal: the envelope reads the stem-root *elastic* wrench, not the rigid-junction readout | done; GPU-confirmed |
 | D2 | Task 11 gate: success AND safety AND collateral vs scripted pull, AND >= random | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
+| D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
 
 ## D1 -- The detach envelope reads the stem-root elastic wrench
 
@@ -60,8 +61,23 @@ max step change below 0.2x the readout's.
   force-driven plus bending, and twist-and-pull cannot emerge until torsion is modelled and
   identified. That needs a separate torsional stiffness per stem segment (Newton's cable joint has
   one angular stiffness) plus twist data.
-- (c) The GPU sweep (`detach_sweep`) should confirm that zero and random no longer detach while the
-  scripted pull still does.
+- (c) GPU confirmation (below): the torque loophole is closed, but random still reaches the
+  envelope through *force* (see D5).
+
+**GPU confirmation (local session, RTX 4090, 298ff94, `sim_wiring_gpu`, seed 12345, `detach_sweep`).**
+Success under the default rule (total moment, raw, 3-step streak). The step-to-step torque p99 is
+shown for the new signal and for the rigid readout.
+
+| policy | success | success, tau_max 0.3 | success, force only | d tau p99, stem elastic | d tau p99, readout |
+| --- | --- | --- | --- | --- | --- |
+| zero | 0.00 | 0.00 | 0.00 | 0.0007 | 0.0276 |
+| random | 0.81 | 0.69 | 0.67 | 0.0107 | 0.0933 |
+| scripted_pull | 1.00 | 1.00 | 1.00 | 0.0133 | 0.1108 |
+| scripted_twist_pull | 1.00 | 1.00 | 1.00 | 0.0057 | 0.0526 |
+
+- Zero no longer detaches at any tau_max. The at-rest noise drops ~40x.
+- The scripted policies succeed under every rule, so tau_max = 0.05 stays.
+- Random still succeeds at 0.67 even with a force-only envelope, so it gets there by force.
 
 **Alternatives.**
 - Raise tau_max above the noise (~0.15-0.2): hides the jitter and makes the envelope effectively
@@ -140,3 +156,30 @@ on the real rig's quiet unloaded holds (s02, 32 segments, ~60 Hz block mean).
 - The rig-side tare frame mismatch is for the maintainer to confirm and fix on the rig. It also
   bears on the M4.0 torque-magnitude gate: a wrong torque frame or tare changes torque
   magnitudes.
+
+## D5 -- Random reaches the envelope through force; keep the action bounds, gate on collateral
+
+**Finding (GPU sweep under D1).**
+- Random succeeds 0.81 under the default rule and 0.67 under a force-only envelope.
+- Its random walk against the leash commands up to ~30 N: a 0.15 m position leash x K_lin up to
+  200 N/m. That exceeds F_max = 20 N.
+
+**Choice.** No change to the leash, the K range or F_max.
+- In this task, pulling hard enough is easy. The hard part, which the policy must learn, is
+  loading the spur-stem junction *without* loading the rest of the tree.
+- The D2 gate already demands success >= random AND peak collateral <= 0.5x the scripted pull's.
+  The reward already charges collateral.
+- 30 N at 0.15 m is within what the real arm does in a pick, so shrinking the bounds would
+  restrict the policy to make a baseline look worse.
+
+**Alternatives (maintainer's call).**
+- Shrink `max_target_pos_offset_m`.
+- Lower `k_lin_max`.
+- Raise F_max from its measured value.
+- Each makes random fail more often, but none makes the task more like the real one.
+
+**Open.** The sweep does not record collateral, so random's collateral versus the scripted
+pull's is unmeasured. It comes out of the first `eval_vic_harvest --random` run, with no extra
+GPU run.
+
+**Revert.** Nothing to revert.

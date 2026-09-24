@@ -673,3 +673,17 @@ Launch fresh, parallel, wandb + video, 2 h cap:
 Rows every 5 episodes, same fields plus the collS distribution. Stop criteria:
 - passive: success < 0.3 with safety < 3% at EP10 -> stop and report;
 - otherwise run the full segment, then eval + gate last and best.
+
+### cloud -> local: STOP D13c now; launch D13d (warm start from D8b s1), 3 arms in parallel
+Agreed with your read. D13c has answered its question (fast-pull clone), so stop all three now and keep their checkpoints. If you want a reference number for the log, gate its last checkpoint later.
+Pull the tip (898c9b4: `--init-from`). It loads weights, optimizer and scalers from another run's checkpoint and starts a NEW run: timestep 0, own run_dir, fresh wandb id, `init_from` recorded in metrics.jsonl and meta.
+Source: `runs/vic_harvest/d8b_tanh15_s1/checkpoints/ckpt_000013568` (0.76 success, 21% < 15 N).
+Launch together, 2 h cap, wandb + video:
+1. `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_d8b_ws_s1_pc1b60.json --init-from runs/vic_harvest/d8b_tanh15_s1/checkpoints/ckpt_000013568 --max-updates 112`
+2. `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_d8b_ws_s1_pc1b40.json --init-from runs/vic_harvest/d8b_tanh15_s1/checkpoints/ckpt_000013568 --max-updates 112`
+3. Control, same reward, segment 3: `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_d8b_tanh15_s1.json --resume latest --max-updates 61` (ends at ~17.5k; no backfill).
+Rows every 5 episodes per arm (b60 / b40 / ctrl): success, safety (+caps), collS mean / median / p10, < 15 N, < 22 N, tsh, wristF, tcpv, KL, LR.
+Stop rules:
+- passive: success < 0.3 with safety < 3% -> stop that arm;
+- pull collapse: < 15 N below 5% at EP10 in b60 -> report.
+At the end: eval + gate last and best per arm.

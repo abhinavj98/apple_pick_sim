@@ -277,3 +277,39 @@ def test_episode_stats_report_which_safety_cap_tripped_and_peak_wrist_torque():
     assert float(s["Episode / safety wrist force (frac)"]) == 0.0
     assert float(s["Episode / safety wrist torque (frac)"]) == pytest.approx(0.25)
     assert float(s["Episode / peak wrist torque N*m (mean)"]) == pytest.approx((12.0 + 3.0) / 4)
+
+
+def test_episode_stats_record_target_force_at_and_before_a_safety_trip():
+    # tells a one-step solver blow-up (10 N -> 900 N) from a policy that ramps into the cap
+    from apple_pick_gym.batched_envs.harvest_episode import EpisodeConfig
+    from apple_pick_gym.rl.skrl_wrapper import _EpisodeStats
+
+    st = _EpisodeStats(2, torch.device("cpu"), safety=EpisodeConfig())
+
+    def info(f0, f1, safe):
+        tw = torch.zeros(2, 6)
+        tw[0, 0], tw[1, 0] = f0, f1
+        return {
+            "episode": {
+                "frozen": torch.zeros(2, dtype=torch.bool),
+                "success_achieved": torch.zeros(2, dtype=torch.bool),
+                "safety_junction": torch.tensor(safe),
+                "safety_wrist": torch.zeros(2, dtype=torch.bool),
+            },
+            "reward_terms": {
+                "raw": {"collateral": torch.zeros(2)},
+                "weighted": {k: torch.zeros(2) for k in ("progress", "pullout", "wrist", "collateral", "slack")},
+                "terminal": torch.zeros(2),
+            },
+            "detach_index": torch.zeros(2),
+            "target_junction_wrench": tw,
+            "ft_wrist": torch.zeros(2, 6),
+            "woody_part_force": {},
+        }
+
+    st.update(torch.zeros(2, 1), info(10.0, 38.0, [False, False]), torch.zeros(2, dtype=torch.bool), torch.zeros(2, 13))
+    st.update(torch.zeros(2, 1), info(900.0, 41.0, [True, True]), torch.ones(2, dtype=torch.bool), torch.zeros(2, 13))
+    s = st.summary()
+    assert float(s["Episode / safety trip target force N (median)"]) == pytest.approx(470.5)  # median of 900, 41
+    assert float(s["Episode / safety trip prev target force N (median)"]) == pytest.approx(24.0)  # median of 10, 38
+    assert float(s["Episode / safety trip target force jump > 5x (frac of trips)"]) == pytest.approx(0.5)

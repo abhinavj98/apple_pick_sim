@@ -128,6 +128,13 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         out[key] = float(np.mean(vals)) if vals else float("nan")
     for cap in ("target force", "target torque", "wrist force", "wrist torque"):
         out[f"safety_{cap.replace(' ', '_')}_frac"] = float(np.mean([e.get(f"Episode / safety {cap} (frac)", 0.0) for e in per_episode]))
+    for label, key in (
+        ("safety trip target force N (median)", "safety_trip_target_force_n_median"),
+        ("safety trip prev target force N (median)", "safety_trip_prev_target_force_n_median"),
+        ("safety trip target force jump > 5x (frac of trips)", "safety_trip_jump_5x_frac"),
+    ):
+        vals = [e[f"Episode / {label}"] for e in per_episode if np.isfinite(e.get(f"Episode / {label}", np.nan))]
+        out[key] = float(np.mean(vals)) if vals else float("nan")
     out["peak_wrist_torque_nm_mean"] = float(np.mean([e["Episode / peak wrist torque N*m (mean)"] for e in per_episode]))
     out["peak_target_torque_nm_mean"] = float(np.mean([e["Episode / peak target torque N*m (mean)"] for e in per_episode]))
     out["episodes"] = per_episode

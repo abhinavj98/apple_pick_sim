@@ -82,7 +82,9 @@ class _EpisodeStats:
         self.peak_tau, self.peak_wrist_tau = z(), z()
         b = lambda: torch.zeros(self.n, dtype=torch.bool, device=self.device)
         self.safety_cap = {k: b() for k in ("target_force", "target_torque", "wrist_force", "wrist_torque")}
+        self.prev_target_f = z()
         nan = lambda: torch.full((self.n,), float("nan"), device=self.device)
+        self.trip_f, self.trip_prev_f = nan(), nan()
         self.at_detach = {k: nan() for k in ("force", "torque", "torsion", "bending", "force_share", "torque_share")}
 
     def update(
@@ -139,6 +141,8 @@ class _EpisodeStats:
         ft = torch.nan_to_num(info["ft_wrist"].to(self.peak_tau), nan=0.0, posinf=0.0)
         self.peak_wrist_tau = m(self.peak_wrist_tau, torch.linalg.norm(ft[:, 3:6], dim=-1))
         tripped = terminated & safe & ~self.safety
+        self.trip_f = torch.where(tripped, f_n, self.trip_f)
+        self.trip_prev_f = torch.where(tripped, self.prev_target_f, self.trip_prev_f)
         if self.safety_cfg is not None and bool(tripped.any()):
             fc, tc = float(self.safety_cfg.safety_force_cap_n), float(self.safety_cfg.safety_torque_cap_nm)
             caps = {
@@ -150,6 +154,7 @@ class _EpisodeStats:
             for k, v in caps.items():
                 self.safety_cap[k] |= tripped & v
         self.safety |= terminated & safe
+        self.prev_target_f = f_n.clone()
         lf = live.float()
         self.k_lin += lf * env_action[:, 6:9].mean(-1)
         self.k_ang += lf * env_action[:, 9:12].mean(-1)
@@ -162,6 +167,22 @@ class _EpisodeStats:
             sp = torch.nan_to_num(tcp_speed.reshape(-1).to(self.peak_speed), nan=0.0, posinf=0.0)
             self.peak_speed = m(self.peak_speed, sp)
             self.sum_speed += lf * sp
+
+    def _trip_summary(self, valid: torch.Tensor) -> dict[str, torch.Tensor]:
+        trips = self.safety & valid & torch.isfinite(self.trip_f)
+        nan = torch.tensor(float("nan"), device=self.device)
+        if not bool(trips.any()):
+            return {
+                "Episode / safety trip target force N (median)": nan,
+                "Episode / safety trip prev target force N (median)": nan,
+                "Episode / safety trip target force jump > 5x (frac of trips)": nan,
+            }
+        f, p = self.trip_f[trips], self.trip_prev_f[trips]
+        return {
+            "Episode / safety trip target force N (median)": f.quantile(0.5),
+            "Episode / safety trip prev target force N (median)": p.quantile(0.5),
+            "Episode / safety trip target force jump > 5x (frac of trips)": (f > 5.0 * p.clamp_min(1e-6)).float().mean(),
+        }
 
     def summary(self) -> dict[str, torch.Tensor]:
         valid = ~self.invalid
@@ -198,6 +219,7 @@ class _EpisodeStats:
             "Episode / peak target torque N*m (mean)": s(self.peak_tau),
             "Episode / peak wrist torque N*m (mean)": s(self.peak_wrist_tau),
             **{f"Episode / safety {k.replace('_', ' ')} (frac)": s(v) for k, v in self.safety_cap.items()},
+            **self._trip_summary(valid),
             **{f"Episode / detach {label} (mean)": won_mean(self.at_detach[k]) for k, label in _DETACH_LABELS},
         }
 

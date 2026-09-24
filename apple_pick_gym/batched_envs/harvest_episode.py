@@ -26,7 +26,9 @@ from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig
 class EpisodeConfig:
     """Success-streak length and safety caps for episode-level logic."""
 
-    success_streak_steps: int = 10
+    # The detach envelope is a physical failure criterion, so a short streak (50 ms at
+    # 60 Hz) only rejects single-step solver spikes rather than asking for a hold.
+    success_streak_steps: int = 3
     safety_force_cap_n: float = 40.0
     safety_torque_cap_nm: float = 10.0
 
@@ -74,9 +76,16 @@ class FreezeMask:
         else:
             self.done_mask[env_mask] = False
 
-    def update(self, newly_terminated: torch.Tensor) -> None:
-        """Sticky OR: an env, once frozen, stays frozen until ``reset()``."""
+    def update(self, newly_terminated: torch.Tensor) -> torch.Tensor:
+        """Sticky OR: an env, once frozen, stays frozen until ``reset()``.
+
+        Returns the freeze *edge* ``(N,)``: envs frozen by this call and not before. That
+        edge is the episode's ``terminated`` signal -- recurrent PPO resets hidden state and
+        cuts the GAE bootstrap on every ``terminated``, so it must fire exactly once.
+        """
+        edge = newly_terminated & ~self.done_mask
         self.done_mask = self.done_mask | newly_terminated
+        return edge
 
     def apply_to_action(self, action: torch.Tensor, last_action: torch.Tensor) -> torch.Tensor:
         mask = self.done_mask.reshape(-1, *([1] * (action.dim() - 1)))

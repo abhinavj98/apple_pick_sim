@@ -88,6 +88,33 @@ def test_freeze_mask_is_sticky_across_updates():
     torch.testing.assert_close(out, torch.tensor([[0.0], [5.0]]))
 
 
+def test_freeze_mask_update_returns_only_the_freeze_edge():
+    """skrl PPO_RNN resets an env's LSTM state and cuts GAE on every `terminated`, so the
+    env must report termination once, on the step an env freezes -- not every frozen step."""
+    mask = FreezeMask(num_envs=3, device="cpu")
+    e1 = mask.update(torch.tensor([True, False, False]))
+    e2 = mask.update(torch.tensor([True, True, False]))  # env0 still "done", env1 new
+    e3 = mask.update(torch.tensor([True, True, False]))
+    assert e1.tolist() == [True, False, False]
+    assert e2.tolist() == [False, True, False]
+    assert e3.tolist() == [False, False, False]
+    assert mask.done_mask.tolist() == [True, True, False]
+
+
+def test_freeze_mask_edge_ignores_envs_frozen_at_reset():
+    """Invalid envs are frozen from reset; they never produce a termination edge."""
+    mask = FreezeMask(num_envs=2, device="cpu")
+    mask.update(torch.tensor([True, False]))  # reset-time freeze (invalid env)
+    edge = mask.update(torch.tensor([True, False]))
+    assert edge.tolist() == [False, False]
+
+
+def test_default_success_streak_is_short():
+    """The detach envelope is a physical failure criterion: a short streak only rejects
+    single-step solver spikes."""
+    assert EpisodeConfig().success_streak_steps == 3
+
+
 def test_freeze_mask_reset_clears_all_envs():
     mask = FreezeMask(num_envs=2, device="cpu")
     mask.update(torch.tensor([True, True]))

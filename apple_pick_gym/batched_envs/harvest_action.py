@@ -146,6 +146,50 @@ def integrate_delta_pose(target: torch.Tensor, delta: torch.Tensor) -> torch.Ten
     return torch.cat([pos_new, quat_new], dim=-1)
 
 
+def _quat_conj_wxyz(q: torch.Tensor) -> torch.Tensor:
+    return torch.cat([q[:, :1], -q[:, 1:]], dim=-1)
+
+
+def leash_target_pose(
+    target: torch.Tensor,
+    tcp: torch.Tensor,
+    *,
+    max_pos_offset_m: float | None,
+    max_rot_offset_rad: float | None,
+) -> torch.Tensor:
+    """Keep the integrated ``(N, 7)`` ``[pos, quat_wxyz]`` target within a leash of the TCP.
+
+    The VIC wrench is ``K * (target - tcp)``, so an unbounded integrated target lets a
+    random-walk policy wind up forces far past any safety cap (``+-0.02 m/step`` for
+    500 steps is ~0.45 m, 90 N at ``K = 200 N/m``). The leash bounds the commanded
+    wrench to ``K_max * max_pos_offset_m`` / ``K_ang_max * max_rot_offset_rad``, the
+    same way a real-rig impedance controller saturates its setpoint error. Position
+    is projected onto the sphere of radius ``max_pos_offset_m`` around the TCP;
+    rotation is shortened along the same relative axis to ``max_rot_offset_rad``.
+    ``None`` disables that half.
+    """
+    out = target.clone()
+    if max_pos_offset_m is not None:
+        offset = target[:, :3] - tcp[:, :3]
+        dist = torch.linalg.norm(offset, dim=-1, keepdim=True)
+        scale = torch.clamp(float(max_pos_offset_m) / dist.clamp_min(1e-12), max=1.0)
+        out[:, :3] = tcp[:, :3] + offset * scale
+    if max_rot_offset_rad is not None:
+        q_tcp = tcp[:, 3:7]
+        rel = _quat_mul_wxyz(target[:, 3:7], _quat_conj_wxyz(q_tcp))  # world-frame: target = rel * tcp
+        rel = torch.where(rel[:, :1] < 0.0, -rel, rel)  # shortest arc (double cover)
+        sin_half = torch.linalg.norm(rel[:, 1:], dim=-1, keepdim=True)
+        angle = 2.0 * torch.atan2(sin_half, rel[:, :1])
+        axis = rel[:, 1:] / sin_half.clamp_min(1e-12)
+        clamped = torch.clamp(angle, max=float(max_rot_offset_rad))
+        rel_new = _axis_angle_to_quat_wxyz(axis * clamped)
+        q_new = _quat_mul_wxyz(rel_new, q_tcp)
+        q_new = q_new / torch.linalg.norm(q_new, dim=-1, keepdim=True).clamp_min(1e-9)
+        over = angle > float(max_rot_offset_rad)
+        out[:, 3:7] = torch.where(over, q_new, target[:, 3:7])
+    return out
+
+
 def pack_vic_pose_action(
     target: torch.Tensor,
     linear_k: torch.Tensor,

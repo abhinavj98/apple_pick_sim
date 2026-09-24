@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import math
 
+import pytest
 import torch
 
 from apple_pick_gym.batched_envs.harvest_action import (
     HarvestActionBounds,
     derive_critical_damping,
     integrate_delta_pose,
+    leash_target_pose,
     pack_vic_pose_action,
     split_harvest_action,
 )
@@ -155,3 +157,54 @@ def test_full_pipeline_split_integrate_pack():
     torch.testing.assert_close(
         new_target[:, 2], torch.full((n,), bounds.linear_delta_m), atol=1e-6, rtol=0
     )
+
+
+def _quat_about_z_wxyz(angle: float) -> torch.Tensor:
+    return torch.tensor([[math.cos(angle / 2), 0.0, 0.0, math.sin(angle / 2)]])
+
+
+def test_leash_leaves_targets_inside_the_leash_untouched():
+    target = _identity_target(1)
+    target[:, :3] = torch.tensor([0.01, 0.0, 0.0])
+    tcp = _identity_target(1)
+    out = leash_target_pose(target, tcp, max_pos_offset_m=0.05, max_rot_offset_rad=0.5)
+    torch.testing.assert_close(out, target)
+
+
+def test_leash_projects_position_onto_the_sphere_around_the_tcp():
+    """VIC force is K*(target - tcp): bounding the offset bounds the commanded force."""
+    tcp = _identity_target(2)
+    tcp[1, :3] = torch.tensor([1.0, 1.0, 1.0])
+    target = tcp.clone()
+    target[0, :3] += torch.tensor([0.3, 0.4, 0.0])  # 0.5 m away
+    target[1, :3] += torch.tensor([0.0, 0.0, -0.2])
+    out = leash_target_pose(target, tcp, max_pos_offset_m=0.1, max_rot_offset_rad=None)
+    torch.testing.assert_close(out[0, :3], torch.tensor([0.06, 0.08, 0.0]))
+    torch.testing.assert_close(out[1, :3], torch.tensor([1.0, 1.0, 0.9]))
+    torch.testing.assert_close(out[:, 3:], target[:, 3:])
+
+
+def test_leash_limits_rotation_offset_about_the_same_axis():
+    tcp = _identity_target(1)
+    target = _identity_target(1)
+    target[:, 3:] = _quat_about_z_wxyz(1.0)
+    out = leash_target_pose(target, tcp, max_pos_offset_m=None, max_rot_offset_rad=0.25)
+    torch.testing.assert_close(out[:, 3:], _quat_about_z_wxyz(0.25), atol=1e-6, rtol=0)
+
+
+def test_leash_rotation_is_relative_to_a_non_identity_tcp():
+    tcp = _identity_target(1)
+    tcp[:, 3:] = _quat_about_z_wxyz(0.5)
+    target = _identity_target(1)
+    target[:, 3:] = _quat_about_z_wxyz(-0.5)  # 1 rad away, the other way
+    out = leash_target_pose(target, tcp, max_pos_offset_m=None, max_rot_offset_rad=0.2)
+    torch.testing.assert_close(out[:, 3:], _quat_about_z_wxyz(0.3), atol=1e-6, rtol=0)
+
+
+def test_leash_handles_double_cover_quaternions():
+    tcp = _identity_target(1)
+    target = _identity_target(1)
+    target[:, 3:] = -_quat_about_z_wxyz(0.1)  # same rotation, negated quaternion
+    out = leash_target_pose(target, tcp, max_pos_offset_m=None, max_rot_offset_rad=0.2)
+    angle = 2 * torch.acos(torch.abs(out[:, 3]).clamp(max=1.0))
+    assert float(angle) == pytest.approx(0.1, abs=1e-5)

@@ -72,10 +72,11 @@ from apple_pick_gym.batched_envs.apple_pick_batched_base_env import ApplePickBat
 from apple_pick_gym.batched_envs.harvest_action import (
     HarvestActionBounds,
     integrate_delta_pose,
+    leash_target_pose,
     pack_vic_pose_action,
     split_harvest_action,
 )
-from apple_pick_gym.batched_envs.harvest_detach import detach_index
+from apple_pick_gym.batched_envs.harvest_detach import detach_index, junction_wrench_at_anchor
 from apple_pick_gym.batched_envs.harvest_episode import (
     EpisodeConfig,
     FreezeMask,
@@ -85,6 +86,7 @@ from apple_pick_gym.batched_envs.harvest_episode import (
 )
 from apple_pick_gym.batched_envs.harvest_reward import (
     HarvestRewardConfig,
+    quat_rotate_vector,
     compute_dense_reward_terms,
     weight_dense_reward_terms,
 )
@@ -200,6 +202,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._arm_build_dr_scales = arm_build_dr_scales
         self._arm_build_dr_sample = None
         self._pending_terminated: torch.Tensor | None = None
+        self._last_tcp_pose_wxyz: torch.Tensor | None = None
+        self._collateral_baseline_norm: dict[str, torch.Tensor] | None = None
 
         if sim_config is None:
             from apple_pick_sim.coupled_fruiting import BatchedHeterogeneousCoupledSimConfig
@@ -279,6 +283,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 f"junction_names={self._junction_names}"
             )
         self._target_junction_idx = self._junction_names.index(self._target_junction_name)
+        self._target_child_body = self._resolve_target_child_bodies()
 
         b = self._action_bounds
         self.action_space = spaces.Box(
@@ -312,6 +317,17 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._success_tracker = SuccessStreakTracker(num_envs=self.num_envs, device=self.device)
         self._freeze_mask = FreezeMask(num_envs=self.num_envs, device=self.device)
 
+        if self.device.type == "cpu":
+            import warnings
+
+            warnings.warn(
+                "ApplePickVicHarvestEnv on a CPU Warp device: the batched FR3 arm runs on "
+                "Newton's MuJoCo-CPU backend, which does not integrate replicated "
+                "(separate_worlds) arms -- the TCP stays fixed whatever the action. CPU is "
+                "fine for wiring tests only; train and evaluate on CUDA.",
+                UserWarning,
+                stacklevel=2,
+            )
         self._apply_build_time_dr()
         if episode_snapshot_path is not None:
             self.load_world_snapshot(episode_snapshot_path)
@@ -319,6 +335,22 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             if self._hold_cfg.enabled:
                 self._hold_settle()
             self._invalid_env_mask = self._detect_invalid_envs()
+
+    def _resolve_target_child_bodies(self) -> torch.Tensor:
+        """Per env: the cable-model body index of the target junction's child (``(N,)`` long)."""
+        bufs = self._sim.obs_bufs
+        joint_idx = bufs.woody_joint_indices.numpy().reshape(self.num_envs, -1)[:, self._target_junction_idx]
+        child = self._sim.scene.cable.model.joint_child.numpy()[joint_idx]
+        return torch.as_tensor(child.astype(np.int64), device=self.device)
+
+    def _target_child_com_world(self) -> torch.Tensor:
+        """``(N, 3)`` world COM of the target junction's child body (same state the gather reads)."""
+        cable = self._sim.scene.cable
+        body_q = wp.to_torch(cable.state_0.body_q).to(device=self.device, dtype=torch.float32)
+        body_com = wp.to_torch(cable.model.body_com).to(device=self.device, dtype=torch.float32)
+        idx = self._target_child_body
+        q = body_q[idx]
+        return q[:, :3] + quat_rotate_vector(q[:, 3:7], body_com[idx])
 
     def _detect_invalid_envs(self) -> torch.Tensor:
         """Flag envs whose stored rest state is a failed IK grasp.
@@ -642,6 +674,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         )
 
         sensor_ft = self._ft_sensor.step(full["ft_wrist"])
+        self._last_tcp_pose_wxyz = torch.cat([tcp_pose[:, :3], _xyzw_to_wxyz(tcp_pose[:, 3:7])], dim=-1)
 
         # Proprioception + F/T only -- apple/junction geometry is NOT fed to
         # the policy (see _harvest_observation_space's docstring); it is
@@ -677,8 +710,18 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         )
         woody_part_force = self._woody_part_force()
         info["woody_part_force"] = woody_part_force
+        # Raw readout: torque about the child body's COM (kept for logging/back-compat).
         info["target_junction_force"] = woody_part_force[self._target_junction_name]
-        info["target_junction_wrench"] = info["target_junction_force"]
+        # What the detach envelope and progress reward read: the same wrench with the
+        # torque shifted to the joint anchor (harvest_detach.junction_wrench_at_anchor).
+        info["target_junction_wrench"] = junction_wrench_at_anchor(
+            info["target_junction_force"],
+            child_anchor=self._last_full_obs["woody_part_info"][self._target_junction_name]["anchors_pos"][:, 3:6],
+            child_com=self._target_child_com_world(),
+        )
+        info["detach_index"] = detach_index(info["target_junction_wrench"], self._reward_cfg.detach)
+        if self._collateral_baseline_norm is not None:
+            info["collateral_baseline_norm"] = self._collateral_baseline_norm
         # Raw (privileged, un-sensor-filtered) ft_wrist for reward computation --
         # distinct from obs["ft_wrist"], which is what the policy actually
         # observes. Reward is train-time only, so this privilege is legitimate.
@@ -717,8 +760,17 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         action = self._freeze_mask.apply_to_delta_action(action, self._last_action, delta_dims=6)
 
         split = split_harvest_action(action, self._action_bounds)
-        gains = torch.cat([split.linear_k, split.angular_k], dim=-1)
+        b = self._action_bounds
         self._target_pose = integrate_delta_pose(self._target_pose, split.delta)
+        if self._last_tcp_pose_wxyz is not None and (
+            b.max_target_pos_offset_m is not None or b.max_target_rot_offset_rad is not None
+        ):
+            self._target_pose = leash_target_pose(
+                self._target_pose,
+                self._last_tcp_pose_wxyz,
+                max_pos_offset_m=b.max_target_pos_offset_m,
+                max_rot_offset_rad=b.max_target_rot_offset_rad,
+            )
         packed = pack_vic_pose_action(
             self._target_pose, split.linear_k, split.angular_k, split.zeta
         )
@@ -775,8 +827,45 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._pending_terminated = None
 
         obs = self._gather_obs()
+        # Rest load on every non-target junction, so the collateral term counts only
+        # load the policy adds (harvest_reward.compute_collateral_penalty).
+        self._collateral_baseline_norm = None
         info = self._make_info()
+        self._collateral_baseline_norm = {
+            name: torch.linalg.norm(w[:, :3], dim=-1).clone()
+            for name, w in info["woody_part_force"].items()
+            if name != self._target_junction_name
+        }
+        info["collateral_baseline_norm"] = self._collateral_baseline_norm
         return obs, info
+
+    def privileged_fields(self) -> dict[str, torch.Tensor]:
+        """Critic-only DR ground truth (``harvest_obs._PRIVILEGED_FIELDS`` order)."""
+        from apple_pick_gym.batched_envs.harvest_privileged import build_privileged_fields
+
+        return build_privileged_fields(
+            self._sim.per_env_params,
+            self._last_support_dr_sample,
+            self._arm_build_dr_sample,
+            self._last_arm_dr_sample,
+            device=self.device,
+        )
+
+    def plant_geometry(self) -> dict[str, torch.Tensor]:
+        """Critic-only rod/apple geometry and grasp weld axis (fixed for the run)."""
+        from apple_pick_gym.batched_envs.harvest_privileged import build_plant_geometry
+
+        return build_plant_geometry(
+            self._sim.per_env_params,
+            [g.weld_direction for g in self._per_env_grippers],
+            device=self.device,
+        )
+
+    @property
+    def invalid_env_mask(self) -> torch.Tensor:
+        if self._invalid_env_mask is None:
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        return self._invalid_env_mask
 
     def compute_reward(self, obs: dict[str, Any], info: dict[str, Any]) -> torch.Tensor:
         """Dense shaping + terminal bonus/penalty, masked to 0 for already-frozen envs.
@@ -795,8 +884,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             weighted_terms["progress"] + weighted_terms["pullout"] + weighted_terms["collateral"]
         ).unsqueeze(-1)
 
-        detach_idx = detach_index(info["target_junction_wrench"], self._reward_cfg.detach)
-        success_this_step = detach_idx >= 1.0
+        success_this_step = info["detach_index"] >= 1.0
         success_achieved = self._success_tracker.update(success_this_step, self._episode_cfg)
 
         # Safety caps: the target junction's wrench is uncapped (privileged
@@ -811,8 +899,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         terminal = compute_terminal_reward(success_achieved, safety_violation, self._reward_cfg)
         reward = self._freeze_mask.apply_to_reward(dense + terminal)
 
-        self._pending_terminated = success_achieved | safety_violation
-        self._freeze_mask.update(self._pending_terminated)
+        # terminated fires once, on the freeze edge: frozen envs keep stepping (whole-batch
+        # reset only) and would otherwise re-report termination every step, which makes
+        # recurrent PPO zero their hidden state and cut GAE on every frozen step.
+        self._pending_terminated = self._freeze_mask.update(success_achieved | safety_violation)
 
         # Debug/logging surface (reward decomposition + termination reasons). Values are
         # this step's; "total" is the returned (freeze-masked) reward.
@@ -830,6 +920,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             "safety_junction": safety_junction,
             "safety_wrist": safety_wrist,
             "frozen": self._freeze_mask.done_mask.clone(),
+            "terminated_edge": self._pending_terminated.clone(),
+            "detach_index": info["detach_index"],
         }
         info["target_pose"] = self._target_pose.clone()
         return reward

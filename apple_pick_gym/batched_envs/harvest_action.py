@@ -62,6 +62,10 @@ class HarvestActionBounds:
     k_ang_max: float = 40.0
     zeta_min: float = 0.3
     zeta_max: float = 2.0
+    # Optional leash on the integrated target (see leash_target_pose): bounds the VIC
+    # setpoint error, hence the commanded wrench. None keeps the target unbounded.
+    max_target_pos_offset_m: float | None = None
+    max_target_rot_offset_rad: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)

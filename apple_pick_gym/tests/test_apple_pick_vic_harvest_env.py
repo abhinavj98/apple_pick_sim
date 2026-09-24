@@ -321,11 +321,12 @@ class TestApplePickVicHarvestEnv:
     def test_reward_and_termination_are_wired_not_stubbed(self):
         """Task 7 wiring smoke test: reward is nonzero-capable (not the Task 6
         stub), success/freeze/safety plumb through, truncated stays uniform."""
+        from apple_pick_gym.batched_envs.harvest_detach import DetachEnvelopeConfig
         from apple_pick_gym.batched_envs.harvest_episode import EpisodeConfig
         from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig
 
         env = _make_env(
-            reward_config=HarvestRewardConfig(f_threshold_n=5.0),
+            reward_config=HarvestRewardConfig(detach=DetachEnvelopeConfig(f_max_n=5.0)),
             episode_config=EpisodeConfig(success_streak_steps=2, safety_force_cap_n=1e6, safety_torque_cap_nm=1e6),
             max_episode_steps=5,
         )
@@ -376,6 +377,8 @@ class TestApplePickVicHarvestEnv:
                 "safety_junction",
                 "safety_wrist",
                 "frozen",
+                "terminated_edge",
+                "detach_index",
             ):
                 assert ep[key].shape == (2,), key
             assert info["target_pose"].shape == (2, 7)

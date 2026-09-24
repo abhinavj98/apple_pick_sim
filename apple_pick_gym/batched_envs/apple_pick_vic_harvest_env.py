@@ -81,15 +81,9 @@ from apple_pick_gym.batched_envs.harvest_episode import (
     EpisodeConfig,
     FreezeMask,
     SuccessStreakTracker,
-    check_safety_violation,
-    compute_terminal_reward,
 )
-from apple_pick_gym.batched_envs.harvest_reward import (
-    HarvestRewardConfig,
-    quat_rotate_vector,
-    compute_dense_reward_terms,
-    weight_dense_reward_terms,
-)
+from apple_pick_gym.batched_envs.harvest_outcome import evaluate_harvest_step
+from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig, quat_rotate_vector
 from apple_pick_gym.batched_envs.sensor_realism import FtSensorConfig, FtSensorModel
 from apple_pick_gym.batched_envs.support_joint_dr import sample_support_joint_dr
 
@@ -862,6 +856,26 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         )
 
     @property
+    def action_bounds(self) -> HarvestActionBounds:
+        return self._action_bounds
+
+    @property
+    def junction_names(self) -> list[str]:
+        return list(self._junction_names)
+
+    @property
+    def target_junction_name(self) -> str:
+        return self._target_junction_name
+
+    @property
+    def episode_config(self) -> EpisodeConfig:
+        return self._episode_cfg
+
+    @property
+    def max_episode_steps(self) -> int:
+        return int(self._max_episode_steps)
+
+    @property
     def invalid_env_mask(self) -> torch.Tensor:
         if self._invalid_env_mask is None:
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -870,59 +884,28 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
     def compute_reward(self, obs: dict[str, Any], info: dict[str, Any]) -> torch.Tensor:
         """Dense shaping + terminal bonus/penalty, masked to 0 for already-frozen envs.
 
-        Also updates the success streak and the freeze mask, and caches the
-        resulting ``terminated`` for :meth:`compute_terminated` to return --
+        Delegates to :func:`harvest_outcome.evaluate_harvest_step` (shared with the RL
+        surrogate env). Also updates the success streak and the freeze mask, and caches
+        the resulting ``terminated`` (the freeze edge) for :meth:`compute_terminated` --
         the base env's ``step()`` always calls ``compute_reward`` first, so
         this ordering is safe and avoids double-incrementing the streak
         tracker by calling ``.update()`` from both methods.
         """
-        raw_terms = compute_dense_reward_terms(
-            obs, info, target_junction_name=self._target_junction_name, cfg=self._reward_cfg
+        outcome = evaluate_harvest_step(
+            obs,
+            info,
+            reward_cfg=self._reward_cfg,
+            episode_cfg=self._episode_cfg,
+            tracker=self._success_tracker,
+            freeze_mask=self._freeze_mask,
+            target_junction_name=self._target_junction_name,
         )
-        weighted_terms = weight_dense_reward_terms(raw_terms, self._reward_cfg)
-        dense = (
-            weighted_terms["progress"] + weighted_terms["pullout"] + weighted_terms["collateral"]
-        ).unsqueeze(-1)
-
-        success_this_step = info["detach_index"] >= 1.0
-        success_achieved = self._success_tracker.update(success_this_step, self._episode_cfg)
-
-        # Safety caps: the target junction's wrench is uncapped (privileged
-        # debug gather, not the stem-harvest transfer), so this is a real
-        # check. ft_wrist is already hard-capped by the stem-harvest transfer
-        # at the same 40 N / 10 N*m default, so that half is a no-op safety
-        # net today, kept for robustness if the caps ever diverge.
-        safety_junction = check_safety_violation(info["target_junction_force"], self._episode_cfg)
-        safety_wrist = check_safety_violation(info["ft_wrist"], self._episode_cfg)
-        safety_violation = safety_junction | safety_wrist
-
-        terminal = compute_terminal_reward(success_achieved, safety_violation, self._reward_cfg)
-        reward = self._freeze_mask.apply_to_reward(dense + terminal)
-
-        # terminated fires once, on the freeze edge: frozen envs keep stepping (whole-batch
-        # reset only) and would otherwise re-report termination every step, which makes
-        # recurrent PPO zero their hidden state and cut GAE on every frozen step.
-        self._pending_terminated = self._freeze_mask.update(success_achieved | safety_violation)
-
+        self._pending_terminated = outcome.terminated
         # Debug/logging surface (reward decomposition + termination reasons). Values are
         # this step's; "total" is the returned (freeze-masked) reward.
-        info["reward_terms"] = {
-            "raw": raw_terms,
-            "weighted": weighted_terms,
-            "dense": dense.squeeze(-1),
-            "terminal": terminal.squeeze(-1),
-            "total": reward.reshape(self.num_envs),
-        }
-        info["episode"] = {
-            "success_this_step": success_this_step,
-            "success_achieved": success_achieved,
-            "success_streak": self._success_tracker.streak.clone(),
-            "safety_junction": safety_junction,
-            "safety_wrist": safety_wrist,
-            "frozen": self._freeze_mask.done_mask.clone(),
-            "terminated_edge": self._pending_terminated.clone(),
-            "detach_index": info["detach_index"],
-        }
+        info["reward_terms"] = outcome.reward_terms
+        info["episode"] = outcome.episode
+        reward = outcome.reward
         info["target_pose"] = self._target_pose.clone()
         return reward
 

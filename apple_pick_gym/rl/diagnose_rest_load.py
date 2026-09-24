@@ -69,13 +69,55 @@ def _stats(x: torch.Tensor) -> dict[str, float]:
     return {k: float(x.quantile(q)) for k, q in (("p10", 0.1), ("median", 0.5), ("p90", 0.9), ("max", 1.0))}
 
 
-def diagnose(env) -> dict:
-    """Reset ``env`` (``ApplePickVicHarvestEnv``) and decompose the target junction's rest wrench."""
+def _hold_action(env, k_lin: float = 150.0, k_ang: float = 10.0, zeta: float = 1.0) -> torch.Tensor:
+    """Env-unit 13-D action: no target change, moderate stiffness."""
+    a = torch.zeros(env.num_envs, 13, device=env.device)
+    a[:, 6:9], a[:, 9:12], a[:, 12] = k_lin, k_ang, zeta
+    return a
+
+
+def _weld_wrench_on_apple_at(env, point: torch.Tensor) -> torch.Tensor | None:
+    """``(N, 6)`` wrench the gripper applies to the apple through the proxy-apple weld, about ``point``.
+
+    Read from the weld joint itself (wrench on its child, the proxy, at the child COM), negated
+    for the apple and moved to ``point``. ``None`` if the scene has no batched weld indices.
+    """
+    import warp as wp
+
+    from apple_pick_gym.batched_envs.harvest_reward import quat_rotate_vector
+    from apple_pick_sim.vbd_fixed_joint_wrenches import gather_joint_wrench_child_com_device
+
+    sim = env._sim
+    scene = sim.scene
+    joints = getattr(scene, "weld_harvest_joint_indices_wp", None)
+    if joints is None:
+        return None
+    cable = scene.cable
+    f, t = gather_joint_wrench_child_com_device(
+        cable.model, cable.solver, body_q=cable.state_0.body_q, body_q_prev=cable.state_1.body_q,
+        joint_indices=joints, dt=float(sim.sub_dt),
+    )
+    dev = env.device
+    force = -wp.to_torch(f).to(device=dev, dtype=torch.float32)
+    torque_com = -wp.to_torch(t).to(device=dev, dtype=torch.float32)
+    child = torch.as_tensor(cable.model.joint_child.numpy()[joints.numpy()].astype(np.int64), device=dev)
+    body_q = wp.to_torch(cable.state_0.body_q).to(device=dev, dtype=torch.float32)
+    body_com = wp.to_torch(cable.model.body_com).to(device=dev, dtype=torch.float32)
+    q = body_q[child]
+    com = q[:, :3] + quat_rotate_vector(q[:, 3:7], body_com[child])
+    return torch.cat([force, torque_com + torch.cross(com - point, force, dim=-1)], dim=-1)
+
+
+def diagnose(env, *, hold_steps: int = 0) -> dict:
+    """Reset ``env`` (``ApplePickVicHarvestEnv``), optionally hold ``hold_steps`` steps, and decompose
+    the target junction's rest wrench."""
     import warp as wp
 
     from apple_pick_gym.batched_envs.harvest_reward import quat_rotate_vector
 
     obs, info = env.reset()
+    for _ in range(hold_steps):
+        obs, _r, _te, _tr, info = env.step(_hold_action(env))
     n, dev = env.num_envs, env.device
     cable = env._sim.scene.cable
     model = cable.model
@@ -112,7 +154,15 @@ def diagnose(env) -> dict:
     tcp = obs["tcp_pos"]
     t_grip_j = ft[:, 3:] + torch.cross(tcp - j, ft[:, :3], dim=-1)
 
+    weld = _weld_wrench_on_apple_at(env, j)
     res = {}
+    if weld is not None:
+        rf = w_j[:, :3] + f_g + weld[:, :3]
+        rt = w_j[:, 3:] + t_g + weld[:, 3:]
+        res["weld_joint"] = {
+            "force_residual_n": _stats(torch.linalg.norm(rf, dim=-1)),
+            "torque_residual_nm": _stats(torch.linalg.norm(rt, dim=-1)),
+        }
     for s in (+1.0, -1.0):
         rf = w_j[:, :3] + f_g + s * ft[:, :3]
         rt = w_j[:, 3:] + t_g + s * t_grip_j
@@ -151,8 +201,12 @@ def diagnose(env) -> dict:
         "cos_junction_vs_minus_gravity_torque": _stats(
             v(torch.nn.functional.cosine_similarity(w_j[:, 3:], -t_g, dim=-1))
         ),
+        "hold_steps": hold_steps,
         "balance_residuals": res,
     }
+    if weld is not None:
+        out["weld_force_on_apple_n"] = _stats(v(norm(weld[:, :3])))
+        out["weld_torque_about_junction_nm"] = _stats(v(norm(weld[:, 3:])))
     if stem_deg is not None:
         out["stem_angle_from_down_deg"] = _stats(v(stem_deg))
     if lever is not None:
@@ -169,13 +223,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", required=True, help="TrainConfig JSON (env section is used)")
     p.add_argument("--num-envs", type=int)
     p.add_argument("--seed", type=int, default=12345)
+    p.add_argument("--hold-steps", type=int, default=0, help="hold steps before measuring (0 = at reset)")
     p.add_argument("--out", required=True)
     a = p.parse_args(argv)
     cfg = TrainConfig.load_json(a.config)
     env_cfg = cfg.env if a.num_envs is None else dataclasses.replace(cfg.env, num_envs=a.num_envs)
     env = build_env(env_cfg, seed=a.seed)
     try:
-        res = diagnose(env)
+        res = diagnose(env, hold_steps=a.hold_steps)
     finally:
         env.close()
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)

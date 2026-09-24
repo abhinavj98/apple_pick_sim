@@ -149,13 +149,19 @@ def _ppo_rnn_class():
 
         debug_kl = False
 
-        def _pre_update_kl(self) -> float:
-            """KL(stored || recomputed) over the whole rollout before any gradient step, scalers frozen."""
+        debug_dir = None
+
+        def _pre_update_kl(self, timestep: int = 0) -> float:
+            """KL(stored || recomputed) over the whole rollout before any gradient step, scalers frozen.
+
+            If it is large, the worst rows are written to ``<debug_dir>/debug_kl_<timestep>.json``.
+            """
             mem = self.memory
             idx = mem.all_sequence_indexes
             view = lambda name: mem.tensors_view[name][idx]
+            obs = view("observations")
             inputs = {
-                "observations": self._observation_preprocessor(view("observations")),
+                "observations": self._observation_preprocessor(obs),
                 "states": self._state_preprocessor(view("states")),
                 "taken_actions": view("actions"),
                 "rnn": [view(n).transpose(0, 1) for n in self._rnn_tensors_names if "policy" in n],
@@ -165,12 +171,45 @@ def _ppo_rnn_class():
             with torch.no_grad():
                 _, out = self.policy.act(inputs, role="policy")
                 ratio = out["log_prob"].flatten() - view("log_prob").flatten()
-                return float(((torch.exp(ratio) - 1) - ratio).mean())
+                kl = float(((torch.exp(ratio) - 1) - ratio).mean())
+            if kl > 0.05 and self.debug_dir is not None:
+                self._dump_worst_rows(timestep, idx, ratio, obs, inputs)
+            return kl
+
+        def _dump_worst_rows(self, timestep, idx, ratio, obs, inputs, k: int = 24) -> None:
+            n_env = self.memory.num_envs
+            seq = self._rnn_sequence_length
+            term = inputs["terminated"].flatten().bool()
+            trunc = inputs["truncated"].flatten().bool()
+            ended = term | trunc
+            h0 = inputs["rnn"][0]  # (layers, rows, hidden) after transpose
+            rows = []
+            for j in torch.topk(ratio.abs(), min(k, ratio.numel())).indices.tolist():
+                flat = int(idx[j])
+                t, env = divmod(flat, n_env)
+                pos = j % seq  # position inside its BPTT sequence
+                rows.append(
+                    {
+                        "abs_dlogp": float(ratio[j].abs()),
+                        "t_in_rollout": t,
+                        "env": env,
+                        "pos_in_seq": pos,
+                        "terminated": bool(term[j]),
+                        "truncated": bool(trunc[j]),
+                        "prev_ended_in_seq": bool(ended[j - 1]) if pos > 0 else None,
+                        "any_end_earlier_in_seq": bool(ended[j - pos : j].any()) if pos > 0 else False,
+                        "obs_absmax": float(obs[j].abs().max()),
+                        "obs_absmax_dim": int(obs[j].abs().argmax()),
+                        "stored_h_norm": float(h0[:, j].norm()),
+                    }
+                )
+            path = Path(self.debug_dir) / f"debug_kl_{int(timestep):09d}.json"
+            path.write_text(json.dumps({"timestep": int(timestep), "rows": rows}, indent=1) + "\n")
 
         def update(self, *, timestep: int, timesteps: int) -> None:
             pre = getattr(self._observation_preprocessor, "running_mean", None)
             if self.debug_kl:
-                self.track_data("Debug / pre-update KL (frozen scalers)", self._pre_update_kl())
+                self.track_data("Debug / pre-update KL (frozen scalers)", self._pre_update_kl(timestep))
                 mean0 = pre.detach().clone() if pre is not None else None
             super().update(timestep=timestep, timesteps=timesteps)
             if self.debug_kl and pre is not None:
@@ -227,6 +266,7 @@ def build_agent(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, run_dir: Path,
         entropy_loss_scale=p.entropy_loss_scale,
         value_loss_scale=p.value_loss_scale,
         time_limit_bootstrap=p.time_limit_bootstrap,
+        kl_threshold=p.kl_threshold or 0,
         experiment=dict(
             directory=str(run_dir.parent),
             experiment_name=run_dir.name,
@@ -260,6 +300,7 @@ def build_agent(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, run_dir: Path,
         cfg=agent_cfg,
     )
     agent.debug_kl = bool(p.debug_kl)
+    agent.debug_dir = str(run_dir) if p.debug_kl else None
     return agent
 
 

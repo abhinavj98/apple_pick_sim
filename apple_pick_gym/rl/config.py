@@ -100,6 +100,9 @@ class PPOConfig:
     # diagnostic (costs one extra forward pass over the rollout per update): log the pre-update KL
     # with the scalers frozen and the obs scaler's mean shift during the update
     debug_kl: bool = False
+    # skrl early stop: end the update epoch once a minibatch's KL exceeds this (None/0 = off). Safety
+    # net after a GPU run's KL climbed 173 -> 1954 -> 8.6e8 over three updates
+    kl_threshold: float | None = 0.05
     ratio_clip: float = 0.2
     value_clip: float = 0.2
     grad_norm_clip: float = 1.0

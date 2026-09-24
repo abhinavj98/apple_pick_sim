@@ -672,3 +672,33 @@ of the scaler contamination that D14 removes.
 - `run_training` checks the policy/value weights after every update. If any is non-finite, it
   writes a `{"kind": "diverged"}` metrics row and raises `TrainingDiverged`, naming the last
   healthy checkpoint. Nothing is saved from the poisoned update on.
+
+## D13 run: target behaviour reached; a stored-data mismatch in the real env (open)
+
+**D13 checkpoints (eval, gate vs eval_d8: 3/5 each).**
+
+| ckpt | success | safety | steps | collateral / success | torque share | wrist F |
+| --- | --- | --- | --- | --- | --- | --- |
+| 4800 | 0.257 | 0.065 | 95 | 10.5 N | 0.90 | 11.9 N |
+| 6400 | 0.258 | 0.068 | 81 | 11.0 N | 0.91 | 11.3 N |
+
+- Both collateral clauses and beats_random pass. Success and safety fail; nearly all safety
+  failures are wrist force.
+- The behaviour is the target one: a bend detach at ~10.5 N collateral per success. The
+  remaining gap is reliability.
+
+**Divergence.** From t~6100 the KL climbed 173 -> 1954 -> 8.6e8 with large positive policy loss.
+The run was stopped at ~6600, while the deterministic policy was still intact.
+
+**Diagnostic (`ppo.debug_kl`, resumed from ckpt_4800, 16 updates).**
+- Scaler shift is at most 0.017 std: ruled out.
+- Pre-update KL (no gradient step, scalers frozen) is 0.07-0.34 on 3 of 4 rollouts that contain
+  a batch reset, and 73 on one that does not.
+- The surrogate does not reproduce it, and neither does the consistency test (auto-reset rows
+  recompute exactly). So a few real-env rows differ between rollout and recompute.
+
+**Next.**
+- `debug_kl` now dumps the worst rows (step, env, position in the BPTT sequence, ended flags
+  around it, obs magnitude and argmax dim, stored LSTM-state norm) to `debug_kl_<t>.json` when
+  the pre-update KL > 0.05.
+- skrl's `kl_threshold` early stop is on at 0.05 (`PPOConfig.kl_threshold`) as a safety net.

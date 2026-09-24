@@ -109,3 +109,52 @@ def test_debug_kl_logs_pre_update_kl_and_scaler_shift(tmp_path):
     for r in ups:
         assert r["Debug / pre-update KL (frozen scalers)"] < 1e-5
         assert r["Debug / obs scaler mean shift (max, std units)"] >= 0.0
+
+
+def test_debug_kl_dumps_the_worst_rows_when_stored_log_probs_disagree(tmp_path, monkeypatch):
+    import json
+
+    base_factory = trainer_mod._ppo_rnn_class
+
+    def factory():
+        base = base_factory()
+
+        class Corrupt(base):
+            def update(self, *, timestep: int, timesteps: int) -> None:
+                lp = self.memory.get_tensor_by_name("log_prob")
+                lp[5, 2] -= 30.0  # one stored row off by 30 nats
+                super().update(timestep=timestep, timesteps=timesteps)
+
+        return Corrupt
+
+    monkeypatch.setattr(trainer_mod, "_ppo_rnn_class", factory)
+    cfg = TrainConfig(
+        env=EnvConfig(kind="surrogate", num_envs=4, max_episode_steps=13, device="cpu"),
+        ppo=PPOConfig(rollouts=16, mini_batches=2, learning_epochs=1, debug_kl=True),
+        actor=_NET,
+        critic=_NET,
+        timesteps=16,
+        checkpoint_every_updates=100,
+        run_dir=str(tmp_path / "run"),
+    )
+    trainer_mod.run_training(cfg)
+    dumps = sorted((tmp_path / "run").glob("debug_kl_*.json"))
+    assert dumps, "expected a dump for the corrupted rollout"
+    worst = json.loads(dumps[0].read_text())["rows"][0]
+    assert (worst["t_in_rollout"], worst["env"]) == (5, 2) and worst["abs_dlogp"] > 25.0
+
+
+def test_kl_early_stop_is_on_by_default_and_reaches_the_agent(tmp_path):
+    from apple_pick_gym.rl.trainer import build_training
+
+    cfg = TrainConfig(
+        env=EnvConfig(kind="surrogate", num_envs=4, max_episode_steps=16, device="cpu"),
+        ppo=PPOConfig(rollouts=16, mini_batches=2, learning_epochs=1),
+        actor=_NET,
+        critic=_NET,
+        timesteps=16,
+        run_dir=str(tmp_path / "run"),
+    )
+    assert cfg.ppo.kl_threshold == 0.05
+    _w, agent = build_training(cfg)
+    assert agent.cfg.kl_threshold == 0.05

@@ -46,7 +46,13 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         max_target_rot_offset_rad=env_cfg.max_target_rot_offset_rad,
     )
     reward = HarvestRewardConfig(
-        detach=DetachEnvelopeConfig(f_max_n=env_cfg.f_max_n, tau_max_nm=env_cfg.tau_max_nm),
+        detach=DetachEnvelopeConfig(
+            f_max_n=env_cfg.f_max_n,
+            tau_max_nm=env_cfg.tau_max_nm,
+            torque_mode=env_cfg.torque_mode,
+            torsion_max_nm=env_cfg.torsion_max_nm,
+            bending_max_nm=env_cfg.bending_max_nm,
+        ),
         w_progress=env_cfg.w_progress,
         w_pullout=env_cfg.w_pullout,
         w_collateral=env_cfg.w_collateral,

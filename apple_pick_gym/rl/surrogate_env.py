@@ -221,7 +221,9 @@ class SurrogateHarvestEnv:
             j: torch.linalg.norm(w[:, :3], dim=-1).clone() for j, w in info["woody_part_force"].items() if j != self.TARGET_JUNCTION_NAME
         }
         info["collateral_baseline_norm"] = self._collateral_baseline
-        self._progress_prev = compute_progress_reward(info["target_junction_wrench"], self._reward_cfg)
+        self._progress_prev = compute_progress_reward(
+            info["target_junction_wrench"], self._reward_cfg, stem_axis=info["target_junction_axis"]
+        )
         return obs, info
 
     def step(self, action: torch.Tensor):
@@ -340,7 +342,8 @@ class SurrogateHarvestEnv:
             "woody_part_force": woody,
             "target_junction_force": target_wrench,
             "target_junction_wrench": target_wrench,
-            "detach_index": detach_index(target_wrench, self._reward_cfg.detach),
+            "target_junction_axis": self.weld.clone(),  # the surrogate's stem axis is the grasp axis
+            "detach_index": detach_index(target_wrench, self._reward_cfg.detach, stem_axis=self.weld),
             "ft_wrist": ft_raw,
         }
         return obs, info

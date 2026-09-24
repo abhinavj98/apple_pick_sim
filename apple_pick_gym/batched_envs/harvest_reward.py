@@ -65,10 +65,14 @@ def quat_rotate_vector(quat_xyzw: torch.Tensor, vec: torch.Tensor) -> torch.Tens
 
 
 def compute_progress_reward(
-    target_junction_wrench: torch.Tensor, cfg: HarvestRewardConfig
+    target_junction_wrench: torch.Tensor, cfg: HarvestRewardConfig, *, stem_axis: torch.Tensor | None = None
 ) -> torch.Tensor:
-    """Detach-envelope utilization of the ``(N, 6)`` target wrench, clipped to ``[0, 1]``, shape (N,)."""
-    return torch.clamp(detach_utilization(target_junction_wrench, cfg.detach), min=0.0, max=1.0)
+    """Detach-envelope utilization of the ``(N, 6)`` target wrench, clipped to ``[0, 1]``, shape (N,).
+
+    ``stem_axis`` (``(N, 3)``) is needed when ``cfg.detach.torque_mode == "split"``.
+    """
+    u = detach_utilization(target_junction_wrench, cfg.detach, stem_axis=stem_axis)
+    return torch.clamp(u, min=0.0, max=1.0)
 
 
 def compute_pullout_penalty(ft_wrist: torch.Tensor, tcp_quat: torch.Tensor) -> torch.Tensor:
@@ -118,7 +122,9 @@ def compute_dense_reward_terms(
     ``info["collateral_baseline_norm"]``.
     """
     return {
-        "progress": compute_progress_reward(info["target_junction_wrench"], cfg),
+        "progress": compute_progress_reward(
+            info["target_junction_wrench"], cfg, stem_axis=info.get("target_junction_axis")
+        ),
         "pullout": compute_pullout_penalty(info["ft_wrist"], obs["tcp_quat"]),
         "collateral": compute_collateral_penalty(
             info["woody_part_force"],

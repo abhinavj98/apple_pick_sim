@@ -57,6 +57,7 @@ def test_defaults_follow_the_plan():
     assert cfg.ppo.discount_factor == 0.99 and cfg.ppo.gae_lambda == 0.95
     assert cfg.ppo.time_limit_bootstrap is False
     assert cfg.env.f_max_n == 20.0 and cfg.env.tau_max_nm == 0.05
+    assert cfg.env.torque_mode == "total"  # the split envelope is opt-in until the maintainer decides
     assert cfg.env.progress_mode == "delta" and cfg.env.w_slack > 0.0
     assert cfg.env.sensor_dr is True  # F/T bias / noise / drift on for training
     assert cfg.env.max_target_pos_offset_m is not None  # VIC target leash on for training

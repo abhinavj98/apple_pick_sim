@@ -37,6 +37,11 @@ class EnvConfig:
     # detach envelope (spur-stem): (F/f_max)^2 + (tau/tau_max)^2 >= 1
     f_max_n: float = 20.0
     tau_max_nm: float = 0.05
+    # "total" (default): tau is the total junction moment (bending-dominated). "split": torsion
+    # about the stem axis and bending get their own limits (see DetachEnvelopeConfig).
+    torque_mode: Literal["total", "split"] = "total"
+    torsion_max_nm: float = 0.05
+    bending_max_nm: float = 0.9
     success_streak_steps: int = 3
     safety_force_cap_n: float = 40.0
     safety_torque_cap_nm: float = 10.0

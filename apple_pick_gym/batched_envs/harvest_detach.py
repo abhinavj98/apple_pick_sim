@@ -30,34 +30,68 @@ torque for a fixed joint).
 from __future__ import annotations
 
 import dataclasses
+from typing import Literal
 
 import torch
 
 
 @dataclasses.dataclass(frozen=True)
 class DetachEnvelopeConfig:
-    """Elliptical detachment envelope for the target junction."""
+    """Elliptical detachment envelope for the target junction.
+
+    ``torque_mode="total"`` (default): ``(|F|/f_max)^2 + (|tau|/tau_max)^2`` with the *total*
+    junction moment. That moment is dominated by **bending**: the junction sits ~46 mm from the
+    apple centre, so ~1.1 N of sideways force at the apple already reaches 0.05 N*m (measured on
+    GPU: a random policy detaches 100 % this way).
+
+    ``torque_mode="split"``: ``(|F|/f_max)^2 + (tau_t/torsion_max)^2 + (M_b/bending_max)^2``,
+    with torsion ``tau_t`` about the stem axis and bending ``M_b`` perpendicular to it (see
+    :func:`split_torque`). ``bending_max_nm = 0.9`` ~ ``f_max * 46 mm`` is a placeholder for the
+    maintainer to set; the split needs the stem axis.
+    """
 
     f_max_n: float = 20.0
     tau_max_nm: float = 0.05
+    torque_mode: Literal["total", "split"] = "total"
+    torsion_max_nm: float = 0.05
+    bending_max_nm: float = 0.9
 
     def __post_init__(self) -> None:
-        if not self.f_max_n > 0.0:
-            raise ValueError(f"f_max_n must be > 0, got {self.f_max_n}")
-        if not self.tau_max_nm > 0.0:
-            raise ValueError(f"tau_max_nm must be > 0, got {self.tau_max_nm}")
+        for name in ("f_max_n", "tau_max_nm", "torsion_max_nm", "bending_max_nm"):
+            if not getattr(self, name) > 0.0:
+                raise ValueError(f"{name} must be > 0, got {getattr(self, name)}")
+        if self.torque_mode not in ("total", "split"):
+            raise ValueError(f"unknown torque_mode {self.torque_mode!r}")
 
 
-def detach_index(wrench: torch.Tensor, cfg: DetachEnvelopeConfig) -> torch.Tensor:
-    """``(|F|/F_max)^2 + (|tau|/tau_max)^2`` for ``(N, 6)`` ``[F, tau]`` wrenches, shape ``(N,)``."""
+def split_torque(torque: torch.Tensor, stem_axis: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(N, 3)`` torque -> (``|torsion|`` about ``stem_axis``, ``|bending|`` perpendicular), each ``(N,)``."""
+    axis = torch.nn.functional.normalize(stem_axis, dim=-1)
+    along = (torque * axis).sum(-1, keepdim=True)
+    return along.squeeze(-1).abs(), torch.linalg.norm(torque - along * axis, dim=-1)
+
+
+def detach_index(
+    wrench: torch.Tensor, cfg: DetachEnvelopeConfig, *, stem_axis: torch.Tensor | None = None
+) -> torch.Tensor:
+    """Envelope index of ``(N, 6)`` ``[F, tau]`` wrenches, shape ``(N,)`` (detach at ``>= 1``)."""
     f = torch.linalg.norm(wrench[:, :3], dim=-1) / float(cfg.f_max_n)
-    t = torch.linalg.norm(wrench[:, 3:6], dim=-1) / float(cfg.tau_max_nm)
-    return f * f + t * t
+    if cfg.torque_mode == "total":
+        t = torch.linalg.norm(wrench[:, 3:6], dim=-1) / float(cfg.tau_max_nm)
+        return f * f + t * t
+    if stem_axis is None:
+        raise ValueError("torque_mode='split' needs stem_axis (N, 3)")
+    tors, bend = split_torque(wrench[:, 3:6], stem_axis)
+    tt = tors / float(cfg.torsion_max_nm)
+    bb = bend / float(cfg.bending_max_nm)
+    return f * f + tt * tt + bb * bb
 
 
-def detach_utilization(wrench: torch.Tensor, cfg: DetachEnvelopeConfig) -> torch.Tensor:
+def detach_utilization(
+    wrench: torch.Tensor, cfg: DetachEnvelopeConfig, *, stem_axis: torch.Tensor | None = None
+) -> torch.Tensor:
     """``sqrt(detach_index)``: radial fraction of the envelope in use (1 = on the envelope)."""
-    return torch.sqrt(detach_index(wrench, cfg))
+    return torch.sqrt(detach_index(wrench, cfg, stem_axis=stem_axis))
 
 
 def junction_wrench_at_anchor(

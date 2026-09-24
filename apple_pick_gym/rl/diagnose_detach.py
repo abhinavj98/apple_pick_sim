@@ -5,8 +5,8 @@ policy it rolls one synchronized episode and reports
 
 - success / safety rate over valid envs and steps to detach;
 - the rest torque at reset (how close the junction already is to ``tau_max``);
-- at the detach step: |F|, |tau| at the joint anchor and at the child COM, and each half's
-  share of the envelope ``(F/F_max)^2`` vs ``(tau/tau_max)^2``;
+- at the detach step: |F|, |tau| at the joint anchor and at the child COM, torsion (about the
+  stem axis) vs bending, and each half's share of the envelope ``(F/F_max)^2`` vs ``(tau/tau_max)^2``;
 - over live steps: |F|, |tau|, detach-index percentiles, the step-to-step torque change
   (spiky if its p99 approaches ``tau_max``) and the lengths of runs with index >= 1
   (``transient_crossings``: the index went back under 1 while still live -- spikes; a spike
@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from apple_pick_gym.batched_envs.harvest_detach import split_torque
 from apple_pick_gym.rl.config import TrainConfig
 
 
@@ -45,7 +46,7 @@ def diagnose(wrapper, policy) -> dict:
     n = wrapper.num_envs
     valid = (~env.invalid_env_mask).cpu()
     tau0 = torch.linalg.norm(info0["target_junction_wrench"][:, 3:], dim=-1).cpu()
-    rec = {k: [] for k in ("F", "TA", "TC", "IDX", "TERM", "SUCC", "SAFE", "FROZ")}
+    rec = {k: [] for k in ("F", "TA", "TC", "TORS", "BEND", "IDX", "TERM", "SUCC", "SAFE", "FROZ")}
     for _ in range(env.max_episode_steps - 1):
         obs, _r, term, _trunc, info = wrapper.step(policy.act(wrapper, obs, state))
         state = wrapper.state()
@@ -53,6 +54,13 @@ def diagnose(wrapper, policy) -> dict:
         rec["F"].append(torch.linalg.norm(tw[:, :3], dim=-1))
         rec["TA"].append(torch.linalg.norm(tw[:, 3:], dim=-1))
         rec["TC"].append(torch.linalg.norm(raw[:, 3:], dim=-1))
+        axis = info.get("target_junction_axis")
+        if axis is None:
+            tors = bend = torch.full_like(rec["TC"][-1], float("nan"))
+        else:
+            tors, bend = split_torque(tw[:, 3:], axis)
+        rec["TORS"].append(tors)
+        rec["BEND"].append(bend)
         rec["IDX"].append(info["detach_index"])
         rec["TERM"].append(term.flatten())
         rec["SUCC"].append(ep["success_achieved"])
@@ -99,6 +107,8 @@ def diagnose(wrapper, policy) -> dict:
         "force_at_detach_median": _q(R["F"][k, ar][won], 0.5),
         "tau_anchor_at_detach_median": _q(R["TA"][k, ar][won], 0.5),
         "tau_com_at_detach_median": _q(R["TC"][k, ar][won], 0.5),
+        "torsion_at_detach_median": _q(R["TORS"][k, ar][won], 0.5),
+        "bending_at_detach_median": _q(R["BEND"][k, ar][won], 0.5),
         "force_share_at_detach_median": _q(fs[won], 0.5),
         "torque_share_at_detach_median": _q(ts[won], 0.5),
         "torque_dominated_fraction": float((ts > fs)[won].float().mean()) if won.any() else float("nan"),
@@ -107,6 +117,10 @@ def diagnose(wrapper, policy) -> dict:
         "live_tau_median": _q(R["TA"][live], 0.5),
         "live_tau_p99": _q(R["TA"][live], 0.99),
         "live_index_p99": _q(R["IDX"][live], 0.99),
+        "live_torsion_median": _q(R["TORS"][live], 0.5),
+        "live_torsion_p99": _q(R["TORS"][live], 0.99),
+        "live_bending_median": _q(R["BEND"][live], 0.5),
+        "live_bending_p99": _q(R["BEND"][live], 0.99),
         "dtau_median": _q(dtau, 0.5),
         "dtau_p99": _q(dtau, 0.99),
         "runs_over_envelope": len(runs),
@@ -131,10 +145,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-episode-steps", type=int)
     p.add_argument("--device")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--torque-mode", choices=("total", "split"), help="envelope torque term (default: config's)")
+    p.add_argument("--tau-max", type=float, help="total-mode torque limit (N*m)")
+    p.add_argument("--torsion-max", type=float, help="split-mode torsion limit (N*m)")
+    p.add_argument("--bending-max", type=float, help="split-mode bending limit (N*m)")
     p.add_argument("--out", required=True)
     args = p.parse_args(argv)
     cfg = TrainConfig.load_json(args.config) if args.config else TrainConfig()
-    over = {k: v for k, v in {"kind": args.env, "num_envs": args.num_envs, "max_episode_steps": args.max_episode_steps, "device": args.device}.items() if v is not None}
+    over = {k: v for k, v in {
+        "kind": args.env, "num_envs": args.num_envs, "max_episode_steps": args.max_episode_steps, "device": args.device,
+        "torque_mode": args.torque_mode, "tau_max_nm": args.tau_max, "torsion_max_nm": args.torsion_max,
+        "bending_max_nm": args.bending_max,
+    }.items() if v is not None}
     cfg = dataclasses.replace(cfg, env=dataclasses.replace(cfg.env, **over))
     wrapper = HarvestSkrlWrapper(build_env(cfg.env, seed=args.seed))
     report = {"env": dataclasses.asdict(cfg.env), "policies": {}}
@@ -146,7 +168,9 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"{name}: success {r['success_rate']:.3f} safety {r['safety_rate']:.3f} | rest tau med {r['rest_tau_median']:.4f} | "
                 f"at detach F {r['force_at_detach_median']:.2f} N tau {r['tau_anchor_at_detach_median']:.4f} "
-                f"(share F {r['force_share_at_detach_median']:.2f} / tau {r['torque_share_at_detach_median']:.2f}) | "
+                f"(share F {r['force_share_at_detach_median']:.2f} / tau {r['torque_share_at_detach_median']:.2f}; "
+                f"torsion {r['torsion_at_detach_median']:.4f} bending {r['bending_at_detach_median']:.4f}) | "
+                f"live torsion p99 {r['live_torsion_p99']:.4f} bending p99 {r['live_bending_p99']:.4f} | "
                 f"dtau p99 {r['dtau_p99']:.4f} | crossings {r['runs_over_envelope']} (transient {r['transient_crossings']})"
             )
     finally:

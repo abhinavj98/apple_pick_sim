@@ -120,3 +120,44 @@ def test_lever_term_matters_at_this_tau_max():
     lever = 0.0025
     assert lever * cfg.f_max_n == pytest.approx(cfg.tau_max_nm)
     assert math.isclose(lever * 20.0, 0.05)
+
+
+# ---------------------------------------------------------------- torsion / bending split
+from apple_pick_gym.batched_envs.harvest_detach import split_torque  # noqa: E402
+
+
+def test_split_torque_into_torsion_and_bending():
+    axis = torch.tensor([[0.0, 0.0, 1.0]])
+    tors, bend = split_torque(torch.tensor([[0.3, 0.4, 0.02]]), axis)
+    assert float(tors[0]) == pytest.approx(0.02)
+    assert float(bend[0]) == pytest.approx(0.5)
+    tors2, _ = split_torque(torch.tensor([[0.0, 0.0, -0.02]]), -axis)  # axis sign does not matter
+    assert float(tors2[0]) == pytest.approx(0.02)
+
+
+def test_total_mode_is_the_default_and_unchanged():
+    cfg = DetachEnvelopeConfig()
+    assert cfg.torque_mode == "total"
+    w = _wrench((0, 0, 0), (0.5, 0, 0))  # pure bending, 10x tau_max
+    assert detach_index(w, cfg)[0] == pytest.approx(100.0)
+
+
+def test_split_mode_gives_bending_and_torsion_their_own_limits():
+    cfg = DetachEnvelopeConfig(torque_mode="split", torsion_max_nm=0.05, bending_max_nm=0.9)
+    axis = torch.tensor([[0.0, 0.0, 1.0]])
+    bend = _wrench((0, 0, 0), (0.45, 0, 0))
+    twist = _wrench((0, 0, 0), (0, 0, 0.05))
+    both = _wrench((10.0, 0, 0), (0.45, 0, 0.025))
+    assert detach_index(bend, cfg, stem_axis=axis)[0] == pytest.approx(0.25)
+    assert detach_index(twist, cfg, stem_axis=axis)[0] == pytest.approx(1.0)
+    assert detach_index(both, cfg, stem_axis=axis)[0] == pytest.approx(0.25 + 0.25 + 0.25)
+
+
+def test_split_mode_requires_the_stem_axis():
+    with pytest.raises(ValueError, match="stem_axis"):
+        detach_index(_wrench((0, 0, 1), (0, 0, 0)), DetachEnvelopeConfig(torque_mode="split"))
+
+
+def test_split_limits_must_be_positive():
+    with pytest.raises(ValueError):
+        DetachEnvelopeConfig(torque_mode="split", bending_max_nm=0.0)

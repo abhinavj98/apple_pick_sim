@@ -199,3 +199,20 @@ def test_delta_progress_telescopes_over_an_episode():
         _, _, _, _, info = env.step(_action(dp=env.weld * 0.001))
         total += info["reward_terms"]["weighted"]["progress"]
     torch.testing.assert_close(total, info["reward_terms"]["raw"]["progress"] - u0, atol=1e-4, rtol=0)
+
+
+def test_split_envelope_uses_the_stem_axis_and_twist_counts_as_torsion():
+    from apple_pick_gym.batched_envs.harvest_detach import DetachEnvelopeConfig, split_torque
+    from apple_pick_gym.batched_envs.harvest_reward import HarvestRewardConfig
+
+    cfg = HarvestRewardConfig(detach=DetachEnvelopeConfig(torque_mode="split"))
+    env = _env(reward_config=cfg, action_bounds=HarvestActionBounds(max_target_rot_offset_rad=1.2), steps=40)
+    _, info = env.reset()
+    torch.testing.assert_close(info["target_junction_axis"], env.weld)
+    tors0, bend0 = split_torque(info["target_junction_wrench"][:, 3:], info["target_junction_axis"])
+    for _ in range(20):
+        _, _, _, _, info = env.step(_action(drot=env.weld * 0.03, k_ang=40.0))
+    tors, bend = split_torque(info["target_junction_wrench"][:, 3:], info["target_junction_axis"])
+    # twisting about the grasp axis loads torsion; bending (the horizontal rest moment) stays put
+    assert float((tors - tors0).mean()) > 0.01
+    torch.testing.assert_close(bend, bend0, atol=2e-3, rtol=0)

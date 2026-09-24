@@ -56,7 +56,14 @@ def test_rl_contract_and_domain_randomization():
         w = info["target_junction_wrench"]
         assert w.shape == (n, 6)
         torch.testing.assert_close(w[:, :3], info["target_junction_force"][:, :3])
-        torch.testing.assert_close(info["detach_index"], detach_index(w, env._reward_cfg.detach))
+        torch.testing.assert_close(
+            info["detach_index"], detach_index(w, env._reward_cfg.detach, stem_axis=info["target_junction_axis"])
+        )
+        # stem axis: unit vector from the spur-stem child anchor to the stem-apple parent anchor,
+        # roughly along the hanging stem (downward) at rest
+        axis = info["target_junction_axis"]
+        torch.testing.assert_close(torch.linalg.norm(axis, dim=-1), torch.ones(n))
+        assert bool((axis[:, 2] < -0.5).all()), axis
         # --- collateral rest baseline
         base = info["collateral_baseline_norm"]
         assert set(base) == set(env._junction_names) - {tj}

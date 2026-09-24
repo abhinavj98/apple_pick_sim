@@ -351,6 +351,16 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         q = body_q[idx]
         return q[:, :3] + quat_rotate_vector(q[:, 3:7], body_com[idx])
 
+    def _target_stem_axis(self) -> torch.Tensor | None:
+        """``(N, 3)`` unit stem axis at the target junction: from the spur-stem child anchor to the
+        stem-apple parent anchor (the stem's two ends). ``None`` if there is no stem-apple junction."""
+        info = self._last_full_obs["woody_part_info"]
+        if "stem_apple" not in info or self._target_junction_name == "stem_apple":
+            return None
+        a0 = info[self._target_junction_name]["anchors_pos"][:, 3:6]
+        a1 = info["stem_apple"]["anchors_pos"][:, :3]
+        return torch.nn.functional.normalize(a1 - a0, dim=-1)
+
     def _detect_invalid_envs(self) -> torch.Tensor:
         """Flag envs whose stored rest state is a failed IK grasp.
 
@@ -718,7 +728,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             child_anchor=self._last_full_obs["woody_part_info"][self._target_junction_name]["anchors_pos"][:, 3:6],
             child_com=self._target_child_com_world(),
         )
-        info["detach_index"] = detach_index(info["target_junction_wrench"], self._reward_cfg.detach)
+        info["target_junction_axis"] = self._target_stem_axis()
+        info["detach_index"] = detach_index(
+            info["target_junction_wrench"], self._reward_cfg.detach, stem_axis=info["target_junction_axis"]
+        )
         if self._collateral_baseline_norm is not None:
             info["collateral_baseline_norm"] = self._collateral_baseline_norm
         # Raw (privileged, un-sensor-filtered) ft_wrist for reward computation --
@@ -836,7 +849,9 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             if name != self._target_junction_name
         }
         info["collateral_baseline_norm"] = self._collateral_baseline_norm
-        self._progress_prev = compute_progress_reward(info["target_junction_wrench"], self._reward_cfg)
+        self._progress_prev = compute_progress_reward(
+            info["target_junction_wrench"], self._reward_cfg, stem_axis=info["target_junction_axis"]
+        )
         return obs, info
 
     def privileged_fields(self) -> dict[str, torch.Tensor]:

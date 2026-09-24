@@ -107,7 +107,7 @@ def record(wrapper, policy) -> dict:
     obs, _ = wrapper.reset()
     state = wrapper.state()
     policy.reset(wrapper)
-    rec = {"W": [], "AX": [], "WU": [], "FROZ": [], "APPLE": []}
+    rec = {"W": [], "AX": [], "WU": [], "FROZ": [], "APPLE": [], "AQ": []}
     for _ in range(env.max_episode_steps - 1):
         obs, _r, _term, _trunc, info = wrapper.step(policy.act(wrapper, obs, state))
         state = wrapper.state()
@@ -119,7 +119,10 @@ def record(wrapper, policy) -> dict:
         rec["FROZ"].append(info["episode"]["frozen"].detach().cpu())
         apple = info.get("apple_pos")
         rec["APPLE"].append(None if apple is None else apple.detach().cpu())
+        aq = info.get("apple_quat")
+        rec["AQ"].append(None if aq is None else aq.detach().cpu())
     return {
+        "AQ": None if rec["AQ"][0] is None else torch.stack(rec["AQ"]),
         "APPLE": None if rec["APPLE"][0] is None else torch.stack(rec["APPLE"]),
         "W": torch.stack(rec["W"]),
         "AX": None if rec["AX"][0] is None else torch.stack(rec["AX"]),
@@ -190,6 +193,13 @@ def evaluate(
         noise.update(apple_step_mm_p50=1000 * _pct(d_apple, 0.5), apple_step_mm_p99=1000 * _pct(d_apple, 0.99))
         quiet = both & (torch.linalg.norm(rec["APPLE"][1:] - rec["APPLE"][:-1], dim=-1) < 1e-4)
         noise.update(dtau_p99_when_apple_still=_pct((tau[1:] - tau[:-1]).abs()[quiet], 0.99), still_steps=int(quiet.sum()))
+    if rec.get("AQ") is not None:
+        # apple rotation per step (rad): a real twist / swing large enough to explain the torque
+        # jumps through the soft stem would be rad-scale
+        q = rec["AQ"]
+        dot = (q[1:] * q[:-1]).sum(-1).abs().clamp(max=1.0)
+        dang = 2.0 * torch.acos(dot)
+        noise.update(apple_rot_step_rad_p50=_pct(dang[both], 0.5), apple_rot_step_rad_p99=_pct(dang[both], 0.99))
     if rec["WU"] is not None:
         tu = torch.linalg.norm(rec["WU"][..., 3:], dim=-1)
         noise.update(
@@ -244,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{name}: " + " ".join(f"{k}={r[k]['success']:.2f}" for k in keys if k in r)
                 + f" | tau p99 {nz['tau_p99']:.4f} dtau p99 {nz['dtau_p99']:.4f}"
                 + (f" apple step p99 {nz['apple_step_mm_p99']:.3f} mm, dtau p99 with apple still {nz['dtau_p99_when_apple_still']:.4f} ({nz['still_steps']} steps)" if "apple_step_mm_p99" in nz else "")
+                + (f" apple rot step p99 {nz['apple_rot_step_rad_p99']:.5f} rad" if "apple_rot_step_rad_p99" in nz else "")
                 + (f" undamped tau p99 {nz['undamped_tau_p99']:.4f} dtau p99 {nz['undamped_dtau_p99']:.4f}" if "undamped_tau_p99" in nz else "")
             )
     finally:

@@ -999,3 +999,17 @@ ckpt_11200, s2 ckpt_8000. All are also 2/5.
 - The D8b seeds use the last checkpoints as their reference.
 - A D8b segment 3 (to 17.5k steps) stays an option after D13b, if D13b does not beat the growth
   rate.
+
+**D13b EP5 (early).** Weight 1.0 works on collateral but costs success early.
+
+| seed | success | safety | collateral / success median | < 15 N | torque share | TCP |
+| --- | --- | --- | --- | --- | --- | --- |
+| s0 | 0.28 | 14.8% | 29.5 N | 21% | 0.61 | 0.13 m/s |
+| s1 | 0.14 | 17.6% | 9.9 N | 81% | 0.90 | 0.13 m/s |
+| s2 | 0.09 | 10.5% | 12.6 N | 56% | 0.83 | 0.13 m/s |
+
+- Successes move into the bend basin, but success collapses. Safety rises, so these are failing
+  bends, not passive drift. This is the same signature as D15's early phase (which went
+  0.35 -> 0.71).
+- Keep running. The EP15 check stands: stop only on success < 0.5 with LOW safety, or no success
+  recovery by EP25.

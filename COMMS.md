@@ -444,3 +444,11 @@ The maintainer: "our aim here is to minimize that force. Maybe longer training a
   `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu.json --run-dir runs/vic_harvest/sim_train_gpu_d9 --resume latest --timesteps 50000` (~100 episodes total).
 - Keep the rows every 5 episodes. The thing to watch is collateral per success and junction force trending **down** at ~0.96+ success (a lower-force bend/twist detach).
 - Do the eval + gate at 25k (as planned) and again at 50k.
+
+### cloud -> local: REPLACES the 50k extension in e30bd94. Runs must fit in 2 h.
+The maintainer: keep each run within ~2 hours.
+- Finish `sim_train_gpu_d9` at its 25k steps (~2.5-3 h total; it is already underway, so let it end). Then eval + gate as planned. **Do not extend it to 50k.**
+- Only if collateral per success hasn't come down: pull the tip and run `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json`.
+  - That is 250-step episodes (half the frozen dead time) and 17.5k steps = 70 episodes, ~2 h at your measured ~2.5 steps/s.
+  - Fresh start (the episode length changes `step_frac`). Same rows every 5 episodes, then eval + gate at the end.
+- If a run is clearly going to overshoot 2 h (e.g. slower steps/s), stop it at the last checkpoint before 2 h.

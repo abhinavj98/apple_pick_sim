@@ -75,6 +75,7 @@ from apple_pick_gym.batched_envs.harvest_action import (
     pack_vic_pose_action,
     split_harvest_action,
 )
+from apple_pick_gym.batched_envs.harvest_detach import detach_index
 from apple_pick_gym.batched_envs.harvest_episode import (
     EpisodeConfig,
     FreezeMask,
@@ -677,6 +678,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         woody_part_force = self._woody_part_force()
         info["woody_part_force"] = woody_part_force
         info["target_junction_force"] = woody_part_force[self._target_junction_name]
+        info["target_junction_wrench"] = info["target_junction_force"]
         # Raw (privileged, un-sensor-filtered) ft_wrist for reward computation --
         # distinct from obs["ft_wrist"], which is what the policy actually
         # observes. Reward is train-time only, so this privilege is legitimate.
@@ -793,8 +795,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             weighted_terms["progress"] + weighted_terms["pullout"] + weighted_terms["collateral"]
         ).unsqueeze(-1)
 
-        force_norm = torch.linalg.norm(info["target_junction_force"][:, :3], dim=-1)
-        success_this_step = force_norm >= float(self._reward_cfg.f_threshold_n)
+        detach_idx = detach_index(info["target_junction_wrench"], self._reward_cfg.detach)
+        success_this_step = detach_idx >= 1.0
         success_achieved = self._success_tracker.update(success_this_step, self._episode_cfg)
 
         # Safety caps: the target junction's wrench is uncapped (privileged

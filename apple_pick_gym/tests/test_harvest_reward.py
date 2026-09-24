@@ -1,9 +1,9 @@
 """Dense harvest reward shaping: progress, pull-out, and collateral-force penalties.
 
-Ported from feature/rl-gym's harvest_reward.py (math unchanged) with
-f_threshold_n updated to the maintainer's current placeholder (5 N, flagged
-for a later revisit -- possibly a combined force+torque criterion). Reward
-is privileged: it reads uncapped junction forces and raw ft_wrist from
+Progress is the fraction of the spur-stem detach envelope in use
+(``harvest_detach.py``: ``(F/20 N)^2 + (tau/0.05 N*m)^2 >= 1``), replacing the old
+force-only threshold. Collateral is measured against each junction's rest load.
+Reward is privileged: it reads uncapped junction wrenches and raw ft_wrist from
 ``info``, not the sensor-realistic ``obs["ft_wrist"]`` the policy sees.
 """
 
@@ -13,6 +13,7 @@ import math
 
 import torch
 
+from apple_pick_gym.batched_envs.harvest_detach import DetachEnvelopeConfig
 from apple_pick_gym.batched_envs.harvest_reward import (
     HarvestRewardConfig,
     compute_collateral_penalty,
@@ -23,16 +24,31 @@ from apple_pick_gym.batched_envs.harvest_reward import (
 )
 
 
-def test_default_threshold_is_5n():
+def test_default_success_is_the_20n_0p05nm_envelope():
     cfg = HarvestRewardConfig()
-    assert cfg.f_threshold_n == 5.0
+    assert cfg.detach == DetachEnvelopeConfig(f_max_n=20.0, tau_max_nm=0.05)
+    assert not hasattr(cfg, "f_threshold_n")
 
 
-def test_progress_reward_clips_at_threshold():
-    cfg = HarvestRewardConfig(f_threshold_n=5.0)
-    force = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 2.5], [0.0, 0.0, 10.0]])
-    r = compute_progress_reward(force, cfg)
-    torch.testing.assert_close(r, torch.tensor([0.0, 0.5, 1.0]))
+def test_progress_reward_is_envelope_utilization_clipped_at_one():
+    cfg = HarvestRewardConfig()
+    wrench = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 10.0, 0.0, 0.0, 0.0],  # half of F_max
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.025],  # half of tau_max
+            [0.0, 0.0, 40.0, 0.0, 0.0, 0.0],  # beyond the envelope
+        ]
+    )
+    r = compute_progress_reward(wrench, cfg)
+    torch.testing.assert_close(r, torch.tensor([0.0, 0.5, 0.5, 1.0]))
+
+
+def test_progress_reward_rewards_twist_and_pull_over_pull_alone():
+    cfg = HarvestRewardConfig()
+    pull = torch.tensor([[12.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+    twist_pull = torch.tensor([[12.0, 0.0, 0.0, 0.0, 0.0, 0.03]])
+    assert compute_progress_reward(twist_pull, cfg) > compute_progress_reward(pull, cfg)
 
 
 def test_quat_rotate_vector_identity():
@@ -76,6 +92,19 @@ def test_collateral_penalty_sums_non_target_junctions():
     torch.testing.assert_close(total, torch.tensor([7.0]))
 
 
+def test_collateral_penalty_counts_only_load_above_rest_baseline():
+    woody = {
+        "spur_stem": torch.tensor([[100.0, 0.0, 0.0, 0.0, 0.0, 0.0]]),
+        "stem_apple": torch.tensor([[0.0, 0.0, 9.0, 0.0, 0.0, 0.0], [0.0, 0.0, 2.0, 0.0, 0.0, 0.0]]),
+        "primary_spur": torch.tensor([[0.0, 0.0, 6.0, 0.0, 0.0, 0.0], [0.0, 0.0, 6.0, 0.0, 0.0, 0.0]]),
+    }
+    woody["spur_stem"] = woody["spur_stem"].expand(2, 6)
+    baseline = {"stem_apple": torch.tensor([4.0, 4.0]), "primary_spur": torch.tensor([6.0, 6.0])}
+    total = compute_collateral_penalty(woody, target_junction_name="spur_stem", baseline_norm=baseline)
+    # env0: stem_apple 9-4=5, primary 0 ; env1: unloading below rest is not rewarded -> 0
+    torch.testing.assert_close(total, torch.tensor([5.0, 0.0]))
+
+
 def test_collateral_penalty_raises_when_only_target_junction_present():
     woody = {"spur_stem": torch.tensor([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]])}
     try:
@@ -86,12 +115,11 @@ def test_collateral_penalty_raises_when_only_target_junction_present():
 
 
 def test_dense_reward_combines_weighted_terms():
-    cfg = HarvestRewardConfig(
-        f_threshold_n=5.0, w_progress=1.0, w_pullout=0.5, w_collateral=0.1
-    )
+    cfg = HarvestRewardConfig(w_progress=1.0, w_pullout=0.5, w_collateral=0.1)
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
     info = {
-        "target_junction_force": torch.tensor([[0.0, 0.0, 5.0, 0.0, 0.0, 0.0]]),  # progress=1.0
+        # anchor-frame target wrench, on the envelope -> progress=1.0
+        "target_junction_wrench": torch.tensor([[0.0, 0.0, 20.0, 0.0, 0.0, 0.0]]),
         "ft_wrist": torch.tensor([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0]]),  # pullout=2.0
         "woody_part_force": {
             "spur_stem": torch.zeros(1, 6),
@@ -102,6 +130,22 @@ def test_dense_reward_combines_weighted_terms():
     expected = 1.0 * 1.0 - 0.5 * 2.0 - 0.1 * 5.0
     assert reward.shape == (1, 1)
     torch.testing.assert_close(reward, torch.tensor([[expected]]))
+
+
+def test_dense_reward_uses_collateral_baseline_from_info():
+    cfg = HarvestRewardConfig(w_progress=0.0, w_pullout=0.0, w_collateral=1.0)
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
+    info = {
+        "target_junction_wrench": torch.zeros(1, 6),
+        "ft_wrist": torch.zeros(1, 6),
+        "woody_part_force": {
+            "spur_stem": torch.zeros(1, 6),
+            "stem_apple": torch.tensor([[0.0, 0.0, 5.0, 0.0, 0.0, 0.0]]),
+        },
+        "collateral_baseline_norm": {"stem_apple": torch.tensor([3.0])},
+    }
+    reward = compute_dense_reward(obs, info, target_junction_name="spur_stem", cfg=cfg)
+    torch.testing.assert_close(reward, torch.tensor([[-2.0]]))
 
 
 if __name__ == "__main__":

@@ -182,7 +182,7 @@ def test_reward_terms_recombine_to_dense_reward():
     cfg = HarvestRewardConfig()
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(n, 1)}
     info = {
-        "target_junction_force": torch.tensor([[3.0, 0, 0, 0, 0, 0]]).repeat(n, 1),
+        "target_junction_wrench": torch.tensor([[3.0, 0, 0, 0, 0, 0.01]]).repeat(n, 1),
         "ft_wrist": torch.tensor([[0.0, 0.0, 4.0, 0, 0, 0]]).repeat(n, 1),
         "woody_part_force": {
             "spur_stem": torch.ones(n, 6),

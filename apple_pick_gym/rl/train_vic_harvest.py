@@ -34,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-dir", help="output directory (config, metrics, TensorBoard, checkpoints)")
     p.add_argument("--resume", help="'latest' or a checkpoint directory")
     p.add_argument("--dry-run", action="store_true", help="one rollout + one PPO update, then exit")
+    p.add_argument(
+        "--max-updates", type=int,
+        help="stop after this many more PPO updates, with a checkpoint (a wall-capped segment; continue with --resume latest)",
+    )
     g = p.add_argument_group("environment")
     g.add_argument("--env", choices=("sim", "surrogate"), help="real ApplePickVicHarvestEnv or the analytic surrogate")
     g.add_argument("--world-set", help="sim: world-set JSONL")
@@ -119,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
             "backend, which does not integrate replicated arms (the TCP never moves). Use --env surrogate "
             "for CPU training, or --allow-cpu-sim for a wiring-only check."
         )
-    result = run_training(cfg, resume=args.resume, max_updates=1 if args.dry_run else None)
+    result = run_training(cfg, resume=args.resume, max_updates=1 if args.dry_run else args.max_updates)
     print(
         f"trained timesteps {result.start_timestep} -> {result.timestep} ({result.updates} updates); "
         f"last checkpoint: {result.last_checkpoint}; run dir: {result.run_dir}"

@@ -80,3 +80,28 @@ def test_cli_video_every_overrides_config():
     args = build_parser().parse_args(["--config", cfg_path, "--video-every", "0"])
     cfg = config_from_args(args)
     assert cfg.video_every == 0 and cfg.seed == 1
+
+
+def test_cli_max_updates_is_passed_to_run_training(monkeypatch):
+    import apple_pick_gym.rl.train_vic_harvest as cli
+    import apple_pick_gym.rl.trainer as trainer
+
+    seen = {}
+
+    class R:
+        start_timestep = timestep = updates = 0
+        last_checkpoint = run_dir = None
+        episodes = []
+
+    def fake(cfg, *, resume=None, max_updates=None):
+        seen["max_updates"] = max_updates
+        return R()
+
+    monkeypatch.setattr(trainer, "run_training", fake)
+    args = ["--config", "apple_pick_gym/rl/configs/surrogate_smoke.json"]
+    cli.main(args + ["--max-updates", "7"])
+    assert seen["max_updates"] == 7
+    cli.main(args + ["--max-updates", "7", "--dry-run"])
+    assert seen["max_updates"] == 1
+    cli.main(args)
+    assert seen["max_updates"] is None

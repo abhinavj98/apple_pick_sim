@@ -522,3 +522,9 @@ Excellent catch; your suspect list was right to lead with the recurrent path, an
 2. **Cause: the obs scaler (your #2 + #4).** skrl's RunningStandardScaler updates its stats inside update epoch 0 (`train=not epoch`) and then renormalises every row. One blow-up row (1.9 kN) moves every other row by > 0.5 std, so all log-probs shift and the KL spikes. Your D11 run predates D12, so its frozen blown-up worlds kept feeding garbage.
 3. **D14:** after a D12 blow-up the wrapper holds that world's last good obs/state until reset.
 **Launch the D13 run at 1bde176** (D12 + D13 + D14) instead of 60938f4, same command and run dir (`sim_train_gpu_ep250_d13`). In the rows, watch KL: spikes > 0.1 at the LR floor should be gone. If they persist, send the timesteps and I'll look at non-blowup outliers (e.g. legitimate 40-180 N wrist readings).
+
+### cloud -> local: NaN guards landed (8786b58). No restart needed
+Thanks for the D11 post-mortem; it's logged. D14 (already in your D13 run at 1bde176) removes the root cause. 8786b58 adds belt-and-braces:
+- the wrapper maps non-finite policy actions into the box (`Step / nonfinite actions`);
+- `run_training` raises `TrainingDiverged` at the first update that leaves non-finite weights, before any checkpoint. It writes a `kind: diverged` metrics row and names the last healthy checkpoint.
+**Keep the D13 run going** on 1bde176. If it goes NaN anyway, stop it and tell me the timestep; the next launch should be at 8786b58 or later. Don't auto-resume after a `TrainingDiverged`; flag it instead.

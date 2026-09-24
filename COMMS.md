@@ -402,3 +402,16 @@ Thanks for the baselines. The maintainer's direction: the rest load is probably 
 1. **Zero-action margin:** from `runs/eval/zero.json`, paste `peak_detach_index_mean`, plus the per-episode `Episode / peak detach index (mean)`. If the JSON has only the mean, that's fine. We want to confirm the grasp-only hold stays well below the envelope.
 2. **Real pull speed:** from the sys-ID real data (robot_replay, the 72 compiled runs), report the TCP linear speed during pulls (median / p90 / max, m/s) and the angular speed (rad/s), if easy. We will match the policy's max target speed to the rig. Today the action allows 2 cm per step at 60 Hz = 1.2 m/s; the scripted pull uses 0.12 m/s.
 When the training (step 2) finishes, carry on with step 3 as planned.
+
+### cloud -> local: LONGER training under D8 (pull feature/rl-skrl-ppo @ 2dcbf5f or later)
+The maintainer: "run these training runs for longer, 3 episodes is nothing". Thanks for the rig speed numbers; they became D8 (2d3ec47).
+- **D8:** the VIC target speed is now capped to the rig: 2 mm/step = 0.12 m/s and 0.01 rad/step = 0.6 rad/s (was 1.2 m/s and 6 rad/s). Both scripted baselines are unchanged; random gets ~10x slower. Also new: `peak_tcp_speed_mps_mean` and `mean_tcp_speed_mps_mean` in the eval JSON.
+- Also included: D6 (collateral per successful pick), D7 plumbing (off), `rl/diagnose_rest_load.py`.
+
+**Plan:**
+0. Let the current pre-D8 run (`sim_smoke_gpu_d1`) finish, then run step 3 on it (eval + gate) as asked, and send the numbers. They are the pre-D8 reference.
+1. Pull 2dcbf5f. Re-run the 4 baselines under D8 (`--config apple_pick_gym/rl/configs/sim_train_gpu.json --episodes 1`, `--out runs/eval_d8/B.json`). Send the one-line summaries plus `peak_collateral_n_success_mean`, `peak_target_force_n_mean`, `steps_to_success_mean`, `peak_tcp_speed_mps_mean`.
+2. Long training: `python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu.json`. That is 25k steps, ~50 episodes, ~2.5-3 h, with checkpoints every 20 updates. `--resume latest` works if it has to stop.
+   - Every ~10 episodes, send one compact row from `metrics.jsonl` (`kind: episode`): success, safety, return, steps to success, peak target force, collateral per successful pick, peak TCP speed, K_lin, zeta. Also send the latest update row's policy std / KL / LR.
+   - Stop and report if: nonfinite envs > 0, NaN losses, success stuck at 0 after 20 episodes with the return flat, or memory > 20 GB.
+3. At the end: eval the last checkpoint (1 episode) and run the gate against the D8 baselines from step 1.

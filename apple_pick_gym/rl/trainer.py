@@ -352,6 +352,73 @@ class TrainResult:
     episodes: list[dict[str, float]]
 
 
+class TrainVideo:
+    """Record episodes during training: the whole batch resets every ``episode_steps`` steps.
+
+    ``before_step`` opens a clip at an episode boundary (if the recorder selects that episode)
+    and captures the pre-step frame; ``after_step`` closes it on the episode's last step and
+    passes ``(path, episode_idx, timestep)`` to ``log``. Episodes are counted from
+    ``start_timestep`` (a resume resets the env there); the index continues from
+    ``start_timestep // episode_steps``.
+    """
+
+    def __init__(self, recorder, *, episode_steps: int, control_hz: float, log, start_timestep: int = 0) -> None:
+        self.recorder = recorder
+        self.episode_steps = int(episode_steps)
+        self.control_hz = float(control_hz)
+        self.log = log
+        self.start = int(start_timestep)
+        self._first_ep = self.start // self.episode_steps
+        self._episode: int | None = None
+
+    def before_step(self, env, timestep: int) -> None:
+        ep, k = divmod(int(timestep) - self.start, self.episode_steps)
+        ep += self._first_ep
+        if k == 0 and self.recorder.should_record(ep):
+            self.recorder.start_episode(env, ep)
+            self._episode = ep
+        if self._episode is not None:
+            self.recorder.capture(env, k / self.control_hz)
+
+    def after_step(self, timestep: int) -> None:
+        if self._episode is None or (int(timestep) + 1 - self.start) % self.episode_steps:
+            return
+        ep, self._episode = self._episode, None
+        path = self.recorder.end_episode()
+        if path is not None:
+            self.log(path, ep, int(timestep) + 1)
+
+    def close(self) -> None:
+        self.recorder.close()
+
+
+def _build_train_video(
+    cfg: TrainConfig, wrapper: HarvestSkrlWrapper, run_dir: Path, *, start_timestep: int
+) -> TrainVideo | None:
+    if cfg.video_every <= 0:
+        return None
+    from apple_pick_gym.batched_envs.harvest_video import HarvestVideoRecorder
+
+    env = wrapper._env
+
+    def _log(path: Path, ep: int, timestep: int) -> None:
+        print(f"[video] episode {ep}: {path}", flush=True)
+        if cfg.wandb:
+            import wandb
+
+            if wandb.run is not None:
+                wandb.log({"Video / episode": wandb.Video(str(path), format="mp4"), "Video / episode index": ep})
+
+    recorder = HarvestVideoRecorder(run_dir / "videos", record_every=cfg.video_every, seed=cfg.seed)
+    return TrainVideo(
+        recorder,
+        episode_steps=int(env.max_episode_steps),
+        control_hz=float(env._sim.config.runtime.control_hz),
+        log=_log,
+        start_timestep=start_timestep,
+    )
+
+
 def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: int | None = None) -> TrainResult:
     """Train until ``cfg.timesteps`` (or ``max_updates`` more updates). ``resume``: ``"latest"`` or a checkpoint dir."""
     from skrl.trainers.torch import SequentialTrainerCfg
@@ -394,6 +461,7 @@ def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: in
     agent.enable_models_training_mode(False)
 
     last_ckpt = ckpt_path
+    video = _build_train_video(cfg, wrapper, run_dir, start_timestep=start)
     obs, _ = wrapper.reset()
     states = wrapper.state()
     t_env = t_act = 0.0
@@ -402,6 +470,8 @@ def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: in
     try:
         for timestep in range(start, stop_at):
             agent.pre_interaction(timestep=timestep, timesteps=cfg.timesteps)
+            if video is not None:
+                video.before_step(wrapper._env, timestep)
             with torch.no_grad():
                 t0 = time.perf_counter()
                 actions, _ = agent.act(obs, states, timestep=timestep, timesteps=cfg.timesteps)
@@ -435,6 +505,8 @@ def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: in
                 agent.track_data("Stats / env step time per rollout (s)", t_env)
                 agent.track_data("Stats / policy act time per rollout (s)", t_act)
                 t_env = t_act = 0.0
+            if video is not None:
+                video.after_step(timestep)
             agent.post_interaction(timestep=timestep, timesteps=cfg.timesteps)
             obs, states = next_obs, next_states
             if (timestep + 1) % cfg.ppo.rollouts == 0:
@@ -454,6 +526,8 @@ def run_training(cfg: TrainConfig, *, resume: str | None = None, max_updates: in
         timestep = stop_at
     finally:
         metrics.close()
+        if video is not None:
+            video.close()
         wrapper.close()
     return TrainResult(
         start_timestep=start, timestep=timestep, updates=updates, run_dir=run_dir, last_checkpoint=last_ckpt, episodes=episodes

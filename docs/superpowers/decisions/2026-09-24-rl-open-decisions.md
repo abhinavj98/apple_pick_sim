@@ -868,3 +868,13 @@ D15 went on to 0.71.
 - With full-scale actions no longer the useful pull rate (0.12 m/s is now ~0.3 of the range), the
   bounded-mean actors may no longer be handicapped.
 - Three variants, same reward: `sim_train_gpu_d8b_{unbounded,tanh1,tanh15}.json`.
+
+**D8b plan change (maintainer): three seeds of the bounded actor, not three variants.**
+
+- Run `mean_bound = 1.5` (D16b actor) under the D8b cap with seeds 0/1/2:
+  `sim_train_gpu_d8b_tanh15_s{0,1,2}.json`, each with wandb and a video every 5 episodes.
+- Seeds measure run-to-run spread, which none of the single-run comparisons so far (D15 vs D16b)
+  could separate from the actor change.
+- Video: `TrainConfig.video_every` (default 0 = off) records one randomly picked env for a whole
+  episode every N episodes (`HarvestVideoRecorder`, CUDA only). Clips go to
+  `<run_dir>/videos/` and to wandb as `Video / episode`.

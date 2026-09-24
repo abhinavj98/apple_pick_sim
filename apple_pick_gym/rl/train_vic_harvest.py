@@ -60,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--wandb", dest="wandb", action="store_true", default=None)
     w.add_argument("--no-wandb", dest="wandb", action="store_false")
     g.add_argument("--wandb-project")
+    g.add_argument("--video-every", type=int, help="record one env every N episodes (0 = off; CUDA)")
     return p
 
 
@@ -94,6 +95,7 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         "checkpoint_every_updates": args.checkpoint_every_updates,
         "wandb": args.wandb,
         "wandb_project": args.wandb_project,
+        "video_every": args.video_every,
     }.items() if v is not None}
     return dataclasses.replace(
         cfg,

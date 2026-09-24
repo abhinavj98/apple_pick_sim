@@ -125,8 +125,11 @@ class TrainConfig:
     run_dir: str = "runs/vic_harvest"
     wandb: bool = False
     wandb_project: str = "apple_pick_vic_harvest"
+    video_every: int = 0  # >0: record one random env every N episodes (CUDA; logged to wandb when on)
 
     def validate(self) -> None:
+        if self.video_every < 0:
+            raise ValueError(f"video_every must be >= 0, got {self.video_every}")
         seq = self.actor.sequence_length
         if self.critic.sequence_length != seq:
             raise ValueError(

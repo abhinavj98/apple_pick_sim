@@ -18,6 +18,7 @@ hyperparameters beyond what is listed.
 | D10 | LR floor 1e-4 for the KL-adaptive schedule | superseded by D10b |
 | D10b | KL-adaptive LR bounded to [3e-5, base LR] | done |
 | D11 | Smooth wrist-force cost above a 25 N soft cap | done |
+| D12 | Solver blow-up guard (> 200 N or non-finite): freeze, no penalty, invalid | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -574,3 +575,30 @@ fruit-woody up to 1923 N, fruit-proxy 842 N, wrist 183 N. The medians are unaffe
 worlds can count as safety failures and inject huge rewards. The non-finite guard only catches
 NaN/inf. Candidate follow-up: flag worlds whose plant wrench jumps beyond a physical bound as
 invalid for the rest of the episode.
+
+## D12 -- Solver blow-up guard
+
+**Finding.** Trip-jump eval of D11 ckpt_1600 (ba83dd8, N=2000):
+
+| metric | value |
+| --- | --- |
+| target force at trip, median | 41.0 N |
+| target force one step before, median | 6.5 N |
+| trips with a >5x one-step jump | 45% |
+| total safety (eval) | 5.5% (vs 24.8% in training rollouts: exploration noise) |
+
+The local agent read the jumps as numeric. I don't think they are:
+- The trip force is barely over the cap (41 vs 40 N). A 6.5 -> 41 N rise in one 60 Hz step
+  fits a physical snap (the bent stem going taut), and the policy should learn to avoid it.
+- The real numerics are the rare absurd values (contact 1.9 kN, wrist 183 N in single worlds).
+
+**Choice.**
+- `EpisodeConfig.blowup_force_n = 200` (5x the cap). A target-junction or wrist force above it,
+  or a non-finite one, marks a blow-up in `evaluate_harvest_step`.
+- The world is frozen (terminated edge) with reward 0: no failure penalty, no success, no dense
+  term from the bad readout.
+- Episode stats count the world as invalid, so it is excluded from success/safety rates.
+  `Episode / blowup fraction` (eval: `blowup_fraction`) reports how often it happens.
+- The 40 N safety cap is unchanged: real overshoots and snaps stay failures.
+
+**Revert.** `blowup_force_n = None`.

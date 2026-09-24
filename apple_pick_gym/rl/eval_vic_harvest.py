@@ -86,6 +86,7 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         "success_rate": "Episode / success rate",
         "safety_rate": "Episode / safety rate",
         "invalid_fraction": "Episode / invalid fraction",
+        "blowup_fraction": "Episode / blowup fraction",
         "return_mean": "Episode / return (mean)",
         "steps_to_success_mean": "Episode / steps to success (mean)",
         "peak_detach_index_mean": "Episode / peak detach index (mean)",

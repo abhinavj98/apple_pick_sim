@@ -313,3 +313,31 @@ def test_episode_stats_record_target_force_at_and_before_a_safety_trip():
     assert float(s["Episode / safety trip target force N (median)"]) == pytest.approx(470.5)  # median of 900, 41
     assert float(s["Episode / safety trip prev target force N (median)"]) == pytest.approx(24.0)  # median of 10, 38
     assert float(s["Episode / safety trip target force jump > 5x (frac of trips)"]) == pytest.approx(0.5)
+
+
+def test_d12_blowup_worlds_are_excluded_from_rates_and_counted():
+    from apple_pick_gym.rl.skrl_wrapper import _EpisodeStats
+
+    st = _EpisodeStats(4, torch.device("cpu"))
+    info = {
+        "episode": {
+            "frozen": torch.zeros(4, dtype=torch.bool),
+            "success_achieved": torch.tensor([True, False, False, False]),
+            "safety_junction": torch.zeros(4, dtype=torch.bool),
+            "safety_wrist": torch.zeros(4, dtype=torch.bool),
+            "blowup": torch.tensor([False, True, False, False]),
+        },
+        "reward_terms": {
+            "raw": {"collateral": torch.zeros(4)},
+            "weighted": {k: torch.zeros(4) for k in ("progress", "pullout", "wrist", "collateral", "slack")},
+            "terminal": torch.zeros(4),
+        },
+        "detach_index": torch.zeros(4),
+        "target_junction_wrench": torch.zeros(4, 6),
+        "ft_wrist": torch.zeros(4, 6),
+        "woody_part_force": {},
+    }
+    st.update(torch.zeros(4, 1), info, torch.tensor([True, True, False, False]), torch.zeros(4, 13))
+    s = st.summary()
+    assert float(s["Episode / blowup fraction"]) == pytest.approx(0.25)
+    assert float(s["Episode / success rate"]) == pytest.approx(1.0 / 3.0)  # 1 of the 3 non-blown-up envs

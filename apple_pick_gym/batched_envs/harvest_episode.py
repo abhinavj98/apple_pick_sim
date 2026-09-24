@@ -31,6 +31,10 @@ class EpisodeConfig:
     success_streak_steps: int = 3
     safety_force_cap_n: float = 40.0
     safety_torque_cap_nm: float = 10.0
+    # [D12] a target-junction or wrist force above this (or non-finite) is a solver blow-up, not
+    # physics: the world is frozen with zero reward, no failure penalty and no success, and is
+    # reported as invalid. None disables the guard. 200 N = 5x the safety cap.
+    blowup_force_n: float | None = 200.0
 
 
 class SuccessStreakTracker:

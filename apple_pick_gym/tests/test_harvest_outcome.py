@@ -135,3 +135,25 @@ def test_slack_costs_every_live_step_and_nothing_once_frozen():
     )
     torch.testing.assert_close(o.reward.flatten(), torch.tensor([0.0, -0.05, -0.05]))
     torch.testing.assert_close(o.reward_terms["weighted"]["slack"], torch.full((N,), -0.05))
+
+
+def test_d12_physically_impossible_force_is_a_blowup_frozen_without_penalty_or_success():
+    # [D12] solver blow-ups (single worlds at ~1-2 kN on GPU) are numerics, not policy: freeze the
+    # world with zero reward, no failure penalty, no success; a 41 N overshoot stays a safety failure
+    out = _run([_info([5.0, 1500.0, 41.0])], safety_force_cap_n=40.0, blowup_force_n=200.0)
+    ep = out[0].episode
+    assert ep["blowup"].tolist() == [False, True, False]
+    assert out[0].terminated.tolist() == [False, True, True]
+    r = out[0].reward.flatten()
+    assert float(r[1]) == 0.0  # no penalty, no bonus, no dense term from the blown-up readout
+    assert float(r[2]) < -18.0  # 41 N at the junction: a real safety failure (-20 + progress 1)
+    assert ep["success_achieved"].tolist() == [False, False, False]
+    assert ep["safety_junction"].tolist() == [False, False, True]
+    wrist = _run([_info([5.0, 5.0, 5.0], wrist_f=float("nan"))], blowup_force_n=200.0)[0]
+    assert wrist.episode["blowup"].all() and float(wrist.reward.abs().max()) == 0.0
+
+
+def test_d12_blowup_guard_off_keeps_old_behaviour():
+    out = _run([_info([5.0, 1500.0, 5.0])], safety_force_cap_n=40.0, blowup_force_n=None)
+    assert out[0].episode["safety_junction"].tolist() == [False, True, False]
+    assert not out[0].episode["blowup"].any()

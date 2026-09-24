@@ -70,6 +70,7 @@ class _EpisodeStats:
     def reset(self, invalid: torch.Tensor) -> None:
         z = lambda: torch.zeros(self.n, device=self.device)
         self.invalid = invalid.clone()
+        self.blowup = torch.zeros_like(self.invalid)
         self.ret, self.steps = z(), 0
         self.peak_idx, self.peak_force, self.peak_coll, self.peak_wrist = z(), z(), z(), z()
         self.terms = {k: z() for k in ("progress", "pullout", "wrist", "collateral", "slack", "terminal")}
@@ -97,6 +98,9 @@ class _EpisodeStats:
     ) -> None:
         self.steps += 1
         ep, rt = info["episode"], info["reward_terms"]
+        if "blowup" in ep:  # [D12] solver blow-up: invalid for the rest of the episode
+            self.blowup |= ep["blowup"].to(self.blowup)
+            self.invalid |= ep["blowup"].to(self.invalid)
         live = ~ep["frozen"] | terminated  # not frozen before this step
         self.ret += reward.reshape(-1)
         m = lambda cur, new: torch.where(live, torch.maximum(cur, torch.nan_to_num(new, nan=0.0, posinf=0.0)), cur)
@@ -197,6 +201,7 @@ class _EpisodeStats:
             "Episode / success rate": s(self.success),
             "Episode / safety rate": s(self.safety),
             "Episode / invalid fraction": self.invalid.float().mean(),
+            "Episode / blowup fraction": self.blowup.float().mean(),
             "Episode / return (mean)": s(self.ret),
             "Episode / peak detach index (mean)": s(self.peak_idx),
             "Episode / peak target force N (mean)": s(self.peak_force),

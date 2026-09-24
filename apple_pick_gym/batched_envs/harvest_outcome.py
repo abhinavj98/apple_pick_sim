@@ -69,7 +69,19 @@ def evaluate_harvest_step(
         raise ValueError(f"unknown progress_mode {reward_cfg.progress_mode!r}")
     dense = sum(weighted_terms.values()).unsqueeze(-1)
 
-    success_this_step = info["detach_index"] >= 1.0
+    # [D12] solver blow-ups: physically impossible (or non-finite) target / wrist force
+    tw, fw = info["target_junction_wrench"], info["ft_wrist"]
+    finite = torch.isfinite(tw).all(-1) & torch.isfinite(fw).all(-1)
+    if episode_cfg.blowup_force_n is None:
+        blowup = torch.zeros_like(finite)
+    else:
+        bound = float(episode_cfg.blowup_force_n)
+        f_t = torch.linalg.norm(torch.nan_to_num(tw[:, :3]), dim=-1)
+        f_w = torch.linalg.norm(torch.nan_to_num(fw[:, :3]), dim=-1)
+        blowup = ~finite | (f_t > bound) | (f_w > bound)
+    blowup = blowup & ~freeze_mask.done_mask
+
+    success_this_step = (info["detach_index"] >= 1.0) & ~blowup
     success_achieved = tracker.update(success_this_step, episode_cfg)
 
     # The target junction's wrench is uncapped (privileged debug gather), so this is a real
@@ -77,14 +89,17 @@ def evaluate_harvest_step(
     # default, so that half is a safety net kept in case the caps diverge.
     safety_junction = check_safety_violation(info["target_junction_wrench"], episode_cfg)
     safety_wrist = check_safety_violation(info["ft_wrist"], episode_cfg)
+    safety_junction = safety_junction & ~blowup
+    safety_wrist = safety_wrist & ~blowup
     safety_violation = safety_junction | safety_wrist
 
     terminal = compute_terminal_reward(success_achieved, safety_violation, reward_cfg)
     reward = freeze_mask.apply_to_reward(dense + terminal)
+    reward = torch.where(blowup.unsqueeze(-1), torch.zeros_like(reward), reward)
     # Once, on the freeze edge: frozen envs keep stepping (whole-batch reset only) and would
     # otherwise re-report termination, making recurrent PPO zero their hidden state and cut
     # GAE on every frozen step.
-    terminated = freeze_mask.update(success_achieved | safety_violation)
+    terminated = freeze_mask.update(success_achieved | safety_violation | blowup)
 
     n = reward.shape[0]
     return HarvestStepOutcome(
@@ -104,6 +119,7 @@ def evaluate_harvest_step(
             "success_streak": tracker.streak.clone(),
             "safety_junction": safety_junction,
             "safety_wrist": safety_wrist,
+            "blowup": blowup,
             "frozen": freeze_mask.done_mask.clone(),
             "terminated_edge": terminated.clone(),
             "detach_index": info["detach_index"],

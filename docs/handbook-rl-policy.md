@@ -54,6 +54,13 @@ resistance and vice versa. A pull at 0.7 F_max plus a twist at 0.75 τ_max alrea
   joint anchor (`junction_wrench_at_anchor`, verified against the AVBD kernel, which
   computes `t_lin = r × f` with `r = x_c − com`). The raw readout remains in
   `info["target_junction_force"]`. At rest the child COM sits ~1.2 mm from the anchor.
+- **[D1] Which wrench.** The rigid spur-stem fixed joint's constraint readout carries a
+  +-0.03 N*m step-to-step solver-noise floor, with no matching motion: the apple rotates < 0.001 rad
+  per step. The envelope therefore reads the **stem-root elastic wrench**: the first soft stem cable
+  joint's wrench, moved to the junction by statics (`M_J = M_A + (A - J) x F`). It has the same
+  mean and ~65x less noise. `info["junction_readout_wrench"]` keeps the readout, and
+  `wrench_source="junction_readout"` reverts. Rationale:
+  `docs/superpowers/decisions/2026-09-24-rl-open-decisions.md` (D1).
 - `info["detach_index"]` is published every step.
 - Success needs the index ≥ 1 for `EpisodeConfig.success_streak_steps` consecutive
   steps (default **3** = 50 ms). The streak only rejects single-step solver spikes; the

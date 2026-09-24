@@ -8,10 +8,68 @@ hyperparameters beyond what is listed.
 
 | ID | Decision | Status |
 | --- | --- | --- |
-| D1 | Detach signal: what the envelope reads (torque noise / bending / torsion) | pending CPU checks |
+| D1 | Detach signal: the envelope reads the stem-root *elastic* wrench, not the rigid-junction readout | done on CPU; GPU sweep requested |
 | D2 | Task 11 gate: success AND safety AND collateral vs scripted pull, AND >= random | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
+
+## D1 -- The detach envelope reads the stem-root elastic wrench
+
+**Problem (GPU, local session).** Under the total-moment envelope, a random policy and a
+do-nothing-then-jiggle policy "detach" at 100%. Torque dominates the index, and the zero policy
+alone crosses the envelope 8 times in 128 steps.
+
+**Diagnosis (CPU, real env, arm frozen, zero action).**
+1. Torque jumps of 0.033 N*m (step-to-step p99) occur while the apple moves 0.0003 mm and rotates
+   0.0007 rad per step (p99).
+   - Through the model's stem stiffness (0.017-0.025 N*m/rad per segment) that rotation explains
+     ~1e-5 N*m.
+   - So neither torsional nor bending stiffness is the cause, tuned or not.
+2. The same readout without the AVBD penalty-damping term is identical, so damping is not the cause.
+3. The rest *level* (~0.01-0.02 N*m) is real. The grasp leaves the very soft stem deformed by
+   ~0.47-0.65 rad per cable joint, and stiffness x deformation gives 0.008-0.017 N*m.
+- Conclusion: the ~0.02 N*m level is real stem elasticity. The +-0.03 N*m jitter comes from reading
+  a stiff penalty constraint (the rigid spur-stem fixed joint) whose sub-micron violations are
+  multiplied by a huge stiffness.
+
+**Choice.** `DetachEnvelopeConfig.wrench_source = "stem_elastic"` (default).
+- The spur-stem wrench is taken from the first soft stem cable joint's wrench on its child segment,
+  moved to the junction anchor by statics: `M_J = M_A + (A - J) x F`, lever ~2.3 mm.
+- The ~1e-4 N weight of the one stem segment in between is ignored.
+- `info["junction_readout_wrench"]` keeps the rigid-junction readout.
+- F_max = 20 N, tau_max = 0.05 N*m, the total-moment envelope and the 3-step streak are unchanged.
+  The noise is removed at the source, so no filter or threshold change is needed.
+
+**Evidence (CPU prototype, 2 worlds x 50 steps).**
+| | readout | stem elastic |
+| --- | --- | --- |
+| mean torque vector, world 0 | (0.0020, 0.0019, -0.0085) | (0.0016, 0.0017, -0.0079) |
+| mean torque vector, world 1 | (0.0010, 0.0176, -0.0119) | (0.0017, 0.0187, -0.0123) |
+| torque std | 0.0097 / 0.0082 | 0.00006 / 0.00025 |
+| d tau p99 | 0.032 | 0.0005 |
+| mean force | 4.29 / 5.23 N | 4.09 / 4.71 N |
+
+The slow contract test asserts: force within 15% of the readout, mean torque within 0.01 N*m, and
+max step change below 0.2x the readout's.
+
+**Consequences worth discussing.**
+- (a) The rest pre-load from the grasp already uses 16-45% of tau_max per world. It is physically
+  real in this model, but it depends on how the grasp twists the stem.
+- (b) The stem is so soft in rotation (twist shares the bend stiffness, which was only identified
+  from pulls) that twisting the apple barely loads the junction. The envelope is in practice
+  force-driven plus bending, and twist-and-pull cannot emerge until torsion is modelled and
+  identified. That needs a separate torsional stiffness per stem segment (Newton's cable joint has
+  one angular stiffness) plus twist data.
+- (c) The GPU sweep (`detach_sweep`) should confirm that zero and random no longer detach while the
+  scripted pull still does.
+
+**Alternatives.**
+- Raise tau_max above the noise (~0.15-0.2): hides the jitter and makes the envelope effectively
+  force-only.
+- EMA the readout and lengthen the streak: keeps a noisy, non-physical signal.
+- Force-only envelope: drops the torque term that the maintainer wants.
+
+**Revert.** Set `wrench_source="junction_readout"` (EnvConfig / DetachEnvelopeConfig).
 
 ## D2 -- Task 11 exit gate includes collateral
 

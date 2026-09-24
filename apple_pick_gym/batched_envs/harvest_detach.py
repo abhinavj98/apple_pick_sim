@@ -55,6 +55,12 @@ class DetachEnvelopeConfig:
     torque_mode: Literal["total", "split"] = "total"
     torsion_max_nm: float = 0.05
     bending_max_nm: float = 0.9
+    # [D1] Which spur-stem wrench the envelope reads.
+    # "stem_elastic" (default): the wrench of the first soft stem cable joint, shifted to the
+    #   junction by statics. It has the same mean as the readout and ~65x less noise.
+    # "junction_readout": the rigid fixed joint's AVBD constraint wrench, which carries a
+    #   +-0.03 N*m step-to-step solver-noise floor.
+    wrench_source: Literal["stem_elastic", "junction_readout"] = "stem_elastic"
 
     def __post_init__(self) -> None:
         for name in ("f_max_n", "tau_max_nm", "torsion_max_nm", "bending_max_nm"):
@@ -62,6 +68,8 @@ class DetachEnvelopeConfig:
                 raise ValueError(f"{name} must be > 0, got {getattr(self, name)}")
         if self.torque_mode not in ("total", "split"):
             raise ValueError(f"unknown torque_mode {self.torque_mode!r}")
+        if self.wrench_source not in ("stem_elastic", "junction_readout"):
+            raise ValueError(f"unknown wrench_source {self.wrench_source!r}")
 
 
 def split_torque(torque: torch.Tensor, stem_axis: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -92,6 +100,13 @@ def detach_utilization(
 ) -> torch.Tensor:
     """``sqrt(detach_index)``: radial fraction of the envelope in use (1 = on the envelope)."""
     return torch.sqrt(detach_index(wrench, cfg, stem_axis=stem_axis))
+
+
+def shift_moment(
+    moment: torch.Tensor, force: torch.Tensor, *, from_point: torch.Tensor, to_point: torch.Tensor
+) -> torch.Tensor:
+    """Moment about ``to_point`` of a wrench ``(force, moment about from_point)``: ``M + (from - to) x F``."""
+    return moment + torch.cross(from_point - to_point, force, dim=-1)
 
 
 def junction_wrench_at_anchor(

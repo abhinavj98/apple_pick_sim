@@ -161,3 +161,24 @@ def test_split_mode_requires_the_stem_axis():
 def test_split_limits_must_be_positive():
     with pytest.raises(ValueError):
         DetachEnvelopeConfig(torque_mode="split", bending_max_nm=0.0)
+
+
+def test_wrench_source_defaults_to_the_stem_elastic_joint():
+    """[D1] the rigid junction's constraint readout carries a +-0.03 N*m solver-noise floor; the
+    first soft stem joint's elastic wrench, shifted to the junction by statics, has the same mean
+    and ~65x less step-to-step noise (CPU, v1 worlds)."""
+    assert DetachEnvelopeConfig().wrench_source == "stem_elastic"
+    DetachEnvelopeConfig(wrench_source="junction_readout")
+    with pytest.raises(ValueError):
+        DetachEnvelopeConfig(wrench_source="bogus")
+
+
+def test_stem_root_statics_shift():
+    """Moment about the junction J of a wrench (F, M_A) acting at A: M_J = M_A + (A - J) x F."""
+    from apple_pick_gym.batched_envs.harvest_detach import shift_moment
+
+    F = torch.tensor([[0.0, 0.0, -5.0]])
+    M_A = torch.tensor([[0.001, 0.0, 0.0]])
+    A = torch.tensor([[0.0024, 0.0, 0.0]])
+    J = torch.zeros(1, 3)
+    torch.testing.assert_close(shift_moment(M_A, F, from_point=A, to_point=J), torch.tensor([[0.001, 0.012, 0.0]]))

@@ -42,6 +42,8 @@ class EnvConfig:
     torque_mode: Literal["total", "split"] = "total"
     torsion_max_nm: float = 0.05
     bending_max_nm: float = 0.9
+    # [D1] which spur-stem wrench the envelope reads (see DetachEnvelopeConfig.wrench_source)
+    wrench_source: Literal["stem_elastic", "junction_readout"] = "stem_elastic"
     success_streak_steps: int = 3
     safety_force_cap_n: float = 40.0
     safety_torque_cap_nm: float = 10.0

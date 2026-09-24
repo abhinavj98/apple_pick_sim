@@ -76,7 +76,7 @@ from apple_pick_gym.batched_envs.harvest_action import (
     pack_vic_pose_action,
     split_harvest_action,
 )
-from apple_pick_gym.batched_envs.harvest_detach import detach_index, junction_wrench_at_anchor
+from apple_pick_gym.batched_envs.harvest_detach import detach_index, junction_wrench_at_anchor, shift_moment
 from apple_pick_gym.batched_envs.harvest_episode import (
     EpisodeConfig,
     FreezeMask,
@@ -283,6 +283,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             )
         self._target_junction_idx = self._junction_names.index(self._target_junction_name)
         self._target_child_body = self._resolve_target_child_bodies()
+        self._stem_root = self._resolve_stem_root_joints()
 
         b = self._action_bounds
         self.action_space = spaces.Box(
@@ -341,6 +342,60 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         joint_idx = bufs.woody_joint_indices.numpy().reshape(self.num_envs, -1)[:, self._target_junction_idx]
         child = self._sim.scene.cable.model.joint_child.numpy()[joint_idx]
         return torch.as_tensor(child.astype(np.int64), device=self.device)
+
+    def _resolve_stem_root_joints(self) -> dict[str, Any] | None:
+        """Per env: the first soft stem cable joint after the target junction (parent = the junction's
+        child segment). ``None`` if any env has none -- the envelope then falls back to the readout."""
+        import newton
+
+        model = self._sim.scene.cable.model
+        jtype = model.joint_type.numpy()
+        parent = model.joint_parent.numpy()
+        joints = []
+        for seg0 in self._target_child_body.cpu().numpy():
+            hits = np.nonzero((parent == int(seg0)) & (jtype == int(newton.JointType.CABLE)))[0]
+            if hits.size == 0:
+                return None
+            joints.append(int(hits[0]))
+        j = np.asarray(joints, dtype=np.int32)
+        return {
+            "joints_wp": wp.array(j, dtype=wp.int32, device=model.joint_child.device),
+            "child": torch.as_tensor(model.joint_child.numpy()[j].astype(np.int64), device=self.device),
+            "x_c": torch.as_tensor(model.joint_X_c.numpy()[j][:, :3], dtype=torch.float32, device=self.device),
+        }
+
+    def _stem_root_wrench(self) -> torch.Tensor | None:
+        """[D1] Spur-stem junction wrench from the first stem cable joint's elastic wrench.
+
+        The cable joint's wrench on its child segment (force F, couple M_A at the joint anchor A),
+        moved to the junction's child anchor J by statics: ``M_J = M_A + (A - J) x F``. This
+        ignores the ~mg of one stem segment between the two joints (~1e-4 N).
+        """
+        if self._stem_root is None:
+            return None
+        from apple_pick_sim.vbd_fixed_joint_wrenches import gather_joint_wrench_child_com_device
+
+        sim = self._sim
+        cable = sim.scene.cable
+        f, t = gather_joint_wrench_child_com_device(
+            cable.model,
+            cable.solver,
+            body_q=cable.state_0.body_q,
+            body_q_prev=cable.state_1.body_q,
+            joint_indices=self._stem_root["joints_wp"],
+            dt=float(sim.sub_dt),
+        )
+        force = wp.to_torch(f).to(device=self.device, dtype=torch.float32)
+        torque_com = wp.to_torch(t).to(device=self.device, dtype=torch.float32)
+        body_q = wp.to_torch(cable.state_0.body_q).to(device=self.device, dtype=torch.float32)
+        body_com = wp.to_torch(cable.model.body_com).to(device=self.device, dtype=torch.float32)
+        child = self._stem_root["child"]
+        q = body_q[child]
+        com = q[:, :3] + quat_rotate_vector(q[:, 3:7], body_com[child])
+        anchor = q[:, :3] + quat_rotate_vector(q[:, 3:7], self._stem_root["x_c"])
+        at_a = junction_wrench_at_anchor(torch.cat([force, torque_com], dim=-1), child_anchor=anchor, child_com=com)
+        j = self._last_full_obs["woody_part_info"][self._target_junction_name]["anchors_pos"][:, 3:6]
+        return torch.cat([at_a[:, :3], shift_moment(at_a[:, 3:], at_a[:, :3], from_point=anchor, to_point=j)], dim=-1)
 
     def _target_child_com_world(self) -> torch.Tensor:
         """``(N, 3)`` world COM of the target junction's child body (same state the gather reads)."""
@@ -723,11 +778,14 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         info["target_junction_force"] = woody_part_force[self._target_junction_name]
         # What the detach envelope and progress reward read: the same wrench with the
         # torque shifted to the joint anchor (harvest_detach.junction_wrench_at_anchor).
-        info["target_junction_wrench"] = junction_wrench_at_anchor(
+        readout = junction_wrench_at_anchor(
             info["target_junction_force"],
             child_anchor=self._last_full_obs["woody_part_info"][self._target_junction_name]["anchors_pos"][:, 3:6],
             child_com=self._target_child_com_world(),
         )
+        info["junction_readout_wrench"] = readout
+        stem_root = self._stem_root_wrench() if self._reward_cfg.detach.wrench_source == "stem_elastic" else None
+        info["target_junction_wrench"] = readout if stem_root is None else stem_root
         info["target_junction_axis"] = self._target_stem_axis()
         info["detach_index"] = detach_index(
             info["target_junction_wrench"], self._reward_cfg.detach, stem_axis=info["target_junction_axis"]

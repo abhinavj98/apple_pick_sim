@@ -13,7 +13,9 @@ grid of rules offline:
 - a ``tau_max`` grid for the total envelope (``--tau-max-grid``): which limit stops a do-nothing or
   random policy from "detaching" on noise while a real pull still detaches.
 
-Rows report the would-detach rate over valid envs and the median steps to detach. The noise
+Rows report the would-detach rate over valid envs and the median steps to detach. The envelope
+wrench is the env's ``target_junction_wrench`` (the [D1] stem-elastic wrench by default); the
+rigid-junction readout is recorded alongside for comparison. The noise
 block gives percentiles of |F|, |tau|, step-to-step |d tau|, torsion and bending over live
 steps. On the real env it also reports the torque read without the AVBD penalty-damping term
 (``kd * dC/dt``), which tests whether the noise comes from that velocity term.
@@ -107,7 +109,7 @@ def record(wrapper, policy) -> dict:
     obs, _ = wrapper.reset()
     state = wrapper.state()
     policy.reset(wrapper)
-    rec = {"W": [], "AX": [], "WU": [], "FROZ": [], "APPLE": [], "AQ": []}
+    rec = {"W": [], "AX": [], "WU": [], "FROZ": [], "APPLE": [], "AQ": [], "WR": []}
     for _ in range(env.max_episode_steps - 1):
         obs, _r, _term, _trunc, info = wrapper.step(policy.act(wrapper, obs, state))
         state = wrapper.state()
@@ -119,9 +121,12 @@ def record(wrapper, policy) -> dict:
         rec["FROZ"].append(info["episode"]["frozen"].detach().cpu())
         apple = info.get("apple_pos")
         rec["APPLE"].append(None if apple is None else apple.detach().cpu())
+        wr = info.get("junction_readout_wrench")
+        rec["WR"].append(None if wr is None else wr.detach().cpu())
         aq = info.get("apple_quat")
         rec["AQ"].append(None if aq is None else aq.detach().cpu())
     return {
+        "WR": None if rec["WR"][0] is None else torch.stack(rec["WR"]),
         "AQ": None if rec["AQ"][0] is None else torch.stack(rec["AQ"]),
         "APPLE": None if rec["APPLE"][0] is None else torch.stack(rec["APPLE"]),
         "W": torch.stack(rec["W"]),
@@ -200,6 +205,10 @@ def evaluate(
         dot = (q[1:] * q[:-1]).sum(-1).abs().clamp(max=1.0)
         dang = 2.0 * torch.acos(dot)
         noise.update(apple_rot_step_rad_p50=_pct(dang[both], 0.5), apple_rot_step_rad_p99=_pct(dang[both], 0.99))
+    if rec.get("WR") is not None:
+        # [D1] the rigid-junction constraint readout, for comparison with the envelope's wrench
+        tr = torch.linalg.norm(rec["WR"][..., 3:], dim=-1)
+        noise.update(readout_tau_p99=_pct(tr[live], 0.99), readout_dtau_p99=_pct((tr[1:] - tr[:-1]).abs()[both], 0.99))
     if rec["WU"] is not None:
         tu = torch.linalg.norm(rec["WU"][..., 3:], dim=-1)
         noise.update(
@@ -255,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
                 + f" | tau p99 {nz['tau_p99']:.4f} dtau p99 {nz['dtau_p99']:.4f}"
                 + (f" apple step p99 {nz['apple_step_mm_p99']:.3f} mm, dtau p99 with apple still {nz['dtau_p99_when_apple_still']:.4f} ({nz['still_steps']} steps)" if "apple_step_mm_p99" in nz else "")
                 + (f" apple rot step p99 {nz['apple_rot_step_rad_p99']:.5f} rad" if "apple_rot_step_rad_p99" in nz else "")
+                + (f" | readout tau p99 {nz['readout_tau_p99']:.4f} dtau p99 {nz['readout_dtau_p99']:.4f}" if "readout_tau_p99" in nz else "")
                 + (f" undamped tau p99 {nz['undamped_tau_p99']:.4f} dtau p99 {nz['undamped_dtau_p99']:.4f}" if "undamped_tau_p99" in nz else "")
             )
     finally:

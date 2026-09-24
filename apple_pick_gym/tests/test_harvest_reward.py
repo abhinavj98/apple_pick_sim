@@ -215,3 +215,21 @@ def test_d9_dense_terms_use_the_configured_pullout_hinge():
     }
     terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
     torch.testing.assert_close(terms["pullout"], torch.tensor([2.0]))
+
+
+def test_d11_wrist_force_soft_cap_charges_total_wrist_force_above_it():
+    # [D11] the bend-detach policy pushed laterally: wrist 23 N mean peak, 10% of envs over the 40 N
+    # safety cliff, while pull-out (grip axis only) stayed ~free. Charge |F_wrist| above a soft cap.
+    from apple_pick_gym.batched_envs.harvest_reward import compute_dense_reward_terms, weight_dense_reward_terms
+
+    cfg = HarvestRewardConfig(wrist_force_soft_cap_n=25.0, w_wrist=0.5)
+    w = torch.zeros(3, 6)
+    ft = torch.zeros(3, 6)
+    ft[0, 0], ft[1, 0], ft[2, 1] = 20.0, 30.0, 45.0  # lateral (x/y) pushes; ee z = world z
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]] * 3)}
+    info = {"target_junction_wrench": w, "ft_wrist": ft, "woody_part_force": {"spur_stem": w, "other": torch.zeros(3, 6)}}
+    raw = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
+    torch.testing.assert_close(raw["wrist"], torch.tensor([0.0, 5.0, 20.0]))
+    torch.testing.assert_close(raw["pullout"], torch.zeros(3))  # lateral: not pull-out
+    torch.testing.assert_close(weight_dense_reward_terms(raw, cfg)["wrist"], torch.tensor([0.0, -2.5, -10.0]))
+    assert HarvestRewardConfig().w_wrist == 0.0  # library default: off

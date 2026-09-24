@@ -50,7 +50,7 @@ def test_obs_and_info_follow_the_real_env_contract():
     assert r.shape == term.shape == trunc.shape == (N, 1)
     for key in ("frozen", "success_achieved", "safety_junction", "safety_wrist", "success_streak", "terminated_edge"):
         assert info["episode"][key].shape == (N,), key
-    assert set(info["reward_terms"]["raw"]) == {"progress", "pullout", "collateral", "slack"}
+    assert set(info["reward_terms"]["raw"]) == {"progress", "pullout", "wrist", "collateral", "slack"}
     assert env.target_junction_name == "spur_stem"
 
 

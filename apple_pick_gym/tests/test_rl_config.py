@@ -135,3 +135,12 @@ def test_d9_training_reward_balance_ranks_a_clean_pick_above_scripted_pull_above
     scripted = ret(0.68, 56.03, 0.31, 1.0, pullout_above_hinge=5.0)
     clean = ret(0.67, 22.34, 0.42, 0.90, safety=0.10)
     assert clean > scripted > zero, (clean, scripted, zero)
+
+
+def test_d11_training_config_turns_on_the_wrist_force_soft_cap():
+    cfg = TrainConfig().env
+    assert (cfg.wrist_force_soft_cap_n, cfg.w_wrist) == (25.0, 0.5)
+    from apple_pick_gym.rl.trainer import build_env
+
+    env = build_env(dataclasses.replace(cfg, kind="surrogate", num_envs=2, device="cpu"), seed=0)
+    assert env._reward_cfg.wrist_force_soft_cap_n == 25.0 and env._reward_cfg.w_wrist == 0.5

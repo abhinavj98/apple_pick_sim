@@ -17,6 +17,7 @@ hyperparameters beyond what is listed.
 | D9 | Reward rebalance so a pick beats standing still | done |
 | D10 | LR floor 1e-4 for the KL-adaptive schedule | superseded by D10b |
 | D10b | KL-adaptive LR bounded to [3e-5, base LR] | done |
+| D11 | Smooth wrist-force cost above a 25 N soft cap | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -512,3 +513,38 @@ episodes, D10b LR bounds) proved that wrong for **bending**:
 - Safety violations climb to 30%. New metrics show which cap trips: `Episode / safety {target
   force, target torque, wrist force, wrist torque} (frac)`, plus peak wrist torque. The eval JSON
   has `safety_*_frac` and `peak_wrist_torque_nm_mean`.
+
+## D11 -- Smooth wrist-force cost above a 25 N soft cap
+
+**Finding.** Side eval of ep250 ckpt_1600 at 3a6e225, N=2000.
+
+| safety cap | fraction of envs tripping it |
+| --- | --- |
+| wrist force | 10.1% |
+| target force | 3.3% |
+| wrist torque | 0.05% |
+| target torque | 0 |
+| total | 13.5% |
+
+- Peak wrist force 23.4 N, peak wrist torque 3.7 N*m, peak target force 11.3 N.
+- At detach: F 10.4 N, tau 0.046 N*m (bending 0.040, torsion 0.019), torque share 0.85.
+  Success 0.41, collateral per success 10.2 N.
+
+**Read.**
+- The low-collateral strategy bends the stem by pushing laterally at the gripper.
+- The wrist sees ~2x the junction force. With 0.2 N of weld force at rest, the difference most
+  likely goes through contact: the apple pressed against the branch.
+- Pull-out charges only the grip axis, so lateral pushing was free up to the 40 N cliff.
+
+**Choice (training config).** A new dense term, `wrist = relu(|F_wrist| - 25 N)`, weighted
+`w_wrist = 0.5` per step. That is the same slope as pull-out, but on total force. It is a smooth
+cost starting 15 N below the safety cliff.
+- The library `HarvestRewardConfig` default is `w_wrist = 0` (off).
+- It does not affect the D9 ordering: the scripted pull's wrist force peaks at ~15 N.
+- Logged as `Episode / reward wrist (sum)` and `reward_wrist_sum`.
+
+**Open (maintainer).** The ~12 N the wrist carries beyond the junction is probably apple-branch
+contact. Pressing the fruit into the tree bruises it in reality, and its realism depends on the
+contact model. Worth checking contact forces before trusting the bend strategy.
+
+**Revert.** `w_wrist = 0`.

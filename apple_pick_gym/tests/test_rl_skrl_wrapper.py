@@ -223,7 +223,7 @@ def test_episode_stats_report_target_wrench_at_detach_and_peak_torque():
         },
         "reward_terms": {
             "raw": {"collateral": torch.zeros(2)},
-            "weighted": {k: torch.zeros(2) for k in ("progress", "pullout", "collateral", "slack")},
+            "weighted": {k: torch.zeros(2) for k in ("progress", "pullout", "wrist", "collateral", "slack")},
             "terminal": torch.zeros(2),
         },
         "detach_index": torch.ones(2),
@@ -262,7 +262,7 @@ def test_episode_stats_report_which_safety_cap_tripped_and_peak_wrist_torque():
         },
         "reward_terms": {
             "raw": {"collateral": torch.zeros(4)},
-            "weighted": {k: torch.zeros(4) for k in ("progress", "pullout", "collateral", "slack")},
+            "weighted": {k: torch.zeros(4) for k in ("progress", "pullout", "wrist", "collateral", "slack")},
             "terminal": torch.zeros(4),
         },
         "detach_index": torch.zeros(4),

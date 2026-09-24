@@ -53,6 +53,10 @@ class EnvConfig:
     w_progress: float = 10.0  # delta progress telescopes to 10 * (u_end - u_0); cannot be farmed
     w_pullout: float = 0.5
     pullout_threshold_n: float = 10.0  # grip capacity stand-in: only force beyond it counts
+    # [D11] smooth cost on total wrist force above 25 N (the safety cliff is 40 N): the bend-detach
+    # policy pushed laterally, 10% of envs over 40 N at the wrist while pull-out stayed ~free
+    w_wrist: float = 0.5
+    wrist_force_soft_cap_n: float = 25.0
     w_collateral: float = 0.02
     success_bonus: float = 20.0
     failure_penalty: float = -40.0

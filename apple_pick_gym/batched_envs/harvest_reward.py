@@ -45,6 +45,11 @@ class HarvestRewardConfig:
     # [D9] grip capacity: only wrist force along the grip axis above this counts as pull-out
     # (0 = every newton counts, the original behaviour)
     pullout_threshold_n: float = 0.0
+    # [D11] wrist-force soft cap: -w_wrist * relu(|F_wrist| - soft_cap) per step, a smooth cost
+    # below the safety cliff for pushing in any direction (pull-out only sees the grip axis).
+    # w_wrist = 0 (default) is off.
+    w_wrist: float = 0.0
+    wrist_force_soft_cap_n: float = 25.0
     w_collateral: float = 0.1
     # Slack: a constant cost per live (not-yet-frozen) step, so the policy is paid to detach
     # sooner rather than later. 0.01 * 500 steps = -5 at most, half the success bonus.
@@ -138,6 +143,7 @@ def compute_dense_reward_terms(
             thresholds=info.get("detach_thresholds"),
         ),
         "pullout": compute_pullout_penalty(info["ft_wrist"], obs["tcp_quat"], threshold_n=cfg.pullout_threshold_n),
+        "wrist": torch.clamp(torch.linalg.norm(info["ft_wrist"][:, :3], dim=-1) - float(cfg.wrist_force_soft_cap_n), min=0.0),
         "collateral": compute_collateral_penalty(
             info["woody_part_force"],
             target_junction_name=target_junction_name,
@@ -158,6 +164,7 @@ def weight_dense_reward_terms(
     return {
         "progress": cfg.w_progress * terms["progress"],
         "pullout": -cfg.w_pullout * terms["pullout"],
+        "wrist": -cfg.w_wrist * terms["wrist"],
         "collateral": -cfg.w_collateral * terms["collateral"],
         "slack": -cfg.w_slack * terms["slack"],
     }

@@ -71,7 +71,7 @@ def test_safety_violation_is_a_penalized_terminal_failure():
 
 def test_reward_terms_and_total_are_reported():
     out = _run([_info([10.0, 10.0, 10.0], other=(3.0, 3.0, 3.0))])[0]
-    assert set(out.reward_terms["raw"]) == {"progress", "pullout", "collateral", "slack"}
+    assert set(out.reward_terms["raw"]) == {"progress", "pullout", "wrist", "collateral", "slack"}
     torch.testing.assert_close(out.reward_terms["raw"]["progress"], torch.full((N,), 0.5))
     torch.testing.assert_close(out.reward_terms["raw"]["collateral"], torch.full((N,), 3.0))
     torch.testing.assert_close(out.reward_terms["total"], out.reward.flatten())

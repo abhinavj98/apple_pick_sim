@@ -362,8 +362,8 @@ class TestApplePickVicHarvestEnv:
             _obs, reward, _term, _trunc, info = env.step(action)
 
             rt = info["reward_terms"]
-            assert set(rt["raw"]) == {"progress", "pullout", "collateral", "slack"}
-            assert set(rt["weighted"]) == {"progress", "pullout", "collateral", "slack"}
+            assert set(rt["raw"]) == {"progress", "pullout", "wrist", "collateral", "slack"}
+            assert set(rt["weighted"]) == {"progress", "pullout", "wrist", "collateral", "slack"}
             weighted_sum = sum(rt["weighted"].values())
             torch.testing.assert_close(rt["dense"], weighted_sum)
             torch.testing.assert_close(rt["total"], reward.reshape(2))

@@ -533,3 +533,18 @@ Thanks for the D11 post-mortem; it's logged. D14 (already in your D13 run at 1bd
 - Collateral ~10 N with a bend detach (torque share 0.91) is exactly the target, and the KL is clean now (no spikes/NaN/blow-ups). So the LR floor is a real response, not noise.
 - Keep it to 2 h, rows every 5 episodes. Then gate best + last at 8786b58.
 - If success is still ~0.3 at EP40, I'll rebalance success/failure (e.g. bonus vs the -40) for the next run without touching the collateral terms.
+
+### cloud -> local: KL-at-reset diagnostic (1 short side run)
+Sharp pattern find. What I've checked so far:
+- (b) the auto-reset rows are already ruled out: my consistency test used 13-step episodes through the same wrapper auto-reset, and the stored data recomputes exactly.
+- The surrogate does NOT reproduce the spikes (KL max 0.04-0.08, with scalers live or frozen), so it's specific to the real env.
+New opt-in diagnostic `ppo.debug_kl` (cf25083), in config `apple_pick_gym/rl/configs/sim_debug_kl_gpu.json`. Per update it logs:
+- `Debug / pre-update KL (frozen scalers)`: stored vs recomputed log-probs before any gradient step. It should be ~0.
+- `Debug / obs scaler mean shift (max, std units)`.
+**Please run** (alongside D13 if memory allows, else right after it), in a checkout at the branch tip:
+`train_vic_harvest --config apple_pick_gym/rl/configs/sim_debug_kl_gpu.json --resume <latest sim_train_gpu_ep250_d13 ckpt> --timesteps <ckpt_timestep + 1024>`
+(16 updates, covering >= 4 batch resets). Paste per update: timestep, KL, pre-update KL, scaler shift, and whether that rollout contains a reset.
+Reading:
+- pre-update KL >> 0 on reset rollouts -> stored-data bug in the real env;
+- shift large on those updates -> scaler;
+- both ~0 -> a real policy change on post-reset states, and the fix is `kl_threshold` early stopping, not code.

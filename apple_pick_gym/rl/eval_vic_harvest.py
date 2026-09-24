@@ -23,6 +23,7 @@ import dataclasses
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -151,13 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_eval(args) -> tuple[TrainConfig, Any, Any, str]:
+    """``(cfg, wrapper, policy, label)`` for parsed eval args (a checkpoint or a baseline)."""
     from apple_pick_gym.rl.baselines import BASELINES, RandomPolicy
     from apple_pick_gym.rl.checkpoint import load_checkpoint
     from apple_pick_gym.rl.skrl_wrapper import HarvestSkrlWrapper
     from apple_pick_gym.rl.trainer import build_agent, build_env
 
-    args = build_parser().parse_args(argv)
     if args.checkpoint:
         meta = json.loads((Path(args.checkpoint) / "meta.json").read_text())
         cfg = TrainConfig.from_dict(meta["config"])
@@ -181,11 +182,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.checkpoint:
             agent = build_agent(wrapper, cfg, run_dir=Path(args.out).parent / "_eval_agent")
             load_checkpoint(args.checkpoint, agent, wrapper, cfg)
-            policy = RecurrentPolicyRunner(agent)
-            label = f"checkpoint:{args.checkpoint}"
-        else:
-            policy = RandomPolicy(seed=args.seed) if args.baseline == "random" else BASELINES[args.baseline]()
-            label = f"baseline:{args.baseline}"
+            return cfg, wrapper, RecurrentPolicyRunner(agent), f"checkpoint:{args.checkpoint}"
+        policy = RandomPolicy(seed=args.seed) if args.baseline == "random" else BASELINES[args.baseline]()
+        return cfg, wrapper, policy, f"baseline:{args.baseline}"
+    except Exception:
+        wrapper.close()
+        raise
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    cfg, wrapper, policy, label = build_eval(args)
+    try:
         metrics = evaluate(wrapper, policy, episodes=args.episodes)
     finally:
         wrapper.close()

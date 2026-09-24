@@ -10,6 +10,7 @@ hyperparameters beyond what is listed.
 | --- | --- | --- |
 | D1 | Detach signal: the envelope reads the stem-root *elastic* wrench, not the rigid-junction readout | done; GPU-confirmed |
 | D2 | Task 11 gate: success AND safety AND collateral vs scripted pull, AND >= random | done |
+| D2a | Gate also requires peak collateral strictly below random's | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -111,6 +112,32 @@ snapshot and seed, all of these hold:
 The 0.5 ratio is a judgement call. It demands a clear improvement in the thing the task is about.
 
 **Revert.** Use `--collateral-ratio 1e9` and omit `--random`, or ignore the tool.
+
+### D2a -- Collateral must also be strictly below random's
+
+**Finding (local GPU, `eval_vic_harvest`, sim_wiring_gpu, seed 12345, 1 episode, pre-D1 e2b3fb5).**
+
+| baseline | peak collateral | success | safety |
+| --- | --- | --- | --- |
+| random | 15.2 N | 1.00 | 0 |
+| scripted_pull | 45.0 N | -- | -- |
+
+- Random's collateral is 0.34x the scripted pull's, so random itself passed the D2 collateral
+  clause. With equal success, random matched itself on every criterion and passed the whole gate.
+
+**Choice.** When `--random` is given, add `collateral_vs_random`: the policy's peak collateral must
+be strictly below random's. Random can no longer pass its own gate, and a learned policy must load
+the tree less than untargeted flailing does.
+
+**Caveats.**
+- The data is one episode, pre-D1.
+- Under D1, random detaches later (0.81), so its collateral will likely rise. The next
+  `eval_vic_harvest --baseline random` on current code will update it.
+- `peak_collateral_n_mean` averages over failed episodes too. A random run that often fails
+  without pulling hard looks gentler than it is. If that bites, compare collateral on successful
+  episodes only.
+
+**Revert.** Drop the `collateral_vs_random` line in `gate.py`.
 
 ## D3 -- F/T sensor noise from real data
 

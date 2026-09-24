@@ -30,3 +30,17 @@ def test_cli_reads_eval_jsons(tmp_path):
     rc = gate.main(["--policy", str(tmp_path / "p.json"), "--scripted-pull", str(tmp_path / "s.json"),
                     "--random", str(tmp_path / "r.json"), "--out", str(out)])
     assert rc == 0 and json.loads(out.read_text())["passed"]
+
+
+def test_d2a_collateral_must_also_not_exceed_random():
+    # [D2a] GPU (pre-D1): random peaked at 15.2 N collateral vs scripted pull's 45 N, so random alone
+    # would pass the 0.5x-scripted clause. A policy must not load the tree more than random does.
+    pull, rnd = _m(1.0, 0.0, 45.0), _m(1.0, 0.0, 15.2)
+    res = gate.evaluate_gate(_m(1.0, 0.0, 20.0), scripted_pull=pull, random=rnd)
+    assert res["criteria"]["collateral"]["passed"]
+    assert not res["criteria"]["collateral_vs_random"]["passed"] and not res["passed"]
+    assert gate.evaluate_gate(_m(1.0, 0.0, 12.0), scripted_pull=pull, random=rnd)["passed"]
+    # random itself cannot pass the gate
+    assert not gate.evaluate_gate(rnd, scripted_pull=pull, random=rnd)["passed"]
+    # without a random baseline the clause is absent
+    assert "collateral_vs_random" not in gate.evaluate_gate(_m(1.0, 0.0, 20.0), scripted_pull=pull)["criteria"]

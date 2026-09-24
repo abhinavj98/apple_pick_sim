@@ -8,7 +8,12 @@ that. The gate therefore requires *all* of:
 - ``safety``: safety-violation rate <= the scripted pull's;
 - ``collateral``: peak collateral load <= ``collateral_ratio`` (default 0.5) x the scripted pull's;
 - ``beats_random``: success rate >= the random policy's (guards against an envelope a random
-  policy already trips, as the total-moment envelope did).
+  policy already trips, as the total-moment envelope did);
+- ``collateral_vs_random`` [D2a]: peak collateral strictly < the random policy's (so random itself fails). On GPU random peaked at
+  15.2 N vs the scripted pull's 45 N, so random alone passed the 0.5x clause; a learned policy must
+  not load the tree more than random flailing does.
+
+The random clauses apply only when a random baseline is given.
 
 Evaluate every policy on the same held-out snapshot and seed.
 
@@ -24,6 +29,9 @@ import sys
 from pathlib import Path
 
 
+_OPS = {">=": lambda v, t: v >= t, "<=": lambda v, t: v <= t, "<": lambda v, t: v < t}
+
+
 def evaluate_gate(policy: dict, *, scripted_pull: dict, random: dict | None = None, collateral_ratio: float = 0.5) -> dict:
     crit = {
         "success": (policy["success_rate"], ">=", scripted_pull["success_rate"]),
@@ -32,8 +40,9 @@ def evaluate_gate(policy: dict, *, scripted_pull: dict, random: dict | None = No
     }
     if random is not None:
         crit["beats_random"] = (policy["success_rate"], ">=", random["success_rate"])
+        crit["collateral_vs_random"] = (policy["peak_collateral_n_mean"], "<", random["peak_collateral_n_mean"])
     out = {
-        name: {"value": v, "op": op, "threshold": t, "passed": bool(v >= t if op == ">=" else v <= t)}
+        name: {"value": v, "op": op, "threshold": t, "passed": bool(_OPS[op](v, t))}
         for name, (v, op, t) in crit.items()
     }
     return {"passed": all(c["passed"] for c in out.values()), "criteria": out, "collateral_ratio": collateral_ratio}
@@ -54,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     Path(a.out).write_text(json.dumps(res, indent=2) + "\n")
     for name, c in res["criteria"].items():
-        print(f"{name:13s} {'PASS' if c['passed'] else 'FAIL'}  {c['value']:.3f} {c['op']} {c['threshold']:.3f}")
+        print(f"{name:20s} {'PASS' if c['passed'] else 'FAIL'}  {c['value']:.3f} {c['op']} {c['threshold']:.3f}")
     print("GATE", "PASSED" if res["passed"] else "FAILED")
     return 0
 

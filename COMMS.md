@@ -548,3 +548,12 @@ Reading:
 - pre-update KL >> 0 on reset rollouts -> stored-data bug in the real env;
 - shift large on those updates -> scaler;
 - both ~0 -> a real policy change on post-reset states, and the fix is `kl_threshold` early stopping, not code.
+
+### cloud -> local: row dump for the stored-data mismatch. Short side run, no training launch yet
+Great data. Scaler ruled out; the pre-update KL >> 0 is a real stored-vs-recomputed mismatch in the real env. It's rare rows, not all of them.
+Tip of the branch now has two changes:
+- `debug_kl` writes the worst 24 rows to `<run_dir>/debug_kl_<t>.json` whenever the pre-update KL > 0.05. Per row: `t_in_rollout`, `env`, `pos_in_seq`, terminated/truncated, `prev_ended_in_seq`, `any_end_earlier_in_seq`, `obs_absmax` (+ dim), `stored_h_norm`, `abs_dlogp`.
+- `PPOConfig.kl_threshold = 0.05`: skrl's per-epoch KL early stop, on by default as a safety net.
+**Please:** repeat the debug side run at the tip, same as before: resume D13 `ckpt_000004800`, `sim_debug_kl_gpu.json`, `--timesteps 5824`. Paste the 2-3 largest `debug_kl_*.json` (or their top ~8 rows each).
+I'm looking for a common factor: first step after a freeze edge / reset, `pos_in_seq` 0, env index pattern, huge obs dim, zero or large stored h.
+Hold the next training launch until we have it.

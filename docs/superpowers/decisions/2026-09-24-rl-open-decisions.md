@@ -365,3 +365,21 @@ clean: 0 nonfinite envs, no NaN, 5.4 GB.
   under the old 1.2 m/s bound, which D8 now caps.
 - The KL-adaptive schedule had already cut the LR to 9e-5 by update 24. Watch that in the long
   run; the update row has no KL key yet.
+
+## Baselines under D8 (sim_train_gpu.json, N=2000, 1 episode, d5b9e93)
+
+| baseline | success | safety | steps | junction F | collateral / success | peak TCP v | mean TCP v |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| zero | 0.000 | 0.000 | 500 | 3.8 N | -- | 0.001 m/s | 0.000 m/s |
+| random | 0.053 | 0.013 | 364 | 9.1 N | 35.8 N | 0.060 m/s | 0.014 m/s |
+| scripted_pull | 0.998 | 0.002 | 31 | 18.6 N | 44.4 N | 0.102 m/s | 0.072 m/s |
+| scripted_twist_pull | 0.999 | 0.001 | 52 | 17.8 N | 42.4 N | 0.064 m/s | 0.042 m/s |
+
+**Read.**
+- D8 removes the yank loophole: random falls from 0.941 to 0.053, and the scripted pulls are
+  unchanged.
+- Gate bars under D8:
+  - success >= 0.998 and safety <= 0.002 (scripted pull);
+  - collateral per success <= 22.2 N (0.5x scripted pull);
+  - collateral < 35.8 N (random). That bar comes from only ~5% of envs, so it is noisy, but the
+    0.5x-scripted clause is the binding one anyway.

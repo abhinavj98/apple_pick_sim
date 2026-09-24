@@ -63,7 +63,7 @@ def test_defaults_follow_the_plan():
     assert cfg.env.max_target_pos_offset_m is not None  # VIC target leash on for training
 
 
-@pytest.mark.parametrize("name", ["surrogate_smoke.json", "sim_wiring_cpu.json", "sim_wiring_gpu.json", "sim_smoke_gpu.json", "sim_train_gpu.json", "sim_train_gpu_ep250.json", "sim_debug_kl_gpu.json", "sim_train_gpu_ep250_unbounded.json"])
+@pytest.mark.parametrize("name", ["surrogate_smoke.json", "sim_wiring_cpu.json", "sim_wiring_gpu.json", "sim_smoke_gpu.json", "sim_train_gpu.json", "sim_train_gpu_ep250.json", "sim_debug_kl_gpu.json", "sim_train_gpu_ep250_unbounded.json", "sim_train_gpu_d8b_unbounded.json", "sim_train_gpu_d8b_tanh1.json", "sim_train_gpu_d8b_tanh15.json"])
 def test_checked_in_configs_load_and_validate(name):
     from pathlib import Path
 
@@ -82,10 +82,12 @@ def test_d8_target_speed_cap_matches_the_rig_and_reaches_the_env():
     # The cap (60 Hz): 2 mm/step = 0.12 m/s, 0.01 rad/step = 0.6 rad/s (was 1.2 m/s, 6 rad/s).
     from apple_pick_gym.rl.trainer import build_env
 
+    # [D8b] maintainer: max target speed 0.4 m/s and 0.3 rad/s -> per 60 Hz step
     cfg = TrainConfig()
-    assert cfg.env.linear_delta_m == 0.002 and cfg.env.angular_delta_rad == 0.01
+    assert cfg.env.linear_delta_m == pytest.approx(0.4 / 60) and cfg.env.angular_delta_rad == pytest.approx(0.3 / 60)
     env = build_env(dataclasses.replace(cfg.env, kind="surrogate", num_envs=4, device="cpu"), seed=0)
-    assert env.action_bounds.linear_delta_m == 0.002 and env.action_bounds.angular_delta_rad == 0.01
+    assert env.action_bounds.linear_delta_m == pytest.approx(0.4 / 60)
+    assert env.action_bounds.angular_delta_rad == pytest.approx(0.3 / 60)
 
 
 def test_d10_kl_adaptive_lr_has_a_floor():

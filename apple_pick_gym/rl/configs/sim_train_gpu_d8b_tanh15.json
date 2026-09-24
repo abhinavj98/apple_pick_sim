@@ -1,0 +1,22 @@
+{
+  "env": {
+    "kind": "sim",
+    "world_set": "apple_pick_gym/world_sets/snapshots/harvest_worlds_v2_all2000/shard_00.jsonl",
+    "snapshot": "apple_pick_gym/world_sets/snapshots/harvest_worlds_v2_all2000/shard_00_snapshot.npz",
+    "num_envs": 2000,
+    "max_episode_steps": 250,
+    "device": "cuda:0",
+    "progress_mode": "delta"
+  },
+  "ppo": {
+    "rollouts": 64,
+    "mini_batches": 8,
+    "learning_epochs": 5
+  },
+  "timesteps": 17500,
+  "checkpoint_every_updates": 25,
+  "run_dir": "runs/vic_harvest/d8b_tanh15",
+  "actor": {
+    "mean_bound": 1.5
+  }
+}

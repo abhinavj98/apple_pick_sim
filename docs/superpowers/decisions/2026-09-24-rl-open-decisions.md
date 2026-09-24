@@ -24,6 +24,7 @@ hyperparameters beyond what is listed.
 | D15 | Fix skrl PPO_RNN storing h_{t+1} for row t (rnn-state dict aliasing) | done, GPU-confirmed |
 | D16 | tanh-squash the actor mean into the action box | superseded by D16b |
 | D16b | Actor mean bounded at +-1.5 (1.5 tanh(x/1.5)) | done |
+| D8b | Max target speed 0.4 m/s, 0.3 rad/s (maintainer) | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -855,3 +856,15 @@ D15 went on to 0.71.
 - The bounded mean is the most rig-like and safest policy; the unbounded one picks 2.5x more
   often.
 - This is a real trade-off for the maintainer: success vs rig-realistic motion and safety.
+
+## D8b -- Max target speed 0.4 m/s and 0.3 rad/s (maintainer)
+
+- The maintainer set the cap to 0.4 m/s linear and 0.3 rad/s angular: at 60 Hz,
+  `linear_delta_m = 0.4/60 = 6.67 mm/step` and `angular_delta_rad = 0.3/60 = 5 mrad/step`.
+- Relative to D8 that is 3.3x faster linear and 2x slower angular.
+- `scripted_pull` (2 mm/step) is unchanged. `scripted_twist_pull`'s 10 mrad/step twist is clamped
+  to 5 mrad/step. Random is faster.
+- The baselines are re-run for the gate (`runs/eval_d8b`).
+- With full-scale actions no longer the useful pull rate (0.12 m/s is now ~0.3 of the range), the
+  bounded-mean actors may no longer be handicapped.
+- Three variants, same reward: `sim_train_gpu_d8b_{unbounded,tanh1,tanh15}.json`.

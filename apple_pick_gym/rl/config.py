@@ -73,8 +73,9 @@ class EnvConfig:
     # 0.12 m/s, 0.01 rad/step = 0.6 rad/s. Real pulls: TCP speed p90 0.03 m/s, per-run peak
     # <= 0.21 m/s, angular <= 0.55 rad/s. The sim is only validated at those speeds, and fast
     # yanks were how a random policy detached (the cap was 1.2 m/s, 6 rad/s).
-    linear_delta_m: float = 0.002
-    angular_delta_rad: float = 0.01
+    # [D8b] maintainer (2026-09-24): max target speed 0.4 m/s and 0.3 rad/s at 60 Hz control
+    linear_delta_m: float = 0.4 / 60.0
+    angular_delta_rad: float = 0.3 / 60.0
     # F/T sensor DR (bias / noise / drift, FtSensorConfig.rl_training)
     sensor_dr: bool = True
     # surrogate only: fraction of envs flagged invalid (frozen from reset)

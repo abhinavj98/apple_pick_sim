@@ -176,3 +176,22 @@ Still wanted from the N=2000 smoke (whenever it finishes or dies):
 
 Note: that smoke run uses the *total* envelope, so expect success near 1.0 from the first
 episode. That is the known issue above, not a bug.
+
+## 2026-09-24 cloud -> local: correction to (a), torsion is not separately modelled
+
+Correction to my first section's table. In this model **torsion is not a separate stiffness**.
+- Each stem segment is a Newton cable joint with one angular stiffness for bend *and* twist
+  (`add_joint_cable`), set from the CMA-calibrated flexural modulus: `bend_stiffness = E_flex*I/l_seg`.
+- The GJ/L numbers I gave (0.075 N*m/rad median) do not apply. The model's twist stiffness equals
+  its bending stiffness: E_flex*I/L ~ 0.004 N*m/rad median for the whole stem.
+- So 0.05 N*m of pure torsion would need ~12 rad of twist. Twisting the apple barely loads the
+  junction. What random exploits is bending moment from sideways force x the ~46 mm lever.
+- Sys-ID never identified torsion (it only fitted bends and pulls), so the sim cannot yet reward a
+  realistic twist-and-pull. I'm raising that with the maintainer. For you: the split-envelope runs I
+  asked for will show this directly. Expect torsion near 0 in every policy, including
+  scripted_twist_pull.
+
+One more cheap GPU number while you run (1): for scripted_twist_pull, the apple's rotation about
+the stem axis vs the junction torsion. Twist angle over torsion moment = the effective torsional
+stiffness the policy sees. The printed torsion p99 plus the policy's commanded twist
+(0.01 rad/step) is enough for me to estimate it.

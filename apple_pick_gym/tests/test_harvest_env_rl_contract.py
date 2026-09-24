@@ -93,8 +93,8 @@ def test_rl_contract_and_domain_randomization():
         terms, rewards, frozen, tau_stem, tau_ro = [], [], [], [], []
         for _ in range(12):
             obs, r, term, trunc, info = env.step(action)
-            tau_stem.append(torch.linalg.norm(info["target_junction_wrench"][:, 3:], dim=-1))
-            tau_ro.append(torch.linalg.norm(info["junction_readout_wrench"][:, 3:], dim=-1))
+            tau_stem.append(info["target_junction_wrench"][:, 3:].clone())
+            tau_ro.append(info["junction_readout_wrench"][:, 3:].clone())
             terms.append(term.flatten().clone())
             rewards.append(r.flatten().clone())
             frozen.append(info["episode"]["frozen"].clone())
@@ -105,10 +105,13 @@ def test_rl_contract_and_domain_randomization():
         assert bool(torch.stack(frozen)[edge_step:].all())
         assert float(torch.stack(rewards)[edge_step + 1 :].abs().max()) == 0.0
         assert bool(trunc.all())  # synchronized time limit
-        # [D1] same torque level, far less step-to-step noise than the rigid-junction readout
-        ts, tr = torch.stack(tau_stem), torch.stack(tau_ro)
-        assert float((ts[1:] - ts[:-1]).abs().max()) < 0.2 * float((tr[1:] - tr[:-1]).abs().max())
-        assert bool(((ts.mean(0) - tr.mean(0)).abs() < 0.01).all()), (ts.mean(0), tr.mean(0))
+        # [D1] same mean torque *vector* (the mean of |tau| would be inflated by the readout's noise),
+        # far less step-to-step noise than the rigid-junction readout
+        ts, tr = torch.stack(tau_stem), torch.stack(tau_ro)  # (T, N, 3)
+        step = lambda x: torch.linalg.norm(x[1:] - x[:-1], dim=-1)
+        assert float(step(ts).max()) < 0.2 * float(step(tr).max())
+        gap = torch.linalg.norm(ts.mean(0) - tr.mean(0), dim=-1)
+        assert bool((gap < 0.005).all()), (ts.mean(0), tr.mean(0))
 
         # --- reset resamples arm joint DR and the sensor bias; privileged follows
         env.reset()

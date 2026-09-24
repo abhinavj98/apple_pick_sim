@@ -39,6 +39,12 @@ hyperparameters beyond what is listed.
 5. **F/T frames on the rig** (D4): the tare mixes the K and O frames.
 6. **Real data**: s05-d05 and s05-d07 look like duplicates.
 
+7. **Pre-existing CPU test failure (not from this branch).**
+   `apple_pick_gym/tests/test_apple_pick_coupled_env.py::test_vic_env_tcp_moves_under_velocity_command`
+   fails on CPU: the TCP moves dx = -0.024 m instead of > +0.05 m. It fails the same way at the
+   merge-base c41070e (dx = -0.023 m), before any M5 work. It is likely related to the MuJoCo-CPU
+   arm path (H6 §10). I left it alone; it is out of M5 scope and tests are never skipped.
+
 **Suggested next GPU steps.**
 - Post-D1 baselines on one held-out snapshot: `eval_vic_harvest --baseline {random,scripted_pull}`.
 - Then the first real-env training run (`configs/sim_smoke_gpu.json`), watching success,

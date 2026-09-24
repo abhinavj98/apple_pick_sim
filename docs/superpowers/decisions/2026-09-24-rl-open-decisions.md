@@ -878,3 +878,19 @@ D15 went on to 0.71.
 - Video: `TrainConfig.video_every` (default 0 = off) records one randomly picked env for a whole
   episode every N episodes (`HarvestVideoRecorder`, CUDA only). Clips go to
   `<run_dir>/videos/` and to wandb as `Video / episode`.
+
+**D8b baselines (GPU, `runs/eval_d8b`, N=2000, 1 episode).**
+
+| policy | success | safety | collateral / success | steps | peak TCP |
+| --- | --- | --- | --- | --- | --- |
+| zero | 0.000 | 0.0% | -- | -- | 0.001 m/s |
+| random | 0.431 | 10.9% | 39.5 N | 150 | 0.155 m/s |
+| scripted_pull | 0.998 | 0.2% | 44.5 N | 31 | 0.102 m/s |
+| scripted_twist_pull | 0.999 | 0.1% | 42.4 N | 53 | 0.058 m/s |
+
+- At the faster cap, random succeeds again (0.43, vs 0.05 under D8). The gate now needs success
+  >= 0.431 and collateral < 39.5 N.
+- The pulls succeed almost always, but at ~42-44 N collateral. The learned policy's value is the
+  low-collateral bend detach (~10-15 N in D15/D16b), not success rate.
+- wandb 0.30 has no `wandb.util.generate_id`. The local agent fixed the run-id minting (014ae74).
+  Seeds live: s0 `26yqs6lv`, s1 `l478x3im`, s2 `sc4364a7` (project `pruning-rl/apple_pick_vic_harvest`).

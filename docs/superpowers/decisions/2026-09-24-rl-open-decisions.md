@@ -10,7 +10,8 @@ hyperparameters beyond what is listed.
 | --- | --- | --- |
 | D1 | Detach signal: what the envelope reads (torque noise / bending / torsion) | pending CPU checks |
 | D2 | Task 11 gate: success AND safety AND collateral vs scripted pull, AND >= random | done |
-| D3 | F/T sensor-noise preset calibrated on the real rig | done (`be9465b`, pre-dates the tags) |
+| D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
+| D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 
 ## D2 -- Task 11 exit gate includes collateral
 
@@ -51,9 +52,33 @@ on the real rig's quiet unloaded holds (s02, 32 segments, ~60 Hz block mean).
   the measured column was already low-passed.
 - The measured std is therefore post-filter noise, which is where the sim adds it (after its
   causal EMA). The calibration is consistent.
-- Open item: the sim's EMA cutoff (10 Hz) must equal the rig's *online* filter, whose alpha the
-  local session is reading from `real_robot_exps` (asked in COMMS.md).
+- **Online filter (resolved).** From `real_robot_exps` code (local session): the rig reads Franka's
+  external-wrench *estimate* `K_F_ext_hat_K` at 1 kHz, subtracts a bias, and EMAs it online with
+  `ft_ema_alpha` = 0.05 (config since 2026-08-17; the s02 data is 2026-08-20). That gives
+  fc = -ln(0.95) * 1000 / 2pi ~ 8.2 Hz.
+  - `rl_training()` now uses `cutoff_hz=8.16` (was 10).
+  - The collected `ft_wrist_raw` is that EMA'd signal, so the measured noise is post-filter, as
+    modelled.
 - The offline zero-phase `filtfilt` used for sys-ID scoring is non-causal. It is deliberately not
   modelled in the policy's observation.
 
 **Revert.** `git revert be9465b`.
+
+## D4 -- F/T frame convention (flagged for the maintainer; no code change)
+
+**Finding (local session, from code).**
+- The sim observes `ft_wrist` as the world-frame TCP coupling wrench.
+- The sys-ID converter rotates real F/T into that frame (`R(tcp) @ F/T`, ROADMAP slice 1).
+- The live rig path is not in that frame:
+  - it reads `K_F_ext_hat_K`, which is stiffness-frame;
+  - one read path only negates, another rotates base -> body;
+  - dataset metadata says "force in EE frame, torque in base frame";
+  - the per-episode bias tare averages `O_F_ext_hat_K` (base frame) and subtracts it from the
+    K-frame signal. That is a frame mismatch whenever the K and O frames differ.
+
+**Decision.**
+- Keep the sim contract (world frame).
+- Deployment must apply the same transform as the converter before feeding the policy.
+- The rig-side tare frame mismatch is for the maintainer to confirm and fix on the rig. It also
+  bears on the M4.0 torque-magnitude gate: a wrong torque frame or tare changes torque
+  magnitudes.

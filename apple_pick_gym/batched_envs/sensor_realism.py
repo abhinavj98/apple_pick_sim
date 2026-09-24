@@ -48,7 +48,11 @@ class FtSensorConfig:
 
     @classmethod
     def rl_training(cls) -> FtSensorConfig:
-        """Sensor DR on: per-episode bias, per-step noise, slow bounded drift.
+        """Sensor DR on: the rig's online EMA, per-episode bias, per-step noise, bounded drift.
+
+        **Filter matches the rig**: the real F/T is Franka's external-wrench *estimate*
+        (``K_F_ext_hat_K``), bias-subtracted and EMA'd online at 1 kHz with alpha 0.05, i.e. an
+        ~8.2 Hz corner. The collected ``ft_wrist_raw`` is already that EMA'd signal.
 
         **Noise is measured on the real rig** (2026-09-24, s02 unloaded baseline holds, arm still,
         32 x 0.5 s segments of ``ft_wrist_raw``, linear-detrended, 16-sample block mean ~ 60 Hz):
@@ -61,6 +65,9 @@ class FtSensorConfig:
         0.05 N*m (Tz 0.005), drift a bounded walk. Revisit with a dedicated stationary recording.
         """
         return cls(
+            # the rig's online EMA: alpha 0.05 at 1 kHz on Franka's K_F_ext_hat_K -> fc ~ 8.2 Hz
+            # (real_robot_exps pro_robot_interface.py, config.yaml ft_ema_alpha since 2026-08-17)
+            cutoff_hz=8.16,
             bias_std=(0.5, 0.5, 0.5, 0.05, 0.05, 0.005),
             noise_std=(0.12, 0.11, 0.12, 0.04, 0.05, 0.005),
             drift_std=(0.01, 0.01, 0.01, 0.001, 0.001, 0.0001),

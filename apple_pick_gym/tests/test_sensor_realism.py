@@ -149,7 +149,7 @@ def test_per_channel_drift_clip():
 
 def test_rl_training_preset_turns_sensor_dr_on():
     cfg = FtSensorConfig.rl_training()
-    assert cfg.control_hz == 60.0 and cfg.cutoff_hz == 10.0
+    assert cfg.control_hz == 60.0
     for field in (cfg.bias_std, cfg.noise_std, cfg.drift_std, cfg.drift_clip):
         vals = torch.as_tensor(field, dtype=torch.float32)
         assert vals.shape == (6,) and bool(torch.all(vals > 0))
@@ -161,3 +161,12 @@ def test_rl_training_noise_matches_the_real_rig():
     noise = torch.as_tensor(FtSensorConfig.rl_training().noise_std)
     torch.testing.assert_close(noise, torch.tensor([0.12, 0.11, 0.12, 0.04, 0.05, 0.005]))
     assert float(noise[3]) > 5 * float(noise[5])  # Tx/Ty are an order noisier than Tz
+
+
+def test_rl_training_ema_matches_the_rigs_online_filter():
+    """The rig EMAs Franka's K_F_ext_hat_K online at 1 kHz with alpha 0.05 (real_robot_exps
+    config.yaml since 2026-08-17): fc = -ln(1 - 0.05) * 1000 / (2 pi) ~ 8.16 Hz."""
+    import math
+
+    fc_rig = -math.log(1.0 - 0.05) * 1000.0 / (2.0 * math.pi)
+    assert FtSensorConfig.rl_training().cutoff_hz == pytest.approx(fc_rig, abs=0.05)

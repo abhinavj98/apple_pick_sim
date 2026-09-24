@@ -61,9 +61,10 @@ _DETACH_LABELS = (
 class _EpisodeStats:
     """Per-env running episode statistics, summarized over valid envs at the time limit."""
 
-    def __init__(self, num_envs: int, device: torch.device, *, detach: Any = None) -> None:
+    def __init__(self, num_envs: int, device: torch.device, *, detach: Any = None, safety: Any = None) -> None:
         self.n, self.device = int(num_envs), device
         self.detach = detach  # DetachEnvelopeConfig, for the force / torque shares at detach
+        self.safety_cfg = safety  # EpisodeConfig, for which safety cap tripped
         self.reset(torch.zeros(self.n, dtype=torch.bool, device=device))
 
     def reset(self, invalid: torch.Tensor) -> None:
@@ -78,7 +79,9 @@ class _EpisodeStats:
         self.k_lin, self.k_ang, self.zeta, self.live_steps = z(), z(), z(), z()
         self.peak_speed, self.sum_speed = z(), z()
         self.peak_junction: dict[str, torch.Tensor] = {}
-        self.peak_tau = z()
+        self.peak_tau, self.peak_wrist_tau = z(), z()
+        b = lambda: torch.zeros(self.n, dtype=torch.bool, device=self.device)
+        self.safety_cap = {k: b() for k in ("target_force", "target_torque", "wrist_force", "wrist_torque")}
         nan = lambda: torch.full((self.n,), float("nan"), device=self.device)
         self.at_detach = {k: nan() for k in ("force", "torque", "torsion", "bending", "force_share", "torque_share")}
 
@@ -133,6 +136,19 @@ class _EpisodeStats:
             for k, v in vals.items():
                 self.at_detach[k] = torch.where(edge, v, self.at_detach[k])
         self.success |= won
+        ft = torch.nan_to_num(info["ft_wrist"].to(self.peak_tau), nan=0.0, posinf=0.0)
+        self.peak_wrist_tau = m(self.peak_wrist_tau, torch.linalg.norm(ft[:, 3:6], dim=-1))
+        tripped = terminated & safe & ~self.safety
+        if self.safety_cfg is not None and bool(tripped.any()):
+            fc, tc = float(self.safety_cfg.safety_force_cap_n), float(self.safety_cfg.safety_torque_cap_nm)
+            caps = {
+                "target_force": f_n > fc,
+                "target_torque": t_n > tc,
+                "wrist_force": torch.linalg.norm(ft[:, :3], dim=-1) > fc,
+                "wrist_torque": torch.linalg.norm(ft[:, 3:6], dim=-1) > tc,
+            }
+            for k, v in caps.items():
+                self.safety_cap[k] |= tripped & v
         self.safety |= terminated & safe
         lf = live.float()
         self.k_lin += lf * env_action[:, 6:9].mean(-1)
@@ -179,6 +195,8 @@ class _EpisodeStats:
             "Episode / mean TCP speed m/s (mean)": s(per_live(self.sum_speed)),
             **{f"Episode / peak force {k} N (mean)": s(v) for k, v in self.peak_junction.items()},
             "Episode / peak target torque N*m (mean)": s(self.peak_tau),
+            "Episode / peak wrist torque N*m (mean)": s(self.peak_wrist_tau),
+            **{f"Episode / safety {k.replace('_', ' ')} (frac)": s(v) for k, v in self.safety_cap.items()},
             **{f"Episode / detach {label} (mean)": won_mean(self.at_detach[k]) for k, label in _DETACH_LABELS},
         }
 
@@ -194,7 +212,12 @@ class HarvestSkrlWrapper(Wrapper):
         self._obs_space = _box(actor_obs_layout().total_width)
         self._state_space = _box(self._layout.total_width)
         self._action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(13,), dtype=np.float32)
-        self._stats = _EpisodeStats(env.num_envs, self.device, detach=getattr(getattr(env, "_reward_cfg", None), "detach", None))
+        self._stats = _EpisodeStats(
+            env.num_envs,
+            self.device,
+            detach=getattr(getattr(env, "_reward_cfg", None), "detach", None),
+            safety=getattr(env, "episode_config", None),
+        )
         self._obs: torch.Tensor | None = None
         self._state: torch.Tensor | None = None
         self._privileged: dict[str, torch.Tensor] | None = None

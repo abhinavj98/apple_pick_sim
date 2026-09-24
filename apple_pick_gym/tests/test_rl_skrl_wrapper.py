@@ -241,3 +241,39 @@ def test_episode_stats_report_target_wrench_at_detach_and_peak_torque():
     assert float(s["Episode / detach force share (mean)"]) == pytest.approx(0.64)  # (16/20)^2
     assert float(s["Episode / detach torque share (mean)"]) == pytest.approx(1.0)  # (0.05/0.05)^2
     assert float(s["Episode / peak target torque N*m (mean)"]) == pytest.approx(0.025)  # mean of 0.05, 0
+
+
+def test_episode_stats_report_which_safety_cap_tripped_and_peak_wrist_torque():
+    from apple_pick_gym.batched_envs.harvest_episode import EpisodeConfig
+    from apple_pick_gym.rl.skrl_wrapper import _EpisodeStats
+
+    st = _EpisodeStats(4, torch.device("cpu"), safety=EpisodeConfig())  # caps 40 N / 10 N*m
+    tw = torch.zeros(4, 6)
+    tw[0, 0] = 50.0  # target force cap
+    ft = torch.zeros(4, 6)
+    ft[1, 3] = 12.0  # wrist torque cap
+    ft[2, 3] = 3.0  # below every cap
+    info = {
+        "episode": {
+            "frozen": torch.zeros(4, dtype=torch.bool),
+            "success_achieved": torch.zeros(4, dtype=torch.bool),
+            "safety_junction": torch.tensor([True, False, False, False]),
+            "safety_wrist": torch.tensor([False, True, False, False]),
+        },
+        "reward_terms": {
+            "raw": {"collateral": torch.zeros(4)},
+            "weighted": {k: torch.zeros(4) for k in ("progress", "pullout", "collateral", "slack")},
+            "terminal": torch.zeros(4),
+        },
+        "detach_index": torch.zeros(4),
+        "target_junction_wrench": tw,
+        "ft_wrist": ft,
+        "woody_part_force": {},
+    }
+    st.update(torch.zeros(4, 1), info, torch.tensor([True, True, False, False]), torch.zeros(4, 13))
+    s = st.summary()
+    assert float(s["Episode / safety target force (frac)"]) == pytest.approx(0.25)
+    assert float(s["Episode / safety target torque (frac)"]) == 0.0
+    assert float(s["Episode / safety wrist force (frac)"]) == 0.0
+    assert float(s["Episode / safety wrist torque (frac)"]) == pytest.approx(0.25)
+    assert float(s["Episode / peak wrist torque N*m (mean)"]) == pytest.approx((12.0 + 3.0) / 4)

@@ -493,3 +493,22 @@ Eval, GPU, N=2000, 984979c, sim_train_gpu.json:
 
 **Also.** `collateral_vs_random` compares against random's collateral from its ~5% successful
 envs, a biased subset. Treat that clause as advisory.
+
+## Correction: a torque-dominant detach IS reachable (ep250 run, episodes 1-4)
+
+The section above concluded that torque is not a usable lever. The ep250 run (984979c, 250-step
+episodes, D10b LR bounds) proved that wrong for **bending**:
+
+| t | success | safety | steps | collateral / success | detach F | detach tau | force share | torque share |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 250 | 0.055 | 0.001 | 222 | 34.4 N | 15.8 N | 0.035 | 0.64 | 0.51 |
+| 500 | 0.032 | 0.015 | 209 | 18.8 N | 12.3 N | 0.042 | 0.45 | 0.74 |
+| 750 | 0.280 | 0.081 | 186 | 20.1 N | 12.2 N | 0.042 | 0.42 | 0.72 |
+| 1000 | 0.343 | 0.305 | 135 | 11.4 N | 10.5 N | 0.047 | 0.33 | 0.90 |
+
+- Collateral per success falls to 11 N, below the D2 22 N target, via a torque-dominated
+  detach.
+- The scripted twist does not do this; whatever the policy does (likely bending the stem) does.
+- Safety violations climb to 30%. New metrics show which cap trips: `Episode / safety {target
+  force, target torque, wrist force, wrist torque} (frac)`, plus peak wrist torque. The eval JSON
+  has `safety_*_frac` and `peak_wrist_torque_nm_mean`.

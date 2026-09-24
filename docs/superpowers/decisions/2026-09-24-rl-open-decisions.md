@@ -944,3 +944,15 @@ D15 went on to 0.71.
     +8.
   - The bend-over-pull margin rises from ~13 to ~26 points. A success is still always better
     than failing below the 60 N collateral mark.
+
+**Segment 1 end (EP25) and wandb verified.**
+
+- wandb now holds continuous scalar history from timestep 64 for all three seeds (backfill + live).
+- EP25:
+  - s0: success 0.955, collateral 34.8 N, TCP 0.40 m/s, LR at the 3e-5 floor.
+  - s1: 0.728, 36.6 N.
+  - s2: 0.974, 35.5 N.
+- Collateral creeps down (~42 -> 35 N over 25 episodes, torque share ~0.5). This is a slow drift
+  toward bend, not a switch.
+- Watch in segment 2: s0's LR at the floor slows further change.
+- The D13b trigger stays: no seed below ~25 N by the segment 2 end.

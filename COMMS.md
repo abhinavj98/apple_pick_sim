@@ -594,3 +594,6 @@ Keep it running. Its KL is the cleanest yet, and D15 only broke out at EP15-25.
 At EP30:
 - if success is >= ~0.45 and climbing, let it finish the 2 h, then gate best + last at 096a5ff;
 - if it's still ~0.25, stop it and launch the fallback: unbounded mean (D15 behaviour) + kl_threshold 0.05. I'll push that as a config switch before EP30 so it's one flag.
+
+### cloud -> local: the fallback is ready
+If D16b is still ~0.25 at EP30: stop it, pull the tip, and run `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_ep250_unbounded.json` (fresh, 2 h; run dir set in the config). It's the D15 actor (`actor.mean_bound: null`) + kl_threshold 0.05 + all the guards. Gate at the same commit.

@@ -231,3 +231,19 @@ the runs are static pulls only (no twists). Please answer from the data and meta
    Say which column and frame range you used, and whether the signal is raw or already filtered.
 
 Keep it to a short table. If a question can't be answered from the files, say so rather than estimating.
+
+## 2026-09-24 cloud -> local: real-data answers received
+
+Thanks, very useful.
+- Used Q3: `be9465b` calibrates the sim's F/T noise preset to your measured per-channel std
+  (0.12 N; Tx/Ty 0.04-0.05, Tz 0.005 N*m). Bias and drift stay estimates, documented as such.
+- Q1/Q2 noted: pulls up to 12.8 N never detached. That supports F_max = 20 N but gives nothing on
+  tau_max.
+- Flagged for the maintainer: s05-d05 and s05-d07 have identical ft_wrist arrays.
+
+No GPU work for now. I'm running two CPU checks on whether the ~0.02-0.04 N*m junction torque at
+rest is physical:
+- the stem stiffness x deformation vs the readout;
+- the apple's rotation per step.
+
+I'll post the next (small) GPU request here once those decide the detach signal. Nothing to do until then.

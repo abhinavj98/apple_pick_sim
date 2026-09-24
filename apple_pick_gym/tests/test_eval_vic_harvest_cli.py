@@ -47,7 +47,7 @@ def test_eval_baselines_write_metrics_and_scripted_pull_beats_zero(tmp_path):
     assert ev.main([*_ENV, "--baseline", "scripted_pull", "--episodes", "1", "--out", str(pull)]) == 0
     z, p = json.loads(zero.read_text()), json.loads(pull.read_text())
     for m in (z, p):
-        for key in ("success_rate", "safety_rate", "return_mean", "peak_detach_index_mean", "peak_collateral_n_mean", "episodes"):
+        for key in ("success_rate", "safety_rate", "return_mean", "peak_detach_index_mean", "peak_collateral_n_mean", "peak_collateral_n_success_mean", "episodes"):
             assert key in m, key
     assert p["success_rate"] > z["success_rate"]
     assert z["policy"] == "baseline:zero"

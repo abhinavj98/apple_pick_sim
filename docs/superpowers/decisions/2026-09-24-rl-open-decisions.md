@@ -11,6 +11,7 @@ hyperparameters beyond what is listed.
 | D1 | Detach signal: the envelope reads the stem-root *elastic* wrench, not the rigid-junction readout | done; GPU-confirmed |
 | D2 | Task 11 gate: success AND safety AND collateral vs scripted pull, AND >= random | done |
 | D2a | Gate also requires peak collateral strictly below random's | done |
+| D6 | Gate compares collateral per *successful* pick | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -33,8 +34,8 @@ hyperparameters beyond what is listed.
    that acceptable, or should the grasp be relaxed or the pre-load subtracted?
 3. **Random succeeds at 0.81 through force** (D5). Keep the action bounds (my choice) or shrink the
    leash / K range?
-4. **The D2a gate compares collateral means that include failed episodes.** Consider
-   success-conditioned collateral.
+4. **Collateral per successful pick** (D6, done). Open question: should failed episodes' collateral
+   also be bounded? Today only the safety rate covers them.
 5. **F/T frames on the rig** (D4): the tare mixes the K and O frames.
 6. **Real data**: s05-d05 and s05-d07 look like duplicates.
 
@@ -238,3 +239,27 @@ pull's is unmeasured. It comes out of the first `eval_vic_harvest --random` run,
 GPU run.
 
 **Revert.** Nothing to revert.
+
+## D6 -- The gate compares collateral per successful pick
+
+**Problem.** `peak_collateral_n_mean` averages over every episode, including failed ones that never
+pulled. A policy that often fails, such as random at 0.81 under D1, looks gentler than it is, and
+the D2a clause "strictly below random" becomes too easy or too hard for the wrong reason.
+
+**Choice.**
+- The wrapper logs `Episode / peak collateral N, successful (mean)`: the mean over valid envs that
+  succeeded, NaN if none did.
+- `eval_vic_harvest` reports it as `peak_collateral_n_success_mean`, with each batch weighted by its
+  count of successful valid envs.
+- `gate.py` uses it for both collateral clauses when every metrics JSON has it. Otherwise it falls
+  back to the all-episode mean. The result records `collateral_metric`.
+- A baseline with no successful pick sets no collateral bar. A policy with none fails its
+  collateral clauses.
+
+**Alternatives.**
+- Keep the all-episode mean. It is biased toward policies that fail often.
+- Bound both means. That is stricter, but it penalises failed-but-gentle attempts that the safety
+  rate already covers.
+
+**Revert.** Drop `_COLL_SUCCESS` in `gate.py`: the gate then uses the all-episode mean again. The
+extra logged metric does no harm.

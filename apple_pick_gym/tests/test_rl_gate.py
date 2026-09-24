@@ -44,3 +44,30 @@ def test_d2a_collateral_must_also_not_exceed_random():
     assert not gate.evaluate_gate(rnd, scripted_pull=pull, random=rnd)["passed"]
     # without a random baseline the clause is absent
     assert "collateral_vs_random" not in gate.evaluate_gate(_m(1.0, 0.0, 20.0), scripted_pull=pull)["criteria"]
+
+
+def _ms(success, safety, coll, coll_success):
+    return {**_m(success, safety, coll), "peak_collateral_n_success_mean": coll_success}
+
+
+def test_d6_collateral_clauses_use_successful_episodes_when_both_report_it():
+    # random's all-episode mean (8 N) is diluted by failed episodes that never pulled; per successful
+    # pick it loads the tree at 30 N. A policy at 20 N per pick passes the random clause.
+    pull, rnd = _ms(1.0, 0.0, 45.0, 45.0), _ms(0.5, 0.0, 8.0, 30.0)
+    res = gate.evaluate_gate(_ms(1.0, 0.0, 20.0, 20.0), scripted_pull=pull, random=rnd)
+    assert res["passed"], res
+    assert res["criteria"]["collateral_vs_random"]["threshold"] == 30.0
+    assert res["collateral_metric"] == "peak_collateral_n_success_mean"
+    # older metrics JSONs without the field fall back to the all-episode mean
+    assert gate.evaluate_gate(_m(1.0, 0.0, 20.0), scripted_pull=pull, random=_m(0.5, 0.0, 8.0))["collateral_metric"] == (
+        "peak_collateral_n_mean"
+    )
+
+
+def test_d6_baseline_without_successes_sets_no_collateral_bar():
+    pull, rnd = _ms(1.0, 0.0, 45.0, 45.0), _ms(0.0, 0.0, 5.0, float("nan"))
+    res = gate.evaluate_gate(_ms(1.0, 0.0, 20.0, 20.0), scripted_pull=pull, random=rnd)
+    assert res["criteria"]["collateral_vs_random"]["passed"] and res["passed"]
+    # but a policy that never succeeds fails its own collateral clauses (NaN)
+    bad = gate.evaluate_gate(_ms(0.0, 0.0, 5.0, float("nan")), scripted_pull=_ms(0.0, 0.0, 45.0, float("nan")))
+    assert not bad["criteria"]["collateral"]["passed"] or not bad["passed"]

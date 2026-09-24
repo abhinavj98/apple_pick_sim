@@ -95,6 +95,8 @@ class _EpisodeStats:
         per_live = lambda x: x / self.live_steps.clamp_min(1.0)
         won = self.success & valid
         stt = self.steps_to_success[won].mean() if bool(won.any()) else torch.tensor(float(self.steps), device=self.device)
+        # [D6] load on the tree per successful pick; NaN when no valid env succeeded
+        coll_won = self.peak_coll[won].mean() if bool(won.any()) else torch.tensor(float("nan"), device=self.device)
         return {
             "Episode / success rate": s(self.success),
             "Episode / safety rate": s(self.safety),
@@ -103,6 +105,7 @@ class _EpisodeStats:
             "Episode / peak detach index (mean)": s(self.peak_idx),
             "Episode / peak target force N (mean)": s(self.peak_force),
             "Episode / peak collateral N (mean)": s(self.peak_coll),
+            "Episode / peak collateral N, successful (mean)": coll_won,
             "Episode / peak wrist force N (mean)": s(self.peak_wrist),
             "Episode / steps to success (mean)": stt,
             "Episode / reward progress (sum)": s(self.terms["progress"]),

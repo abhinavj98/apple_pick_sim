@@ -159,3 +159,18 @@ def test_nonfinite_env_rows_are_sanitized_zero_rewarded_and_counted():
     assert bool(torch.isfinite(obs).all()) and bool(torch.isfinite(w.state()).all())
     assert bool(torch.isfinite(r).all()) and float(r[1]) == 0.0
     assert float(info["log"]["Step / nonfinite envs"]) == 1.0
+
+
+def test_d6_success_conditioned_peak_collateral():
+    # [D6] peak collateral averaged over successful (valid) envs only; NaN when none succeeded
+    from apple_pick_gym.rl.skrl_wrapper import _EpisodeStats
+
+    st = _EpisodeStats(4, torch.device("cpu"))
+    st.reset(torch.tensor([False, False, False, True]))
+    st.peak_coll = torch.tensor([10.0, 30.0, 50.0, 70.0])
+    st.success = torch.tensor([True, False, True, True])  # env 3 is invalid
+    s = st.summary()
+    assert float(s["Episode / peak collateral N (mean)"]) == pytest.approx(30.0)
+    assert float(s["Episode / peak collateral N, successful (mean)"]) == pytest.approx(30.0)  # (10 + 50) / 2
+    st.success = torch.zeros(4, dtype=torch.bool)
+    assert torch.isnan(st.summary()["Episode / peak collateral N, successful (mean)"])

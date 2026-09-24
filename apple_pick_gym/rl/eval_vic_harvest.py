@@ -90,6 +90,7 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         "peak_detach_index_mean": "Episode / peak detach index (mean)",
         "peak_target_force_n_mean": "Episode / peak target force N (mean)",
         "peak_collateral_n_mean": "Episode / peak collateral N (mean)",
+        "peak_collateral_n_success_mean": "Episode / peak collateral N, successful (mean)",
         "peak_wrist_force_n_mean": "Episode / peak wrist force N (mean)",
         "reward_progress_sum": "Episode / reward progress (sum)",
         "reward_pullout_sum": "Episode / reward pullout (sum)",
@@ -101,6 +102,12 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         "zeta_mean": "Episode / zeta used (mean)",
     }
     out = {k: float(np.mean([e[v] for e in per_episode])) for k, v in keys.items()}
+    # [D6] success-conditioned collateral: weight each batch episode by its successful valid envs
+    won = [(e["Episode / success rate"] * (1.0 - e["Episode / invalid fraction"]), e[keys["peak_collateral_n_success_mean"]]) for e in per_episode]
+    won = [(w, c) for w, c in won if w > 0.0 and np.isfinite(c)]
+    out["peak_collateral_n_success_mean"] = (
+        float(sum(w * c for w, c in won) / sum(w for w, _ in won)) if won else float("nan")
+    )
     out["episodes"] = per_episode
     return out
 

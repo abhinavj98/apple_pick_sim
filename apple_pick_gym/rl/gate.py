@@ -15,6 +15,11 @@ that. The gate therefore requires *all* of:
 
 The random clauses apply only when a random baseline is given.
 
+[D6] The collateral clauses compare ``peak_collateral_n_success_mean`` (load per *successful* pick)
+when every metrics JSON has it, else ``peak_collateral_n_mean``. The all-episode mean is diluted by
+failed episodes that never pulled, which flatters a policy that often fails (random). A baseline with
+no successful pick sets no collateral bar; a policy with none fails its collateral clauses.
+
 Evaluate every policy on the same held-out snapshot and seed.
 
     uv run python -m apple_pick_gym.rl.gate --policy eval/policy.json --scripted-pull eval/pull.json \\
@@ -24,28 +29,52 @@ Evaluate every policy on the same held-out snapshot and seed.
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import sys
 from pathlib import Path
 
 
 _OPS = {">=": lambda v, t: v >= t, "<=": lambda v, t: v <= t, "<": lambda v, t: v < t}
+_COLL_ALL, _COLL_SUCCESS = "peak_collateral_n_mean", "peak_collateral_n_success_mean"
+
+
+def _num(x) -> float:
+    return float("nan") if x is None else float(x)
+
+
+def _passed(v: float, op: str, t: float) -> bool:
+    # a NaN threshold is a baseline with no successful pick: it sets no bar. A NaN value is a
+    # policy with no successful pick: it fails.
+    if math.isnan(v):
+        return False
+    if math.isnan(t):
+        return True
+    return bool(_OPS[op](v, t))
 
 
 def evaluate_gate(policy: dict, *, scripted_pull: dict, random: dict | None = None, collateral_ratio: float = 0.5) -> dict:
+    # [D6] compare load on the tree per successful pick when every metrics JSON reports it
+    reports = [policy, scripted_pull] + ([random] if random is not None else [])
+    coll = _COLL_SUCCESS if all(_COLL_SUCCESS in m for m in reports) else _COLL_ALL
     crit = {
         "success": (policy["success_rate"], ">=", scripted_pull["success_rate"]),
         "safety": (policy["safety_rate"], "<=", scripted_pull["safety_rate"]),
-        "collateral": (policy["peak_collateral_n_mean"], "<=", collateral_ratio * scripted_pull["peak_collateral_n_mean"]),
+        "collateral": (_num(policy[coll]), "<=", collateral_ratio * _num(scripted_pull[coll])),
     }
     if random is not None:
         crit["beats_random"] = (policy["success_rate"], ">=", random["success_rate"])
-        crit["collateral_vs_random"] = (policy["peak_collateral_n_mean"], "<", random["peak_collateral_n_mean"])
+        crit["collateral_vs_random"] = (_num(policy[coll]), "<", _num(random[coll]))
     out = {
-        name: {"value": v, "op": op, "threshold": t, "passed": bool(_OPS[op](v, t))}
+        name: {"value": v, "op": op, "threshold": t, "passed": _passed(float(v), op, float(t))}
         for name, (v, op, t) in crit.items()
     }
-    return {"passed": all(c["passed"] for c in out.values()), "criteria": out, "collateral_ratio": collateral_ratio}
+    return {
+        "passed": all(c["passed"] for c in out.values()),
+        "criteria": out,
+        "collateral_ratio": collateral_ratio,
+        "collateral_metric": coll,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

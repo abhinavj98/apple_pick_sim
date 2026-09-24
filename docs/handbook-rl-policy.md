@@ -268,8 +268,22 @@ Baselines (`rl/baselines.py`):
   up and buckles the stem;
 - `scripted_twist_pull`.
 
-The Task 11 gate is to beat `scripted_pull` on held-out worlds without a worse safety
-rate.
+The Task 11 gate (`rl/gate.py`; decisions D2, D2a, D6) takes the `eval_vic_harvest` metrics
+JSONs for the policy, `scripted_pull` and `random`, all on the same held-out snapshot and seed. The
+policy passes only if all of these hold:
+
+- success >= `scripted_pull`'s;
+- safety <= `scripted_pull`'s;
+- success >= `random`'s;
+- peak collateral <= 0.5x `scripted_pull`'s;
+- peak collateral strictly below `random`'s.
+
+Collateral is compared per *successful* pick (`peak_collateral_n_success_mean`).
+
+```bash
+uv run python -m apple_pick_gym.rl.gate --policy eval/policy.json --scripted-pull eval/pull.json \
+    --random eval/random.json --out eval/gate.json
+```
 
 ## 9. The surrogate env
 

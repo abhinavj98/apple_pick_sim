@@ -216,6 +216,10 @@ def _ppo_rnn_class():
             path.write_text(json.dumps({"timestep": int(timestep), "rows": rows}, indent=1) + "\n")
 
         def update(self, *, timestep: int, timesteps: int) -> None:
+            # [D16] share of stored (clipped) actions sitting on the box edge: log-probs there are
+            # tail-sensitive, so a large share predicts KL spikes
+            acts = self.memory.get_tensor_by_name("actions")
+            self.track_data("Policy / actions at box edge (frac)", float((acts.abs() >= 0.999).float().mean()))
             pre = getattr(self._observation_preprocessor, "running_mean", None)
             if self.debug_kl:
                 self.track_data("Debug / pre-update KL (frozen scalers)", self._pre_update_kl(timestep))

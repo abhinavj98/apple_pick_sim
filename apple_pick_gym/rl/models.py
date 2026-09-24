@@ -140,7 +140,10 @@ class LstmGaussianActor(GaussianMixin, Model):
 
     def compute(self, inputs: dict[str, Any], role: str = "") -> tuple[torch.Tensor, dict[str, Any]]:
         feats, rnn = self.tower(inputs["observations"], inputs, self.training)
-        mean = self.mean_head(feats)
+        # [D16] tanh keeps the mean inside the [-1, 1] action box. Unbounded, a mean outside it put
+        # clipped actions deep in the Gaussian tail, where log-probs swing by nats for tiny parameter
+        # steps (GPU post-update KL spikes of 8-7080 with exact stored data).
+        mean = torch.tanh(self.mean_head(feats))
         return mean, {"log_std": self.log_std_parameter.expand_as(mean), "rnn": rnn}
 
 

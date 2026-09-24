@@ -21,7 +21,8 @@ hyperparameters beyond what is listed.
 | D12 | Solver blow-up guard (> 200 N or non-finite): freeze, no penalty, invalid | done |
 | D13 | Charge -0.5 x episode peak collateral at the success edge | done |
 | D14 | Hold a blown-up world's last good obs/state (keeps the obs scaler clean) | done |
-| D15 | Fix skrl PPO_RNN storing h_{t+1} for row t (rnn-state dict aliasing) | done |
+| D15 | Fix skrl PPO_RNN storing h_{t+1} for row t (rnn-state dict aliasing) | done, GPU-confirmed |
+| D16 | tanh-squash the actor mean into the action box | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -736,3 +737,32 @@ The run was stopped at ~6600, while the deterministic policy was still intact.
 
 **Consequence.** Every recurrent run so far trained on corrupted sequence starts. Results from D9
 onward should be re-established on the fixed code; the D13 reward settings are the starting point.
+
+**D15 GPU confirmation.** Debug side run at 4c7acee: the pre-update KL (scalers frozen) is ~1e-10
+on all 16 updates, with 0 dumps. The stored-data mismatch is gone.
+
+## D16 -- tanh-squash the actor mean
+
+**Finding.** With exact stored data (D15), the post-update KL still spiked (8.1, 7080) at LR <=
+3e-4. That size cannot come from a real policy change of that step size.
+
+**Mechanism.**
+- The actor's mean was unbounded, while actions are clipped to [-1, 1] and the log-prob is taken
+  at the clipped action (skrl `clip_actions`).
+- When the mean drifts outside the box, the clipped action sits deep in the Gaussian tail, where
+  log p is hypersensitive to the mean: a few nats per dimension for tiny steps.
+- The KL estimator mean(exp(r) - 1 - r) explodes on those rows. It also gives huge,
+  meaningless policy ratios there.
+
+**Choice.** `mean = tanh(mean_head(features))`.
+- The mean head's x0.01 init keeps it in tanh's linear range at the start. The Gaussian std and
+  the clipping are unchanged.
+- Tests: the mean stays inside the box even for a pre-activation of 50, and the log-prob of a
+  boundary action moves < 0.05 for a small parameter step.
+- New per-update metric `Policy / actions at box edge (frac)`: the share of stored actions at
+  |a| >= 0.999.
+
+**Consequence.** Checkpoints saved before D16 must be evaluated at a pre-D16 commit, because the
+same weights now give different means. The running D15 run is pre-D16.
+
+**Revert.** Drop the `torch.tanh`.

@@ -148,3 +148,30 @@ def test_initial_log_std_is_configurable_and_clipped():
         observation_space=o, state_space=s, action_space=a, device="cpu", num_envs=N, cfg=_cfg(initial_log_std=-0.5)
     )
     torch.testing.assert_close(actor.log_std_parameter.detach(), torch.full((ACT,), -0.5))
+
+
+def test_d16_actor_mean_stays_inside_the_action_box():
+    # [D16] with an unbounded mean and clip_actions, a mean drifting outside [-1, 1] leaves the clipped
+    # action deep in the Gaussian tail, where its log-prob swings by nats for tiny parameter steps
+    # (GPU: post-update KL 8 -> 7080 with exact stored data). tanh keeps the mean inside the box.
+    actor, _ = _models()
+    actor.eval()
+    with torch.no_grad():
+        actor.mean_head.bias.fill_(50.0)
+    obs = torch.randn(N, OBS) * 10.0
+    _, out = actor.act({"observations": obs, "states": torch.zeros(N, STATE), "rnn": _zero_rnn(actor, N)}, role="policy")
+    mean = out["mean_actions"]
+    assert float(mean.abs().max()) <= 1.0
+
+
+def test_d16_log_prob_of_a_boundary_action_is_smooth_in_the_parameters():
+    actor, _ = _models()
+    actor.eval()
+    obs = torch.randn(N, OBS)
+    inputs = {"observations": obs, "states": torch.zeros(N, STATE), "rnn": _zero_rnn(actor, N), "taken_actions": torch.ones(N, ACT)}
+    with torch.no_grad():
+        actor.mean_head.bias.fill_(5.0)  # pre-activation far outside the box
+        _, a = actor.act(inputs, role="policy")
+        actor.mean_head.bias.add_(0.01)
+        _, b = actor.act(inputs, role="policy")
+    assert float((b["log_prob"] - a["log_prob"]).abs().max()) < 0.05

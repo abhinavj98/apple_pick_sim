@@ -75,3 +75,14 @@ def test_checked_in_configs_load_and_validate(name):
         assert (root / cfg.env.world_set).exists()
         if cfg.env.snapshot is not None:
             assert (root / cfg.env.snapshot).exists()
+
+
+def test_d8_target_speed_cap_matches_the_rig_and_reaches_the_env():
+    # [D8] real rig pulls: TCP speed p90 0.03 m/s, per-run peak <= 0.21 m/s; angular <= 0.55 rad/s.
+    # The cap (60 Hz): 2 mm/step = 0.12 m/s, 0.01 rad/step = 0.6 rad/s (was 1.2 m/s, 6 rad/s).
+    from apple_pick_gym.rl.trainer import build_env
+
+    cfg = TrainConfig()
+    assert cfg.env.linear_delta_m == 0.002 and cfg.env.angular_delta_rad == 0.01
+    env = build_env(dataclasses.replace(cfg.env, kind="surrogate", num_envs=4, device="cpu"), seed=0)
+    assert env.action_bounds.linear_delta_m == 0.002 and env.action_bounds.angular_delta_rad == 0.01

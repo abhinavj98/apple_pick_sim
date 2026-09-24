@@ -174,3 +174,22 @@ def test_d6_success_conditioned_peak_collateral():
     assert float(s["Episode / peak collateral N, successful (mean)"]) == pytest.approx(30.0)  # (10 + 50) / 2
     st.success = torch.zeros(4, dtype=torch.bool)
     assert torch.isnan(st.summary()["Episode / peak collateral N, successful (mean)"])
+
+
+def test_episode_stats_report_tcp_speed():
+    # how fast the policy moves the arm: peak and mean (over live steps) TCP linear speed
+    env, w = _wrapped()
+    w.reset()
+    for _ in range(T):
+        _, _, _, _, info = w.step(torch.zeros(N, 13))
+    still = info["log"]
+    assert float(still["Episode / peak TCP speed m/s (mean)"]) < 1e-3
+    env2, w2 = _wrapped()
+    w2.reset()
+    a = torch.zeros(N, 13)
+    a[:, 0] = 1.0  # full-scale +x target step every step
+    for _ in range(T):
+        _, _, _, _, info = w2.step(a)
+    moving = info["log"]
+    peak, mean = float(moving["Episode / peak TCP speed m/s (mean)"]), float(moving["Episode / mean TCP speed m/s (mean)"])
+    assert peak > 0.01 and 0.0 < mean <= peak + 1e-6

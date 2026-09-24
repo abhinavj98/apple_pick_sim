@@ -12,6 +12,8 @@ hyperparameters beyond what is listed.
 | D2 | Task 11 gate: success AND safety AND collateral vs scripted pull, AND >= random | done |
 | D2a | Gate also requires peak collateral strictly below random's | done |
 | D6 | Gate compares collateral per *successful* pick | done |
+| D7 | Per-env F_max / tau_max draws | parked (plumbing, off) |
+| D8 | Cap VIC target speed to the real rig (2 mm/step, 0.01 rad/step at 60 Hz) | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -269,3 +271,62 @@ the D2a clause "strictly below random" becomes too easy or too hard for the wron
 
 **Revert.** Drop `_COLL_SUCCESS` in `gate.py`: the gate then uses the all-episode mean again. The
 extra logged metric does no harm.
+
+## Rest load check (maintainer: "verify zero-action torques are way below the max applied")
+
+**Result: OK.**
+- The grasp-only hold (zero baseline, GPU, N=2000, 500 steps, post-D1) peaks at a detach index
+  of 0.125, i.e. ~1/8 of the envelope (utilization ~0.35).
+- The pulling baselines reach it: junction force 18-20 N, torque p99 ~0.07 N*m.
+- Rest torque at reset (CPU, 8 worlds, `rl/diagnose_rest_load.py`): median 0.0135 N*m (27% of
+  tau_max), junction force 4.0 N.
+
+**Statics (open, parked as small).**
+- The hanging stem + apple weigh 2.6 N and put 0.006 N*m of gravity moment on the junction.
+- The weld to the gripper carries 0.18 N. The direct weld-joint readout equals the wrist
+  wrench, with its sign flipped.
+- That leaves ~1 N (median) of junction force unexplained. The likely sources are
+  apple/stem contacts or penalty bias in the readout.
+- The maintainer judged the rest load acceptable, so it is not chased further.
+
+## D7 -- Per-env F_max / tau_max (parked)
+
+- Plumbing only (0a541b2): `envelope_thresholds`, per-env thresholds in `detach_index` and
+  progress, and the surrogate env.
+- Not wired into the real env, the critic or the config. Off by default.
+- Revisit if the F_max / tau_max estimates stay uncertain once a policy learns.
+
+## D8 -- Cap the VIC target speed to the real rig
+
+**Finding.**
+- The action allowed a 2 cm target step and a 0.1 rad target rotation per step at 60 Hz, i.e.
+  1.2 m/s and 6 rad/s.
+- The real sys-ID pulls (72 runs, 228k samples at 1 kHz) had TCP speed:
+
+| TCP speed statistic | value |
+| --- | --- |
+| median | 0.014 m/s |
+| p90 | 0.03 m/s |
+| per-run peak, median | 0.055 m/s |
+| per-run peak, max | 0.21 m/s |
+| angular, p90 | 0.064 rad/s |
+| angular, max | 0.55 rad/s |
+
+- Random detached 94% of the time in ~75 steps by yanking the target around. Fast yanks are
+  outside what the sim was identified on.
+
+**Choice.** `EnvConfig.linear_delta_m = 0.002` and `angular_delta_rad = 0.01`, i.e. 0.12 m/s and
+0.6 rad/s. That is below the rig's per-run peak speeds and leaves both scripted baselines
+unchanged (they already run at exactly these rates). It is a hard bound, not reward shaping. The
+current reward still favours speed (a per-step slack cost and a per-step collateral cost), and
+the cap bounds that incentive without retuning weights.
+
+**New metrics.** `Episode / peak TCP speed m/s (mean)` and `Episode / mean TCP speed m/s (mean)`,
+also in `eval_vic_harvest` as `peak_tcp_speed_mps_mean` and `mean_tcp_speed_mps_mean`. A learned
+policy should beat random on time to detach, junction force at detach, collateral and speed, even
+if its success rate is a little lower.
+
+**Consequence.** The random baseline now moves ~10x slower, so its success rate should drop. The
+baselines need a re-run under D8.
+
+**Revert.** Set `linear_delta_m=0.02` and `angular_delta_rad=0.1` in the config.

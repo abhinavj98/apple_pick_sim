@@ -42,6 +42,8 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
 
     device = resolve_device(env_cfg.device)
     bounds = HarvestActionBounds(
+        linear_delta_m=env_cfg.linear_delta_m,
+        angular_delta_rad=env_cfg.angular_delta_rad,
         max_target_pos_offset_m=env_cfg.max_target_pos_offset_m,
         max_target_rot_offset_rad=env_cfg.max_target_rot_offset_rad,
     )

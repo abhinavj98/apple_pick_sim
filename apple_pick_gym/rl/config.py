@@ -58,6 +58,12 @@ class EnvConfig:
     # VIC target leash: bounds the commanded wrench to K_max * offset (200 N/m * 0.15 m = 30 N)
     max_target_pos_offset_m: float | None = 0.15
     max_target_rot_offset_rad: float | None = 0.5
+    # [D8] per-step VIC target motion cap, matched to the real rig (60 Hz control): 2 mm/step =
+    # 0.12 m/s, 0.01 rad/step = 0.6 rad/s. Real pulls: TCP speed p90 0.03 m/s, per-run peak
+    # <= 0.21 m/s, angular <= 0.55 rad/s. The sim is only validated at those speeds, and fast
+    # yanks were how a random policy detached (the cap was 1.2 m/s, 6 rad/s).
+    linear_delta_m: float = 0.002
+    angular_delta_rad: float = 0.01
     # F/T sensor DR (bias / noise / drift, FtSensorConfig.rl_training)
     sensor_dr: bool = True
     # surrogate only: fraction of envs flagged invalid (frozen from reset)

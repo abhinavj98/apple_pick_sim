@@ -64,8 +64,16 @@ class _EpisodeStats:
         self.safety = torch.zeros_like(self.success)
         self.steps_to_success = torch.full((self.n,), float("nan"), device=self.device)
         self.k_lin, self.k_ang, self.zeta, self.live_steps = z(), z(), z(), z()
+        self.peak_speed, self.sum_speed = z(), z()
 
-    def update(self, reward: torch.Tensor, info: dict[str, Any], terminated: torch.Tensor, env_action: torch.Tensor) -> None:
+    def update(
+        self,
+        reward: torch.Tensor,
+        info: dict[str, Any],
+        terminated: torch.Tensor,
+        env_action: torch.Tensor,
+        tcp_speed: torch.Tensor | None = None,
+    ) -> None:
         self.steps += 1
         ep, rt = info["episode"], info["reward_terms"]
         live = ~ep["frozen"] | terminated  # not frozen before this step
@@ -88,6 +96,10 @@ class _EpisodeStats:
         self.k_ang += lf * env_action[:, 9:12].mean(-1)
         self.zeta += lf * env_action[:, 12]
         self.live_steps += lf
+        if tcp_speed is not None:
+            sp = torch.nan_to_num(tcp_speed.reshape(-1).to(self.peak_speed), nan=0.0, posinf=0.0)
+            self.peak_speed = m(self.peak_speed, sp)
+            self.sum_speed += lf * sp
 
     def summary(self) -> dict[str, torch.Tensor]:
         valid = ~self.invalid
@@ -116,6 +128,8 @@ class _EpisodeStats:
             "Episode / K_lin used (mean)": s(per_live(self.k_lin)),
             "Episode / K_ang used (mean)": s(per_live(self.k_ang)),
             "Episode / zeta used (mean)": s(per_live(self.zeta)),
+            "Episode / peak TCP speed m/s (mean)": s(self.peak_speed),
+            "Episode / mean TCP speed m/s (mean)": s(per_live(self.sum_speed)),
         }
 
 
@@ -202,7 +216,8 @@ class HarvestSkrlWrapper(Wrapper):
         reward = reward.reshape(-1, 1).to(torch.float32)
         bad_reward = ~torch.isfinite(reward).all(-1)
         reward = torch.where(bad_reward.unsqueeze(-1), torch.zeros_like(reward), reward)
-        self._stats.update(reward, info, terminated.flatten(), env_action)
+        tcp_speed = torch.linalg.norm(obs["tcp_velocity"][:, :3].to(self.device, torch.float32), dim=-1)
+        self._stats.update(reward, info, terminated.flatten(), env_action, tcp_speed=tcp_speed)
         log = {
             "Step / detach index (mean)": torch.nan_to_num(info["detach_index"].float()).mean(),
             "Step / frozen fraction": info["episode"]["frozen"].float().mean(),

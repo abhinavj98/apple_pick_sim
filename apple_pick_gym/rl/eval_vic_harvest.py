@@ -100,6 +100,8 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         "k_lin_mean": "Episode / K_lin used (mean)",
         "k_ang_mean": "Episode / K_ang used (mean)",
         "zeta_mean": "Episode / zeta used (mean)",
+        "peak_tcp_speed_mps_mean": "Episode / peak TCP speed m/s (mean)",
+        "mean_tcp_speed_mps_mean": "Episode / mean TCP speed m/s (mean)",
     }
     out = {k: float(np.mean([e[v] for e in per_episode])) for k, v in keys.items()}
     # [D6] success-conditioned collateral: weight each batch episode by its successful valid envs

@@ -64,3 +64,6 @@ robot_replay/s[0-9][0-9]/
 robot_replay/*.zip
 # wandb run logs
 wandb/
+
+# RL training outputs (apple_pick_gym/rl)
+runs/

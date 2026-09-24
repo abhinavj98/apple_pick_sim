@@ -1,0 +1,17 @@
+{
+  "env": {
+    "kind": "sim",
+    "world_set": "apple_pick_gym/world_sets/harvest_worlds_v1.jsonl",
+    "snapshot": null,
+    "num_envs": 2,
+    "max_episode_steps": 16,
+    "device": "cpu",
+    "progress_mode": "delta"
+  },
+  "ppo": {"rollouts": 16, "mini_batches": 2, "learning_epochs": 2},
+  "actor": {"pre_mlp": [32], "lstm_hidden": 32, "post_mlp": [32], "sequence_length": 8},
+  "critic": {"pre_mlp": [32], "lstm_hidden": 32, "post_mlp": [32], "sequence_length": 8},
+  "timesteps": 32,
+  "checkpoint_every_updates": 1,
+  "run_dir": "runs/vic_harvest/sim_wiring_cpu"
+}

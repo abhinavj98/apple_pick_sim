@@ -1,0 +1,15 @@
+{
+  "env": {
+    "kind": "sim",
+    "world_set": "apple_pick_gym/world_sets/harvest_worlds_v2.jsonl",
+    "snapshot": null,
+    "num_envs": 64,
+    "max_episode_steps": 128,
+    "device": "cuda:0",
+    "progress_mode": "delta"
+  },
+  "ppo": {"rollouts": 64, "mini_batches": 4, "learning_epochs": 5},
+  "timesteps": 512,
+  "checkpoint_every_updates": 2,
+  "run_dir": "runs/vic_harvest/sim_wiring_gpu"
+}

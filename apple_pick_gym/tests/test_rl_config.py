@@ -59,3 +59,17 @@ def test_defaults_follow_the_plan():
     assert cfg.env.f_max_n == 20.0 and cfg.env.tau_max_nm == 0.05
     assert cfg.env.sensor_dr is True  # F/T bias / noise / drift on for training
     assert cfg.env.max_target_pos_offset_m is not None  # VIC target leash on for training
+
+
+@pytest.mark.parametrize("name", ["surrogate_smoke.json", "sim_wiring_cpu.json", "sim_wiring_gpu.json", "sim_smoke_gpu.json"])
+def test_checked_in_configs_load_and_validate(name):
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "rl" / "configs" / name
+    cfg = TrainConfig.load_json(path)
+    cfg.validate()
+    if cfg.env.kind == "sim":
+        root = Path(__file__).resolve().parents[2]
+        assert (root / cfg.env.world_set).exists()
+        if cfg.env.snapshot is not None:
+            assert (root / cfg.env.snapshot).exists()

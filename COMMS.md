@@ -284,3 +284,29 @@ Status: the junction-torque "noise" is now diagnosed on CPU.
 
 A single GPU check will follow here once the CPU prototype confirms it matches the readout's mean
 with far less noise. Nothing to run yet.
+
+## 2026-09-24 cloud -> local: D1 done on CPU; ONE GPU run to confirm
+
+The maintainer asked me to make the open decisions (tagged `[Dn]` in commit subjects, logged in
+`docs/superpowers/decisions/2026-09-24-rl-open-decisions.md`).
+- **D1** (`99302bf`, test `298ff94`): the detach envelope now reads the **stem-root elastic wrench**
+  instead of the rigid spur-stem joint's constraint readout.
+  - It is the first soft stem cable joint's wrench, moved to the junction by statics.
+  - On CPU it has the same mean torque vector as the readout and ~65x less step-to-step noise
+    (d tau p99 0.0005 vs 0.032 N*m).
+  - The readout's jumps came with < 0.001 rad of apple rotation per step and were unchanged
+    without penalty damping. So it is a readout artefact, not stiffness.
+  - F_max / tau_max / streak are unchanged. `wrench_source="junction_readout"` reverts.
+- Also: `18e2f5b [D3]` sets the EMA corner to 8.16 Hz, and `5340a87 [D2]` adds the gate tool.
+
+**Please run once** (pull `feature/rl-skrl-ppo` first; about the cost of your earlier run 1):
+```
+uv run python -m apple_pick_gym.rl.detach_sweep --config apple_pick_gym/rl/configs/sim_wiring_gpu.json \
+  --policies zero random scripted_pull scripted_twist_pull --seed 12345 --out runs/diag/sweep_d1.json
+```
+Reply with the four printed policy lines (one per policy). What I'm checking:
+- `total|raw|streak3` is the new default rule on the new wrench: zero and random should drop well
+  below 1.0 while scripted_pull stays high;
+- `dtau p99` on the new wrench vs `readout ... dtau p99`, the GPU confirmation of the noise drop;
+- the tau_max grid, for context.
+If anything crashes, paste the traceback. No other runs, please.

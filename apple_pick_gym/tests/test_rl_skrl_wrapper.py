@@ -372,3 +372,23 @@ def test_d14_blown_up_world_emits_its_last_good_obs_and_state_until_reset():
     assert not torch.equal(obs[0], good_obs)  # healthy worlds still update
     w.reset()
     assert not torch.equal(w._held, torch.ones_like(w._held))  # released at reset
+
+
+def test_success_collateral_distribution():
+    # median / p10 / p90 and low-force fractions over successful valid envs (NaN when none)
+    from apple_pick_gym.rl.skrl_wrapper import _EpisodeStats
+
+    st = _EpisodeStats(6, torch.device("cpu"))
+    st.reset(torch.tensor([False] * 5 + [True]))
+    st.peak_coll = torch.tensor([10.0, 20.0, 30.0, 40.0, 99.0, 5.0])
+    st.success = torch.tensor([True, True, True, True, False, True])  # env 5 invalid, env 4 failed
+    s = st.summary()
+    k = "Episode / peak collateral N, successful"
+    assert float(s[f"{k} (median)"]) == pytest.approx(25.0)
+    assert float(s[f"{k} (p10)"]) == pytest.approx(13.0)
+    assert float(s[f"{k} (p90)"]) == pytest.approx(37.0)
+    assert float(s[f"{k} < 15 N (frac)"]) == pytest.approx(0.25)
+    assert float(s[f"{k} < 22 N (frac)"]) == pytest.approx(0.5)
+    st.success = torch.zeros(6, dtype=torch.bool)
+    s = st.summary()
+    assert all(torch.isnan(s[f"{k} {q}"]) for q in ("(median)", "(p10)", "(p90)", "< 15 N (frac)", "< 22 N (frac)"))

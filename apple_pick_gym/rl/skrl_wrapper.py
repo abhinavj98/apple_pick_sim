@@ -188,6 +188,22 @@ class _EpisodeStats:
             "Episode / safety trip target force jump > 5x (frac of trips)": (f > 5.0 * p.clamp_min(1e-6)).float().mean(),
         }
 
+    def _success_collateral_dist(self, won: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Distribution of peak collateral over successful valid envs: a low-force sub-population
+        (bend detach) shows in p10 and the < 15 N / < 22 N fractions before it moves the mean."""
+        k = "Episode / peak collateral N, successful"
+        c = self.peak_coll[won].float()
+        if not c.numel():
+            nan = torch.tensor(float("nan"), device=self.device)
+            return {f"{k} {q}": nan for q in ("(median)", "(p10)", "(p90)", "< 15 N (frac)", "< 22 N (frac)")}
+        return {
+            f"{k} (median)": c.quantile(0.5),
+            f"{k} (p10)": c.quantile(0.1),
+            f"{k} (p90)": c.quantile(0.9),
+            f"{k} < 15 N (frac)": (c < 15.0).float().mean(),
+            f"{k} < 22 N (frac)": (c < 22.0).float().mean(),
+        }
+
     def summary(self) -> dict[str, torch.Tensor]:
         valid = ~self.invalid
         s = lambda x: torch.tensor(0.0, device=self.device) if not bool(valid.any()) else x[valid].float().mean()
@@ -207,6 +223,7 @@ class _EpisodeStats:
             "Episode / peak target force N (mean)": s(self.peak_force),
             "Episode / peak collateral N (mean)": s(self.peak_coll),
             "Episode / peak collateral N, successful (mean)": coll_won,
+            **self._success_collateral_dist(won),
             "Episode / peak wrist force N (mean)": s(self.peak_wrist),
             "Episode / steps to success (mean)": stt,
             "Episode / reward progress (sum)": s(self.terms["progress"]),

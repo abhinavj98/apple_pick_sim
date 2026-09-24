@@ -108,11 +108,15 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
     }
     out = {k: float(np.mean([e[v] for e in per_episode])) for k, v in keys.items()}
     # [D6] success-conditioned collateral: weight each batch episode by its successful valid envs
-    won = [(e["Episode / success rate"] * (1.0 - e["Episode / invalid fraction"]), e[keys["peak_collateral_n_success_mean"]]) for e in per_episode]
-    won = [(w, c) for w, c in won if w > 0.0 and np.isfinite(c)]
-    out["peak_collateral_n_success_mean"] = (
-        float(sum(w * c for w, c in won) / sum(w for w, _ in won)) if won else float("nan")
-    )
+    out["peak_collateral_n_success_mean"] = success_weighted(per_episode, keys["peak_collateral_n_success_mean"])
+    # distribution over successes (per batch episode; exact for --episodes 1, else win-weighted mean)
+    for suffix, name in (
+        ("(median)", "median"), ("(p10)", "p10"), ("(p90)", "p90"),
+        ("< 15 N (frac)", "frac_below_15n"), ("< 22 N (frac)", "frac_below_22n"),
+    ):
+        key = f"Episode / peak collateral N, successful {suffix}"
+        if key in per_episode[0]:
+            out[f"peak_collateral_n_success_{name}"] = success_weighted(per_episode, key)
     for k in per_episode[0]:
         if k.startswith("Episode / peak force ") and k.endswith(" N (mean)"):
             name = k[len("Episode / peak force ") : -len(" N (mean)")]
@@ -140,6 +144,13 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
     out["peak_target_torque_nm_mean"] = float(np.mean([e["Episode / peak target torque N*m (mean)"] for e in per_episode]))
     out["episodes"] = per_episode
     return out
+
+
+def success_weighted(per_episode: list[dict[str, float]], key: str) -> float:
+    """Mean of a success-conditioned per-episode stat, weighted by each episode's valid wins (NaN if none)."""
+    won = [(e["Episode / success rate"] * (1.0 - e["Episode / invalid fraction"]), e[key]) for e in per_episode]
+    won = [(w, c) for w, c in won if w > 0.0 and np.isfinite(c)]
+    return float(sum(w * c for w, c in won) / sum(w for w, _ in won)) if won else float("nan")
 
 
 def build_parser() -> argparse.ArgumentParser:

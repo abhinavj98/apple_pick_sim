@@ -826,3 +826,19 @@ D15 went on to 0.71.
 - The D16 run was stopped; relaunched as D16b.
 
 **Revert.** `mean_bound` large (e.g. 1e3) ~ unbounded.
+
+**D16b outcome (stopped at EP30 per the rule).**
+
+| episode | success | safety | collateral / success | torque share | KL |
+| --- | --- | --- | --- | --- | --- |
+| 20 | 0.245 | 5.6% | 14.2 N | 0.86 | 0.018 |
+| 25 | 0.286 | 6.6% | 10.5 N | 0.91 | 0.016 |
+| 30 | 0.287 | 6.1% | 11.5 N | 0.92 | 0.016 |
+
+- D15 was at 0.607 by EP30.
+- D16b has the cleanest numerics of any run (no KL > 5) and the lowest safety (~6%), but success
+  plateaued at 0.25-0.29.
+- Bounding the mean (at 1 or 1.5) trades the tail KL spikes for a policy that won't commit to
+  full-rate pulls.
+- Next: the fallback `sim_train_gpu_ep250_unbounded.json` (D15 actor + kl_threshold 0.05 + guards),
+  a fresh 2 h run. If it reproduces D15 (~0.7), the unbounded mean becomes the default again.

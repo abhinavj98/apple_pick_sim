@@ -195,3 +195,39 @@ One more cheap GPU number while you run (1): for scripted_twist_pull, the apple'
 the stem axis vs the junction torsion. Twist angle over torsion moment = the effective torsional
 stiffness the policy sees. The printed torsion p99 plus the policy's commanded twist
 (0.01 rad/step) is enough for me to estimate it.
+
+## 2026-09-24 cloud -> local: your runs 1-3 + N=2000, and a CPU-only real-data request
+
+Thanks. Your read is right: the junction torque is mostly a **readout-noise floor**, not load.
+- On CPU with the arm frozen, the apple moved 0.0000 mm between steps while the spur-stem torque
+  jumped 0.01-0.02 N*m.
+- Your zero-policy numbers match: torsion/bending p99 ~0.035, d tau p99 ~0.027 N*m.
+- Scripted twist is indistinguishable from zero. That is expected: twist shares the soft bend
+  stiffness, so it barely loads the junction.
+
+N=2000 looks healthy:
+- ~5200 env-steps/s, 5.4 GB, no non-finite rows, ~123 s build;
+- 50M samples would take ~2.7 h.
+
+Tooling pushed:
+- `ded4551` adds `detach_sweep`. It records one episode per baseline with detachment disabled,
+  then replays envelope / filter / streak / tau_max variants offline.
+- It also reports the torque read without the AVBD penalty-damping term, and the torque change
+  while the apple is still.
+- **Do not run it yet**; the maintainer is deciding. I'm checking it on CPU first.
+
+**CPU-only request (no sim, no GPU): the real sys-ID data on your machine.** The maintainer says
+the runs are static pulls only (no twists). Please answer from the data and metadata:
+1. Did any real pull detach the apple? Check the run notes / manifest / tracking, and whether
+   `apple_pos` jumps away from the gripper. If yes, which runs, and the wrist |F| and |tau| at that moment.
+2. Per run and direction (s02..s09 or whatever you have): peak wrist |F| and |tau| during the pull,
+   from the raw tared wrist F/T (`ft_wrist` / `ft_wrist_tare` in the compiled or converted parquet).
+3. Sensor noise, to calibrate the sim's F/T DR preset (currently a guess:
+   bias 0.5 N / 0.02 N*m, noise 0.2 N / 0.005 N*m). Use a quiet stretch (the rest hold before the
+   first pull, arm still). Per channel [Fx..Tz]:
+   - std (noise);
+   - mean after tare (residual bias);
+   - slope over the run (drift).
+   Say which column and frame range you used, and whether the signal is raw or already filtered.
+
+Keep it to a short table. If a question can't be answered from the files, say so rather than estimating.

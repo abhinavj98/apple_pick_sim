@@ -46,4 +46,14 @@ on the real rig's quiet unloaded holds (s02, 32 segments, ~60 Hz block mean).
 
 **Evidence.** The local GPU session's Q3 table. The previous guess had Tx/Ty noise 10x too low.
 
+**Where the noise is added (maintainer note: real F/T is EMA'd and low-passed during conversion).**
+- 60 Hz block-averaging barely reduced the measured noise. White 1 kHz noise would drop ~4x, so
+  the measured column was already low-passed.
+- The measured std is therefore post-filter noise, which is where the sim adds it (after its
+  causal EMA). The calibration is consistent.
+- Open item: the sim's EMA cutoff (10 Hz) must equal the rig's *online* filter, whose alpha the
+  local session is reading from `real_robot_exps` (asked in COMMS.md).
+- The offline zero-phase `filtfilt` used for sys-ID scoring is non-causal. It is deliberately not
+  modelled in the policy's observation.
+
 **Revert.** `git revert be9465b`.

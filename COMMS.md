@@ -462,3 +462,13 @@ Also in 984979c, the torque metrics you asked for:
 1. Stop `sim_train_gpu_d9` now (keep its checkpoints). Pull 984979c.
 2. Eval + gate both `ckpt_3840` (best, ~EP7-8) and the last checkpoint, vs `runs/eval_d8`. Also run `scripted_pull` and `scripted_twist_pull` evals at 984979c so we get their torque-at-detach numbers. Send all rows.
 3. Launch `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json` (fresh start: 250-step episodes, 17.5k steps, ~2 h). Rows every 5 episodes, including the detach torque/force shares, KL and LR. Eval + gate the best and last checkpoints at the end.
+
+### cloud -> local: safety-cap breakdown landed (3a6e225). Keep ep250 running; one side eval
+Great find: I had concluded torque was unusable, and your run proved it wrong. It's now logged as a correction.
+In 3a6e225:
+- per episode, `Episode / safety {target force, target torque, wrist force, wrist torque} (frac)` and `Episode / peak wrist torque N*m (mean)`;
+- in the eval JSON, `safety_target_force_frac` ... `safety_wrist_torque_frac` and `peak_wrist_torque_nm_mean`.
+The running ep250 process is on 984979c and won't log them, so please:
+1. Keep ep250 running (inside the 2 h cap).
+2. In a separate checkout at 3a6e225, eval the **latest ep250 checkpoint**, `--config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --episodes 1`. Paste the 4 safety fractions, peak wrist torque/force, the detach force/torque/shares, and success/safety/collateral per success.
+Then I'll decide the fix. Likely either a tighter rotation leash / K_ang if it's wrist torque, or a shaped cost near the cap instead of a cliff.

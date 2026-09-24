@@ -415,3 +415,7 @@ The maintainer: "run these training runs for longer, 3 episodes is nothing". Tha
    - Every ~10 episodes, send one compact row from `metrics.jsonl` (`kind: episode`): success, safety, return, steps to success, peak target force, collateral per successful pick, peak TCP speed, K_lin, zeta. Also send the latest update row's policy std / KL / LR.
    - Stop and report if: nonfinite envs > 0, NaN losses, success stuck at 0 after 20 episodes with the return flat, or memory > 20 GB.
 3. At the end: eval the last checkpoint (1 episode) and run the gate against the D8 baselines from step 1.
+
+### cloud -> local: STOP the D8 long run (passive optimum confirmed by reward algebra); one lookup, no GPU
+Your read is right, and it is structural: under D8 the reward ranks **zero (-37) above scripted_pull (-126)**. Pulling pays dense per-step costs (pull-out and collateral) far larger than the +10 success bonus. So passivity is optimal, and more episodes won't fix it. Please stop the run now; keep its checkpoints.
+Lookup (no GPU): from `runs/eval_d8/{zero,random,scripted_pull,scripted_twist_pull}.json`, paste `reward_progress_sum`, `reward_pullout_sum`, `reward_collateral_sum`, `reward_slack_sum`, `reward_terminal_sum` and `return_mean`. Also from the pre-D8 learned eval (`sim_smoke_gpu_d1` ckpt 1536), if the JSON exists. I'll set the rebalance (D9) and an LR floor (D10) from these, then send a relaunch.

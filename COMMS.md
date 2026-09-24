@@ -499,3 +499,9 @@ New per-episode stats (and in the eval JSON):
 - `... target force jump > 5x (frac of trips)`.
 Please eval the latest D11 checkpoint at the branch tip (1 episode, separate checkout, alongside training). Paste those three values plus the 4 cap fractions.
 Reading guide: a large jump fraction with a pre-trip force of ~10-20 N means numeric blow-ups. The fix is then an env-side guard (flag the world invalid, no penalty), not reward. A gradual ramp (pre-trip ~35 N) means the policy.
+
+### cloud -> local: D12 blow-up guard (4096c9e). A correction on the reading
+Correction to my own guide: the median trip lands at **41 N, just over the 40 N cap**. A one-step 6.5 -> 41 N rise fits a physical snap (the bent stem going taut), which the policy should learn to avoid; I'm keeping those as safety failures.
+Genuine numerics are the rare absurd values (1.9 kN contact, 183 N wrist).
+**D12:** any target or wrist force > 200 N (5x the cap), or non-finite, now counts as a blow-up. That world is frozen with reward 0 (no penalty, no success) and treated as invalid in the rates. The frequency is logged as `Episode / blowup fraction` / `blowup_fraction`.
+**Plan:** let the D11 run finish its 2 h (no restart for D12; it's a hygiene fix). Do the end-of-run eval + gate (best + last) **at 4096c9e**, so the gate numbers exclude blow-ups, and report `blowup_fraction`. D12 comes into the next training run automatically.

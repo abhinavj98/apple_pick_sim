@@ -288,6 +288,11 @@ extra logged metric does no harm.
 - That leaves ~1 N (median) of junction force unexplained. The likely sources are
   apple/stem contacts or penalty bias in the readout.
 - The maintainer judged the rest load acceptable, so it is not chased further.
+- After 5 hold steps the picture is the same (steady, not a reset transient).
+  - Torque balances within 0.006 N*m (median): gravity 0.006 N*m plus a couple of 0.014 N*m
+    that the grasp applies through the weld. So the rest torque is the apple's weight plus a
+    small twist or bend held in by the grasp.
+  - Force is still ~0.9 N short.
 
 ## D7 -- Per-env F_max / tau_max (parked)
 
@@ -328,5 +333,10 @@ if its success rate is a little lower.
 
 **Consequence.** The random baseline now moves ~10x slower, so its success rate should drop. The
 baselines need a re-run under D8.
+
+**Surrogate opt-out.** `configs/surrogate_smoke.json` keeps the old 0.02 m / 0.1 rad bounds. Its
+analytic plant is not rig-calibrated, and under the cap its 96-step episodes never reached the
+envelope (the CPU learning smoke stalled at return -1.05). It checks the learning pipeline, not
+realism.
 
 **Revert.** Set `linear_delta_m=0.02` and `angular_delta_rad=0.1` in the config.

@@ -4,7 +4,9 @@
     "num_envs": 128,
     "max_episode_steps": 96,
     "device": "cpu",
-    "progress_mode": "delta"
+    "progress_mode": "delta",
+    "linear_delta_m": 0.02,
+    "angular_delta_rad": 0.1
   },
   "ppo": {
     "rollouts": 32,
@@ -12,8 +14,27 @@
     "learning_epochs": 5,
     "learning_rate": 0.001
   },
-  "actor": {"pre_mlp": [64], "lstm_hidden": 64, "post_mlp": [64], "sequence_length": 16, "initial_log_std": -0.5},
-  "critic": {"pre_mlp": [64], "lstm_hidden": 64, "post_mlp": [64], "sequence_length": 16},
+  "actor": {
+    "pre_mlp": [
+      64
+    ],
+    "lstm_hidden": 64,
+    "post_mlp": [
+      64
+    ],
+    "sequence_length": 16,
+    "initial_log_std": -0.5
+  },
+  "critic": {
+    "pre_mlp": [
+      64
+    ],
+    "lstm_hidden": 64,
+    "post_mlp": [
+      64
+    ],
+    "sequence_length": 16
+  },
   "timesteps": 960,
   "checkpoint_every_updates": 10,
   "run_dir": "runs/vic_harvest/surrogate_smoke"

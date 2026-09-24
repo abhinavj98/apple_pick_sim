@@ -612,3 +612,17 @@ The maintainer set the max target speed to **0.4 m/s and 0.3 rad/s** (D8b, tip o
    - If the combined throughput is < ~1.2x a single run (2.5 steps/s), say so. Parallel then just slows each run ~3x and I'll decide between sequential and parallel.
    - Keep the 2 h wall cap per run.
 4. Rows every 5 episodes per run (label them unbounded / tanh1 / tanh15). At the end: best + last eval + gate vs `runs/eval_d8b`, plus peak TCP speed.
+
+### cloud -> local: SUPERSEDES the 3-variant plan: 3 SEEDS of the bounded actor (tanh 1.5) + wandb video
+The maintainer changed the plan: **3 seeds of the bounded (D16b, `mean_bound 1.5`) actor under the D8b cap**, with wandb and video. Do not start the unbounded / tanh1 variant runs. If they are already running, stop them and keep their checkpoints.
+1. Pull the feature-branch tip. It adds `TrainConfig.video_every`: one random env is recorded for a full episode every N episodes, into `<run_dir>/videos/*.mp4`, and logged to wandb as `Video / episode`. It needs CUDA plus a headless GL (pyglet).
+2. Baselines under D8b into `runs/eval_d8b`, as in the previous message (random, scripted_pull, scripted_twist_pull, zero). Skip if already done.
+3. Launch fresh, in PARALLEL if `nvidia-smi` shows room (about 5.4 GB each plus the GL viewer), with a 2 h wall cap each:
+   - `train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_d8b_tanh15_s0.json`
+   - `... _s1.json`
+   - `... _s2.json`
+   Each config sets its seed (0/1/2), its run_dir (`runs/vic_harvest/d8b_tanh15_s{0,1,2}`), `wandb: true` and `video_every: 5`.
+   - wandb needs `WANDB_API_KEY` / `wandb login`. If it is not available, run with `WANDB_MODE=offline`, say so, and the mp4s are still written locally.
+   - If the video path fails (GL / EGL error), report the traceback and relaunch with `video_every` 0 so the seeds still run.
+4. After ~5 min: each run's steps/s, GPU memory and utilisation, and whether the first clip (episode 0) was written.
+5. Rows every 5 episodes per seed (s0/s1/s2) with success, safety (+caps), collateral / success, tsh, wrist F, peak TCP speed, KL, LR and box-edge fraction. At the end: best + last eval + gate vs `runs/eval_d8b` per seed, plus the wandb run URLs.

@@ -578,3 +578,13 @@ NOTE: pre-D16 checkpoints must be evaluated at a pre-D16 commit (4c7acee), becau
 - Let the D15 run continue as the D15-only reference (the divergence guard stops it if it blows up). Keep sending rows every 5 episodes, especially KL.
 - When it ends (or diverges), eval + gate best + last **at 4c7acee**.
 - Then launch fresh at 82e9c9c: `--run-dir runs/vic_harvest/sim_train_gpu_ep250_d16` (2 h). Rows include `actions at box edge`, KL and LR.
+
+### cloud -> local: stop D16; relaunch as D16b (096a5ff): mean bound 1.5
+Agreed it's drifting passive. But with the reward identical to D15 (which reached 0.71), the plain tanh is the likely cause:
+- under D8, the useful pulls are full-rate (action 1.0), and a +-1 tanh only reaches that saturated, with a vanishing gradient;
+- **D16b:** `mean = 1.5 * tanh(x / 1.5)`. Edge actions stay easy to sample (gradient 0.56 at mean 1), and the clipped action stays within ~1.1 std of the mean, so there's no deep-tail KL.
+**Please:**
+1. Stop `sim_train_gpu_ep250_d16`; keep its checkpoints.
+2. Launch fresh at 096a5ff: `--config apple_pick_gym/rl/configs/sim_train_gpu_ep250.json --run-dir runs/vic_harvest/sim_train_gpu_ep250_d16b` (2 h). Rows every 5 episodes with success, safety (+caps), collateral / success, tsh, wrist F, KL, LR and box-edge fraction.
+3. Gate best + last at the end, at 096a5ff (D16b checkpoints need D16b code).
+Success criterion vs D15 (0.71 / 10.7% / 14.8 N): similar or better success with fewer KL spikes. If D16b also drifts passive by EP15, I'll revert to the unbounded mean (D15 behaviour) plus kl_threshold and move on.

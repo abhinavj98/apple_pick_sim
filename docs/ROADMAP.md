@@ -46,19 +46,31 @@
 
 **Done (branch `feature/rl-skrl-ppo`):**
 
-- [x] Detach envelope + anchor-frame junction torque; envelope-based progress / success; collateral vs rest baseline; opt-in `delta` progress (fixes "hover under the envelope" — measured)
+- [x] Detach envelope + anchor-frame junction torque; envelope-based progress / success; collateral vs rest baseline; `delta` progress, now the default, plus slack cost (fixes "hover under the envelope" — measured)
 - [x] One-shot `terminated` (freeze edge), VIC target leash, shared `evaluate_harvest_step`, privileged DR fields, per-channel F/T sensor DR preset
 - [x] `apple_pick_gym/rl/`: action scaling, LSTM actor / privileged LSTM critic, skrl wrapper (auto-reset, time-limit semantics, non-finite guard, episode stats), config, trainer, checkpoints with layout sidecar, train / eval CLIs, baselines, analytic surrogate env
 - [x] CPU learning smoke on the surrogate (success 0 → 1.0, collateral ↓); real-env wiring through the CLI on CPU; DR resampling verified on a real build
 
+**Decisions taken 2026-09-24 (for maintainer review):** D1-D6 in
+`docs/superpowers/decisions/2026-09-24-rl-open-decisions.md`. Commits are tagged `[Dn]`. It opens
+with a morning brief of state, open questions and next GPU steps.
+- The envelope reads the stem-root elastic wrench (D1, GPU-confirmed).
+- The gate compares collateral per successful pick against scripted pull and random (D2/D2a/D6).
+- The F/T model matches the rig (D3).
+
 **Next up (ordered; needs CUDA):**
 
-- [ ] **GPU wiring** — `sim_wiring_gpu.json` (64 worlds, hold settle): arm moves, finite losses, `Step / nonfinite envs` = 0
-- [ ] **Plan Task 2** — N=2000 throughput / stability from the committed all-2000 snapshot (stop and report if it crashes repeatedly or needs > ~20 GB)
-- [ ] **Plan Task 9 baselines on GPU** — `scripted_pull` / `zero` / `random` on the train snapshot; stop and revisit envelope / reward if scripted pull never detaches
-- [ ] **Plan Task 10** — `sim_smoke_gpu.json` (~3M samples) with one `--resume latest` mid-run
-- [ ] **Plan Task 3** — held-out world set + snapshot; **Task 11** capstone + gate (beat scripted pull on held-out, no worse safety)
-- [ ] Reward / PPO tuning with the maintainer (weights, streak, slack); `delta` progress + slack are now defaults
+- [x] **GPU wiring** -- `sim_wiring_gpu.json` (64 worlds): the arm moves on CUDA (local RTX 4090)
+- [x] **Plan Task 2** -- N=2000 at ~5200 env-steps/s, 5.4 GB, ~123 s build
+- [ ] **Plan Task 9 baselines on GPU** -- detach rates under D1 (`detach_sweep`): zero 0.00, random
+  0.81, scripted_pull 1.00, scripted_twist_pull 1.00. Still to do: re-run `eval_vic_harvest
+  --baseline {random,scripted_pull}` on current code for collateral (the pre-D1 figures were
+  random 15.2 N, pull 45 N).
+- [ ] **Plan Task 10** -- `sim_smoke_gpu.json` (~3M samples) with one `--resume latest` mid-run
+- [ ] **Plan Task 3** -- held-out world set + snapshot, then **Task 11** capstone + gate
+  (`rl/gate.py`, D2/D2a/D6)
+- [ ] Reward / PPO tuning with the maintainer (weights, streak, slack). `delta` progress + slack are
+  now defaults.
 
 **Blocker found:** the real harvest env's batched arm does **not** integrate on a CPU Warp device (Newton MuJoCo-CPU backend, `separate_worlds`) — CPU is wiring-only. See H6 §10.
 

@@ -341,3 +341,34 @@ def test_d12_blowup_worlds_are_excluded_from_rates_and_counted():
     s = st.summary()
     assert float(s["Episode / blowup fraction"]) == pytest.approx(0.25)
     assert float(s["Episode / success rate"]) == pytest.approx(1.0 / 3.0)  # 1 of the 3 non-blown-up envs
+
+
+class _BlowupEnv(SurrogateHarvestEnv):
+    """Env 1 blows up at its 3rd step: flagged by the outcome, garbage wrist reading from then on."""
+
+    def step(self, action):
+        obs, r, term, trunc, info = super().step(action)
+        if self._step_count >= 3:
+            obs["ft_wrist"][1] = 1900.0
+            info["episode"]["blowup"][1] = self._step_count == 3
+        return obs, r, term, trunc, info
+
+
+def test_d14_blown_up_world_emits_its_last_good_obs_and_state_until_reset():
+    # [D14] keeps post-blow-up garbage out of the RunningStandardScaler stats and the PPO batch
+    env = _BlowupEnv(num_envs=N, max_episode_steps=T, seed=0, ft_sensor_config=FtSensorConfig())
+    w = HarvestSkrlWrapper(env)
+    w.reset()
+    a = torch.zeros(N, 13)
+    a[:, 0] = 0.5
+    for _ in range(2):
+        obs, *_ = w.step(a)
+    good_obs, good_state = obs[1].clone(), w.state()[1].clone()
+    for _ in range(3):
+        obs, *_ = w.step(a)
+        torch.testing.assert_close(obs[1], good_obs)
+        torch.testing.assert_close(w.state()[1], good_state)
+        assert float(obs.abs().max()) < 1000.0
+    assert not torch.equal(obs[0], good_obs)  # healthy worlds still update
+    w.reset()
+    assert not torch.equal(w._held, torch.ones_like(w._held))  # released at reset

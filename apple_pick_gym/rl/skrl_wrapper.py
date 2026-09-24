@@ -247,6 +247,9 @@ class HarvestSkrlWrapper(Wrapper):
             safety=getattr(env, "episode_config", None),
         )
         self._obs: torch.Tensor | None = None
+        self._held = torch.zeros(env.num_envs, dtype=torch.bool, device=self.device)
+        self._last_good_obs: torch.Tensor | None = None
+        self._last_good_state: torch.Tensor | None = None
         self._state: torch.Tensor | None = None
         self._privileged: dict[str, torch.Tensor] | None = None
         self._geometry: dict[str, torch.Tensor] | None = None
@@ -294,6 +297,17 @@ class HarvestSkrlWrapper(Wrapper):
         self._nonfinite = ~(torch.isfinite(self._obs).all(-1) & torch.isfinite(self._state).all(-1))
         self._obs = torch.nan_to_num(self._obs, nan=0.0, posinf=0.0, neginf=0.0)
         self._state = torch.nan_to_num(self._state, nan=0.0, posinf=0.0, neginf=0.0)
+        # [D14] a blown-up world (D12) keeps stepping frozen with garbage readings: hold its last
+        # good obs / state so they don't drag the RunningStandardScaler stats (which renormalise
+        # every world's inputs inside the update) or enter the PPO batch.
+        blowup = info.get("episode", {}).get("blowup") if isinstance(info.get("episode"), dict) else None
+        if blowup is not None:
+            self._held = self._held | blowup.to(self._held.device).bool()
+        if self._last_good_obs is not None and bool(self._held.any()):
+            keep = self._held.unsqueeze(-1)
+            self._obs = torch.where(keep, self._last_good_obs, self._obs)
+            self._state = torch.where(keep, self._last_good_state, self._state)
+        self._last_good_obs, self._last_good_state = self._obs.clone(), self._state.clone()
 
     def _on_reset(self, obs: dict[str, Any], info: dict[str, Any]) -> None:
         # Build-time DR (plant, support, geometry) is fixed; arm joint DR resamples each reset.
@@ -302,6 +316,8 @@ class HarvestSkrlWrapper(Wrapper):
             geo = self._env.plant_geometry()
             self._geometry = {k: geo[k] for k, _ in PLANT_GEOMETRY_FIELDS}
         self._stats.reset(self._env.invalid_env_mask)
+        self._held = torch.zeros(self._env.num_envs, dtype=torch.bool, device=self.device)
+        self._last_good_obs = self._last_good_state = None
         self._refresh(obs, info)
 
     def reset(self) -> tuple[torch.Tensor, dict[str, Any]]:

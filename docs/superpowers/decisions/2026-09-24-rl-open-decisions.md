@@ -20,6 +20,7 @@ hyperparameters beyond what is listed.
 | D11 | Smooth wrist-force cost above a 25 N soft cap | done |
 | D12 | Solver blow-up guard (> 200 N or non-finite): freeze, no penalty, invalid | done |
 | D13 | Charge -0.5 x episode peak collateral at the success edge | done |
+| D14 | Hold a blown-up world's last good obs/state (keeps the obs scaler clean) | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -629,3 +630,25 @@ The local agent read the jumps as numeric. I don't think they are:
 - The library `HarvestRewardConfig` default is off.
 
 **Revert.** `w_peak_collateral = 0`.
+
+## D14 -- KL spikes: the obs scaler, not the LSTM. Hold blown-up worlds' last good rows
+
+**Finding (D11 run, local agent).** KL(mean) per update spiked to 0.19-0.33, and once 9.09, with
+the LR pinned at the 3e-5 floor and std flat. A real policy change that large is impossible at
+that LR, so the recomputed log-probs disagreed with the rollout's.
+
+**Tests (`test_rl_logprob_consistency.py`).**
+- Recurrent path: 13-step episodes against 8-step BPTT sequences, so auto-resets land mid-sequence
+  at varying offsets. Recomputing the whole stored rollout with the update's sequence sampling,
+  stored LSTM states and terminated/truncated resets (scalers frozen) matches the stored log-probs
+  to float32 precision (max 1e-3 on ~-7). The LSTM bookkeeping is correct.
+- Scaler: skrl's `RunningStandardScaler` updates its statistics inside update epoch 0
+  (`train=not epoch`), then renormalises every row. One blow-up row (1900 N) in a batch moves
+  every other row's normalised input by > 0.5 std. That changes all log-probs, hence the KL spikes.
+
+**Choice.** Once a world is flagged as a blow-up (D12), the wrapper emits that world's **last
+good** actor obs and critic state until the next reset. The world is already frozen with zero
+reward, so this only keeps its garbage out of the scaler statistics and the PPO batch. The D11
+run predates D12/D14, which explains its spikes.
+
+**Revert.** Drop the `_held` block in `HarvestSkrlWrapper._refresh`.

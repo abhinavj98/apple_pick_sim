@@ -904,3 +904,21 @@ D15 went on to 0.71.
 - Decision: keep the three seeds parallel and continue in <= 2 h segments (`--resume latest
   --max-updates 112`; the new flag ends a segment on a checkpoint). This keeps the 2 h rule and
   gives ~55 episodes per seed over two segments. A third segment is decided from the rows.
+
+**D8b seeds, EP1-EP5 (early read, no action).**
+
+| seed | success EP1 -> EP5 | safety EP5 | collateral / success EP5 | torque share EP5 |
+| --- | --- | --- | --- | --- |
+| s0 | 0.95 -> 0.94 | 4.7% | 39.3 N | 0.39 |
+| s1 | 0.77 -> 0.68 | 19.8% (wrist F) | 34.2 N | 0.53 |
+| s2 | 0.67 -> 0.92 | 3.5% | 39.9 N | 0.37 |
+
+- At the 0.4 m/s cap, the untrained policy already detaches 67-95% of the time by pulling
+  (~42 N, torque share 0.33). Under D8 it started at ~5% and bend-dominated.
+- The runs start in the pull basin. The only gain left is un-learning it for a lower-collateral
+  bend detach.
+- At the terminal, a 42 N pull scores 20 - 0.5x42 = -1, and a ~12 N bend scores +14. That is a
+  ~15-point pull toward bend, set against the wrist soft cap that bend pays (s1 shows exactly
+  this trade).
+- No reward change mid-run. Decision point is after segment 2. If no seed falls below ~25 N
+  collateral, consider a stronger peak-collateral weight (D13 0.5 -> 1.0).

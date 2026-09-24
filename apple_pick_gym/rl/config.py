@@ -97,6 +97,9 @@ class PPOConfig:
     kl_adaptive_min_lr: float = 3e-5
     # [D10b] ceiling: None = learning_rate. skrl's default 0.01 let it climb to 5e-4 while success fell
     kl_adaptive_max_lr: float | None = None
+    # diagnostic (costs one extra forward pass over the rollout per update): log the pre-update KL
+    # with the scalers frozen and the obs scaler's mean shift during the update
+    debug_kl: bool = False
     ratio_clip: float = 0.2
     value_clip: float = 0.2
     grad_norm_clip: float = 1.0

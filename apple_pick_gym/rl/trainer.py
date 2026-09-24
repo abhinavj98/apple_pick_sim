@@ -147,8 +147,37 @@ def _ppo_rnn_class():
 
         history_callback = None
 
+        debug_kl = False
+
+        def _pre_update_kl(self) -> float:
+            """KL(stored || recomputed) over the whole rollout before any gradient step, scalers frozen."""
+            mem = self.memory
+            idx = mem.all_sequence_indexes
+            view = lambda name: mem.tensors_view[name][idx]
+            inputs = {
+                "observations": self._observation_preprocessor(view("observations")),
+                "states": self._state_preprocessor(view("states")),
+                "taken_actions": view("actions"),
+                "rnn": [view(n).transpose(0, 1) for n in self._rnn_tensors_names if "policy" in n],
+                "terminated": view("terminated"),
+                "truncated": view("truncated"),
+            }
+            with torch.no_grad():
+                _, out = self.policy.act(inputs, role="policy")
+                ratio = out["log_prob"].flatten() - view("log_prob").flatten()
+                return float(((torch.exp(ratio) - 1) - ratio).mean())
+
         def update(self, *, timestep: int, timesteps: int) -> None:
+            pre = getattr(self._observation_preprocessor, "running_mean", None)
+            if self.debug_kl:
+                self.track_data("Debug / pre-update KL (frozen scalers)", self._pre_update_kl())
+                mean0 = pre.detach().clone() if pre is not None else None
             super().update(timestep=timestep, timesteps=timesteps)
+            if self.debug_kl and pre is not None:
+                sc = self._observation_preprocessor
+                std = torch.sqrt(sc.running_variance.clamp_min(1e-8))
+                shift = float(((sc.running_mean - mean0).abs() / std).max())
+                self.track_data("Debug / obs scaler mean shift (max, std units)", shift)
             kl = getattr(self.scheduler, "last_kl", None)
             if kl is not None:
                 self.track_data("Policy / KL (mean)", kl)
@@ -221,7 +250,7 @@ def build_agent(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, run_dir: Path,
         agent_cfg["state_preprocessor_kwargs"] = {"size": wrapper.state_space, "device": device}
         agent_cfg["value_preprocessor"] = RunningStandardScaler
         agent_cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
-    return _ppo_rnn_class()(
+    agent = _ppo_rnn_class()(
         models=models,
         memory=memory,
         observation_space=wrapper.observation_space,
@@ -230,6 +259,8 @@ def build_agent(wrapper: HarvestSkrlWrapper, cfg: TrainConfig, *, run_dir: Path,
         device=device,
         cfg=agent_cfg,
     )
+    agent.debug_kl = bool(p.debug_kl)
+    return agent
 
 
 def build_training(cfg: TrainConfig, *, wandb_run_id: str | None = None):

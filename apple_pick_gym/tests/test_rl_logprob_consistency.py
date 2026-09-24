@@ -86,3 +86,26 @@ def test_scaler_update_inside_the_update_shifts_every_row():
     scaler(batch, train=True)
     after = scaler(normal[:4])
     assert float((after - before).abs().max()) > 0.5  # every normal row moved
+
+
+def test_debug_kl_logs_pre_update_kl_and_scaler_shift(tmp_path):
+    # opt-in GPU diagnostic: pre-update KL with scalers frozen (~0 if stored data is consistent) and
+    # how far the obs scaler's mean moves during the update (in its own std units)
+    import json
+
+    cfg = TrainConfig(
+        env=EnvConfig(kind="surrogate", num_envs=4, max_episode_steps=13, device="cpu"),
+        ppo=PPOConfig(rollouts=16, mini_batches=2, learning_epochs=1, debug_kl=True),
+        actor=_NET,
+        critic=_NET,
+        timesteps=32,
+        checkpoint_every_updates=100,
+        run_dir=str(tmp_path / "run"),
+    )
+    trainer_mod.run_training(cfg)
+    rows = [json.loads(l) for l in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()]
+    ups = [r for r in rows if r["kind"] == "update"]
+    assert len(ups) == 2
+    for r in ups:
+        assert r["Debug / pre-update KL (frozen scalers)"] < 1e-5
+        assert r["Debug / obs scaler mean shift (max, std units)"] >= 0.0

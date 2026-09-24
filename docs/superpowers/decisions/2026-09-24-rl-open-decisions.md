@@ -19,6 +19,7 @@ hyperparameters beyond what is listed.
 | D10b | KL-adaptive LR bounded to [3e-5, base LR] | done |
 | D11 | Smooth wrist-force cost above a 25 N soft cap | done |
 | D12 | Solver blow-up guard (> 200 N or non-finite): freeze, no penalty, invalid | done |
+| D13 | Charge -0.5 x episode peak collateral at the success edge | done |
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
@@ -602,3 +603,29 @@ The local agent read the jumps as numeric. I don't think they are:
 - The 40 N safety cap is unchanged: real overshoots and snaps stay failures.
 
 **Revert.** `blowup_force_n = None`.
+
+## D13 -- Charge the episode's peak collateral at the success edge
+
+**Finding (D11 run, ep250_d11 at d08e65d).**
+
+| episode | success | safety | collateral / success | torque share at detach | detach F |
+| --- | --- | --- | --- | --- | --- |
+| EP5 | 0.35 | 25% | 10.4 N | 0.92 | 10.4 N |
+| EP10 | 0.43 | 16% | 15.1 N | 0.84 | 11.4 N |
+| EP15 | 0.60 | 12% | 27.2 N | 0.62 | 14.2 N |
+
+- The policy drifts from the bend detach back toward pulling.
+- D11 made the lateral push expensive, while collateral is only charged per step at 0.02. That
+  term mostly measures time, not the pick's load.
+- So the objective the maintainer cares about, collateral per successful pick, was barely in
+  the reward.
+
+**Choice.** `w_peak_collateral = 0.5`. At the success edge only, the terminal reward becomes
+`success_bonus - 0.5 x (episode peak collateral, N above rest)`.
+- Pull (~44 N): 20 - 22 = -2 at success, ~ +5 with progress (still > zero's -6).
+- Bend (~10 N): 20 - 5 = +15.
+- The running peak is tracked like `progress_prev`: `peak_collateral_prev` in
+  `evaluate_harvest_step`, reset per episode in both envs.
+- The library `HarvestRewardConfig` default is off.
+
+**Revert.** `w_peak_collateral = 0`.

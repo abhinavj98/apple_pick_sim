@@ -41,6 +41,8 @@ class HarvestStepOutcome:
     progress: torch.Tensor  # (N,) this step's envelope utilization (next step's progress_prev)
     reward_terms: dict[str, Any]
     episode: dict[str, torch.Tensor]
+    # (N,) the episode's running peak collateral (next step's peak_collateral_prev), [D13]
+    peak_collateral: torch.Tensor | None = None
 
 
 def evaluate_harvest_step(
@@ -53,6 +55,7 @@ def evaluate_harvest_step(
     freeze_mask: FreezeMask,
     target_junction_name: str,
     progress_prev: torch.Tensor | None = None,
+    peak_collateral_prev: torch.Tensor | None = None,
 ) -> HarvestStepOutcome:
     """Update ``tracker`` / ``freeze_mask`` in place and return this step's outcome.
 
@@ -93,7 +96,14 @@ def evaluate_harvest_step(
     safety_wrist = safety_wrist & ~blowup
     safety_violation = safety_junction | safety_wrist
 
+    coll = raw_terms["collateral"]
+    live = ~freeze_mask.done_mask
+    prev_peak = torch.zeros_like(coll) if peak_collateral_prev is None else peak_collateral_prev.to(coll)
+    peak_collateral = torch.where(live, torch.maximum(prev_peak, torch.nan_to_num(coll)), prev_peak)
     terminal = compute_terminal_reward(success_achieved, safety_violation, reward_cfg)
+    if reward_cfg.w_peak_collateral:
+        won = success_achieved & ~safety_violation
+        terminal = terminal - (float(reward_cfg.w_peak_collateral) * peak_collateral * won).unsqueeze(-1)
     reward = freeze_mask.apply_to_reward(dense + terminal)
     reward = torch.where(blowup.unsqueeze(-1), torch.zeros_like(reward), reward)
     # Once, on the freeze edge: frozen envs keep stepping (whole-batch reset only) and would
@@ -124,4 +134,5 @@ def evaluate_harvest_step(
             "terminated_edge": terminated.clone(),
             "detach_index": info["detach_index"],
         },
+        peak_collateral=peak_collateral.detach().clone(),
     )

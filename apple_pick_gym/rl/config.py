@@ -57,6 +57,10 @@ class EnvConfig:
     # policy pushed laterally, 10% of envs over 40 N at the wrist while pull-out stayed ~free
     w_wrist: float = 0.5
     wrist_force_soft_cap_n: float = 25.0
+    # [D13] -0.5 x the episode's peak collateral (N) at the success edge. Under D11 the policy drifted
+    # from the bend detach (10 N collateral) back to pulling (27 N): the per-step collateral term
+    # hardly separates them. Pull: 20 - 22 = -2 at success; bend: 20 - 5 = +15.
+    w_peak_collateral: float = 0.5
     w_collateral: float = 0.02
     success_bonus: float = 20.0
     failure_penalty: float = -40.0

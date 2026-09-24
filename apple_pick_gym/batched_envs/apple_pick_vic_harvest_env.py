@@ -203,6 +203,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._last_tcp_pose_wxyz: torch.Tensor | None = None
         self._collateral_baseline_norm: dict[str, torch.Tensor] | None = None
         self._progress_prev: torch.Tensor | None = None
+        self._peak_collateral: torch.Tensor | None = None
 
         if sim_config is None:
             from apple_pick_sim.coupled_fruiting import BatchedHeterogeneousCoupledSimConfig
@@ -907,6 +908,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             if name != self._target_junction_name
         }
         info["collateral_baseline_norm"] = self._collateral_baseline_norm
+        self._peak_collateral = None  # [D13] running peak collateral, reset per episode
         self._progress_prev = compute_progress_reward(
             info["target_junction_wrench"], self._reward_cfg, stem_axis=info["target_junction_axis"]
         )
@@ -986,8 +988,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             freeze_mask=self._freeze_mask,
             target_junction_name=self._target_junction_name,
             progress_prev=self._progress_prev,
+            peak_collateral_prev=self._peak_collateral,
         )
         self._progress_prev = outcome.progress
+        self._peak_collateral = outcome.peak_collateral
         self._pending_terminated = outcome.terminated
         # Debug/logging surface (reward decomposition + termination reasons). Values are
         # this step's; "total" is the returned (freeze-masked) reward.

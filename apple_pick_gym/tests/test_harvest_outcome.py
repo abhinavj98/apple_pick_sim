@@ -157,3 +157,28 @@ def test_d12_blowup_guard_off_keeps_old_behaviour():
     out = _run([_info([5.0, 1500.0, 5.0])], safety_force_cap_n=40.0, blowup_force_n=None)
     assert out[0].episode["safety_junction"].tolist() == [False, True, False]
     assert not out[0].episode["blowup"].any()
+
+
+def test_d13_success_pays_minus_w_times_the_episode_peak_collateral():
+    # [D13] collateral per successful pick is the objective: charge the episode's peak collateral once,
+    # at the success edge (the per-step collateral term mostly measured time, not the pick's load)
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(N, 1)}
+    tracker, mask = SuccessStreakTracker(N, "cpu"), FreezeMask(N, "cpu")
+    cfg = HarvestRewardConfig(progress_mode="absolute", w_slack=0.0, w_progress=0.0, w_collateral=0.0, w_peak_collateral=0.5)
+    ep = EpisodeConfig(success_streak_steps=1)
+    peak = None
+    seq = [_info([5.0, 5.0, 5.0], other=(30.0, 10.0, 0.0)), _info([25.0, 25.0, 5.0], other=(4.0, 4.0, 0.0))]
+    outs = []
+    for info in seq:
+        o = evaluate_harvest_step(
+            obs, info, reward_cfg=cfg, episode_cfg=ep, tracker=tracker, freeze_mask=mask,
+            target_junction_name=TJ, peak_collateral_prev=peak,
+        )
+        peak = o.peak_collateral
+        outs.append(o)
+    torch.testing.assert_close(outs[0].peak_collateral, torch.tensor([30.0, 10.0, 0.0]))
+    torch.testing.assert_close(outs[1].peak_collateral, torch.tensor([30.0, 10.0, 0.0]))  # max, not last
+    r = outs[1].reward.flatten()
+    # envs 0/1 succeed: bonus 10 - 0.5 * peak ; env 2 does not succeed: no charge
+    torch.testing.assert_close(r[:2], torch.tensor([10.0 - 15.0, 10.0 - 5.0]))
+    assert float(r[2]) == 0.0

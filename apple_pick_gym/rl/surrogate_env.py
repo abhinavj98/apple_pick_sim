@@ -135,6 +135,7 @@ class SurrogateHarvestEnv:
         self._arm_sample: dict[str, torch.Tensor] | None = None
         self._step_count = 0
         det = self._reward_cfg.detach  # [D7] nominal until the first reset draws per-env limits
+        self._peak_collateral: torch.Tensor | None = None
         self._thresholds = torch.tensor([[float(det.f_max_n), float(det.tau_max_nm)]] * self.num_envs, device=self.device)
 
     def reseed_episode_rng(self, seed: int) -> None:
@@ -224,6 +225,7 @@ class SurrogateHarvestEnv:
             j: torch.linalg.norm(w[:, :3], dim=-1).clone() for j, w in info["woody_part_force"].items() if j != self.TARGET_JUNCTION_NAME
         }
         info["collateral_baseline_norm"] = self._collateral_baseline
+        self._peak_collateral = None  # [D13] running peak collateral, reset per episode
         self._progress_prev = compute_progress_reward(
             info["target_junction_wrench"],
             self._reward_cfg,
@@ -265,8 +267,10 @@ class SurrogateHarvestEnv:
             freeze_mask=self._freeze,
             target_junction_name=self.TARGET_JUNCTION_NAME,
             progress_prev=self._progress_prev,
+            peak_collateral_prev=self._peak_collateral,
         )
         self._progress_prev = outcome.progress
+        self._peak_collateral = outcome.peak_collateral
         info["reward_terms"] = outcome.reward_terms
         info["episode"] = outcome.episode
         info["target_pose"] = self._target.clone()

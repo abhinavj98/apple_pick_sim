@@ -61,6 +61,7 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         pullout_threshold_n=env_cfg.pullout_threshold_n,
         w_wrist=env_cfg.w_wrist,
         wrist_force_soft_cap_n=env_cfg.wrist_force_soft_cap_n,
+        w_peak_collateral=env_cfg.w_peak_collateral,
         w_collateral=env_cfg.w_collateral,
         w_slack=env_cfg.w_slack,
         success_bonus=env_cfg.success_bonus,

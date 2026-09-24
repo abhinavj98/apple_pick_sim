@@ -144,3 +144,12 @@ def test_d11_training_config_turns_on_the_wrist_force_soft_cap():
 
     env = build_env(dataclasses.replace(cfg, kind="surrogate", num_envs=2, device="cpu"), seed=0)
     assert env._reward_cfg.wrist_force_soft_cap_n == 25.0 and env._reward_cfg.w_wrist == 0.5
+
+
+def test_d13_training_config_charges_peak_collateral_at_success():
+    from apple_pick_gym.rl.trainer import build_env
+
+    cfg = TrainConfig().env
+    assert cfg.w_peak_collateral == 0.5
+    env = build_env(dataclasses.replace(cfg, kind="surrogate", num_envs=2, device="cpu"), seed=0)
+    assert env._reward_cfg.w_peak_collateral == 0.5

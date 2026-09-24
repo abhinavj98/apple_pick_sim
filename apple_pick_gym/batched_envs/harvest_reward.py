@@ -49,6 +49,9 @@ class HarvestRewardConfig:
     # below the safety cliff for pushing in any direction (pull-out only sees the grip axis).
     # w_wrist = 0 (default) is off.
     w_wrist: float = 0.0
+    # [D13] one-off charge at the success edge: -w_peak_collateral * the episode's peak collateral
+    # (N above rest). Targets collateral per successful pick directly. 0 (default) is off.
+    w_peak_collateral: float = 0.0
     wrist_force_soft_cap_n: float = 25.0
     w_collateral: float = 0.1
     # Slack: a constant cost per live (not-yet-frozen) step, so the policy is paid to detach

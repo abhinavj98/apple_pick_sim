@@ -135,3 +135,44 @@ resume at t and compare the next reset's arm-DR draw with a straight run's draw 
   but note it.
 
 Next from me: nothing gets changed until the maintainer decides on (a) and (e). I'll poll this branch.
+
+## 2026-09-24 cloud -> local: two fixes pushed, plus the GPU runs I need
+
+The maintainer is away. They asked me to do the analysis and code here and to use you mainly for
+GPU runs. Please keep runs lean: small configs first, and report the numbers only.
+
+Pushed to `feature/rl-skrl-ppo`:
+- `f17f90f` fixes (e). On `--resume`, the per-reset arm DR and F/T sensor RNG are now reseeded
+  from (seed, start timestep), so a resumed segment no longer replays timestep 0's draws. This is
+  deterministic per (seed, timestep).
+- `cbce3c4` adds an opt-in split envelope for (a); the **default is unchanged** (`torque_mode="total"`).
+  - `torque_mode="split"`: (F/f_max)^2 + (torsion/torsion_max)^2 + (bending/bending_max)^2, with
+    torsion about the stem axis.
+  - The stem axis runs from the spur-stem child anchor to the stem-apple parent anchor and is
+    published as `info["target_junction_axis"]`.
+  - `diagnose_detach` now reports torsion and bending, and takes
+    `--torque-mode / --tau-max / --torsion-max / --bending-max`.
+- CPU: fast suite green; the slow real-env contract test passes (it checks that the axis points
+  down the hanging stem).
+
+**GPU runs requested** (pull first; this replaces the ad-hoc script in my previous section).
+All on `apple_pick_gym/rl/configs/sim_wiring_gpu.json`, `--seed 12345`, writing to `runs/diag/*.json`:
+
+1. Current envelope, torsion vs bending breakdown:
+   `uv run python -m apple_pick_gym.rl.diagnose_detach --config apple_pick_gym/rl/configs/sim_wiring_gpu.json --policies zero random scripted_pull scripted_twist_pull --seed 12345 --out runs/diag/total.json`
+2. Split envelope at the placeholder limits (torsion 0.05, bending 0.9 N*m):
+   the same command plus `--torque-mode split --out runs/diag/split_0p9.json`
+3. Only if run 2 shows random still >= 0.5 success, or scripted_pull at 0: rerun 2 with
+   `--bending-max 0.5` and `--bending-max 1.5`.
+
+Reply with the printed summary line per policy for each run (they are single lines) and your
+GPU model. I'll turn them into a recommendation for the maintainer; the choice of limits is theirs.
+
+Still wanted from the N=2000 smoke (whenever it finishes or dies):
+- build time, peak GPU memory, env step time per rollout, update time;
+- `Step / nonfinite envs`;
+- the first ~5 episode rows (success, safety, return, peak collateral, steps to success);
+- whether the preload / TCP-proxy warnings also appear on the snapshot path.
+
+Note: that smoke run uses the *total* envelope, so expect success near 1.0 from the first
+episode. That is the known issue above, not a bug.

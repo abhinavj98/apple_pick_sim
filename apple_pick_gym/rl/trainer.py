@@ -483,6 +483,7 @@ def run_training(
     max_updates: int | None = None,
     wandb_backfill: bool = False,
     init_from: str | None = None,
+    init_allow_bounds_change: bool = False,
 ) -> TrainResult:
     """Train until ``cfg.timesteps`` (or ``max_updates`` more updates). ``resume``: ``"latest"`` or a checkpoint dir.
 
@@ -492,6 +493,10 @@ def run_training(
     ``init_from``: a checkpoint of ANOTHER run whose weights, optimizer and scalers start this
     one. Unlike ``resume`` it is a new run: timestep 0, this ``run_dir``, a fresh wandb id, and
     ``cfg`` (e.g. a changed reward) as is. Recorded in ``metrics.jsonl`` and checkpoint meta.
+
+    ``init_allow_bounds_change``: let ``init_from`` load a checkpoint whose action bounds differ
+    (e.g. a slower speed cap: the same normalized action then commands a smaller step). Layouts and
+    the RNN spec must still match; both bounds are recorded in the ``init_from`` metrics row.
     """
     if init_from and resume:
         raise ValueError("init_from starts a new run; it cannot be combined with resume")
@@ -530,11 +535,15 @@ def run_training(
     agent.init(trainer_cfg=SequentialTrainerCfg(timesteps=cfg.timesteps))
     start, updates = 0, 0
     if init_from:
-        src_meta = load_checkpoint(init_from, agent, wrapper, cfg)
-        metrics.write(
-            json.dumps({"kind": "init_from", "checkpoint": str(init_from), "source_timestep": int(src_meta["timestep"])})
-            + "\n"
-        )
+        row: dict[str, Any] = {"kind": "init_from", "checkpoint": str(init_from)}
+        if init_allow_bounds_change:
+            src_meta = load_checkpoint(init_from, agent, wrapper, cfg, ignore=("action_bounds",))
+            row["source_action_bounds"] = src_meta["action_bounds"]
+            row["action_bounds"] = dataclasses.asdict(wrapper.action_scaler.bounds)
+        else:
+            src_meta = load_checkpoint(init_from, agent, wrapper, cfg)
+        row["source_timestep"] = int(src_meta["timestep"])
+        metrics.write(json.dumps(row) + "\n")
         metrics.flush()
     if ckpt_path is not None:
         meta = load_checkpoint(ckpt_path, agent, wrapper, cfg)

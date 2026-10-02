@@ -39,6 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="checkpoint of another run to start this NEW run from (weights, optimizer, scalers; timestep 0)",
     )
     p.add_argument(
+        "--init-allow-bounds-change", action="store_true",
+        help="with --init-from: allow the source checkpoint's action bounds (e.g. speed cap) to differ from this config's",
+    )
+    p.add_argument(
         "--max-updates", type=int,
         help="stop after this many more PPO updates, with a checkpoint (a wall-capped segment; continue with --resume latest)",
     )
@@ -137,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         max_updates=1 if args.dry_run else args.max_updates,
         wandb_backfill=args.wandb_backfill,
         init_from=args.init_from,
+        init_allow_bounds_change=args.init_allow_bounds_change,
     )
     print(
         f"trained timesteps {result.start_timestep} -> {result.timestep} ({result.updates} updates); "

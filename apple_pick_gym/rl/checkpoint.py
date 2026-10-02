@@ -82,14 +82,23 @@ def latest_checkpoint(run_dir) -> Path | None:
     return ckpts[-1] if ckpts else None
 
 
-def load_checkpoint(path, agent, wrapper, cfg) -> dict[str, Any]:
-    """Load ``path`` into ``agent`` after checking it matches this build; returns its meta."""
+def load_checkpoint(path, agent, wrapper, cfg, *, ignore: tuple[str, ...] = ()) -> dict[str, Any]:
+    """Load ``path`` into ``agent`` after checking it matches this build; returns its meta.
+
+    ``ignore``: compatibility keys to skip. Only ``"action_bounds"`` may be skipped, for a deliberate
+    warm start across an action-scale change (e.g. a slower speed cap); layouts and the RNN spec
+    must always match.
+    """
     path = Path(path)
+    if set(ignore) - {"action_bounds"}:
+        raise ValueError(f"only 'action_bounds' may be ignored, got {ignore!r}")
     meta = json.loads((path / "meta.json").read_text())
     if meta.get("schema") != _META_SCHEMA:
         raise ValueError(f"{path}: unsupported checkpoint schema {meta.get('schema')!r}")
     expected = checkpoint_meta(agent, wrapper, cfg, timestep=0, updates=0, wandb_run_id=None)
     for key in ("actor_layout", "critic_layout", "action_bounds", "rnn"):
+        if key in ignore:
+            continue
         if meta[key] != expected[key]:
             raise ValueError(f"{path}: checkpoint {key} does not match this build\n saved:   {meta[key]}\n current: {expected[key]}")
     agent.load(str(path / "agent.pt"))

@@ -191,3 +191,39 @@ def test_new_wandb_run_id_is_wandb_style_and_does_not_need_wandb_util():
     ids = {_new_wandb_run_id() for _ in range(50)}
     assert len(ids) == 50
     assert all(re.fullmatch(r"[a-z0-9]{8}", i) for i in ids)
+
+
+def test_load_checkpoint_can_ignore_action_bounds_but_not_layouts(tmp_path):
+    """A warm start across a speed-cap change: the bounds may differ, layouts must not."""
+    cfg = _cfg(tmp_path)
+    run_training(cfg)
+    ckpt = latest_checkpoint(tmp_path / "run")
+    slow = dataclasses.replace(cfg, env=dataclasses.replace(cfg.env, linear_delta_m=cfg.env.linear_delta_m / 8))
+    wrapper, agent = build_training(slow)
+    with pytest.raises(ValueError, match="action_bounds"):
+        load_checkpoint(ckpt, agent, wrapper, slow)
+    meta = load_checkpoint(ckpt, agent, wrapper, slow, ignore=("action_bounds",))
+    assert meta["action_bounds"] != dataclasses.asdict(wrapper.action_scaler.bounds)
+
+    bad = json.loads((ckpt / "meta.json").read_text())
+    bad["critic_layout"][-1][0] = "renamed_field"
+    (ckpt / "meta.json").write_text(json.dumps(bad))
+    with pytest.raises(ValueError, match="critic_layout"):
+        load_checkpoint(ckpt, agent, wrapper, slow, ignore=("action_bounds",))
+
+
+def test_init_from_across_a_speed_cap_change_needs_explicit_opt_in(tmp_path):
+    src_cfg = _cfg(tmp_path, run_dir=str(tmp_path / "src"))
+    src = run_training(src_cfg)
+    slow_env = dataclasses.replace(src_cfg.env, linear_delta_m=src_cfg.env.linear_delta_m / 8)
+    dst_cfg = _cfg(tmp_path, run_dir=str(tmp_path / "dst"), env=slow_env, timesteps=16)
+    with pytest.raises(ValueError, match="action_bounds"):
+        run_training(dst_cfg, init_from=str(src.last_checkpoint))
+
+    dst_cfg = _cfg(tmp_path, run_dir=str(tmp_path / "dst2"), env=slow_env, timesteps=16)
+    res = run_training(dst_cfg, init_from=str(src.last_checkpoint), init_allow_bounds_change=True)
+    assert res.start_timestep == 0
+    row = json.loads((tmp_path / "dst2" / "metrics.jsonl").read_text().splitlines()[0])
+    assert row["kind"] == "init_from"
+    assert row["source_action_bounds"]["linear_delta_m"] == pytest.approx(src_cfg.env.linear_delta_m)
+    assert row["action_bounds"]["linear_delta_m"] == pytest.approx(slow_env.linear_delta_m)

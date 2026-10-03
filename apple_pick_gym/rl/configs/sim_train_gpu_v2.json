@@ -1,0 +1,41 @@
+{
+  "env": {
+    "kind": "sim",
+    "world_set": "apple_pick_gym/world_sets/snapshots/harvest_worlds_v3_all2000/shard_00.jsonl",
+    "snapshot": "apple_pick_gym/world_sets/snapshots/harvest_worlds_v3_all2000/shard_00_snapshot.npz",
+    "num_envs": 2000,
+    "max_episode_steps": 250,
+    "device": "cuda:0",
+    "detach_criterion": "bend_pull",
+    "detach_scale_range": [0.85, 1.15],
+    "action_frame": "tool",
+    "k_lin_max": 500.0,
+    "realized_k_scale_range": [0.8, 1.2],
+    "progress_mode": "delta",
+    "w_progress": 10.0,
+    "w_pullout": 0.0,
+    "w_wrist": 0.0,
+    "w_peak_collateral": 0.0,
+    "w_collateral": 0.02,
+    "collateral_clip_n": 50.0,
+    "w_slack": 0.01,
+    "success_bonus": 60.0,
+    "safety_force_cap_n": 1000000000000.0,
+    "safety_torque_cap_nm": 1000000000000.0
+  },
+  "ppo": {
+    "rollouts": 64,
+    "mini_batches": 8,
+    "learning_epochs": 5,
+    "discount_factor": 0.995
+  },
+  "timesteps": 17500,
+  "checkpoint_every_updates": 25,
+  "run_dir": "runs/vic_harvest/v2_s0",
+  "actor": {
+    "mean_bound": 1.5
+  },
+  "seed": 0,
+  "wandb": true,
+  "video_every": 5
+}

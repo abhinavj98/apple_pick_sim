@@ -4,10 +4,10 @@
 
 | Field            | Value |
 | ---------------- | ----- |
-| **Last updated** | 2026-09-24 |
+| **Last updated** | 2026-10-02 |
 | **Owner**        | Abhinav |
 | **Vision**       | See `docs/VISION.md` |
-| **Active work**  | **[M5]** RL harvest policy — skrl recurrent-PPO infrastructure proven on CPU (surrogate learning smoke); real-sim training needs CUDA (H6 `docs/handbook-rl-policy.md`). **[M4].0** status unchanged (Task 9 science gate failed on val torque magnitude). |
+| **Active work**  | **[M5]** RL harvest policy — **task v2 (D17)** after the real-robot test: equator grasps, bend-and-pull detach, tool-frame VIC (H6 `docs/handbook-rl-policy.md`). Code done and CPU-proven; v3 world set screening; GPU training next. **[M4].0** status unchanged (Task 9 science gate failed on val torque magnitude). |
 
 ---
 
@@ -41,6 +41,29 @@
 ---
 
 ## Current focus
+
+**[M5] task v2 (D17, maintainer 2026-10-02).** The v1 policies were tested on the real FR3 and did not
+pick the way the maintainer wants (human-like bend/twist, then pull). v2: grasps around the apple's
+equator (60 deg cone about world -y, roll +-90 deg); detach when the stem tension reaches the Li et al.
+2016 bend-and-pull force at the stem's bending angle; start-relative TCP-frame observations and a
+tool-frame action with tool-frame stiffness; a 4-term reward (progress, clipped collateral, slack,
+success; no safety trip); gamma 0.995. Decisions and findings: D17 in
+`docs/superpowers/decisions/2026-09-24-rl-open-decisions.md`.
+
+**Next up (ordered):**
+
+- [x] D17a-h code: criterion, reward, tool-frame VIC kernel, action, obs/critic, grasp roll / cone /
+  hold, bend-pull surrogate (CPU learning smoke), baselines + v2 gate, `sim_train_gpu_v2.json`
+- [ ] **v3 world set** -- maintainer decision on the screening bias first (pilot: 48% pass, grasps
+  above the equator 21% vs below 74%); then pass 2, a 2000-world selection with a coverage report,
+  the all-2000 snapshot (`harvest_worlds_v3_all2000`), and a GPU wiring check of `sim_train_gpu_v2.json`
+- [ ] GPU baselines on v3: `scripted_pull`, `scripted_bend_pull`, `scripted_down_pull`, `random` (the
+  v2 gate's bars); check that the bend-pull detaches at far lower tension than the down-pull
+- [ ] v2 training run (2 h segments, wandb, video), eval against the v2 gate, then the robot
+- [ ] Rig side (maintainer): tool-frame stiffness in the controller, TCP-frame obs with the start pose
+  stored at grasp, rig force limits
+
+**Earlier focus (v1 infrastructure, 2026-09-24):**
 
 **[M5] — learned VIC harvest policy (maintainer direction 2026-09-24).** Sys-ID is treated as good enough; the next deliverable is RL **infrastructure** that trains a recurrent VIC policy to detach the apple at the spur–stem junction — success is the elliptical envelope \((F/20\,\mathrm{N})^2 + (\tau/0.05\,\mathrm{N\,m})^2 \ge 1\) (torque at the joint anchor) — with low load on every other junction. Reward and PPO tuning come *after* the infrastructure is proven. Contracts, DR and commands: H6 `docs/handbook-rl-policy.md`. Plan: `docs/superpowers/plans/2026-09-23-rl-skrl-ppo-lstm-training.md`.
 

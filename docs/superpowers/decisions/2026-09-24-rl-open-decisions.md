@@ -28,6 +28,7 @@ hyperparameters beyond what is listed.
 | D3 | F/T sensor model matched to the real rig: noise and online EMA corner (8.2 Hz) | done |
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
+| D17 | Task v2 after the real-robot test (maintainer, 2026-10-02): equator grasps, bend-and-pull detach (Li et al. 2016), tool-frame obs/action, 4-term reward | code done (D17a-h); v3 world set screening; GPU training pending |
 
 ## Morning brief (for the 2026-09-25 discussion)
 
@@ -1063,3 +1064,65 @@ ckpt_11200, s2 ckpt_8000. All are also 2/5.
   - `sim_train_gpu_d8b_ws_s1_pc1b40.json`: weight 1.0, bonus 40 (pull -4 ~ idle, bend +30);
   - control: D8b s1 segment 3 with the unchanged reward (`--resume latest --max-updates 61`, to
     17.5k steps). This separates the reward change from plain extra training.
+
+## D17 -- Task v2 after the real-robot test (maintainer, 2026-10-02)
+
+**Why.** Policies from the D8b/D13 runs were run on the real FR3 and did not pick the way the
+maintainer wants: human-like **bend/twist, then pull**, with little load on the rest of the tree.
+Walking through the training pipeline step by step, the maintainer redesigned the task. What
+pushed v1 away from that behaviour:
+- the reward was outcome-only, and its envelope's 0.05 N*m total moment was reached by ~1 N of
+  sideways force, so "bend" was a lateral push rather than a stem bend;
+- grasps from below put the grip axis along a hanging stem, so twisting barely loaded the
+  junction (see "Torque at detach" above);
+- the actor saw absolute world-frame pose and joint angles with a fixed plant pose, and a clock.
+
+**Choices (each commit tagged).**
+
+| ID | Choice | Where |
+| --- | --- | --- |
+| D17a | Detach when stem tension >= F_d(theta_b) = s (0.015 theta^2 - 1.155 theta + 26.09) N: the average of Li et al. 2016's Eq 3/4, flat past its 38.5 deg minimum (3.86 N), s ~ U(0.85, 1.15) per env per episode; theta_b = stem-chord angle from its settled direction; the env owns the criterion and publishes `detach_utilization` | `harvest_detach.py`, env `_publish_detach_state` |
+| D17b | Reward = progress (10) + collateral (0.02, clipped at 50 N per step) + slack (0.01) + success (60). Pull-out, wrist cap, peak collateral and the safety trip are off by config. Peaks > 40 N are reported | `harvest_reward.py`, `sim_train_gpu_v2.json` |
+| D17c | Per-axis VIC gains along the TCP axes (`K = R diag(k) R^T`), `ControllerConfig.vic_gain_frame` | `vic_wrench.py`, `vic_joint_torques_batched.py` |
+| D17d | Pose deltas in the TCP frame; K_lin up to 500 N/m; realized-stiffness DR x U(0.8, 1.2) per axis per episode | `harvest_action.py`, env |
+| D17e | Actor: start-relative, TCP-frame obs (displacement, rotation, gravity, twist, F/T, VIC setpoint offset, last action); no joints, no absolute pose, no clock. Critic gets step_frac, detach_scale, realized_k_scale | `harvest_obs.py`, `critic_state.py` |
+| D17f | Grasps: 60 deg cone about world -y (equator, robot side), roll +-90 deg; post-grasp hold 500 N/m / 30 N*m/rad (was 100 / 10) | `params.py`, `build.py`, `world_set.py`, screening CLI |
+| D17g | `SurrogateBendPullEnv`; v2 CPU learning smoke | `rl/surrogate_env.py` |
+| D17h | Baselines `scripted_bend_pull`, `scripted_down_pull`, tool-frame `scripted_pull`; v2 gate (no safety clause; collateral <= the scripted bend-pull's) | `rl/baselines.py`, `rl/gate.py` |
+| -- | gamma 0.995. The time-limit semantics are unchanged: skrl's GAE cuts only at `terminated`, so the critic keeps step_frac and the wrapper still reports the limit as terminated | `sim_train_gpu_v2.json` |
+
+**Findings while building it.**
+- **The stored weld direction is not the realized grasp.** At reset the TCP +z points exactly at
+  the apple centre (0.0 deg) but sits 26 deg (median) / 68 deg (max) from the world set's sampled
+  `weld_direction` (16 v2 worlds, GPU). IK hits the proxy pose exactly; the post-grasp settle at
+  10 N*m/rad then rotates TCP and apple together. So the v1 world-frame `scripted_pull` pulled
+  off-axis, and the critic's grasp axis was wrong. The critic and the baselines now use the
+  realized axis (TCP -z at reset).
+- **Bend-pull on the real plant (16 v2 worlds, scripted pull):** rest tension 3.6 N (u0 = 0.14),
+  rising to ~27 N; every world detached by step 60.
+- **With an equator grasp, pulling out along the grip axis already bends the stem** (surrogate:
+  theta_b ~39 deg at detach). The axial no-bend reference is a pull straight down
+  (`scripted_down_pull`).
+- **A ~40 deg bend alone detaches**: F_d's floor (3.3-4.4 N) is about the rest tension, as in the
+  paper's pendulum tests (theta_d 45-50 deg).
+- **v3 screening pilot (128 candidates, seed 100):** 48% pass pass 1 (v2: ~91%). By grasp elevation:
+  -60..-30 deg 65%, -30..0 deg 71%, 0..30 deg 29%, 30..60 deg 26%. Rest-invalid grasps (TCP 10-49 cm
+  off, 30-200 N at the wrist) are ~27% at every elevation; grasps above the equator additionally fail
+  the hold / pull probes. Same 32 worlds at the old 100/10 hold: 10/32 rest-invalid vs 14/32 at
+  500/30.
+- **CPU:** PPO on `surrogate_smoke_v2.json` learns the bend detach in ~35 s (0.84 -> 1.00 success,
+  46 -> 16 steps).
+
+**Open (maintainer).**
+1. The v3 cone yields ~50% unusable worlds, skewed against grasps above the equator: accept the
+   bias, stratify the accepted set by elevation, or narrow the cone. Pass-1 screening continues in
+   the meantime (samples within a narrower cone stay usable).
+2. Rig side: tool-frame stiffness in the controller (today base-frame per-axis), TCP-frame
+   observations with the start pose stored at grasp, and the rig's own force limits.
+3. The 500 N/m hold is 5x the rig's dataset gain (100 N/m).
+
+**Revert.** Per switch: `detach_criterion="envelope"`, `action_frame="world"`, `k_lin_max=200`, the
+v1 reward weights, `HoldSettleConfig(linear_k=100, linear_d=15, angular_k=10, angular_d=3)`, gamma
+0.99. The v1 configs (`sim_train_gpu_*.json` before v2) do not set the new keys and keep their
+meaning.
+

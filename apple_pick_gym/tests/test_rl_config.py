@@ -162,3 +162,22 @@ def test_unbounded_fallback_config_sets_mean_bound_none():
 
     cfg = TrainConfig.load_json(Path(__file__).resolve().parent.parent / "rl" / "configs" / "sim_train_gpu_ep250_unbounded.json")
     assert cfg.actor.mean_bound is None and cfg.ppo.kl_threshold == 0.05
+
+
+def test_d17_v2_sim_config_carries_every_v2_decision():
+    from pathlib import Path
+
+    from apple_pick_gym.rl.config import TrainConfig
+
+    cfg = TrainConfig.load_json(Path(__file__).resolve().parent.parent / "rl" / "configs" / "sim_train_gpu_v2.json")
+    cfg.validate()
+    e = cfg.env
+    assert (e.detach_criterion, e.detach_scale_range) == ("bend_pull", (0.85, 1.15))
+    assert (e.action_frame, e.k_lin_max, e.realized_k_scale_range) == ("tool", 500.0, (0.8, 1.2))
+    # 4-term reward: progress, clipped collateral, slack, success; no pull-out / wrist / peak / safety
+    assert (e.w_progress, e.w_collateral, e.collateral_clip_n, e.w_slack, e.success_bonus) == (10.0, 0.02, 50.0, 0.01, 60.0)
+    assert (e.w_pullout, e.w_wrist, e.w_peak_collateral) == (0.0, 0.0, 0.0)
+    assert e.safety_force_cap_n >= 1e9 and e.safety_torque_cap_nm >= 1e9
+    assert (e.linear_delta_m, e.angular_delta_rad) == (0.4 / 60.0, 0.3 / 60.0)  # D8b cap unchanged
+    assert cfg.ppo.discount_factor == 0.995 and cfg.ppo.time_limit_bootstrap is False
+    assert "harvest_worlds_v3" in e.world_set

@@ -3,7 +3,7 @@
 This is the living reference for **[M5]**: learning a variable-impedance (VIC) policy
 that detaches the apple at the **spur–stem junction** while loading every other
 junction as little as possible, in the sys-ID-calibrated simulator. It owns the task
-definition (detach envelope, reward, episode semantics), the action / observation /
+definition (detach criterion, reward, episode semantics), the action / observation /
 critic-state contracts, domain randomization, and the skrl training stack under
 `apple_pick_gym/rl/`. Sequencing and status belong in `docs/ROADMAP.md`.
 
@@ -11,117 +11,114 @@ critic-state contracts, domain randomization, and the skrl training stack under
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-09-24 |
-| Code owners | `apple_pick_gym/batched_envs/apple_pick_vic_harvest_env.py`; `harvest_detach.py`; `harvest_outcome.py`; `harvest_reward.py`; `harvest_privileged.py`; `apple_pick_gym/rl/` |
-| Status | Living handbook -- infrastructure proven on CPU (surrogate); real-sim training needs CUDA |
+| Last reviewed | 2026-10-02 |
+| Code owners | `apple_pick_gym/batched_envs/apple_pick_vic_harvest_env.py`; `harvest_detach.py`; `harvest_outcome.py`; `harvest_reward.py`; `harvest_obs.py`; `harvest_privileged.py`; `apple_pick_gym/rl/` |
+| Status | Living handbook -- **task v2 (D17)** implemented and CPU-proven on the surrogate; the v3 world set (equator grasps) is being screened; v2 GPU training not yet run |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md` (two-model coupling); H2 `docs/handbook-variable-impedance.md` (`vic_pose`); H5 `docs/handbook-youngs-cma.md` (the calibrated plant) |
-| Archive | Design: `docs/superpowers/specs/2026-09-17-rl-vic-harvest-policy-design.md`; plans: `docs/superpowers/plans/2026-09-17-rl-vic-harvest-policy.md`, `docs/superpowers/plans/2026-09-23-rl-skrl-ppo-lstm-training.md` |
+| Archive | Design: `docs/superpowers/specs/2026-09-17-rl-vic-harvest-policy-design.md`; plans: `docs/superpowers/plans/2026-09-17-rl-vic-harvest-policy.md`, `docs/superpowers/plans/2026-09-23-rl-skrl-ppo-lstm-training.md`; decisions D1-D17: `docs/superpowers/decisions/2026-09-24-rl-open-decisions.md` |
+
+**Task versions.** v1 (D1-D16) is the infrastructure build: grasps from below, an elliptical
+force/torque envelope, absolute world-frame observations and actions, an 8-term reward. Policies
+trained on it were tested on the real FR3 and did not pick the way the maintainer wants
+(human-like bend/twist, then pull). **v2 (D17, 2026-10-02)** is the redesign this handbook now
+describes; v1 settings stay reachable through config switches for reproducing old runs
+(`detach_criterion="envelope"`, `action_frame="world"`, the v1 reward weights).
 
 ## 1. The idea in one paragraph
 
-Sys-ID (H3–H5) tuned the plant so its compliance matches the real rig. The policy now
-starts from a settled, grasped apple (post-grasp, one screened world per env) and
-commands a bounded pose delta plus per-axis stiffness and a damping ratio each 60 Hz
-step, through the same `vic_pose` interface the real rig uses. The fruit detaches when
-the spur–stem junction's combined force and torque cross an elliptical failure envelope.
-The policy has to get there using only proprioception and a realistic wrist F/T signal,
-and do it without over-loading the spur, primary, supports or the apple–stem junction.
-The critic sees everything, including every DR draw. Because the plant's compliance can't
-be identified from one frame, the actor is recurrent (LSTM), so it can infer the plant
-from interaction history.
+Sys-ID (H3–H5) tuned the plant so its compliance matches the real rig. The policy starts from a
+settled apple grasped **around its equator** (one screened world per env) and commands a bounded
+pose delta plus per-axis stiffness and a damping ratio each 60 Hz step, **in the TCP frame**,
+through the `vic_pose` interface. The fruit detaches when the stem's tension reaches the force a
+human-measured bend-and-pull curve (Li et al. 2016) needs at the stem's current bending angle:
+bending the stem first cuts the pull needed from ~26 N to ~4 N. The policy sees only start-relative
+proprioception and a realistic wrist F/T signal in the TCP frame, and is paid to detach quickly
+while loading the rest of the tree little. The critic sees everything, including every DR draw.
+The actor is recurrent (LSTM), so it can infer the plant from interaction history.
 
 ## 2. Task definition
 
-### 2.1 Detach envelope (success)
+### 2.1 Detach criterion (success) -- bend-and-pull (D17)
+
+Li et al. 2016 (*Characterizing apple picking patterns for robotic harvesting*, Comput. Electron.
+Agric. 127:633) measured the stem tension that detaches a Gala apple at a given stem bending angle
+(Eq 3, pulling against the stem's natural orientation; Eq 4, along it). v2 uses their average,
+held flat past its minimum (the quadratics were fitted at 10-30 deg and turn back up beyond):
 
 \[
-\left(\frac{\lVert F\rVert}{F_{\max}}\right)^2 + \left(\frac{\lVert\tau\rVert}{\tau_{\max}}\right)^2 \ge 1,
-\qquad F_{\max} = 20\ \mathrm{N},\ \tau_{\max} = 0.05\ \mathrm{N\,m}
+F_d(\theta_b) = s\,\big(0.015\,\theta^2 - 1.155\,\theta + 26.09\big)\ \mathrm{N},\quad
+\theta = \min(\theta_b, 38.5^\circ),\qquad \text{detach when } F_t \ge F_d(\theta_b)
 \]
 
-This is an elliptical combined-loading criterion, the biomechanical analogue of von Mises
-or Tsai–Wu. It captures the **twist-and-pull synergy**: torque lowers the junction's pull
-resistance and vice versa. A pull at 0.7 F_max plus a twist at 0.75 τ_max already fails.
+| theta_b | 0 deg | 20 deg | >= 38.5 deg |
+| --- | --- | --- | --- |
+| F_d (s = 1) | 26.1 N | 9.0 N | 3.86 N |
 
-- `harvest_detach.detach_index(wrench)` gives the left-hand side;
-  `detach_utilization = sqrt(index)` is the radial fraction of the envelope, which is
-  linear in load.
-- **Which torque.** `SolverVBD`'s fixed-joint readout reports torque about the *child
-  body's COM*, which is `couple + (x_anchor − x_com) × F`. The lever term is not load
-  on the junction. With τ_max = 0.05 N·m it is not negligible either: 2.5 mm of lever
-  at F_max already reaches τ_max. The env therefore publishes
-  `info["target_junction_wrench"]`, the spur–stem wrench with torque shifted to the
-  joint anchor (`junction_wrench_at_anchor`, verified against the AVBD kernel, which
-  computes `t_lin = r × f` with `r = x_c − com`). The raw readout remains in
-  `info["target_junction_force"]`. At rest the child COM sits ~1.2 mm from the anchor.
-- **[D1] Which wrench.** The rigid spur-stem fixed joint's constraint readout carries a
-  +-0.03 N*m step-to-step solver-noise floor, with no matching motion: the apple rotates < 0.001 rad
-  per step. The envelope therefore reads the **stem-root elastic wrench**: the first soft stem cable
-  joint's wrench, moved to the junction by statics (`M_J = M_A + (A - J) x F`). It has the same
-  mean and ~65x less noise. `info["junction_readout_wrench"]` keeps the readout, and
-  `wrench_source="junction_readout"` reverts. Rationale:
-  `docs/superpowers/decisions/2026-09-24-rl-open-decisions.md` (D1).
-- `info["detach_index"]` is published every step.
-- Success needs the index ≥ 1 for `EpisodeConfig.success_streak_steps` consecutive
-  steps (default **3** = 50 ms). The streak only rejects single-step solver spikes; the
-  envelope is a physical failure criterion, not a hold.
-- The fruit does **not** physically detach in the sim. Detachment is a force proxy, and
-  the env freezes on success (§4).
+- `s ~ U(0.85, 1.15)` per env per episode (`DetachEnvelopeConfig.detach_scale_range`); the critic
+  sees it (`detach_scale`).
+- **theta_b** is the angle of the **stem chord** (spur–stem junction -> stem–apple attachment) from
+  its settled direction at reset (`harvest_detach.chord_angle_deg`).
+- **F_t** is the stem tension: the D1 stem-root elastic force along `-chord`
+  (`harvest_detach.stem_tension`). GPU check (16 v2 worlds): 3.6 N at rest (u0 = 0.14), rising to
+  ~27 N in a straight pull.
+- `u = F_t / F_d` is published as `info["detach_utilization"]` and `info["detach_index"]`; success is
+  `u >= 1` for `success_streak_steps` (3) consecutive steps, then the env freezes. The fruit does not
+  physically detach in the sim.
+- At full bend `F_d` (3.3-4.4 N) is about the rest tension, so a ~40 deg bend alone detaches -- the
+  paper's pendulum tests detach at 45-50 deg too.
+- The env owns the criterion; the reward reads `info["detach_utilization"]`. `info` also carries
+  `theta_b_deg`, `stem_tension`, `detach_force`, `detach_scale`.
 
-Measured at rest on screened v1 worlds (CPU build): spur–stem |F| ≈ 3.7–5.2 N (apple +
-stem weight), |τ| ≈ 0.002–0.03 N·m, index ≈ 0.05–0.5. Torque dominates the rest index
-and fluctuates step to step with solver noise.
+**v1 envelope (legacy, `criterion="envelope"`).** `(|F|/20 N)^2 + (|tau|/0.05 N m)^2 >= 1` on the
+anchor-frame junction wrench (D1). Its 0.05 N m total moment is dominated by bending: ~1.1 N of
+sideways force at the apple already reached it. The offline tools (`detach_sweep`,
+`diagnose_detach`) still evaluate it.
 
-### 2.2 Reward
+### 2.2 Reward (v2: four terms)
 
-Every step, for envs not frozen before the step (`harvest_outcome.evaluate_harvest_step`,
-shared by the real env and the surrogate):
+Every step, for envs not frozen before the step (`harvest_outcome.evaluate_harvest_step`):
 
-| Term | Formula | Default weight |
+| Term | Formula | v2 weight |
 | --- | --- | --- |
-| progress | `delta` (**default**): `u_t − u_{t−1}`; `absolute`: `u_t`, with `u = clip(detach_utilization, 0, 1)` | `w_progress = 1.0` |
-| pull-out | `−relu(F_wrist · ee_z)` (raw wrist force along the grasp axis) | `w_pullout = 0.5` |
-| collateral | `−Σ_{j ≠ spur_stem} relu(‖F_j‖ − ‖F_j‖_rest)`; the rest baseline is recorded at reset (`info["collateral_baseline_norm"]`) | `w_collateral = 0.1` |
-| slack | `−1` per live (not-yet-frozen) step: a time cost, so detaching sooner pays; ≤ −5 over a 500-step episode | `w_slack = 0.01` |
-| terminal | `+success_bonus` on the success edge; `failure_penalty` on a safety violation (no bonus even if the streak also completes) | `+10 / −20` |
+| progress | `w (u_t − u_{t−1})`, `u = clip(detach_utilization, 0, 1)`; telescopes to `w (u_end − u_0)` | `w_progress = 10` |
+| collateral | `−w min(Σ_{j ≠ spur_stem} relu(‖F_j‖ − ‖F_j‖_rest), clip)` | `w_collateral = 0.02`, `collateral_clip_n = 50` |
+| slack | `−w` per live step | `w_slack = 0.01` |
+| success | `+bonus` on the success edge | `success_bonus = 60` |
 
-Safety is the anchor-frame target wrench or the raw wrist wrench exceeding 40 N / 10 N·m.
+- **Off in v2** (zero weight / caps at 1e12 in `sim_train_gpu_v2.json`): pull-out, the wrist
+  soft cap (D11), the peak-collateral charge (D13) and the safety trip (-40 and its freeze).
+  Training no longer penalises force; the rig's own limits must. Peaks over 40 N are reported:
+  `Episode / peak wrist|target force > 40 N (frac)`.
+- The D12 blow-up guard stays (> 200 N or non-finite: freeze, reward 0, invalid).
+- **Why the collateral clip.** Scale does not matter (skrl normalises advantages; values pass a
+  running scaler), heavy tails do: one overloaded episode dominates the value loss and the scaler.
+  The weighted term is bounded at -1 per step; the raw term (peak metrics) is not clipped.
+- **Bounds** (250 steps): progress in `[-10 u0, 10 (1 - u0)]`; slack in `[-2.5, 0]`; collateral >= -250.
+  Idle scores -2.5; every success scores ~+30 or more. Bend vs pull is decided by force x time in the
+  reward, and by the physics (26 N vs ~4 N needed).
+- Peak collateral and the safety rate remain logged metrics.
 
-**Why `delta` is the default (finding, 2026-09-24).** With `absolute` progress, hovering
-just under the envelope out-earns detaching. Success freezes the env, so reward after it
-is 0, and recurrent PPO cuts the return at the freeze edge. On the surrogate, `absolute`
-reached 0.68 success, then *declined* to ~0.37 while the return kept rising. `delta`
-reached 1.00 success in the same budget (`tmp/rl_vic_viz/surrogate_learning_curves.png`).
-`delta` is potential-style shaping: an episode's progress terms telescope to
-`u_last − u_0`, so the success bonus and the slack cost are what drive the policy to
-detach, and to detach quickly. With slack on, the CPU smoke goes from 0.02 to 1.00 success
-in 10 episodes while mean steps-to-success fall from 78 to 48.
+The v1 reward history (D9 rebalance, D11, D13, D13c) is in the decision log.
 
-Reward reads privileged signals (uncapped junction wrenches, raw F/T). That is legitimate
-because reward is not part of the deployed policy. F_max = 20 N is below the 40 N
-stem-harvest cap, so the policy's `ft_wrist` stays informative up to detachment.
+## 3. Action (v2: tool frame)
 
-## 3. Action
+The policy acts in `[−1, 1]^13`. `rl/action_scaling.HarvestActionScaler` maps that box to the env's
+13-D action `[dp(3), drot(3), K_lin(3), K_ang(3), ζ]` (`harvest_action.py`):
 
-The policy acts in `[−1, 1]^13`. `rl/action_scaling.HarvestActionScaler` maps that box to
-the env's 13-D action `[dp(3), drot(3), K_lin(3), K_ang(3), ζ]` (`harvest_action.py`):
-
-- pose deltas: affine, `u · bound`, with defaults ±0.02 m and ±0.1 rad per step
-  (norm-clipped); 0 means hold;
-- stiffness: **log**-affine between `k_min` and `k_max` (20–200 N/m, 2–40 N·m/rad);
-  0 maps to the geometric mean;
+- pose deltas: affine, `u · bound`, D8b cap 0.4 m/s and 0.3 rad/s at 60 Hz (6.7 mm, 5 mrad per
+  step), norm-clipped; 0 means hold. With `action_frame="tool"` the delta is **in the current TCP
+  frame** (`tool_delta_to_world`, norm-preserving): a twist about the grip axis is one dimension;
+- stiffness: log-affine, K_lin 20-**500** N/m (`EnvConfig.k_lin_max`), K_ang 2-40 N·m/rad. With
+  `action_frame="tool"` the per-axis gains act **along the TCP axes** (`K_world = R diag(k) Rᵀ`,
+  `ControllerConfig.vic_gain_frame="tool"`, kernel `compute_vic_spatial_wrench_aniso_tool`);
 - ζ: affine on [0.3, 2.0]; damping is derived, `D = 2ζ√K`.
 
-The env integrates the target (`target ← target ⊕ delta`) and packs the 19-D `vic_pose`
-action (H2 §3).
+The env integrates the target (`target ← target ⊕ delta`) and packs the 19-D `vic_pose` action
+(H2 §3). The TCP +z points exactly at the apple centre (GPU-checked), so `-z` of the tool is the
+pull-out direction.
 
-**Target leash** (`HarvestActionBounds.max_target_pos_offset_m` / `_rot_offset_rad`,
-training defaults 0.15 m / 0.5 rad): the integrated target is projected back within a
-leash of the TCP (`leash_target_pose`). Because the VIC wrench is `K·(target − x)`, the
-leash bounds the commanded wrench (200 N/m × 0.15 m = 30 N, below the 40 N safety cap).
-Without it, a random-walk policy winds the setpoint up without bound (±0.02 m/step × 500
-steps ≈ 0.45 m). The env default is `None` (off) for back-compatibility with screening
-tools.
+**Target leash** (0.15 m / 0.5 rad of the TCP): a windup guard only. At K_lin = 500 it allows up to
+75 N commanded; v2 relies on the rig for force limits (§2.2).
 
 Frozen envs hold their target (zero delta) with their last gains.
 
@@ -132,12 +129,12 @@ enforced by a test:
 
 | Rule | Why | Where |
 | --- | --- | --- |
-| All envs truncate together at `max_episode_steps` (default 500 = 8.3 s) | no per-env `reset_idx` | base env |
+| All envs truncate together at `max_episode_steps` (v2 configs: 250 = 4.2 s) | no per-env `reset_idx` | base env |
 | A succeeded or violating env **freezes**: action held, reward exactly 0 | it can't reset alone | `FreezeMask` |
 | `terminated` fires **once**, on the freeze edge (`FreezeMask.update` returns the edge) | `PPO_RNN` zeroes LSTM state and cuts GAE on *every* `terminated` | `harvest_outcome` |
 | Invalid envs (failed IK grasp) freeze at reset and never emit an edge | they carry no signal | env `_detect_invalid_envs` |
 | The wrapper auto-resets the batch at the time limit and returns the new episode's first obs; `state()` pairs with it | skrl's trainer never calls `reset()` for `num_envs > 1` and calls `state()` right after `step()` | `HarvestSkrlWrapper` |
-| The time-limit step is reported `terminated = truncated = True`; `time_limit_bootstrap=False` | skrl's GAE cuts only at `terminated`, and `step_frac` is observed, so time is part of the MDP; otherwise the last step would bootstrap from the next episode's reset value | wrapper |
+| The time-limit step is reported `terminated = truncated = True`; `time_limit_bootstrap=False` | skrl's GAE cuts only at `terminated`, and `step_frac` is observed (by the critic only in v2), so time is part of the MDP; otherwise the last step would bootstrap from the next episode's reset value | wrapper |
 | LSTM sequences split at `terminated \| truncated` *inside* a stored sequence and zero state there, exactly as in the rollout | step/sequence equivalence | `models._RecurrentTower` |
 | Non-finite env rows are zeroed, get reward 0, and are counted in `Step / nonfinite envs` | one blown-up world must not NaN the batch | wrapper |
 
@@ -148,55 +145,68 @@ subclass (plan, *Risks*).
 
 ## 5. Observations and critic state
 
-**Actor (40-D, `harvest_obs.flatten_actor_obs`):** `tcp_pos(3)`, `tcp_quat(4, xyzw)`,
-`tcp_velocity(6)`, `ft_wrist(6, sensor model)`, `robot_joint_q(7)`, `last_action(13)`,
-`step_frac(1)`. There is no vision geometry: the pick policy uses F/T and proprioception
-only.
+**Actor, v2 (`action_frame="tool"`, 40-D, `harvest_obs._ACTOR_TOOL_FIELDS`):** everything is
+relative to the episode start and expressed in the **current TCP frame**, so the policy cannot
+memorise where the apple sits in the world:
 
-**Critic (`rl/critic_state.critic_state_layout`, 130-D for the five-junction plant):**
+| field | width | meaning |
+| --- | --- | --- |
+| `d_pos_tool` | 3 | TCP displacement since the episode start |
+| `d_rot_tool` | 3 | rotation since the start, body-frame rotation vector |
+| `gravity_tool` | 3 | world down: encodes the grasp direction relative to gravity |
+| `twist_tool` | 6 | TCP linear + angular velocity |
+| `ft_tool` | 6 | wrist F/T; the sensor model (bias, drift, EMA, noise) runs in this frame |
+| `target_offset_tool` | 6 | VIC setpoint minus TCP (position, orientation-error rotvec) |
+| `last_action` | 13 | previous action, env units |
+
+No joint angles, no absolute pose, **no clock**. The rig tares F/T before grasping, like the sim.
+The world-frame fields stay in the obs dict for logging and screening (`obs["ft_wrist"]` is the
+sensor reading rotated back). **v1 actor (`action_frame="world"`):** absolute `tcp_pos`,
+`tcp_quat`, `tcp_velocity`, `ft_wrist`, `robot_joint_q`, `last_action`, `step_frac`.
+
+**Critic (`rl/critic_state.critic_state_layout(junction_names, frame)`):**
 
 1. the actor vector (exact prefix);
-2. `_PRIVILEGED_FIELDS` (35): log10 spur/stem flexural and axial moduli, spur/stem damping
-   ratios, primary density, log10 support kp / roll_kp, support ζ, per-reset arm
-   armature / friction / damping (7 each), and build-time arm link-mass / inertia and EE
-   mass / inertia scales;
-3. every junction's raw wrench (6 each, junction names sorted);
-4. plant geometry: spur/stem length and radius, apple radius and density, weld (grasp)
-   axis (9);
-5. raw wrist wrench (6), anchor-frame target wrench (6), detach index, success-streak
-   fraction, `frozen`, `invalid`.
+2. `_PRIVILEGED_FIELDS`: log10 spur/stem moduli, damping ratios, primary density, log10 support kp /
+   roll_kp, support ζ, per-reset arm armature / friction / damping, build-time arm scales, and (D17)
+   the episode's `detach_scale` and `realized_k_scale` (6);
+3. every junction's raw wrench (sorted junction names);
+4. plant geometry: spur/stem length and radius, apple radius and density, the **realized** grasp
+   axis (`weld_direction` = TCP -z at reset), and `grasp_roll`;
+5. raw wrist wrench, target wrench, detach index, success-streak fraction, `frozen`, `invalid`;
+6. (tool layout) `step_frac`. skrl's GAE cuts only at `terminated` and the wrapper reports the time
+   limit as `terminated = truncated = True` with `time_limit_bootstrap=False`, so the time limit is
+   part of the MDP and the critic must see time even though the actor does not.
 
-The actor model reads only `inputs["observations"]` and the critic only
-`inputs["states"]`; tests assert that each ignores the other. Checkpoints store both
-layouts and refuse to load into a build whose layout differs (§8).
+**The stored weld direction is not the realized grasp (finding, 2026-10-02).** On 16 v2 worlds the
+TCP +z points at the apple centre, but 26 deg (median) and up to 68 deg away from the world set's
+sampled `weld_direction`: the post-grasp hold settle (then 10 N·m/rad) rotated TCP and apple
+together. The critic and the baselines use the realized axis.
+
+The actor model reads only `inputs["observations"]` and the critic only `inputs["states"]`.
+Checkpoints store both layouts (the wrapper's actual actor layout) and refuse a mismatch.
 
 ## 6. Domain randomization
 
 | Axis | What | When | Where it comes from | In critic |
 | --- | --- | --- | --- | --- |
-| Plant materials | spur/stem flexural + axial E, damping ratios, primary density, geometry (real-data fixture, CMA μ ± 1σ) | per env, **baked at build** | world set (`harvest_worlds_v2`) | yes |
+| Plant materials | spur/stem flexural + axial E, damping ratios, primary density, geometry (real-data fixture, CMA μ ± 1σ) | per env, **baked at build** | world set | yes |
 | Support joints | kp, roll_kp (log-uniform), ζ | per env, baked into the build *and* the settled snapshot | world set | yes |
-| Grasp | weld (approach/pull) direction, 30° cone around straight down | per env, at build | world set | yes (geometry) |
+| Grasp direction | v3: **60 deg cone about world -y** (equator, robot side; area-uniform); v1/v2: 30 deg about straight down | per env, at build | world set (`--grasp-pole`, `--grasp-max-polar-deg`) | realized axis |
+| Grasp roll (D17) | uniform ±90 deg about the approach axis (a parallel gripper repeats every 180 deg) | per env, at build | world set (`weld_roll_rad`, `--grasp-roll-max-deg`) | yes |
 | Arm, build-time | link mass/inertia ×[0.9, 1.1], EE payload ×[0.95, 1.05] | per env, once after build | world set | yes |
 | Arm, per episode | joint armature ×[0.7, 1.3], Coulomb friction ×[0.5, 1.5], viscous damping ×[0.7, 1.3] | **every reset** | `_resample_joint_dynamics_dr` | yes |
-| F/T sensor | 10 Hz causal EMA + per-episode bias (0.5 N / 0.05 N·m, estimate) + per-step noise **measured on the real rig** (0.12 N; Tx/Ty 0.04–0.05, Tz 0.005 N·m) + bounded drift (estimate) | **every reset** (bias, drift) / step (noise) | `FtSensorConfig.rl_training()` (training default; the env default is noise-free) | raw F/T yes |
+| Realized stiffness (D17) | applied K = U(0.8, 1.2) × commanded, per axis (damping stays commanded) | **every reset** | `realized_k_scale_range` | yes |
+| Detach force (D17) | `F_d` × U(0.85, 1.15) | **every reset** | `detach_scale_range` | yes |
+| F/T sensor | 8.2 Hz causal EMA + per-episode bias + measured rig noise + bounded drift, in the TCP frame (v2) | every reset (bias, drift) / step (noise) | `FtSensorConfig.rl_training()` | raw F/T yes |
 
-**Verified (2026-09-24).** `test_harvest_env_rl_contract.py` (real build) checks that
-support DR is per env and in the build, that arm joint DR and the F/T bias change on every
-reset and `privileged_fields()` follows the new draw, and that build-time fields stay
-fixed. `test_harvest_privileged.py` checks the layout and log10 transforms.
-`test_support_joint_dr.py` / `test_sensor_realism.py` check samplers and filters.
+**Post-grasp hold (D17).** The snapshot is settled with the arm holding 500 N/m / 30 N·m/rad (was
+100 / 10; damping ratios kept). The rig's dataset gains are 100 N/m / 30 N·m/rad, so the linear hold
+is 5x the rig's.
 
-Not randomized per episode yet (known gaps):
-
-- Null-space `kp_null` / `kd_null` are sampled but not wired per env (batch-uniform floats
-  in `vic_joint_torques_batched`).
-- Link mass and payload are per world, not re-drawn per reset (no reset-to-nominal
-  entry point).
-- Plant base pose relative to the robot is batch-scalar.
-- Latency and action delay are not modelled.
-
-With N = 2000 worlds, plant/grasp diversity comes from N.
+Not randomized yet: action latency; null-space `kp_null` / `kd_null` per env; the plant base pose
+(batch-scalar -- less critical now that the actor's observations are start-relative and in the TCP
+frame).
 
 ## 7. Models and PPO
 
@@ -215,7 +225,7 @@ The plan's starting hyperparameters (`rl/config.py`):
 | rollouts / BPTT | 64 / 32 |
 | epochs / mini-batches | 5 / 8 |
 | lr | 3e-4 with KL-adaptive schedule, target KL 0.01 |
-| discount γ / GAE λ | 0.99 / 0.95 |
+| discount γ / GAE λ | 0.99 / 0.95 (v2: γ = 0.995, a ~200-step horizon on 250-step episodes) |
 | clip (ratio / value / grad-norm) | 0.2 / 0.2 / 1.0 |
 | entropy | 0 |
 | scaling | running standard scaler on obs, state and value |
@@ -229,111 +239,102 @@ sequences.
 Environment: `uv sync --extra gym --extra vic --extra dev --extra rl`.
 
 ```bash
-# CPU smoke: PPO learns the surrogate (success 0 -> ~1 in ~1-2 min)
+# CPU smokes: PPO learns the v1 surrogate and the v2 bend-pull surrogate (~1 min, ~40 s)
 uv run python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/configs/surrogate_smoke.json
+uv run python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/configs/surrogate_smoke_v2.json
 
-# Real env wiring on CPU (2 worlds, 2 updates; the arm does not move on CPU -- plumbing only)
-uv run python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/configs/sim_wiring_cpu.json --allow-cpu-sim
-
-# GPU: real env wiring (64 v2 worlds, hold settle), then the plan's Task 10 smoke (all 2000 worlds, ~3M samples)
-uv run python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/configs/sim_wiring_gpu.json
-uv run python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/configs/sim_smoke_gpu.json --wandb
+# GPU v2 training (needs the v3 world set + snapshot; see apple_pick_gym/world_sets/README.md)
+uv run python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/configs/sim_train_gpu_v2.json --wandb
 
 # Resume after a crash (fresh process; newest checkpoint; wandb run id is kept)
 uv run python -m apple_pick_gym.rl.train_vic_harvest --config <cfg.json> --resume latest
 
 # Baselines and checkpoint evaluation -> metrics JSON
-uv run python -m apple_pick_gym.rl.eval_vic_harvest --config <cfg.json> --baseline scripted_pull --episodes 3 --out <dir>/pull.json
-uv run python -m apple_pick_gym.rl.eval_vic_harvest --checkpoint <run>/checkpoints/ckpt_<t> --episodes 3 --out <dir>/policy.json
+uv run python -m apple_pick_gym.rl.eval_vic_harvest --config <cfg.json> --baseline scripted_bend_pull --episodes 1 --out <dir>/bend_pull.json
+uv run python -m apple_pick_gym.rl.eval_vic_harvest --checkpoint <run>/checkpoints/ckpt_<t> --episodes 1 --out <dir>/policy.json
+
+# v3 world set: screen candidates with the equator cone (one batch per process), then rescreen
+uv run python apple_pick_gym/batched_examples/example_screen_harvest_worlds.py sample --num-envs 128 --seed <s> \
+    --grasp-pole 0 -1 0 --grasp-max-polar-deg 60 --grasp-roll-max-deg 90 --out tmp/harvest_worlds_v3/pass1.jsonl
 ```
 
-Outputs under `--run-dir`:
-
-- `config.json`;
-- `metrics.jsonl`, with one `"kind": "update"` row per PPO update (losses, std, lr,
-  timing, averaged tracked signals) and one `"kind": "episode"` row per episode (success
-  and safety over valid envs, return, peak detach index / target / collateral / wrist
-  force, reward-term sums, K/ζ usage, steps to success);
-- TensorBoard events (skrl), and wandb with `--wandb` (TensorBoard synced);
-- `checkpoints/ckpt_<timestep>/{agent.pt, meta.json}`. `agent.pt` holds the policy,
-  value, optimizer and the three scalers. `meta.json` holds the actor/critic layouts,
-  action bounds, RNN spec, timestep, updates, wandb id, git SHA and config.
+Outputs under `--run-dir`: `config.json`; `metrics.jsonl` (one `"update"` row per PPO update, one
+`"episode"` row per episode); TensorBoard events (skrl), and wandb with `--wandb`;
+`checkpoints/ckpt_<timestep>/{agent.pt, meta.json}` (policy, value, optimizer, the three scalers;
+layouts, action bounds, RNN spec, timestep, updates, wandb id, git SHA and config).
 
 Baselines (`rl/baselines.py`):
 
-- `zero`: hold;
-- `random`;
-- `scripted_pull`: retreat along **+weld**, i.e. away from the plant, at 2 mm/step,
-  K = 150, ζ = 0.9. Grasps approach from below, so pulling along −weld pushes the apple
-  up and buckles the stem;
-- `scripted_twist_pull`.
+- `zero`: hold; `random`;
+- `scripted_pull`: retreat along the grasp axis at 2 mm/step, K = 150, ζ = 0.9. In the tool frame
+  that is `-z` of the TCP. **With an equator grasp it is horizontal, so it already swings the stem**
+  (surrogate: theta_b ~39 deg at detach);
+- `scripted_bend_pull` (D17): move the apple 25 mm horizontally to bend the stem, then pull at 40 deg
+  from straight down along the bend; `scripted_down_pull`: the same script with no bend and a
+  straight-down pull, the axial no-bend reference. Both use only `gravity_tool` from the actor obs;
+- `scripted_twist_pull` (v1).
 
-The Task 11 gate (`rl/gate.py`; decisions D2, D2a, D6) takes the `eval_vic_harvest` metrics
-JSONs for the policy, `scripted_pull` and `random`, all on the same held-out snapshot and seed. The
-policy passes only if all of these hold:
-
-- success >= `scripted_pull`'s;
-- safety <= `scripted_pull`'s;
-- success >= `random`'s;
-- peak collateral <= 0.5x `scripted_pull`'s;
-- peak collateral strictly below `random`'s.
-
-Collateral is compared per *successful* pick (`peak_collateral_n_success_mean`).
+**Gate (`rl/gate.py`).** v2 (pass `--bend-pull`): success >= `scripted_pull`'s; collateral per
+successful pick <= the scripted bend-pull's (ratio 1.0); success >= random's; collateral strictly
+below random's. The safety clause is dropped (no trip in v2). Without `--bend-pull` the v1 gate
+(D2/D2a/D6: success and safety vs the pull, collateral <= 0.5x the pull's, the random clauses)
+applies.
 
 ```bash
 uv run python -m apple_pick_gym.rl.gate --policy eval/policy.json --scripted-pull eval/pull.json \
-    --random eval/random.json --out eval/gate.json
+    --bend-pull eval/bend_pull.json --random eval/random.json --out eval/gate.json
 ```
 
-## 9. The surrogate env
+## 9. The surrogate envs
 
-`rl/surrogate_env.SurrogateHarvestEnv` is an analytic spring plant with the real env's
-RL contract: the same obs dict, `info` keys, action bounds and leash, the DR split and
-privileged layout, and the same `evaluate_harvest_step`. It runs thousands of env-steps
-per second on a CPU.
+`rl/surrogate_env.py` holds two analytic plants with the real env's RL contract (obs dict incl. the
+tool-frame fields, `info` keys, action bounds and leash, DR split and privileged layout, the shared
+`evaluate_harvest_step`). They run thousands of env-steps per second on a CPU and prove
+infrastructure; **their numbers mean nothing about the plant.**
 
-Its structure mirrors the task:
+- `SurrogateHarvestEnv` (v1, envelope criterion): springs around a grasp from below; twist-and-pull
+  reaches the envelope with less collateral than a straight pull.
+- `SurrogateBendPullEnv` (D17, `detach_criterion="bend_pull"`): grasps from the equator cone with the
+  TCP +z into the apple; the stem runs from a fixed junction to its attachment on the apple, with an
+  axial spring on its stretch and a soft lateral spring on its swing. Bending lowers `F_d`, so
+  bend-then-pull detaches at < 0.5x the tension of a straight-down pull, with less collateral
+  (tested). PPO on `surrogate_smoke_v2.json` goes 0.84 -> 1.00 success and 46 -> 16 steps per pick in
+  ~35 s, detaching at theta_b ~45-50 deg with ~6.5 N of tension.
 
-- pulling along the weld axis loads the stem in tension;
-- pushing barely loads it;
-- twisting loads spur–stem torque, and the other junctions carry the pull load (serial
-  chain) but almost none of the twist.
-
-So twist-and-pull detaches with less collateral than a straight pull (tested). It is for
-proving infrastructure. **Its numbers mean nothing about the plant.** It integrates
-damping implicitly: D = 2ζ√K is sized for unit inertia and diverged explicitly at ζ = 2
-(regression-tested).
+Both support the tool-frame action and gains, realized-K DR and the TCP-frame sensor model. They
+integrate damping implicitly (in the gain frame).
 
 ## 10. Known limitations and open issues
 
-- **The real env needs CUDA.** On a CPU Warp device the batched FR3 arm runs on
-  Newton's MuJoCo-CPU backend, which holds a single `mj_data` and does not integrate
-  replicated (`separate_worlds`) arms. The TCP stays exactly fixed whatever the action,
-  even at N = 1. The env warns, and the CLI refuses `--env sim` on CPU without
-  `--allow-cpu-sim`. Existing CPU env tests checked wiring only, which is why this went
-  unnoticed. A Newton-side fix is out of scope (vendored).
-- **Real-env throughput and stability at N = 2000 are unmeasured** (plan Task 2). N = 512
-  was 1.5k env-steps/s on an RTX 4090. N = 1024 had a silent build crash (design spec).
-- **Held-out world set not built** (plan Task 3).
-- **Reward is untuned.** `delta` progress and a 0.01 slack cost are the defaults. Weights, streak length and F_max/τ_max
-  are the maintainer's to tune. At rest the torque term already uses 20–70% of the
-  envelope index on some worlds, and it is noisy step to step.
-- **Scripted pull direction verified only by geometry** (TCP below apple, weld ≈ −z).
-  The real-sim pull could not be run on CPU.
-- **In-process rebuild heap corruption** (`docs/in-process-rebuild-heap-corruption.md`):
-  one sim build per process. Long runs should resume in a fresh process from
-  `--resume latest`. The campaign supervisor (plan) is not written yet.
+- **v3 world set (equator grasps) is being screened** (2026-10-02). Pilot: 48% of candidates pass
+  pass 1 (v2: ~91%), with a strong elevation bias: grasps above the equator pass 21%, below it 74%.
+  About 27% fail at rest at every elevation (failed grasp: TCP 10-49 cm off, 30-200 N at the wrist);
+  the stiffer hold raises that modestly (14/32 vs 10/32 at the old 100/10 hold on the same worlds).
+  Above-equator grasps additionally fail the hold / pull probes. Decision pending (maintainer):
+  accept the bias, stratify, or narrow the cone. Details in the decision log (D17).
+- **Rig-side changes needed for deployment:** per-axis stiffness along the TCP axes (the rig's
+  `compute_pose_task_wrench` is base-frame per-axis today); observations rotated into the TCP frame
+  with the start pose stored at grasp; force limits from the rig, since v2 training does not
+  penalise force.
+- **The real env needs CUDA.** On a CPU Warp device the batched FR3 arm does not integrate (Newton's
+  MuJoCo-CPU backend, `separate_worlds`); CPU is wiring only.
+- **Action latency is not modelled.**
+- **In-process rebuild heap corruption** (`docs/in-process-rebuild-heap-corruption.md`): one sim
+  build per process; long runs resume in a fresh process from `--resume latest`.
 
 ## 11. Validation
 
 ```bash
 # fast RL + harvest suite (no sim builds)
 uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_rl_*.py apple_pick_gym/tests/test_harvest_*.py \
-  apple_pick_gym/tests/test_sensor_realism.py apple_pick_gym/tests/test_train_vic_harvest_cli.py \
+  apple_pick_gym/tests/test_sensor_realism.py apple_pick_gym/tests/test_world_set.py apple_pick_gym/tests/test_train_vic_harvest_cli.py \
   apple_pick_gym/tests/test_eval_vic_harvest_cli.py -q -m "not slow"
-# CPU learning smoke (~2 min)
+uv run --env-file pytest.env python -m pytest apple_pick_sim/tests/test_vic_wrench_tool_frame.py -q
+# CPU learning smokes (v1 ~1 min, v2 ~40 s)
 uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_rl_smoke_training.py -q
 # real-env builds: one test per process
 uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_harvest_env_rl_contract.py -q
+uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_harvest_env_bend_pull.py -q
+uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_harvest_env_tool_frame.py -q
 uv run --env-file pytest.env python -m pytest apple_pick_gym/tests/test_rl_sim_wiring.py -q
 ```

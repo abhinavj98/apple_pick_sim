@@ -1090,6 +1090,7 @@ pushed v1 away from that behaviour:
 | D17g | `SurrogateBendPullEnv`; v2 CPU learning smoke | `rl/surrogate_env.py` |
 | D17h | Baselines `scripted_bend_pull`, `scripted_down_pull`, tool-frame `scripted_pull`; v2 gate (no safety clause; collateral <= the scripted bend-pull's) | `rl/baselines.py`, `rl/gate.py` |
 | D17i | World-frame grasp directions are realized: the build references the settled apple (`weld_direction_frame="world"`, `WorldSpec.weld_frame`, `--grasp-frame world`); legacy default unchanged | `build.py`, `batched_heterogeneous_build.py`, `world_set.py` |
+| D17j | Grasp draws on their own RNG stream (the roll had been a monotone function of support kp: same seed, same stream) and i.i.d. cone sampling (`--grasp-sampling random`; the Fibonacci lattice gave every seed the same 128 directions -- the v2 set has only 192 distinct grasps in 2000) | env `_sample_default_grasps`, screening CLI |
 | -- | gamma 0.995. The time-limit semantics are unchanged: skrl's GAE cuts only at `terminated`, so the critic keeps step_frac and the wrapper still reports the limit as terminated | `sim_train_gpu_v2.json` |
 
 **Findings while building it.**
@@ -1140,4 +1141,13 @@ pushed v1 away from that behaviour:
 v1 reward weights, `HoldSettleConfig(linear_k=100, linear_d=15, angular_k=10, angular_d=3)`, gamma
 0.99. The v1 configs (`sim_train_gpu_*.json` before v2) do not set the new keys and keep their
 meaning.
+
+**D17j (v3 screening, first attempt discarded).** The world-frame pass 1 (seeds 200-218: 1990/2432
+passed, 82%) had two sampler flaws: (a) the grasp roll was drawn from `default_rng(seed)`, the same
+stream the support DR uses with `dr_seed = seed`, so roll was a monotone function of support kp (rank
+correlation 1.0) -- a spurious cue the actor could read from `gravity_tool`; (b) the Fibonacci lattice
+depends only on the env index, so the 2432 candidates shared 128 grasp directions (the v2 set: 192
+distinct in 2000). Both fixed (D17j); v3 is re-screened from seed 300 with `--grasp-sampling random`.
+Its coverage, unaffected by either flaw for the plant knobs, was clean (15-21% rejection per tercile);
+grasp elevation kept a mild bias (rejection 9% / 15% / 31% from low to high).
 

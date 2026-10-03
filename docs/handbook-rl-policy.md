@@ -193,8 +193,8 @@ Checkpoints store both layouts (the wrapper's actual actor layout) and refuse a 
 | --- | --- | --- | --- | --- |
 | Plant materials | spur/stem flexural + axial E, damping ratios, primary density, geometry (real-data fixture, CMA μ ± 1σ) | per env, **baked at build** | world set | yes |
 | Support joints | kp, roll_kp (log-uniform), ζ | per env, baked into the build *and* the settled snapshot | world set | yes |
-| Grasp direction | v3: **60 deg cone about world -y** (equator, robot side; area-uniform); v1/v2: 30 deg about straight down | per env, at build | world set (`--grasp-pole`, `--grasp-max-polar-deg`) | realized axis |
-| Grasp roll (D17) | uniform ±90 deg about the approach axis (a parallel gripper repeats every 180 deg) | per env, at build | world set (`weld_roll_rad`, `--grasp-roll-max-deg`) | yes |
+| Grasp direction | v3: **60 deg cone about world -y** (equator, robot side), i.i.d. area-uniform per world (`--grasp-sampling random`); v1/v2: 30 deg about straight down on a fixed Fibonacci lattice (the v2 set has 192 distinct grasps) | per env, at build | world set (`--grasp-pole`, `--grasp-max-polar-deg`) | realized axis |
+| Grasp roll (D17) | uniform ±90 deg about the approach axis (a parallel gripper repeats every 180 deg), on its own RNG stream (D17j) | per env, at build | world set (`weld_roll_rad`, `--grasp-roll-max-deg`) | yes |
 | Arm, build-time | link mass/inertia ×[0.9, 1.1], EE payload ×[0.95, 1.05] | per env, once after build | world set | yes |
 | Arm, per episode | joint armature ×[0.7, 1.3], Coulomb friction ×[0.5, 1.5], viscous damping ×[0.7, 1.3] | **every reset** | `_resample_joint_dynamics_dr` | yes |
 | Realized stiffness (D17) | applied K = U(0.8, 1.2) × commanded, per axis (damping stays commanded) | **every reset** | `realized_k_scale_range` | yes |
@@ -256,7 +256,8 @@ uv run python -m apple_pick_gym.rl.eval_vic_harvest --checkpoint <run>/checkpoin
 
 # v3 world set: screen candidates with the equator cone (one batch per process), then rescreen
 uv run python apple_pick_gym/batched_examples/example_screen_harvest_worlds.py sample --num-envs 128 --seed <s> \
-    --grasp-pole 0 -1 0 --grasp-max-polar-deg 60 --grasp-roll-max-deg 90 --grasp-frame world --out tmp/harvest_worlds_v3/pass1.jsonl
+    --grasp-pole 0 -1 0 --grasp-max-polar-deg 60 --grasp-roll-max-deg 90 --grasp-frame world --grasp-sampling random \
+    --out tmp/harvest_worlds_v3/pass1.jsonl
 ```
 
 Outputs under `--run-dir`: `config.json`; `metrics.jsonl` (one `"update"` row per PPO update, one

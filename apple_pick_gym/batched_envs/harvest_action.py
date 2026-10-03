@@ -150,6 +150,25 @@ def integrate_delta_pose(target: torch.Tensor, delta: torch.Tensor) -> torch.Ten
     return torch.cat([pos_new, quat_new], dim=-1)
 
 
+def _rotate_by_quat_wxyz(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate ``(N, 3)`` vectors by unit ``(N, 4)`` ``[w, x, y, z]`` quaternions."""
+    w, u = q[:, :1], q[:, 1:]
+    t = 2.0 * torch.cross(u, v, dim=-1)
+    return v + w * t + torch.cross(u, t, dim=-1)
+
+
+def tool_delta_to_world(delta: torch.Tensor, tcp_quat_wxyz: torch.Tensor) -> torch.Tensor:
+    """[D17] Rotate a tool-frame ``(N, 6)`` ``[dp, drot]`` delta into the world frame.
+
+    The policy commands motion in the current TCP frame (a twist about the grip axis is one
+    action dim); :func:`integrate_delta_pose` integrates world-frame deltas. Both halves are
+    rotated by the TCP orientation, which preserves their norms, so the per-step speed cap
+    applied by :func:`split_harvest_action` does not depend on the frame.
+    """
+    q = tcp_quat_wxyz.to(delta)
+    return torch.cat([_rotate_by_quat_wxyz(q, delta[:, :3]), _rotate_by_quat_wxyz(q, delta[:, 3:6])], dim=-1)
+
+
 def _quat_conj_wxyz(q: torch.Tensor) -> torch.Tensor:
     return torch.cat([q[:, :1], -q[:, 1:]], dim=-1)
 
@@ -199,6 +218,8 @@ def pack_vic_pose_action(
     linear_k: torch.Tensor,
     angular_k: torch.Tensor,
     zeta: torch.Tensor,
+    *,
+    kp_scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Pack ``[target(7), Kp(6), Kd(6)]`` into the 19-D ``vic_pose`` action layout.
 
@@ -207,9 +228,15 @@ def pack_vic_pose_action(
     ``Kd`` is derived from a single ``zeta`` shared across both linear and
     angular stiffness, per the harvest action design (13-D layout has one
     ``zeta`` for all six ``Kp`` axes, not a per-axis damping ratio).
+
+    ``kp_scale`` (``(N, 6)``, optional) multiplies the packed stiffness only ([D17] DR).
     """
     kp = torch.cat([linear_k, angular_k], dim=-1)
     kd = derive_critical_damping(kp, zeta)
+    if kp_scale is not None:
+        # [D17] realized-stiffness DR: the arm renders kp_scale * the commanded stiffness, while
+        # the damping stays the one derived from the command
+        kp = kp * kp_scale.to(kp)
     out = torch.cat([target, kp, kd], dim=-1)
     assert out.shape[-1] == _VIC_POSE_ACTION_DIM
     return out

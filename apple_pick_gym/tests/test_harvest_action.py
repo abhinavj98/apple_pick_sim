@@ -208,3 +208,48 @@ def test_leash_handles_double_cover_quaternions():
     out = leash_target_pose(target, tcp, max_pos_offset_m=None, max_rot_offset_rad=0.2)
     angle = 2 * torch.acos(torch.abs(out[:, 3]).clamp(max=1.0))
     assert float(angle) == pytest.approx(0.1, abs=1e-5)
+
+
+# [D17] tool-frame action: the policy's pose delta is expressed in the current TCP frame (a twist
+# about the grip axis is one action dim) and rotated to world before integration.
+
+
+def _quat_wxyz_about_z(angle: float) -> torch.Tensor:
+    return torch.tensor([[math.cos(angle / 2), 0.0, 0.0, math.sin(angle / 2)]])
+
+
+def test_tool_delta_to_world_is_identity_for_an_identity_tcp():
+    from apple_pick_gym.batched_envs.harvest_action import tool_delta_to_world
+
+    delta = torch.tensor([[0.001, -0.002, 0.003, 0.01, 0.0, -0.02]])
+    torch.testing.assert_close(tool_delta_to_world(delta, torch.tensor([[1.0, 0.0, 0.0, 0.0]])), delta)
+
+
+def test_tool_delta_to_world_rotates_translation_and_rotation_by_the_tcp():
+    from apple_pick_gym.batched_envs.harvest_action import tool_delta_to_world
+
+    tcp_q = _quat_wxyz_about_z(math.pi / 2)  # tool x = world y, tool y = world -x
+    delta = torch.tensor([[0.002, 0.0, 0.0, 0.0, 0.01, 0.0]])  # +x tool move, +y tool rotation
+    out = tool_delta_to_world(delta, tcp_q)
+    torch.testing.assert_close(out, torch.tensor([[0.0, 0.002, 0.0, -0.01, 0.0, 0.0]]), atol=1e-7, rtol=0)
+
+
+def test_tool_delta_preserves_the_norm_so_the_speed_cap_is_frame_free():
+    from apple_pick_gym.batched_envs.harvest_action import tool_delta_to_world
+
+    g = torch.Generator().manual_seed(0)
+    q = torch.nn.functional.normalize(torch.randn(16, 4, generator=g), dim=-1)
+    d = torch.randn(16, 6, generator=g)
+    out = tool_delta_to_world(d, q)
+    torch.testing.assert_close(torch.linalg.norm(out[:, :3], dim=-1), torch.linalg.norm(d[:, :3], dim=-1))
+    torch.testing.assert_close(torch.linalg.norm(out[:, 3:], dim=-1), torch.linalg.norm(d[:, 3:], dim=-1))
+
+
+def test_pack_with_a_realized_stiffness_scale_scales_kp_but_derives_kd_from_the_command():
+    # [D17] realized-K DR: the arm renders s * K_cmd; damping stays the commanded 2*zeta*sqrt(K_cmd)
+    target = torch.tensor([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]])
+    lin, ang, zeta = torch.tensor([[100.0, 100.0, 100.0]]), torch.tensor([[10.0, 10.0, 10.0]]), torch.tensor([[1.0]])
+    scale = torch.tensor([[0.8, 1.0, 1.2, 0.9, 1.0, 1.1]])
+    packed = pack_vic_pose_action(target, lin, ang, zeta, kp_scale=scale)
+    torch.testing.assert_close(packed[:, 7:13], torch.tensor([[80.0, 100.0, 120.0, 9.0, 10.0, 11.0]]))
+    torch.testing.assert_close(packed[:, 13:19], pack_vic_pose_action(target, lin, ang, zeta)[:, 13:19])

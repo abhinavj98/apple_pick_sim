@@ -75,6 +75,7 @@ from apple_pick_gym.batched_envs.harvest_action import (
     leash_target_pose,
     pack_vic_pose_action,
     split_harvest_action,
+    tool_delta_to_world,
 )
 from apple_pick_gym.batched_envs.harvest_detach import (
     bend_pull_detach_force,
@@ -180,6 +181,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         support_dr_sample: Any | None = None,
         arm_build_dr_scales: dict[str, Any] | None = None,
         episode_snapshot_path: Path | str | None = None,
+        action_frame: str = "world",
+        realized_k_scale_range: tuple[float, float] | None = None,
     ) -> None:
         """``support_dr_sample`` / ``arm_build_dr_scales`` (with ``per_env_params`` and
         ``per_env_grippers``) rebuild exact worlds from a screened world set -- see
@@ -187,7 +190,12 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
 
         ``episode_snapshot_path`` (a :meth:`save_world_snapshot` file for these same
         worlds) replaces the hold settle: the vetted settled state is restored and becomes
-        the reset baseline, so training does not depend on this build's settle outcome."""
+        the reset baseline, so training does not depend on this build's settle outcome.
+
+        [D17] ``action_frame="tool"`` expresses the pose delta in the current TCP frame and makes
+        the per-axis VIC gains act along the TCP axes (``ControllerConfig.vic_gain_frame``).
+        ``realized_k_scale_range`` (lo, hi) draws a per-env, per-axis factor at every reset by
+        which the applied stiffness differs from the commanded one (DR; damping stays commanded)."""
         from apple_pick_sim.robot.fr3_robot.arm_domain_randomization import (
             ArmDomainRandomizationRanges,
         )
@@ -215,6 +223,14 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         # detach-force scale, both re-drawn / re-recorded in reset()
         self._rest_chord: torch.Tensor | None = None
         self._detach_scale: torch.Tensor | None = None
+        if action_frame not in ("world", "tool"):
+            raise ValueError(f"action_frame must be 'world' or 'tool', got {action_frame!r}")
+        self._action_frame = action_frame
+        rk = realized_k_scale_range
+        if rk is not None and (len(rk) != 2 or not 0.0 < float(rk[0]) <= float(rk[1])):
+            raise ValueError(f"realized_k_scale_range must be (lo, hi) with 0 < lo <= hi, got {rk}")
+        self._realized_k_scale_range = rk
+        self._realized_k_scale: torch.Tensor | None = None  # (N, 6), drawn per reset
 
         if sim_config is None:
             from apple_pick_sim.coupled_fruiting import BatchedHeterogeneousCoupledSimConfig
@@ -248,6 +264,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 fruiting_system=dataclasses.replace(
                     sim_config.fruiting_system, tcp_harvest_source="weld"
                 ),
+            )
+        if action_frame == "tool":
+            sim_config = dataclasses.replace(
+                sim_config, controller=dataclasses.replace(sim_config.controller, vic_gain_frame="tool")
             )
         if ranges_path is None:
             ranges_path = _RL_HARVEST_RANGES_FIXTURE
@@ -877,7 +897,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
 
         split = split_harvest_action(action, self._action_bounds)
         b = self._action_bounds
-        self._target_pose = integrate_delta_pose(self._target_pose, split.delta)
+        delta = split.delta
+        if self._action_frame == "tool" and self._last_tcp_pose_wxyz is not None:
+            delta = tool_delta_to_world(delta, self._last_tcp_pose_wxyz[:, 3:7])  # [D17]
+        self._target_pose = integrate_delta_pose(self._target_pose, delta)
         if self._last_tcp_pose_wxyz is not None and (
             b.max_target_pos_offset_m is not None or b.max_target_rot_offset_rad is not None
         ):
@@ -888,7 +911,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 max_rot_offset_rad=b.max_target_rot_offset_rad,
             )
         packed = pack_vic_pose_action(
-            self._target_pose, split.linear_k, split.angular_k, split.zeta
+            self._target_pose, split.linear_k, split.angular_k, split.zeta, kp_scale=self._realized_k_scale
         )
 
         cfg = self._sim.config
@@ -936,6 +959,11 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
 
         self._ft_sensor.reset()
         self._resample_joint_dynamics_dr()
+        if self._realized_k_scale_range is not None:  # [D17] applied / commanded stiffness
+            lo, hi = (float(v) for v in self._realized_k_scale_range)
+            self._realized_k_scale = torch.as_tensor(
+                self._dr_rng.uniform(lo, hi, size=(self.num_envs, 6)), dtype=torch.float32, device=self.device
+            )
         self._success_tracker.reset()
         self._freeze_mask.reset()
         if self._invalid_env_mask is not None:

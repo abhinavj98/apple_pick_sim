@@ -238,3 +238,33 @@ def test_d17_detach_criterion_reaches_the_env_and_the_surrogate_rejects_bend_pul
     assert det.detach_scale_range == (0.9, 1.1)
     with pytest.raises(ValueError, match="envelope"):
         build_env(EnvConfig(kind="surrogate", num_envs=4, device="cpu", detach_criterion="bend_pull"))
+
+
+def test_d17_action_frame_k_lin_max_and_realized_k_dr_reach_the_sim_env(monkeypatch):
+    import apple_pick_gym.batched_envs.apple_pick_vic_harvest_env as harvest_env_mod
+    from apple_pick_gym.rl.trainer import build_env
+
+    captured = {}
+
+    class _FakeEnv:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(harvest_env_mod, "ApplePickVicHarvestEnv", _FakeEnv)
+    cfg = EnvConfig(
+        kind="sim",
+        world_set="apple_pick_gym/world_sets/harvest_worlds_v1.jsonl",
+        snapshot=None,
+        num_envs=2,
+        device="cpu",
+        action_frame="tool",
+        k_lin_max=500.0,
+        realized_k_scale_range=(0.8, 1.2),
+    )
+    build_env(cfg)
+    assert captured["action_frame"] == "tool"
+    assert captured["realized_k_scale_range"] == (0.8, 1.2)
+    assert captured["action_bounds"].k_lin_max == 500.0
+    assert EnvConfig().k_lin_max == 200.0 and EnvConfig().action_frame == "world"  # old configs unchanged
+    with pytest.raises(ValueError, match="tool"):
+        build_env(EnvConfig(kind="surrogate", num_envs=4, device="cpu", action_frame="tool"))

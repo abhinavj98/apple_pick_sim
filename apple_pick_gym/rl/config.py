@@ -82,6 +82,12 @@ class EnvConfig:
     # [D8b] maintainer (2026-09-24): max target speed 0.4 m/s and 0.3 rad/s at 60 Hz control
     linear_delta_m: float = 0.4 / 60.0
     angular_delta_rad: float = 0.3 / 60.0
+    # [D17] "tool": pose deltas in the current TCP frame and per-axis VIC gains along the TCP axes
+    # (sim only; the surrogate supports "world" only). "world" keeps the D1-D16 action.
+    action_frame: Literal["world", "tool"] = "world"
+    k_lin_max: float = 200.0  # [D17] v2: 500 N/m, the stiffened post-grasp hold
+    # [D17] realized-stiffness DR: applied K = U(lo, hi) * commanded K, per env / axis / episode
+    realized_k_scale_range: tuple[float, float] | None = None
     # F/T sensor DR (bias / noise / drift, FtSensorConfig.rl_training)
     sensor_dr: bool = True
     # surrogate only: fraction of envs flagged invalid (frozen from reset)

@@ -46,6 +46,7 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         angular_delta_rad=env_cfg.angular_delta_rad,
         max_target_pos_offset_m=env_cfg.max_target_pos_offset_m,
         max_target_rot_offset_rad=env_cfg.max_target_rot_offset_rad,
+        k_lin_max=env_cfg.k_lin_max,
     )
     reward = HarvestRewardConfig(
         detach=DetachEnvelopeConfig(
@@ -87,6 +88,9 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
     if env_cfg.kind == "surrogate":
         from apple_pick_gym.rl.surrogate_env import SurrogateHarvestEnv
 
+        if env_cfg.action_frame != "world" or env_cfg.realized_k_scale_range is not None:
+            raise ValueError("the surrogate env supports only action_frame='world' without realized-K DR (tool frame: sim)")
+
         return SurrogateHarvestEnv(
             num_envs=env_cfg.num_envs,
             device=device,
@@ -113,6 +117,8 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         device=device,
         dr_seed=seed,
         episode_snapshot_path=env_cfg.snapshot,
+        action_frame=env_cfg.action_frame,
+        realized_k_scale_range=env_cfg.realized_k_scale_range,
         **common,
         **world_specs_to_env_kwargs(specs[: env_cfg.num_envs]),
     )

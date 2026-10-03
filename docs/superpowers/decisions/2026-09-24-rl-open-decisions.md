@@ -1152,3 +1152,38 @@ distinct in 2000). Both fixed (D17j); v3 is re-screened from seed 300 with `--gr
 Its coverage, unaffected by either flaw for the plant knobs, was clean (15-21% rejection per tercile);
 grasp elevation kept a mild bias (rejection 9% / 15% / 31% from low to high).
 
+**D17 v3 baselines (GPU, `runs/eval_v2b`, N=2000, 1 episode, `sim_train_gpu_v2.json`).**
+
+| policy | success | theta_b at detach | tension at detach | collateral / success (median) | peak wrist | > 40 N |
+| --- | --- | --- | --- | --- | --- | --- |
+| zero | 0.00 | -- | -- | -- | 1.3 N | 0% |
+| scripted_pull (out along grip) | 1.00 | 31 deg | 9.2 N | 13.7 N | 9.2 N | 1% |
+| scripted_bend_pull | 1.00 | 16 deg | 14.9 N | 29.5 N | 12.6 N | 1% |
+| scripted_down_pull | 1.00 | 6.5 deg | 23.0 N | 56.5 N | 20.4 N | 1% |
+| random | 0.83 | 26 deg | 11.9 N | 24.1 N | 16.8 N | 9% |
+
+The criterion works on the plant: bending cuts the tension needed (23 N straight down vs 9-15 N bent)
+and collateral follows. The horizontal pull-out is the gentlest scripted pick; the scripted bend-pull
+(25 mm sideways) only reaches 16 deg, so it is a weaker collateral bar than the pull-out.
+
+**D17 first v2 run (`runs/vic_harvest/v2_s0`, wandb `5znz8lku`), stopped at EP25.** Healthy numerics
+(KL ~0.01, std 0.46, no non-finite rows), success 1.00 from EP5, but it converged to a fast yank:
+
+| episode | steps | collateral / success median | < 15 N | theta_b / tension at detach | > 40 N wrist | peak TCP |
+| --- | --- | --- | --- | --- | --- | --- |
+| 5 | 31 | 38.7 N | 0.05 | 16 deg / 18.3 N | 3.1% | 0.33 m/s |
+| 15 | 20 | 36.9 N | 0.15 | 23 deg / 18.6 N | 6.9% | 0.57 m/s |
+| 25 | 13 | 42.8 N | 0.13 | 31 deg / 25.0 N | 21.1% | 0.96 m/s |
+
+Why (EP25 reward sums): success +60, progress +8.6, collateral -3.2, slack -0.1. The per-step
+collateral term is negligible, and with gamma 0.995 the discounted success bonus pays ~+8 for detaching at
+step 13 instead of 45 -- more than all of collateral. Nothing charges speed or peak force (both removed
+in v2), and the 0.15 m leash at K up to 500 N/m lets the TCP overshoot the 0.4 m/s target cap at the snap.
+Checkpoints kept (`ckpt_000003200` .. `ckpt_000006400`).
+
+**Open (maintainer): how to make gentleness pay.** Candidate levers, strongest first: charge the
+episode's peak collateral at success (D13-style; at 1.0, a 43 N yank loses 29 points against a 14 N
+pick, which beats the ~8-point discount gain); lower the target speed cap toward the rig (D8: 0.12 m/s;
+rig per-run peak median 0.055 m/s); a wrist-force soft cap (stops the > 40 N tail); or a smaller leash /
+commanded-force cost.
+

@@ -10,6 +10,11 @@ independent builds**; only worlds passing both are kept.
 | --- | --- | --- |
 | `harvest_worlds_v1.jsonl` | 587 | first screening (640 candidates) |
 | `harvest_worlds_v2.jsonl` | 2000 | seeded random 2000 of 2212 accepted (2432 candidates); includes v1 worlds |
+| `harvest_worlds_v3.jsonl` | 2000 | [D17] task v2: equator grasps (60 deg cone about world -y, i.i.d.; roll +-90 deg; world-frame grasp), 500/30 hold; seeded random 2000 of 2459 accepted (3072 candidates). Coverage: `harvest_worlds_v3_coverage.md` |
+
+**v1/v2 caveat (found 2026-10-02, D17i/j):** their grasps were built in the legacy apple frame, so the
+realized grasp is the stored `weld_direction` rotated by the settled apple (26 deg median), and their
+Fibonacci grasp lattice repeats the same directions for every seed (v2: 192 distinct in 2000).
 
 ## Settled snapshots (v2)
 
@@ -54,3 +59,20 @@ built with. Its fingerprint check only catches changed worlds, not changed physi
 any change to the build path, solver settings or the Newton pin, rebuild it with the command
 above (using `--retries 4`) and commit the new files. Each rebuild adds ~11 MB to git history,
 so rebuild only when the code actually changed.
+
+## Committed snapshot: v3 (task v2, D17)
+
+`snapshots/harvest_worlds_v3_all2000/` -- a single N=2000 shard of `harvest_worlds_v3.jsonl`; 1994/2000
+valid (6 marked invalid and masked). Built on 2026-10-03 with
+`example_build_world_snapshots.py --world-set apple_pick_gym/world_sets/harvest_worlds_v3.jsonl
+--shard-size 2000 --shard-index 0 --retries 4` (first attempt, 258 s). `sim_train_gpu_v2.json` trains on it.
+
+Screening recipe (pass 1, one batch per process; pass 2 rescreens the survivors in chunks of 128,
+shuffle seed 0):
+
+```bash
+uv run python apple_pick_gym/batched_examples/example_screen_harvest_worlds.py sample --num-envs 128 --seed <300..323> \
+    --grasp-pole 0 -1 0 --grasp-max-polar-deg 60 --grasp-roll-max-deg 90 --grasp-frame world --grasp-sampling random \
+    --out tmp/harvest_worlds_v3/pass1_v3.jsonl
+```
+

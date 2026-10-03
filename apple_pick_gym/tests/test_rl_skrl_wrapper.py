@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
 import torch
 
@@ -430,3 +432,47 @@ def test_d17_episode_stats_report_bend_pull_state_at_detach_and_over_40n_peaks()
     assert float(s["Episode / peak theta_b deg (mean)"]) == pytest.approx(52.0 / 3)
     assert float(s["Episode / peak wrist force > 40 N (frac)"]) == pytest.approx(1 / 3)
     assert float(s["Episode / peak target force > 40 N (frac)"]) == pytest.approx(1 / 3)
+
+
+def test_d17_episode_stats_decompose_the_motion_at_detach():
+    # [D17] what kind of motion detaches: TCP displacement since the start split into along-grip
+    # (out = -tool z), down (gravity) and the remaining sideways part; rotation into twist about the
+    # grip and tilt; and the commanded stiffness per tool axis.
+    from apple_pick_gym.rl.skrl_wrapper import _EpisodeStats
+
+    st = _EpisodeStats(2, torch.device("cpu"))
+    obs = {
+        # env0: tool z horizontal, gravity along tool -y; moved 30 mm out, 20 mm down, 40 mm sideways (x)
+        "d_pos_tool": torch.tensor([[0.04, -0.02, -0.03], [0.0, 0.0, 0.0]]),
+        "gravity_tool": torch.tensor([[0.0, -1.0, 0.0], [0.0, -1.0, 0.0]]),
+        "d_rot_tool": torch.tensor([[0.0, 0.0, 0.1], [0.0, 0.0, 0.0]]),  # 0.1 rad twist about the grip
+    }
+    info = {
+        "episode": {
+            "frozen": torch.zeros(2, dtype=torch.bool),
+            "success_achieved": torch.tensor([True, False]),
+            "safety_junction": torch.zeros(2, dtype=torch.bool),
+            "safety_wrist": torch.zeros(2, dtype=torch.bool),
+        },
+        "reward_terms": {
+            "raw": {"collateral": torch.zeros(2)},
+            "weighted": {k: torch.zeros(2) for k in ("progress", "pullout", "wrist", "collateral", "slack")},
+            "terminal": torch.zeros(2),
+        },
+        "detach_index": torch.tensor([1.0, 0.1]),
+        "target_junction_wrench": torch.zeros(2, 6),
+        "ft_wrist": torch.zeros(2, 6),
+        "woody_part_force": {},
+    }
+    act = torch.zeros(2, 13)
+    act[:, 6:9] = torch.tensor([50.0, 120.0, 150.0])
+    st.update(torch.zeros(2, 1), info, torch.tensor([True, False]), act, obs=obs)
+    s = st.summary()
+    assert float(s["Episode / detach motion out along grip mm (mean)"]) == pytest.approx(30.0)
+    assert float(s["Episode / detach motion down mm (mean)"]) == pytest.approx(20.0)
+    assert float(s["Episode / detach motion sideways mm (mean)"]) == pytest.approx(40.0)
+    assert float(s["Episode / detach motion total mm (mean)"]) == pytest.approx(math.sqrt(30**2 + 20**2 + 40**2), rel=1e-5)
+    assert float(s["Episode / detach twist about grip deg (mean)"]) == pytest.approx(math.degrees(0.1), rel=1e-5)
+    assert float(s["Episode / detach tilt deg (mean)"]) == pytest.approx(0.0, abs=1e-6)
+    assert float(s["Episode / detach K_lin tool x (mean)"]) == pytest.approx(50.0)
+    assert float(s["Episode / detach K_lin tool z grip (mean)"]) == pytest.approx(150.0)

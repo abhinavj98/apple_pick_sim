@@ -135,6 +135,15 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         ("torque share", "detach_torque_share_mean"),
         ("theta_b deg", "detach_theta_b_deg_mean"),  # [D17]
         ("stem tension N", "detach_stem_tension_n_mean"),
+        ("motion total mm", "detach_motion_total_mm_mean"),
+        ("motion out along grip mm", "detach_motion_grip_out_mm_mean"),
+        ("motion down mm", "detach_motion_down_mm_mean"),
+        ("motion sideways mm", "detach_motion_sideways_mm_mean"),
+        ("twist about grip deg", "detach_twist_deg_mean"),
+        ("tilt deg", "detach_tilt_deg_mean"),
+        ("K_lin tool x", "detach_k_lin_tool_x_mean"),
+        ("K_lin tool y", "detach_k_lin_tool_y_mean"),
+        ("K_lin tool z grip", "detach_k_lin_tool_z_mean"),
     ):
         vals = [e[f"Episode / detach {label} (mean)"] for e in per_episode if np.isfinite(e.get(f"Episode / detach {label} (mean)", np.nan))]
         out[key] = float(np.mean(vals)) if vals else float("nan")

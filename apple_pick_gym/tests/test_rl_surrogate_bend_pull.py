@@ -196,3 +196,9 @@ def test_d17_eval_json_reports_the_bend_pull_state_and_over_40n_peaks():
     for key in ("detach_theta_b_deg_mean", "detach_stem_tension_n_mean", "peak_theta_b_deg_mean"):
         assert math.isfinite(out[key]) and out[key] > 0.0, key
     assert out["peak_wrist_force_over_40n_frac"] == 0.0 and out["peak_target_force_over_40n_frac"] == 0.0
+    # the detaching motion (scripted bend-pull: a sideways move, then a pull; no rotation)
+    assert out["detach_motion_sideways_mm_mean"] > 8.0  # TCP travel lags the 25 mm target move
+    assert out["detach_twist_deg_mean"] < 5.0
+    for key in ("detach_motion_total_mm_mean", "detach_motion_grip_out_mm_mean", "detach_motion_down_mm_mean",
+                "detach_tilt_deg_mean", "detach_k_lin_tool_x_mean", "detach_k_lin_tool_z_mean"):
+        assert math.isfinite(out[key]), key

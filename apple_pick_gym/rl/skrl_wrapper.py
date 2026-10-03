@@ -57,7 +57,43 @@ _DETACH_LABELS = (
     ("torque_share", "torque share"),
     ("theta_b", "theta_b deg"),  # [D17] bend-pull criterion: stem bending angle at detach
     ("tension", "stem tension N"),
+    # [D17] the motion that detached: TCP travel since the start, in the TCP frame, split into out along
+    # the grip (-tool z), down (gravity) and the sideways remainder; rotation as twist about the grip
+    # and tilt; and the commanded stiffness per tool axis
+    ("motion_total", "motion total mm"),
+    ("motion_grip_out", "motion out along grip mm"),
+    ("motion_down", "motion down mm"),
+    ("motion_sideways", "motion sideways mm"),
+    ("rot_twist", "twist about grip deg"),
+    ("rot_tilt", "tilt deg"),
+    ("k_x", "K_lin tool x"),
+    ("k_y", "K_lin tool y"),
+    ("k_z", "K_lin tool z grip"),
 )
+
+
+def detach_motion(obs: dict[str, Any], env_action: torch.Tensor) -> dict[str, torch.Tensor] | None:
+    """[D17] Per-env motion decomposition from the tool-frame obs (``None`` without them)."""
+    if obs is None or not all(k in obs for k in ("d_pos_tool", "gravity_tool", "d_rot_tool")):
+        return None
+    d = obs["d_pos_tool"].float()
+    g = torch.nn.functional.normalize(obs["gravity_tool"].float().to(d), dim=-1)
+    rv = obs["d_rot_tool"].float().to(d)
+    down = (d * g).sum(-1)
+    rest = d - down.unsqueeze(-1) * g
+    rest = torch.cat([rest[:, :2], torch.zeros_like(rest[:, 2:3])], dim=-1)  # drop the grip-axis part
+    act = env_action.float().to(d)
+    return {
+        "motion_total": 1000.0 * torch.linalg.norm(d, dim=-1),
+        "motion_grip_out": -1000.0 * d[:, 2],  # tool +z points into the apple
+        "motion_down": 1000.0 * down,
+        "motion_sideways": 1000.0 * torch.linalg.norm(rest, dim=-1),
+        "rot_twist": torch.rad2deg(rv[:, 2].abs()),
+        "rot_tilt": torch.rad2deg(torch.linalg.norm(rv[:, :2], dim=-1)),
+        "k_x": act[:, 6],
+        "k_y": act[:, 7],
+        "k_z": act[:, 8],
+    }
 # [D17] the safety trip is off in v2 training; peaks over the old cap are reported, not penalised
 _REPORT_FORCE_CAP_N = 40.0
 
@@ -100,6 +136,7 @@ class _EpisodeStats:
         terminated: torch.Tensor,
         env_action: torch.Tensor,
         tcp_speed: torch.Tensor | None = None,
+        obs: dict[str, Any] | None = None,
     ) -> None:
         self.steps += 1
         ep, rt = info["episode"], info["reward_terms"]
@@ -149,6 +186,9 @@ class _EpisodeStats:
             }
             if theta is not None and tension is not None:
                 vals["theta_b"], vals["tension"] = theta.to(tw), tension.to(tw)
+            motion = detach_motion(obs, env_action)
+            if motion is not None:
+                vals.update({k: v.to(tw) for k, v in motion.items()})
             for k, v in vals.items():
                 self.at_detach[k] = torch.where(edge, v, self.at_detach[k])
         self.success |= won
@@ -376,7 +416,7 @@ class HarvestSkrlWrapper(Wrapper):
         bad_reward = ~torch.isfinite(reward).all(-1)
         reward = torch.where(bad_reward.unsqueeze(-1), torch.zeros_like(reward), reward)
         tcp_speed = torch.linalg.norm(obs["tcp_velocity"][:, :3].to(self.device, torch.float32), dim=-1)
-        self._stats.update(reward, info, terminated.flatten(), env_action, tcp_speed=tcp_speed)
+        self._stats.update(reward, info, terminated.flatten(), env_action, tcp_speed=tcp_speed, obs=obs)
         log = {
             "Step / detach index (mean)": torch.nan_to_num(info["detach_index"].float()).mean(),
             "Step / frozen fraction": info["episode"]["frozen"].float().mean(),

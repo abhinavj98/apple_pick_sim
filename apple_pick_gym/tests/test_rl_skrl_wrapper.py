@@ -392,3 +392,41 @@ def test_success_collateral_distribution():
     st.success = torch.zeros(6, dtype=torch.bool)
     s = st.summary()
     assert all(torch.isnan(s[f"{k} {q}"]) for q in ("(median)", "(p10)", "(p90)", "< 15 N (frac)", "< 22 N (frac)"))
+
+
+def test_d17_episode_stats_report_bend_pull_state_at_detach_and_over_40n_peaks():
+    # [D17] with the safety trip off, forces over the old 40 N cap are reported, not penalised;
+    # the bend-pull criterion's bending angle and stem tension are logged at detach and at peak.
+    from apple_pick_gym.rl.skrl_wrapper import _EpisodeStats
+
+    st = _EpisodeStats(3, torch.device("cpu"))
+    tw = torch.zeros(3, 6)
+    tw[:, 2] = torch.tensor([5.0, 45.0, 1.0])
+    ft = torch.zeros(3, 6)
+    ft[:, 0] = torch.tensor([50.0, 10.0, 1.0])
+    info = {
+        "episode": {
+            "frozen": torch.zeros(3, dtype=torch.bool),
+            "success_achieved": torch.tensor([True, False, False]),
+            "safety_junction": torch.zeros(3, dtype=torch.bool),
+            "safety_wrist": torch.zeros(3, dtype=torch.bool),
+        },
+        "reward_terms": {
+            "raw": {"collateral": torch.zeros(3)},
+            "weighted": {k: torch.zeros(3) for k in ("progress", "pullout", "wrist", "collateral", "slack")},
+            "terminal": torch.zeros(3),
+        },
+        "detach_index": torch.tensor([1.0, 0.5, 0.1]),
+        "theta_b_deg": torch.tensor([40.0, 12.0, 0.0]),
+        "stem_tension": torch.tensor([4.0, 30.0, 2.0]),
+        "target_junction_wrench": tw,
+        "ft_wrist": ft,
+        "woody_part_force": {},
+    }
+    st.update(torch.zeros(3, 1), info, torch.tensor([True, False, False]), torch.zeros(3, 13))
+    s = st.summary()
+    assert float(s["Episode / detach theta_b deg (mean)"]) == pytest.approx(40.0)
+    assert float(s["Episode / detach stem tension N (mean)"]) == pytest.approx(4.0)
+    assert float(s["Episode / peak theta_b deg (mean)"]) == pytest.approx(52.0 / 3)
+    assert float(s["Episode / peak wrist force > 40 N (frac)"]) == pytest.approx(1 / 3)
+    assert float(s["Episode / peak target force > 40 N (frac)"]) == pytest.approx(1 / 3)

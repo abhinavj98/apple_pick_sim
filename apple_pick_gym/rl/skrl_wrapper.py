@@ -55,7 +55,11 @@ _DETACH_LABELS = (
     ("bending", "bending N*m"),
     ("force_share", "force share"),
     ("torque_share", "torque share"),
+    ("theta_b", "theta_b deg"),  # [D17] bend-pull criterion: stem bending angle at detach
+    ("tension", "stem tension N"),
 )
+# [D17] the safety trip is off in v2 training; peaks over the old cap are reported, not penalised
+_REPORT_FORCE_CAP_N = 40.0
 
 
 class _EpisodeStats:
@@ -81,12 +85,13 @@ class _EpisodeStats:
         self.peak_speed, self.sum_speed = z(), z()
         self.peak_junction: dict[str, torch.Tensor] = {}
         self.peak_tau, self.peak_wrist_tau = z(), z()
+        self.peak_theta = z()
         b = lambda: torch.zeros(self.n, dtype=torch.bool, device=self.device)
         self.safety_cap = {k: b() for k in ("target_force", "target_torque", "wrist_force", "wrist_torque")}
         self.prev_target_f = z()
         nan = lambda: torch.full((self.n,), float("nan"), device=self.device)
         self.trip_f, self.trip_prev_f = nan(), nan()
-        self.at_detach = {k: nan() for k in ("force", "torque", "torsion", "bending", "force_share", "torque_share")}
+        self.at_detach = {k: nan() for k, _ in _DETACH_LABELS}
 
     def update(
         self,
@@ -117,6 +122,9 @@ class _EpisodeStats:
         tw = torch.nan_to_num(info["target_junction_wrench"].to(self.peak_tau), nan=0.0, posinf=0.0)
         f_n, t_n = torch.linalg.norm(tw[:, :3], dim=-1), torch.linalg.norm(tw[:, 3:6], dim=-1)
         self.peak_tau = m(self.peak_tau, t_n)
+        theta, tension = info.get("theta_b_deg"), info.get("stem_tension")
+        if theta is not None:
+            self.peak_theta = m(self.peak_theta, theta.to(self.peak_theta))
         edge = won & ~self.success
         if bool(edge.any()):
             axis = info.get("target_junction_axis")
@@ -139,6 +147,8 @@ class _EpisodeStats:
                 "force_share": (f_n / f_max) ** 2,
                 "torque_share": (t_n / tau_max) ** 2,
             }
+            if theta is not None and tension is not None:
+                vals["theta_b"], vals["tension"] = theta.to(tw), tension.to(tw)
             for k, v in vals.items():
                 self.at_detach[k] = torch.where(edge, v, self.at_detach[k])
         self.success |= won
@@ -225,6 +235,9 @@ class _EpisodeStats:
             "Episode / peak collateral N, successful (mean)": coll_won,
             **self._success_collateral_dist(won),
             "Episode / peak wrist force N (mean)": s(self.peak_wrist),
+            "Episode / peak wrist force > 40 N (frac)": s(self.peak_wrist > _REPORT_FORCE_CAP_N),
+            "Episode / peak target force > 40 N (frac)": s(self.peak_force > _REPORT_FORCE_CAP_N),
+            "Episode / peak theta_b deg (mean)": s(self.peak_theta),
             "Episode / steps to success (mean)": stt,
             "Episode / reward progress (sum)": s(self.terms["progress"]),
             "Episode / reward pullout (sum)": s(self.terms["pullout"]),

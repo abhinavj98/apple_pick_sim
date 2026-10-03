@@ -183,3 +183,55 @@ def test_d13_success_pays_minus_w_times_the_episode_peak_collateral():
     # envs 0/1 succeed: bonus 10 - 0.5 * peak ; env 2 does not succeed: no charge
     torch.testing.assert_close(r[:2], torch.tensor([10.0 - 15.0, 10.0 - 5.0]))
     assert float(r[2]) == 0.0
+
+
+def _v2_episode_returns(u_traj, coll_traj, wrist_f=0.0):
+    """[D17] Return per env of a 250-step episode under the v2 reward (4 terms, no safety trip)."""
+    reward_cfg = HarvestRewardConfig(
+        w_progress=10.0, progress_mode="delta", w_pullout=0.0, w_wrist=0.0, w_peak_collateral=0.0,
+        w_collateral=0.02, collateral_clip_n=50.0, w_slack=0.01, success_bonus=60.0, failure_penalty=-40.0,
+    )
+    episode_cfg = EpisodeConfig(success_streak_steps=3, safety_force_cap_n=1e12, safety_torque_cap_nm=1e12)
+    n = u_traj.shape[1]
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(n, 1)}
+    tracker, mask = SuccessStreakTracker(n, "cpu"), FreezeMask(n, "cpu")
+    prev, total, worst = u_traj[0].clone(), torch.zeros(n), torch.zeros(n)
+    for t in range(1, u_traj.shape[0]):
+        other = torch.zeros(n, 6)
+        other[:, 2] = coll_traj[t]
+        wrist = torch.zeros(n, 6)
+        wrist[:, 0] = wrist_f
+        info = {
+            "target_junction_wrench": torch.zeros(n, 6),
+            "detach_utilization": u_traj[t],
+            "detach_index": u_traj[t],
+            "ft_wrist": wrist,
+            "woody_part_force": {TJ: torch.zeros(n, 6), "stem_apple": other},
+            "collateral_baseline_norm": {"stem_apple": torch.zeros(n)},
+        }
+        out = evaluate_harvest_step(
+            obs, info, reward_cfg=reward_cfg, episode_cfg=episode_cfg, tracker=tracker, freeze_mask=mask,
+            target_junction_name=TJ, progress_prev=prev,
+        )
+        prev = out.progress
+        r = out.reward.flatten()
+        total += r
+        worst = torch.minimum(worst, out.reward_terms["dense"])
+        assert not bool(out.episode["safety_wrist"].any())
+    return total, worst, mask.done_mask
+
+
+def test_d17_v2_reward_ranks_bend_pick_over_pull_pick_over_idle_and_is_bounded():
+    t = torch.arange(251, dtype=torch.float32)
+    u0 = 0.14
+    bend = torch.clamp(u0 + (1.0 - u0) * t / 100.0, max=1.2)  # slow, gentle: 10 N collateral
+    pull = torch.clamp(u0 + (1.0 - u0) * t / 40.0, max=1.2)  # fast, hard: 60 N (clipped to 50)
+    idle = torch.full_like(t, u0)
+    u = torch.stack([bend, pull, idle], dim=1)
+    coll = torch.stack([torch.full_like(t, 10.0), torch.full_like(t, 60.0), torch.zeros_like(t)], dim=1)
+    ret, worst, done = _v2_episode_returns(u, coll, wrist_f=100.0)  # 100 N wrist: no safety trip any more
+    assert done.tolist() == [True, True, False]
+    assert float(ret[0]) > float(ret[1]) > float(ret[2])
+    assert float(ret[2]) == pytest.approx(-2.5, abs=1e-4)  # idle: slack only
+    # dense per-step bound: progress >= -10, collateral >= -1 (clip), slack -0.01
+    assert float(worst.min()) >= -(10.0 + 1.0 + 0.01) - 1e-5

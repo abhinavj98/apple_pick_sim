@@ -259,3 +259,18 @@ def test_d17_progress_term_is_the_env_published_utilization_clipped():
     }
     terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
     torch.testing.assert_close(terms["progress"], torch.tensor([0.0, 0.0, 0.4, 1.0]))
+
+
+def test_d17_collateral_clip_bounds_the_weighted_term_but_not_the_raw_load():
+    # [D17] an unbounded per-step collateral cost lets one bad episode dominate the value loss and
+    # the value scaler; the weighted term is clipped, the raw load (peak-collateral metrics) is not.
+    from apple_pick_gym.batched_envs.harvest_reward import weight_dense_reward_terms
+
+    raw = {k: torch.zeros(3) for k in ("progress", "pullout", "wrist", "slack")}
+    raw["collateral"] = torch.tensor([10.0, 60.0, 200.0])
+    clipped = weight_dense_reward_terms(raw, HarvestRewardConfig(w_collateral=0.02, collateral_clip_n=50.0))
+    torch.testing.assert_close(clipped["collateral"], torch.tensor([-0.2, -1.0, -1.0]))
+    torch.testing.assert_close(raw["collateral"], torch.tensor([10.0, 60.0, 200.0]))
+    unclipped = weight_dense_reward_terms(raw, HarvestRewardConfig(w_collateral=0.02))
+    torch.testing.assert_close(unclipped["collateral"], torch.tensor([-0.2, -1.2, -4.0]))
+    assert HarvestRewardConfig().collateral_clip_n is None  # library default: off

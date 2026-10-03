@@ -54,6 +54,10 @@ class HarvestRewardConfig:
     w_peak_collateral: float = 0.0
     wrist_force_soft_cap_n: float = 25.0
     w_collateral: float = 0.1
+    # [D17] cap on the per-step collateral load (N) the weighted term charges, so the dense reward
+    # is bounded (<= w_collateral * clip per step) and one overloaded episode cannot dominate the
+    # value loss / scaler. The raw term (peak-collateral metrics) stays unclipped. None = off.
+    collateral_clip_n: float | None = None
     # Slack: a constant cost per live (not-yet-frozen) step, so the policy is paid to detach
     # sooner rather than later. 0.01 * 500 steps = -5 at most, half the success bonus.
     w_slack: float = 0.01
@@ -165,7 +169,12 @@ def weight_dense_reward_terms(
         "progress": cfg.w_progress * terms["progress"],
         "pullout": -cfg.w_pullout * terms["pullout"],
         "wrist": -cfg.w_wrist * terms["wrist"],
-        "collateral": -cfg.w_collateral * terms["collateral"],
+        "collateral": -cfg.w_collateral
+        * (
+            terms["collateral"]
+            if cfg.collateral_clip_n is None
+            else torch.clamp(terms["collateral"], max=float(cfg.collateral_clip_n))
+        ),
         "slack": -cfg.w_slack * terms["slack"],
     }
 

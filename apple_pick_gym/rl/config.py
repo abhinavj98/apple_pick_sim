@@ -67,6 +67,7 @@ class EnvConfig:
     # hardly separates them. Pull: 20 - 22 = -2 at success; bend: 20 - 5 = +15.
     w_peak_collateral: float = 0.5
     w_collateral: float = 0.02
+    collateral_clip_n: float | None = None  # [D17] per-step collateral cap (N); v2 configs: 50
     success_bonus: float = 20.0
     failure_penalty: float = -40.0
     w_slack: float = 0.01  # per live step

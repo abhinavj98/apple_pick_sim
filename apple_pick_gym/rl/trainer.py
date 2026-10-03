@@ -65,6 +65,7 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         wrist_force_soft_cap_n=env_cfg.wrist_force_soft_cap_n,
         w_peak_collateral=env_cfg.w_peak_collateral,
         w_collateral=env_cfg.w_collateral,
+        collateral_clip_n=env_cfg.collateral_clip_n,
         w_slack=env_cfg.w_slack,
         success_bonus=env_cfg.success_bonus,
         failure_penalty=env_cfg.failure_penalty,

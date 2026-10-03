@@ -86,16 +86,17 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         ft_sensor_config=sensor,
     )
     if env_cfg.kind == "surrogate":
-        from apple_pick_gym.rl.surrogate_env import SurrogateHarvestEnv
+        from apple_pick_gym.rl.surrogate_env import SurrogateBendPullEnv, SurrogateHarvestEnv
 
-        if env_cfg.action_frame != "world" or env_cfg.realized_k_scale_range is not None:
-            raise ValueError("the surrogate env supports only action_frame='world' without realized-K DR (tool frame: sim)")
-
-        return SurrogateHarvestEnv(
+        # [D17] the bend-pull criterion needs a stem: the pendulum-stem surrogate
+        cls = SurrogateBendPullEnv if env_cfg.detach_criterion == "bend_pull" else SurrogateHarvestEnv
+        return cls(
             num_envs=env_cfg.num_envs,
             device=device,
             invalid_fraction=env_cfg.surrogate_invalid_fraction,
             seed=seed,
+            action_frame=env_cfg.action_frame,
+            realized_k_scale_range=env_cfg.realized_k_scale_range,
             **common,
         )
     if env_cfg.kind != "sim":

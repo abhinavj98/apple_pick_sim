@@ -236,8 +236,10 @@ def test_d17_detach_criterion_reaches_the_env_and_the_surrogate_rejects_bend_pul
     det = env._reward_cfg.detach
     assert det.criterion == "envelope"  # the EnvConfig default until the surrogate models a stem chord
     assert det.detach_scale_range == (0.9, 1.1)
-    with pytest.raises(ValueError, match="envelope"):
-        build_env(EnvConfig(kind="surrogate", num_envs=4, device="cpu", detach_criterion="bend_pull"))
+    from apple_pick_gym.rl.surrogate_env import SurrogateBendPullEnv
+
+    bp = build_env(EnvConfig(kind="surrogate", num_envs=4, device="cpu", detach_criterion="bend_pull", action_frame="tool"))
+    assert isinstance(bp, SurrogateBendPullEnv) and bp.obs_frame == "tool"
 
 
 def test_d17_action_frame_k_lin_max_and_realized_k_dr_reach_the_sim_env(monkeypatch):
@@ -266,5 +268,5 @@ def test_d17_action_frame_k_lin_max_and_realized_k_dr_reach_the_sim_env(monkeypa
     assert captured["realized_k_scale_range"] == (0.8, 1.2)
     assert captured["action_bounds"].k_lin_max == 500.0
     assert EnvConfig().k_lin_max == 200.0 and EnvConfig().action_frame == "world"  # old configs unchanged
-    with pytest.raises(ValueError, match="tool"):
-        build_env(EnvConfig(kind="surrogate", num_envs=4, device="cpu", action_frame="tool"))
+    sur = build_env(EnvConfig(kind="surrogate", num_envs=4, device="cpu", action_frame="tool", realized_k_scale_range=(0.8, 1.2)))
+    assert sur.obs_frame == "tool" and sur._realized_k_scale_range == (0.8, 1.2)

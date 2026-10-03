@@ -1,0 +1,38 @@
+{
+  "env": {
+    "kind": "surrogate",
+    "num_envs": 128,
+    "max_episode_steps": 96,
+    "device": "cpu",
+    "detach_criterion": "bend_pull",
+    "detach_scale_range": [0.85, 1.15],
+    "action_frame": "tool",
+    "k_lin_max": 500.0,
+    "realized_k_scale_range": [0.8, 1.2],
+    "linear_delta_m": 0.006666666666666667,
+    "angular_delta_rad": 0.005,
+    "progress_mode": "delta",
+    "w_progress": 10.0,
+    "w_pullout": 0.0,
+    "w_wrist": 0.0,
+    "w_peak_collateral": 0.0,
+    "w_collateral": 0.02,
+    "collateral_clip_n": 50.0,
+    "w_slack": 0.01,
+    "success_bonus": 60.0,
+    "safety_force_cap_n": 1000000000000.0,
+    "safety_torque_cap_nm": 1000000000000.0
+  },
+  "ppo": {
+    "rollouts": 32,
+    "mini_batches": 4,
+    "learning_epochs": 5,
+    "learning_rate": 0.001,
+    "discount_factor": 0.995
+  },
+  "actor": {"pre_mlp": [64], "lstm_hidden": 64, "post_mlp": [64], "sequence_length": 16, "initial_log_std": -0.5},
+  "critic": {"pre_mlp": [64], "lstm_hidden": 64, "post_mlp": [64], "sequence_length": 16},
+  "timesteps": 1920,
+  "checkpoint_every_updates": 20,
+  "run_dir": "runs/vic_harvest/surrogate_smoke_v2"
+}

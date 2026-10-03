@@ -1122,12 +1122,13 @@ pushed v1 away from that behaviour:
   the settle and IK grasps wherever the proxy ended up. Bottom grasps (v1/v2) sit on that axis, so
   they drifted only 26 deg. The pilot's rejection rate and elevation bias are largely symptoms: the
   robot is asked to reach round the apple. Screening was stopped at 384 candidates (185 passed).
+  **Correction (same day): it is a frame bug, not a spin.** The realized grasp equals the sampled direction rotated by the apple body's orientation, exactly (0.0 deg on 18 valid worlds): the build applies `weld_direction` (documented as world frame) in the apple body frame (`_approach_dir_in_apple_frame` with `weld_reference_quat=None`), and the apple body frame is a median 118 deg (max 174) from the world frame. The proxy is pinned in VBD (`inv_mass = 0`) through the post-grasp settle, and no VIC acts there: the arm is not stepped, and IK aligns it to the proxy afterwards. Bottom grasps barely changed (26 deg) because the apple frame's rotation is mostly about the vertical axis.
 
 **Open (maintainer).**
-1. The v3 world set needs the build to hold the sampled grasp (the apple must not spin freely about
-   the stem before the arm takes it). Until then a side-grasp cone is not what the sim realizes.
-   Options are in the session report; this is a change to the shared `apple_pick_sim` build
-   pipeline, which the sys-ID replay also uses.
+1. The v3 world set needs the sampled grasp expressed in the apple body frame (or
+   `weld_reference_quat` set to the apple's orientation) so the world-frame cone is realized. It is a
+   change to the shared `apple_pick_sim` build and would change what existing world sets rebuild to,
+   so it should be gated (maintainer decision).
 2. Rig side: tool-frame stiffness in the controller (today base-frame per-axis), TCP-frame
    observations with the start pose stored at grasp, and the rig's own force limits.
 3. The 500 N/m hold is 5x the rig's dataset gain (100 N/m).

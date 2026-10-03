@@ -180,8 +180,9 @@ sensor reading rotated back). **v1 actor (`action_frame="world"`):** absolute `t
 
 **The stored weld direction is not the realized grasp (finding, 2026-10-02).** On 16 v2 worlds the
 TCP +z points at the apple centre, but 26 deg (median) and up to 68 deg away from the world set's
-sampled `weld_direction`: the post-grasp hold settle (then 10 N·m/rad) rotated TCP and apple
-together. The critic and the baselines use the realized axis.
+sampled `weld_direction`. Cause: the build applies `weld_direction` in the apple body frame, which is
+not world-aligned (the realized axis equals `R_apple · weld` exactly). The critic and the baselines
+use the realized axis.
 
 The actor model reads only `inputs["observations"]` and the critic only `inputs["states"]`.
 Checkpoints store both layouts (the wrapper's actual actor layout) and refuse a mismatch.
@@ -306,10 +307,11 @@ integrate damping implicitly (in the gain frame).
 
 ## 10. Known limitations and open issues
 
-- **v3 world set blocked: the equator grasp is not realized.** The apple spins freely about the stem
-  during the build settle (no gravity restoring torque about a vertical stem, soft torsion), so
-  sampled side grasps end up at random azimuths (median 85 deg, max 176 deg). The build must hold
-  the grasp before v3 can be screened (D17).
+- **v3 world set blocked: the equator grasp is not realized.** The build applies the world-frame
+  `weld_direction` in the apple body frame (`_approach_dir_in_apple_frame`, `weld_reference_quat=None`),
+  and the apple frame is rotated a median 118 deg from the world, so sampled side grasps land at the
+  wrong azimuth (median 85 deg, max 176 deg). The realized grasp equals `R_apple · weld` exactly. The
+  frame must be fixed before v3 can be screened (D17).
 - **v3 screening pilot** (2026-10-02, before the spin was found). Pilot: 48% of candidates pass
   pass 1 (v2: ~91%), with a strong elevation bias: grasps above the equator pass 21%, below it 74%.
   About 27% fail at rest at every elevation (failed grasp: TCP 10-49 cm off, 30-200 N at the wrist);

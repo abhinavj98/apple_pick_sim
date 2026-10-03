@@ -187,6 +187,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         grasp_hemisphere_pole: tuple[float, float, float] = (0.0, 0.0, -1.0),
         grasp_max_polar_angle_rad: float = np.pi / 6.0,
         grasp_roll_max_rad: float = 0.0,
+        grasp_weld_frame: str = "apple",
         reward_config: HarvestRewardConfig | None = None,
         episode_config: EpisodeConfig | None = None,
         hold_settle: HoldSettleConfig | None = None,
@@ -306,6 +307,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 max_polar_angle_rad=grasp_max_polar_angle_rad,
                 seed=dr_seed,
                 roll_max_rad=grasp_roll_max_rad,
+                weld_frame=grasp_weld_frame,
             )
         self._per_env_grippers = list(per_env_grippers)
 
@@ -568,6 +570,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         max_polar_angle_rad: float,
         seed: int,
         roll_max_rad: float = 0.0,
+        weld_frame: str = "apple",
     ) -> list[Any]:
         """Per-env grasp approach-direction diversity via the existing sys-ID sampler.
 
@@ -597,6 +600,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 robot_facing_weld=False,
                 weld_direction=tuple(float(x) for x in directions[i]),
                 weld_roll_rad=None if rolls[i] is None else float(rolls[i]),
+                weld_direction_frame=weld_frame,
             )
             for i in range(int(num_envs))
         ]
@@ -672,6 +676,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             weld = ",".join(f"{float(x):.6f}" for x in gripper.weld_direction)
             if gripper.weld_roll_rad:  # [D17] only rolled grasps extend the key (v2 snapshots still pair)
                 weld += f"|roll={float(gripper.weld_roll_rad):.6f}"
+            if gripper.weld_direction_frame != "apple":  # [D17] likewise for world-frame grasps
+                weld += f"|frame={gripper.weld_direction_frame}"
             payload = (fruiting_params_to_json(params) + "|" + weld).encode()
             out.append(hashlib.sha256(payload).hexdigest()[:16])
         return out
@@ -719,6 +725,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 params_json=fruiting_params_to_json(params),
                 weld_direction=tuple(float(x) for x in self._per_env_grippers[i].weld_direction),
                 weld_roll_rad=float(self._per_env_grippers[i].weld_roll_rad or 0.0),
+                weld_frame=self._per_env_grippers[i].weld_direction_frame,
                 support_kp=float(sup.kp[i]),
                 support_roll_kp=float(sup.roll_kp[i]),
                 support_zeta=float(sup.zeta[i]),

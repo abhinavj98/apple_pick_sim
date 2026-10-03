@@ -216,6 +216,9 @@ def build_batched_heterogeneous_scene(
             settled.cable.state_0.body_q.assign(settled_checkpoint.body_q)
             settled.cable.state_1.body_q.assign(settled_checkpoint.body_q)
             pre_weld_tree_obs = _capture_pre_weld_tree_obs(settled)
+            # [D17] world-frame weld directions: reference the settled apple pose of each world
+            weld_grippers = _weld_grippers_from_settled_apple(weld_grippers, settled)
+            gripper_weld = weld_grippers[0]
             weld_kw = _builder_kwargs(
                 config,
                 gripper=gripper_weld,
@@ -281,6 +284,9 @@ def build_batched_heterogeneous_scene(
             )
             settled_body_q = capture_body_q_numpy(settled.cable.state_0.body_q)
             pre_weld_tree_obs = _capture_pre_weld_tree_obs(settled)
+            # [D17] world-frame weld directions: reference the settled apple pose of each world
+            weld_grippers = _weld_grippers_from_settled_apple(weld_grippers, settled)
+            gripper_weld = weld_grippers[0]
             weld_kw = _builder_kwargs(
                 config,
                 gripper=gripper_weld,
@@ -959,6 +965,49 @@ def _apply_joint_penalty_overrides(
         support_zeta_per_env=support_zeta_per_env,
     )
     return applied_angular_kd, applied_linear_kd, applied_angular_kp, applied_linear_kp
+
+
+def _weld_grippers_from_settled_apple(
+    weld_grippers: Sequence[GripperProxyConfig], settled: Any
+) -> tuple[GripperProxyConfig, ...]:
+    """[D17] Set ``weld_reference_pos`` / ``_quat`` from each world's settled apple pose.
+
+    Only for grippers with ``weld_direction_frame == "world"`` and an explicit ``weld_direction``
+    that carry no reference yet. Without it the build applies the world-frame direction in the apple
+    body frame, which the settled apple has rotated (``R_apple * weld`` is what gets realized).
+    Positions are in each world's own (template) frame: the replication offset is removed.
+    """
+    grippers = tuple(weld_grippers)
+    need = [
+        g.weld_direction_frame == "world" and g.weld_direction is not None and g.weld_reference_quat is None
+        for g in grippers
+    ]
+    if not any(need):
+        return grippers
+    apple = settled.cable.apple_body
+    if apple is None:
+        raise ValueError("weld_direction_frame='world' needs an apple body in the settled scene")
+    bq = capture_body_q_numpy(settled.cable.state_0.body_q).reshape(-1, 7)
+    layout = getattr(settled, "layout", None)
+    out = []
+    for w, (g, n) in enumerate(zip(grippers, need)):
+        if not n:
+            out.append(g)
+            continue
+        if layout is not None and len(grippers) > 1:
+            q7 = bq[layout.body_index(w, int(layout.template_apple_body))]
+            origin = np.asarray(layout.world_origin(w), dtype=np.float64)
+        else:
+            q7 = bq[int(apple)]
+            origin = np.zeros(3)
+        out.append(
+            dataclasses.replace(
+                g,
+                weld_reference_pos=tuple(float(v) for v in (q7[:3] - origin)),
+                weld_reference_quat=tuple(float(v) for v in q7[3:7]),
+            )
+        )
+    return tuple(out)
 
 
 def _rebootstrap_fr3_after_post_grasp_settle(

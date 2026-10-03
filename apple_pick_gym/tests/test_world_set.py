@@ -140,3 +140,16 @@ def test_d17_grasp_pole_relative_polar_angle_knob():
     k = world_spec_knobs(s)
     assert k["weld_elevation_deg"] == pytest.approx(0.0, abs=1e-6)
     assert k["weld_azimuth_deg"] == pytest.approx(-90.0)
+
+
+def test_d17_weld_frame_round_trips_and_old_rows_keep_the_legacy_apple_frame(tmp_path):
+    spec = _spec(0, weld_frame="world")
+    path = tmp_path / "w.jsonl"
+    save_world_set(path, [spec])
+    assert load_world_set(path)[0].weld_frame == "world"
+    row = spec.to_row()
+    del row["weld_frame"]  # v1/v2 rows
+    assert WorldSpec.from_row(row).weld_frame == "apple"
+    assert world_specs_to_env_kwargs([spec])["per_env_grippers"][0].weld_direction_frame == "world"
+    with pytest.raises(ValueError):
+        _spec(0, weld_frame="body")

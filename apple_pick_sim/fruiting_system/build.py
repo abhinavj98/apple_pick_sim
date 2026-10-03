@@ -842,6 +842,13 @@ def _add_gripper_proxy(
         raise ValueError("weld_proxy_offset_in_apple_frame requires fix_to_apple=True")
     if config.weld_reference_quat is not None and config.weld_reference_pos is None:
         raise ValueError("weld_reference_quat requires weld_reference_pos")
+    if config.weld_direction_frame not in ("apple", "world"):
+        raise ValueError(f"weld_direction_frame must be 'apple' or 'world', got {config.weld_direction_frame!r}")
+    if config.weld_direction_frame == "world" and config.fix_to_apple and config.weld_reference_quat is None:
+        raise ValueError(
+            "weld_direction_frame='world' needs weld_reference_quat (the apple's orientation; the "
+            "batched settle-then-weld build fills it from the settled apple)"
+        )
 
     weld_apple_center = _weld_apple_center(config, artifacts)
     weld_apple_quat = (
@@ -988,6 +995,8 @@ def _add_gripper_proxy(
             else:
                 z_axis = approach_local
             up = wp.vec3(0.0, 0.0, 1.0)
+            if config.weld_direction_frame == "world" and weld_apple_quat is not None:
+                up = wp.normalize(wp.quat_rotate_inv(weld_apple_quat, up))  # [D17] world up, in the apple frame
             if abs(wp.dot(z_axis, up)) > 0.99:
                 up = wp.vec3(1.0, 0.0, 0.0)
             x_axis = wp.normalize(wp.cross(up, z_axis))

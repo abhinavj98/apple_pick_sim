@@ -618,3 +618,61 @@ def test_weld_roll_turns_the_proxy_about_its_approach_axis_only():
     np.testing.assert_allclose(r1[:, 2], r0[:, 2], atol=1e-5)  # same approach axis
     np.testing.assert_allclose(r1[:, 2], -p1 / np.linalg.norm(p1), atol=1e-5)  # +z points into the apple
     assert float(np.dot(r1[:, 0], r0[:, 0])) == pytest.approx(np.cos(np.pi / 3), abs=1e-5)
+
+
+def test_world_frame_weld_direction_is_mapped_through_the_apple_reference_orientation():
+    """[D17] weld_direction_frame='world': the world-frame approach and the look-at's up are both
+    expressed in the apple body frame through weld_reference_quat (which the batched build fills from
+    the settled apple), so the realized grasp is the sampled world direction and the tool x axis is
+    horizontal whatever the apple's orientation. It requires the reference orientation."""
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    weld = np.array([0.0, -1.0, 0.0])
+    yaw = np.pi / 2  # apple body frame rotated 90 deg about world z
+    q_apple = (0.0, 0.0, float(np.sin(yaw / 2)), float(np.cos(yaw / 2)))  # xyzw
+    R = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+
+    def offset(frame):
+        scene = fs.generate_coupled_cable_scene(
+            ranges,
+            seed=5,
+            gripper_proxy=fs.GripperProxyConfig(
+                fix_to_apple=True,
+                robot_facing_weld=False,
+                weld_direction=tuple(weld),
+                weld_direction_frame=frame,
+                weld_reference_pos=(0.0, 0.0, 0.0),
+                weld_reference_quat=q_apple,
+            ),
+            **COUPLED_VBD_SCENE_KW,
+        )
+        off = np.asarray(scene.gripper_proxy_offset_in_apple_frame, dtype=np.float64)
+        x, y, z, w = off[3:7]
+        rot = np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ]
+        )
+        return off[:3], rot
+
+    p_w, r_w = offset("world")
+    # in world: grasp point along the sampled direction, tool +z into the apple, tool x horizontal
+    np.testing.assert_allclose(R @ (p_w / np.linalg.norm(p_w)), weld, atol=1e-5)
+    np.testing.assert_allclose(R @ r_w[:, 2], -weld, atol=1e-5)
+    assert abs(float((R @ r_w[:, 0])[2])) < 1e-5
+    # legacy ('apple') with a reference quat already maps the direction (same grasp point); only
+    # the look-at's up differs (apple-frame z instead of world up)
+    p_a, r_a = offset("apple")
+    np.testing.assert_allclose(p_a, p_w, atol=1e-6)
+    np.testing.assert_allclose(r_a[:, 2], r_w[:, 2], atol=1e-5)
+    with pytest.raises(ValueError, match="weld_reference_quat"):
+        fs.generate_coupled_cable_scene(
+            ranges,
+            seed=5,
+            gripper_proxy=fs.GripperProxyConfig(
+                fix_to_apple=True, robot_facing_weld=False, weld_direction=tuple(weld), weld_direction_frame="world"
+            ),
+            **COUPLED_VBD_SCENE_KW,
+        )

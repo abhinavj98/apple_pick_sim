@@ -50,12 +50,17 @@ class WorldSpec:
     screening: dict[str, Any] = dataclasses.field(default_factory=dict)
     # [D17] gripper roll about the approach axis (rad); v1/v2 rows have none (0 = the look-at)
     weld_roll_rad: float = 0.0
+    # [D17] "world": weld_direction is realized in the world frame (the build references the settled
+    # apple). v1/v2 rows are "apple" (legacy: realized as R_apple * weld_direction)
+    weld_frame: str = "apple"
 
     def __post_init__(self) -> None:
         d = tuple(float(x) for x in self.weld_direction)
         if len(d) != 3 or not math.isclose(math.sqrt(sum(x * x for x in d)), 1.0, abs_tol=1e-4):
             raise ValueError(f"weld_direction must be a unit 3-vector, got {self.weld_direction!r}")
         object.__setattr__(self, "weld_direction", d)
+        if self.weld_frame not in ("apple", "world"):
+            raise ValueError(f"weld_frame must be 'apple' or 'world', got {self.weld_frame!r}")
 
     @property
     def passed(self) -> bool:
@@ -113,6 +118,7 @@ def world_specs_to_env_kwargs(specs: Sequence[WorldSpec]) -> dict[str, Any]:
                 robot_facing_weld=False,
                 weld_direction=s.weld_direction,
                 weld_roll_rad=float(s.weld_roll_rad),
+                weld_direction_frame=s.weld_frame,
             )
             for s in specs
         ],

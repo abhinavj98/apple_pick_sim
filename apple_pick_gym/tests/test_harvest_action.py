@@ -281,3 +281,14 @@ def test_d17_post_grasp_hold_is_stiffer_with_the_same_damping_ratios():
     # zeta kept from the old 100 N/m / 15 and 10 N*m/rad / 3 hold
     assert h.linear_d / (2 * math.sqrt(h.linear_k)) == pytest.approx(15.0 / (2 * math.sqrt(100.0)), rel=1e-3)
     assert h.angular_d / (2 * math.sqrt(h.angular_k)) == pytest.approx(3.0 / (2 * math.sqrt(10.0)), rel=1e-3)
+
+
+def test_d17_default_grasp_sampler_sets_the_weld_frame():
+    from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import ApplePickVicHarvestEnv
+
+    grips = ApplePickVicHarvestEnv._sample_default_grasps(
+        num_envs=3, pole=(0.0, -1.0, 0.0), max_polar_angle_rad=0.5, seed=1, weld_frame="world"
+    )
+    assert all(g.weld_direction_frame == "world" for g in grips)
+    legacy = ApplePickVicHarvestEnv._sample_default_grasps(num_envs=3, pole=(0.0, 0.0, -1.0), max_polar_angle_rad=0.5, seed=1)
+    assert all(g.weld_direction_frame == "apple" for g in legacy)

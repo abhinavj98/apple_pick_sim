@@ -547,6 +547,14 @@ class GripperProxyConfig:
     When ``robot_facing_weld=True``, validated to lie on the robot-facing hemisphere
     (dot ≥ 0 with apple→robot unit vector); raises ``ValueError`` otherwise.
     """
+    weld_direction_frame: str = "apple"
+    """[D17] How a settle-then-weld build resolves ``weld_direction``. ``"apple"`` (legacy): the
+    batched build passes no apple reference, so the direction is applied in the apple body frame,
+    which is not world-aligned (the realized grasp is ``R_apple * weld_direction``). ``"world"``: the
+    batched build sets ``weld_reference_pos`` / ``weld_reference_quat`` to the settled apple pose, so
+    the direction (and the look-at's up) are world frame and the sampled grasp is realized. Requires
+    ``weld_reference_quat`` at scene build time.
+    """
     weld_roll_rad: float | None = None
     """[D17] Roll (rad) of the gripper about its approach axis, applied after the look-at.
 

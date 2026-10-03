@@ -54,12 +54,10 @@ success; no safety trip); gamma 0.995. Decisions and findings: D17 in
 
 - [x] D17a-h code: criterion, reward, tool-frame VIC kernel, action, obs/critic, grasp roll / cone /
   hold, bend-pull surrogate (CPU learning smoke), baselines + v2 gate, `sim_train_gpu_v2.json`
-- [ ] **v3 world set -- blocked on a build fix:** the build applies the world-frame `weld_direction` in
-  the apple body frame (rotated a median 118 deg from world), so equator grasps land at the wrong
-  azimuth (median 85 deg; D17). Fix the frame, gated so existing world sets rebuild unchanged
-  (maintainer decision: shared `apple_pick_sim` pipeline), then
-  re-screen, select 2000 with a coverage report on the *realized* grasp, build the all-2000 snapshot
-  (`harvest_worlds_v3_all2000`) and wire-check `sim_train_gpu_v2.json` on GPU
+- [x] Grasp-frame fix (D17i): world-frame grasp directions are realized (0.6 deg median), 29/32 valid
+- [ ] **v3 world set** -- screening with `--grasp-frame world` (pass 1 running), then pass 2, a
+  2000-world selection with a coverage report, the all-2000 snapshot (`harvest_worlds_v3_all2000`)
+  and a GPU wiring check of `sim_train_gpu_v2.json`
 - [ ] GPU baselines on v3: `scripted_pull`, `scripted_bend_pull`, `scripted_down_pull`, `random` (the
   v2 gate's bars); check that the bend-pull detaches at far lower tension than the down-pull
 - [ ] v2 training run (2 h segments, wandb, video), eval against the v2 gate, then the robot

@@ -1089,6 +1089,7 @@ pushed v1 away from that behaviour:
 | D17f | Grasps: 60 deg cone about world -y (equator, robot side), roll +-90 deg; post-grasp hold 500 N/m / 30 N*m/rad (was 100 / 10) | `params.py`, `build.py`, `world_set.py`, screening CLI |
 | D17g | `SurrogateBendPullEnv`; v2 CPU learning smoke | `rl/surrogate_env.py` |
 | D17h | Baselines `scripted_bend_pull`, `scripted_down_pull`, tool-frame `scripted_pull`; v2 gate (no safety clause; collateral <= the scripted bend-pull's) | `rl/baselines.py`, `rl/gate.py` |
+| D17i | World-frame grasp directions are realized: the build references the settled apple (`weld_direction_frame="world"`, `WorldSpec.weld_frame`, `--grasp-frame world`); legacy default unchanged | `build.py`, `batched_heterogeneous_build.py`, `world_set.py` |
 | -- | gamma 0.995. The time-limit semantics are unchanged: skrl's GAE cuts only at `terminated`, so the critic keeps step_frac and the wrapper still reports the limit as terminated | `sim_train_gpu_v2.json` |
 
 **Findings while building it.**
@@ -1125,10 +1126,12 @@ pushed v1 away from that behaviour:
   **Correction (same day): it is a frame bug, not a spin.** The realized grasp equals the sampled direction rotated by the apple body's orientation, exactly (0.0 deg on 18 valid worlds): the build applies `weld_direction` (documented as world frame) in the apple body frame (`_approach_dir_in_apple_frame` with `weld_reference_quat=None`), and the apple body frame is a median 118 deg (max 174) from the world frame. The proxy is pinned in VBD (`inv_mass = 0`) through the post-grasp settle, and no VIC acts there: the arm is not stepped, and IK aligns it to the proxy afterwards. Bottom grasps barely changed (26 deg) because the apple frame's rotation is mostly about the vertical axis.
 
 **Open (maintainer).**
-1. The v3 world set needs the sampled grasp expressed in the apple body frame (or
-   `weld_reference_quat` set to the apple's orientation) so the world-frame cone is realized. It is a
-   change to the shared `apple_pick_sim` build and would change what existing world sets rebuild to,
-   so it should be gated (maintainer decision).
+1. ~~The v3 world set needs the sampled grasp expressed in the apple frame.~~ **Fixed (D17i, maintainer
+   OK):** `GripperProxyConfig.weld_direction_frame="world"` makes the batched settle-then-weld build
+   reference each world's settled apple pose (`weld_reference_pos` / `_quat`) and use world up in the
+   look-at; the default `"apple"` keeps v1/v2 rebuilds unchanged. GPU check (seed 100, 32 worlds):
+   realized vs sampled grasp 0.6 deg median / 3.3 deg max (was 81 / 132), roll within 2 deg, 29/32
+   valid (was 17/32) with no elevation bias. v3 is re-screened with `--grasp-frame world`.
 2. Rig side: tool-frame stiffness in the controller (today base-frame per-axis), TCP-frame
    observations with the start pose stored at grasp, and the rig's own force limits.
 3. The 500 N/m hold is 5x the rig's dataset gain (100 N/m).

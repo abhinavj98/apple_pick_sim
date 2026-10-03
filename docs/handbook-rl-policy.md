@@ -256,7 +256,7 @@ uv run python -m apple_pick_gym.rl.eval_vic_harvest --checkpoint <run>/checkpoin
 
 # v3 world set: screen candidates with the equator cone (one batch per process), then rescreen
 uv run python apple_pick_gym/batched_examples/example_screen_harvest_worlds.py sample --num-envs 128 --seed <s> \
-    --grasp-pole 0 -1 0 --grasp-max-polar-deg 60 --grasp-roll-max-deg 90 --out tmp/harvest_worlds_v3/pass1.jsonl
+    --grasp-pole 0 -1 0 --grasp-max-polar-deg 60 --grasp-roll-max-deg 90 --grasp-frame world --out tmp/harvest_worlds_v3/pass1.jsonl
 ```
 
 Outputs under `--run-dir`: `config.json`; `metrics.jsonl` (one `"update"` row per PPO update, one
@@ -307,12 +307,12 @@ integrate damping implicitly (in the gain frame).
 
 ## 10. Known limitations and open issues
 
-- **v3 world set blocked: the equator grasp is not realized.** The build applies the world-frame
-  `weld_direction` in the apple body frame (`_approach_dir_in_apple_frame`, `weld_reference_quat=None`),
-  and the apple frame is rotated a median 118 deg from the world, so sampled side grasps land at the
-  wrong azimuth (median 85 deg, max 176 deg). The realized grasp equals `R_apple · weld` exactly. The
-  frame must be fixed before v3 can be screened (D17).
-- **v3 screening pilot** (2026-10-02, before the spin was found). Pilot: 48% of candidates pass
+- **Grasp frame (fixed, D17i).** The batched build used to apply the world-frame `weld_direction` in
+  the apple body frame (rotated a median 118 deg from world), so side grasps landed at the wrong
+  azimuth. `weld_direction_frame="world"` (`WorldSpec.weld_frame`, `--grasp-frame world`) references
+  the settled apple; realized vs sampled is now 0.6 deg median. v1/v2 world sets keep the legacy
+  frame (`"apple"`), so their snapshots still pair.
+- **v3 screening pilot with the legacy frame** (2026-10-02, superseded by the fix). Pilot: 48% of candidates pass
   pass 1 (v2: ~91%), with a strong elevation bias: grasps above the equator pass 21%, below it 74%.
   About 27% fail at rest at every elevation (failed grasp: TCP 10-49 cm off, 30-200 N at the wrist);
   the stiffer hold raises that modestly (14/32 vs 10/32 at the old 100/10 hold on the same worlds).

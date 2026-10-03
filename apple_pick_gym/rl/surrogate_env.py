@@ -114,6 +114,11 @@ class SurrogateHarvestEnv:
         self._substeps = int(substeps)
         self._action_bounds = action_bounds or HarvestActionBounds()
         self._reward_cfg = reward_config or HarvestRewardConfig()
+        if self._reward_cfg.detach.criterion != "envelope":
+            raise ValueError(
+                "SurrogateHarvestEnv implements only the 'envelope' detach criterion "
+                f"(got {self._reward_cfg.detach.criterion!r}); bend-pull needs a stem chord model"
+            )
         self._episode_cfg = episode_config or EpisodeConfig()
         self._plant = plant_ranges or SurrogatePlantRanges()
         self._arm = arm_ranges or SurrogateArmRanges()
@@ -357,6 +362,7 @@ class SurrogateHarvestEnv:
             "detach_index": detach_index(target_wrench, self._reward_cfg.detach, stem_axis=self.weld, thresholds=self._thresholds),
             "ft_wrist": ft_raw,
         }
+        info["detach_utilization"] = torch.sqrt(info["detach_index"])  # [D17] what progress reads
         return obs, info
 
     # ------------------------------------------------------------------ privileged

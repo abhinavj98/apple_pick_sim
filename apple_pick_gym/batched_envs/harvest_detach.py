@@ -70,8 +70,28 @@ class DetachEnvelopeConfig:
     # the draw; the privileged critic does. Total-moment envelope only.
     f_max_range_n: tuple[float, float] | None = None
     tau_max_range_nm: tuple[float, float] | None = None
+    # [D17] Which criterion the env evaluates. "envelope": the elliptical force + torque envelope
+    # above. "bend_pull": Li et al. 2016 (Comput. Electron. Agric. 127:633, Eq 3/4): detach when
+    # the stem tension reaches F_d(theta_b) = s * (a theta^2 + b theta + c) N, theta_b the stem
+    # chord's bending angle (deg) from its rest direction, flat past the quadratic's minimum. The
+    # coefficients average the paper's against- and along-orientation fits; s is drawn per env at
+    # each reset from detach_scale_range (None: s = 1).
+    criterion: Literal["envelope", "bend_pull"] = "envelope"
+    bend_pull_coeffs: tuple[float, float, float] = (0.015, -1.155, 26.09)
+    detach_scale_range: tuple[float, float] | None = (0.85, 1.15)
 
     def __post_init__(self) -> None:
+        if self.criterion not in ("envelope", "bend_pull"):
+            raise ValueError(f"unknown criterion {self.criterion!r}")
+        a, b, _c = (float(v) for v in self.bend_pull_coeffs)
+        if not (a > 0.0 and b < 0.0):
+            raise ValueError(
+                f"bend_pull_coeffs must be a convex quadratic with its minimum above 0 deg "
+                f"(a > 0, b < 0), got {self.bend_pull_coeffs}"
+            )
+        rng = self.detach_scale_range
+        if rng is not None and (len(rng) != 2 or not 0.0 < float(rng[0]) <= float(rng[1])):
+            raise ValueError(f"detach_scale_range must be (lo, hi) with 0 < lo <= hi, got {rng}")
         for name in ("f_max_n", "tau_max_nm", "torsion_max_nm", "bending_max_nm"):
             if not getattr(self, name) > 0.0:
                 raise ValueError(f"{name} must be > 0, got {getattr(self, name)}")
@@ -175,3 +195,64 @@ def junction_wrench_at_anchor(
     torque_com = wrench_at_child_com[:, 3:6]
     torque_anchor = torque_com - torch.cross(child_anchor - child_com, force, dim=-1)
     return torch.cat([force, torque_anchor], dim=-1)
+
+
+# ---------------------------------------------------------------------------------------------
+# [D17] Bend-and-pull criterion (``DetachEnvelopeConfig.criterion == "bend_pull"``)
+# ---------------------------------------------------------------------------------------------
+
+
+def bend_pull_min_angle_deg(cfg: DetachEnvelopeConfig) -> float:
+    """Bending angle (deg) where the detach-force quadratic bottoms out: ``-b / 2a``."""
+    a, b, _c = (float(v) for v in cfg.bend_pull_coeffs)
+    return -b / (2.0 * a)
+
+
+def bend_pull_detach_force(theta_deg: torch.Tensor, scale: torch.Tensor, cfg: DetachEnvelopeConfig) -> torch.Tensor:
+    """Stem tension (N) that detaches the fruit at bending angle ``theta_deg``, shape ``(N,)``.
+
+    ``scale * (a theta^2 + b theta + c)`` with ``theta`` clamped to ``[0, theta_min]``: the
+    curve is held flat past its minimum. ``scale`` is the per-env draw (:func:`detach_scales`).
+    """
+    a, b, c = (float(v) for v in cfg.bend_pull_coeffs)
+    th = torch.clamp(theta_deg, min=0.0, max=bend_pull_min_angle_deg(cfg))
+    return scale.to(th) * (a * th * th + b * th + c)
+
+
+def chord_angle_deg(chord: torch.Tensor, rest_chord: torch.Tensor) -> torch.Tensor:
+    """Angle (deg) between ``(N, 3)`` stem chords (any length) now and at rest, shape ``(N,)``.
+
+    ``atan2(|a x b|, a . b)`` stays accurate near 0 deg, where ``acos`` of a dot product does not.
+    """
+    cross = torch.linalg.norm(torch.cross(chord, rest_chord.to(chord), dim=-1), dim=-1)
+    dot = (chord * rest_chord.to(chord)).sum(-1)
+    return torch.rad2deg(torch.atan2(cross, dot))
+
+
+def stem_tension(force_on_child: torch.Tensor, chord: torch.Tensor) -> torch.Tensor:
+    """Axial stem tension (N, positive = pulled) from the stem-root joint force, shape ``(N,)``.
+
+    ``force_on_child`` is the joint's force on its child segment (the apple side); ``chord`` points
+    junction -> apple. A pulled or hanging apple drags the child away from the junction and the
+    joint holds it back, so tension is the force component along ``-chord``.
+    """
+    axis = torch.nn.functional.normalize(chord.to(force_on_child), dim=-1)
+    return -(force_on_child * axis).sum(-1)
+
+
+def bend_pull_utilization(
+    tension: torch.Tensor, theta_deg: torch.Tensor, scale: torch.Tensor, cfg: DetachEnvelopeConfig
+) -> torch.Tensor:
+    """``tension / F_d(theta)``, shape ``(N,)``: detach at ``>= 1``. Not clipped (compression < 0)."""
+    return tension / bend_pull_detach_force(theta_deg, scale, cfg)
+
+
+def detach_scales(
+    cfg: DetachEnvelopeConfig, n: int, rng: np.random.Generator, *, device: torch.device | str
+) -> torch.Tensor:
+    """Per-env ``(n,)`` scale on the bend-pull detach force for one episode (uniform; ones if off)."""
+    if cfg.detach_scale_range is None:
+        s = np.ones(n)
+    else:
+        s = rng.uniform(float(cfg.detach_scale_range[0]), float(cfg.detach_scale_range[1]), size=n)
+    return torch.as_tensor(s, dtype=torch.float32, device=device)

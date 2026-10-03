@@ -76,7 +76,15 @@ from apple_pick_gym.batched_envs.harvest_action import (
     pack_vic_pose_action,
     split_harvest_action,
 )
-from apple_pick_gym.batched_envs.harvest_detach import detach_index, junction_wrench_at_anchor, shift_moment
+from apple_pick_gym.batched_envs.harvest_detach import (
+    bend_pull_detach_force,
+    chord_angle_deg,
+    detach_index,
+    detach_scales,
+    junction_wrench_at_anchor,
+    shift_moment,
+    stem_tension,
+)
 from apple_pick_gym.batched_envs.harvest_episode import (
     EpisodeConfig,
     FreezeMask,
@@ -85,7 +93,6 @@ from apple_pick_gym.batched_envs.harvest_episode import (
 from apple_pick_gym.batched_envs.harvest_outcome import evaluate_harvest_step
 from apple_pick_gym.batched_envs.harvest_reward import (
     HarvestRewardConfig,
-    compute_progress_reward,
     quat_rotate_vector,
 )
 from apple_pick_gym.batched_envs.sensor_realism import FtSensorConfig, FtSensorModel
@@ -204,6 +211,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._collateral_baseline_norm: dict[str, torch.Tensor] | None = None
         self._progress_prev: torch.Tensor | None = None
         self._peak_collateral: torch.Tensor | None = None
+        # [D17] bend-pull criterion state: the stem chord at reset (theta_b = 0) and the per-env
+        # detach-force scale, both re-drawn / re-recorded in reset()
+        self._rest_chord: torch.Tensor | None = None
+        self._detach_scale: torch.Tensor | None = None
 
         if sim_config is None:
             from apple_pick_sim.coupled_fruiting import BatchedHeterogeneousCoupledSimConfig
@@ -788,9 +799,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         stem_root = self._stem_root_wrench() if self._reward_cfg.detach.wrench_source == "stem_elastic" else None
         info["target_junction_wrench"] = readout if stem_root is None else stem_root
         info["target_junction_axis"] = self._target_stem_axis()
-        info["detach_index"] = detach_index(
-            info["target_junction_wrench"], self._reward_cfg.detach, stem_axis=info["target_junction_axis"]
-        )
+        self._publish_detach_state(info)
         if self._collateral_baseline_norm is not None:
             info["collateral_baseline_norm"] = self._collateral_baseline_norm
         # Raw (privileged, un-sensor-filtered) ft_wrist for reward computation --
@@ -812,6 +821,42 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             for name in self._junction_names
         }
         return info
+
+    def _publish_detach_state(self, info: dict[str, Any]) -> None:
+        """Evaluate the configured detach criterion into ``info`` ([D17]).
+
+        Always publishes ``detach_index`` (success at ``>= 1``) and ``detach_utilization`` (what
+        the progress reward reads). The bend-pull criterion also publishes the stem bending angle
+        ``theta_b_deg`` (chord now vs at reset), the axial ``stem_tension`` from the D1 stem-root
+        wrench, the ``detach_force`` it is compared against and the episode's ``detach_scale``.
+        """
+        det = self._reward_cfg.detach
+        if det.criterion == "envelope":
+            info["detach_index"] = detach_index(
+                info["target_junction_wrench"], det, stem_axis=info["target_junction_axis"]
+            )
+            info["detach_utilization"] = torch.sqrt(info["detach_index"])
+            return
+        chord = info["target_junction_axis"]
+        if chord is None:
+            raise RuntimeError("the bend-pull detach criterion needs a stem_apple junction (stem chord)")
+        n = self.num_envs
+        rest = chord if self._rest_chord is None else self._rest_chord
+        scale = (
+            torch.ones(n, dtype=torch.float32, device=self.device)
+            if self._detach_scale is None
+            else self._detach_scale
+        )
+        theta = chord_angle_deg(chord, rest)
+        tension = stem_tension(info["target_junction_wrench"][:, :3], chord)
+        f_d = bend_pull_detach_force(theta, scale, det)
+        u = tension / f_d
+        info["theta_b_deg"] = theta
+        info["stem_tension"] = tension
+        info["detach_force"] = f_d
+        info["detach_scale"] = scale
+        info["detach_index"] = u
+        info["detach_utilization"] = u
 
     def _actions_tensor(self, action: Any) -> torch.Tensor:
         if not isinstance(action, torch.Tensor):
@@ -898,6 +943,14 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._pending_terminated = None
 
         obs = self._gather_obs()
+        # [D17] bend-pull: theta_b is measured from this episode's settled stem chord, and the
+        # detach force is scaled per env (drawn here, before the first info is built)
+        self._rest_chord = None
+        if self._reward_cfg.detach.criterion == "bend_pull":
+            self._rest_chord = self._target_stem_axis()
+            self._detach_scale = detach_scales(
+                self._reward_cfg.detach, self.num_envs, self._dr_rng, device=self.device
+            )
         # Rest load on every non-target junction, so the collateral term counts only
         # load the policy adds (harvest_reward.compute_collateral_penalty).
         self._collateral_baseline_norm = None
@@ -909,9 +962,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         }
         info["collateral_baseline_norm"] = self._collateral_baseline_norm
         self._peak_collateral = None  # [D13] running peak collateral, reset per episode
-        self._progress_prev = compute_progress_reward(
-            info["target_junction_wrench"], self._reward_cfg, stem_axis=info["target_junction_axis"]
-        )
+        self._progress_prev = torch.clamp(info["detach_utilization"], min=0.0, max=1.0)
         return obs, info
 
     def privileged_fields(self) -> dict[str, torch.Tensor]:

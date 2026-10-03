@@ -227,3 +227,14 @@ def test_init_from_across_a_speed_cap_change_needs_explicit_opt_in(tmp_path):
     assert row["kind"] == "init_from"
     assert row["source_action_bounds"]["linear_delta_m"] == pytest.approx(src_cfg.env.linear_delta_m)
     assert row["action_bounds"]["linear_delta_m"] == pytest.approx(slow_env.linear_delta_m)
+
+
+def test_d17_detach_criterion_reaches_the_env_and_the_surrogate_rejects_bend_pull():
+    from apple_pick_gym.rl.trainer import build_env
+
+    env = build_env(EnvConfig(kind="surrogate", num_envs=4, device="cpu", detach_scale_range=(0.9, 1.1)))
+    det = env._reward_cfg.detach
+    assert det.criterion == "envelope"  # the EnvConfig default until the surrogate models a stem chord
+    assert det.detach_scale_range == (0.9, 1.1)
+    with pytest.raises(ValueError, match="envelope"):
+        build_env(EnvConfig(kind="surrogate", num_envs=4, device="cpu", detach_criterion="bend_pull"))

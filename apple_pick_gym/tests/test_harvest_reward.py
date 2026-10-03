@@ -43,6 +43,7 @@ def test_slack_is_a_constant_per_step_cost():
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(2, 1)}
     info = {
         "target_junction_wrench": torch.zeros(2, 6),
+        "detach_utilization": torch.zeros(2),
         "ft_wrist": torch.zeros(2, 6),
         "woody_part_force": {"spur_stem": torch.zeros(2, 6), "stem_apple": torch.zeros(2, 6)},
     }
@@ -141,6 +142,7 @@ def test_dense_reward_combines_weighted_terms():
     info = {
         # anchor-frame target wrench, on the envelope -> progress=1.0
         "target_junction_wrench": torch.tensor([[0.0, 0.0, 20.0, 0.0, 0.0, 0.0]]),
+        "detach_utilization": torch.tensor([1.0]),
         "ft_wrist": torch.tensor([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0]]),  # pullout=2.0
         "woody_part_force": {
             "spur_stem": torch.zeros(1, 6),
@@ -158,6 +160,7 @@ def test_dense_reward_uses_collateral_baseline_from_info():
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
     info = {
         "target_junction_wrench": torch.zeros(1, 6),
+        "detach_utilization": torch.zeros(1),
         "ft_wrist": torch.zeros(1, 6),
         "woody_part_force": {
             "spur_stem": torch.zeros(1, 6),
@@ -185,7 +188,7 @@ def test_d7_progress_uses_per_env_thresholds_from_info():
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]] * 2)}
     info = {
         "target_junction_wrench": w,
-        "detach_thresholds": th,
+        "detach_utilization": compute_progress_reward(w, cfg, thresholds=th),  # what the env publishes
         "ft_wrist": torch.zeros(2, 6),
         "woody_part_force": {"spur_stem": w, "other": torch.zeros(2, 6)},
     }
@@ -210,6 +213,7 @@ def test_d9_dense_terms_use_the_configured_pullout_hinge():
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
     info = {
         "target_junction_wrench": w,
+        "detach_utilization": torch.zeros(1),
         "ft_wrist": torch.tensor([[0.0, 0.0, 12.0, 0.0, 0.0, 0.0]]),
         "woody_part_force": {"spur_stem": w, "other": torch.zeros(1, 6)},
     }
@@ -227,9 +231,31 @@ def test_d11_wrist_force_soft_cap_charges_total_wrist_force_above_it():
     ft = torch.zeros(3, 6)
     ft[0, 0], ft[1, 0], ft[2, 1] = 20.0, 30.0, 45.0  # lateral (x/y) pushes; ee z = world z
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]] * 3)}
-    info = {"target_junction_wrench": w, "ft_wrist": ft, "woody_part_force": {"spur_stem": w, "other": torch.zeros(3, 6)}}
+    info = {
+        "target_junction_wrench": w,
+        "detach_utilization": torch.zeros(3),
+        "ft_wrist": ft,
+        "woody_part_force": {"spur_stem": w, "other": torch.zeros(3, 6)},
+    }
     raw = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
     torch.testing.assert_close(raw["wrist"], torch.tensor([0.0, 5.0, 20.0]))
     torch.testing.assert_close(raw["pullout"], torch.zeros(3))  # lateral: not pull-out
     torch.testing.assert_close(weight_dense_reward_terms(raw, cfg)["wrist"], torch.tensor([0.0, -2.5, -10.0]))
     assert HarvestRewardConfig().w_wrist == 0.0  # library default: off
+
+
+def test_d17_progress_term_is_the_env_published_utilization_clipped():
+    # [D17] the env owns the detach criterion (envelope or bend-pull) and publishes
+    # info["detach_utilization"]; the reward reads it rather than recomputing it from a wrench.
+    from apple_pick_gym.batched_envs.harvest_reward import compute_dense_reward_terms
+
+    cfg = HarvestRewardConfig()
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]] * 4)}
+    info = {
+        "target_junction_wrench": torch.zeros(4, 6),  # ignored by progress
+        "detach_utilization": torch.tensor([-0.2, 0.0, 0.4, 1.7]),
+        "ft_wrist": torch.zeros(4, 6),
+        "woody_part_force": {"spur_stem": torch.zeros(4, 6), "other": torch.zeros(4, 6)},
+    }
+    terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
+    torch.testing.assert_close(terms["progress"], torch.tensor([0.0, 0.0, 0.4, 1.0]))

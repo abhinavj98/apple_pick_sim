@@ -25,6 +25,7 @@ def _info(target_f, wrist_f=0.0, other=(0.0, 0.0, 0.0)):
         "target_junction_wrench": w,
         "target_junction_force": w,
         "detach_index": (w[:, 2] / 20.0) ** 2,
+        "detach_utilization": w[:, 2] / 20.0,
         "ft_wrist": wrist,
         "woody_part_force": {TJ: w, "stem_apple": o},
         "collateral_baseline_norm": {"stem_apple": torch.zeros(N)},

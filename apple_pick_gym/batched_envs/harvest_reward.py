@@ -134,17 +134,14 @@ def compute_dense_reward_terms(
 ) -> dict[str, torch.Tensor]:
     """Raw (unweighted) dense reward terms, each shape (N,); ``slack`` is 1 per step.
 
-    Reads ``info["target_junction_wrench"]`` (anchor-frame target wrench),
+    Reads ``info["detach_utilization"]`` (the env's detach criterion, [D17]),
     ``info["ft_wrist"]``, ``info["woody_part_force"]`` and, if present,
     ``info["collateral_baseline_norm"]``.
     """
     return {
-        "progress": compute_progress_reward(
-            info["target_junction_wrench"],
-            cfg,
-            stem_axis=info.get("target_junction_axis"),
-            thresholds=info.get("detach_thresholds"),
-        ),
+        # [D17] the env owns the criterion (elliptical envelope or bend-and-pull) and publishes
+        # its utilization; the reward does not recompute it from a wrench.
+        "progress": torch.clamp(info["detach_utilization"], min=0.0, max=1.0),
         "pullout": compute_pullout_penalty(info["ft_wrist"], obs["tcp_quat"], threshold_n=cfg.pullout_threshold_n),
         "wrist": torch.clamp(torch.linalg.norm(info["ft_wrist"][:, :3], dim=-1) - float(cfg.wrist_force_soft_cap_n), min=0.0),
         "collateral": compute_collateral_penalty(

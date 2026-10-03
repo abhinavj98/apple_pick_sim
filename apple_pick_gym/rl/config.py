@@ -44,6 +44,11 @@ class EnvConfig:
     bending_max_nm: float = 0.9
     # [D1] which spur-stem wrench the envelope reads (see DetachEnvelopeConfig.wrench_source)
     wrench_source: Literal["stem_elastic", "junction_readout"] = "stem_elastic"
+    # [D17] detach criterion: "envelope" (the f_max / tau_max ellipse above) or "bend_pull" (Li et
+    # al. 2016: stem tension >= F_d(theta_b), see DetachEnvelopeConfig). The surrogate env supports
+    # only "envelope" for now, so that stays the default; the v2 sim configs select "bend_pull".
+    detach_criterion: Literal["envelope", "bend_pull"] = "envelope"
+    detach_scale_range: tuple[float, float] | None = (0.85, 1.15)  # bend_pull: per-env F_d scale
     success_streak_steps: int = 3
     safety_force_cap_n: float = 40.0
     safety_torque_cap_nm: float = 10.0

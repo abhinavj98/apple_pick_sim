@@ -229,3 +229,103 @@ def test_d7_ranges_are_validated():
         DetachEnvelopeConfig(tau_max_range_nm=(0.0, 0.1))
     with pytest.raises(ValueError):  # the split envelope keeps fixed limits
         DetachEnvelopeConfig(torque_mode="split", f_max_range_n=(15.0, 25.0))
+
+
+# ---------------------------------------------------------------------------------------------
+# [D17] Bend-and-pull criterion (Li et al. 2016, Comput. Electron. Agric. 127:633, Eq 3/4):
+# detach when the stem tension reaches F_d(theta_b), the pull force needed at stem bending angle
+# theta_b. The two orientation-specific fits are averaged and the curve is held flat past its
+# minimum (the quadratic's rise is a fitting artefact outside the 10-30 deg data).
+# ---------------------------------------------------------------------------------------------
+
+from apple_pick_gym.batched_envs.harvest_detach import (  # noqa: E402
+    bend_pull_detach_force,
+    bend_pull_utilization,
+    chord_angle_deg,
+    detach_scales,
+    stem_tension,
+)
+
+
+def _eq3(t):  # pulling against the stem's natural orientation
+    return 0.02 * t * t - 1.32 * t + 26.03
+
+
+def _eq4(t):  # pulling along it
+    return 0.01 * t * t - 0.99 * t + 26.15
+
+
+def test_bend_pull_default_criterion_and_coefficients_are_the_li2016_average():
+    cfg = DetachEnvelopeConfig(criterion="bend_pull")
+    a, b, c = cfg.bend_pull_coeffs
+    assert (a, b, c) == pytest.approx((0.015, -1.155, 26.09))
+    for t in (10.0, 20.0, 30.0):  # the fitted bending angles
+        f = bend_pull_detach_force(torch.tensor([t]), torch.ones(1), cfg)
+        assert float(f) == pytest.approx(0.5 * (_eq3(t) + _eq4(t)), abs=1e-4)
+
+
+def test_bend_pull_force_values_and_flat_past_the_minimum():
+    cfg = DetachEnvelopeConfig(criterion="bend_pull")
+    theta = torch.tensor([0.0, 20.0, 38.5, 50.0, 90.0])
+    f = bend_pull_detach_force(theta, torch.ones(5), cfg)
+    torch.testing.assert_close(f, torch.tensor([26.09, 8.99, 3.85625, 3.85625, 3.85625]), atol=1e-4, rtol=0)
+
+
+def test_bend_pull_force_is_monotone_non_increasing_and_scales_per_env():
+    cfg = DetachEnvelopeConfig(criterion="bend_pull")
+    theta = torch.linspace(0.0, 120.0, 241)
+    f = bend_pull_detach_force(theta, torch.ones_like(theta), cfg)
+    assert bool((f[1:] <= f[:-1] + 1e-6).all())
+    scaled = bend_pull_detach_force(torch.tensor([0.0, 0.0]), torch.tensor([0.85, 1.15]), cfg)
+    torch.testing.assert_close(scaled, torch.tensor([0.85, 1.15]) * 26.09)
+
+
+def test_chord_angle_deg_between_rest_and_current_chord():
+    rest = torch.tensor([[0.0, 0.0, -1.0]] * 3)
+    s, c = math.sin(math.radians(30.0)), math.cos(math.radians(30.0))
+    cur = torch.tensor([[0.0, 0.0, -1.0], [s, 0.0, -c], [0.0, 0.0, 2.0]])  # unnormalised is fine
+    torch.testing.assert_close(chord_angle_deg(cur, rest), torch.tensor([0.0, 30.0, 180.0]), atol=1e-3, rtol=0)
+
+
+def test_stem_tension_is_positive_when_the_child_is_held_toward_the_junction():
+    # The stem-root readout is the joint force ON the child segment. A hanging / pulled apple
+    # drags the child away from the junction, so the joint holds it back toward the junction:
+    # force along -chord = tension.
+    chord = torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]])  # junction -> apple
+    force_on_child = torch.tensor([[0.0, 0.0, 5.0], [0.0, 0.0, -2.0]])
+    torch.testing.assert_close(stem_tension(force_on_child, chord), torch.tensor([5.0, -2.0]))
+
+
+def test_bend_pull_utilization_is_tension_over_detach_force():
+    cfg = DetachEnvelopeConfig(criterion="bend_pull")
+    u = bend_pull_utilization(
+        torch.tensor([13.045, 3.85625, -1.0]), torch.tensor([0.0, 60.0, 0.0]), torch.ones(3), cfg
+    )
+    torch.testing.assert_close(u, torch.tensor([0.5, 1.0, -1.0 / 26.09]), atol=1e-5, rtol=0)
+
+
+def test_detach_scales_draw_inside_the_range_and_default_to_one_without_one():
+    import numpy as np
+
+    cfg = DetachEnvelopeConfig(criterion="bend_pull", detach_scale_range=(0.85, 1.15))
+    s = detach_scales(cfg, 4000, np.random.default_rng(0), device="cpu")
+    assert s.shape == (4000,)
+    assert float(s.min()) >= 0.85 and float(s.max()) <= 1.15
+    assert float(s.std()) > 0.05  # actually random, roughly uniform (std 0.087)
+    off = DetachEnvelopeConfig(criterion="bend_pull", detach_scale_range=None)
+    torch.testing.assert_close(detach_scales(off, 3, np.random.default_rng(0), device="cpu"), torch.ones(3))
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"criterion": "nope"},
+        {"criterion": "bend_pull", "bend_pull_coeffs": (0.0, -1.0, 26.0)},  # no minimum
+        {"criterion": "bend_pull", "bend_pull_coeffs": (0.015, 1.155, 26.09)},  # minimum below 0 deg
+        {"criterion": "bend_pull", "detach_scale_range": (1.2, 0.8)},
+        {"criterion": "bend_pull", "detach_scale_range": (0.0, 1.0)},
+    ],
+)
+def test_bend_pull_config_rejects_bad_values(kwargs):
+    with pytest.raises(ValueError):
+        DetachEnvelopeConfig(**kwargs)

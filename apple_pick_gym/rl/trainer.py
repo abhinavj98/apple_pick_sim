@@ -55,6 +55,8 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
             torsion_max_nm=env_cfg.torsion_max_nm,
             bending_max_nm=env_cfg.bending_max_nm,
             wrench_source=env_cfg.wrench_source,
+            criterion=env_cfg.detach_criterion,
+            detach_scale_range=env_cfg.detach_scale_range,
         ),
         w_progress=env_cfg.w_progress,
         w_pullout=env_cfg.w_pullout,

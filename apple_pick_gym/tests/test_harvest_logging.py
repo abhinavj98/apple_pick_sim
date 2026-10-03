@@ -183,6 +183,7 @@ def test_reward_terms_recombine_to_dense_reward():
     obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(n, 1)}
     info = {
         "target_junction_wrench": torch.tensor([[3.0, 0, 0, 0, 0, 0.01]]).repeat(n, 1),
+        "detach_utilization": torch.full((n,), 0.25),
         "ft_wrist": torch.tensor([[0.0, 0.0, 4.0, 0, 0, 0]]).repeat(n, 1),
         "woody_part_force": {
             "spur_stem": torch.ones(n, 6),

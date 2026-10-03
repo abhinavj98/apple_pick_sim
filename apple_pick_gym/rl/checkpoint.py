@@ -19,7 +19,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from apple_pick_gym.batched_envs.harvest_obs import actor_obs_layout
 
 _META_SCHEMA = "vic_harvest_rl_checkpoint_v1"
 
@@ -50,7 +49,7 @@ def checkpoint_meta(
         "schema": _META_SCHEMA,
         "timestep": int(timestep),
         "updates": int(updates),
-        "actor_layout": _layout_rows(actor_obs_layout()),
+        "actor_layout": _layout_rows(wrapper.actor_layout),
         "critic_layout": _layout_rows(wrapper.critic_layout),
         "action_bounds": dataclasses.asdict(wrapper.action_scaler.bounds),
         "rnn": {"policy": _rnn_spec(agent.policy), "value": _rnn_spec(agent.value)},

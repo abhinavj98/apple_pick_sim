@@ -78,7 +78,12 @@ def test_rl_contract_and_domain_randomization():
         priv0 = env.privileged_fields()
         assert list(priv0) == [k for k, _ in _PRIVILEGED_FIELDS]
         geo = env.plant_geometry()
-        torch.testing.assert_close(geo["weld_direction"], torch.tensor([s.weld_direction for s in specs]))
+        # [D17] the critic's grasp axis is the realized one (apple -> gripper = TCP -z at reset), not
+        # the stored sampled direction, which the post-grasp settle rotates away from
+        from apple_pick_gym.batched_envs.harvest_reward import quat_rotate_vector
+
+        z_tool = quat_rotate_vector(obs["tcp_quat"], torch.tensor([[0.0, 0.0, 1.0]] * n))
+        torch.testing.assert_close(geo["weld_direction"], -z_tool, atol=1e-5, rtol=0)
         assert len(set(env._sim.config.fruiting_system.support_kp_per_env)) == n
         arm0 = env._last_arm_dr_sample.friction.copy()
         bias0 = env._ft_sensor._bias.clone()

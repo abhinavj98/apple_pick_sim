@@ -10,7 +10,9 @@ Layout (``critic_state_layout``), in order:
 4. ``target_junction_wrench`` -- the anchor-frame spur-stem wrench the envelope reads;
 5. ``detach_index``, ``success_streak_frac`` -- progress toward the success condition;
 6. ``frozen``, ``invalid`` -- so the critic can learn V ~ 0 on frozen / invalid envs,
-   whose samples still enter the PPO batch (the sim resets the whole batch only).
+   whose samples still enter the PPO batch (the sim resets the whole batch only);
+7. ``step_frac`` -- [D17] tool-frame layout only: the actor has no clock, but the time limit is
+   part of the MDP (skrl's GAE cuts only at ``terminated``), so the critic must see time.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from typing import Any
 import torch
 
 from apple_pick_gym.batched_envs.harvest_obs import (
+    ObsFrame,
     ObsLayout,
     ObsLayoutEntry,
     critic_obs_layout,
@@ -38,11 +41,15 @@ CRITIC_EXTRA_FIELDS: tuple[tuple[str, int], ...] = PLANT_GEOMETRY_FIELDS + (
 )
 
 
-def critic_state_layout(junction_names: Sequence[str]) -> ObsLayout:
-    base = critic_obs_layout(list(junction_names))
+def _extra_fields(frame: ObsFrame) -> tuple[tuple[str, int], ...]:
+    return CRITIC_EXTRA_FIELDS + ((("step_frac", 1),) if frame == "tool" else ())
+
+
+def critic_state_layout(junction_names: Sequence[str], frame: ObsFrame = "world") -> ObsLayout:
+    base = critic_obs_layout(list(junction_names), frame)
     entries = list(base.entries)
     start = base.total_width
-    for name, width in CRITIC_EXTRA_FIELDS:
+    for name, width in _extra_fields(frame):
         entries.append(ObsLayoutEntry(name=name, start=start, width=width))
         start += width
     return ObsLayout(entries=tuple(entries), total_width=start)
@@ -57,13 +64,16 @@ def build_critic_state(
     junction_names: Sequence[str],
     success_streak_steps: int,
     invalid: torch.Tensor,
+    frame: ObsFrame = "world",
 ) -> torch.Tensor:
     """``(N, critic_state_layout(junction_names).total_width)`` float32.
 
     ``info`` is a reset or step info; reset infos have no ``"episode"`` entry, in which case
     the streak is 0 and ``frozen`` equals ``invalid`` (invalid envs freeze at reset).
     """
-    base = flatten_critic_obs(obs, privileged, info["woody_part_force"], junction_names=list(junction_names))
+    base = flatten_critic_obs(
+        obs, privileged, info["woody_part_force"], junction_names=list(junction_names), frame=frame
+    )
     n = base.shape[0]
     ep = info.get("episode")
     if ep is None:
@@ -80,4 +90,6 @@ def build_critic_state(
         frozen.to(base.dtype).reshape(n, 1),
         invalid.to(base.dtype).reshape(n, 1),
     ]
+    if frame == "tool":
+        extras.append(obs["step_frac"].reshape(n, 1))
     return torch.cat([base, *[e.to(device=base.device, dtype=base.dtype) for e in extras]], dim=-1)

@@ -266,8 +266,11 @@ class HarvestSkrlWrapper(Wrapper):
         super().__init__(env)
         self._scaler = HarvestActionScaler(env.action_bounds)
         self._junctions = list(env.junction_names)
-        self._layout = critic_state_layout(self._junctions)
-        self._obs_space = _box(actor_obs_layout().total_width)
+        # [D17] "tool": start-relative, TCP-frame actor obs (and step_frac in the critic only)
+        self._frame = getattr(env, "obs_frame", "world")
+        self._actor_layout = actor_obs_layout(self._frame)
+        self._layout = critic_state_layout(self._junctions, self._frame)
+        self._obs_space = _box(self._actor_layout.total_width)
         self._state_space = _box(self._layout.total_width)
         self._action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(13,), dtype=np.float32)
         self._stats = _EpisodeStats(
@@ -310,11 +313,15 @@ class HarvestSkrlWrapper(Wrapper):
         return self._layout
 
     @property
+    def actor_layout(self):
+        return self._actor_layout
+
+    @property
     def action_scaler(self) -> HarvestActionScaler:
         return self._scaler
 
     def _refresh(self, obs: dict[str, Any], info: dict[str, Any]) -> None:
-        self._obs = flatten_actor_obs(obs).to(self.device, torch.float32)
+        self._obs = flatten_actor_obs(obs, self._frame).to(self.device, torch.float32)
         self._state = build_critic_state(
             obs,
             info,
@@ -323,6 +330,7 @@ class HarvestSkrlWrapper(Wrapper):
             junction_names=self._junctions,
             success_streak_steps=int(self._env.episode_config.success_streak_steps),
             invalid=self._env.invalid_env_mask,
+            frame=self._frame,
         ).to(self.device, torch.float32)
         self._nonfinite = ~(torch.isfinite(self._obs).all(-1) & torch.isfinite(self._state).all(-1))
         self._obs = torch.nan_to_num(self._obs, nan=0.0, posinf=0.0, neginf=0.0)

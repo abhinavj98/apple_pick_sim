@@ -399,6 +399,8 @@ class SurrogateHarvestEnv:
             "arm_link_inertia_scale": ones.clone(),
             "arm_ee_mass_scale": ones.clone(),
             "arm_ee_inertia_scale": ones.clone(),
+            "detach_scale": ones.clone(),  # [D17] envelope criterion: no bend-pull scale draw
+            "realized_k_scale": torch.ones(self.num_envs, 6, device=self.device),  # no realized-K DR
         }
         return {name: vals[name] for name, _ in _PRIVILEGED_FIELDS}
 

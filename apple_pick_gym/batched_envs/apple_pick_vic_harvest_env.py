@@ -91,6 +91,7 @@ from apple_pick_gym.batched_envs.harvest_episode import (
     FreezeMask,
     SuccessStreakTracker,
 )
+from apple_pick_gym.batched_envs.harvest_obs import rotate_tool_wrench_to_world, tool_frame_obs
 from apple_pick_gym.batched_envs.harvest_outcome import evaluate_harvest_step
 from apple_pick_gym.batched_envs.harvest_reward import (
     HarvestRewardConfig,
@@ -143,6 +144,13 @@ _RL_HARVEST_RANGES_FIXTURE = (
 # base 0.2 m toward the plant so every default grasp is IK-reachable. The older
 # fruiting_system_ranges_rl_harvest_variance.json put CMA moduli (identified on thin real
 # rods) onto 2-4x thicker rods, which made the plant far too stiff and unstable.
+
+
+def _rotate_z_axis_xyzw(quat_xyzw: torch.Tensor) -> torch.Tensor:
+    """The frame's +z axis in world for ``(N, 4)`` xyzw quaternions."""
+    z = torch.zeros_like(quat_xyzw[:, :3])
+    z[:, 2] = 1.0
+    return quat_rotate_vector(quat_xyzw, z)
 
 
 def _xyzw_to_wxyz(quat_xyzw: torch.Tensor) -> torch.Tensor:
@@ -231,6 +239,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             raise ValueError(f"realized_k_scale_range must be (lo, hi) with 0 < lo <= hi, got {rk}")
         self._realized_k_scale_range = rk
         self._realized_k_scale: torch.Tensor | None = None  # (N, 6), drawn per reset
+        self._start_tcp_pose: torch.Tensor | None = None  # [D17] (N, 7) xyzw, recorded at reset
+        self._grasp_axis_rest: torch.Tensor | None = None  # [D17] realized apple->gripper axis
 
         if sim_config is None:
             from apple_pick_sim.coupled_fruiting import BatchedHeterogeneousCoupledSimConfig
@@ -741,6 +751,13 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 "robot_joint_q": inf_box((7,)),
                 "last_action": inf_box((_ACTION_DIM,)),
                 "step_frac": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
+                # [D17] start-relative, TCP-frame fields (harvest_obs._ACTOR_TOOL_FIELDS)
+                "d_pos_tool": inf_box((3,)),
+                "d_rot_tool": inf_box((3,)),
+                "gravity_tool": inf_box((3,)),
+                "twist_tool": inf_box((6,)),
+                "ft_tool": inf_box((6,)),
+                "target_offset_tool": inf_box((6,)),
             }
         )
 
@@ -769,8 +786,32 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             device=self.device,
         )
 
-        sensor_ft = self._ft_sensor.step(full["ft_wrist"])
-        self._last_tcp_pose_wxyz = torch.cat([tcp_pose[:, :3], _xyzw_to_wxyz(tcp_pose[:, 3:7])], dim=-1)
+        tcp_q = tcp_pose[:, 3:7]  # xyzw
+        if self._action_frame == "tool":
+            # [D17] the sensor model (bias, drift, EMA, noise) runs in the sensor's own frame
+            raw_tool = tool_frame_obs(
+                tcp_pos=tcp_pose[:, :3], tcp_quat=tcp_q, tcp_velocity=full["tcp_velocity"], ft=full["ft_wrist"],
+                start_pos=tcp_pose[:, :3], start_quat=tcp_q, target_pos=tcp_pose[:, :3], target_quat=tcp_q,
+            )["ft_tool"]
+            ft_tool = self._ft_sensor.step(raw_tool)
+            sensor_ft = rotate_tool_wrench_to_world(ft_tool, tcp_q)
+        else:
+            sensor_ft = self._ft_sensor.step(full["ft_wrist"])
+        self._last_tcp_pose_wxyz = torch.cat([tcp_pose[:, :3], _xyzw_to_wxyz(tcp_q)], dim=-1)
+        if self._start_tcp_pose is None:  # first gather of the episode (reset)
+            self._start_tcp_pose = tcp_pose.clone()
+        tool = tool_frame_obs(
+            tcp_pos=tcp_pose[:, :3],
+            tcp_quat=tcp_q,
+            tcp_velocity=full["tcp_velocity"],
+            ft=sensor_ft,
+            start_pos=self._start_tcp_pose[:, :3],
+            start_quat=self._start_tcp_pose[:, 3:7],
+            target_pos=self._target_pose[:, :3],
+            target_quat=self._target_pose[:, [4, 5, 6, 3]],  # wxyz -> xyzw
+        )
+        if self._action_frame == "tool":
+            tool["ft_tool"] = ft_tool  # exactly the sensor-frame reading (no round trip)
 
         # Proprioception + F/T only -- apple/junction geometry is NOT fed to
         # the policy (see _harvest_observation_space's docstring); it is
@@ -784,6 +825,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             "robot_joint_q": wp.to_torch(bufs.joint_q).to(device=self.device, dtype=torch.float32),
             "last_action": self._last_action.clone(),
             "step_frac": step_frac,
+            **tool,
         }
         self._last_full_obs = full
         return obs
@@ -970,7 +1012,11 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             self._freeze_mask.update(self._invalid_env_mask)
         self._pending_terminated = None
 
+        self._start_tcp_pose = None  # [D17] re-recorded by the gather below
         obs = self._gather_obs()
+        # [D17] the realized grasp axis (apple -> gripper): the TCP +z points at the apple centre,
+        # and differs from the stored weld_direction by tens of degrees after the hold settle
+        self._grasp_axis_rest = -_rotate_z_axis_xyzw(obs["tcp_quat"])
         # [D17] bend-pull: theta_b is measured from this episode's settled stem chord, and the
         # detach force is scaled per env (drawn here, before the first info is built)
         self._rest_chord = None
@@ -1003,17 +1049,30 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             self._arm_build_dr_sample,
             self._last_arm_dr_sample,
             device=self.device,
+            detach_scale=self._detach_scale,
+            realized_k_scale=self._realized_k_scale,
         )
 
     def plant_geometry(self) -> dict[str, torch.Tensor]:
-        """Critic-only rod/apple geometry and grasp weld axis (fixed for the run)."""
+        """Critic-only rod/apple geometry and grasp weld axis (fixed for the run).
+
+        [D17] ``weld_direction`` is the *realized* apple -> gripper axis at reset (``-z`` of the
+        TCP), not the stored sampled direction, which the post-grasp settle rotates away from by
+        up to ~70 deg. Before the first reset the stored direction is the only one available.
+        """
         from apple_pick_gym.batched_envs.harvest_privileged import build_plant_geometry
 
-        return build_plant_geometry(
-            self._sim.per_env_params,
-            [g.weld_direction for g in self._per_env_grippers],
-            device=self.device,
+        welds = (
+            [g.weld_direction for g in self._per_env_grippers]
+            if self._grasp_axis_rest is None
+            else self._grasp_axis_rest.detach().cpu().tolist()
         )
+        return build_plant_geometry(self._sim.per_env_params, welds, device=self.device)
+
+    @property
+    def obs_frame(self) -> str:
+        """[D17] ``"tool"``: the actor reads the start-relative TCP-frame fields."""
+        return self._action_frame
 
     def reseed_episode_rng(self, seed: int) -> None:
         """Reseed the per-reset DR stream (arm joint dynamics). Build-time DR is unaffected.

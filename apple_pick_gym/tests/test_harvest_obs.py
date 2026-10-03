@@ -53,6 +53,8 @@ def _make_privileged(n: int) -> dict:
         "arm_link_inertia_scale": torch.rand(n, 1),
         "arm_ee_mass_scale": torch.rand(n, 1),
         "arm_ee_inertia_scale": torch.rand(n, 1),
+        "detach_scale": torch.rand(n, 1),
+        "realized_k_scale": torch.rand(n, 6),
     }
 
 
@@ -166,3 +168,94 @@ if __name__ == "__main__":
     import pytest
 
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------------------------
+# [D17] tool-frame actor observations: everything relative to the episode start and expressed in
+# the current TCP frame, so the policy cannot memorise where the apple sits in the world.
+# ---------------------------------------------------------------------------------------------
+
+import math  # noqa: E402
+
+import pytest  # noqa: E402
+
+from apple_pick_gym.batched_envs.harvest_obs import quat_xyzw_to_rotvec, tool_frame_obs  # noqa: E402
+
+
+def _q_xyzw(axis, angle):
+    a = torch.tensor(axis, dtype=torch.float32)
+    a = a / torch.linalg.norm(a)
+    return torch.cat([a * math.sin(angle / 2), torch.tensor([math.cos(angle / 2)])]).unsqueeze(0)
+
+
+def test_quat_to_rotvec_and_double_cover():
+    q = _q_xyzw([0.0, 0.0, 1.0], 0.3)
+    torch.testing.assert_close(quat_xyzw_to_rotvec(q), torch.tensor([[0.0, 0.0, 0.3]]), atol=1e-6, rtol=0)
+    torch.testing.assert_close(quat_xyzw_to_rotvec(-q), torch.tensor([[0.0, 0.0, 0.3]]), atol=1e-6, rtol=0)
+    torch.testing.assert_close(quat_xyzw_to_rotvec(torch.tensor([[0.0, 0.0, 0.0, 1.0]])), torch.zeros(1, 3))
+
+
+def _tool_obs(q_now, p_now=(0.1, 0.2, 0.3), p_start=(0.1, 0.2, 0.3), q_start=None, v=(0.0,) * 6, ft=(0.0,) * 6,
+              p_tgt=None, q_tgt=None):
+    q_start = q_now if q_start is None else q_start
+    p_tgt = p_now if p_tgt is None else p_tgt
+    q_tgt = q_now if q_tgt is None else q_tgt
+    t = lambda x: torch.tensor([x], dtype=torch.float32)
+    return tool_frame_obs(
+        tcp_pos=t(p_now), tcp_quat=q_now, tcp_velocity=t(v), ft=t(ft),
+        start_pos=t(p_start), start_quat=q_start, target_pos=t(p_tgt), target_quat=q_tgt,
+    )
+
+
+def test_tool_frame_obs_identity_tcp_is_the_world_frame():
+    q = torch.tensor([[0.0, 0.0, 0.0, 1.0]])
+    o = _tool_obs(q, p_now=(0.1, 0.2, 0.33), v=(1, 2, 3, 4, 5, 6), ft=(1, 0, 0, 0, 0, 2), p_tgt=(0.1, 0.25, 0.33))
+    torch.testing.assert_close(o["d_pos_tool"], torch.tensor([[0.0, 0.0, 0.03]]), atol=1e-6, rtol=0)
+    torch.testing.assert_close(o["gravity_tool"], torch.tensor([[0.0, 0.0, -1.0]]))
+    torch.testing.assert_close(o["twist_tool"], torch.tensor([[1.0, 2, 3, 4, 5, 6]]))
+    torch.testing.assert_close(o["ft_tool"], torch.tensor([[1.0, 0, 0, 0, 0, 2]]))
+    torch.testing.assert_close(o["target_offset_tool"], torch.tensor([[0.0, 0.05, 0.0, 0.0, 0.0, 0.0]]), atol=1e-6, rtol=0)
+    torch.testing.assert_close(o["d_rot_tool"], torch.zeros(1, 3))
+
+
+def test_tool_frame_obs_rotates_world_vectors_into_the_tcp_frame():
+    q = _q_xyzw([0.0, 0.0, 1.0], math.pi / 2)  # tool x = world y, tool y = world -x
+    o = _tool_obs(q, v=(0.0, 1.0, 0.0, 0.0, 0.0, 0.0), ft=(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    torch.testing.assert_close(o["twist_tool"][:, :3], torch.tensor([[1.0, 0.0, 0.0]]), atol=1e-6, rtol=0)
+    torch.testing.assert_close(o["ft_tool"][:, :3], torch.tensor([[0.0, -1.0, 0.0]]), atol=1e-6, rtol=0)
+    # gripper pointing horizontally (tool z = world -y): gravity reads along tool -y... check via a tilt
+    q_side = _q_xyzw([1.0, 0.0, 0.0], math.pi / 2)  # tool z = world -y, tool y = world z
+    torch.testing.assert_close(_tool_obs(q_side)["gravity_tool"], torch.tensor([[0.0, -1.0, 0.0]]), atol=1e-6, rtol=0)
+
+
+def test_tool_frame_obs_rotation_since_start_is_a_body_frame_rotvec():
+    q0 = _q_xyzw([1.0, 0.0, 0.0], math.pi / 2)
+    # rotate 0.2 rad about the tool's own z axis since the start: q_now = q0 * Rz(0.2)
+    rz = _q_xyzw([0.0, 0.0, 1.0], 0.2)
+    x0, y0, z0, w0 = q0[0]
+    x1, y1, z1, w1 = rz[0]
+    q_now = torch.tensor([[
+        w0 * x1 + x0 * w1 + y0 * z1 - z0 * y1,
+        w0 * y1 - x0 * z1 + y0 * w1 + z0 * x1,
+        w0 * z1 + x0 * y1 - y0 * x1 + z0 * w1,
+        w0 * w1 - x0 * x1 - y0 * y1 - z0 * z1,
+    ]])
+    o = _tool_obs(q_now, q_start=q0)
+    torch.testing.assert_close(o["d_rot_tool"], torch.tensor([[0.0, 0.0, 0.2]]), atol=1e-5, rtol=0)
+
+
+def test_tool_actor_layout_drops_absolute_pose_joints_and_clock():
+    lay = actor_obs_layout("tool")
+    names = [e.name for e in lay.entries]
+    assert names == ["d_pos_tool", "d_rot_tool", "gravity_tool", "twist_tool", "ft_tool", "target_offset_tool", "last_action"]
+    assert lay.total_width == 3 + 3 + 3 + 6 + 6 + 6 + 13
+    assert actor_obs_layout() == actor_obs_layout("world")  # the D1-D16 layout is the default
+    with pytest.raises(ValueError):
+        actor_obs_layout("body")
+
+
+def test_tool_critic_layout_has_the_tool_actor_prefix():
+    jn = ["spur_stem", "stem_apple"]
+    crit = critic_obs_layout(jn, frame="tool")
+    act = actor_obs_layout("tool")
+    assert crit.entries[: len(act.entries)] == act.entries

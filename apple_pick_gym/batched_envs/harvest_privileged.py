@@ -71,11 +71,14 @@ def build_privileged_fields(
     arm_joint_sample: Any | None,
     *,
     device: str | torch.device,
+    detach_scale: torch.Tensor | None = None,
+    realized_k_scale: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     """``_PRIVILEGED_FIELDS``-ordered dict of ``(N, width)`` float32 tensors.
 
     ``arm_joint_sample`` is the per-reset joint-dynamics draw (``None`` before the
-    first reset: nominal values).
+    first reset: nominal values). ``detach_scale`` (``(N,)``) and ``realized_k_scale``
+    (``(N, 6)``) are the [D17] per-episode draws; ``None`` (not drawn) is nominal 1.
     """
     n = len(per_env_params)
     for name, arr in (
@@ -119,6 +122,12 @@ def build_privileged_fields(
             out[name] = torch.as_tensor(joint["friction"], device=device)
         elif name == "arm_joint_damping":
             out[name] = torch.as_tensor(joint["joint_damping"], device=device)
+        elif name == "detach_scale":
+            v = torch.ones(n) if detach_scale is None else detach_scale.reshape(n)
+            out[name] = v.to(device=device, dtype=torch.float32).reshape(n, 1)
+        elif name == "realized_k_scale":
+            v = torch.ones(n, 6) if realized_k_scale is None else realized_k_scale
+            out[name] = v.to(device=device, dtype=torch.float32).reshape(n, 6)
         else:
             vals = np.asarray(raw[name], dtype=np.float64)
             if name in LOG10_PRIVILEGED_FIELDS:

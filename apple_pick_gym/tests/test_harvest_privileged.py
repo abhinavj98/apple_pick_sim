@@ -116,3 +116,18 @@ def test_plant_geometry_and_grasp_axis(world):
     torch.testing.assert_close(geo["weld_direction"], torch.tensor(welds, dtype=torch.float32))
     assert float(geo["stem_length_m"][0, 0]) == pytest.approx(params[0].stem.length, rel=1e-6)
     assert float(geo["apple_radius_m"][0, 0]) == pytest.approx(params[0].apple_radius, rel=1e-6)
+
+
+def test_d17_episode_detach_scale_and_realized_stiffness_scale_are_privileged(world):
+    params, support, arm_build, arm_joint, _ = world
+    n = len(params)
+    out = build_privileged_fields(params, support, arm_build, arm_joint, device="cpu")
+    torch.testing.assert_close(out["detach_scale"], torch.ones(n, 1))  # not drawn: nominal
+    torch.testing.assert_close(out["realized_k_scale"], torch.ones(n, 6))
+    s = torch.linspace(0.85, 1.15, n)
+    k = torch.full((n, 6), 0.9)
+    out = build_privileged_fields(
+        params, support, arm_build, arm_joint, device="cpu", detach_scale=s, realized_k_scale=k
+    )
+    torch.testing.assert_close(out["detach_scale"], s.reshape(n, 1))
+    torch.testing.assert_close(out["realized_k_scale"], k)

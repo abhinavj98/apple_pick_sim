@@ -13,7 +13,7 @@ critic-state contracts, domain randomization, and the skrl training stack under
 | ----- | ----- |
 | Last reviewed | 2026-10-02 |
 | Code owners | `apple_pick_gym/batched_envs/apple_pick_vic_harvest_env.py`; `harvest_detach.py`; `harvest_outcome.py`; `harvest_reward.py`; `harvest_obs.py`; `harvest_privileged.py`; `apple_pick_gym/rl/` |
-| Status | Living handbook -- **task v2 (D17)** implemented and CPU-proven on the surrogate; the v3 world set (equator grasps) is being screened; v2 GPU training not yet run |
+| Status | Living handbook -- **task v2 (D17)**: v3 world set built; `sim_train_gpu_v2b.json` (peak-collateral charge + 0.12 m/s) trains a policy that passes the v2 gate (D17l) |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md` (two-model coupling); H2 `docs/handbook-variable-impedance.md` (`vic_pose`); H5 `docs/handbook-youngs-cma.md` (the calibrated plant) |
 | Archive | Design: `docs/superpowers/specs/2026-09-17-rl-vic-harvest-policy-design.md`; plans: `docs/superpowers/plans/2026-09-17-rl-vic-harvest-policy.md`, `docs/superpowers/plans/2026-09-23-rl-skrl-ppo-lstm-training.md`; decisions D1-D17: `docs/superpowers/decisions/2026-09-24-rl-open-decisions.md` |
 

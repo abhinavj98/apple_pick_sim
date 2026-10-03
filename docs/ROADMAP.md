@@ -60,7 +60,10 @@ success; no safety trip); gamma 0.995. Decisions and findings: D17 in
   and a GPU wiring check of `sim_train_gpu_v2.json`
 - [ ] GPU baselines on v3: `scripted_pull`, `scripted_bend_pull`, `scripted_down_pull`, `random` (the
   v2 gate's bars); check that the bend-pull detaches at far lower tension than the down-pull
-- [ ] v2 training run (2 h segments, wandb, video), eval against the v2 gate, then the robot
+- [x] v2 training: v2 (no peak-collateral charge, 0.4 m/s) converged to a fast yank; **v2b** (peak
+  collateral 1.0 + 0.12 m/s, D17l) passes the v2 gate: success 1.00, collateral 3.3 N median vs 13.7 N
+  for the best scripted pick, 0-1% > 40 N, 0.15 m/s; a lift-and-push pendulum detach (`runs/eval_v2b`)
+- [ ] Held-out v3 world set for a generalisation eval; then the robot
 - [ ] Rig side (maintainer): tool-frame stiffness in the controller, TCP-frame obs with the start pose
   stored at grasp, rig force limits
 

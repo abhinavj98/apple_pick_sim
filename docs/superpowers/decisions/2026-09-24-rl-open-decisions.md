@@ -1187,3 +1187,44 @@ pick, which beats the ~8-point discount gain); lower the target speed cap toward
 rig per-run peak median 0.055 m/s); a wrist-force soft cap (stops the > 40 N tail); or a smaller leash /
 commanded-force cost.
 
+## D17l -- v2b: peak-collateral charge + 0.12 m/s cap (maintainer); first v2 policy that passes the gate
+
+`sim_train_gpu_v2b.json` = v2 + `w_peak_collateral` 1.0 + `linear_delta_m` 0.002. Fresh run
+`runs/vic_harvest/v2b_s0` (wandb project `pruning-rl/apple_pick_vic_harvest`), 17.5k steps / 70 episodes,
+no divergence or non-finite rows.
+
+| episode | success | steps | collateral / success median | < 15 N | theta_b / tension at detach | > 40 N wrist | peak TCP |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0.12 | 194 | 24.3 N | 0.18 | 18 deg / 14.4 N | 0.4% | 0.07 m/s |
+| 5 | 1.00 | 85 | 11.7 N | 0.61 | 29 deg / 8.8 N | 4.3% | 0.14 m/s |
+| 20 | 1.00 | 58 | 6.0 N | 0.88 | 31 deg / 7.9 N | 1.1% | 0.17 m/s |
+| 40 | 1.00 | 49 | 5.8 N | 0.89 | 35 deg / 7.3 N | 3.2% | 0.21 m/s |
+| 60 | 1.00 | 47 | 4.4 N | 0.91 | 36 deg / 7.1 N | 1.9% | 0.23 m/s |
+
+**Eval (`runs/eval_v2b`, deterministic policy, eval seed 12345, N=2000, 1 episode):**
+
+| policy | success | steps | collateral / success median | < 15 N | theta_b / tension at detach | peak wrist | > 40 N | peak TCP |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| scripted_pull | 1.00 | 45 | 13.7 N | 0.53 | 31 deg / 9.2 N | 9.2 N | 1% | 0.14 m/s |
+| scripted_bend_pull | 1.00 | 33 | 29.5 N | 0.04 | 16 deg / 14.9 N | 12.6 N | 1% | 0.17 m/s |
+| scripted_down_pull | 1.00 | 31 | 56.5 N | 0.00 | 6.5 deg / 23.0 N | 20.4 N | 1% | 0.17 m/s |
+| random (0.12 m/s cap) | 0.07 | 166 | 27.5 N | 0.16 | 22 deg / 16.1 N | 6.8 N | 1% | 0.09 m/s |
+| **v2b ckpt_14400** | **1.00** | 45 | **3.3 N** | **0.98** | 36 deg / **5.5 N** | 5.5 N | **0%** | 0.15 m/s |
+| **v2b ckpt_16000** | **1.00** | 46 | **3.5 N** | **0.97** | 38 deg / 5.7 N | 6.4 N | 1% | 0.16 m/s |
+
+**Gate: both checkpoints pass the v2 gate** (`gate_*.json`): success >= scripted_pull's, collateral
+(mean per success: 4.5 / 4.9 N) <= the scripted bend-pull's (31.4 N), and the random clauses. They
+also pass the stricter bar, the scripted pull-out's collateral (16.9 N; `gate_strict_*.json`).
+`ckpt_14400` (EP~58) is marginally the better one (0% > 40 N).
+
+**What it does (ckpt_16000, mean over successes at detach):** the TCP has travelled 72 mm: 46 mm
+*toward* the apple along the grip, 28 mm *up* and 47 mm sideways, with almost no rotation (twist 2 deg,
+tilt 4 deg). K along tool x / y / grip: 86 / 141 / 201 N/m. It pushes the apple up and sideways to swing
+the stem about the spur-stem junction (a lift-and-push pendulum detach) at ~6 N of wrist force, not a
+twist and not a pull. **Correction:** the EP50 probe was first read as "30 mm out, 18 mm down"; both signs
+were inverted (`grip_out = -d_z` and `down` came out negative): it was 30 mm in and 18 mm up.
+
+**Open (maintainer):** whether a lift-and-push is acceptable on the rig (it presses the fruit toward the
+spur, but at ~6 N); the rig-side items in D17 (tool-frame stiffness, TCP-frame obs, force limits); a held-
+out world set for a clean generalisation number (the eval uses the training worlds with a different seed).
+

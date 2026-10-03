@@ -140,6 +140,16 @@ def _build_once(argv: Sequence[str] | None = None) -> None:
         env._invalid_env_mask = env._invalid_env_mask | failed
         env.reset()  # back to the captured baseline before saving (the snapshot itself is untouched)
         stem = f"shard_{args.shard_index:02d}"
+        # [D17] world-frame grasps: record the apple-frame weld this build resolved, so the training
+        # build (which restores this snapshot) uses the identical weld instead of re-resolving it
+        if any(s.weld_frame == "world" for s in specs):
+            import dataclasses as _dc
+
+            resolved = env.resolved_weld_offsets()
+            specs = [
+                _dc.replace(s, weld_offset=tuple(resolved[i])) if s.weld_frame == "world" else s
+                for i, s in enumerate(specs)
+            ]
         save_world_set(out / f"{stem}.jsonl", specs)
         env.save_world_snapshot(out / f"{stem}_snapshot.npz")
         n_bad = int(env._invalid_env_mask.sum())

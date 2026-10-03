@@ -979,7 +979,10 @@ def _weld_grippers_from_settled_apple(
     """
     grippers = tuple(weld_grippers)
     need = [
-        g.weld_direction_frame == "world" and g.weld_direction is not None and g.weld_reference_quat is None
+        g.weld_direction_frame == "world"
+        and g.weld_direction is not None
+        and g.weld_reference_quat is None
+        and g.weld_proxy_offset_in_apple_frame is None  # already resolved (pinned by the world set)
         for g in grippers
     ]
     if not any(need):

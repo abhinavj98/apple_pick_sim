@@ -53,6 +53,9 @@ class WorldSpec:
     # [D17] "world": weld_direction is realized in the world frame (the build references the settled
     # apple). v1/v2 rows are "apple" (legacy: realized as R_apple * weld_direction)
     weld_frame: str = "apple"
+    # [D17] the apple-frame weld (px, py, pz, qx, qy, qz, qw) a world-frame grasp resolved to in the
+    # snapshot build. Settles are not bit-reproducible, so rebuilds must reuse it (None: resolve anew)
+    weld_offset: tuple[float, ...] | None = None
 
     def __post_init__(self) -> None:
         d = tuple(float(x) for x in self.weld_direction)
@@ -61,6 +64,11 @@ class WorldSpec:
         object.__setattr__(self, "weld_direction", d)
         if self.weld_frame not in ("apple", "world"):
             raise ValueError(f"weld_frame must be 'apple' or 'world', got {self.weld_frame!r}")
+        if self.weld_offset is not None:
+            off = tuple(float(x) for x in self.weld_offset)
+            if len(off) != 7:
+                raise ValueError(f"weld_offset must be (px, py, pz, qx, qy, qz, qw), got {self.weld_offset!r}")
+            object.__setattr__(self, "weld_offset", off)
 
     @property
     def passed(self) -> bool:
@@ -69,6 +77,8 @@ class WorldSpec:
     def to_row(self) -> dict[str, Any]:
         row = dataclasses.asdict(self)
         row["weld_direction"] = list(self.weld_direction)
+        if self.weld_offset is not None:
+            row["weld_offset"] = list(self.weld_offset)
         row["schema"] = WORLD_SPEC_SCHEMA
         return row
 
@@ -79,6 +89,8 @@ class WorldSpec:
         if schema != WORLD_SPEC_SCHEMA:
             raise ValueError(f"unsupported world spec schema {schema!r}")
         row["weld_direction"] = tuple(row["weld_direction"])
+        if row.get("weld_offset") is not None:
+            row["weld_offset"] = tuple(row["weld_offset"])
         return cls(**row)
 
 
@@ -119,6 +131,7 @@ def world_specs_to_env_kwargs(specs: Sequence[WorldSpec]) -> dict[str, Any]:
                 weld_direction=s.weld_direction,
                 weld_roll_rad=float(s.weld_roll_rad),
                 weld_direction_frame=s.weld_frame,
+                weld_proxy_offset_in_apple_frame=s.weld_offset,
             )
             for s in specs
         ],

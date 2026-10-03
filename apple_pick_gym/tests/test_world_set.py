@@ -153,3 +153,21 @@ def test_d17_weld_frame_round_trips_and_old_rows_keep_the_legacy_apple_frame(tmp
     assert world_specs_to_env_kwargs([spec])["per_env_grippers"][0].weld_direction_frame == "world"
     with pytest.raises(ValueError):
         _spec(0, weld_frame="body")
+
+
+def test_d17_resolved_weld_offset_round_trips_and_pins_the_build():
+    # [D17] world-frame grasps resolve their apple-frame weld from the build's settled apple, which is
+    # not bit-reproducible (two builds differed by up to 9.9 mm / 28 deg): the snapshot builder records
+    # the offset it used so every rebuild uses the identical weld.
+    off = (0.01, -0.02, 0.03, 0.0, 0.0, 0.0, 1.0)
+    spec = _spec(0, weld_frame="world", weld_offset=off)
+    import tempfile
+    from pathlib import Path as _P
+
+    with tempfile.TemporaryDirectory() as d:
+        save_world_set(_P(d) / "w.jsonl", [spec])
+        assert load_world_set(_P(d) / "w.jsonl")[0].weld_offset == pytest.approx(off)
+    assert world_specs_to_env_kwargs([spec])["per_env_grippers"][0].weld_proxy_offset_in_apple_frame == pytest.approx(off)
+    assert _spec(0).weld_offset is None  # v1/v2 rows
+    with pytest.raises(ValueError):
+        _spec(0, weld_offset=(0.0, 0.0, 0.0))

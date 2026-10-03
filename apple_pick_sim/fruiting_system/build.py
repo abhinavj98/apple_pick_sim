@@ -844,7 +844,12 @@ def _add_gripper_proxy(
         raise ValueError("weld_reference_quat requires weld_reference_pos")
     if config.weld_direction_frame not in ("apple", "world"):
         raise ValueError(f"weld_direction_frame must be 'apple' or 'world', got {config.weld_direction_frame!r}")
-    if config.weld_direction_frame == "world" and config.fix_to_apple and config.weld_reference_quat is None:
+    if (
+        config.weld_direction_frame == "world"
+        and config.fix_to_apple
+        and config.weld_reference_quat is None
+        and config.weld_proxy_offset_in_apple_frame is None  # an explicit (resolved) weld needs no reference
+    ):
         raise ValueError(
             "weld_direction_frame='world' needs weld_reference_quat (the apple's orientation; the "
             "batched settle-then-weld build fills it from the settled apple)"

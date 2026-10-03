@@ -698,12 +698,17 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         from apple_pick_sim.fruiting_system.params import fruiting_params_to_json
 
         out = []
+        any_world = any(g.weld_direction_frame == "world" for g in self._per_env_grippers)
+        resolved = self.resolved_weld_offsets() if any_world else None
         for params, gripper in zip(self._sim.per_env_params, self._per_env_grippers):
             weld = ",".join(f"{float(x):.6f}" for x in gripper.weld_direction)
             if gripper.weld_roll_rad:  # [D17] only rolled grasps extend the key (v2 snapshots still pair)
                 weld += f"|roll={float(gripper.weld_roll_rad):.6f}"
-            if gripper.weld_direction_frame != "apple":  # [D17] likewise for world-frame grasps
-                weld += f"|frame={gripper.weld_direction_frame}"
+            if gripper.weld_direction_frame != "apple":  # [D17] likewise for world-frame grasps, which
+                # also pin the resolved apple-frame weld: a snapshot must not pair with another build's
+                weld += f"|frame={gripper.weld_direction_frame}|off=" + ",".join(
+                    f"{float(x):.6f}" for x in resolved[len(out)]
+                )
             payload = (fruiting_params_to_json(params) + "|" + weld).encode()
             out.append(hashlib.sha256(payload).hexdigest()[:16])
         return out
@@ -737,6 +742,13 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         saved_invalid = torch.tensor(meta["invalid_env"], dtype=torch.bool, device=self.device)
         self._invalid_env_mask = saved_invalid | self._detect_invalid_envs()
 
+    def resolved_weld_offsets(self) -> list[tuple[float, ...]]:
+        """[D17] Per env, the apple-frame weld ``(px, py, pz, qx, qy, qz, qw)`` this build used."""
+        offs = getattr(self._sim.scene, "per_world_proxy_offsets", None)
+        if offs is None or len(offs) != self.num_envs or any(o is None for o in offs):
+            raise RuntimeError("the build exposes no per-world proxy offsets")
+        return [tuple(float(x) for x in o) for o in offs]
+
     def export_world_specs(self, *, prefix: str) -> list[Any]:
         """One :class:`WorldSpec` per env (plant, grasp, build-time DR) for a world set."""
         from apple_pick_gym.batched_envs.world_set import WorldSpec
@@ -745,6 +757,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         sup, arm = self._last_support_dr_sample, self._arm_build_dr_sample
         if sup is None or arm is None:
             raise RuntimeError("support/arm build-time DR samples are not recorded")
+        any_world = any(g.weld_direction_frame == "world" for g in self._per_env_grippers)
+        resolved = self.resolved_weld_offsets() if any_world else None
         return [
             WorldSpec(
                 world_id=f"{prefix}_e{i}",
@@ -752,6 +766,11 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 weld_direction=tuple(float(x) for x in self._per_env_grippers[i].weld_direction),
                 weld_roll_rad=float(self._per_env_grippers[i].weld_roll_rad or 0.0),
                 weld_frame=self._per_env_grippers[i].weld_direction_frame,
+                weld_offset=(
+                    tuple(float(x) for x in resolved[i])
+                    if self._per_env_grippers[i].weld_direction_frame == "world"
+                    else None
+                ),
                 support_kp=float(sup.kp[i]),
                 support_roll_kp=float(sup.roll_kp[i]),
                 support_zeta=float(sup.zeta[i]),

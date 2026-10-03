@@ -62,10 +62,14 @@ so rebuild only when the code actually changed.
 
 ## Committed snapshot: v3 (task v2, D17)
 
-`snapshots/harvest_worlds_v3_all2000/` -- a single N=2000 shard of `harvest_worlds_v3.jsonl`; 1994/2000
-valid (6 marked invalid and masked). Built on 2026-10-03 with
+`snapshots/harvest_worlds_v3_all2000/` -- a single N=2000 shard of `harvest_worlds_v3.jsonl`; 1998/2000
+valid (2 marked invalid and masked). Its `shard_00.jsonl` pins each world's resolved apple-frame weld
+(`weld_offset`): world-frame grasps resolve the weld from the build's settled apple, which is not
+bit-reproducible (two builds of the same worlds differed by up to 9.9 mm / 28 deg), so a training build
+must reuse the snapshot build's weld or a third of the worlds start with 30-200 N at the wrist. The
+fingerprint includes the offset. Built on 2026-10-03 with
 `example_build_world_snapshots.py --world-set apple_pick_gym/world_sets/harvest_worlds_v3.jsonl
---shard-size 2000 --shard-index 0 --retries 4` (first attempt, 258 s). `sim_train_gpu_v2.json` trains on it.
+--shard-size 2000 --shard-index 0 --retries 4` (first attempt, 258 s; the builder writes the resolved welds). `sim_train_gpu_v2.json` trains on it.
 
 Screening recipe (pass 1, one batch per process; pass 2 rescreens the survivors in chunks of 128,
 shuffle seed 0):

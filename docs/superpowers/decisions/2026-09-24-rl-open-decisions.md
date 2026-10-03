@@ -1091,6 +1091,7 @@ pushed v1 away from that behaviour:
 | D17h | Baselines `scripted_bend_pull`, `scripted_down_pull`, tool-frame `scripted_pull`; v2 gate (no safety clause; collateral <= the scripted bend-pull's) | `rl/baselines.py`, `rl/gate.py` |
 | D17i | World-frame grasp directions are realized: the build references the settled apple (`weld_direction_frame="world"`, `WorldSpec.weld_frame`, `--grasp-frame world`); legacy default unchanged | `build.py`, `batched_heterogeneous_build.py`, `world_set.py` |
 | D17j | Grasp draws on their own RNG stream (the roll had been a monotone function of support kp: same seed, same stream) and i.i.d. cone sampling (`--grasp-sampling random`; the Fibonacci lattice gave every seed the same 128 directions -- the v2 set has only 192 distinct grasps in 2000) | env `_sample_default_grasps`, screening CLI |
+| D17k | Pin the resolved apple-frame weld of world-frame grasps in the world spec (`WorldSpec.weld_offset`, written by the snapshot builder, in the fingerprint): settles are not bit-reproducible, so a re-resolved weld did not match the snapshot (680/2000 worlds at 30-200 N rest wrist force; pinned: 2/2000 invalid, 0.28 N median) | `world_set.py`, env, snapshot builder |
 | -- | gamma 0.995. The time-limit semantics are unchanged: skrl's GAE cuts only at `terminated`, so the critic keeps step_frac and the wrapper still reports the limit as terminated | `sim_train_gpu_v2.json` |
 
 **Findings while building it.**

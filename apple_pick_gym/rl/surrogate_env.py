@@ -415,6 +415,7 @@ class SurrogateHarvestEnv:
             "apple_radius_m": z + 0.04,
             "apple_density": z + 800.0,
             "weld_direction": self.weld.clone(),
+            "grasp_roll": z.clone(),  # [D17] the surrogate has no gripper roll
         }
         return {name: geo[name] for name, _ in PLANT_GEOMETRY_FIELDS}
 

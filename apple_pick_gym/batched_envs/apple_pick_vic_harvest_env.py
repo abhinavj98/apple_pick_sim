@@ -113,10 +113,13 @@ class HoldSettleConfig:
     """
 
     enabled: bool = True
-    linear_k: float = 100.0
-    linear_d: float = 15.0
-    angular_k: float = 10.0
-    angular_d: float = 3.0
+    # [D17] stiffened from 100 N/m / 10 N*m/rad (maintainer): the soft hold let the hanging load
+    # sag and twist the TCP + welded apple by up to ~70 deg from the sampled grasp. Damping keeps
+    # the old ratios (zeta 0.75 linear, 0.47 angular).
+    linear_k: float = 500.0
+    linear_d: float = 33.54
+    angular_k: float = 30.0
+    angular_d: float = 5.196
     max_frames: int = 240
     check_every: int = 10
     force_tol_n: float = 0.5
@@ -183,6 +186,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         dr_seed: int = 0,
         grasp_hemisphere_pole: tuple[float, float, float] = (0.0, 0.0, -1.0),
         grasp_max_polar_angle_rad: float = np.pi / 6.0,
+        grasp_roll_max_rad: float = 0.0,
         reward_config: HarvestRewardConfig | None = None,
         episode_config: EpisodeConfig | None = None,
         hold_settle: HoldSettleConfig | None = None,
@@ -301,6 +305,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 pole=grasp_hemisphere_pole,
                 max_polar_angle_rad=grasp_max_polar_angle_rad,
                 seed=dr_seed,
+                roll_max_rad=grasp_roll_max_rad,
             )
         self._per_env_grippers = list(per_env_grippers)
 
@@ -557,7 +562,12 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
 
     @staticmethod
     def _sample_default_grasps(
-        *, num_envs: int, pole: tuple[float, float, float], max_polar_angle_rad: float, seed: int
+        *,
+        num_envs: int,
+        pole: tuple[float, float, float],
+        max_polar_angle_rad: float,
+        seed: int,
+        roll_max_rad: float = 0.0,
     ) -> list[Any]:
         """Per-env grasp approach-direction diversity via the existing sys-ID sampler.
 
@@ -573,6 +583,12 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         directions = sample_fibonacci_hemisphere(
             int(num_envs), np.asarray(pole), max_polar_angle=float(max_polar_angle_rad)
         )
+        # [D17] gripper roll about the approach axis, uniform in +-roll_max (0: the look-at, no draw)
+        rolls = (
+            np.random.default_rng(int(seed)).uniform(-roll_max_rad, roll_max_rad, size=int(num_envs))
+            if roll_max_rad > 0.0
+            else [None] * int(num_envs)
+        )
         return [
             GripperProxyConfig(
                 mass=PLACEHOLDER_EE_MASS_KG,
@@ -580,6 +596,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 dynamic_apple=True,
                 robot_facing_weld=False,
                 weld_direction=tuple(float(x) for x in directions[i]),
+                weld_roll_rad=None if rolls[i] is None else float(rolls[i]),
             )
             for i in range(int(num_envs))
         ]
@@ -653,6 +670,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         out = []
         for params, gripper in zip(self._sim.per_env_params, self._per_env_grippers):
             weld = ",".join(f"{float(x):.6f}" for x in gripper.weld_direction)
+            if gripper.weld_roll_rad:  # [D17] only rolled grasps extend the key (v2 snapshots still pair)
+                weld += f"|roll={float(gripper.weld_roll_rad):.6f}"
             payload = (fruiting_params_to_json(params) + "|" + weld).encode()
             out.append(hashlib.sha256(payload).hexdigest()[:16])
         return out
@@ -699,6 +718,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 world_id=f"{prefix}_e{i}",
                 params_json=fruiting_params_to_json(params),
                 weld_direction=tuple(float(x) for x in self._per_env_grippers[i].weld_direction),
+                weld_roll_rad=float(self._per_env_grippers[i].weld_roll_rad or 0.0),
                 support_kp=float(sup.kp[i]),
                 support_roll_kp=float(sup.roll_kp[i]),
                 support_zeta=float(sup.zeta[i]),
@@ -1067,7 +1087,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             if self._grasp_axis_rest is None
             else self._grasp_axis_rest.detach().cpu().tolist()
         )
-        return build_plant_geometry(self._sim.per_env_params, welds, device=self.device)
+        rolls = [float(g.weld_roll_rad or 0.0) for g in self._per_env_grippers]
+        return build_plant_geometry(self._sim.per_env_params, welds, device=self.device, rolls=rolls)
 
     @property
     def obs_frame(self) -> str:

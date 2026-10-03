@@ -48,6 +48,8 @@ class WorldSpec:
     arm_ee_mass_scale: float
     arm_ee_inertia_scale: float
     screening: dict[str, Any] = dataclasses.field(default_factory=dict)
+    # [D17] gripper roll about the approach axis (rad); v1/v2 rows have none (0 = the look-at)
+    weld_roll_rad: float = 0.0
 
     def __post_init__(self) -> None:
         d = tuple(float(x) for x in self.weld_direction)
@@ -110,6 +112,7 @@ def world_specs_to_env_kwargs(specs: Sequence[WorldSpec]) -> dict[str, Any]:
                 dynamic_apple=True,
                 robot_facing_weld=False,
                 weld_direction=s.weld_direction,
+                weld_roll_rad=float(s.weld_roll_rad),
             )
             for s in specs
         ],
@@ -148,6 +151,11 @@ def world_spec_knobs(spec: WorldSpec) -> dict[str, float]:
     for f in ("support_kp", "support_roll_kp", "support_zeta") + tuple(s for _, s in _ARM_BUILD_SCALE_FIELDS):
         knobs[f] = float(getattr(spec, f))
     knobs["weld_polar_deg"] = math.degrees(math.acos(max(-1.0, min(1.0, -spec.weld_direction[2]))))
+    # [D17] pole-free grasp knobs (the v3 cone sits on the equator, where "polar from -z" says little)
+    wx, wy, wz = spec.weld_direction
+    knobs["weld_elevation_deg"] = math.degrees(math.asin(max(-1.0, min(1.0, wz))))
+    knobs["weld_azimuth_deg"] = math.degrees(math.atan2(wy, wx))
+    knobs["weld_roll_deg"] = math.degrees(float(spec.weld_roll_rad))
     return knobs
 
 

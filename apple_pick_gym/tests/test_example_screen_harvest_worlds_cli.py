@@ -69,3 +69,20 @@ def test_report_mode_parses_multiple_sets():
 
     a = make_parser().parse_args(["report", "a.jsonl", "b.jsonl", "--out-md", "r.md"])
     assert (a.mode, a.sets, a.out_md) == ("report", ["a.jsonl", "b.jsonl"], "r.md")
+
+
+def test_d17_sample_takes_the_grasp_cone_and_roll():
+    import math
+
+    from apple_pick_gym.batched_examples.example_screen_harvest_worlds import grasp_env_kwargs, make_parser
+
+    a = make_parser().parse_args(["sample", "--num-envs", "8", "--seed", "3", "--out", "x.jsonl"])
+    assert grasp_env_kwargs(a) == {}  # defaults: the env's own cone, no roll (v1/v2 recipe)
+    b = make_parser().parse_args(
+        ["sample", "--num-envs", "8", "--seed", "3", "--out", "x.jsonl",
+         "--grasp-pole", "0", "-1", "0", "--grasp-max-polar-deg", "60", "--grasp-roll-max-deg", "90"]
+    )
+    kw = grasp_env_kwargs(b)
+    assert kw["grasp_hemisphere_pole"] == (0.0, -1.0, 0.0)
+    assert kw["grasp_max_polar_angle_rad"] == pytest.approx(math.pi / 3)
+    assert kw["grasp_roll_max_rad"] == pytest.approx(math.pi / 2)

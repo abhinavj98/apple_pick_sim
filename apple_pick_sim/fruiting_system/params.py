@@ -547,6 +547,13 @@ class GripperProxyConfig:
     When ``robot_facing_weld=True``, validated to lie on the robot-facing hemisphere
     (dot ≥ 0 with apple→robot unit vector); raises ``ValueError`` otherwise.
     """
+    weld_roll_rad: float | None = None
+    """[D17] Roll (rad) of the gripper about its approach axis, applied after the look-at.
+
+    The look-at fixes the tool +z into the apple and picks x from the world up axis; this turns
+    the fingers about +z. ``None`` (default) keeps the look-at orientation. Not used by the
+    explicit ``weld_proxy_offset_in_apple_frame`` path or the legacy random weld.
+    """
     weld_reference_pos: tuple[float, float, float] | None = None
     """Optional apple-center override for robot-facing hemisphere checks and weld offset.
 

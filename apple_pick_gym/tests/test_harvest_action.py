@@ -253,3 +253,31 @@ def test_pack_with_a_realized_stiffness_scale_scales_kp_but_derives_kd_from_the_
     packed = pack_vic_pose_action(target, lin, ang, zeta, kp_scale=scale)
     torch.testing.assert_close(packed[:, 7:13], torch.tensor([[80.0, 100.0, 120.0, 9.0, 10.0, 11.0]]))
     torch.testing.assert_close(packed[:, 13:19], pack_vic_pose_action(target, lin, ang, zeta)[:, 13:19])
+
+
+def test_d17_default_grasp_sampler_draws_directions_in_the_cone_and_bounded_rolls():
+    import numpy as np
+
+    from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import ApplePickVicHarvestEnv
+
+    pole = (0.0, -1.0, 0.0)
+    grips = ApplePickVicHarvestEnv._sample_default_grasps(
+        num_envs=200, pole=pole, max_polar_angle_rad=math.pi / 3, seed=4, roll_max_rad=math.pi / 2
+    )
+    d = np.array([g.weld_direction for g in grips])
+    polar = np.degrees(np.arccos(np.clip(d @ np.array(pole), -1, 1)))
+    assert polar.max() <= 60.0 + 1e-6 and polar.max() > 55.0
+    roll = np.array([g.weld_roll_rad for g in grips])
+    assert np.abs(roll).max() <= math.pi / 2 and roll.std() > 0.5
+    no_roll = ApplePickVicHarvestEnv._sample_default_grasps(num_envs=4, pole=pole, max_polar_angle_rad=0.5, seed=4)
+    assert all(g.weld_roll_rad is None for g in no_roll)
+
+
+def test_d17_post_grasp_hold_is_stiffer_with_the_same_damping_ratios():
+    from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import HoldSettleConfig
+
+    h = HoldSettleConfig()
+    assert (h.linear_k, h.angular_k) == (500.0, 30.0)
+    # zeta kept from the old 100 N/m / 15 and 10 N*m/rad / 3 hold
+    assert h.linear_d / (2 * math.sqrt(h.linear_k)) == pytest.approx(15.0 / (2 * math.sqrt(100.0)), rel=1e-3)
+    assert h.angular_d / (2 * math.sqrt(h.angular_k)) == pytest.approx(3.0 / (2 * math.sqrt(10.0)), rel=1e-3)

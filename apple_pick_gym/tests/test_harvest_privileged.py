@@ -131,3 +131,15 @@ def test_d17_episode_detach_scale_and_realized_stiffness_scale_are_privileged(wo
     )
     torch.testing.assert_close(out["detach_scale"], s.reshape(n, 1))
     torch.testing.assert_close(out["realized_k_scale"], k)
+
+
+def test_d17_plant_geometry_carries_the_grasp_roll(world):
+    from apple_pick_gym.batched_envs.harvest_privileged import PLANT_GEOMETRY_FIELDS, build_plant_geometry
+
+    params, _support, _arm_build, _arm_joint, welds = world
+    n = len(params)
+    geo = build_plant_geometry(params, welds, device="cpu")
+    assert [k for k, _ in PLANT_GEOMETRY_FIELDS][-1] == "grasp_roll"
+    torch.testing.assert_close(geo["grasp_roll"], torch.zeros(n, 1))  # v1/v2 worlds: no roll
+    geo = build_plant_geometry(params, welds, device="cpu", rolls=[0.1 * i for i in range(n)])
+    torch.testing.assert_close(geo["grasp_roll"], torch.tensor([[0.1 * i] for i in range(n)]))

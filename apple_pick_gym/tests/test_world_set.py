@@ -113,3 +113,30 @@ def test_coverage_report_flags_knobs_where_rejections_concentrate():
     # all three rejections sit in the top tercile of support_kp
     assert kp["reject_rate_by_tercile"][2] > 0.5
     assert kp["reject_rate_by_tercile"][0] == 0.0
+
+
+def test_d17_grasp_roll_round_trips_and_old_rows_default_to_no_roll(tmp_path):
+    from apple_pick_gym.batched_envs.world_set import world_spec_knobs
+
+    rolled = _spec(0, weld_roll_rad=0.7)
+    path = tmp_path / "w.jsonl"
+    save_world_set(path, [rolled])
+    assert load_world_set(path)[0].weld_roll_rad == pytest.approx(0.7)
+    row = rolled.to_row()
+    del row["weld_roll_rad"]  # a v1/v2 world set line has no roll
+    assert WorldSpec.from_row(row).weld_roll_rad == 0.0
+    grip = world_specs_to_env_kwargs([rolled])["per_env_grippers"][0]
+    assert grip.weld_roll_rad == pytest.approx(0.7)
+    knobs = world_spec_knobs(rolled)
+    assert knobs["weld_roll_deg"] == pytest.approx(np.degrees(0.7))
+    for k in ("weld_elevation_deg", "weld_azimuth_deg", "weld_polar_deg"):
+        assert k in knobs
+
+
+def test_d17_grasp_pole_relative_polar_angle_knob():
+    from apple_pick_gym.batched_envs.world_set import world_spec_knobs
+
+    s = _spec(0, weld_direction=(0.0, -1.0, 0.0))  # straight out of the apple at the equator
+    k = world_spec_knobs(s)
+    assert k["weld_elevation_deg"] == pytest.approx(0.0, abs=1e-6)
+    assert k["weld_azimuth_deg"] == pytest.approx(-90.0)

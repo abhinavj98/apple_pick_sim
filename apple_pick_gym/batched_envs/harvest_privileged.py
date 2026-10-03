@@ -44,6 +44,7 @@ PLANT_GEOMETRY_FIELDS: tuple[tuple[str, int], ...] = (
     ("apple_radius_m", 1),
     ("apple_density", 1),
     ("weld_direction", 3),
+    ("grasp_roll", 1),  # [D17] gripper roll about the approach axis (rad)
 )
 
 
@@ -142,6 +143,7 @@ def build_plant_geometry(
     weld_directions: Sequence[Sequence[float]],
     *,
     device: str | torch.device,
+    rolls: Sequence[float] | None = None,
 ) -> dict[str, torch.Tensor]:
     """``PLANT_GEOMETRY_FIELDS``-ordered dict: rod/apple geometry and the grasp's weld axis."""
     if len(weld_directions) != len(per_env_params):
@@ -159,6 +161,7 @@ def build_plant_geometry(
         "apple_radius_m": _col([_apple(p, "apple_radius") for p in per_env_params], device),
         "apple_density": _col([_apple(p, "apple_density") for p in per_env_params], device),
         "weld_direction": torch.as_tensor(np.asarray(weld_directions, dtype=np.float32), device=device),
+        "grasp_roll": _col([0.0] * len(per_env_params) if rolls is None else list(rolls), device),
     }
     for name, t in out.items():
         if not bool(torch.isfinite(t).all()):

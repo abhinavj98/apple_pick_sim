@@ -1001,6 +1001,9 @@ def _add_gripper_proxy(
 
             if config.robot_facing_weld or config.weld_direction is not None:
                 final_rot = base_rot
+                if config.weld_roll_rad is not None:  # [D17] turn the fingers about the approach axis
+                    roll_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(config.weld_roll_rad))
+                    final_rot = wp.mul(base_rot, roll_rot)
             else:
                 # Optional: randomize roll around the approach axis
                 roll_angle = random.uniform(0.0, 2 * math.pi)

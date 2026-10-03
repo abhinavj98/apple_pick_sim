@@ -578,3 +578,43 @@ def test_weld_proxy_offset_requires_fix_to_apple():
             ),
             **COUPLED_VBD_SCENE_KW,
         )
+
+
+def test_weld_roll_turns_the_proxy_about_its_approach_axis_only():
+    """[D17] weld_roll_rad rolls the gripper about the approach axis: same grasp point and +z
+    (into the apple), x axis turned by the roll."""
+    fs = _import_fs()
+    ranges = fs.load_ranges(RANGES_FIXTURE)
+    weld = (0.0, -1.0, 0.0)
+
+    def build(roll):
+        scene = fs.generate_coupled_cable_scene(
+            ranges,
+            seed=5,
+            gripper_proxy=fs.GripperProxyConfig(
+                fix_to_apple=True, robot_facing_weld=False, weld_direction=weld, weld_roll_rad=roll
+            ),
+            **COUPLED_VBD_SCENE_KW,
+        )
+        # the weld's parent xform (apple frame) carries the grasp; the proxy body itself is created
+        # at identity orientation and only takes it on through the joint
+        off = np.asarray(scene.gripper_proxy_offset_in_apple_frame, dtype=np.float64)
+        return off[:3], off[3:7]
+
+    def axes(qxyzw):
+        x, y, z, w = qxyzw
+        return np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ]
+        )
+
+    p0, q0 = build(None)
+    p1, q1 = build(np.pi / 3)
+    np.testing.assert_allclose(p1, p0, atol=1e-6)
+    r0, r1 = axes(q0), axes(q1)
+    np.testing.assert_allclose(r1[:, 2], r0[:, 2], atol=1e-5)  # same approach axis
+    np.testing.assert_allclose(r1[:, 2], -p1 / np.linalg.norm(p1), atol=1e-5)  # +z points into the apple
+    assert float(np.dot(r1[:, 0], r0[:, 0])) == pytest.approx(np.cos(np.pi / 3), abs=1e-5)

@@ -65,6 +65,12 @@ def make_parser() -> argparse.ArgumentParser:
         if name == "sample":
             sp.add_argument("--num-envs", type=int, required=True)
             sp.add_argument("--seed", type=int, required=True, help="Topology + DR seed; world ids are s<seed>_e<i>.")
+            # [D17] grasp cone: unset = the env's default cone (straight down, 30 deg) and no roll
+            sp.add_argument("--grasp-pole", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
+                            help="World-frame cone axis of the grasp (apple -> gripper), e.g. 0 -1 0.")
+            sp.add_argument("--grasp-max-polar-deg", type=float, default=None, help="Cone half-angle.")
+            sp.add_argument("--grasp-roll-max-deg", type=float, default=None,
+                            help="Gripper roll about the approach axis, uniform in +-this.")
         else:
             sp.add_argument("--from-set", required=True, help="Pass-1 JSONL; only its passed worlds are rescreened.")
             sp.add_argument("--shuffle-seed", type=int, required=True)
@@ -119,6 +125,20 @@ def _report(paths: Sequence[str], out_md: str | None) -> str:
     return text
 
 
+def grasp_env_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    """[D17] ``ApplePickVicHarvestEnv`` grasp-cone kwargs from the ``sample`` flags (only those set)."""
+    import math
+
+    kw: dict[str, Any] = {}
+    if getattr(args, "grasp_pole", None) is not None:
+        kw["grasp_hemisphere_pole"] = tuple(float(v) for v in args.grasp_pole)
+    if getattr(args, "grasp_max_polar_deg", None) is not None:
+        kw["grasp_max_polar_angle_rad"] = math.radians(float(args.grasp_max_polar_deg))
+    if getattr(args, "grasp_roll_max_deg", None) is not None:
+        kw["grasp_roll_max_rad"] = math.radians(float(args.grasp_roll_max_deg))
+    return kw
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import ApplePickVicHarvestEnv
     from apple_pick_gym.batched_envs.harvest_world_screening import (
@@ -141,7 +161,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     if args.mode == "sample":
         env = ApplePickVicHarvestEnv(
-            num_envs=args.num_envs, topology_seed=args.seed, dr_seed=args.seed, **common
+            num_envs=args.num_envs, topology_seed=args.seed, dr_seed=args.seed, **grasp_env_kwargs(args), **common
         )
         tag, prior = "pass1", None
         try:

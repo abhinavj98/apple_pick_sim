@@ -105,6 +105,10 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         "zeta_mean": "Episode / zeta used (mean)",
         "peak_tcp_speed_mps_mean": "Episode / peak TCP speed m/s (mean)",
         "mean_tcp_speed_mps_mean": "Episode / mean TCP speed m/s (mean)",
+        # [D17] the safety trip is off in v2: report peaks over the old 40 N cap; bend-pull state
+        "peak_wrist_force_over_40n_frac": "Episode / peak wrist force > 40 N (frac)",
+        "peak_target_force_over_40n_frac": "Episode / peak target force > 40 N (frac)",
+        "peak_theta_b_deg_mean": "Episode / peak theta_b deg (mean)",
     }
     out = {k: float(np.mean([e[v] for e in per_episode])) for k, v in keys.items()}
     # [D6] success-conditioned collateral: weight each batch episode by its successful valid envs
@@ -128,6 +132,8 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         ("bending N*m", "detach_bending_nm_mean"),
         ("force share", "detach_force_share_mean"),
         ("torque share", "detach_torque_share_mean"),
+        ("theta_b deg", "detach_theta_b_deg_mean"),  # [D17]
+        ("stem tension N", "detach_stem_tension_n_mean"),
     ):
         vals = [e[f"Episode / detach {label} (mean)"] for e in per_episode if np.isfinite(e.get(f"Episode / detach {label} (mean)", np.nan))]
         out[key] = float(np.mean(vals)) if vals else float("nan")

@@ -20,6 +20,11 @@ when every metrics JSON has it, else ``peak_collateral_n_mean``. The all-episode
 failed episodes that never pulled, which flatters a policy that often fails (random). A baseline with
 no successful pick sets no collateral bar; a policy with none fails its collateral clauses.
 
+[D17] v2 scheme (selected by passing ``bend_pull``, the ``scripted_bend_pull`` metrics): the safety
+trip is off in v2 training, so the safety clause is dropped; the collateral bar is the scripted
+bend-pull's collateral per successful pick (``collateral_ratio`` defaults to 1.0 there), success is
+still compared with the straight scripted pull, and the random clauses stay.
+
 Evaluate every policy on the same held-out snapshot and seed.
 
     uv run python -m apple_pick_gym.rl.gate --policy eval/policy.json --scripted-pull eval/pull.json \\
@@ -53,15 +58,31 @@ def _passed(v: float, op: str, t: float) -> bool:
     return bool(_OPS[op](v, t))
 
 
-def evaluate_gate(policy: dict, *, scripted_pull: dict, random: dict | None = None, collateral_ratio: float = 0.5) -> dict:
+def evaluate_gate(
+    policy: dict,
+    *,
+    scripted_pull: dict,
+    random: dict | None = None,
+    collateral_ratio: float | None = None,
+    bend_pull: dict | None = None,
+) -> dict:
     # [D6] compare load on the tree per successful pick when every metrics JSON reports it
-    reports = [policy, scripted_pull] + ([random] if random is not None else [])
+    reports = [policy, scripted_pull] + [m for m in (random, bend_pull) if m is not None]
     coll = _COLL_SUCCESS if all(_COLL_SUCCESS in m for m in reports) else _COLL_ALL
-    crit = {
-        "success": (policy["success_rate"], ">=", scripted_pull["success_rate"]),
-        "safety": (policy["safety_rate"], "<=", scripted_pull["safety_rate"]),
-        "collateral": (_num(policy[coll]), "<=", collateral_ratio * _num(scripted_pull[coll])),
-    }
+    scheme = "v1" if bend_pull is None else "v2"
+    if scheme == "v1":
+        ratio = 0.5 if collateral_ratio is None else float(collateral_ratio)
+        crit = {
+            "success": (policy["success_rate"], ">=", scripted_pull["success_rate"]),
+            "safety": (policy["safety_rate"], "<=", scripted_pull["safety_rate"]),
+            "collateral": (_num(policy[coll]), "<=", ratio * _num(scripted_pull[coll])),
+        }
+    else:  # [D17] no safety trip in v2; the collateral bar is the hand-written bend-and-pull
+        ratio = 1.0 if collateral_ratio is None else float(collateral_ratio)
+        crit = {
+            "success": (policy["success_rate"], ">=", scripted_pull["success_rate"]),
+            "collateral": (_num(policy[coll]), "<=", ratio * _num(bend_pull[coll])),
+        }
     if random is not None:
         crit["beats_random"] = (policy["success_rate"], ">=", random["success_rate"])
         crit["collateral_vs_random"] = (_num(policy[coll]), "<", _num(random[coll]))
@@ -72,8 +93,9 @@ def evaluate_gate(policy: dict, *, scripted_pull: dict, random: dict | None = No
     return {
         "passed": all(c["passed"] for c in out.values()),
         "criteria": out,
-        "collateral_ratio": collateral_ratio,
+        "collateral_ratio": ratio,
         "collateral_metric": coll,
+        "scheme": scheme,
     }
 
 
@@ -82,13 +104,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--policy", required=True)
     p.add_argument("--scripted-pull", required=True)
     p.add_argument("--random")
-    p.add_argument("--collateral-ratio", type=float, default=0.5)
+    p.add_argument("--bend-pull", help="[D17] scripted_bend_pull metrics: selects the v2 gate")
+    p.add_argument("--collateral-ratio", type=float, default=None, help="default 0.5 (v1) / 1.0 (v2)")
     p.add_argument("--out", required=True)
     a = p.parse_args(argv)
     load = lambda f: json.loads(Path(f).read_text())
     res = evaluate_gate(
         load(a.policy), scripted_pull=load(a.scripted_pull), random=load(a.random) if a.random else None,
-        collateral_ratio=a.collateral_ratio,
+        collateral_ratio=a.collateral_ratio, bend_pull=load(a.bend_pull) if a.bend_pull else None,
     )
     Path(a.out).write_text(json.dumps(res, indent=2) + "\n")
     for name, c in res["criteria"].items():

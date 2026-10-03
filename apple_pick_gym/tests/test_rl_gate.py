@@ -71,3 +71,16 @@ def test_d6_baseline_without_successes_sets_no_collateral_bar():
     # but a policy that never succeeds fails its own collateral clauses (NaN)
     bad = gate.evaluate_gate(_ms(0.0, 0.0, 5.0, float("nan")), scripted_pull=_ms(0.0, 0.0, 45.0, float("nan")))
     assert not bad["criteria"]["collateral"]["passed"] or not bad["passed"]
+
+
+def test_d17_v2_gate_compares_success_to_the_pull_and_collateral_to_the_scripted_bend_pull():
+    from apple_pick_gym.rl.gate import evaluate_gate
+
+    m = lambda succ, coll: {"success_rate": succ, "safety_rate": 0.3, "peak_collateral_n_success_mean": coll}
+    pull, bend, rnd = m(0.99, 40.0), m(0.95, 12.0), m(0.4, 30.0)
+    ok = evaluate_gate(m(0.99, 11.0), scripted_pull=pull, random=rnd, bend_pull=bend)
+    assert ok["passed"] and "safety" not in ok["criteria"] and ok["scheme"] == "v2"
+    assert ok["criteria"]["collateral"]["threshold"] == 12.0  # 1.0 x the scripted bend-pull's
+    assert not evaluate_gate(m(0.99, 13.0), scripted_pull=pull, random=rnd, bend_pull=bend)["passed"]
+    assert not evaluate_gate(m(0.90, 11.0), scripted_pull=pull, random=rnd, bend_pull=bend)["passed"]
+    assert evaluate_gate(m(0.99, 11.0), scripted_pull=pull, random=rnd)["scheme"] == "v1"  # unchanged without it

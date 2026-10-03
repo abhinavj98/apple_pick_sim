@@ -151,3 +151,48 @@ def test_stays_finite_under_random_actions_and_extreme_gains():
 def test_envelope_criterion_is_refused():
     with pytest.raises(ValueError, match="bend_pull"):
         _env(reward_config=HarvestRewardConfig())
+
+
+def _roll_baseline(name, steps=150):
+    from apple_pick_gym.rl.baselines import BASELINES
+    from apple_pick_gym.rl.skrl_wrapper import HarvestSkrlWrapper
+
+    env = _env(steps=steps)
+    w = HarvestSkrlWrapper(env)
+    obs, _ = w.reset()
+    pol = BASELINES[name]()
+    pol.reset(w)
+    state = w.state()
+    log = {}
+    for _ in range(steps):
+        obs, _r, _te, _tr, info = w.step(pol.act(w, obs, state))
+        state = w.state()
+        log = info.get("log", log)
+    return log
+
+
+def test_d17_baselines_in_the_tool_frame_pull_out_and_bend_then_pull():
+    pull = _roll_baseline("scripted_pull")
+    bend = _roll_baseline("scripted_bend_pull")
+    down = _roll_baseline("scripted_down_pull")
+    k = lambda log, s: float(log[f"Episode / {s}"])
+    for log in (pull, bend, down):
+        assert k(log, "success rate") == 1.0
+    # equator grasp: pulling out along the grip axis is horizontal, so it already swings the stem
+    assert k(pull, "detach theta_b deg (mean)") > 20.0
+    # the axial reference (straight down) detaches by tension; bending first needs far less
+    assert k(bend, "detach theta_b deg (mean)") > k(down, "detach theta_b deg (mean)") + 10.0
+    assert k(bend, "detach stem tension N (mean)") < 0.5 * k(down, "detach stem tension N (mean)")
+    assert k(bend, "peak collateral N, successful (mean)") < k(down, "peak collateral N, successful (mean)")
+
+
+def test_d17_eval_json_reports_the_bend_pull_state_and_over_40n_peaks():
+    from apple_pick_gym.rl.baselines import BASELINES
+    from apple_pick_gym.rl.eval_vic_harvest import evaluate
+    from apple_pick_gym.rl.skrl_wrapper import HarvestSkrlWrapper
+
+    w = HarvestSkrlWrapper(_env(steps=80))
+    out = evaluate(w, BASELINES["scripted_bend_pull"](), episodes=1)
+    for key in ("detach_theta_b_deg_mean", "detach_stem_tension_n_mean", "peak_theta_b_deg_mean"):
+        assert math.isfinite(out[key]) and out[key] > 0.0, key
+    assert out["peak_wrist_force_over_40n_frac"] == 0.0 and out["peak_target_force_over_40n_frac"] == 0.0

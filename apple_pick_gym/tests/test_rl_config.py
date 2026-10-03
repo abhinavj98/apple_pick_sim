@@ -181,3 +181,24 @@ def test_d17_v2_sim_config_carries_every_v2_decision():
     assert (e.linear_delta_m, e.angular_delta_rad) == (0.4 / 60.0, 0.3 / 60.0)  # D8b cap unchanged
     assert cfg.ppo.discount_factor == 0.995 and cfg.ppo.time_limit_bootstrap is False
     assert "harvest_worlds_v3" in e.world_set
+
+
+def test_d17_v2b_config_is_v2_plus_peak_collateral_and_the_rig_speed_cap():
+    # [D17] v2 converged to a fast yank (0.96 m/s, 21% > 40 N): charge the episode's peak collateral at
+    # success (1.0 x N) and cap the target speed at 0.12 m/s (D8). Everything else as v2.
+    from pathlib import Path
+
+    from apple_pick_gym.rl.config import TrainConfig
+
+    d = Path(__file__).resolve().parent.parent / "rl" / "configs"
+    v2 = TrainConfig.load_json(d / "sim_train_gpu_v2.json")
+    v2b = TrainConfig.load_json(d / "sim_train_gpu_v2b.json")
+    v2b.validate()
+    assert v2b.env.w_peak_collateral == 1.0 and v2b.env.success_bonus == 60.0
+    assert v2b.env.linear_delta_m == 0.002 and v2b.env.angular_delta_rad == v2.env.angular_delta_rad
+    import dataclasses
+
+    same = lambda c: dataclasses.replace(c.env, w_peak_collateral=0.0, linear_delta_m=0.0)
+    assert same(v2b) == same(v2)
+    assert v2b.ppo == v2.ppo and v2b.actor == v2.actor
+    assert v2b.run_dir != v2.run_dir

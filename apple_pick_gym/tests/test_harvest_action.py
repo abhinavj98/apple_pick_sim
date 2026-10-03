@@ -292,3 +292,41 @@ def test_d17_default_grasp_sampler_sets_the_weld_frame():
     assert all(g.weld_direction_frame == "world" for g in grips)
     legacy = ApplePickVicHarvestEnv._sample_default_grasps(num_envs=3, pole=(0.0, 0.0, -1.0), max_polar_angle_rad=0.5, seed=1)
     assert all(g.weld_direction_frame == "apple" for g in legacy)
+
+
+def test_d17_grasp_roll_does_not_reuse_the_seeds_dr_stream():
+    # [D17] the support DR draws from default_rng(dr_seed); a roll drawn from default_rng(seed) with
+    # the same seed was a monotone function of support kp (rank correlation 1.0 in the v3 pilot)
+    import numpy as np
+
+    from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import ApplePickVicHarvestEnv
+
+    grips = ApplePickVicHarvestEnv._sample_default_grasps(
+        num_envs=256, pole=(0.0, -1.0, 0.0), max_polar_angle_rad=math.pi / 3, seed=7, roll_max_rad=math.pi / 2
+    )
+    roll = np.array([g.weld_roll_rad for g in grips])
+    same_stream = np.random.default_rng(7).uniform(0.0, 1.0, size=256)
+    rank = lambda x: np.argsort(np.argsort(x))
+    assert abs(np.corrcoef(rank(roll), rank(same_stream))[0, 1]) < 0.2
+
+
+def test_d17_random_grasp_sampling_varies_with_the_seed_and_is_area_uniform_in_the_cone():
+    import numpy as np
+
+    from apple_pick_gym.batched_envs.apple_pick_vic_harvest_env import ApplePickVicHarvestEnv
+
+    pole, cap = np.array([0.0, -1.0, 0.0]), math.pi / 3
+    draw = lambda seed, mode: np.array(
+        [
+            g.weld_direction
+            for g in ApplePickVicHarvestEnv._sample_default_grasps(
+                num_envs=4000, pole=tuple(pole), max_polar_angle_rad=cap, seed=seed, sampling=mode
+            )
+        ]
+    )
+    a, b = draw(1, "random"), draw(2, "random")
+    assert not np.allclose(a[:10], b[:10])
+    cos = a @ pole
+    assert cos.min() >= math.cos(cap) - 1e-6
+    assert abs(cos.mean() - (1 + math.cos(cap)) / 2) < 0.01  # area-uniform: cos(polar) ~ U(cos cap, 1)
+    np.testing.assert_allclose(draw(1, "fibonacci"), draw(2, "fibonacci"))  # legacy: seed-independent

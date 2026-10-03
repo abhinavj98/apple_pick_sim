@@ -53,6 +53,8 @@ envs is a real but survivable cost, not a training blocker.
 
 from __future__ import annotations
 
+import math
+
 import dataclasses
 from pathlib import Path
 from typing import Any
@@ -149,6 +151,18 @@ _RL_HARVEST_RANGES_FIXTURE = (
 # rods) onto 2-4x thicker rods, which made the plant far too stiff and unstable.
 
 
+def _rotate_cap_to_pole(local: np.ndarray, pole: np.ndarray) -> np.ndarray:
+    """Rotate ``(n, 3)`` unit vectors drawn about +z so that +z maps to the unit ``pole``."""
+    p = pole / np.linalg.norm(pole)
+    z = np.array([0.0, 0.0, 1.0])
+    v, c = np.cross(z, p), float(np.dot(z, p))
+    if np.linalg.norm(v) < 1e-12:
+        return local if c > 0 else local * np.array([1.0, -1.0, -1.0])
+    vx = np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+    rot = np.eye(3) + vx + vx @ vx / (1.0 + c)
+    return local @ rot.T
+
+
 def _rotate_z_axis_xyzw(quat_xyzw: torch.Tensor) -> torch.Tensor:
     """The frame's +z axis in world for ``(N, 4)`` xyzw quaternions."""
     z = torch.zeros_like(quat_xyzw[:, :3])
@@ -188,6 +202,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         grasp_max_polar_angle_rad: float = np.pi / 6.0,
         grasp_roll_max_rad: float = 0.0,
         grasp_weld_frame: str = "apple",
+        grasp_sampling: str = "fibonacci",
         reward_config: HarvestRewardConfig | None = None,
         episode_config: EpisodeConfig | None = None,
         hold_settle: HoldSettleConfig | None = None,
@@ -308,6 +323,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 seed=dr_seed,
                 roll_max_rad=grasp_roll_max_rad,
                 weld_frame=grasp_weld_frame,
+                sampling=grasp_sampling,
             )
         self._per_env_grippers = list(per_env_grippers)
 
@@ -571,6 +587,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         seed: int,
         roll_max_rad: float = 0.0,
         weld_frame: str = "apple",
+        sampling: str = "fibonacci",
     ) -> list[Any]:
         """Per-env grasp approach-direction diversity via the existing sys-ID sampler.
 
@@ -583,15 +600,24 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         from apple_pick_sim.fruiting_system import GripperProxyConfig, PLACEHOLDER_EE_MASS_KG
         from apple_pick_sim.system_id.fibonacci_hemisphere import sample_fibonacci_hemisphere
 
-        directions = sample_fibonacci_hemisphere(
-            int(num_envs), np.asarray(pole), max_polar_angle=float(max_polar_angle_rad)
-        )
+        n = int(num_envs)
+        # [D17] the grasp draws get their own stream: the build-time DR draws from default_rng(dr_seed),
+        # and reusing it made the roll a monotone function of support kp
+        rng = np.random.default_rng(np.random.SeedSequence([int(seed), 0x6A55]))
+        if sampling == "fibonacci":
+            # legacy: a deterministic lattice, the same n directions for every seed
+            directions = sample_fibonacci_hemisphere(n, np.asarray(pole), max_polar_angle=float(max_polar_angle_rad))
+        elif sampling == "random":
+            # [D17] i.i.d. area-uniform in the cap: cos(polar) ~ U(cos cap, 1), azimuth ~ U(0, 2 pi)
+            cz = rng.uniform(math.cos(float(max_polar_angle_rad)), 1.0, size=n)
+            az = rng.uniform(0.0, 2.0 * math.pi, size=n)
+            sz = np.sqrt(np.clip(1.0 - cz * cz, 0.0, None))
+            local = np.stack([sz * np.cos(az), sz * np.sin(az), cz], axis=-1)
+            directions = _rotate_cap_to_pole(local, np.asarray(pole, dtype=np.float64))
+        else:
+            raise ValueError(f"grasp sampling must be 'fibonacci' or 'random', got {sampling!r}")
         # [D17] gripper roll about the approach axis, uniform in +-roll_max (0: the look-at, no draw)
-        rolls = (
-            np.random.default_rng(int(seed)).uniform(-roll_max_rad, roll_max_rad, size=int(num_envs))
-            if roll_max_rad > 0.0
-            else [None] * int(num_envs)
-        )
+        rolls = rng.uniform(-roll_max_rad, roll_max_rad, size=n) if roll_max_rad > 0.0 else [None] * n
         return [
             GripperProxyConfig(
                 mass=PLACEHOLDER_EE_MASS_KG,

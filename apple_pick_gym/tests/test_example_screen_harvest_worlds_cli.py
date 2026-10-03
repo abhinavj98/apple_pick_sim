@@ -93,3 +93,10 @@ def test_d17_sample_takes_the_weld_frame():
 
     a = make_parser().parse_args(["sample", "--num-envs", "8", "--seed", "3", "--out", "x.jsonl", "--grasp-frame", "world"])
     assert grasp_env_kwargs(a)["grasp_weld_frame"] == "world"
+
+
+def test_d17_sample_takes_the_grasp_sampling_mode():
+    from apple_pick_gym.batched_examples.example_screen_harvest_worlds import grasp_env_kwargs, make_parser
+
+    a = make_parser().parse_args(["sample", "--num-envs", "8", "--seed", "3", "--out", "x.jsonl", "--grasp-sampling", "random"])
+    assert grasp_env_kwargs(a)["grasp_sampling"] == "random"

@@ -306,7 +306,11 @@ integrate damping implicitly (in the gain frame).
 
 ## 10. Known limitations and open issues
 
-- **v3 world set (equator grasps) is being screened** (2026-10-02). Pilot: 48% of candidates pass
+- **v3 world set blocked: the equator grasp is not realized.** The apple spins freely about the stem
+  during the build settle (no gravity restoring torque about a vertical stem, soft torsion), so
+  sampled side grasps end up at random azimuths (median 85 deg, max 176 deg). The build must hold
+  the grasp before v3 can be screened (D17).
+- **v3 screening pilot** (2026-10-02, before the spin was found). Pilot: 48% of candidates pass
   pass 1 (v2: ~91%), with a strong elevation bias: grasps above the equator pass 21%, below it 74%.
   About 27% fail at rest at every elevation (failed grasp: TCP 10-49 cm off, 30-200 N at the wrist);
   the stiffer hold raises that modestly (14/32 vs 10/32 at the old 100/10 hold on the same worlds).

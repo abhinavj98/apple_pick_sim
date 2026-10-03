@@ -1113,10 +1113,21 @@ pushed v1 away from that behaviour:
 - **CPU:** PPO on `surrogate_smoke_v2.json` learns the bend detach in ~35 s (0.84 -> 1.00 success,
   46 -> 16 steps).
 
+- **The equator cone is not realized: the apple spins about the stem during the build.** On the
+  worlds of seed 100 that pass (17/32, 500/30 hold) the realized grasp is 81 deg (median) / 132 deg
+  (max) from the sampled one, almost all azimuthal (median 85 deg, max 176 deg): realized azimuths
+  span -159..161 deg, many on the far side from the robot (robot side = -90 deg). Elevation moves
+  only +15-30 deg (realized median +20 vs sampled -5). Mechanism: about the vertical stem there is no
+  gravity restoring torque and the stem's torsion is soft, so apple + 1.1 kg proxy spin freely in
+  the settle and IK grasps wherever the proxy ended up. Bottom grasps (v1/v2) sit on that axis, so
+  they drifted only 26 deg. The pilot's rejection rate and elevation bias are largely symptoms: the
+  robot is asked to reach round the apple. Screening was stopped at 384 candidates (185 passed).
+
 **Open (maintainer).**
-1. The v3 cone yields ~50% unusable worlds, skewed against grasps above the equator: accept the
-   bias, stratify the accepted set by elevation, or narrow the cone. Pass-1 screening continues in
-   the meantime (samples within a narrower cone stay usable).
+1. The v3 world set needs the build to hold the sampled grasp (the apple must not spin freely about
+   the stem before the arm takes it). Until then a side-grasp cone is not what the sim realizes.
+   Options are in the session report; this is a change to the shared `apple_pick_sim` build
+   pipeline, which the sys-ID replay also uses.
 2. Rig side: tool-frame stiffness in the controller (today base-frame per-axis), TCP-frame
    observations with the start pose stored at grasp, and the rig's own force limits.
 3. The 500 N/m hold is 5x the rig's dataset gain (100 N/m).

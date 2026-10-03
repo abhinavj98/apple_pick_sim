@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from apple_pick_gym.rl.baselines import BASELINES
 from apple_pick_gym.rl.config import TrainConfig
 
 
@@ -163,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--checkpoint", help="checkpoint directory (ckpt_<timestep>)")
-    src.add_argument("--baseline", choices=("zero", "random", "scripted_pull", "scripted_twist_pull"))
+    src.add_argument("--baseline", choices=tuple(BASELINES))
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--out", required=True, help="metrics JSON path")
     p.add_argument("--config", help="TrainConfig JSON for a baseline's env (default: TrainConfig defaults)")

@@ -67,3 +67,11 @@ def test_eval_checkpoint_is_deterministic(tmp_path):
         outs.append(json.loads(out.read_text()))
     assert outs[0]["return_mean"] == pytest.approx(outs[1]["return_mean"])
     assert outs[0]["policy"].startswith("checkpoint:")
+
+
+def test_d17_cli_offers_every_baseline():
+    from apple_pick_gym.rl.baselines import BASELINES
+    from apple_pick_gym.rl.eval_vic_harvest import build_parser
+
+    for name in BASELINES:
+        assert build_parser().parse_args(["--baseline", name, "--out", "x.json"]).baseline == name

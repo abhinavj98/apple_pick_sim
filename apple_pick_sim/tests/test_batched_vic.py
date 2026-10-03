@@ -286,3 +286,41 @@ def test_isotropic_path_unchanged_without_gain_buffers():
     wrenches = scene.vic_jt_wrench_buf.numpy()
     for w in range(_NUM_ENVS):
         assert float(np.linalg.norm(wrenches[w, :3])) > 1.0
+
+
+@requires_fr3
+@pytest.mark.slow
+def test_aniso_wrench_tool_frame_follows_the_tcp_axes():
+    """[D17] scene.vic_gain_frame='tool': per-axis gains act along the TCP axes (R diag(k) R^T e)."""
+    scene = _build_batched_scene()
+    ctrl = _configure_batched_vic(scene)
+    dev = scene.robot_model.device
+
+    pos = ctrl._target_pos_wp.numpy().copy()
+    pos[:, 0] += 0.1
+    ctrl._target_pos_wp.assign(pos.astype(np.float32))
+    ctrl.stage_targets_to_scene(scene)
+
+    scene.vic_kp_lin_wp = wp.full(_NUM_ENVS, wp.vec3(1000.0, 0.0, 0.0), dtype=wp.vec3, device=dev)
+    scene.vic_kp_ang_wp = wp.zeros(_NUM_ENVS, dtype=wp.vec3, device=dev)
+    scene.vic_kd_lin_wp = wp.zeros(_NUM_ENVS, dtype=wp.vec3, device=dev)
+    scene.vic_kd_ang_wp = wp.zeros(_NUM_ENVS, dtype=wp.vec3, device=dev)
+    scene.vic_gain_frame = "tool"
+
+    launch_compute_vic_wrenches_batched(scene)
+    wp.synchronize()
+    wrenches = scene.vic_jt_wrench_buf.numpy()
+    body_q = scene.robot_state_0.body_q.numpy()
+    tcp_idx = scene.vic_jt_tcp_indices_wp.numpy()
+    for w in range(_NUM_ENVS):
+        x, y, z, qw = body_q[tcp_idx[w]][3:7]
+        R = np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * qw), 2 * (x * z + y * qw)],
+                [2 * (x * y + z * qw), 1 - 2 * (x * x + z * z), 2 * (y * z - x * qw)],
+                [2 * (x * z - y * qw), 2 * (y * z + x * qw), 1 - 2 * (x * x + y * y)],
+            ]
+        )
+        e = pos[w] - body_q[tcp_idx[w]][:3]
+        expected = R @ np.diag([1000.0, 0.0, 0.0]) @ R.T @ e
+        np.testing.assert_allclose(wrenches[w, :3], expected, rtol=1e-3, atol=1e-2)

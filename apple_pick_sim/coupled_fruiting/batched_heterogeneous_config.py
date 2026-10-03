@@ -226,6 +226,14 @@ class ControllerConfig:
     sep_ori: bool = False
     # Continuous_Force_RL: 0.2 N·m per 1 ms. 0 disables slew (algebraic tests).
     joint_torque_slew_nm_s: float = 200.0
+    # [D17] Frame of the per-env anisotropic vic_pose gains: "world" (component-wise in world
+    # axes, like the rig's base-frame compute_pose_task_wrench and the sys-ID replay) or "tool"
+    # (along the TCP's axes: K_world = R diag(k) R^T).
+    vic_gain_frame: Literal["world", "tool"] = "world"
+
+    def __post_init__(self) -> None:
+        if self.vic_gain_frame not in ("world", "tool"):
+            raise ValueError(f"vic_gain_frame must be 'world' or 'tool', got {self.vic_gain_frame!r}")
 
     def expected_action_shape(self, num_envs: int) -> tuple[int, int]:
         """Return ``(num_envs, action_dim)``."""

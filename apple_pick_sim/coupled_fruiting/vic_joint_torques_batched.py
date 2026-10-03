@@ -23,6 +23,7 @@ from apple_pick_sim.coupled_fruiting.vic_joint_torques import (
 from apple_pick_sim.coupled_fruiting.vic_wrench import (
     compute_vic_spatial_wrench,
     compute_vic_spatial_wrench_aniso,
+    compute_vic_spatial_wrench_aniso_tool,
 )
 from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGains
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import EEVelocity
@@ -84,21 +85,25 @@ def _compute_vic_wrenches_batched_aniso_kernel(
     kp_ang: wp.array(dtype=wp.vec3),
     kd_lin: wp.array(dtype=wp.vec3),
     kd_ang: wp.array(dtype=wp.vec3),
+    tool_frame: int,
     wrenches_out: wp.array2d(dtype=float),
 ):
-    """Per-env anisotropic pose-PD wrench at TCP COM (world frame), ``v_des = 0``."""
+    """Per-env anisotropic pose-PD wrench at TCP COM (world frame), ``v_des = 0``.
+
+    ``tool_frame != 0`` ([D17]): the per-axis gains act along the TCP's axes, not the world's.
+    """
     w = wp.tid()
     tcp_idx = tcp_indices[w]
     target_tf = wp.transform(target_positions[w], _vec4_to_quat(target_rotations[w]))
-    wrench = compute_vic_spatial_wrench_aniso(
-        body_q[tcp_idx],
-        body_qd[tcp_idx],
-        target_tf,
-        kp_lin[w],
-        kp_ang[w],
-        kd_lin[w],
-        kd_ang[w],
-    )
+    wrench = wp.spatial_vector()
+    if tool_frame != 0:
+        wrench = compute_vic_spatial_wrench_aniso_tool(
+            body_q[tcp_idx], body_qd[tcp_idx], target_tf, kp_lin[w], kp_ang[w], kd_lin[w], kd_ang[w]
+        )
+    else:
+        wrench = compute_vic_spatial_wrench_aniso(
+            body_q[tcp_idx], body_qd[tcp_idx], target_tf, kp_lin[w], kp_ang[w], kd_lin[w], kd_ang[w]
+        )
     wrenches_out[w, 0] = wrench[0]
     wrenches_out[w, 1] = wrench[1]
     wrenches_out[w, 2] = wrench[2]
@@ -263,6 +268,7 @@ def launch_compute_vic_wrenches_batched(
                 kp_ang,
                 kd_lin,
                 kd_ang,
+                int(getattr(scene, "vic_gain_frame", "world") == "tool"),
                 scene.vic_jt_wrench_buf,
             ],
             device=dev,

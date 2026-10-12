@@ -17,6 +17,9 @@ from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance_batched import (
 from apple_pick_sim.robot.fr3_robot.controllers.ee_velocity_batched import (
     Fr3BatchedEEVelocityController,
 )
+from apple_pick_sim.robot.fr3_robot.controllers.tcp_prescribed_batched import (
+    Fr3BatchedTcpPrescribedController,
+)
 from apple_pick_sim.robot.fr3_robot.controllers.keyboard import (
     EEVelocity,
     FR3_KEYBOARD_BINDINGS,
@@ -98,6 +101,7 @@ __all__ = [
     "Fr3BatchedEEDirectJointController",
     "Fr3BatchedEEImpedanceController",
     "Fr3BatchedEEVelocityController",
+    "Fr3BatchedTcpPrescribedController",
     "Fr3EEDirectJointController",
     "Fr3EEImpedanceController",
     "Fr3EEVelocityController",

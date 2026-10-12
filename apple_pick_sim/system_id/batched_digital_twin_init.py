@@ -235,6 +235,39 @@ def _proxy_offset_from_episode_meta(
     )
 
 
+def translate_fruiting_worlds(cable: Any, shifts: np.ndarray) -> None:
+    """Rigidly translate each world's plant by ``shifts[w]`` (``(num_envs, 3)``, m).
+
+    Moves every cable body of world ``w`` (``state_0``/``state_1`` and the as-built
+    rest ``model.body_q``) together with the world-parent support anchors
+    (``joint_X_p``), so all joint residuals are unchanged and a gravity-settled
+    plant stays settled. Velocities are left as they are.
+    """
+    model = cable.model
+    shifts = np.asarray(shifts, dtype=np.float64).reshape(-1, 3)
+    body_world = np.asarray(model.body_world.numpy(), dtype=np.int64).reshape(-1)
+    if shifts.shape[0] <= int(body_world.max()):
+        raise ValueError(
+            f"shifts has {shifts.shape[0]} rows but the model has "
+            f"{int(body_world.max()) + 1} worlds"
+        )
+    body_shift = np.where(
+        (body_world >= 0)[:, None], shifts[np.clip(body_world, 0, None)], 0.0
+    ).astype(np.float32)
+    for arr in (cable.state_0.body_q, cable.state_1.body_q, model.body_q):
+        bq = arr.numpy().reshape(-1, 7).copy()
+        bq[:, 0:3] += body_shift
+        arr.assign(bq)
+    parent = np.asarray(model.joint_parent.numpy(), dtype=np.int64).reshape(-1)
+    child = np.asarray(model.joint_child.numpy(), dtype=np.int64).reshape(-1)
+    world_roots = np.nonzero((parent < 0) & (child >= 0))[0]
+    if world_roots.size:
+        xp = model.joint_X_p.numpy().reshape(-1, 7).copy()
+        xp[world_roots, 0:3] += body_shift[child[world_roots]]
+        model.joint_X_p.assign(xp)
+    align_proxy_body_q_prev_for_vbd(cable, tuple(range(int(model.body_count))))
+
+
 def apply_logged_post_grasp_se3_to_cable(
     cable: Any,
     meta: dict[str, Any],

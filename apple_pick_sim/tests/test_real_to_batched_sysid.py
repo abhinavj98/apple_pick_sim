@@ -283,6 +283,7 @@ def _write_synthetic_real(
     ft_wrist_raw_frames: list[list[float]] | None = None,
     tcp_velocity_frames: list[list[float]] | None = None,
     tcp_pos_frames: list[list[float]] | None = None,
+    post_grasp_apple_offset_xyz: list[float] | None = None,
 ) -> None:
     """Minimal real-episode-shaped parquet for native pre/post → batched meta."""
     branch = [0.0, 1.0, 0.6]
@@ -445,6 +446,15 @@ def _write_synthetic_real(
             "woody_bending_angles": [0.0, 0.0, 0.0],
             "apple_pos": len_apple.tolist(),
             "apple_pose_4x4": _identity_pose_4x4(len_apple.tolist()),
+        }
+    if post_grasp_apple_offset_xyz is not None:
+        moved = (
+            np.asarray(apple_pos, dtype=np.float64)
+            + np.asarray(post_grasp_apple_offset_xyz, dtype=np.float64)
+        ).tolist()
+        dataset_metadata["post_grasp_geometry"]["snapshot"] = {
+            "apple_pos": moved,
+            "apple_pose_4x4": _identity_pose_4x4(moved),
         }
     if camera_to_base_4x4 is not None:
         dataset_metadata["camera_to_base_4x4_used"] = camera_to_base_4x4
@@ -1769,8 +1779,11 @@ def _write_folder_parquet(
     dump_direction_index: int | None = None,
     dump_control_hz: float | None = None,
     n_rows: int = 330,
+    post_grasp_apple_offset_xyz: list[float] | None = None,
 ) -> None:
     kw = _folder_export_action_kw()
+    if post_grasp_apple_offset_xyz is not None:
+        kw = {**kw, "post_grasp_apple_offset_xyz": post_grasp_apple_offset_xyz}
     if dump_control_hz is not None:
         kw = {**kw, "dump_control_hz": dump_control_hz, "n_rows": n_rows}
     _write_synthetic_real(
@@ -2038,3 +2051,70 @@ def test_convert_cli_input_dir_does_not_require_input():
         mod.build_parser().parse_args(
             ["--input", "x.parquet", "--input-dir", "/tmp/s09", "--dataset-out", "out"]
         )
+
+
+def _export_marker_outlier_tree(tmp_path: Path, *, apple_from_tcp: bool):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    src_dir = tmp_path / "s09"
+    src_dir.mkdir()
+    for d in range(3):
+        _write_folder_parquet(
+            src_dir / f"s09-d{d:02d}.parquet",
+            d,
+            # d01's apple marker is 10 mm off; the logged TCP is identical everywhere.
+            post_grasp_apple_offset_xyz=[0.0, 0.01, 0.0] if d == 1 else None,
+        )
+    out = tmp_path / f"batched_{apple_from_tcp}"
+    export_real_tree_folder_to_batched_dataset(
+        src_dir,
+        fixture_path=VARIANCE,
+        output_dir=out,
+        overwrite=True,
+        apple_from_tcp=apple_from_tcp,
+    )
+    return BatchedSysIdDataset(out)
+
+
+def test_folder_convert_apple_from_tcp_ignores_marker_outlier(tmp_path: Path):
+    from apple_pick_sim.system_id.real_post_grasp_plan import taut_apple_radius_from_tcp
+    from apple_pick_sim.system_id.real_to_batched_sysid import DEFAULT_APPLE_STANDOFF_M
+
+    ds = _export_marker_outlier_tree(tmp_path, apple_from_tcp=True)
+    c = DEFAULT_APPLE_STANDOFF_M
+    # Synthetic tree: TCP (0, 0.9, 0.4) with identity quat (tool z = world z),
+    # frame-0 spur tip (0, 1, 0.5), stem 0.065 m.
+    r = taut_apple_radius_from_tcp(
+        [0.0, 0.9, 0.4], [0.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.5],
+        stem_length_m=0.065, standoff_m=c,
+    )
+    for d in range(3):
+        meta = ds.load_episode_metadata(0, d)
+        np.testing.assert_allclose(meta["initial_apple_pos"], [0.0, 0.9, 0.4 + r + c], atol=1e-9)
+        np.testing.assert_allclose(meta["weld_reference_pos"], meta["initial_apple_pos"])
+        np.testing.assert_allclose(meta["initial_apple_quat"], [0.0, 0.0, 0.0, 1.0], atol=1e-9)
+        assert meta["apple_radius"] == pytest.approx(r, abs=1e-12)
+        params = json.loads(meta["fruiting_system_params"])
+        assert params["apple_radius"] == pytest.approx(r, abs=1e-12)
+    report = ds.manifest["collection"]["apple_from_tcp"]
+    assert report["standoff_m"] == pytest.approx(c)
+    assert report["apple_radius_m"] == pytest.approx(r, abs=1e-12)
+    assert set(report["apple_radius_by_direction_mm"]) == {"0", "1", "2"}
+    assert report["marker_vs_tcp_apple_mm"]["1"] > report["marker_vs_tcp_apple_mm"]["0"]
+
+
+def test_folder_convert_without_apple_from_tcp_keeps_marker(tmp_path: Path):
+    ds = _export_marker_outlier_tree(tmp_path, apple_from_tcp=False)
+    meta = ds.load_episode_metadata(0, 1)
+    np.testing.assert_allclose(meta["initial_apple_pos"], [0.0, 0.96, 0.38], atol=1e-9)
+    assert "apple_from_tcp" not in ds.manifest["collection"]
+
+
+def test_folder_convert_writes_rest_junction_pos(tmp_path: Path):
+    ds = _export_marker_outlier_tree(tmp_path, apple_from_tcp=False)
+    for d in range(3):
+        meta = ds.load_episode_metadata(0, d)
+        np.testing.assert_allclose(meta["rest_junction_pos"], [0.0, 1.0, 0.6], atol=1e-12)

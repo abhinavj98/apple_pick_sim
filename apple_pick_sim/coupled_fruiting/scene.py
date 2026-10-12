@@ -600,6 +600,8 @@ class CoupledFruitingScene:
     use_mujoco_contacts: bool = False
     robot_disable_contacts: bool = True
     robot_kinematic_mode: bool = False
+    ft_from_proxy_forces: bool = False
+    """Read the TCP wrench obs from ``proxy_forces`` (kinematic ``tcp_pose`` replay)."""
     qd_synced: wp.array | None = None
     """Pooled copy of cable ``body_qd`` before VBD (velocity-delta harvest)."""
     vic_controller: fr3_robot.Fr3EEImpedanceController | None = None

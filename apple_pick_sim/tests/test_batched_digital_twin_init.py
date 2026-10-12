@@ -906,3 +906,53 @@ def test_initialize_batched_env_from_dataset_raises_without_joint_q():
             structure_idx=0,
             num_directions=1,
         )
+
+
+def test_translate_fruiting_worlds_moves_bodies_rest_and_world_anchors(monkeypatch):
+    from types import SimpleNamespace
+
+    from apple_pick_sim.system_id import batched_digital_twin_init as dti
+
+    class _Arr:
+        def __init__(self, data):
+            self.data = np.asarray(data, dtype=np.float64)
+
+        def numpy(self):
+            return self.data.copy()
+
+        def assign(self, value):
+            self.data = np.asarray(value, dtype=np.float64).reshape(self.data.shape)
+
+    def _bq(n):
+        q = np.zeros((n, 7))
+        q[:, 6] = 1.0
+        q[:, 0] = np.arange(n)
+        return q
+
+    # Two worlds of two bodies; joints: world root per world + one internal joint.
+    model = SimpleNamespace(
+        body_world=_Arr([0, 0, 1, 1]),
+        body_q=_Arr(_bq(4)),
+        body_count=4,
+        joint_parent=_Arr([-1, 0, -1, 2]),
+        joint_child=_Arr([0, 1, 2, 3]),
+        joint_X_p=_Arr(_bq(4)),
+    )
+    cable = SimpleNamespace(model=model, state_0=SimpleNamespace(body_q=_Arr(_bq(4))),
+                            state_1=SimpleNamespace(body_q=_Arr(_bq(4))))
+    synced = []
+    monkeypatch.setattr(dti, "align_proxy_body_q_prev_for_vbd", lambda c, ids: synced.append(ids))
+
+    shifts = np.array([[0.0, 0.0, 0.01], [0.0, -0.02, 0.0]])
+    dti.translate_fruiting_worlds(cable, shifts)
+
+    expect = _bq(4)
+    expect[0:2, 0:3] += shifts[0]
+    expect[2:4, 0:3] += shifts[1]
+    for arr in (cable.state_0.body_q, cable.state_1.body_q, model.body_q):
+        np.testing.assert_allclose(arr.data, expect)
+    xp = _bq(4)
+    xp[0, 0:3] += shifts[0]
+    xp[2, 0:3] += shifts[1]
+    np.testing.assert_allclose(model.joint_X_p.data, xp)
+    assert synced == [(0, 1, 2, 3)]

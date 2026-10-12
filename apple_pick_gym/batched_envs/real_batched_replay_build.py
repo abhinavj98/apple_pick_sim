@@ -31,6 +31,7 @@ from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGai
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     apply_logged_post_grasp_se3_to_cable,
     gripper_proxy_for_real_batched_replay,
+    translate_fruiting_worlds,
 )
 
 # Canonical real-replay VBD settle defaults (pre-grasp free settle / post-grasp welded).
@@ -199,7 +200,9 @@ def real_replay_sim_config(
     controller = dataclasses.replace(
         gym_cfg.controller,
         mode=controller_mode,
-        action_dim=19 if controller_mode == "vic_pose" else gym_cfg.controller.action_dim,
+        action_dim={"vic_pose": 19, "tcp_pose": 7}.get(
+            controller_mode, gym_cfg.controller.action_dim
+        ),
         linear_speed=1.0,
         angular_speed=1.0,
     )
@@ -262,6 +265,42 @@ def real_replay_sim_config(
     )
 
 
+def anchor_settled_junction_to_rest(
+    env: ApplePickBatchedSysIdEnv,
+    per_env_meta: Sequence[Mapping[str, Any]],
+) -> np.ndarray:
+    """Translate each free-settled plant so its T junction sits at the logged rest one.
+
+    The build base is a camera estimate and the candidate's gravity sag is not known
+    ahead of time, so after the pre-grasp settle each world's plant is shifted by
+    ``rest_junction_pos - settled primary_spur junction`` (the during-run frame-0
+    junction). Rigid translation keeps the settle exact under uniform gravity.
+    Returns the ``(num_envs, 3)`` shifts.
+    """
+    scene = env._sim.scene
+    layout = scene.layout
+    n_envs = int(layout.num_envs)
+    if len(per_env_meta) != n_envs:
+        raise ValueError(f"per_env_meta length {len(per_env_meta)} != num_envs {n_envs}")
+    names = list(env.junction_names)
+    j = names.index("primary_spur")
+    obs = env._sim.gather_obs()
+    settled = obs["woody_parent_pos"].numpy().reshape(n_envs, len(names), 3)[:, j, :]
+    targets = np.empty((n_envs, 3), dtype=np.float64)
+    for w, meta in enumerate(per_env_meta):
+        raw = meta.get("rest_junction_pos")
+        if raw is None:
+            raise ValueError(
+                "episode metadata missing rest_junction_pos; reconvert the real dataset"
+            )
+        targets[w] = np.asarray(raw, dtype=np.float64).reshape(3) + np.asarray(
+            layout.world_origin(w), dtype=np.float64
+        )
+    shifts = targets - settled.astype(np.float64)
+    translate_fruiting_worlds(scene.cable, shifts)
+    return shifts
+
+
 def make_real_replay_build_env_fn(
     *,
     ranges_path: Path,
@@ -279,7 +318,13 @@ def make_real_replay_build_env_fn(
     reuse_replicated_mujoco: bool = False,
     enable_self_collisions: bool = False,
     dynamic_apple: bool = True,
+    anchor_rest_junction: bool | None = None,
 ) -> Callable[..., ApplePickBatchedSysIdEnv]:
+    """``anchor_rest_junction`` (default: on for ``tcp_pose``) pins each settled plant's
+    T junction to the logged frame-0 one; see :func:`anchor_settled_junction_to_rest`."""
+    if anchor_rest_junction is None:
+        anchor_rest_junction = controller_mode == "tcp_pose"
+
     def build_env_fn(
         *,
         num_envs: int,
@@ -399,6 +444,13 @@ def make_real_replay_build_env_fn(
         layout = getattr(scene, "layout", None)
         cable = getattr(scene, "cable", None)
         if cable is not None:
+            if anchor_rest_junction:
+                build_env_fn.last_rest_junction_shift = anchor_settled_junction_to_rest(
+                    env,
+                    per_env_episode_meta
+                    if per_env_episode_meta is not None
+                    else [episode_meta] * int(num_envs),
+                )
             if per_env_episode_meta is not None:
                 apply_logged_post_grasp_se3_to_cable(
                     cable,
@@ -469,4 +521,9 @@ def make_real_replay_build_env_fn(
     build_env_fn.wants_support_kp_per_env = True
     build_env_fn.wants_support_roll_kp_per_env = True
     build_env_fn.wants_support_zeta_per_env = True
+    # ``tcp_pose`` builds a kinematic arm: the fused replay then prescribes the
+    # recorded TCP motion instead of driving the recorded vic_pose targets.
+    build_env_fn.replay_mode = (
+        "tcp_prescribed" if controller_mode == "tcp_pose" else "closed_loop"
+    )
     return build_env_fn

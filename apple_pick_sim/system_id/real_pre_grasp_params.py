@@ -334,8 +334,14 @@ def map_pre_grasp_geometry(
     *,
     primary_dir: tuple[float, float, float],
     strict: bool = False,
+    apple_pose_override: tuple[Any, Any] | None = None,
 ) -> PreGraspMappedGeometry:
-    """Map Branch/Spur/Apple shared_endpoints pre-grasp into rod geometry."""
+    """Map Branch/Spur/Apple shared_endpoints pre-grasp into rod geometry.
+
+    ``apple_pose_override`` (``(pos, quat_xyzw)``) replaces the snapshot apple
+    marker for the taut closure, stem direction and apple orientation, e.g. the
+    apple derived from the logged robot TCP.
+    """
     topo = meta.get("topology") or {}
     names = list(topo.get("junction_names") or [])
     if names != ["Branch", "Spur", "Apple"] or not topo.get("shared_endpoints"):
@@ -360,8 +366,12 @@ def map_pre_grasp_geometry(
     if float(np.linalg.norm(spur_end - start9[6:9])) > 1e-4:
         raise ValueError("Spur endpoint mismatch between part0 end and part2 start")
 
-    apple_pos = coerce_xyz(snap["apple_pos"], field="apple_pos")
-    apple_quat_xyzw = _apple_quat_from_snapshot(snap)
+    if apple_pose_override is not None:
+        apple_pos = coerce_xyz(apple_pose_override[0], field="apple_pose_override")
+        apple_quat_xyzw = tuple(float(x) for x in apple_pose_override[1])
+    else:
+        apple_pos = coerce_xyz(snap["apple_pos"], field="apple_pos")
+        apple_quat_xyzw = _apple_quat_from_snapshot(snap)
 
     bend = np.asarray(
         snap.get("woody_bending_angles", [0.0, 0.0, 0.0]), dtype=np.float64
@@ -489,6 +499,9 @@ def map_pre_grasp_geometry(
         return abs(measured - catalog) / abs(catalog)
 
     diagnostics: dict[str, Any] = {
+        "apple_pose_source": (
+            "override" if apple_pose_override is not None else snap_source
+        ),
         "spur_chord_length_m": spur_chord,
         "stem_spur_to_com_m": spur_to_com,
         "stem_chord_length_m": stem_chord,
@@ -618,10 +631,16 @@ def fruiting_params_from_pre_grasp_meta(
     *,
     fixture_path: str | Path,
     strict: bool = False,
+    apple_pose_override: tuple[Any, Any] | None = None,
 ) -> tuple[FruitingSystemParams, tuple[float, float, float], dict[str, Any]]:
     """Build ``FruitingSystemParams`` + base + diagnostics from metadata dict."""
     primary_dir = primary_direction_from_fixture(fixture_path)
-    mapped = map_pre_grasp_geometry(meta, primary_dir=primary_dir, strict=strict)
+    mapped = map_pre_grasp_geometry(
+        meta,
+        primary_dir=primary_dir,
+        strict=strict,
+        apple_pose_override=apple_pose_override,
+    )
     directions = {
         "primary": primary_dir,
         "spur": mapped.spur_direction,

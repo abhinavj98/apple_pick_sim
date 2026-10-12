@@ -203,3 +203,21 @@ def test_build_sim_config_accepts_device_override():
     cfg = module.build_sim_config(num_envs=2, device="cpu")
     assert cfg.runtime.device == "cpu"
     assert cfg.controller.mode == "vic"
+
+
+def test_build_sim_config_arm_perturbation_defaults_nominal():
+    module = _load_example_module()
+    cfg = module.build_sim_config(num_envs=2)
+    assert cfg.controller.vic_joint_friction is None
+
+
+def test_build_sim_config_arm_perturbation_sets_friction_and_scales_stiffness():
+    module = _load_example_module()
+    nominal = module.build_sim_config(num_envs=2).controller.vic_gains
+    cfg = module.build_sim_config(num_envs=2, arm_joint_friction=0.8, arm_kp_scale=0.5)
+    assert cfg.controller.vic_joint_friction == pytest.approx(0.8)
+    assert cfg.controller.vic_gains.linear_k == pytest.approx(0.5 * nominal.linear_k)
+    assert cfg.controller.vic_gains.angular_k == pytest.approx(0.5 * nominal.angular_k)
+    assert cfg.controller.vic_gains.linear_d == pytest.approx(nominal.linear_d)
+    with pytest.raises(ValueError, match="arm_kp_scale"):
+        module.build_sim_config(num_envs=2, arm_kp_scale=0.0)

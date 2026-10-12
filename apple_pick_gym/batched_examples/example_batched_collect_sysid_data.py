@@ -188,9 +188,16 @@ def build_sim_config(
     settle_quiet_every: int | None = None,
     device: str | None = None,
     ranges: dict | None = None,
+    arm_joint_friction: float | None = None,
+    arm_kp_scale: float = 1.0,
 ) -> BatchedHeterogeneousCoupledSimConfig:
+    """Collection sim config. ``arm_joint_friction`` / ``arm_kp_scale`` deliberately
+    perturb the *collection* arm (sys-ID validation: does a replay mode still recover
+    the plant when the replay arm model is wrong?). Defaults leave the arm nominal."""
     if ranges is None:
         ranges = load_ranges(default_ranges_fixture_path())
+    if not arm_kp_scale > 0.0:
+        raise ValueError(f"arm_kp_scale must be > 0, got {arm_kp_scale}")
     (
         vic_gains,
         joint_angular_kd,
@@ -204,6 +211,13 @@ def build_sim_config(
     settle = SETTLE_SUBSTEPS if settle_substeps is None else int(settle_substeps)
     gravity_ramp = SETTLE_GRAVITY_RAMP if settle_gravity_ramp is None else bool(settle_gravity_ramp)
     quiet_every = SETTLE_QUIET_EVERY if settle_quiet_every is None else settle_quiet_every
+    gains = vic_gains if vic_gains is not None else gym_cfg.controller.vic_gains
+    if float(arm_kp_scale) != 1.0:
+        gains = dataclasses.replace(
+            gains,
+            linear_k=float(gains.linear_k) * float(arm_kp_scale),
+            angular_k=float(gains.angular_k) * float(arm_kp_scale),
+        )
     return dataclasses.replace(
         gym_cfg,
         runtime=dataclasses.replace(
@@ -221,7 +235,10 @@ def build_sim_config(
         ),
         controller=dataclasses.replace(
             gym_cfg.controller,
-            vic_gains=vic_gains,
+            vic_gains=gains,
+            vic_joint_friction=(
+                None if arm_joint_friction is None else float(arm_joint_friction)
+            ),
         ),
         fruiting_system=dataclasses.replace(
             gym_cfg.fruiting_system,
@@ -316,6 +333,21 @@ def _make_parser() -> argparse.ArgumentParser:
             "Write post-weld initial_states/sXX_dYY.npz per episode (diagnostic only; "
             "default off)."
         ),
+    )
+    p.add_argument(
+        "--arm-joint-friction",
+        type=float,
+        default=None,
+        help=(
+            "Validation only: Coulomb friction [N·m] on every arm joint of the "
+            "collection arm (default: FR3 fixture value)."
+        ),
+    )
+    p.add_argument(
+        "--arm-kp-scale",
+        type=float,
+        default=1.0,
+        help="Validation only: scale the collection VIC stiffness K (default 1.0).",
     )
     p.add_argument(
         "--settle-substeps",
@@ -426,6 +458,8 @@ def main() -> None:
         settle_gravity_ramp=args.settle_gravity_ramp,
         settle_quiet_every=args.settle_quiet_every,
         ranges=ranges,
+        arm_joint_friction=args.arm_joint_friction,
+        arm_kp_scale=float(args.arm_kp_scale),
     )
 
     env = ApplePickBatchedSysIdEnv(

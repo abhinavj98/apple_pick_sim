@@ -16,6 +16,7 @@ from apple_pick_gym.batched_envs.batched_stability_monitor import (
 )
 from apple_pick_gym.batched_envs.batched_sysid_mmd_grid import (
     BatchedSysIdReplayCollectors,
+    replay_control_horizon_record_after_step,
     replay_control_horizon_record_before_step,
 )
 from apple_pick_gym.batched_envs.support_joint_penalties import (
@@ -25,6 +26,7 @@ from apple_pick_gym.batched_envs.support_joint_penalties import (
 )
 from apple_pick_sim.fruiting_system.joint_kd_scaling import support_dowel_length_m
 from apple_pick_gym.batched_envs.env_disable_controller import EnvDisableController
+from apple_pick_gym.batched_envs.real_batched_replay_build import dataset_declares_vic_pose
 from apple_pick_sim.fruiting_system.params import (
     FruitingSystemParams,
     GripperProxyConfig,
@@ -36,6 +38,7 @@ from apple_pick_sim.system_id import (
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     gripper_proxy_for_real_batched_replay,
 )
+from apple_pick_sim.system_id.tcp_prescription import prescribed_tcp_actions
 
 
 class ReplayFusionIncompatible(ValueError):
@@ -214,6 +217,103 @@ def _validate_request(request: ReplayStructureRequest) -> _ReplayCompatibilitySi
         direction_indices=directions,
         gripper=gripper_signature,
     )
+
+
+REPLAY_MODES = ("closed_loop", "tcp_prescribed")
+"""``closed_loop``: recorded ``vic_pose`` targets drive the sim arm. ``tcp_prescribed``:
+the recorded TCP pose drives a kinematic arm (``controller.mode="tcp_pose"``); see
+``apple_pick_sim.system_id.tcp_prescription``. Builders advertise it as
+``build_env_fn.replay_mode``."""
+
+
+def build_env_replay_mode(build_env_fn: Callable[..., Any]) -> str:
+    """Return the replay mode a ``build_env_fn`` advertises (default ``closed_loop``)."""
+    mode = getattr(build_env_fn, "replay_mode", "closed_loop")
+    if not isinstance(mode, str):  # e.g. a Mock build_env_fn in tests
+        mode = "closed_loop"
+    if mode not in REPLAY_MODES:
+        raise ValueError(f"build_env_fn.replay_mode must be one of {REPLAY_MODES}, got {mode!r}")
+    return mode
+
+
+def sim_tcp_start_poses(env: Any) -> np.ndarray:
+    """``(num_envs, 7)`` ``[pos, quat_xyzw]`` world TCP poses straight from the sim state."""
+    sim = env._sim
+    body_q = sim.scene.robot_state_0.body_q.numpy().reshape(-1, 7)
+    return np.stack(
+        [body_q[int(i)] for i in sim.layout.tcp_body_indices], axis=0
+    ).astype(np.float64)
+
+
+def _slot_episode_meta(dataset: Any, slot: ReplaySlot) -> Mapping[str, Any]:
+    if slot.episode_meta is not None:
+        return slot.episode_meta
+    load = getattr(dataset, "load_episode_metadata", None)
+    if load is None:
+        return {}
+    return load(int(slot.source.structure_idx), int(slot.source.direction_idx))
+
+
+def slots_recorded_after_step(dataset: Any, slots: Sequence[ReplaySlot]) -> bool:
+    """True for sim-sim recordings (row k = state after action k).
+
+    Converted real (``vic_pose``) bags record before stepping (frame 0 is the grasp).
+    Replay must use the dataset's convention or every row is compared one frame off.
+    """
+    collection = getattr(dataset, "manifest", {}).get("collection", {})
+    conventions = {
+        not dataset_declares_vic_pose(collection, _slot_episode_meta(dataset, slot))
+        for slot in slots
+    }
+    if len(conventions) != 1:
+        raise ValueError("a fused replay chunk mixes real and sim-sim recordings")
+    return conventions.pop()
+
+
+def _slot_tcp_prescription_kwargs(dataset: Any, slot: ReplaySlot) -> dict[str, Any]:
+    """Recording convention + reference pose for one slot (see ``tcp_prescription``).
+
+    Converted real (``vic_pose``) bags record before stepping with frame 0 at the
+    grasp; sim-sim collection records after stepping, so its reference is the
+    episode's pre-motion ``initial_tcp_*`` metadata.
+    """
+    meta = _slot_episode_meta(dataset, slot)
+    collection = dataset.manifest.get("collection", {})
+    if dataset_declares_vic_pose(collection, meta):
+        return {"recorded_after_step": False}
+    for key in ("initial_tcp_pos", "initial_tcp_quat"):
+        if meta.get(key) is None:
+            raise KeyError(f"tcp_prescribed sim-sim replay needs episode metadata {key!r}")
+    return {
+        "recorded_after_step": True,
+        "reference_pos": np.asarray(meta["initial_tcp_pos"], dtype=np.float64),
+        "reference_quat_xyzw": np.asarray(meta["initial_tcp_quat"], dtype=np.float64),
+    }
+
+
+def prescribed_tcp_actions_for_slots(
+    slots: Sequence[ReplaySlot], start_poses: np.ndarray, *, dataset: Any
+) -> np.ndarray:
+    """Pad per-slot 7D prescribed TCP actions built from each recording's TCP motion."""
+    if int(start_poses.shape[0]) != len(slots):
+        raise ValueError(
+            f"start pose rows ({start_poses.shape[0]}) != replay slots ({len(slots)})"
+        )
+    per_slot = []
+    for slot, start in zip(slots, start_poses, strict=True):
+        for key in ("tcp_pos", "tcp_quat"):
+            if key not in slot.recorded:
+                raise KeyError(f"tcp_prescribed replay needs recorded {key!r}")
+        per_slot.append(
+            prescribed_tcp_actions(
+                np.asarray(slot.recorded["tcp_pos"]),
+                np.asarray(slot.recorded["tcp_quat"]),
+                sim_start_pos=start[:3],
+                sim_start_quat_xyzw=start[3:7],
+                **_slot_tcp_prescription_kwargs(dataset, slot),
+            )
+        )
+    return _pad_actions_with_last(per_slot)
 
 
 def _pad_actions_with_last(actions_by_slot: Sequence[np.ndarray]) -> np.ndarray:
@@ -457,6 +557,7 @@ def replay_multi_structure_candidate_blocks(
         max_envs_per_batch=int(max_envs_per_batch),
     )
     replay_seed = _replay_seed(dataset, seed)
+    replay_mode = build_env_replay_mode(build_env_fn)
     replay_by_key: dict[ReplaySlotKey, dict[str, Any]] = {}
     failed_structures: dict[int, str] = {}
     failed_chunk_indices: list[int] = []
@@ -585,6 +686,12 @@ def replay_multi_structure_candidate_blocks(
                 dataset,
                 tuple(slot.source for slot in slots),
             )
+            if replay_mode == "tcp_prescribed":
+                # Recorded TCP motion relative to frame 0, onto each env's own settled
+                # post-reset TCP (no t=0 jump); same frame count as the recording.
+                recorded_actions = prescribed_tcp_actions_for_slots(
+                    slots, sim_tcp_start_poses(env), dataset=dataset
+                )
             initial_unstable = ik_bootstrap_unstable_mask(env, len(slots))
             last_obs = getattr(env, "_last_obs", None)
             if last_obs is None:
@@ -604,7 +711,12 @@ def replay_multi_structure_candidate_blocks(
                 [slot.recorded for slot in slots],
             )
             recorded_n_frames_arr = np.asarray(recorded_n_frames, dtype=np.int64)
-            replay_control_horizon_record_before_step(
+            replay_loop = (
+                replay_control_horizon_record_after_step
+                if slots_recorded_after_step(dataset, slots)
+                else replay_control_horizon_record_before_step
+            )
+            replay_loop(
                 env=env,
                 recorded_actions=recorded_actions,
                 recorded_n_frames_arr=recorded_n_frames_arr,

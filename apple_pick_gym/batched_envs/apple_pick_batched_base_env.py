@@ -175,7 +175,14 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
         bufs = self._sim.obs_bufs
         if bufs is None:
             raise RuntimeError("sim observation buffers not allocated")
-        return obs_dict_from_bufs(bufs, self._junction_names, self.device)
+        return obs_dict_from_bufs(
+            bufs,
+            self._junction_names,
+            self.device,
+            ft_from_proxy_forces=bool(
+                getattr(self._sim.scene, "ft_from_proxy_forces", False)
+            ),
+        )
 
     def _make_info(self) -> dict[str, Any]:
         import apple_pick_sim.fruiting_system as fs

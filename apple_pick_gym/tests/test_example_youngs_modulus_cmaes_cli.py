@@ -731,6 +731,22 @@ def test_parser_accepts_full_trajectory_flag(monkeypatch):
     assert default_args.full_trajectory is False
 
 
+def test_parser_replay_mode_defaults_closed_loop_and_accepts_tcp_prescribed(monkeypatch):
+    module = _load_module()
+    import newton.examples
+
+    monkeypatch.setattr(newton.examples, "create_parser", argparse.ArgumentParser)
+    parser = module._make_parser()
+    base = ["--dataset", "/tmp/gt", "--output", "/tmp/cma"]
+    assert parser.parse_args(base).replay_mode == "closed_loop"
+    assert (
+        parser.parse_args([*base, "--replay-mode", "tcp_prescribed"]).replay_mode
+        == "tcp_prescribed"
+    )
+    with pytest.raises(SystemExit):
+        parser.parse_args([*base, "--replay-mode", "kinematic"])
+
+
 def test_build_cmaes_report_records_level_bag_scoring_flags():
     module = _load_module()
     scoring = cmaes.YoungsModulusScoringConfig(
@@ -758,6 +774,8 @@ def test_build_cmaes_report_records_level_bag_scoring_flags():
     assert payload["scoring"]["categorical_weight"] == pytest.approx(100.0)
     assert payload["scoring"]["hold_aggregation"] == "none"
     assert payload["scoring"]["full_trajectory"] is True
+    assert payload["scoring"]["real_ft_column"] == "ft_wrist"
+    assert payload["replay"] == {"mode": "closed_loop"}
     assert payload["scoring"]["wave_max_attempts"] == 5
 
     custom = module._build_cmaes_report_payload(

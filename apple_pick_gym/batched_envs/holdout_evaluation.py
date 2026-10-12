@@ -603,6 +603,7 @@ def run_holdout_evaluation(
     write_match_metrics: bool = True,
     dataset_path: str | Path | None = None,
     cma_seed: int | None = None,
+    replay_mode: str = "closed_loop",
 ) -> tuple[dict[str, Any], list[str]]:
     """Evaluate val baseline/fitted, build report, write overlays; return failures."""
     if state.final_evaluation is None:
@@ -735,5 +736,6 @@ def run_holdout_evaluation(
         val_overlay_paths=overlay_paths,
         val_verification_by_direction=val_verification,
     )
+    report["replay"] = {"mode": str(replay_mode)}
     write_holdout_report(output_dir, report)
     return report, holdout_gate_failures(report)

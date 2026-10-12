@@ -107,6 +107,7 @@ from apple_pick_gym.batched_envs.real_batched_replay_build import (
     real_replay_sim_config,
 )
 from apple_pick_gym.cma_generation_persist import persist_cma_generation_wave_batch
+from apple_pick_sim.system_id.mmd_features import scored_real_ft_column
 from apple_pick_gym.youngs_modulus_cmaes_viz import write_cmaes_visualization_bundle
 from apple_pick_gym.youngs_modulus_overlay_viz import (
     overlay_episodes_from_replay_evaluation,
@@ -635,6 +636,7 @@ def _build_cmaes_report_payload(
     force_magnitude_weight: float = 0.0,
     isolated_eval_waves: bool = True,
     wave_max_attempts: int = DEFAULT_WAVE_MAX_ATTEMPTS,
+    replay_mode: str = "closed_loop",
 ) -> dict[str, Any]:
     counters = counter_totals or {}
     structures: dict[str, Any] = {}
@@ -711,10 +713,14 @@ def _build_cmaes_report_payload(
             "categorical_weight": float(scoring.categorical_weight),
             "delta_weight": float(scoring.delta_weight),
             "full_trajectory": bool(scoring.full_trajectory),
+            "real_ft_column": scored_real_ft_column(
+                full_trajectory=bool(scoring.full_trajectory)
+            ),
             "force_magnitude_weight": float(force_magnitude_weight),
             "isolated_eval_waves": bool(isolated_eval_waves),
             "wave_max_attempts": int(wave_max_attempts),
         },
+        "replay": {"mode": str(replay_mode)},
         "command_status": str(command_status),
         "structures": structures,
         "aggregate": aggregate,
@@ -907,6 +913,17 @@ def _make_parser() -> argparse.ArgumentParser:
             "holds can't constrain. Requires --hold-aggregation none (a "
             "reduced ramp state throws away the signal this exists to "
             "capture). Default: off (hold-only, matches prior behavior)."
+        ),
+    )
+    p.add_argument(
+        "--replay-mode",
+        choices=["closed_loop", "tcp_prescribed"],
+        default="closed_loop",
+        help=(
+            "How candidate replays drive the plant. closed_loop (default): recorded "
+            "targets through the sim arm. tcp_prescribed: a kinematic arm follows the "
+            "recorded TCP motion (relative to frame 0), so arm-model error (Ki, joint "
+            "friction, task-space inertia) cannot leak into the fitted plant."
         ),
     )
     p.add_argument(
@@ -1684,6 +1701,9 @@ def _run(
 
     settle_config = _settle_config_kwargs(args=args)
     dynamic_apple = bool(getattr(args, "dynamic_apple", True))
+    replay_mode = str(getattr(args, "replay_mode", "closed_loop"))
+    # Data semantics stay ``mode``; ``replay_mode`` only picks how the plant is driven.
+    real_controller_mode = "tcp_pose" if replay_mode == "tcp_prescribed" else "vic_pose"
     if mode == "vic_pose":
         control_hz = control_hz_from_episode_metadata(
             episode_meta,
@@ -1706,7 +1726,7 @@ def _run(
             settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
             post_grasp_settle_substeps=CMA_POST_GRASP_SETTLE_SUBSTEPS,
             bootstrap_joint_q=bootstrap_joint_q,
-            controller_mode="vic_pose",
+            controller_mode=real_controller_mode,
             control_hz=control_hz,
             dynamic_apple=dynamic_apple,
         )
@@ -1721,7 +1741,7 @@ def _run(
             settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
             post_grasp_settle_substeps=CMA_POST_GRASP_SETTLE_SUBSTEPS,
             bootstrap_joint_q=bootstrap_joint_q,
-            controller_mode="vic_pose",
+            controller_mode=real_controller_mode,
             control_hz=control_hz,
             dynamic_apple=dynamic_apple,
         )
@@ -1732,6 +1752,7 @@ def _run(
             control_hz=control_hz,
             device=device,
             settle_config=settle_config,
+            replay_mode=replay_mode,
         )
         replay_sim_config = build_sim_config(num_envs=1, ranges=ranges, **settle_config)
     replay_context = build_cma_replay_context_from_cli(
@@ -1758,6 +1779,7 @@ def _run(
         episode_meta=episode_meta if mode == "vic_pose" else None,
         enable_self_collisions=bool(getattr(args, "enable_self_collision", False)),
         dynamic_apple=dynamic_apple,
+        replay_mode=replay_mode,
     )
     scoring = YoungsModulusScoringConfig(
         use_median=args.use_median is True,
@@ -1882,6 +1904,7 @@ def _run(
             ),
             isolated_eval_waves=bool(use_isolated_eval_waves),
             wave_max_attempts=int(getattr(args, "wave_max_attempts", DEFAULT_WAVE_MAX_ATTEMPTS)),
+            replay_mode=replay_mode,
         )
         _write_cmaes_report_atomic(report_path, payload)
 
@@ -2237,6 +2260,7 @@ def _run(
                     write_match_metrics=bool(args.write_match_metrics),
                     dataset_path=str(args.dataset),
                     cma_seed=int(base_seed),
+                    replay_mode=replay_mode,
                 )
             except Exception as exc:
                 exit_nonzero = True

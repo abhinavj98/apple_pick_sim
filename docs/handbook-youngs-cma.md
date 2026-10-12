@@ -177,6 +177,32 @@ The parent keeps pycma `ask`/`tell` and `penalize_youngs_modulus_scores`.
 remain in-process after fit (same as before). A failed worker is retried up
 to `--wave-max-attempts` (default 5) before the wave fails.
 
+**Replay modes (`--replay-mode`, branch `feature/tcp-prescribed-sysid`):**
+
+- `closed_loop` (default): the recorded actions (`vic_pose` targets, or sim-sim
+  twists) drive the sim FR3 arm, and the plant sees whatever TCP motion the sim
+  arm produces. The arm model (gains, Ki, joint friction, task-space Λ) sits in
+  series with the plant, so arm-model error is fit as plant error.
+- `tcp_prescribed`: a kinematic arm (`controller.mode="tcp_pose"`,
+  `Fr3BatchedTcpPrescribedController`) follows the **recorded TCP pose**. Per frame,
+  batched IK solves the end-of-frame joints; per substep, joints are linearly
+  interpolated, so the proxy moves smoothly. The recorded motion is applied
+  relative to its pre-motion reference onto each env's own settled TCP
+  (`apple_pick_sim/system_id/tcp_prescription.py`). With a kinematic arm the
+  lagged coupling cache stays zero, so `ft_wrist` is read from `proxy_forces`
+  (`scene.ft_from_proxy_forces`). Builders advertise the mode as
+  `build_env_fn.replay_mode`, and `CmaReplayContext.replay_mode` carries it to
+  isolated workers. `cmaes_report.json` and `holdout_report.json` record
+  `replay.mode`. Arm fidelity is then validated separately from plant sys-ID.
+
+**Recording convention:** converted real bags record **before** stepping (frame 0
+is the grasp); sim-sim collection records **after** stepping (row k is the
+state after action k). Fused and scalar replay pick the matching loop per dataset
+(`replay_control_horizon_record_before_step` / `_after_step`). Before this,
+2026-09-03 (`a7f748e`) applied the real convention to sim-sim data too, which put
+every sim-sim replay row one frame off: GT replay scored ~160 Sinkhorn under
+full-trajectory scoring, versus ~0.3 aligned.
+
 **In-process FR3 reuse (`--no-isolated-eval-waves`):** the in-process path sets
 `RobotConfig.reuse_replicated_mujoco`. After the first fused weld, later waves
 reuse the USD-imported FR3 model and `SolverMuJoCo` (reset to the cached rest
@@ -255,6 +281,11 @@ Legacy transition bags:
 `--hold-aggregation mean --include-delta --categorical-weight 1`. Recorded under
 `scoring.hold_aggregation`, `scoring.include_delta`, and `scoring.categorical_weight`
 in `cmaes_report.json`.
+
+**Full-trajectory F/T column:** under `--full-trajectory`, real bags are scored on
+the unfiltered `ft_wrist` (rig EMA + block mean) rather than the convert-time 10 Hz
+`ft_wrist_lpf`, because candidate replays carry no LPF (`scoring.real_ft_column`).
+The sim side still has no counterpart to the rig's online EMA (τ ≈ 19.5 ms).
 
 **Full-trajectory scoring (2026-09-14, opt-in):** `--full-trajectory` scores each
 direction's `move_out` ramp segments alongside its `hold` segments, instead of

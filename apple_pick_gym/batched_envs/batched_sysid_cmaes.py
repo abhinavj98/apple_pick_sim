@@ -203,10 +203,24 @@ def youngs_modulus_values_match(
     *,
     log10_atol: float = 1e-9,
 ) -> bool:
-    return all(
-        math.isclose(math.log10(a), math.log10(b), rel_tol=0.0, abs_tol=log10_atol)
-        for a, b in zip(left, right, strict=True)
-    )
+    """True when every slot matches: positive values in log10, unset slots as unset.
+
+    Optional slots (axial moduli, roll kp, ζ, density) are ``None`` when unset; a
+    slot set on one side only is a mismatch. ζ slots are linear in ``[0, 1]`` and
+    may be exactly 0, so non-positive values compare by absolute tolerance.
+    """
+
+    def _slot_match(a: float | None, b: float | None) -> bool:
+        if a is None or b is None:
+            return a is None and b is None
+        a, b = float(a), float(b)
+        if a > 0.0 and b > 0.0:
+            return math.isclose(
+                math.log10(a), math.log10(b), rel_tol=0.0, abs_tol=log10_atol
+            )
+        return math.isclose(a, b, rel_tol=0.0, abs_tol=log10_atol)
+
+    return all(_slot_match(a, b) for a, b in zip(left, right, strict=True))
 
 
 def maybe_include_gt_candidate(

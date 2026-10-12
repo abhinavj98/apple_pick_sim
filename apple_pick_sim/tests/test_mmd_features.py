@@ -18,6 +18,7 @@ from apple_pick_sim.system_id.mmd_features import (
     iter_kept_hold_segments,
     mean_hold_block_errors,
     replay_obs_dict_from_sysid_numpy,
+    scored_ft_wrist,
 )
 
 
@@ -705,6 +706,43 @@ def test_full_trajectory_rejects_median_hold_reduce():
         build_transition_features_by_direction(
             arrays, full_trajectory=True, use_median=True
         )
+
+
+def _real_like_arrays_with_lpf() -> dict:
+    """Real-style bag: convert-time ``ft_wrist_lpf`` differs from ``ft_wrist``."""
+    arrays = _arrays_for_steps(steps=6, junction_names=["joint_a"])
+    arrays["dir_idx"] = np.zeros(6, dtype=np.int32)
+    arrays["phase"] = np.array([0, 0, 1, 1, 1, 1], dtype=np.int8)
+    arrays["ft_wrist_lpf"] = arrays["ft_wrist"] + 1000.0
+    return arrays
+
+
+def test_scored_ft_wrist_use_lpf_false_returns_live_column():
+    arrays = _real_like_arrays_with_lpf()
+
+    np.testing.assert_array_equal(scored_ft_wrist(arrays), arrays["ft_wrist_lpf"])
+    np.testing.assert_array_equal(
+        scored_ft_wrist(arrays, use_lpf=False), arrays["ft_wrist"]
+    )
+
+
+def test_full_trajectory_scores_unfiltered_real_ft_wrist():
+    """Full-trajectory rows use ``ft_wrist`` (EMA + block mean), not the 10 Hz LPF column."""
+    arrays = _real_like_arrays_with_lpf()
+
+    feats = build_transition_features_by_direction(arrays, full_trajectory=True)[0]
+
+    # Row 0 is the move_out transition starting at frame 0: s_0 leads the row.
+    np.testing.assert_allclose(feats[0, :6], arrays["ft_wrist"][0])
+
+
+def test_hold_only_scoring_keeps_ft_wrist_lpf():
+    arrays = _real_like_arrays_with_lpf()
+
+    feats = build_transition_features_by_direction(arrays, hold_reduce="none")[0]
+
+    # First hold transition starts at frame 2.
+    np.testing.assert_allclose(feats[0, :6], arrays["ft_wrist_lpf"][2])
 
 
 def test_median_hold_to_hold_features_use_full_hold_medians():

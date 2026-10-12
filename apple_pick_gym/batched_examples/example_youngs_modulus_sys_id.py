@@ -545,9 +545,12 @@ def _make_build_env_fn(
     device: str | None = None,
     settle_config: dict | None = None,
     reuse_replicated_mujoco: bool = False,
+    replay_mode: str = "closed_loop",
 ):
     from apple_pick_gym.batched_envs import ApplePickBatchedSysIdEnv
 
+    if replay_mode not in ("closed_loop", "tcp_prescribed"):
+        raise ValueError(f"unknown replay_mode {replay_mode!r}")
     ranges = load_ranges(ranges_path)
 
     def build_env_fn(
@@ -576,6 +579,13 @@ def _make_build_env_fn(
             sim_config,
             runtime=dataclasses.replace(sim_config.runtime, control_hz=float(control_hz)),
         )
+        if replay_mode == "tcp_prescribed":
+            sim_config = dataclasses.replace(
+                sim_config,
+                controller=dataclasses.replace(
+                    sim_config.controller, mode="tcp_pose", action_dim=7
+                ),
+            )
         if support_kp_per_env is not None:
             kp_tuple = tuple(float(kp) for kp in support_kp_per_env)
             if len(kp_tuple) != int(num_envs):
@@ -638,6 +648,7 @@ def _make_build_env_fn(
     build_env_fn.wants_support_kp_per_env = True
     build_env_fn.wants_support_roll_kp_per_env = True
     build_env_fn.wants_support_zeta_per_env = True
+    build_env_fn.replay_mode = replay_mode
     return build_env_fn
 
 
@@ -701,6 +712,15 @@ def _make_parser() -> argparse.ArgumentParser:
         choices=("vic", "vic_pose"),
         default=None,
         help="Replay controller mode (default: infer vic_pose from dataset, else vic).",
+    )
+    p.add_argument(
+        "--replay-mode",
+        choices=("closed_loop", "tcp_prescribed"),
+        default="closed_loop",
+        help=(
+            "closed_loop (default): recorded targets drive the sim arm. tcp_prescribed: "
+            "a kinematic arm follows the recorded TCP motion (arm-free plant replay)."
+        ),
     )
     p.add_argument(
         "--dynamic-apple",
@@ -1045,7 +1065,11 @@ def _run(
             settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
             post_grasp_settle_substeps=DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
             bootstrap_joint_q=bootstrap_joint_q,
-            controller_mode="vic_pose",
+            controller_mode=(
+                "tcp_pose"
+                if getattr(args, "replay_mode", "closed_loop") == "tcp_prescribed"
+                else "vic_pose"
+            ),
             control_hz=control_hz,
             dynamic_apple=dynamic_apple,
         )
@@ -1060,7 +1084,11 @@ def _run(
             settle_gravity_ramp=bool(settle_config.get("settle_gravity_ramp")),
             post_grasp_settle_substeps=DEFAULT_POST_GRASP_SETTLE_SUBSTEPS,
             bootstrap_joint_q=bootstrap_joint_q,
-            controller_mode="vic_pose",
+            controller_mode=(
+                "tcp_pose"
+                if getattr(args, "replay_mode", "closed_loop") == "tcp_prescribed"
+                else "vic_pose"
+            ),
             control_hz=control_hz,
             dynamic_apple=dynamic_apple,
         )
@@ -1072,6 +1100,7 @@ def _run(
             control_hz=control_hz,
             device=device,
             settle_config=settle_config,
+            replay_mode=str(getattr(args, "replay_mode", "closed_loop")),
         )
         replay_sim_config = build_sim_config(
             num_envs=1,

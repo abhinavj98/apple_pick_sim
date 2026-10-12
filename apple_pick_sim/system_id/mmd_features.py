@@ -130,8 +130,20 @@ def transition_feature_scale(
     return np.concatenate([state, delta_scale, extra])
 
 
-def scored_ft_wrist(arrays: Mapping[str, Any]) -> Any:
-    """Prefer convert-time ``ft_wrist_lpf`` when present; else live ``ft_wrist``."""
+def scored_real_ft_column(*, full_trajectory: bool) -> str:
+    """Name of the real-bag F/T column the scorer uses (report provenance)."""
+    return "ft_wrist" if full_trajectory else "ft_wrist_lpf"
+
+
+def scored_ft_wrist(arrays: Mapping[str, Any], *, use_lpf: bool = True) -> Any:
+    """Prefer convert-time ``ft_wrist_lpf`` when present; else live ``ft_wrist``.
+
+    ``use_lpf=False`` always returns ``ft_wrist``. Full-trajectory scoring uses it:
+    the 10 Hz zero-phase LPF has no sim counterpart, and its attenuation of ramp
+    dynamics would otherwise be fit as extra plant damping.
+    """
+    if not use_lpf:
+        return arrays["ft_wrist"]
     lpf = arrays.get("ft_wrist_lpf")
     if lpf is None:
         return arrays["ft_wrist"]
@@ -565,11 +577,14 @@ def build_bending_angles(
     return angles.astype(np.float32, copy=False)
 
 
-def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
+def build_state_matrix(
+    arrays: Mapping[str, Any], *, use_ft_lpf: bool = True
+) -> np.ndarray:
     """Build per-frame observable state rows in the MMD feature order.
 
     ``apple_pos`` is required on ``arrays`` for bend-chord geometry but is not
-    concatenated into the scored state.
+    concatenated into the scored state. ``use_ft_lpf`` selects the F/T column
+    via :func:`scored_ft_wrist`.
     """
 
     if not isinstance(arrays, Mapping):
@@ -585,7 +600,11 @@ def build_state_matrix(arrays: Mapping[str, Any]) -> np.ndarray:
     junction_names = [str(name) for name in arrays["junction_names"]]
 
     columns = [
-        _as_2d(scored_ft_wrist(arrays), name="ft_wrist", n_frames=n_frames),
+        _as_2d(
+            scored_ft_wrist(arrays, use_lpf=use_ft_lpf),
+            name="ft_wrist",
+            n_frames=n_frames,
+        ),
         _as_2d(arrays["tcp_velocity"], name="tcp_velocity", n_frames=n_frames),
         _as_2d(arrays["tcp_pos"], name="tcp_pos", n_frames=n_frames),
         build_tcp_rotvec(arrays["tcp_quat"]),
@@ -809,11 +828,14 @@ def build_transition_features_by_direction(
     recordings stamp ``hold_number=-1`` outside the hold phase. Requires
     ``hold_reduce`` to resolve to ``"none"``: reducing a ramp to one
     median/mean state discards the very signal (e.g. damping) full-trajectory
-    scoring exists to capture.
+    scoring exists to capture. Full-trajectory rows also score real bags'
+    unfiltered ``ft_wrist`` (rig EMA + block mean) instead of the convert-time
+    ``ft_wrist_lpf``: candidate replays carry no LPF, so on ramps that filter
+    would read as extra plant damping.
     """
 
     _require_keys(arrays, REQUIRED_ARRAY_KEYS)
-    state = build_state_matrix(arrays)
+    state = build_state_matrix(arrays, use_ft_lpf=not full_trajectory)
     phase = np.asarray(arrays["phase"]).reshape(-1)
     dir_idx = np.asarray(arrays["dir_idx"]).reshape(-1)
     stable = np.asarray(arrays.get("stable", np.ones(phase.shape[0], dtype=bool)), dtype=bool).reshape(

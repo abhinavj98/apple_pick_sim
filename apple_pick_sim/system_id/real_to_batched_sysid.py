@@ -46,6 +46,10 @@ _DEFAULT_CONTROL_HZ = 15.0
 DEFAULT_TARGET_CONTROL_HZ = 30.0
 DEFAULT_FT_LPF_CUTOFF_HZ = 10.0
 DEFAULT_FT_LPF_ORDER = 4
+# --apple-from-tcp: apple surface sits this far beyond the TCP along tool +Z.
+# Fitted from consistent-marker directions (2026-10-12): s08 12.5, s09 12.6,
+# s10 8.2 mm; pooled median of s08+s09+s10 (n=20) = 12.3 mm.
+DEFAULT_APPLE_STANDOFF_M = 0.0123
 _TREE_PARQUET_RE = re.compile(r"(?P<tree>s\d+)-d(?P<dir>\d+)\.parquet")
 
 # Convert-time primary T-junction lift: rest snapshot base is sagged vs lengthened.
@@ -410,11 +414,14 @@ def build_episode_metadata_from_real(
     *,
     fixture_path: str | Path,
     weld_direction_sign: float = 1.0,
+    apple_pose_override: tuple[Any, Any] | None = None,
 ) -> dict[str, Any]:
     """Build batched-style episode metadata from one real-world parquet episode.
 
     Uses the same pre/post builders as ``example_view_pre_grasp_settle.py`` so
     converted metadata matches the settle-viewer twin (rebuild + grasp init).
+    ``apple_pose_override`` (``(pos, quat_xyzw)``) replaces the logged apple
+    marker at grasp for the taut closure and the weld.
     """
     path = Path(input_path)
     fixture = Path(fixture_path)
@@ -424,12 +431,15 @@ def build_episode_metadata_from_real(
     # Lazy imports avoid a cycle with real_pre_grasp_params → this module.
     from apple_pick_sim.system_id.real_post_grasp_plan import post_grasp_plan_from_metadata
     from apple_pick_sim.system_id.real_pre_grasp_params import (
-        fruiting_params_from_pre_grasp_parquet,
+        fruiting_params_from_pre_grasp_meta,
         load_dataset_metadata,
+        select_pre_grasp_woody_snapshot,
     )
 
-    params, base_pos, diagnostics = fruiting_params_from_pre_grasp_parquet(
-        path, fixture_path=fixture
+    params, base_pos, diagnostics = fruiting_params_from_pre_grasp_meta(
+        load_dataset_metadata(path),
+        fixture_path=fixture,
+        apple_pose_override=apple_pose_override,
     )
     if params.apple_radius is None:
         raise ValueError("native pre-grasp params missing apple_radius")
@@ -446,6 +456,7 @@ def build_episode_metadata_from_real(
         dm,
         apple_radius_m=float(params.apple_radius),
         emit_warnings=True,
+        apple_pose_override=apple_pose_override,
     )
 
     table = pq.read_table(path)
@@ -504,6 +515,12 @@ def build_episode_metadata_from_real(
         "weld_reference_pos": list(apple_pos),
         "weld_reference_quat": list(apple_quat),
     }
+    rest_snap, _ = select_pre_grasp_woody_snapshot(dm.get("pre_grasp_geometry") or {})
+    # During-run (frame-0) primary_spur junction; build sag-shift target.
+    meta["rest_junction_pos"] = [
+        float(x)
+        for x in np.asarray(rest_snap["woody_part_start_pos"], dtype=np.float64).reshape(9)[0:3]
+    ]
     cam = camera_to_base_4x4_from_dataset_metadata(dm)
     if cam is not None:
         meta["camera_to_base_4x4"] = cam
@@ -803,6 +820,83 @@ def _rod_geometry_signature(params_blob: Any) -> tuple[Any, ...]:
     return tuple(sig)
 
 
+def _tcp_derived_apple_poses(
+    discovered: list[tuple[Path, int]],
+    *,
+    standoff_m: float,
+) -> tuple[dict[int, tuple[Any, Any]], float, dict[str, Any]]:
+    """Per-direction grasped apple at ``tcp + (r_tree + c)·z_tool`` and its report.
+
+    The apple marker reads up to ~45 mm too deep along the camera ray, so the
+    grasped apple comes from the logged TCP: each direction's taut radius is
+    solved against its frame-0 spur tip (:func:`taut_apple_radius_from_tcp`) and
+    the tree uses the median.
+    """
+    from apple_pick_sim.system_id.real_post_grasp_plan import (
+        apple_pose_at_tcp,
+        post_grasp_plan_from_metadata,
+        taut_apple_radius_from_tcp,
+    )
+    from apple_pick_sim.system_id.real_pre_grasp_params import (
+        select_pre_grasp_woody_snapshot,
+    )
+
+    rows = []
+    for path, direction_idx in discovered:
+        dm = _load_dataset_metadata(path)
+        # Radius only feeds plan warnings; the logged TCP and marker are what we need.
+        plan = post_grasp_plan_from_metadata(dm, apple_radius_m=1.0, emit_warnings=False)
+        pre = dm.get("pre_grasp_geometry") or {}
+        snap, _ = select_pre_grasp_woody_snapshot(pre)
+        spur_tip = np.asarray(snap["woody_part_end_pos"], dtype=np.float64).reshape(9)[0:3]
+        radius = taut_apple_radius_from_tcp(
+            plan.tcp_pos,
+            plan.tcp_quat_xyzw,
+            spur_tip,
+            stem_length_m=float(pre["parts"]["stem"]["length_m"]),
+            standoff_m=float(standoff_m),
+        )
+        rows.append((int(direction_idx), plan, radius))
+    r_tree = float(np.median([radius for _, _, radius in rows]))
+    overrides: dict[int, tuple[Any, Any]] = {}
+    marker_mm: dict[str, float] = {}
+    for direction_idx, plan, _ in rows:
+        pose = apple_pose_at_tcp(plan.tcp_pos, plan.tcp_quat_xyzw, r_tree, standoff_m)
+        overrides[direction_idx] = pose
+        marker_mm[str(direction_idx)] = 1e3 * float(
+            np.linalg.norm(np.asarray(plan.apple_pos_measured) - np.asarray(pose[0]))
+        )
+    report = {
+        "standoff_m": float(standoff_m),
+        "apple_radius_m": r_tree,
+        "apple_radius_by_direction_mm": {
+            str(direction_idx): 1e3 * radius for direction_idx, _, radius in sorted(rows)
+        },
+        "marker_vs_tcp_apple_mm": marker_mm,
+    }
+    return overrides, r_tree, report
+
+
+def _apply_tree_apple_radius(episodes: list[_ConvertedEpisode], radius_m: float) -> float:
+    """Set every episode's apple radius to ``radius_m`` keeping its mass; return density."""
+    from apple_pick_sim.fruiting_system.params import fruiting_params_from_dict
+
+    density = float("nan")
+    for ep in episodes:
+        blob = ep.episode_meta["fruiting_system_params"]
+        p = fruiting_params_from_dict(json.loads(blob) if isinstance(blob, str) else blob)
+        mass = float(p.apple_density) * (4.0 / 3.0) * math.pi * float(p.apple_radius) ** 3
+        density = mass / ((4.0 / 3.0) * math.pi * float(radius_m) ** 3)
+        p = dataclasses.replace(p, apple_radius=float(radius_m), apple_density=density)
+        ep.episode_meta = {
+            **ep.episode_meta,
+            "fruiting_system_params": json.dumps(fruiting_params_to_dict(p), sort_keys=True),
+            "params_fingerprint": params_fingerprint(p),
+            "apple_radius": float(radius_m),
+        }
+    return density
+
+
 def _canonicalize_tree_geometry(
     episodes: list[_ConvertedEpisode],
     *,
@@ -944,6 +1038,7 @@ def _build_real_episode(
     ft_lpf_order: int = DEFAULT_FT_LPF_ORDER,
     transport_torque_to_tcp: bool = False,
     inject_rest_hold: bool = True,
+    apple_pose_override: tuple[Any, Any] | None = None,
 ) -> _ConvertedEpisode:
     """Convert one real parquet into trajectory + metadata (no manifest write)."""
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedEpisodeWriter
@@ -953,7 +1048,10 @@ def _build_real_episode(
     fixture = Path(fixture_path)
 
     episode_meta = build_episode_metadata_from_real(
-        path, fixture_path=fixture, weld_direction_sign=weld_direction_sign
+        path,
+        fixture_path=fixture,
+        weld_direction_sign=weld_direction_sign,
+        apple_pose_override=apple_pose_override,
     )
     episode_meta = {
         **episode_meta,
@@ -1258,6 +1356,7 @@ def _write_batched_manifest(
     topology_seed: int | None = None,
     sim_config: dict[str, Any] | None = None,
     n_holds: int | None = None,
+    extra_collection: dict[str, Any] | None = None,
 ) -> None:
     from apple_pick_sim.system_id.batched_trajectory_store import write_manifest
 
@@ -1314,6 +1413,8 @@ def _write_batched_manifest(
         collection["action_compatible_with_vic_twist"] = False
         collection["action_dim"] = int(ref.episode_meta.get("action_dim") or 19)
         collection["action_layout"] = "vic_pose_v1"
+    if extra_collection:
+        collection.update(extra_collection)
     write_manifest(
         out,
         command_argv=list(command_argv),
@@ -1388,14 +1489,29 @@ def export_real_tree_folder_to_batched_dataset(
     base_pos_tolerance_m: float = 5e-3,
     transport_torque_to_tcp: bool = False,
     inject_rest_hold: bool = True,
+    apple_from_tcp: bool = False,
+    apple_standoff_m: float = DEFAULT_APPLE_STANDOFF_M,
 ) -> Path:
-    """Write a 1×N ``batched_sysid_v1`` dataset from one tree folder of parquets."""
+    """Write a 1×N ``batched_sysid_v1`` dataset from one tree folder of parquets.
+
+    ``apple_from_tcp`` trusts the logged robot TCP over the apple marker: each
+    direction's grasped apple sits at ``tcp + (r + c)·z_tool`` with ``c =
+    apple_standoff_m`` and one taut-closure radius ``r`` per tree (density keeps
+    the logged mass).
+    """
     from apple_pick_sim.system_id.batched_trajectory_store import episode_filename
 
     src_dir = Path(input_dir)
     out = Path(output_dir)
     fixture = Path(fixture_path)
     discovered = _discover_tree_parquets(src_dir)
+    apple_overrides: dict[int, tuple[Any, Any]] = {}
+    apple_from_tcp_report: dict[str, Any] | None = None
+    tree_apple_radius_m: float | None = None
+    if apple_from_tcp:
+        apple_overrides, tree_apple_radius_m, apple_from_tcp_report = _tcp_derived_apple_poses(
+            discovered, standoff_m=float(apple_standoff_m)
+        )
     converted: list[_ConvertedEpisode] = []
     for path, direction_idx in discovered:
         dm = _load_dataset_metadata(path)
@@ -1412,7 +1528,12 @@ def export_real_tree_folder_to_batched_dataset(
                 ft_lpf_order=ft_lpf_order,
                 transport_torque_to_tcp=transport_torque_to_tcp,
                 inject_rest_hold=inject_rest_hold,
+                apple_pose_override=apple_overrides.get(direction_idx),
             )
+        )
+    if apple_from_tcp_report is not None and tree_apple_radius_m is not None:
+        apple_from_tcp_report["apple_density_kg_m3"] = _apply_tree_apple_radius(
+            converted, tree_apple_radius_m
         )
     _canonicalize_tree_geometry(converted, base_pos_tolerance_m=float(base_pos_tolerance_m))
     if out.exists() and any(out.iterdir()) and not overwrite:
@@ -1443,5 +1564,10 @@ def export_real_tree_folder_to_batched_dataset(
         topology_seed=topology_seed,
         sim_config=sim_config,
         n_holds=n_holds,
+        extra_collection=(
+            {"apple_from_tcp": apple_from_tcp_report}
+            if apple_from_tcp_report is not None
+            else None
+        ),
     )
     return out

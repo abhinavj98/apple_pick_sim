@@ -101,6 +101,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max per-axis fruiting_base_pos spread across directions (default: 5e-3).",
     )
     parser.add_argument(
+        "--apple-from-tcp",
+        action="store_true",
+        help=(
+            "Tree folders only: trust the logged TCP over the apple marker. Estimate one "
+            "apple-in-TCP grasp per tree, place each direction's grasped apple at "
+            "TCP·grasp, and close the stem with the tree-median apple radius."
+        ),
+    )
+    parser.add_argument(
+        "--apple-standoff-m",
+        type=float,
+        default=None,
+        help=(
+            "With --apple-from-tcp: apple surface distance beyond the TCP along tool +Z "
+            "(default: DEFAULT_APPLE_STANDOFF_M)."
+        ),
+    )
+    parser.add_argument(
         "--transport-torque-to-tcp",
         action="store_true",
         help=(
@@ -147,9 +165,17 @@ def main(argv: list[str] | None = None) -> int:
             out_dir = export_real_tree_folder_to_batched_dataset(
                 args.input_dir,
                 base_pos_tolerance_m=float(args.base_pos_tolerance_m),
+                apple_from_tcp=bool(args.apple_from_tcp),
+                **(
+                    {"apple_standoff_m": float(args.apple_standoff_m)}
+                    if args.apple_standoff_m is not None
+                    else {}
+                ),
                 **common_kw,
             )
         else:
+            if args.apple_from_tcp or args.apple_standoff_m is not None:
+                parser.error("--apple-from-tcp requires --input-dir (tree folder)")
             out_dir = export_real_episode_to_batched_dataset(
                 args.input,
                 **common_kw,

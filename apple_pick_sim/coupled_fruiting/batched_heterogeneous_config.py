@@ -74,7 +74,7 @@ _VIC_DEFAULT_ANGULAR_D = 1.0
 
 RobotKind = Literal["fr3"]
 StepMode = Literal["coupled", "vbd_only"]
-ControllerMode = Literal["direct", "ee", "vic", "vic_pose"]
+ControllerMode = Literal["direct", "ee", "vic", "vic_pose", "tcp_pose"]
 
 _TESTS_RANGES_FIXTURE = (
     Path(__file__).resolve().parent.parent / "fixtures" / "fruiting_system_ranges_straight_rod_test.json"
@@ -226,6 +226,10 @@ class ControllerConfig:
     sep_ori: bool = False
     # Continuous_Force_RL: 0.2 N·m per 1 ms. 0 disables slew (algebraic tests).
     joint_torque_slew_nm_s: float = 200.0
+    # Coulomb (dry) friction on the 7 arm joints [N·m], scalar or per joint, for the
+    # VIC arm. None keeps the FR3 fixture default. Sys-ID validation uses it to
+    # collect with a deliberately wrong arm (replay keeps the default).
+    vic_joint_friction: float | tuple[float, ...] | None = None
 
     def expected_action_shape(self, num_envs: int) -> tuple[int, int]:
         """Return ``(num_envs, action_dim)``."""
@@ -372,6 +376,17 @@ class BatchedHeterogeneousCoupledSimConfig:
                 raise ValueError(
                     "controller.mode='vic_pose' requires action_dim=19 "
                     f"([pos(3), quat_wxyz(4), Kp(6), Kd(6)]), got {self.controller.action_dim}"
+                )
+
+        if self.controller.mode == "tcp_pose":
+            if self.robot.step_mode != "coupled":
+                raise ValueError(
+                    "controller.mode='tcp_pose' requires robot.step_mode='coupled'"
+                )
+            if self.controller.action_dim != 7:
+                raise ValueError(
+                    "controller.mode='tcp_pose' requires action_dim=7 "
+                    f"([pos(3), quat_wxyz(4)]), got {self.controller.action_dim}"
                 )
 
         if self.robot.step_mode == "vbd_only" and self.controller.mode != "direct":

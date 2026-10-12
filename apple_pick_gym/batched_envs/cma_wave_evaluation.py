@@ -72,6 +72,9 @@ class CmaReplayContext:
     reuse_replicated_mujoco: bool = False
     enable_self_collisions: bool = False
     dynamic_apple: bool = True
+    # "closed_loop" (recorded targets through the sim arm) | "tcp_prescribed"
+    # (kinematic arm follows the recorded TCP; arm-free plant sys-ID).
+    replay_mode: str = "closed_loop"
 
 
 @dataclass(frozen=True)
@@ -148,7 +151,12 @@ def build_cma_replay_artifacts(
         "settle_gravity_ramp": bool(context.settle_gravity_ramp),
         "settle_quiet_every": context.settle_quiet_every,
     }
+    if context.replay_mode not in ("closed_loop", "tcp_prescribed"):
+        raise ValueError(f"unknown replay_mode {context.replay_mode!r}")
     if context.mode == "vic_pose":
+        real_controller_mode = (
+            "tcp_pose" if context.replay_mode == "tcp_prescribed" else "vic_pose"
+        )
         if context.episode_meta is None:
             raise ValueError("vic_pose replay context requires episode_meta")
         if context.fruiting_base_pos is None:
@@ -169,7 +177,7 @@ def build_cma_replay_artifacts(
             settle_gravity_ramp=bool(context.settle_gravity_ramp),
             post_grasp_settle_substeps=int(context.post_grasp_settle_substeps),
             bootstrap_joint_q=context.bootstrap_joint_q,
-            controller_mode="vic_pose",
+            controller_mode=real_controller_mode,
             control_hz=float(context.control_hz),
             reuse_replicated_mujoco=bool(context.reuse_replicated_mujoco),
             enable_self_collisions=bool(context.enable_self_collisions),
@@ -185,7 +193,7 @@ def build_cma_replay_artifacts(
             settle_gravity_ramp=bool(context.settle_gravity_ramp),
             post_grasp_settle_substeps=int(context.post_grasp_settle_substeps),
             bootstrap_joint_q=context.bootstrap_joint_q,
-            controller_mode="vic_pose",
+            controller_mode=real_controller_mode,
             control_hz=float(context.control_hz),
             reuse_replicated_mujoco=bool(context.reuse_replicated_mujoco),
             enable_self_collisions=bool(context.enable_self_collisions),
@@ -200,6 +208,7 @@ def build_cma_replay_artifacts(
         device=context.device,
         settle_config=settle_config,
         reuse_replicated_mujoco=bool(context.reuse_replicated_mujoco),
+        replay_mode=str(context.replay_mode),
     )
     replay_sim_config = build_sim_config(
         num_envs=1,
@@ -237,6 +246,7 @@ def build_cma_replay_context_from_cli(
     reuse_replicated_mujoco: bool = False,
     enable_self_collisions: bool = False,
     dynamic_apple: bool = True,
+    replay_mode: str = "closed_loop",
 ) -> CmaReplayContext:
     """Construct replay context from CMA CLI ``_run`` settle/build inputs."""
     settle_substeps = settle_config.get("settle_substeps")
@@ -263,6 +273,7 @@ def build_cma_replay_context_from_cli(
         reuse_replicated_mujoco=bool(reuse_replicated_mujoco),
         enable_self_collisions=bool(enable_self_collisions),
         dynamic_apple=bool(dynamic_apple),
+        replay_mode=str(replay_mode),
     )
 
 

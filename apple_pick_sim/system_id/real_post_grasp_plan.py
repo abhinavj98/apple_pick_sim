@@ -46,6 +46,16 @@ def pose_4x4_to_pos_quat(
     return pos, quat
 
 
+def pos_quat_to_pose_4x4(pos: Any, quat_xyzw: Any) -> list[float]:
+    """Position + quat (x,y,z,w) → row-major flat 4×4 (inverse of :func:`pose_4x4_to_pos_quat`)."""
+    from scipy.spatial.transform import Rotation
+
+    M = np.eye(4, dtype=np.float64)
+    M[:3, :3] = Rotation.from_quat(np.asarray(quat_xyzw, dtype=np.float64)).as_matrix()
+    M[:3, 3] = np.asarray(pos, dtype=np.float64).reshape(3)
+    return [float(v) for v in M.reshape(16)]
+
+
 def _rotmat_to_quat_xyzw(R: np.ndarray) -> tuple[float, float, float, float]:
     """Rotation matrix → (x, y, z, w)."""
     m00, m01, m02 = R[0, 0], R[0, 1], R[0, 2]
@@ -233,12 +243,15 @@ def post_grasp_plan_from_metadata(
     warn_tol_m: float = _DEFAULT_WARN_TOL_M,
     approach_align_min_dot: float = _DEFAULT_APPROACH_ALIGN_MIN_DOT,
     emit_warnings: bool = True,
+    apple_pose_override: tuple[Any, Any] | None = None,
 ) -> PostGraspPlan:
     """Build plan from ``dataset_metadata`` including ``post_grasp_geometry``.
 
     New compiled episodes store the grasped apple under
     ``post_grasp_geometry.snapshot.apple_pose_4x4`` (and ``apple_pos``);
-    TCP remains on ``post_grasp_geometry.tcp_pose_4x4``.
+    TCP remains on ``post_grasp_geometry.tcp_pose_4x4``. ``apple_pose_override``
+    (``(pos, quat_xyzw)``) replaces the logged apple marker pose, e.g. with the
+    TCP-derived apple from :func:`apple_pose_at_tcp`.
     """
     post = meta.get("post_grasp_geometry")
     if not isinstance(post, dict):
@@ -271,9 +284,14 @@ def post_grasp_plan_from_metadata(
                 stacklevel=2,
             )
 
+    apple_pose_4x4 = snap["apple_pose_4x4"]
+    if apple_pose_override is not None:
+        apple_pose_4x4 = pos_quat_to_pose_4x4(*apple_pose_override)
+        apple_override = tuple(float(x) for x in apple_pose_override[0])
+
     return build_post_grasp_plan(
         tcp_pose_4x4=post["tcp_pose_4x4"],
-        apple_pose_4x4=snap["apple_pose_4x4"],
+        apple_pose_4x4=apple_pose_4x4,
         apple_radius_m=apple_radius_m,
         tcp_pos_override=tcp_override,
         apple_pos_override=apple_override,
@@ -423,3 +441,69 @@ def apply_post_grasp_after_settle(
     align_proxy_body_q_prev_for_vbd(welded, tuple(range(body_count)))
     sync_weld_proxy_rest_from_apple_rest(welded)
     return welded
+
+
+def apple_pose_at_tcp(
+    tcp_pos: Any,
+    tcp_quat_xyzw: Any,
+    radius_m: float,
+    standoff_m: float,
+) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
+    """Grasped apple ``(pos, quat_xyzw)``: centre at ``tcp + (r + c)·z_tool``.
+
+    The gripper seats the apple surface ``standoff_m`` beyond the TCP along tool +Z,
+    so the logged TCP fixes the apple; the apple body frame is the tool frame.
+    """
+    from scipy.spatial.transform import Rotation
+
+    quat = np.asarray(tcp_quat_xyzw, dtype=np.float64).reshape(4)
+    z_tool = Rotation.from_quat(quat).apply([0.0, 0.0, 1.0])
+    pos = np.asarray(tcp_pos, dtype=np.float64).reshape(3) + (
+        float(radius_m) + float(standoff_m)
+    ) * z_tool
+    return (
+        (float(pos[0]), float(pos[1]), float(pos[2])),
+        (float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])),
+    )
+
+
+def taut_apple_radius_from_tcp(
+    tcp_pos: Any,
+    tcp_quat_xyzw: Any,
+    spur_tip: Any,
+    *,
+    stem_length_m: float,
+    standoff_m: float,
+) -> float:
+    """Apple radius that makes the stem taut for an apple placed by :func:`apple_pose_at_tcp`.
+
+    With ``v = spur_tip − tcp``, tool axis ``z``, ``s = r + c`` and ``k = stem − c``
+    the stem spans spur tip → apple surface when ``|v − s·z| = s + k``, so
+    ``s = (|v|² − k²) / (2(v·z + k))`` and ``r = s − c``.
+    """
+    from scipy.spatial.transform import Rotation
+
+    from apple_pick_sim.system_id.real_pre_grasp_params import (
+        _APPLE_RADIUS_MAX_M,
+        _APPLE_RADIUS_MIN_M,
+    )
+
+    z_tool = Rotation.from_quat(np.asarray(tcp_quat_xyzw, dtype=np.float64)).apply(
+        [0.0, 0.0, 1.0]
+    )
+    v = np.asarray(spur_tip, dtype=np.float64).reshape(3) - np.asarray(
+        tcp_pos, dtype=np.float64
+    ).reshape(3)
+    k = float(stem_length_m) - float(standoff_m)
+    denom = 2.0 * (float(v @ z_tool) + k)
+    if denom <= _ZERO_EPS:
+        raise ValueError(
+            f"no taut apple radius: spur tip is not ahead of the TCP (v·z + k = {denom / 2:.4f} m)"
+        )
+    radius = (float(v @ v) - k * k) / denom - float(standoff_m)
+    if not (_APPLE_RADIUS_MIN_M < radius < _APPLE_RADIUS_MAX_M):
+        raise ValueError(
+            f"taut apple radius {radius:.4f} m outside "
+            f"[{_APPLE_RADIUS_MIN_M}, {_APPLE_RADIUS_MAX_M}] m"
+        )
+    return float(radius)

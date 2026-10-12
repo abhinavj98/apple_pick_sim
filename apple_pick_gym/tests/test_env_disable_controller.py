@@ -67,6 +67,17 @@ def test_apply_actions_holds_frozen_row_across_later_steps():
     assert out[1].tolist() == pytest.approx(_pose_row(0.5, 800.0))
 
 
+def test_apply_actions_freezes_previous_tcp_pose_row_for_disabled_envs():
+    """7D tcp_pose rows are absolute TCP poses: zeroing would teleport to the origin."""
+    c = EnvDisableController(num_envs=2, device="cpu")
+    first = torch.tensor([_pose_row(0.5, 0.0)[:7]] * 2, dtype=torch.float32)
+    c.apply_actions(first)
+    c.update(torch.tensor([False, True]))
+    out = c.apply_actions(torch.tensor([_pose_row(0.9, 0.0)[:7]] * 2, dtype=torch.float32))
+    assert out[0].tolist() == pytest.approx(_pose_row(0.9, 0.0)[:7])
+    assert out[1].tolist() == pytest.approx(_pose_row(0.5, 0.0)[:7])
+
+
 def test_apply_actions_still_zeros_disabled_twist_rows():
     c = EnvDisableController(num_envs=2, device="cpu")
     c.apply_actions(torch.ones(2, 6))

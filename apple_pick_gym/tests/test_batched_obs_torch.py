@@ -95,6 +95,20 @@ def test_obs_dict_from_bufs_shapes():
     )
 
 
+def test_obs_dict_ft_wrist_source_follows_ft_from_proxy_forces():
+    """Kinematic ``tcp_pose`` replay reads ft_wrist from the current harvest, not the lagged cache."""
+    bufs = make_batched_obs_buffers(_layout(), _FakeCable(), "cpu")
+    bufs.tcp_force.assign(np.full((2, 6), 3.0, dtype=np.float32))
+    bufs.tcp_coupling_force.assign(np.zeros((2, 6), dtype=np.float32))
+    names = ["a_b", "b_c"]
+
+    default = obs_dict_from_bufs(bufs, names, torch.device("cpu"))
+    kinematic = obs_dict_from_bufs(bufs, names, torch.device("cpu"), ft_from_proxy_forces=True)
+
+    torch.testing.assert_close(default["ft_wrist"], torch.zeros(2, 6))
+    torch.testing.assert_close(kinematic["ft_wrist"], torch.full((2, 6), 3.0))
+
+
 def test_obs_dict_from_bufs_does_not_alias_warp_storage():
     layout = _layout()
     cable = _FakeCable()

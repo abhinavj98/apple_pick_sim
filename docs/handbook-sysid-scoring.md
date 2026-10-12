@@ -22,7 +22,9 @@ features scored from them. `docs/ROADMAP.md` owns delivery status and next work.
 > `ft_wrist_raw − ft_wrist_baseline` again). Convert keeps world-rotated
 > `ft_wrist` as an unfiltered 30 Hz block-mean and writes a separate
 > `ft_wrist_lpf` series (zero-phase Butterworth, default 10 Hz, then the same
-> block-mean). Scoring uses `ft_wrist_lpf` when present. Never convert an
+> block-mean). Hold-only scoring uses `ft_wrist_lpf` when present;
+> `full_trajectory` scoring uses the unfiltered `ft_wrist` (the LPF has no sim
+> counterpart and would read as extra damping on ramps). Never convert an
 > uncorrected `*_robot.parquet`.
 >
 > Sim `ft_wrist` is already the plant TCP wrench. Gym copies
@@ -129,7 +131,7 @@ CMA pair `J=2`, `mmd_features.CMA_WOODY_JUNCTIONS` is
 
 | Offset | Field | Dimensions | Meaning |
 | ------ | ----- | ---------- | ------- |
-| 0:6 | `ft_wrist` | 6 | World-frame force then torque, env-on-robot, about TCP. Real GT uses `ft_wrist_lpf` when that column is present; candidate replay always uses live `ft_wrist`. |
+| 0:6 | `ft_wrist` | 6 | World-frame force then torque, env-on-robot, about TCP. Real GT uses `ft_wrist_lpf` when that column is present (hold-only scoring; `full_trajectory` uses `ft_wrist`); candidate replay always uses live `ft_wrist`. |
 | 6:12 | `tcp_velocity` | 6 | Linear then angular TCP velocity |
 | 12:15 | `tcp_pos` | 3 | TCP world position |
 | 15:18 | `tcp_rotvec` | 3 | Frame-0 relative axis-angle from bag `tcp_quat` xyzw (\(\phi=\log(q_0^{-1}q_t)\), hemisphere-aligned) |
@@ -171,7 +173,9 @@ with the same geometry:
    writes `ft_wrist_lpf`: the same world wrench after a 10 Hz `filtfilt`, then
    the same block-mean to `collection.control_hz`. Scoring
    (`mmd_features.scored_ft_wrist` / `build_state_matrix`) uses `ft_wrist_lpf`
-   when present; `raw_ft_wrist` remains diagnostic only, unfiltered.
+   when present, except under `full_trajectory`, which scores the unfiltered
+   `ft_wrist` (`cmaes_report.json` records `scoring.real_ft_column`);
+   `raw_ft_wrist` remains diagnostic only, unfiltered.
 2. **No sim filter and no sim tare.**
    Candidate replay uses its live world-frame plant harvest as `ft_wrist`.
    There is no score-time F/T transform, no simulated EMA/LPF, and no unloaded

@@ -212,6 +212,18 @@ class BatchedHeterogeneousCoupledSim:
             )
         elif mode in ("vic", "vic_pose"):
             ctrl = self._configure_fr3_vic(ik_kw, velocity_for_world)
+        elif mode == "tcp_pose":
+            # Arm-free plant replay: kinematic arm, TCP follows prescribed poses. The
+            # coupling cache stays zero (no lagged wrench on a kinematic arm), so the
+            # plant-side wrench is read from ``proxy_forces`` instead.
+            self._scene.robot_kinematic_mode = True
+            self._scene.ft_from_proxy_forces = True
+            ctrl = fr3_robot.Fr3BatchedTcpPrescribedController(
+                self._scene.robot_model,
+                velocity_for_world=velocity_for_world,
+                **ik_kw,
+            )
+            ctrl.hold_still(self._scene.robot_state_0)
         else:
             self._scene.robot_kinematic_mode = True
             ctrl = fr3_robot.Fr3BatchedEEDirectJointController(
@@ -249,6 +261,9 @@ class BatchedHeterogeneousCoupledSim:
             angular_k=float(g.angular_k),
             angular_d=float(g.angular_d),
         )
+        friction_kw: dict[str, Any] = {}
+        if self._config.controller.vic_joint_friction is not None:
+            friction_kw["joint_friction"] = self._config.controller.vic_joint_friction
         fr3_robot.configure_vic_joint_torques_arm_batched(
             self._scene.robot_model,
             self._scene.robot_state_0,
@@ -259,6 +274,7 @@ class BatchedHeterogeneousCoupledSim:
             kp_null=float(self._config.controller.kp_null),
             kd_null=float(self._config.controller.kd_null),
             sep_ori=bool(self._config.controller.sep_ori),
+            **friction_kw,
         )
         self._scene.vic_jt_torque_slew_nm_s = float(
             self._config.controller.joint_torque_slew_nm_s
@@ -280,7 +296,7 @@ class BatchedHeterogeneousCoupledSim:
         return fr3_robot.EEVelocity(linear=linear, angular=angular)
 
     def _clip_actions(self, actions):
-        if self._config.controller.mode == "vic_pose":
+        if self._config.controller.mode in ("vic_pose", "tcp_pose"):
             return actions
         return clip_action_tensor(
             actions,
@@ -291,6 +307,12 @@ class BatchedHeterogeneousCoupledSim:
     def _run_fr3_teleop_from_actions(self) -> None:
         cfg = self._config
         assert self._ee_ctrl is not None
+        if cfg.controller.mode == "tcp_pose":
+            assert isinstance(self._ee_ctrl, fr3_robot.Fr3BatchedTcpPrescribedController)
+            self._ee_ctrl.begin_frame(
+                self._scene.robot_state_0, self._action_buffer, self.frame_dt
+            )
+            return
         if cfg.controller.mode == "vic_pose":
             assert isinstance(self._ee_ctrl, fr3_robot.Fr3BatchedEEImpedanceController)
             velocity = self._ee_ctrl.run_coupled_teleop_frame_from_pose_actions(
@@ -331,6 +353,13 @@ class BatchedHeterogeneousCoupledSim:
 
         import torch
 
+        tcp_prescribed = cfg.controller.mode == "tcp_pose"
+        if actions is None and tcp_prescribed:
+            # A zero pose row is not "no motion"; hold the current joint coordinates.
+            if self._ee_ctrl is not None:
+                self._ee_ctrl.hold_frame()
+            self._run_substeps(tcp_prescribed=self._ee_ctrl is not None)
+            return
         if actions is None:
             n, d = cfg.controller.expected_action_shape(cfg.runtime.num_envs)
             actions = torch.zeros(n, d, dtype=torch.float32, device=self._device)
@@ -364,9 +393,18 @@ class BatchedHeterogeneousCoupledSim:
                         velocity=velocity,
                     )
 
-        for _ in range(cfg.runtime.substeps_per_step):
-            self._scene.coupled_substep(self.sub_dt)
+        self._run_substeps(tcp_prescribed=tcp_prescribed and self._ee_ctrl is not None)
 
+    def _run_substeps(self, *, tcp_prescribed: bool) -> None:
+        """Advance ``substeps_per_step`` coupled substeps (interpolating a prescribed TCP)."""
+        n_sub = int(self._config.runtime.substeps_per_step)
+        state = self._scene.robot_state_0
+        for i in range(n_sub):
+            if tcp_prescribed:
+                self._ee_ctrl.write_substep(state, float(i + 1) / float(n_sub))
+            self._scene.coupled_substep(self.sub_dt)
+        if tcp_prescribed:
+            self._ee_ctrl.measure_residual(state)
         self._sim_time += self.frame_dt
 
     def gather_obs(self) -> dict[str, Any]:

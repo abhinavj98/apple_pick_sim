@@ -355,8 +355,15 @@ grasp: `action[0]` already holds the first 1 cm target, but TCP and wrist force
 have not loaded. Logging after the first control period would dump a 1 cm
 pose-error wrench into that row. Init keeps the VIC target on
 `initial_tcp_*` (same as settle/`reset`); `action[0]` is applied after frame 0
-is recorded. Sim-collect bags still store frame 0 as the observation after
-action 0; that contract is collection-only.
+is recorded. Sim-collect bags store row k as the observation *after* action k,
+so sim-sim replay records after each step (`replay_control_horizon_record_after_step`);
+the loop is chosen per dataset. Using the real convention on sim-sim data compares
+every replay row with the recorded row one frame later.
+
+`--replay-mode tcp_prescribed` (CMA and grid CLIs) replaces the arm with a
+kinematic TCP that follows the recorded `tcp_pos` / `tcp_quat` (frame-0-relative,
+onto the sim's own settled grasp). The `vic_pose` gains and targets are then
+unused for the plant; see H1 §3 "Replay modes".
 
 The shared builder also matches
 the real collection OSC: `sep_ori=True` (rotation without \(\Lambda\)) and

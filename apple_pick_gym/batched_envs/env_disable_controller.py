@@ -5,6 +5,10 @@ from __future__ import annotations
 import torch
 
 _POSE_ACTION_DIM = 19
+_TCP_POSE_ACTION_DIM = 7
+# Absolute-pose layouts (``vic_pose`` 19D, ``tcp_pose`` 7D): a zero row is a real
+# command (world origin / limp arm), so disabled envs freeze their last row instead.
+_ABSOLUTE_POSE_ACTION_DIMS = frozenset({_POSE_ACTION_DIM, _TCP_POSE_ACTION_DIM})
 
 
 class EnvDisableController:
@@ -40,10 +44,11 @@ class EnvDisableController:
 
     def apply_actions(self, actions: torch.Tensor) -> torch.Tensor:
         out = actions.clone()
-        if actions.ndim == 2 and int(actions.shape[-1]) == _POSE_ACTION_DIM:
+        if actions.ndim == 2 and int(actions.shape[-1]) in _ABSOLUTE_POSE_ACTION_DIMS:
             # ``vic_pose`` rows are absolute pose + gains, so a zero row commands the
-            # world origin with Kp=Kd=0 (limp arm). Freeze the last commanded row of a
-            # disabled env instead; it keeps holding that pose with its own gains.
+            # world origin with Kp=Kd=0 (limp arm); a zero ``tcp_pose`` row teleports a
+            # kinematic TCP to the origin. Freeze the last commanded row of a disabled
+            # env instead; it keeps holding that pose.
             if self._held_pose_actions is not None:
                 out[self.disabled] = self._held_pose_actions[self.disabled]
             self._held_pose_actions = out.detach().clone()

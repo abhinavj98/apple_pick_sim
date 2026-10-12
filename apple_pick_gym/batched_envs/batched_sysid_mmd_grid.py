@@ -1575,6 +1575,52 @@ def replay_control_horizon_record_before_step(
         disable_ctrl.update(hard_blowup_mask(post_report))
 
 
+def replay_control_horizon_record_after_step(
+    *,
+    env: Any,
+    recorded_actions: np.ndarray,
+    recorded_n_frames_arr: np.ndarray,
+    collectors: Any,
+    disable_ctrl: Any,
+    monitor: Any,
+    on_step: Callable[..., bool] | None = None,
+) -> None:
+    """Step each logged action, then record the resulting obs.
+
+    Sim-sim collection (``batched_sysid_collect``) writes row k *after* stepping
+    action k, so its replay must record after stepping too; recording before
+    stepping (the converted-real convention) compares every replay row against the
+    recorded row one frame later.
+    """
+    n_frames = int(recorded_actions.shape[1])
+    for frame_idx in range(n_frames):
+        actions = actions_tensor_from_recorded_frame(
+            recorded_actions,
+            frame_idx=frame_idx,
+            device=env.device,
+        )
+        env.step(disable_ctrl.apply_actions(actions))
+        if on_step is not None and not bool(on_step(frame_idx=frame_idx, env=env)):
+            break
+        last_obs = getattr(env, "_last_obs", None)
+        if last_obs is None:
+            raise RuntimeError("env._last_obs missing after step")
+        step_report = monitor.check(last_obs, step_idx=int(frame_idx))
+        record_mask = disable_ctrl.should_record_mask()
+        if hasattr(record_mask, "detach"):
+            record_mask = record_mask.detach().cpu().numpy()
+        else:
+            record_mask = np.asarray(record_mask, dtype=bool).reshape(-1)
+        within_recorded = int(frame_idx) < recorded_n_frames_arr
+        collectors.record_all_envs_step(
+            env,
+            frame_idx=frame_idx,
+            unstable=step_report.unstable,
+            record_mask=record_mask & within_recorded,
+        )
+        disable_ctrl.update(hard_blowup_mask(step_report))
+
+
 def replay_batched_sysid_structure(
     *,
     dataset: BatchedSysIdDataset,
@@ -1605,6 +1651,11 @@ def replay_batched_sysid_structure(
     d = len(dirs)
     if d < 1:
         raise ValueError("num_directions must be >= 1")
+    if getattr(build_env_fn, "replay_mode", None) == "tcp_prescribed":
+        raise ValueError(
+            "scalar replay_batched_sysid_structure only supports closed_loop replay; "
+            "tcp_prescribed replay runs through the fused multi-structure path"
+        )
 
     num_envs = num_candidates * d
     base_params = base_params_for_replay(
@@ -1700,7 +1751,12 @@ def replay_batched_sysid_structure(
         )
         collectors = BatchedSysIdReplayCollectors(num_envs, recorded_by_env)
 
-        replay_control_horizon_record_before_step(
+        replay_loop = (
+            replay_control_horizon_record_before_step
+            if dataset_declares_vic_pose(collection, structure_meta)
+            else replay_control_horizon_record_after_step
+        )
+        replay_loop(
             env=env,
             recorded_actions=recorded_actions,
             recorded_n_frames_arr=recorded_n_frames_arr,

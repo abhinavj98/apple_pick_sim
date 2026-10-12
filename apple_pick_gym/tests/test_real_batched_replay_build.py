@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from apple_pick_sim.fruiting_system.params import load_ranges
@@ -688,3 +689,56 @@ def test_real_replay_sim_config_can_enable_replicated_mujoco_reuse():
         reuse_replicated_mujoco=True,
     )
     assert cfg.robot.reuse_replicated_mujoco is True
+
+
+@pytest.mark.parametrize(("mode", "anchored"), [("tcp_pose", True), ("vic_pose", False)])
+def test_make_real_replay_build_env_fn_anchors_junction_only_for_tcp_pose(
+    monkeypatch, mode, anchored
+):
+    from apple_pick_gym.batched_envs import real_batched_replay_build as build
+
+    call_order: list[str] = []
+
+    class _FakeEnv:
+        def __init__(self, **kwargs):
+            self._sim = SimpleNamespace(
+                scene=SimpleNamespace(cable=object(), layout=object()),
+                config=kwargs["sim_config"],
+                per_env_params=(None, None),
+                capture_episode_snapshot=lambda: call_order.append("snapshot"),
+            )
+
+    def _anchor(env, metas):
+        call_order.append("anchor")
+        assert len(metas) == 2
+        return np.zeros((2, 3))
+
+    monkeypatch.setattr(build, "ApplePickBatchedSysIdEnv", _FakeEnv)
+    monkeypatch.setattr(build, "anchor_settled_junction_to_rest", _anchor)
+    monkeypatch.setattr(
+        build, "apply_logged_post_grasp_se3_to_cable", lambda *a, **k: call_order.append("se3")
+    )
+    monkeypatch.setattr(
+        build,
+        "apply_post_grasp_vbd_settle",
+        lambda *a, **k: call_order.append("post_grasp_settle"),
+    )
+    fn = build.make_real_replay_build_env_fn(
+        ranges_path=_VARIANCE,
+        ranges=load_ranges(_VARIANCE),
+        topology_seed=0,
+        fruiting_base_pos=(0.0, 0.5, 0.95),
+        episode_meta={
+            "rest_junction_pos": [0.0, 0.5, 0.9],
+            "initial_apple_pos": [0.1, 0.2, 0.3],
+            "initial_apple_quat": [0.0, 0.0, 0.0, 1.0],
+            "initial_tcp_pos": [0.1, 0.15, 0.3],
+            "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0],
+        },
+        controller_mode=mode,
+    )
+
+    fn(num_envs=2, per_env_params=[None, None], max_episode_steps=4)
+
+    expected = ["se3", "post_grasp_settle", "snapshot"]
+    assert call_order == (["anchor", *expected] if anchored else expected)

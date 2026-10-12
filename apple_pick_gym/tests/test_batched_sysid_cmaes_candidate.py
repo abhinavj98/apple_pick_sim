@@ -1010,3 +1010,32 @@ def test_pycma_dependency_is_importable():
     import cma
 
     assert hasattr(cma, "CMAEvolutionStrategy")
+
+
+def test_values_match_treats_matching_unset_fields_as_equal():
+    """GT candidates leave optional slots None; comparing them must not log10(None)."""
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    gt = cmaes.SupportKpYoungsCandidate(
+        support_kp=1e3, spur=1e8, stem=2e8, spur_youngs=3e8, stem_youngs=4e8
+    )
+    assert cmaes.youngs_modulus_values_match(gt, gt)
+    assert not cmaes.youngs_modulus_values_match(gt, gt._replace(support_kp=2e3))
+
+
+def test_values_match_unset_vs_set_is_mismatch_and_zeta_zero_is_safe():
+    from apple_pick_gym.batched_envs import batched_sysid_cmaes as cmaes
+
+    gt = cmaes.SupportKpYoungsCandidate(support_kp=1e3, spur=1e8, stem=2e8)
+    cma9 = gt._replace(
+        spur_youngs=3e8,
+        stem_youngs=4e8,
+        support_roll_kp=0.75,
+        spur_damping_ratio=0.0,
+        stem_damping_ratio=0.5,
+        support_joint_zeta=1.0,
+    )
+    assert not cmaes.youngs_modulus_values_match(cma9, gt)
+    # ζ slots are linear in [0, 1]; an exact 0 must compare without log10(0).
+    assert cmaes.youngs_modulus_values_match(cma9, cma9)
+    assert not cmaes.youngs_modulus_values_match(cma9, cma9._replace(spur_damping_ratio=0.1))

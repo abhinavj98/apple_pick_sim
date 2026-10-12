@@ -94,6 +94,8 @@ EPISODE_METADATA_KEYS: tuple[str, ...] = (
     "ft_filter",
     # Real→batched: source frame 0 stamped as hold 0 on converted frame 0.
     "rest_hold_injected",
+    # Real→batched: during-run (frame-0) primary_spur junction; build anchors to it.
+    "rest_junction_pos",
 )
 
 

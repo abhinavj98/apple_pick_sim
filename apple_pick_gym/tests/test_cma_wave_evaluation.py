@@ -223,6 +223,79 @@ def test_build_cma_replay_artifacts_passes_dynamic_apple(tmp_path, monkeypatch):
     assert captured["config"] is False
 
 
+def test_build_cma_replay_artifacts_tcp_prescribed_selects_tcp_pose_controller(
+    tmp_path, monkeypatch
+):
+    from apple_pick_gym.batched_envs import cma_wave_evaluation as wave_mod
+
+    captured: dict[str, str] = {}
+
+    def fake_make(**kwargs):
+        captured["build"] = kwargs["controller_mode"]
+        return object()
+
+    def fake_config(**kwargs):
+        captured["config"] = kwargs["controller_mode"]
+        return object()
+
+    monkeypatch.setattr(wave_mod, "make_real_replay_build_env_fn", fake_make)
+    monkeypatch.setattr(wave_mod, "real_replay_sim_config", fake_config)
+    ctx = build_cma_replay_context_from_cli(
+        mode="vic_pose",
+        ranges_path=tmp_path / "ranges.json",
+        topology_seed=0,
+        control_hz=30.0,
+        device="cpu",
+        settle_config={},
+        fruiting_base_pos=(0.0, 0.4, 0.75),
+        episode_meta={"action_layout": "vic_pose_v1", "action_dim": 19},
+        replay_mode="tcp_prescribed",
+    )
+    assert ctx.replay_mode == "tcp_prescribed"
+    wave_mod.build_cma_replay_artifacts(ctx, ranges={})
+    assert captured == {"build": "tcp_pose", "config": "tcp_pose"}
+
+
+def test_build_cma_replay_artifacts_sim_forwards_replay_mode(tmp_path, monkeypatch):
+    from apple_pick_gym.batched_envs import cma_wave_evaluation as wave_mod
+
+    captured: dict[str, str] = {}
+
+    def fake_make(**kwargs):
+        captured["replay_mode"] = kwargs["replay_mode"]
+        return object()
+
+    monkeypatch.setattr(wave_mod, "_make_build_env_fn", fake_make)
+    monkeypatch.setattr(wave_mod, "build_sim_config", lambda **_k: object())
+    ctx = build_cma_replay_context_from_cli(
+        mode="sim",
+        ranges_path=tmp_path / "ranges.json",
+        topology_seed=1,
+        control_hz=30.0,
+        device="cpu",
+        settle_config={},
+        replay_mode="tcp_prescribed",
+    )
+    wave_mod.build_cma_replay_artifacts(ctx, ranges={"primary": {}})
+    assert captured["replay_mode"] == "tcp_prescribed"
+
+
+def test_build_cma_replay_artifacts_rejects_unknown_replay_mode(tmp_path):
+    from apple_pick_gym.batched_envs import cma_wave_evaluation as wave_mod
+
+    ctx = build_cma_replay_context_from_cli(
+        mode="sim",
+        ranges_path=tmp_path / "ranges.json",
+        topology_seed=1,
+        control_hz=30.0,
+        device="cpu",
+        settle_config={},
+        replay_mode="kinematic",
+    )
+    with pytest.raises(ValueError, match="replay_mode"):
+        wave_mod.build_cma_replay_artifacts(ctx, ranges={"primary": {}})
+
+
 def test_spawn_invokes_worker_module(tmp_path):
     spec = _sample_spec(tmp_path)
     calls: list[list[str]] = []

@@ -379,3 +379,63 @@ def test_apply_post_grasp_stem_apple_joint_keeps_pre_grasp_apple_frame():
         dtype=np.float64,
     )
     np.testing.assert_allclose(child_local, expected, atol=1e-4)
+
+
+@pytest.mark.parametrize("euler_deg", [(180.0, 0.0, 0.0), (160.0, 15.0, 70.0), (95.0, -30.0, -120.0)])
+@pytest.mark.parametrize("stem_dir", [(0.0, 1.0, 0.3), (0.4, 0.8, 0.6), (-0.2, 1.0, -0.1)])
+def test_taut_apple_radius_from_tcp_recovers_radius(euler_deg, stem_dir):
+    from scipy.spatial.transform import Rotation
+
+    from apple_pick_sim.system_id.real_post_grasp_plan import (
+        apple_pose_at_tcp,
+        taut_apple_radius_from_tcp,
+    )
+
+    r, c, stem = 0.033, 0.0123, 0.015
+    rot = Rotation.from_euler("xyz", euler_deg, degrees=True)
+    tcp = np.array([0.03, 0.66, 0.43])
+    apple, quat = apple_pose_at_tcp(tcp, rot.as_quat(), r, c)
+    np.testing.assert_allclose(apple, tcp + (r + c) * rot.apply([0.0, 0.0, 1.0]), atol=1e-12)
+    np.testing.assert_allclose(quat, rot.as_quat(), atol=1e-12)
+    # Spur tip on the far side of the apple, stem taut, not behind the gripper.
+    u = rot.apply(np.asarray(stem_dir) / np.linalg.norm(stem_dir))
+    tip = np.asarray(apple) + (stem + r) * u
+
+    got = taut_apple_radius_from_tcp(tcp, rot.as_quat(), tip, stem_length_m=stem, standoff_m=c)
+
+    assert got == pytest.approx(r, abs=1e-12)
+
+
+def test_taut_apple_radius_from_tcp_rejects_tip_behind_gripper():
+    from apple_pick_sim.system_id.real_post_grasp_plan import taut_apple_radius_from_tcp
+
+    with pytest.raises(ValueError, match="taut apple radius|not ahead"):
+        taut_apple_radius_from_tcp(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, -0.2],
+            stem_length_m=0.015,
+            standoff_m=0.0123,
+        )
+
+
+def test_post_grasp_plan_apple_pose_override_replaces_marker():
+    meta = {
+        "post_grasp_geometry": {
+            "tcp_pos": [0.0, 0.9, 0.4],
+            "tcp_pose_4x4": _pose4([0.0, 0.9, 0.4]),
+            "snapshot": {
+                "apple_pos": [0.0, 0.95, 0.38],
+                "apple_pose_4x4": _pose4([0.0, 0.95, 0.38]),
+            },
+        }
+    }
+    quat = (0.0, 0.0, np.sin(0.25), np.cos(0.25))
+    plan = post_grasp_plan_from_metadata(
+        meta,
+        apple_radius_m=0.04,
+        emit_warnings=False,
+        apple_pose_override=((0.0, 0.97, 0.38), quat),
+    )
+    np.testing.assert_allclose(plan.apple_pos_welded, (0.0, 0.97, 0.38))
+    np.testing.assert_allclose(plan.apple_quat_xyzw, quat, atol=1e-9)

@@ -21,8 +21,15 @@ def obs_dict_from_bufs(
     bufs: BatchedObsBuffers,
     junction_names: list[str],
     device: torch.device | str,
+    *,
+    ft_from_proxy_forces: bool = False,
 ) -> dict[str, Any]:
-    """Build batched VIC observation dict with ``woody_part_info`` junction groups."""
+    """Build batched VIC observation dict with ``woody_part_info`` junction groups.
+
+    ``ft_wrist`` is the lagged coupling wrench the dynamic arm feels. A kinematic
+    (``tcp_pose``) arm feels none, so ``ft_from_proxy_forces=True`` reads the same
+    env-on-robot TCP wrench from the current-substep harvest (``tcp_force``) instead.
+    """
     dev = torch.device(device)
     n_envs = int(bufs.num_envs)
     n_j = int(bufs.num_junctions)
@@ -48,7 +55,9 @@ def obs_dict_from_bufs(
         "apple_pos": _to_torch(bufs.apple_pos, dev),
         "tcp_force": _to_torch(bufs.tcp_force, dev),
         "tcp_velocity": _to_torch(bufs.tcp_velocity, dev),
-        "ft_wrist": _to_torch(bufs.tcp_coupling_force, dev),
+        "ft_wrist": _to_torch(
+            bufs.tcp_force if ft_from_proxy_forces else bufs.tcp_coupling_force, dev
+        ),
     }
 
 

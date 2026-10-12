@@ -563,6 +563,73 @@ def test_replay_multi_structure_routes_forced_chunks_by_stable_key(
         )
 
 
+def test_tcp_prescribed_replay_drives_7d_actions_from_recorded_tcp_motion(
+    _fake_replay_runtime, monkeypatch
+):
+    """``replay_mode="tcp_prescribed"``: actions come from the recorded TCP, not ``action``."""
+    blocks = multi.build_replay_candidate_blocks(
+        (_request(4, candidates=(_Candidate(40.0),), directions=(0, 2), action_dim=19),)
+    )
+    for block in blocks:
+        for slot in block.slots:
+            slot.recorded["tcp_pos"] = np.array(
+                [[0.0, 0.0, 0.0], [0.01, 0.0, 0.0], [0.02, 0.0, 0.0]], dtype=np.float32
+            )
+            slot.recorded["tcp_quat"] = np.tile(
+                np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), (3, 1)
+            )
+    starts = np.array(
+        [[1.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0], [2.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0]]
+    )
+    monkeypatch.setattr(multi, "sim_tcp_start_poses", lambda _env: starts)
+
+    def build_env_fn(**kwargs):
+        env = _FakeEnv(kwargs["per_env_params"], kwargs["per_env_grippers"])
+        _fake_replay_runtime.built.append(env)
+        return env
+
+    build_env_fn.replay_mode = "tcp_prescribed"
+
+    real_meta = {"action_layout": "vic_pose_v1"}
+    multi.replay_multi_structure_candidate_blocks(
+        dataset=SimpleNamespace(
+            manifest={"collection": {"seed": 7}},
+            load_episode_metadata=lambda _s, _d: real_meta,
+        ),
+        blocks=blocks,
+        build_env_fn=build_env_fn,
+    )
+
+    env = _fake_replay_runtime.built[0]
+    assert np.asarray(env.actions[0]).shape == (2, 7)
+    # action[0] targets recorded frame 1 (+1 cm) onto each env's own start pose.
+    np.testing.assert_allclose(np.asarray(env.actions[0])[:, 0], [1.01, 2.01], atol=1e-6)
+    np.testing.assert_allclose(np.asarray(env.actions[2])[:, 0], [1.02, 2.02], atol=1e-6)
+    np.testing.assert_allclose(np.asarray(env.actions[0])[:, 3:], [[1.0, 0, 0, 0]] * 2)
+
+
+def test_tcp_prescription_kwargs_sim_sim_uses_initial_tcp_metadata_after_step():
+    blocks = multi.build_replay_candidate_blocks((_request(4, directions=(0,)),))
+    slot = blocks[0].slots[0]
+    meta = {"initial_tcp_pos": [0.1, 0.2, 0.3], "initial_tcp_quat": [0.0, 0.0, 0.0, 1.0]}
+    dataset = SimpleNamespace(manifest={"collection": {}}, load_episode_metadata=lambda _s, _d: meta)
+
+    kwargs = multi._slot_tcp_prescription_kwargs(dataset, slot)
+
+    assert kwargs["recorded_after_step"] is True
+    np.testing.assert_allclose(kwargs["reference_pos"], [0.1, 0.2, 0.3])
+
+
+def test_build_env_replay_mode_rejects_unknown_mode():
+    def build_env_fn(**_kwargs):
+        return None
+
+    assert multi.build_env_replay_mode(build_env_fn) == "closed_loop"
+    build_env_fn.replay_mode = "kinematic"
+    with pytest.raises(ValueError, match="replay_mode"):
+        multi.build_env_replay_mode(build_env_fn)
+
+
 def test_replay_multi_structure_prunes_only_failed_structures_and_discards_partials(
     _fake_replay_runtime,
 ):
@@ -1224,14 +1291,13 @@ def test_drive_tensor_pads_short_directions_with_last_action(
     assert not np.allclose(drive[1, 3:], 0.0)
 
 
-def test_replay_records_reset_obs_before_first_action(monkeypatch, _fake_replay_runtime):
-    """Frame 0 is the post-reset grasp; action[0] is applied after that row."""
+def _order_recording_replay(monkeypatch, _fake_replay_runtime, *, episode_meta):
+    """Replay 3 frames and return how many actions were applied at each record."""
     collectors: list[Any] = []
 
     class OrderCollectors:
         def __init__(self, num_envs, recorded_by_env):
             assert num_envs == len(recorded_by_env)
-            self.recorded = list(recorded_by_env)
             self.n_actions_at_record: list[int] = []
             collectors.append(self)
 
@@ -1254,16 +1320,30 @@ def test_replay_records_reset_obs_before_first_action(monkeypatch, _fake_replay_
         return env
 
     multi.replay_multi_structure_candidate_blocks(
-        dataset=SimpleNamespace(manifest={"collection": {"seed": 7}}),
+        dataset=SimpleNamespace(
+            manifest={"collection": {"seed": 7}},
+            load_episode_metadata=lambda _s, _d: episode_meta,
+        ),
         blocks=blocks,
         build_env_fn=build_env_fn,
         max_envs_per_batch=0,
     )
+    assert len(_fake_replay_runtime.built[0].actions) == 3
+    return collectors[0].n_actions_at_record
 
-    env = _fake_replay_runtime.built[0]
-    assert collectors[0].n_actions_at_record[0] == 0
-    assert collectors[0].n_actions_at_record == list(range(3))
-    assert len(env.actions) == 3
+
+def test_sim_sim_replay_records_after_each_action(monkeypatch, _fake_replay_runtime):
+    """Sim-sim collection writes row k after stepping action k; replay must match."""
+    counts = _order_recording_replay(monkeypatch, _fake_replay_runtime, episode_meta={})
+    assert counts == [1, 2, 3]
+
+
+def test_replay_records_reset_obs_before_first_action(monkeypatch, _fake_replay_runtime):
+    """Frame 0 is the post-reset grasp; action[0] is applied after that row."""
+    counts = _order_recording_replay(
+        monkeypatch, _fake_replay_runtime, episode_meta={"action_layout": "vic_pose_v1"}
+    )
+    assert counts == [0, 1, 2]
 
 
 def test_replay_arrays_truncate_to_recorded_length(monkeypatch, _fake_replay_runtime):

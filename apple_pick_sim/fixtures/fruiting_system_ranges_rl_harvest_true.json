@@ -1,5 +1,5 @@
 {
-  "_comment": "RL harvest DR fixture generated from real sys-ID data (24 CMA runs over structures ['02', '03', '04', '06', '07', '08', '09', '10']). Materials: CMA final-mean mu +- 1.0 sigma (log10 for moduli and support kp/roll_kp, linear for zetas and primary density). Geometry: per-structure real params, mu +- 0.5 sigma (stem angles: uniform). Invariant quantities are pinned. robot_base_pos: [0.0, 0.0, 0.0]. [D17n wide support] support_dr.kp widened log-symmetrically about the same geometric centre from a 1.62x to a 5x range (106.0..529.9 N*m/rad); everything else unchanged.",
+  "_comment": "RL harvest DR fixture generated from real sys-ID data (24 CMA runs over structures ['02', '03', '04', '06', '07', '08', '09', '10']). Materials: CMA final-mean mu +- 1.96 sigma (log10 and log-uniform sampling for spur/stem moduli and support kp/roll_kp; linear for zetas and primary density). Geometry: per-structure real params, real min..max, linear (stem angles: uniform). Invariant quantities are pinned. robot_base_pos: [0.0, 0.0, 0.0]. Densities pinned to their means (spur/stem/apple over the 8 real structures, primary over the 24 CMA final means): the real spur/apple densities are back-solved from weighed masses and nominal dimensions, so their spread is not variation worth sampling. [D17q spur cone] spur direction: up to 30 deg off straight down, any azimuth (elevation_delta -90..-60 and lateral 0..360 from the horizontal primary); the stem stays relative to the spur.",
   "args": {
     "spur_attach_fraction": 0.5,
     "fruiting_base_pos": [
@@ -32,16 +32,16 @@
     },
     "support_dr": {
       "kp": {
-        "min": 105.97194982504067,
-        "max": 529.8597491252034
+        "min": 147.67253199625353,
+        "max": 380.23503754936115
       },
       "roll_kp": {
-        "min": 0.4839491661247771,
-        "max": 1.0130909099379635
+        "min": 0.339462951528115,
+        "max": 1.4442945802068263
       },
       "zeta": {
-        "min": 0.251276711418729,
-        "max": 0.7818822221537912
+        "min": 0.0,
+        "max": 1.0365728673066212
       }
     }
   },
@@ -59,8 +59,8 @@
       "max": 0.0125
     },
     "density": {
-      "min": 324.8310756668913,
-      "max": 1229.4414631906493
+      "min": 777.1362694287703,
+      "max": 777.1362694287703
     },
     "azimuth_deg": {
       "min": 0.0,
@@ -90,36 +90,38 @@
       "max": 6
     },
     "length": {
-      "min": 0.0891547703960372,
-      "max": 0.10584522960396281
+      "min": 0.08,
+      "max": 0.12
     },
     "radius": {
-      "min": 0.004263052915193331,
-      "max": 0.005836947084806669
+      "min": 0.0025,
+      "max": 0.0059
     },
     "density": {
-      "min": 2867.951985959354,
-      "max": 8221.424330788366
+      "min": 5544.6881583738605,
+      "max": 5544.6881583738605
     },
     "elevation_delta_deg": {
       "min": -90.0,
-      "max": -90.0
+      "max": -60.0
     },
     "lateral_delta_deg": {
-      "min": 90.0,
-      "max": 90.0
+      "min": 0.0,
+      "max": 360.0
     },
     "youngs_modulus_pa": {
-      "min": 49337474.00351147,
-      "max": 1068575198.2091422
+      "min": 11273931.311636383,
+      "max": 4676345775.499352,
+      "scale": "log"
     },
     "damping_ratio": {
       "min": 0.19607341279138502,
       "max": 0.7229948787330086
     },
     "flexural_modulus_pa": {
-      "min": 1801823.66372286,
-      "max": 45182675.658027396
+      "min": 383767.0199967131,
+      "max": 212137077.83343577,
+      "scale": "log"
     }
   },
   "stem": {
@@ -128,8 +130,8 @@
       "max": 6
     },
     "length": {
-      "min": 0.013732450830493233,
-      "max": 0.014767549169506764
+      "min": 0.013,
+      "max": 0.015
     },
     "radius": {
       "min": 0.0009,
@@ -148,26 +150,28 @@
       "max": 90.0
     },
     "youngs_modulus_pa": {
-      "min": 23337208.285533074,
-      "max": 5704421583.093971
+      "min": 1666214.0817644012,
+      "max": 79896860847.66759,
+      "scale": "log"
     },
     "damping_ratio": {
       "min": 0.2522675506487783,
       "max": 0.7684148441129943
     },
     "flexural_modulus_pa": {
-      "min": 28194834.354336854,
-      "max": 199984045.9871733
+      "min": 11009641.104031922,
+      "max": 512143583.6862565,
+      "scale": "log"
     }
   },
   "apple": {
     "radius": {
-      "min": 0.03002811797253291,
-      "max": 0.03354793151100356
+      "min": 0.026071968828687793,
+      "max": 0.03564785306384505
     },
     "density": {
-      "min": 1614.4734757204353,
-      "max": 2241.8383335173867
+      "min": 1928.1559046189109,
+      "max": 1928.1559046189109
     }
   }
 }

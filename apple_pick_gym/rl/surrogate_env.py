@@ -270,8 +270,12 @@ class SurrogateHarvestEnv:
         self._collateral_baseline_force = {
             j: w[:, :3].clone() for j, w in info["woody_part_force"].items() if j != self.TARGET_JUNCTION_NAME
         }
+        self._collateral_baseline_torque_norm = {  # [D17q]
+            j: torch.linalg.norm(t, dim=-1).clone() for j, t in info["woody_part_torque_anchor"].items()
+        }
         info["collateral_baseline_norm"] = self._collateral_baseline
         info["collateral_baseline_force"] = self._collateral_baseline_force
+        info["collateral_baseline_torque_norm"] = self._collateral_baseline_torque_norm
         info["tcp_advance_m"] = self._tcp_advance()
         self._peak_collateral = None  # [D13] running peak collateral, reset per episode
         self._progress_prev = torch.clamp(info["detach_utilization"], min=0.0, max=1.0)
@@ -325,6 +329,7 @@ class SurrogateHarvestEnv:
         obs, info = self._observe()
         info["collateral_baseline_norm"] = self._collateral_baseline
         info["collateral_baseline_force"] = self._collateral_baseline_force
+        info["collateral_baseline_torque_norm"] = self._collateral_baseline_torque_norm
         info["tcp_advance_m"] = self._tcp_advance()
         outcome = evaluate_harvest_step(
             obs,
@@ -415,6 +420,8 @@ class SurrogateHarvestEnv:
             "step_count": self._step_count,
             "invalid_env": self._invalid.clone(),
             "woody_part_force": woody,
+            # [D17q] the surrogate's junction moments are already about the joint (no COM offset)
+            "woody_part_torque_anchor": {j: w[:, 3:6] for j, w in woody.items() if j != self.TARGET_JUNCTION_NAME},
             "target_junction_force": target_wrench,
             "target_junction_wrench": target_wrench,
             "target_junction_axis": self.weld.clone(),  # the surrogate's stem axis is the grasp axis
@@ -690,6 +697,8 @@ class SurrogateBendPullEnv(SurrogateHarvestEnv):
             "step_count": self._step_count,
             "invalid_env": self._invalid.clone(),
             "woody_part_force": woody,
+            # [D17q] the surrogate's junction moments are already about the joint (no COM offset)
+            "woody_part_torque_anchor": {j: w[:, 3:6] for j, w in woody.items() if j != self.TARGET_JUNCTION_NAME},
             "target_junction_force": target_wrench,
             "target_junction_wrench": target_wrench,
             "target_junction_axis": u_hat.clone(),

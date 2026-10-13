@@ -75,9 +75,12 @@ class EnvConfig:
     collateral_clip_n: float | None = None  # [D17] per-step collateral cap (N); v2 configs: 50
     # [D17m] "relu_norm": relu(|F| - |F|_rest) per non-target junction (unloading is free);
     # "deviation": |F - F_rest| against the rest force vectors (any change from rest costs). v2c: deviation
-    collateral_mode: Literal["relu_norm", "deviation"] = "relu_norm"
+    # [D17q] "signed_norm": |F| - |F|_rest with no relu (0 at rest; lifting / unloading earns). v2g
+    collateral_mode: Literal["relu_norm", "deviation", "signed_norm"] = "relu_norm"
     # [D17n] junctions left out of the collateral sum (v2d run 3: ["stem_apple"], the target stem's apple end)
     collateral_exclude: tuple[str, ...] = ()
+    # [D17q] N per N*m: junction moments (at the joint anchor) in the collateral sum, same mode as the force. 0 = off
+    collateral_torque_n_per_nm: float = 0.0
     success_bonus: float = 20.0
     failure_penalty: float = -40.0
     w_slack: float = 0.01  # per live step

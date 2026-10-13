@@ -120,6 +120,7 @@ class _EpisodeStats:
         self.k_lin, self.k_ang, self.zeta, self.live_steps = z(), z(), z(), z()
         self.peak_speed, self.sum_speed = z(), z()
         self.peak_junction: dict[str, torch.Tensor] = {}
+        self.peak_junction_torque: dict[str, torch.Tensor] = {}  # [D17q] at the joint anchor
         self.peak_tau, self.peak_wrist_tau = z(), z()
         self.peak_theta = z()
         # [D17m] peak TCP advance (m) along the reset grip axis, into the tree; None until reported
@@ -224,6 +225,9 @@ class _EpisodeStats:
         for name, wr in info["woody_part_force"].items():
             cur = self.peak_junction.get(name, torch.zeros(self.n, device=self.device))
             self.peak_junction[name] = m(cur, torch.linalg.norm(wr[:, :3].to(cur), dim=-1))
+        for name, tq in info.get("woody_part_torque_anchor", {}).items():
+            cur = self.peak_junction_torque.get(name, torch.zeros(self.n, device=self.device))
+            self.peak_junction_torque[name] = m(cur, torch.linalg.norm(tq.to(cur), dim=-1))
         if tcp_speed is not None:
             sp = torch.nan_to_num(tcp_speed.reshape(-1).to(self.peak_speed), nan=0.0, posinf=0.0)
             self.peak_speed = m(self.peak_speed, sp)
@@ -308,6 +312,7 @@ class _EpisodeStats:
             "Episode / peak TCP speed m/s (mean)": s(self.peak_speed),
             "Episode / mean TCP speed m/s (mean)": s(per_live(self.sum_speed)),
             **{f"Episode / peak force {k} N (mean)": s(v) for k, v in self.peak_junction.items()},
+            **{f"Episode / peak torque {k} N*m (mean)": s(v) for k, v in self.peak_junction_torque.items()},
             "Episode / peak target torque N*m (mean)": s(self.peak_tau),
             "Episode / peak wrist torque N*m (mean)": s(self.peak_wrist_tau),
             **{f"Episode / safety {k.replace('_', ' ')} (frac)": s(v) for k, v in self.safety_cap.items()},

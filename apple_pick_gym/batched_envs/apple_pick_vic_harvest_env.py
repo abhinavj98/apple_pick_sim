@@ -250,6 +250,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._pending_terminated: torch.Tensor | None = None
         self._last_tcp_pose_wxyz: torch.Tensor | None = None
         self._collateral_baseline_norm: dict[str, torch.Tensor] | None = None
+        self._collateral_baseline_torque_norm: dict[str, torch.Tensor] | None = None
         self._collateral_baseline_force: dict[str, torch.Tensor] | None = None  # [D17m] rest vectors
         self._progress_prev: torch.Tensor | None = None
         self._peak_collateral: torch.Tensor | None = None
@@ -355,6 +356,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             )
         self._target_junction_idx = self._junction_names.index(self._target_junction_name)
         self._target_child_body = self._resolve_target_child_bodies()
+        self._junction_child_body = self._resolve_junction_child_bodies()  # [D17q] (N, J), for anchor torques
         self._target_parent_body = self._resolve_target_parent_bodies()
         self._stem_root = self._resolve_stem_root_joints()
 
@@ -415,6 +417,33 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         joint_idx = bufs.woody_joint_indices.numpy().reshape(self.num_envs, -1)[:, self._target_junction_idx]
         child = self._sim.scene.cable.model.joint_child.numpy()[joint_idx]
         return torch.as_tensor(child.astype(np.int64), device=self.device)
+
+    def _resolve_junction_child_bodies(self) -> torch.Tensor:
+        """[D17q] Per env and junction (``self._junction_names`` order): the child body index, ``(N, J)`` long."""
+        bufs = self._sim.obs_bufs
+        joint_idx = bufs.woody_joint_indices.numpy().reshape(self.num_envs, -1)
+        child = self._sim.scene.cable.model.joint_child.numpy()[joint_idx]
+        return torch.as_tensor(child.astype(np.int64), device=self.device)
+
+    def _junction_torque_at_anchor(self, woody_part_force: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """[D17q] Every non-target junction's moment shifted from the child COM to the joint anchor, ``(N, 3)``
+        each -- the bending moment the joint carries (the collateral torque term reads this)."""
+        cable = self._sim.scene.cable
+        body_q = wp.to_torch(cable.state_0.body_q).to(device=self.device, dtype=torch.float32)
+        body_com = wp.to_torch(cable.model.body_com).to(device=self.device, dtype=torch.float32)
+        info = self._last_full_obs["woody_part_info"]
+        out = {}
+        for j, name in enumerate(self._junction_names):
+            if name == self._target_junction_name:
+                continue
+            idx = self._junction_child_body[:, j]
+            q = body_q[idx]
+            com = q[:, :3] + quat_rotate_vector(q[:, 3:7], body_com[idx])
+            w = junction_wrench_at_anchor(
+                woody_part_force[name].float(), child_anchor=info[name]["anchors_pos"][:, 3:6].float(), child_com=com
+            )
+            out[name] = w[:, 3:6]
+        return out
 
     def _resolve_target_parent_bodies(self) -> torch.Tensor:
         """Per env: the cable-model body index of the target junction's parent, the spur tip
@@ -942,6 +971,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         )
         woody_part_force = self._woody_part_force()
         info["woody_part_force"] = woody_part_force
+        info["woody_part_torque_anchor"] = self._junction_torque_at_anchor(woody_part_force)
         # Raw readout: torque about the child body's COM (kept for logging/back-compat).
         info["target_junction_force"] = woody_part_force[self._target_junction_name]
         # What the detach envelope and progress reward read: the same wrench with the
@@ -960,6 +990,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             info["collateral_baseline_norm"] = self._collateral_baseline_norm
         if self._collateral_baseline_force is not None:
             info["collateral_baseline_force"] = self._collateral_baseline_force
+        if self._collateral_baseline_torque_norm is not None:
+            info["collateral_baseline_torque_norm"] = self._collateral_baseline_torque_norm
         if self._start_tcp_pose is not None and self._last_tcp_pose_wxyz is not None:
             # [D17m] TCP travel since the start along the reset grip axis (+ = into the tree)
             info["tcp_advance_m"] = (
@@ -1155,6 +1187,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         # load the policy adds (harvest_reward.compute_collateral_penalty).
         self._collateral_baseline_norm = None
         self._collateral_baseline_force = None
+        self._collateral_baseline_torque_norm = None
         info = self._make_info()
         self._collateral_baseline_norm = {
             name: torch.linalg.norm(w[:, :3], dim=-1).clone()
@@ -1167,6 +1200,11 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         }
         info["collateral_baseline_norm"] = self._collateral_baseline_norm
         info["collateral_baseline_force"] = self._collateral_baseline_force
+        # [D17q] rest moment norms at the joint anchors, for the collateral torque term
+        self._collateral_baseline_torque_norm = {
+            name: torch.linalg.norm(t, dim=-1).clone() for name, t in info["woody_part_torque_anchor"].items()
+        }
+        info["collateral_baseline_torque_norm"] = self._collateral_baseline_torque_norm
         self._peak_collateral = None  # [D13] running peak collateral, reset per episode
         self._progress_prev = torch.clamp(info["detach_utilization"], min=0.0, max=1.0)
         return obs, info

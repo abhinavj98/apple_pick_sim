@@ -19,6 +19,12 @@ maintainer decision 2026-09-24) instead of a force-only threshold:
   the rest force *vectors* (``info["collateral_baseline_force"]``): unloading a
   junction (lifting the apple) and turning its load are robot effort on the tree
   too, and the relu of the norm increase scored both 0.
+  [D17q] ``collateral_mode="signed_norm"`` charges ``sum_j (|F_j| - |F_j|_rest)``
+  with no relu: 0 at rest, loading costs, unloading (lifting the apple) earns the
+  same amount back, and turning a load at constant magnitude is free.
+  [D17q] ``collateral_torque_n_per_nm > 0`` adds the junction moments (at the joint
+  anchor, ``info["woody_part_torque_anchor"]``) in the same mode, converted to newtons:
+  ``+ k * (|tau_j| - |tau_j|_rest)``.
 - **slack** = a constant ``-w_slack`` per live step (a time cost: detach sooner).
 
 Reward is privileged (train-time only): it reads uncapped junction wrenches
@@ -75,14 +81,22 @@ class HarvestRewardConfig:
     progress_mode: Literal["absolute", "delta"] = "delta"
     # [D17m] collateral per non-target junction: "relu_norm" relu(|F| - |F|_rest) (v1 / v2b; unloading
     # is free) or "deviation" |F - F_rest| against the rest force vectors (any change from rest costs).
-    collateral_mode: Literal["relu_norm", "deviation"] = "relu_norm"
+    # [D17q] "signed_norm": |F| - |F|_rest with no relu (0 at rest; unloading earns, loading costs).
+    collateral_mode: Literal["relu_norm", "deviation", "signed_norm"] = "relu_norm"
     # [D17n] non-target junctions left out of the collateral sum, e.g. ("stem_apple",): the apple end of
     # the target stem carries the pick's own stem tension. () charges every non-target junction.
     collateral_exclude: tuple[str, ...] = ()
+    # [D17q] weight (N per N*m) of the junction moment in the collateral sum, charged in the same mode as the
+    # force (relu_norm / signed_norm against the rest moment norm). 0 (default) = force only.
+    collateral_torque_n_per_nm: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.collateral_mode not in ("relu_norm", "deviation"):
+        if self.collateral_mode not in ("relu_norm", "deviation", "signed_norm"):
             raise ValueError(f"unknown collateral_mode {self.collateral_mode!r}")
+        if self.collateral_torque_n_per_nm < 0.0:
+            raise ValueError("collateral_torque_n_per_nm must be >= 0")
+        if self.collateral_torque_n_per_nm and self.collateral_mode == "deviation":
+            raise ValueError("collateral torque is not defined for collateral_mode 'deviation'")
 
 
 def quat_rotate_vector(quat_xyzw: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
@@ -125,8 +139,11 @@ def compute_collateral_penalty(
     target_junction_name: str,
     baseline_norm: dict[str, torch.Tensor] | None = None,
     baseline_force: dict[str, torch.Tensor] | None = None,
-    mode: Literal["relu_norm", "deviation"] = "relu_norm",
+    mode: Literal["relu_norm", "deviation", "signed_norm"] = "relu_norm",
     exclude: tuple[str, ...] = (),
+    torque: dict[str, torch.Tensor] | None = None,
+    baseline_torque_norm: dict[str, torch.Tensor] | None = None,
+    torque_weight: float = 0.0,
 ) -> torch.Tensor:
     """Collateral load over every non-target junction, shape (N,).
 
@@ -134,19 +151,41 @@ def compute_collateral_penalty(
     force norms) only load above rest counts, ``relu(||F_j|| - baseline_j)``, so unloading is free.
     ``mode="deviation"`` ([D17m]): ``||F_j[:3] - baseline_force_j||`` summed, ``baseline_force`` the
     per-junction ``(N, 3)`` rest force vectors (required): any change from rest costs.
+    ``mode="signed_norm"`` ([D17q]): ``||F_j[:3]|| - baseline_norm_j`` summed, ``baseline_norm`` required:
+    negative when the policy unloads the junctions below rest.
+    [D17q] ``torque_weight > 0`` adds ``torque_weight * ||tau_j||`` per junction (``torque``: ``(N, 3)`` moments at
+    the joint anchor), against ``baseline_torque_norm`` exactly as the force is against ``baseline_norm``.
     """
+    if torque_weight:
+        if mode == "deviation":
+            raise ValueError("collateral torque is not defined for mode 'deviation'")
+        if torque is None:
+            raise ValueError("collateral torque_weight > 0 needs the junction torques")
+        if baseline_norm is not None and baseline_torque_norm is None:
+            raise ValueError("collateral torque against rest needs baseline_torque_norm (the rest moment norms)")
     if mode == "deviation" and baseline_force is None:
         raise ValueError("collateral mode 'deviation' needs baseline_force (the rest force vectors)")
+    if mode == "signed_norm" and baseline_norm is None:
+        raise ValueError("collateral mode 'signed_norm' needs baseline_norm (the rest force norms)")
     total = None
     for name, wrench in woody_part_force.items():
         if name == target_junction_name or name in exclude:
             continue
         if mode == "deviation":
             norm = torch.linalg.norm(wrench[:, :3] - baseline_force[name].to(wrench), dim=-1)
+        elif mode == "signed_norm":
+            norm = torch.linalg.norm(wrench[:, :3], dim=-1)
+            norm = norm - baseline_norm[name].to(norm)
         else:
             norm = torch.linalg.norm(wrench[:, :3], dim=-1)
             if baseline_norm is not None:
                 norm = torch.clamp(norm - baseline_norm[name].to(norm), min=0.0)
+        if torque_weight:
+            t = torch.linalg.norm(torque[name].to(wrench), dim=-1)
+            if baseline_norm is not None:
+                t = t - baseline_torque_norm[name].to(t)
+                t = t if mode == "signed_norm" else torch.clamp(t, min=0.0)
+            norm = norm + float(torque_weight) * t
         total = norm if total is None else total + norm
     if total is None:
         raise ValueError("woody_part_force has no non-target junctions to penalize")
@@ -179,6 +218,9 @@ def compute_dense_reward_terms(
             baseline_force=info.get("collateral_baseline_force"),
             mode=cfg.collateral_mode,
             exclude=tuple(cfg.collateral_exclude),
+            torque=info.get("woody_part_torque_anchor"),
+            baseline_torque_norm=info.get("collateral_baseline_torque_norm"),
+            torque_weight=cfg.collateral_torque_n_per_nm,
         ),
         "slack": torch.ones_like(info["target_junction_wrench"][:, 0]),
     }

@@ -129,6 +129,9 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         if k.startswith("Episode / peak force ") and k.endswith(" N (mean)"):
             name = k[len("Episode / peak force ") : -len(" N (mean)")]
             out[f"peak_force_{name}_n_mean"] = float(np.mean([e[k] for e in per_episode]))
+        if k.startswith("Episode / peak torque ") and k.endswith(" N*m (mean)"):
+            name = k[len("Episode / peak torque ") : -len(" N*m (mean)")]
+            out[f"peak_torque_{name}_nm_mean"] = float(np.mean([e[k] for e in per_episode]))
     for label, key in (
         ("force N", "detach_force_n_mean"),
         ("torque N*m", "detach_torque_nm_mean"),
@@ -189,7 +192,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=12345, help="eval DR seed (differs from training by default)")
     # [D17m] score a policy (e.g. a v2b checkpoint) under another task's wall / collateral
     p.add_argument("--max-advance-m", help="no-advance wall along the grip axis (m), or 'none' to turn it off")
-    p.add_argument("--collateral-mode", choices=("relu_norm", "deviation"))
+    p.add_argument("--collateral-mode", choices=("relu_norm", "deviation", "signed_norm"))
+    # [D17q] score a policy under the primary_spur force + torque collateral
+    p.add_argument("--collateral-exclude", nargs="*", help="junctions left out of the collateral sum")
+    p.add_argument("--collateral-torque-n-per-nm", type=float, help="weight (N per N*m) of junction moments in collateral")
     # [D17n] score a policy (e.g. a v2c checkpoint) under v2d's detach rules and force clamp
     p.add_argument("--detach-criterion", choices=("envelope", "bend_pull"))
     p.add_argument("--bend-frame", choices=("world", "spur"))
@@ -224,6 +230,10 @@ def build_eval(args) -> tuple[TrainConfig, Any, Any, str]:
         env_over["max_advance_m"] = None if args.max_advance_m.lower() == "none" else float(args.max_advance_m)
     if args.collateral_mode is not None:
         env_over["collateral_mode"] = args.collateral_mode
+    if args.collateral_exclude is not None:
+        env_over["collateral_exclude"] = tuple(args.collateral_exclude)
+    if args.collateral_torque_n_per_nm is not None:
+        env_over["collateral_torque_n_per_nm"] = args.collateral_torque_n_per_nm
     for arg, key in (
         ("detach_criterion", "detach_criterion"),
         ("bend_frame", "bend_frame"),

@@ -74,6 +74,7 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         collateral_clip_n=env_cfg.collateral_clip_n,
         collateral_mode=env_cfg.collateral_mode,
         collateral_exclude=tuple(env_cfg.collateral_exclude),
+        collateral_torque_n_per_nm=env_cfg.collateral_torque_n_per_nm,
         w_slack=env_cfg.w_slack,
         success_bonus=env_cfg.success_bonus,
         failure_penalty=env_cfg.failure_penalty,

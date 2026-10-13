@@ -6,6 +6,7 @@ import dataclasses
 import json
 
 import pytest
+import torch
 
 from apple_pick_gym.rl.config import EnvConfig, PPOConfig, TrainConfig
 
@@ -283,3 +284,45 @@ def test_d17n_k_ang_min_reaches_the_action_bounds():
     assert TrainConfig().env.k_ang_min == 2.0
     env = build_env(dataclasses.replace(TrainConfig().env, kind="surrogate", num_envs=2, device="cpu", k_ang_min=20.0), seed=0)
     assert env.action_bounds.k_ang_min == 20.0
+
+
+def test_d17q_v2g_true_config_is_v2f_true_with_primary_spur_force_and_torque_collateral():
+    # [D17q] maintainer: lifting should pay and collateral should be centred on 0 at rest ("signed_norm"); charge
+    # only primary_spur (its force ~ the support sum: the old sum counted the pull twice), plus its moment at
+    # 25 N per N*m; collateral weights doubled (0.005 -> 0.01, peak 0.3 -> 0.6). Everything else as v2f_true.
+    from pathlib import Path
+
+    from apple_pick_gym.rl.trainer import build_env
+
+    d = Path(__file__).resolve().parent.parent / "rl" / "configs"
+    v2f = TrainConfig.load_json(d / "sim_train_gpu_v2f_true.json")
+    v2g = TrainConfig.load_json(d / "sim_train_gpu_v2g_true.json")
+    v2g.validate()
+    assert (v2f.env.collateral_mode, v2g.env.collateral_mode) == ("deviation", "signed_norm")
+    e = v2g.env
+    assert tuple(e.collateral_exclude) == ("stem_apple", "primary_support_left", "primary_support_right")
+    assert (e.collateral_torque_n_per_nm, e.w_collateral, e.w_peak_collateral) == (25.0, 0.01, 0.6)
+    assert (v2f.env.collateral_torque_n_per_nm, v2f.env.w_collateral, v2f.env.w_peak_collateral) == (0.0, 0.005, 0.3)
+    back = dataclasses.replace(e, collateral_mode="deviation", collateral_exclude=v2f.env.collateral_exclude,
+                               collateral_torque_n_per_nm=0.0, w_collateral=0.005, w_peak_collateral=0.3)
+    assert back == v2f.env
+    assert v2g.ppo == v2f.ppo and v2g.actor == v2f.actor and v2g.run_dir != v2f.run_dir
+    env = build_env(dataclasses.replace(v2g.env, kind="surrogate", num_envs=2, device="cpu", world_set=None, snapshot=None), seed=0)
+    assert env._reward_cfg.collateral_mode == "signed_norm" and env._reward_cfg.collateral_torque_n_per_nm == 25.0
+
+
+def test_d17q_collateral_torque_weight_reaches_the_env_and_its_rest_moments():
+    from apple_pick_gym.rl.trainer import build_env
+
+    env_cfg = dataclasses.replace(
+        TrainConfig().env, kind="surrogate", num_envs=2, device="cpu", collateral_mode="signed_norm",
+        collateral_torque_n_per_nm=10.0, collateral_exclude=("stem_apple", "primary_support_left", "primary_support_right"),
+    )
+    env = build_env(env_cfg, seed=0)
+    assert env._reward_cfg.collateral_torque_n_per_nm == 10.0
+    _, info = env.reset()
+    assert set(info["collateral_baseline_torque_norm"]) == set(info["woody_part_torque_anchor"])
+    _, _, _, _, info = env.step(torch.zeros(2, 13))
+    assert "primary_spur" in info["woody_part_torque_anchor"]
+    with pytest.raises(ValueError):
+        build_env(dataclasses.replace(env_cfg, collateral_mode="deviation"), seed=0)

@@ -362,3 +362,128 @@ def test_d17n_collateral_can_exclude_named_junctions():
     terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
     torch.testing.assert_close(terms["collateral"], torch.tensor([3.0]))
     assert HarvestRewardConfig().collateral_exclude == ()
+
+
+def test_d17q_signed_norm_collateral_is_zero_at_rest_and_pays_for_unloading():
+    # [D17q] maintainer: lifting should pay, and the term should be centred on 0 at rest.
+    # "signed_norm" charges sum_j (|F_j| - |F_j|_rest): loading costs, unloading earns the same amount,
+    # turning the load at constant magnitude is free.
+    woody = {
+        "spur_stem": torch.tensor([[100.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * 4),  # target, excluded
+        "primary_spur": torch.tensor(
+            [
+                [0.0, 0.0, -6.0, 0.0, 0.0, 0.0],  # at rest
+                [0.0, 0.0, -2.0, 0.0, 0.0, 0.0],  # unloaded by 4 N
+                [0.0, 6.0, 0.0, 0.0, 0.0, 0.0],  # same magnitude, turned 90 deg
+                [0.0, 0.0, -9.0, 0.0, 0.0, 0.0],  # loaded by 3 N
+            ]
+        ),
+        "stem_apple": torch.tensor([[0.0, 0.0, -50.0, 0.0, 0.0, 0.0]] * 4),  # excluded by name
+    }
+    rest_norm = {"primary_spur": torch.full((4,), 6.0), "stem_apple": torch.full((4,), 3.0)}
+    signed = compute_collateral_penalty(
+        woody, target_junction_name="spur_stem", baseline_norm=rest_norm, mode="signed_norm", exclude=("stem_apple",)
+    )
+    torch.testing.assert_close(signed, torch.tensor([0.0, -4.0, 0.0, 3.0]))
+    # at or above rest everywhere it is the relu_norm term
+    relu = compute_collateral_penalty(woody, target_junction_name="spur_stem", baseline_norm=rest_norm, exclude=("stem_apple",))
+    torch.testing.assert_close(signed[[0, 2, 3]], relu[[0, 2, 3]])
+
+
+def test_d17q_signed_norm_sums_junctions_and_needs_the_rest_norms():
+    woody = {
+        "spur_stem": torch.zeros(1, 6),
+        "primary_spur": torch.tensor([[0.0, 0.0, -9.0, 0, 0, 0]]),  # +3
+        "primary_support_left": torch.tensor([[0.0, 0.0, -1.0, 0, 0, 0]]),  # -4
+    }
+    rest = {"primary_spur": torch.tensor([6.0]), "primary_support_left": torch.tensor([5.0])}
+    out = compute_collateral_penalty(woody, target_junction_name="spur_stem", baseline_norm=rest, mode="signed_norm")
+    torch.testing.assert_close(out, torch.tensor([-1.0]))  # signed: unloading one offsets loading another
+    try:
+        compute_collateral_penalty(woody, target_junction_name="spur_stem", mode="signed_norm")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_d17q_signed_norm_dense_reward_credits_unloading_and_clips_only_the_cost():
+    from apple_pick_gym.batched_envs.harvest_reward import compute_dense_reward_terms, weight_dense_reward_terms
+
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]] * 2)}
+    info = {
+        "target_junction_wrench": torch.zeros(2, 6),
+        "detach_utilization": torch.zeros(2),
+        "ft_wrist": torch.zeros(2, 6),
+        "woody_part_force": {
+            "spur_stem": torch.zeros(2, 6),
+            "primary_spur": torch.tensor([[0.0, 0.0, -2.0, 0, 0, 0], [0.0, 0.0, -106.0, 0, 0, 0]]),
+        },
+        "collateral_baseline_norm": {"primary_spur": torch.tensor([6.0, 6.0])},
+        "collateral_baseline_force": {"primary_spur": torch.tensor([[0.0, 0.0, -6.0]] * 2)},
+    }
+    cfg = HarvestRewardConfig(collateral_mode="signed_norm", w_collateral=0.5, collateral_clip_n=50.0)
+    terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
+    torch.testing.assert_close(terms["collateral"], torch.tensor([-4.0, 100.0]))
+    w = weight_dense_reward_terms(terms, cfg)
+    torch.testing.assert_close(w["collateral"], torch.tensor([2.0, -25.0]))  # credit +0.5*4; cost capped at 50 N
+
+
+def test_d17q_collateral_torque_term_adds_weighted_signed_moment_change():
+    # [D17q] maintainer: collateral = force + weighted torque at primary_spur, both against rest. The torque
+    # (N*m, at the joint anchor) is converted to newtons by collateral_torque_n_per_nm.
+    woody = {
+        "spur_stem": torch.zeros(3, 6),
+        "primary_spur": torch.tensor([[0.0, 0.0, -6.0, 0, 0, 0], [0.0, 0.0, -8.0, 0, 0, 0], [0.0, 0.0, -6.0, 0, 0, 0]]),
+        "primary_support_left": torch.tensor([[0.0, 0.0, -50.0, 0, 0, 0]] * 3),  # excluded
+    }
+    torque = {
+        "primary_spur": torch.tensor([[0.0, 0.5, 0.0], [0.0, 1.5, 0.0], [0.0, 0.0, 0.2]]),  # rest, +1 N*m, -0.3 N*m
+        "primary_support_left": torch.tensor([[9.0, 0.0, 0.0]] * 3),
+    }
+    kw = dict(
+        target_junction_name="spur_stem",
+        baseline_norm={"primary_spur": torch.full((3,), 6.0), "primary_support_left": torch.full((3,), 5.0)},
+        mode="signed_norm",
+        exclude=("primary_support_left",),
+        torque=torque,
+        baseline_torque_norm={"primary_spur": torch.full((3,), 0.5), "primary_support_left": torch.full((3,), 1.0)},
+    )
+    no_t = compute_collateral_penalty(woody, **kw)  # torque given but weight 0: force only
+    torch.testing.assert_close(no_t, torch.tensor([0.0, 2.0, 0.0]))
+    out = compute_collateral_penalty(woody, torque_weight=10.0, **kw)
+    torch.testing.assert_close(out, torch.tensor([0.0, 2.0 + 10.0, -3.0]))
+
+
+def test_d17q_collateral_torque_needs_torques_and_is_refused_in_deviation_mode():
+    woody = {"spur_stem": torch.zeros(1, 6), "primary_spur": torch.zeros(1, 6)}
+    base = {"primary_spur": torch.zeros(1)}
+    for kw in (
+        dict(mode="signed_norm", baseline_norm=base, torque_weight=1.0),  # no torques
+        dict(mode="signed_norm", baseline_norm=base, torque_weight=1.0, torque={"primary_spur": torch.zeros(1, 3)}),  # no rest
+        dict(mode="deviation", baseline_force={"primary_spur": torch.zeros(1, 3)}, torque_weight=1.0,
+             torque={"primary_spur": torch.zeros(1, 3)}, baseline_torque_norm=base),
+    ):
+        try:
+            compute_collateral_penalty(woody, target_junction_name="spur_stem", **kw)
+            assert False, f"expected ValueError for {kw}"
+        except ValueError:
+            pass
+
+
+def test_d17q_dense_terms_read_the_anchor_torques_when_weighted():
+    from apple_pick_gym.batched_envs.harvest_reward import compute_dense_reward_terms
+
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
+    info = {
+        "target_junction_wrench": torch.zeros(1, 6),
+        "detach_utilization": torch.zeros(1),
+        "ft_wrist": torch.zeros(1, 6),
+        "woody_part_force": {"spur_stem": torch.zeros(1, 6), "primary_spur": torch.tensor([[0.0, 0.0, -6.0, 9, 9, 9]])},
+        "woody_part_torque_anchor": {"primary_spur": torch.tensor([[0.0, 2.0, 0.0]])},
+        "collateral_baseline_norm": {"primary_spur": torch.tensor([6.0])},
+        "collateral_baseline_torque_norm": {"primary_spur": torch.tensor([0.5])},
+    }
+    cfg = HarvestRewardConfig(collateral_mode="signed_norm", collateral_torque_n_per_nm=10.0)
+    terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
+    torch.testing.assert_close(terms["collateral"], torch.tensor([15.0]))  # the COM torque (9, 9, 9) is not used
+    assert HarvestRewardConfig().collateral_torque_n_per_nm == 0.0

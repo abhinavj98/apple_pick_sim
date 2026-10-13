@@ -207,6 +207,12 @@ def test_episode_stats_report_peak_force_per_junction():
     for name in env.junction_names:
         v = log[f"Episode / peak force {name} N (mean)"]
         assert isinstance(v, torch.Tensor) and v.numel() == 1 and float(v) >= 0.0
+    # [D17q] and the peak moment at each non-target joint anchor (the collateral torque term reads these)
+    for name in env.junction_names:
+        if name == env.target_junction_name:
+            continue
+        v = log[f"Episode / peak torque {name} N*m (mean)"]
+        assert isinstance(v, torch.Tensor) and v.numel() == 1 and float(v) >= 0.0
 
 
 def test_episode_stats_report_target_wrench_at_detach_and_peak_torque():

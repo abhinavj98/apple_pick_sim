@@ -10,11 +10,15 @@ maintainer decision 2026-09-24) instead of a force-only threshold:
   envelope in use -- or ``u`` itself (``"absolute"``). Success is the envelope at ``>= 1``.
 - **pullout** = ``relu(F_wrist . ee_z)``, force along the gripper axis.
 - **collateral** = ``sum_j relu(|F_j| - |F_j|_rest)`` over the non-target
-  junctions. The rest baseline (``info["collateral_baseline_norm"]``, recorded
-  by the env at reset) removes the constant gravity load the plant carries at
-  rest, so the term measures load the *policy* adds to the spur, primary and
-  supports -- the objective is enough load at the spur-stem junction and as
-  little extra as possible everywhere else.
+  junctions (``collateral_mode="relu_norm"``). The rest baseline
+  (``info["collateral_baseline_norm"]``, recorded by the env at reset) removes the
+  constant gravity load the plant carries at rest, so the term measures load the
+  *policy* adds to the spur, primary and supports -- the objective is enough load
+  at the spur-stem junction and as little extra as possible everywhere else.
+  [D17m] ``collateral_mode="deviation"`` charges ``sum_j |F_j - F_j,rest|`` against
+  the rest force *vectors* (``info["collateral_baseline_force"]``): unloading a
+  junction (lifting the apple) and turning its load are robot effort on the tree
+  too, and the relu of the norm increase scored both 0.
 - **slack** = a constant ``-w_slack`` per live step (a time cost: detach sooner).
 
 Reward is privileged (train-time only): it reads uncapped junction wrenches
@@ -69,6 +73,16 @@ class HarvestRewardConfig:
     # out-earns detaching, because success freezes the env (reward 0 after) and recurrent PPO
     # cuts the return at the freeze edge (measured on the surrogate: success 0.68 -> 0.37).
     progress_mode: Literal["absolute", "delta"] = "delta"
+    # [D17m] collateral per non-target junction: "relu_norm" relu(|F| - |F|_rest) (v1 / v2b; unloading
+    # is free) or "deviation" |F - F_rest| against the rest force vectors (any change from rest costs).
+    collateral_mode: Literal["relu_norm", "deviation"] = "relu_norm"
+    # [D17n] non-target junctions left out of the collateral sum, e.g. ("stem_apple",): the apple end of
+    # the target stem carries the pick's own stem tension. () charges every non-target junction.
+    collateral_exclude: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.collateral_mode not in ("relu_norm", "deviation"):
+            raise ValueError(f"unknown collateral_mode {self.collateral_mode!r}")
 
 
 def quat_rotate_vector(quat_xyzw: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
@@ -110,19 +124,29 @@ def compute_collateral_penalty(
     *,
     target_junction_name: str,
     baseline_norm: dict[str, torch.Tensor] | None = None,
+    baseline_force: dict[str, torch.Tensor] | None = None,
+    mode: Literal["relu_norm", "deviation"] = "relu_norm",
+    exclude: tuple[str, ...] = (),
 ) -> torch.Tensor:
-    """Sum over every non-target junction of ``||F_j[:3]||``, shape (N,).
+    """Collateral load over every non-target junction, shape (N,).
 
-    With ``baseline_norm`` (per-junction ``(N,)`` rest force norms), only load above
-    rest counts: ``relu(||F_j|| - baseline_j)``. Unloading below rest is not rewarded.
+    ``mode="relu_norm"``: ``||F_j[:3]||`` summed; with ``baseline_norm`` (per-junction ``(N,)`` rest
+    force norms) only load above rest counts, ``relu(||F_j|| - baseline_j)``, so unloading is free.
+    ``mode="deviation"`` ([D17m]): ``||F_j[:3] - baseline_force_j||`` summed, ``baseline_force`` the
+    per-junction ``(N, 3)`` rest force vectors (required): any change from rest costs.
     """
+    if mode == "deviation" and baseline_force is None:
+        raise ValueError("collateral mode 'deviation' needs baseline_force (the rest force vectors)")
     total = None
     for name, wrench in woody_part_force.items():
-        if name == target_junction_name:
+        if name == target_junction_name or name in exclude:
             continue
-        norm = torch.linalg.norm(wrench[:, :3], dim=-1)
-        if baseline_norm is not None:
-            norm = torch.clamp(norm - baseline_norm[name].to(norm), min=0.0)
+        if mode == "deviation":
+            norm = torch.linalg.norm(wrench[:, :3] - baseline_force[name].to(wrench), dim=-1)
+        else:
+            norm = torch.linalg.norm(wrench[:, :3], dim=-1)
+            if baseline_norm is not None:
+                norm = torch.clamp(norm - baseline_norm[name].to(norm), min=0.0)
         total = norm if total is None else total + norm
     if total is None:
         raise ValueError("woody_part_force has no non-target junctions to penalize")
@@ -140,7 +164,7 @@ def compute_dense_reward_terms(
 
     Reads ``info["detach_utilization"]`` (the env's detach criterion, [D17]),
     ``info["ft_wrist"]``, ``info["woody_part_force"]`` and, if present,
-    ``info["collateral_baseline_norm"]``.
+    ``info["collateral_baseline_norm"]`` / ``info["collateral_baseline_force"]`` ([D17m]).
     """
     return {
         # [D17] the env owns the criterion (elliptical envelope or bend-and-pull) and publishes
@@ -152,6 +176,9 @@ def compute_dense_reward_terms(
             info["woody_part_force"],
             target_junction_name=target_junction_name,
             baseline_norm=info.get("collateral_baseline_norm"),
+            baseline_force=info.get("collateral_baseline_force"),
+            mode=cfg.collateral_mode,
+            exclude=tuple(cfg.collateral_exclude),
         ),
         "slack": torch.ones_like(info["target_junction_wrench"][:, 0]),
     }

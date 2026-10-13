@@ -100,3 +100,14 @@ def test_d17_sample_takes_the_grasp_sampling_mode():
 
     a = make_parser().parse_args(["sample", "--num-envs", "8", "--seed", "3", "--out", "x.jsonl", "--grasp-sampling", "random"])
     assert grasp_env_kwargs(a)["grasp_sampling"] == "random"
+
+
+def test_sample_accepts_a_ranges_fixture():
+    # [D17n] wider plant variation: sample candidates from another ranges fixture
+    from apple_pick_gym.batched_examples.example_screen_harvest_worlds import grasp_env_kwargs, make_parser
+
+    a = make_parser().parse_args(["sample", "--num-envs", "8", "--seed", "3", "--out", "x.jsonl", "--ranges", "wide.json"])
+    assert a.ranges == "wide.json"
+    assert grasp_env_kwargs(a)["ranges_path"] == "wide.json"
+    b = make_parser().parse_args(["sample", "--num-envs", "8", "--seed", "3", "--out", "x.jsonl"])
+    assert "ranges_path" not in grasp_env_kwargs(b)

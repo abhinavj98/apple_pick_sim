@@ -29,6 +29,7 @@ hyperparameters beyond what is listed.
 | D4 | F/T observation frame for deployment (sim is world frame; rig is mixed) | flagged, no code change |
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
 | D17 | Task v2 after the real-robot test (maintainer, 2026-10-02): equator grasps, bend-and-pull detach (Li et al. 2016), tool-frame obs/action, 4-term reward | code done (D17a-h); v3 world set screening; GPU training pending |
+| D17n | v2d (maintainer, 2026-10-04): stem-only bend angle, F_d flat past 30 deg, 20-step streak, F_d x U(0.8, 2.0), 40 N commanded-force clamp | code done; overnight run on 6720 v3 worlds |
 
 ## Morning brief (for the 2026-09-25 discussion)
 
@@ -1227,4 +1228,278 @@ were inverted (`grip_out = -d_z` and `down` came out negative): it was 30 mm in 
 **Open (maintainer):** whether a lift-and-push is acceptable on the rig (it presses the fruit toward the
 spur, but at ~6 N); the rig-side items in D17 (tool-frame stiffness, TCP-frame obs, force limits); a held-
 out world set for a clean generalisation number (the eval uses the training worlds with a different seed).
+
+
+## D17m -- Pull, don't push: a no-advance wall on the target, and collateral as deviation from rest (maintainer, 2026-10-03)
+
+**Why.** v2b (D17l) detaches by a lift-and-push pendulum: at detach the TCP has moved 46 mm *toward* the
+apple along the grip, 28 mm up and 47 mm sideways. Two objections (maintainer):
+1. On the real tree, pushing in can collide with the branches inside the canopy. The robot should pull.
+2. Lifting is robot effort on the tree too, but `relu(‖F_j‖ − ‖F_j‖_rest)` scores *unloading* a junction
+   (taking the apple's weight off the spur, primary and supports) as free.
+
+**Choices.**
+
+| Switch | Choice | Where |
+| --- | --- | --- |
+| `max_advance_m` (v2c: 0.0) | The VIC target may not pass the plane through the reset TCP normal to the reset grip axis (TCP +z, into the apple / tree). Applied after the leash, so it is the hard guarantee; pulling back, lateral motion and orientation untouched. Off by default | `harvest_action.clamp_target_advance` / `grip_axis`, env and surrogate `step` |
+| `collateral_mode` (v2c: `"deviation"`) | `Σ ‖F_j − F_j,rest‖` against the rest force *vectors* recorded at reset (also catches a same-size re-directed load); the D13 peak charge reads the same term. Default `"relu_norm"` | `harvest_reward.compute_collateral_penalty`, `info["collateral_baseline_force"]` |
+| config | `sim_train_gpu_v2c.json` = v2b + both switches, `runs/vic_harvest/v2c_s0` | `rl/configs/` |
+| metric | `info["tcp_advance_m"]`: TCP travel along the reset grip axis; `Episode / peak TCP advance into tree mm (mean|max)`, eval `peak_tcp_advance_mm_mean|max` | env, `skrl_wrapper`, `eval_vic_harvest` |
+| eval | `--max-advance-m 0|none`, `--collateral-mode`: score any policy under another task's rules | `eval_vic_harvest` |
+| checkpoint | `max_advance_m` is an env constraint after the action scaling: excluded from the load check (`_BOUNDS_NOT_SCALING`), so old checkpoints load and v2b can be evaluated with the wall on | `rl/checkpoint.py` |
+
+**Clamp, not penalty (maintainer's question).** A penalty is a price: with +60 for a pick, PPO pays it
+whenever pushing helps, it has to be tuned against success, collateral and the peak charge, and it gives
+no guarantee on the rig. The clamp is exact and the deploy repeats it. On the *integrated target* against
+a plane fixed at the grasp, not on the per-step delta (which would leak through accumulation and the tool
+frame's rotation). Axis: the grip axis at grasp (maintainer), not world +y.
+
+**GPU check** (`test_harvest_env_no_advance.py`, 2 v1 worlds, 30 steps pushing 2 mm/step along the grip
+axis, world-frame action): TCP advance 41 / 46 mm with the wall off, 0.2 / 0.03 mm with it on. A
+tool-frame +z push stalls at ~15 mm of target advance on its own (the delta turns with the TCP).
+
+**Expected (not yet measured).** With an equator grasp, pulling out along the grip already bends the stem
+(`scripted_pull` 1.00 success at 31 deg / 9.2 N), so a pull-and-swing should remain available; collateral
+will likely rise from v2b's 3.3 N median. If v2c settles on in-plane sideways swings, a pull-back incentive
+is the next lever. The wall does not see the canopy: sideways motion into neighbouring branches is not
+limited.
+
+**Deploy.** The rig must apply the same clamp to the integrated target (start pose and grip axis recorded
+at grasp); `meta.json` `action_bounds.max_advance_m` carries the value.
+
+**Revert.** `max_advance_m: null`, `collateral_mode: "relu_norm"` (the defaults; v2b and earlier configs do
+not set them).
+
+
+## D17n -- Stem-only bending, fit-range hold, 20-step streak, wide F_d scale, commanded-force clamp (maintainer, 2026-10-04)
+
+**Why.** v2c (D17m) succeeds on 100% of episodes with a fast sideways swing. At the end of training: 49 mm sideways, 0 mm out along the grip, detach in 36 steps,
+TCP at 0.24 m/s mean / 0.41 m/s peak against a 0.12 m/s target cap, median peak collateral 20 N (p90 66 N), worst TCP advance 148 mm past the wall. Four features of the
+criterion paid for it:
+1. theta_b was the stem chord's angle from its reset direction *in the world*, so rigid rotation of the spur / plant counted as stem bending. GPU check
+   (`test_harvest_env_stem_bend_frame.py`, 2 v1 worlds, 40 steps dragging the TCP 2 mm/step sideways): world-frame theta_b 31 / 35 deg, stem-only 2.1 / 3.3 deg.
+2. F_d was extrapolated past the paper's 10-30 deg fit to the quadratic's 38.5 deg minimum (3.86 N), about the rest tension (3.6 N): a big enough swing detached on gravity alone.
+3. A 3-step (50 ms) streak let a momentary tension peak count as a pick.
+4. F_d varied only +-15 %.
+The swing ran on a wound-up spring: the leash allows 15 cm of setpoint error, 75 N at K = 500, so the TCP outruns the target speed cap when the stem yields.
+
+**Choices.**
+
+| Switch | Choice | Where |
+| --- | --- | --- |
+| `bend_frame` (v2d: `"spur"`) | The rest chord is stored in the frame of the target junction's parent body (the spur tip) at reset and carried by its rotation: theta_b is the stem's bending relative to its spur. `info["theta_b_world_deg"]` keeps the old angle for diagnostics. Default `"world"` | `harvest_detach.to_body_frame` / `carried_rest_chord`, env `_target_parent_quat` |
+| `bend_pull_theta_max_deg` (v2d: 30) | F_d held flat past 30 deg (4.94 N x s), the end of the fitted range. Default None = the 38.5 deg minimum | `harvest_detach.bend_pull_theta_clamp_deg` |
+| `success_streak_steps` (v2d: 20) | 0.33 s at u >= 1 (any dip resets). The stem_elastic tension is smooth (D1) | `EpisodeConfig` |
+| `detach_scale_range` (v2d: [0.8, 2.0]) | F_d x U(0.8, 2.0) per env per episode: straight pull 21-52 N, floor 3.95-9.9 N. The policy must keep loading until the apple comes off | `harvest_detach.detach_scales` |
+| `max_commanded_force_n` (v2d: 40) | `||K_lin (target - tcp)|| <= 40 N` (commanded gains, tool frame), after the leash and before the wall; orientation untouched. 40 N = the old safety cap / stem-harvest wrist cap | `harvest_action.clamp_commanded_force`, env and surrogate `step` |
+| config | `sim_train_gpu_v2d.json` = v2c + all five (2000 v3 worlds); `sim_train_gpu_v2d_6720.json` the overnight run on the 6720-world v3 set | `rl/configs/` |
+| eval | `--detach-criterion`, `--bend-frame`, `--bend-theta-max-deg`, `--success-streak`, `--detach-scale LO HI`, `--max-commanded-force-n N|none` | `eval_vic_harvest` |
+| checkpoint | `max_commanded_force_n` is excluded from the bounds load check (`_BOUNDS_NOT_SCALING`) | `rl/checkpoint.py` |
+
+**Accepted risks (maintainer).**
+- *Give-up.* Success pays `60 - 1.0 x peak collateral` and a timeout costs nothing (safety caps off). On hard worlds (s near 2) quitting can out-earn a costly pick. Left as is.
+- *Feasibility.* With stem-only bending a drag barely bends the stem (2-3 deg above), so most picks need near-axial tension: about 23 N x s at 3 deg. Under the 40 N commanded-force
+  clamp the hardest draws may be out of reach. No baseline was run under v2d before the overnight launch (maintainer: skip, launch when the worlds are ready);
+  a scripted feasibility eval ran alongside the snapshot build (`runs/vic_harvest/eval_d17n/`). `scripted_pull` under v2d (2000 v3 worlds, 1 episode):
+  success 0.984 in 94 steps, stem tension 36 N and stem-only theta_b 12 deg at detach, but median peak collateral 106 N (p90 147 N; `primary_spur` and
+  `stem_apple` each carry the pull in series, as in D9), so its success terminal is ~-46 and its return -92. A forceful pick is worth less than quitting.
+  Offered lowering `w_peak_collateral` to 0.3 or capping the charge; the maintainer kept 1.0 for the overnight run.
+
+**World set.** Pass 2 was stopped early (maintainer) at 56/86 chunks: 6720 of 7168 rescreened worlds passed (13312 pass-1 candidates, seeds 1000-1103; pass 1 10973 passed).
+Snapshot `apple_pick_gym/world_sets/snapshots/harvest_worlds_v3_all6720/` (not committed, ~38 MB).
+
+**Deploy.** The rig must apply the commanded-force clamp to the integrated target with the commanded gains, after the leash and before the no-advance wall
+(`meta.json` `action_bounds.max_commanded_force_n`). The detach-criterion switches are reward-side only.
+
+**Revert.** `bend_frame: "world"`, `bend_pull_theta_max_deg: null`, `success_streak_steps: 3`, `detach_scale_range: [0.85, 1.15]`, `max_commanded_force_n: null`.
+
+**Overnight run 1 (`runs/vic_harvest/v2d_6720_s0`, `w_peak_collateral` 1.0): converged toward not picking; stopped at update 41.** Per episode,
+success fell 3.7% -> 0.9%, peak detach index 0.53 -> 0.27, mean TCP speed 0.041 -> 0.016 m/s and return rose -42 -> -13.6: the policy loaded the stem less
+each episode (collateral and slack are cheaper than a -46 pick). The few successes were high-force outliers (~70 N tension, ~300 N collateral).
+**Run 2 (maintainer, 2026-10-04 23:17): `w_peak_collateral` 0.3** (`sim_train_gpu_v2d_6720_pc03.json`, `runs/vic_harvest/v2d_6720_pc03_s0`): a scripted-pull
+pick becomes 60 - 0.3 x 106 = ~+28 (p90 +16), so picking beats quitting while lower collateral still pays more.
+
+**Run 2 (`v2d_6720_pc03_s0`) followed run 1 (stopped at update 27):** success 2.9% -> 1.0%, peak detach index 0.72 -> 0.43, mean TCP speed 0.044 -> 0.017 m/s.
+The reward breakdown showed the driver was the *dense* collateral term (episode sum -36 -> -12.5 as the policy stopped loading), not the peak charge:
+`primary_spur` and `stem_apple` carry the pull in series, so any real pull hits the 50 N per-step clip, and progress pays at most ~+9 per episode.
+**Run 3 (maintainer, 2026-10-04 23:51; coefficients may be retuned overnight, each retune logged here):** `collateral_exclude: ["stem_apple"]` (new
+`HarvestRewardConfig.collateral_exclude`: the target stem's apple end carries the pick's own tension), `w_collateral` 0.02 -> 0.005, `w_slack` 0.01 -> 0.003,
+`w_peak_collateral` 0.3 (`sim_train_gpu_v2d_6720_r3.json`, `runs/vic_harvest/v2d_6720_r3_s0`). Scripted-pull estimate: dense collateral ~-24, terminal ~+39,
+progress ~+9 -> ~+24 per pick against ~-0.75 for holding still.
+
+**Run 3 result (stopped at update 30, kept as a fallback):** picks. Success 7.9% -> 99.4% by episode 7, 91 steps, median peak collateral 69 N, return +31. But
+it is a forceful yank: peak wrist 44 N (38% of envs > 40 N despite the 40 N *commanded* clamp; realized K x1.2 + damping + overshoot), peak TCP speed
+0.57 m/s, peak detach index 3.1 (3x overload during the 20-step hold), invalid fraction 3% -> 7%.
+**Run 4 (00:25, retune): `w_wrist` 0.05 above a 25 N soft cap (D11 term)**, everything else as run 3, initialised from run 3's `ckpt_000001920`
+(`--init-from`; `sim_train_gpu_v2d_6720_r4.json`, `runs/vic_harvest/v2d_6720_r4_s0`). At 44 N for ~30 steps the term is about -28, against ~+35 terminal +
+~9 progress, so a pick stays clearly positive while overload and overshoot cost.
+
+**Run 3 result (stopped at update 30, kept as a fallback):** picks. Success 7.9% -> 99.4% by episode 7, 91 steps, median peak collateral 69 N, return +31. But
+it is a forceful yank: peak wrist 44 N (38% of envs > 40 N despite the 40 N *commanded* clamp; realized K x1.2 + damping + overshoot), peak TCP speed
+0.57 m/s, peak detach index 3.1 (3x overload during the 20-step hold), invalid fraction 3% -> 7%. Not safe for the rig.
+**Run 4 (maintainer, 00:27): `w_wrist` 0.05 above a 25 N soft cap (D11 term)**, everything else as run 3, initialised from run 3's `ckpt_000001920`
+(`--init-from`; `sim_train_gpu_v2d_6720_r4.json`, `runs/vic_harvest/v2d_6720_r4_s0`). Run 3's pick nets ~+7 under it (wrist ~-28) against ~-0.75 for
+holding still; a pick held near 30 N nets ~+30. Risk: draws near s = 2 (~46 N axial) may become give-ups unless the policy bends more.
+
+**Run 4 result (stopped at update 15):** the per-step wrist cost made it *faster*, not gentler: peak wrist 44 -> 52 N (53% > 40 N), peak TCP speed
+0.55 -> 0.79 m/s, invalid 4% -> 8%, steps 87 -> 76. A per-step cost rewards a shorter, more violent yank (fewer steps above 25 N).
+**Run 5 (00:53): safety trip at 60 N** (`safety_force_cap_n` 60 on the target junction and raw wrist force: freeze, -40, no bonus; torque cap still off)
+**and `w_wrist` 0.1**, initialised from run 3's `ckpt_000001920` (`sim_train_gpu_v2d_6720_r5.json`, `runs/vic_harvest/v2d_6720_r5_s0`). A hard cliff the
+rig also has; s = 2 picks need ~46-52 N, so 60 N leaves headroom.
+
+**Run 5 result (stopped at update 50, `ckpt_000003200`):** the 60 N trip cut invalids 8% -> 2.4% but the run oscillated: success 84 -> 73 -> 80 -> 74%,
+safety trips 16 -> 27 -> 19 -> 26%, peak wrist 41-46 N, peak detach index ~3. Trips are real overload (target force ~48 -> ~64 N in the tripping step;
+16% are 5x spikes). The actor cannot see detachment (the apple never comes off in the sim), so with s up to 2 and a 20-step hold it ramps for the
+worst-case apple and overshoots during the hold; commanded 40 N still gives ~45 N peaks plus spikes.
+**Run 6 (01:55): `max_commanded_force_n` 40 -> 30 N**, everything else as run 5, initialised from run 5's `ckpt_000003200`
+(`sim_train_gpu_v2d_6720_r6.json`, `runs/vic_harvest/v2d_6720_r6_s0`). Cost: draws near s = 2 at low bend (~32 N) become marginal.
+v2e item: release the apple at detach (so the actor observes it, as on the real tree).
+
+**Run 6 result (stopped at update ~17, `ckpt_000000640`):** the 30 N clamp helped at once (success 88%, trips 11%, peak wrist 39.5 N, peak speed 0.44 m/s)
+then drifted back by episode 4 (81%, 18%, 42 N, 0.58 m/s): the wrist still sees ~12 N above the commanded spring. Video frames (every 5 steps) show why:
+the gripper and apple **swing as a pendulum on the stem**, about +-30 deg at ~1.5-2 Hz, the branch rocking with them. The policy keeps the wrist soft
+(K_ang ~11.5 N*m/rad of 2-40), so the swing produces the TCP "speed" (large path, ~90 mm net), the wrist-force spikes and the 60 N trips.
+**Run 7 (02:10): `k_ang_min` 2 -> 20 N*m/rad** (new `EnvConfig.k_ang_min`; the rig's hold gain is 30), everything else as run 6, initialised from run 6's
+`ckpt_000000640` with `--init-allow-bounds-change` (`sim_train_gpu_v2d_6720_r7.json`, `runs/vic_harvest/v2d_6720_r7_s0`).
+
+**Run 7 so far:** steady (ep1/4/7 success 92/88/92%, trips 7/12/8%, peak wrist ~38-40 N). Deterministic eval of `r7/ckpt_000000640` on the held-out
+v3 2000 worlds (seeds 300-323, not in the 6720 set) under v2d rules + 60 N trip (`runs/vic_harvest/eval_d17n/r7_ckpt_000000640.json`): success 0.970,
+safety 0.027, invalid 0.0015, return +17.0, 79 steps, peak wrist 37.7 N (38% > 40 N), median / p90 peak collateral 71 / 95 N (scripted_pull 104 / 147 N),
+mean / peak TCP speed 0.099 / 0.21 m/s, detach at 38 N tension and 8.5 deg stem-only bend; motion 67 mm out along the grip, 60 mm down, 51 mm sideways,
+13 deg tilt; K_lin ~96, K_ang ~28, zeta ~0.9. The training rollouts' swing and speed are mostly exploration noise (action std ~0.44).
+`r7/ckpt_000004480` (update 70), same eval: success 0.984, safety 0.015, invalid 0.001, return +21.6, 83 steps, peak wrist 34.7 N (27% > 40 N), median / p90
+peak collateral 66 / 89 N, mean / peak TCP speed 0.098 / 0.19 m/s, worst TCP advance 110 mm, peak detach index 1.67. Best field candidate at 03:45.
+`r7/ckpt_000007680` (update 120), same eval: success 0.983, safety 0.015, return +23.7, 85 steps, peak wrist 33.3 N (22% > 40 N), median / p90 peak
+collateral 64 / 86 N, mean / peak TCP speed 0.100 / 0.20 m/s, worst TCP advance 60 mm. New best field candidate at 04:25.
+`r7/ckpt_000010880` (update 170), same eval: success 0.986, safety 0.014, return +25.1, 89 steps, peak wrist 32.5 N (19% > 40 N), median / p90 peak
+collateral 62 / 86 N, mean / peak TCP speed 0.098 / 0.21 m/s, worst TCP advance 65 mm. New best field candidate at 05:10.
+`r7/ckpt_000013440` (update 210): success 0.980, safety 0.019, return +25.9, peak wrist 32.3 N (18% > 40 N), median collateral 61 N. Second eval seed
+(777) on both: ckpt_10880 0.984 / 0.016 / 32.6 N / 62 N; ckpt_13440 0.984 / 0.016 / 32.4 N / 61 N -- a statistical tie; the run has plateaued.
+**Field recommendation (2026-10-05 06:00): `runs/vic_harvest/v2d_6720_r7_s0/checkpoints/ckpt_000010880`** (two seeds: success 98.5%, safety trips 1.5%,
+peak wrist ~32.5 N with ~20% of picks > 40 N, median peak collateral ~62 N, mean TCP speed ~0.10 m/s, worst advance <= 78 mm). Rig: speed cap 2 mm /
+0.005 rad per step, K_lin 20-500, K_ang 20-40, zeta 0.3-2.0, then leash 0.15 m / 0.5 rad -> 30 N commanded-force clamp -> no-advance wall 0 mm
+(`meta.json` `action_bounds`). Fallback: `r7/ckpt_000013440`.
+`r7/ckpt_000015360` (update 240, two seeds): success 0.980, safety 0.019, peak wrist 31.9 N (18% > 40 N), median collateral 60 N, worst advance 283 mm.
+Later checkpoints trade ~0.5 N of wrist force for slightly lower success and more trips; the recommendation stays `ckpt_000010880`.
+
+**Run 8 (maintainer, 2026-10-05 10:10, after the field trial): grip-slip penalty.** On the rig the apple sometimes slips out of the gripper; the run 7
+policy pulls ~67 mm out along the grip axis at detach. Turned on the D9 `pullout` term: `w_pullout` 0.05 above `pullout_threshold_n` 20 N (force along
+the TCP +z grip axis; sign checked on GPU: a straight tool -z pull gives pullout = F.ez ~ |F|, 3 -> 29 N over 8 -> 40 steps). Everything else as run 7,
+initialised from `r7/ckpt_000010880` (`sim_train_gpu_v2d_6720_r8.json`, `runs/vic_harvest/v2d_6720_r8_s0`). Coefficients may be retuned; logged below.
+Run 8 (stopped at update ~17): no response in 4 episodes (grip-out motion 90 mm, pullout term -5 per episode vs wrist -14). **Run 9 (10:32):
+`w_pullout` 0.05 -> 0.15**, initialised from run 8's latest checkpoint (`sim_train_gpu_v2d_6720_r9.json`, `runs/vic_harvest/v2d_6720_r9_s0`).
+Run 9 (stopped at update ~46): grip-out motion 90 -> 83 mm over 12 episodes but the pullout charge stayed ~-15 per episode (less travel along the grip,
+same force); success 95%. **Run 10 (11:25): `w_pullout` 0.15 -> 0.3**, initialised from run 9's latest checkpoint (`sim_train_gpu_v2d_6720_r10.json`).
+Run 10 (stopped after episode 1): at `w_pullout` 0.3 the mean return went negative (-9.1: pullout -30, wrist -14, collateral -12 vs terminal +38,
+progress +9), i.e. not picking became cheaper (the run 1-2 give-up dynamic). **Run 11 (11:32): `success_bonus` 60 -> 90** with `w_pullout` 0.3 kept,
+initialised from `r9/ckpt_000002560` (`sim_train_gpu_v2d_6720_r11.json`). Expected return ~+21; the cost differences still steer away from grip-axis pull.
+Run 11 result: grip-axis travel 84 -> 54 mm and pullout charge -30 -> -18 over 25 episodes. Deterministic evals (held-out 2000): `r11/ckpt_000002560`
+success 0.978, safety 0.016, grip-out 67 mm, peak wrist 30.5 N (14% > 40 N), collateral 57 N; `r11/ckpt_000005760` success 0.948 (~3% timeouts: it
+gives up on hard apples rather than pull along the grip), safety 0.021, grip-out 53 mm, 30.6 N (12%), 56 N (field `r7/ckpt_000010880`: 0.986, 92 mm).
+Training success then slid to 92% with trips 3.7 -> 6%. **Run 12 (13:15): `w_pullout` 0.3 -> 0.2**, initialised from `r11/ckpt_000005760`
+(`sim_train_gpu_v2d_6720_r12.json`), to hold success while keeping the slip-direction gain.
+`r12/ckpt_000002560` (12 episodes at `w_pullout` 0.2), same eval: success 0.955, safety 0.019, grip-out 58 mm, peak wrist 30.0 N (11% > 40 N), collateral
+56 N, worst advance 245 mm. Lowering the weight held success (0.948 -> 0.955) but did not bring back the hard picks: without pulling along the grip the
+policy has not found enough tension (it does not yet pull down: ~27-31 mm). Balanced slip candidate: `r11/ckpt_000002560` (0.978, 67 mm along the grip).
+`r12/ckpt_000005760` (25 episodes at 0.2): success 0.956, safety 0.017, grip-out 57 mm, peak wrist 30.1 N (11% > 40 N), collateral 55 N -- converged
+(no recovery of the hard picks; the policy does not learn a downward pull under this reward). Run 12 stopped at 14:58.
+**Slip candidates (held-out 2000, deterministic):** `r11/ckpt_000002560` balanced (0.978, 67 mm along the grip) and `r12/ckpt_000005760`
+slip-averse (0.956, 57 mm), vs the field `r7/ckpt_000010880` (0.986, 92 mm). Next lever (maintainer's call): reward downward stem loading or a
+friction-cone grip model so the slip limit is physical rather than a penalty.
+
+**Correction (2026-10-07): the "30 N" commanded-force clamp is not in newtons.** The arm runs OSC (`tau = J^T Lambda (K e + D e_dot)`,
+handbook-variable-impedance.md), so the commanded K is an acceleration gain and the rendered force is `Lambda K e`. `clamp_commanded_force` bounds
+`||K e||` without Lambda. Rollout of `r7/ckpt_000010880` (held-out 2000): at detach `||K e||` ~4.3 (never near 30) while the wrist reads ~30 N
+(F / ||K e|| ~8, i.e. Lambda ~8 kg). The clamp therefore almost never binds for these policies; force is set by Lambda K e. Behaviour is unchanged on a
+rig that uses the same OSC convention and the same formula, but the label is wrong. A true newton clamp needs Lambda (or a measured-wrench limit).
+
+## D17o -- Wide support-stiffness experiment: does more plant variation produce adaptation? (maintainer, 2026-10-07/08)
+
+**Why.** Analysis of `r7/ckpt_000010880` (report: runs/vic_harvest/analysis_r7/run7_pick_anatomy.html) found a grasp-conditioned schedule with no plant
+identification; the felt stiffness is dominated by grasp orientation and the plant materials explain ~0 of it. Hypothesis: widen the one felt plant
+parameter (support stiffness) so a single schedule no longer fits.
+
+**What.** Fixture `apple_pick_sim/fixtures/fruiting_system_ranges_rl_harvest_real_g05_m1_wide_support.json` = g05_m1 with `support_dr.kp` widened
+log-symmetrically from 186-302 (1.6x) to 106-530 (5x). Screening `--ranges` option added (`example_screen_harvest_worlds.py`, test in
+`test_example_screen_harvest_worlds_cli.py`). 8,192 candidates (seeds 2000-2063) -> 6,668 pass 1 -> 6,197 pass 2; split (seed 0) 4,608 train /
+1,536 held-out; snapshots `harvest_worlds_wide_train` (4,513 valid) and `harvest_worlds_wide_holdout` (1,500 valid). Pass rates were flat across the kp
+range (78-85%).
+
+**Runs.**
+- `v2d_wide_r1_s0` (run 7 config, init `r7/ckpt_000010880`): flat for 47 updates -- KL > 0.05 early stop at the 3e-5 LR floor cut almost every update.
+- `v2d_wide_scratch_s0` (from scratch): 6% -> 91% by episode 13 (`ckpt_000003200`: held-out 94.8%, trips 4.1%), then drifted forceful (trips 4 -> 15%);
+  a restart from ckpt_3200 with LR <= 1e-4 drifted the same way. Stopped.
+- **`v2d_wide_r2_s0`** (init run 7, `kl_threshold` off, LR <= 1e-4, 340 updates; `sim_train_gpu_v2d_wide_r2.json`): trained stably, plateaued.
+
+**Result (wide held-out, deterministic).** run 7 96.3% / 3.7% trips; wide r2 95.9% / 3.8% (final ckpt; 95.5-96.0% across checkpoints); from-scratch
+best 94.9% / 4.0%. By support band, wide r2 gained on stiff supports (96.3% vs 95.5%, gentler 35.2 vs 36.4 N, slower) and lost on soft (93.8% vs 96.3%).
+On the normal held-out set wide r2 is 97.7% / 2.0% (run 7 98.6% / 1.4%). Feedback tests: open-loop neighbour schedule costs 2.2 pts (run 7: 1.8);
+freezing F/T costs 0.8 pts (run 7: 1.5) -- wide r2 relies *less* on force feedback. Probes: support stiffness is readable from the current observation
+at R^2 0.75-0.83 by step 60 (MLP), but wide r2's LSTM holds less (0.67) than run 7's (0.74), the observation, or a random LSTM (0.81).
+
+**Conclusion.** More plant variation alone does not produce adaptation under this reward: a schedule remains near-optimal (the attainable gain is ~2
+points), so the policy shifts its compromise instead of identifying the plant. Making identification pay needs a task change (observable detachment,
+direction-dependent detach, or costs that differ sharply by plant). Field checkpoint unchanged: `r7/ckpt_000010880` (slip-reduced: `r11/ckpt_000002560`).
+
+## D17p -- Very-wide bending and support stiffness: 10k worlds (maintainer, 2026-10-08)
+
+**Why.** D17o widened only support `kp` (5x) and the policy kept a grasp-conditioned schedule. The maintainer asked for a much wider plant so a
+single schedule cannot fit: spur and stem bending (flexural) modulus over 100 kPa .. 100 GPa, support stiffness over 100 .. 10,000 N/m, ~10k new worlds,
+and retraining, expecting system-identification-like behaviour.
+
+**What.**
+- Ranges may now carry `"scale": "log"` (`sample_params` draws log-uniformly; validated: `linear`/`log`, log needs min > 0;
+  `apple_pick_sim/tests/test_log_uniform_ranges.py`). Without it a uniform draw over 1e5..1e11 puts ~90% of worlds in the top decade (543/600 in a check).
+- Fixture `apple_pick_sim/fixtures/fruiting_system_ranges_rl_harvest_vvwide_bend.json` = the D17o fixture with spur/stem `flexural_modulus_pa`
+  log-uniform 1e5..1e11 Pa and `support_dr.kp` 100..10,000 (the linear support-joint k_p, N/m; `support_dr` is always log-uniform).
+  Axial moduli, damping, geometry, roll k_p and zeta are unchanged.
+- Screening as D17o (two independent builds, v3 equator grasps), seeds 3000-3013, run as 2048-world batches 12 at a time under CUDA MPS
+  (user-scoped daemon, pipe dir `~/.cache/apple_pick_mps/pipe`). Without MPS the 12 processes time-sliced the GPU (~185 W); with MPS ~260 W.
+- Diversity: the accepted worlds are binned into 144 cells (spur decade x stem decade x support-kp half-decade) and each cell is capped at the smallest
+  count that still yields train + holdout (`tmp/harvest_worlds_vvwide/select_balanced.py`), undoing screening's rejection bias as far as survivors allow.
+  Probe (640 candidates): 64% pass; pass rate 50-60% for soft stems (<1e7 Pa) and stiff supports (>1e3 N/m) vs ~70% elsewhere.
+- Training: the D17o r2 recipe (run 7 config, `kl_threshold` off, LR <= 1e-4, init `r7/ckpt_000010880`) on the new train set
+  (`sim_train_gpu_v2d_vvwide_r1.json`, `runs/vic_harvest/v2d_vvwide_r1_s0`). Baselines: run 7 and wide r2 on the new held-out set (`runs/vic_harvest/eval_vvwide/`).
+
+**World set.** Pass 1: 16,350 / 25,216 candidates (65%; 12 x 2048 under MPS in 55 min, ~9x D17o's throughput). Pass 2: 14,289 / 16,350 (87%).
+Survivors per decade (pass 2): spur 2986 / 2625 / 2254 / 2275 / 2127 / 2022 (1e5 .. 1e10 Pa), stem 1778 / 1824 / 2267 / 3050 / 2759 / 2611,
+support kp 4478 / 3859 / 3271 / 2681 (half-decades 1e2 .. 1e3.5): soft stems and stiff supports fail more often, as the probe showed. Balanced selection
+(no empty cell; cell min / median / max 27 / 107 / 164, cap 93): stem 1576 / 1631 / 1896 / 2196 / 2171 / 2114, kp 3320 / 3080 / 2768 / 2416.
+Split 10,048 train / 1,536 held-out; snapshots `harvest_worlds_vvwide_train` (9,954 valid, build 21 min) and `harvest_worlds_vvwide_holdout` (1,521 valid).
+Not committed (train snapshot is large).
+
+**Baselines on the vv-wide held-out set (deterministic, 1 episode).** run 7 `ckpt_000010880`: success 0.843, safety 0.155, return +1.8, peak collateral
+79 N. wide r2 final: 0.855 / 0.137 / +4.8 / 74 N. (On the D17o wide held-out set both were ~96% / ~4%.) The schedule no longer fits this plant range.
+
+**Run (`v2d_vvwide_r1_s0`, launched 15:11).** ~88 s per update at N = 10,048 (84 s rollout), 340 updates, ~8.3 h.
+**Switched to from scratch (maintainer, 16:11).** The run-7 init carries a plant-blind schedule that fine-tuning tends to keep (D17o), so `v2d_vvwide_r1_s0`
+was stopped at update 35 (checkpoints kept) and **`v2d_vvwide_scratch_s0`** launched from a fresh policy with the D17o from-scratch PPO settings
+(default LR, KL early stop on; `sim_train_gpu_v2d_vvwide_scratch.json`), 340 updates.
+
+**v2e (maintainer, 2026-10-09..12): K_ang 1-40 (it is a true N*m/rad stiffness: the env runs `sep_ori=True`, rotation bypasses Lambda),
+speed caps doubled (4 mm / 0.01 rad per step), from scratch.** `v2e_vvwide_s0` (10,048 vv-wide worlds, stopped at ~update 335,
+`ckpt_000021120`) and `v2e_sysid_s0` (6,720 v3 worlds; the two did not fit on the GPU together, so it ran after; it died without a
+traceback at update ~266, `ckpt_000016640`). Analysis: `runs/vic_harvest/analysis_v2e/` (deterministic, held-out).
+
+| policy | v3 held-out (2000) | vv-wide held-out (1536) |
+| --- | --- | --- |
+| v2e_vvwide | 0.983 / 0.008 trips | 0.910 / 0.024 |
+| v2e_sysid | 0.951 / 0.029 | 0.734 / 0.240 |
+| run 7 (sanity, reproduced) | 0.986 / 0.014 | 0.843 / 0.155 |
+
+- *Wide DR costs nothing on calibrated plants.* Sweep (8 checkpoints each, both sets, success vs samples = timestep x num_envs):
+  v2e_sysid reaches 95.5 % on v3 at 4.3 M samples and stays 95-97 %; v2e_vvwide passes 95 % on v3 at ~39 M and climbs to 98.3 %.
+  Narrow DR is ~10x cheaper to "good" but plateaus lower; on vv-wide plants it never reaches 80 % (59-78 %, 20-40 % trips).
+- *By plant band (vv-wide held-out):* v2e_sysid falls with support kp (91 / 85 / 64 / 51 % over the four half-decades) and on stems
+  >= 1e10 Pa (57 %); v2e_vvwide 97 / 95 / 93 / 90 % and 84 % on stems >= 1e10. **Correction:** earlier probe-rollout band numbers
+  (D17p first round) counted picks that had tripped the safety cap; `probe_rollout_v2e.py` now excludes them.
+- *Motion:* both v2e policies use the soft wrist (mean K_ang 10 / 6, every step below the old 20). v2e_vvwide twists the apple
+  ~31 deg (run 7 ~19 deg) but drags it: apple-centre travel / (r x rotation) median 6-8 (pivot ~0, drag >> 1), and more rotation goes
+  with *less* stem bend (corr -0.37 on v3). Stem bend at detach 11.8 deg on v3 (run 7 10.7), 16.9 deg on vv-wide plants. No
+  rotate-to-bend strategy emerged. Pull-out along the grip rose (109 mm vs 92 mm, the slip direction).
+- *Ablations (A1/A2 noise floor ~1-1.6 pts):* v2e_vvwide on vv-wide plants: memory wiped every step -9 pts (timeouts 7 -> 16 %),
+  wiped once at step 30 -1 to -2 (noise), open-loop neighbour schedule -11, F/T frozen -20 (trips 29 %). On v3 every ablation costs
+  <= 3 pts. v2e_sysid on v3 is effectively a schedule: memoryless +2, open-loop +2, F/T frozen -1.
+  Memory works as a short-horizon filter re-acquired within steps, not a persistent plant estimate (consistent with the D17p probes).
 

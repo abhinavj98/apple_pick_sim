@@ -110,8 +110,11 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         "peak_wrist_force_over_40n_frac": "Episode / peak wrist force > 40 N (frac)",
         "peak_target_force_over_40n_frac": "Episode / peak target force > 40 N (frac)",
         "peak_theta_b_deg_mean": "Episode / peak theta_b deg (mean)",
+        # [D17m] peak TCP advance into the tree along the reset grip axis (mm)
+        "peak_tcp_advance_mm_mean": "Episode / peak TCP advance into tree mm (mean)",
     }
     out = {k: float(np.mean([e[v] for e in per_episode])) for k, v in keys.items()}
+    out["peak_tcp_advance_mm_max"] = float(np.max([e["Episode / peak TCP advance into tree mm (max)"] for e in per_episode]))
     # [D6] success-conditioned collateral: weight each batch episode by its successful valid envs
     out["peak_collateral_n_success_mean"] = success_weighted(per_episode, keys["peak_collateral_n_success_mean"])
     # distribution over successes (per batch episode; exact for --episodes 1, else win-weighted mean)
@@ -184,6 +187,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-episode-steps", type=int)
     p.add_argument("--device")
     p.add_argument("--seed", type=int, default=12345, help="eval DR seed (differs from training by default)")
+    # [D17m] score a policy (e.g. a v2b checkpoint) under another task's wall / collateral
+    p.add_argument("--max-advance-m", help="no-advance wall along the grip axis (m), or 'none' to turn it off")
+    p.add_argument("--collateral-mode", choices=("relu_norm", "deviation"))
+    # [D17n] score a policy (e.g. a v2c checkpoint) under v2d's detach rules and force clamp
+    p.add_argument("--detach-criterion", choices=("envelope", "bend_pull"))
+    p.add_argument("--bend-frame", choices=("world", "spur"))
+    p.add_argument("--bend-theta-max-deg", type=float, help="bend_pull: F_d held flat past this angle (deg)")
+    p.add_argument("--success-streak", type=int, help="consecutive steps at detach index >= 1 for success")
+    p.add_argument("--detach-scale", type=float, nargs=2, metavar=("LO", "HI"), help="bend_pull: F_d scale range")
+    p.add_argument("--max-commanded-force-n", help="commanded-force clamp (N), or 'none' to turn it off")
     return p
 
 
@@ -207,6 +220,23 @@ def build_eval(args) -> tuple[TrainConfig, Any, Any, str]:
         "device": args.device,
     }
     env_over = {k: v for k, v in env_over.items() if v is not None}
+    if args.max_advance_m is not None:
+        env_over["max_advance_m"] = None if args.max_advance_m.lower() == "none" else float(args.max_advance_m)
+    if args.collateral_mode is not None:
+        env_over["collateral_mode"] = args.collateral_mode
+    for arg, key in (
+        ("detach_criterion", "detach_criterion"),
+        ("bend_frame", "bend_frame"),
+        ("bend_theta_max_deg", "bend_pull_theta_max_deg"),
+        ("success_streak", "success_streak_steps"),
+    ):
+        if getattr(args, arg) is not None:
+            env_over[key] = getattr(args, arg)
+    if args.detach_scale is not None:
+        env_over["detach_scale_range"] = tuple(args.detach_scale)
+    if args.max_commanded_force_n is not None:
+        f = args.max_commanded_force_n
+        env_over["max_commanded_force_n"] = None if f.lower() == "none" else float(f)
     if args.snapshot is not None:
         env_over["snapshot"] = None if args.snapshot == "none" else args.snapshot
     cfg = dataclasses.replace(cfg, env=dataclasses.replace(cfg.env, **env_over), seed=args.seed)

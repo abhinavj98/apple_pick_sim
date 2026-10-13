@@ -47,6 +47,9 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         max_target_pos_offset_m=env_cfg.max_target_pos_offset_m,
         max_target_rot_offset_rad=env_cfg.max_target_rot_offset_rad,
         k_lin_max=env_cfg.k_lin_max,
+        k_ang_min=env_cfg.k_ang_min,
+        max_advance_m=env_cfg.max_advance_m,
+        max_commanded_force_n=env_cfg.max_commanded_force_n,
     )
     reward = HarvestRewardConfig(
         detach=DetachEnvelopeConfig(
@@ -58,6 +61,8 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
             wrench_source=env_cfg.wrench_source,
             criterion=env_cfg.detach_criterion,
             detach_scale_range=env_cfg.detach_scale_range,
+            bend_pull_theta_max_deg=env_cfg.bend_pull_theta_max_deg,
+            bend_frame=env_cfg.bend_frame,
         ),
         w_progress=env_cfg.w_progress,
         w_pullout=env_cfg.w_pullout,
@@ -67,6 +72,8 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         w_peak_collateral=env_cfg.w_peak_collateral,
         w_collateral=env_cfg.w_collateral,
         collateral_clip_n=env_cfg.collateral_clip_n,
+        collateral_mode=env_cfg.collateral_mode,
+        collateral_exclude=tuple(env_cfg.collateral_exclude),
         w_slack=env_cfg.w_slack,
         success_bonus=env_cfg.success_bonus,
         failure_penalty=env_cfg.failure_penalty,

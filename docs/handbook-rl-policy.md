@@ -11,9 +11,9 @@ critic-state contracts, domain randomization, and the skrl training stack under
 
 | Field | Value |
 | ----- | ----- |
-| Last reviewed | 2026-10-02 |
+| Last reviewed | 2026-10-03 |
 | Code owners | `apple_pick_gym/batched_envs/apple_pick_vic_harvest_env.py`; `harvest_detach.py`; `harvest_outcome.py`; `harvest_reward.py`; `harvest_obs.py`; `harvest_privileged.py`; `apple_pick_gym/rl/` |
-| Status | Living handbook -- **task v2 (D17)**: v3 world set built; `sim_train_gpu_v2b.json` (peak-collateral charge + 0.12 m/s) trains a policy that passes the v2 gate (D17l) |
+| Status | Living handbook -- **task v2 (D17)**: v3 world set built; `sim_train_gpu_v2b.json` (peak-collateral charge + 0.12 m/s) trains a policy that passes the v2 gate (D17l) by a lift-and-push; `sim_train_gpu_v2c.json` (D17m: no-advance wall + deviation collateral) detaches by a fast sideways swing; `sim_train_gpu_v2d.json` (D17n: stem-only bend, 30 deg hold, 20-step streak, F_d x U(0.8, 2), 40 N commanded-force clamp) trains overnight on 6720 v3 worlds |
 | Related handbooks | H1 `docs/handbook-coupled-simulation.md` (two-model coupling); H2 `docs/handbook-variable-impedance.md` (`vic_pose`); H5 `docs/handbook-youngs-cma.md` (the calibrated plant) |
 | Archive | Design: `docs/superpowers/specs/2026-09-17-rl-vic-harvest-policy-design.md`; plans: `docs/superpowers/plans/2026-09-17-rl-vic-harvest-policy.md`, `docs/superpowers/plans/2026-09-23-rl-skrl-ppo-lstm-training.md`; decisions D1-D17: `docs/superpowers/decisions/2026-09-24-rl-open-decisions.md` |
 
@@ -57,7 +57,12 @@ F_d(\theta_b) = s\,\big(0.015\,\theta^2 - 1.155\,\theta + 26.09\big)\ \mathrm{N}
 - `s ~ U(0.85, 1.15)` per env per episode (`DetachEnvelopeConfig.detach_scale_range`); the critic
   sees it (`detach_scale`).
 - **theta_b** is the angle of the **stem chord** (spur–stem junction -> stem–apple attachment) from
-  its settled direction at reset (`harvest_detach.chord_angle_deg`).
+  its settled direction at reset (`harvest_detach.chord_angle_deg`). **D17n (`bend_frame="spur"`,
+  v2d):** the rest chord is carried by the spur tip body (the junction's parent), so only the stem's
+  bending relative to its spur counts; with `"world"` (v2-v2c) spur rotation counted too (a 8 cm
+  sideways drag: 31-35 deg world, 2-3 deg stem-only). `info["theta_b_world_deg"]` keeps the world angle.
+- **D17n:** `bend_pull_theta_max_deg` (v2d: 30) holds F_d flat past the fitted range (4.94 N x s)
+  instead of the 38.5 deg minimum; v2d also uses a 20-step streak and `s ~ U(0.8, 2.0)`.
 - **F_t** is the stem tension: the D1 stem-root elastic force along `-chord`
   (`harvest_detach.stem_tension`). GPU check (16 v2 worlds): 3.6 N at rest (u0 = 0.14), rising to
   ~27 N in a straight pull.
@@ -81,7 +86,7 @@ Every step, for envs not frozen before the step (`harvest_outcome.evaluate_harve
 | Term | Formula | v2 weight |
 | --- | --- | --- |
 | progress | `w (u_t − u_{t−1})`, `u = clip(detach_utilization, 0, 1)`; telescopes to `w (u_end − u_0)` | `w_progress = 10` |
-| collateral | `−w min(Σ_{j ≠ spur_stem} relu(‖F_j‖ − ‖F_j‖_rest), clip)` | `w_collateral = 0.02`, `collateral_clip_n = 50` |
+| collateral | `−w min(Σ_{j ≠ spur_stem} relu(‖F_j‖ − ‖F_j‖_rest), clip)`; **v2c** (`collateral_mode="deviation"`, D17m): `‖F_j − F_j,rest‖` against the rest force vectors | `w_collateral = 0.02`, `collateral_clip_n = 50` |
 | slack | `−w` per live step | `w_slack = 0.01` |
 | success | `+bonus` on the success edge | `success_bonus = 60` |
 
@@ -97,6 +102,11 @@ Every step, for envs not frozen before the step (`harvest_outcome.evaluate_harve
   Idle scores -2.5; every success scores ~+30 or more. Bend vs pull is decided by force x time in the
   reward, and by the physics (26 N vs ~4 N needed).
 - Peak collateral and the safety rate remain logged metrics.
+- **Why deviation collateral (D17m).** The relu of the norm increase scores *unloading* a junction as
+  free, so lifting the apple (relieving the spur / primary / supports of its weight) cost nothing, and
+  v2b learned a lift-and-push. With `"deviation"` any change from the rest load is robot effort on the
+  tree, including a re-directed load of the same size. The D13 peak charge reads the same term. The env
+  records the rest vectors at reset (`info["collateral_baseline_force"]`).
 
 The v1 reward history (D9 rebalance, D11, D13, D13c) is in the decision log.
 
@@ -119,6 +129,25 @@ pull-out direction.
 
 **Target leash** (0.15 m / 0.5 rad of the TCP): a windup guard only. At K_lin = 500 it allows up to
 75 N commanded; v2 relies on the rig for force limits (§2.2).
+
+**Commanded-force clamp (D17n, `max_commanded_force_n`; v2d: 40 N).** After the leash and before the
+wall, the target is pulled toward the TCP until `||K_lin (target - tcp)|| <= 40 N` (commanded gains,
+tool frame; `harvest_action.clamp_commanded_force`). It bounds the spring the policy can wind up
+whatever stiffness it picks (v2c's TCP outran the speed cap 2x when the stem yielded). The rig must
+apply it the same way.
+
+**No-advance wall (D17m, `max_advance_m`; v2c: 0).** The robot pulls, never pushes into the canopy:
+after the leash, the target's position is projected back onto the plane through the reset TCP normal
+to the reset grip axis `a0` (TCP +z, into the apple and the tree) wherever it is more than
+`max_advance_m` past it (`harvest_action.clamp_target_advance`). Pulling back, lateral motion and the
+orientation are untouched. It is a clamp, not a penalty: a penalty is a price PPO pays whenever the
+success bonus makes pushing worth it, and the rig can apply the identical rule. The wall is on the
+*integrated target*, so it cannot leak through accumulation or the tool frame's rotation. GPU check (2
+v1 worlds, 30 steps pushing 2 mm/step along `a0`): TCP advance 41 / 46 mm with the wall off, 0.2 / 0.03
+mm on. The TCP's own advance is published (`info["tcp_advance_m"]`) and logged as
+`Episode / peak TCP advance into tree mm (mean|max)`. It is not part of the action scaling, so
+checkpoints load across it (`checkpoint._BOUNDS_NOT_SCALING`). It does not see the rest of the canopy:
+sideways motion into neighbouring branches is not limited.
 
 Frozen envs hold their target (zero delta) with their last gains.
 
@@ -198,7 +227,7 @@ Checkpoints store both layouts (the wrapper's actual actor layout) and refuse a 
 | Arm, build-time | link mass/inertia ×[0.9, 1.1], EE payload ×[0.95, 1.05] | per env, once after build | world set | yes |
 | Arm, per episode | joint armature ×[0.7, 1.3], Coulomb friction ×[0.5, 1.5], viscous damping ×[0.7, 1.3] | **every reset** | `_resample_joint_dynamics_dr` | yes |
 | Realized stiffness (D17) | applied K = U(0.8, 1.2) × commanded, per axis (damping stays commanded) | **every reset** | `realized_k_scale_range` | yes |
-| Detach force (D17) | `F_d` × U(0.85, 1.15) | **every reset** | `detach_scale_range` | yes |
+| Detach force (D17) | `F_d` × U(0.85, 1.15); **v2d (D17n): U(0.8, 2.0)** | **every reset** | `detach_scale_range` | yes |
 | F/T sensor | 8.2 Hz causal EMA + per-episode bias + measured rig noise + bounded drift, in the TCP frame (v2) | every reset (bias, drift) / step (noise) | `FtSensorConfig.rl_training()` | raw F/T yes |
 
 **Post-grasp hold (D17).** The snapshot is settled with the arm holding 500 N/m / 30 N·m/rad (was
@@ -251,6 +280,8 @@ uv run python -m apple_pick_gym.rl.train_vic_harvest --config apple_pick_gym/rl/
 uv run python -m apple_pick_gym.rl.train_vic_harvest --config <cfg.json> --resume latest
 
 # Baselines and checkpoint evaluation -> metrics JSON
+# (--max-advance-m 0|none and --collateral-mode relu_norm|deviation score any policy under another task's
+#  wall / collateral, e.g. a v2b checkpoint under v2c)
 uv run python -m apple_pick_gym.rl.eval_vic_harvest --config <cfg.json> --baseline scripted_bend_pull --episodes 1 --out <dir>/bend_pull.json
 uv run python -m apple_pick_gym.rl.eval_vic_harvest --checkpoint <run>/checkpoints/ckpt_<t> --episodes 1 --out <dir>/policy.json
 

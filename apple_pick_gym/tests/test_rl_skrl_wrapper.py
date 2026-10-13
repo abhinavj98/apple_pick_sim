@@ -476,3 +476,42 @@ def test_d17_episode_stats_decompose_the_motion_at_detach():
     assert float(s["Episode / detach tilt deg (mean)"]) == pytest.approx(0.0, abs=1e-6)
     assert float(s["Episode / detach K_lin tool x (mean)"]) == pytest.approx(50.0)
     assert float(s["Episode / detach K_lin tool z grip (mean)"]) == pytest.approx(150.0)
+
+
+def _advance_info(adv, frozen=(False, False)):
+    return {
+        "episode": {
+            "frozen": torch.tensor(frozen),
+            "success_achieved": torch.zeros(2, dtype=torch.bool),
+            "safety_junction": torch.zeros(2, dtype=torch.bool),
+            "safety_wrist": torch.zeros(2, dtype=torch.bool),
+        },
+        "reward_terms": {
+            "raw": {"collateral": torch.zeros(2)},
+            "weighted": {k: torch.zeros(2) for k in ("progress", "pullout", "wrist", "collateral", "slack")},
+            "terminal": torch.zeros(2),
+        },
+        "detach_index": torch.zeros(2),
+        "target_junction_wrench": torch.zeros(2, 6),
+        "ft_wrist": torch.zeros(2, 6),
+        "woody_part_force": {},
+        **({} if adv is None else {"tcp_advance_m": torch.tensor(adv)}),
+    }
+
+
+def test_d17m_episode_stats_report_the_peak_tcp_advance_into_the_tree():
+    # [D17m] the wall is on the VIC target; compliance can still carry the TCP past the grasp plane,
+    # so the episode's peak TCP advance along the reset grip axis is reported (pulling back counts 0).
+    from apple_pick_gym.rl.skrl_wrapper import _EpisodeStats
+
+    st = _EpisodeStats(2, torch.device("cpu"))
+    no = torch.zeros(2, dtype=torch.bool)
+    st.update(torch.zeros(2, 1), _advance_info([0.003, -0.02]), no, torch.zeros(2, 13))
+    st.update(torch.zeros(2, 1), _advance_info([0.001, -0.03]), no, torch.zeros(2, 13))
+    st.update(torch.zeros(2, 1), _advance_info([0.009, 0.05], frozen=(True, True)), no, torch.zeros(2, 13))  # frozen
+    s = st.summary()
+    assert float(s["Episode / peak TCP advance into tree mm (mean)"]) == pytest.approx(1.5)
+    assert float(s["Episode / peak TCP advance into tree mm (max)"]) == pytest.approx(3.0)
+    st = _EpisodeStats(2, torch.device("cpu"))
+    st.update(torch.zeros(2, 1), _advance_info(None), no, torch.zeros(2, 13))
+    assert math.isnan(float(st.summary()["Episode / peak TCP advance into tree mm (mean)"]))

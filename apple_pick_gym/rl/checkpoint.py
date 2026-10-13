@@ -21,6 +21,8 @@ from typing import Any
 
 
 _META_SCHEMA = "vic_harvest_rl_checkpoint_v1"
+# HarvestActionBounds fields the compatibility check skips: env constraints, not the action scaling
+_BOUNDS_NOT_SCALING = frozenset({"max_advance_m", "max_commanded_force_n"})
 
 
 def _git_sha() -> str | None:
@@ -98,7 +100,12 @@ def load_checkpoint(path, agent, wrapper, cfg, *, ignore: tuple[str, ...] = ()) 
     for key in ("actor_layout", "critic_layout", "action_bounds", "rnn"):
         if key in ignore:
             continue
-        if meta[key] != expected[key]:
+        saved, current = meta[key], expected[key]
+        if key == "action_bounds":
+            # [D17m] the no-advance wall is an env constraint after the action scaling, not part of it:
+            # a checkpoint loads across it (and older checkpoints predate the field)
+            saved, current = ({k: v for k, v in d.items() if k not in _BOUNDS_NOT_SCALING} for d in (saved, current))
+        if saved != current:
             raise ValueError(f"{path}: checkpoint {key} does not match this build\n saved:   {meta[key]}\n current: {expected[key]}")
     agent.load(str(path / "agent.pt"))
     return meta

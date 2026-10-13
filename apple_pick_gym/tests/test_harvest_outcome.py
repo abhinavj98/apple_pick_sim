@@ -235,3 +235,28 @@ def test_d17_v2_reward_ranks_bend_pick_over_pull_pick_over_idle_and_is_bounded()
     assert float(ret[2]) == pytest.approx(-2.5, abs=1e-4)  # idle: slack only
     # dense per-step bound: progress >= -10, collateral >= -1 (clip), slack -0.01
     assert float(worst.min()) >= -(10.0 + 1.0 + 0.01) - 1e-5
+
+
+def test_d17m_peak_collateral_charge_reads_the_deviation_term():
+    # [D17m] the success-edge charge reads the same collateral term as the dense one, so with
+    # "deviation" an episode that only *unloaded* the tree (lifted the apple) is charged too.
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]]).repeat(N, 1)}
+    cfg = HarvestRewardConfig(
+        progress_mode="absolute", w_slack=0.0, w_progress=0.0, w_collateral=0.0, w_peak_collateral=1.0,
+        collateral_mode="deviation",
+    )
+    ep = EpisodeConfig(success_streak_steps=1)
+    rest = {"stem_apple": torch.tensor([[0.0, 0.0, 6.0]] * N)}
+    peaks = {}
+    for mode_cfg in (cfg, HarvestRewardConfig(**{**cfg.__dict__, "collateral_mode": "relu_norm"})):
+        tracker, mask = SuccessStreakTracker(N, "cpu"), FreezeMask(N, "cpu")
+        info = _info([25.0, 25.0, 25.0], other=(6.0, 2.0, 9.0))  # at rest / unloaded 4 N / loaded 3 N
+        info["collateral_baseline_norm"] = {"stem_apple": torch.full((N,), 6.0)}
+        info["collateral_baseline_force"] = rest
+        o = evaluate_harvest_step(
+            obs, info, reward_cfg=mode_cfg, episode_cfg=ep, tracker=tracker, freeze_mask=mask, target_junction_name=TJ
+        )
+        peaks[mode_cfg.collateral_mode] = o.peak_collateral
+        torch.testing.assert_close(o.reward.flatten(), mode_cfg.success_bonus - o.peak_collateral)
+    torch.testing.assert_close(peaks["deviation"], torch.tensor([0.0, 4.0, 3.0]))
+    torch.testing.assert_close(peaks["relu_norm"], torch.tensor([0.0, 0.0, 3.0]))

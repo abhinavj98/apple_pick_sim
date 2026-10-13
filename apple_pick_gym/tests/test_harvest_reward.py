@@ -274,3 +274,91 @@ def test_d17_collateral_clip_bounds_the_weighted_term_but_not_the_raw_load():
     unclipped = weight_dense_reward_terms(raw, HarvestRewardConfig(w_collateral=0.02))
     torch.testing.assert_close(unclipped["collateral"], torch.tensor([-0.2, -1.2, -4.0]))
     assert HarvestRewardConfig().collateral_clip_n is None  # library default: off
+
+
+def test_d17m_deviation_collateral_charges_unloading_and_redirection():
+    # [D17m] lifting the apple unloads the other junctions; the relu of the norm increase scored that
+    # 0, but it is still robot effort on the tree. "deviation" charges |F - F_rest| as a vector.
+    woody = {
+        "spur_stem": torch.tensor([[100.0, 0.0, 0.0, 0.0, 0.0, 0.0]] * 4),  # target, excluded
+        "primary_spur": torch.tensor(
+            [
+                [0.0, 0.0, -6.0, 0.0, 0.0, 0.0],  # at rest
+                [0.0, 0.0, -2.0, 0.0, 0.0, 0.0],  # unloaded by 4 N
+                [0.0, 6.0, 0.0, 0.0, 0.0, 0.0],  # same magnitude, turned 90 deg
+                [0.0, 0.0, -9.0, 0.0, 0.0, 0.0],  # loaded by 3 N
+            ]
+        ),
+    }
+    rest = {"primary_spur": torch.tensor([[0.0, 0.0, -6.0]] * 4)}
+    dev = compute_collateral_penalty(woody, target_junction_name="spur_stem", baseline_force=rest, mode="deviation")
+    torch.testing.assert_close(dev, torch.tensor([0.0, 4.0, 6.0 * math.sqrt(2.0), 3.0]))
+    rest_norm = {"primary_spur": torch.full((4,), 6.0)}
+    relu = compute_collateral_penalty(woody, target_junction_name="spur_stem", baseline_norm=rest_norm)
+    torch.testing.assert_close(relu, torch.tensor([0.0, 0.0, 0.0, 3.0]))  # the old blind spots
+
+
+def test_d17m_deviation_collateral_needs_the_rest_vectors():
+    woody = {"spur_stem": torch.zeros(1, 6), "primary_spur": torch.zeros(1, 6)}
+    try:
+        compute_collateral_penalty(woody, target_junction_name="spur_stem", mode="deviation")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_d17m_dense_terms_use_the_configured_collateral_mode():
+    from apple_pick_gym.batched_envs.harvest_reward import compute_dense_reward_terms
+
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
+    info = {
+        "target_junction_wrench": torch.zeros(1, 6),
+        "detach_utilization": torch.zeros(1),
+        "ft_wrist": torch.zeros(1, 6),
+        "woody_part_force": {"spur_stem": torch.zeros(1, 6), "primary_spur": torch.tensor([[0.0, 0.0, -2.0, 0, 0, 0]])},
+        "collateral_baseline_norm": {"primary_spur": torch.tensor([6.0])},
+        "collateral_baseline_force": {"primary_spur": torch.tensor([[0.0, 0.0, -6.0]])},
+    }
+    old = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=HarvestRewardConfig())
+    new = compute_dense_reward_terms(
+        obs, info, target_junction_name="spur_stem", cfg=HarvestRewardConfig(collateral_mode="deviation")
+    )
+    torch.testing.assert_close(old["collateral"], torch.tensor([0.0]))
+    torch.testing.assert_close(new["collateral"], torch.tensor([4.0]))
+    assert HarvestRewardConfig().collateral_mode == "relu_norm"  # library default: v1/v2b behaviour
+    try:
+        HarvestRewardConfig(collateral_mode="abs")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_d17n_collateral_can_exclude_named_junctions():
+    # [D17n] stem_apple is the apple end of the same stem: it carries the stem tension the pick needs,
+    # so charging it as collateral double-counts the pull. collateral_exclude drops it from the sum.
+    from apple_pick_gym.batched_envs.harvest_reward import compute_dense_reward_terms
+
+    woody = {
+        "spur_stem": torch.zeros(1, 6),
+        "primary_spur": torch.tensor([[0.0, 0.0, -9.0, 0, 0, 0]]),
+        "stem_apple": torch.tensor([[0.0, 0.0, -20.0, 0, 0, 0]]),
+    }
+    rest = {"primary_spur": torch.tensor([[0.0, 0.0, -6.0]]), "stem_apple": torch.tensor([[0.0, 0.0, -3.0]])}
+    both = compute_collateral_penalty(woody, target_junction_name="spur_stem", baseline_force=rest, mode="deviation")
+    torch.testing.assert_close(both, torch.tensor([20.0]))
+    spur_only = compute_collateral_penalty(
+        woody, target_junction_name="spur_stem", baseline_force=rest, mode="deviation", exclude=("stem_apple",)
+    )
+    torch.testing.assert_close(spur_only, torch.tensor([3.0]))
+    obs = {"tcp_quat": torch.tensor([[0.0, 0.0, 0.0, 1.0]])}
+    info = {
+        "target_junction_wrench": torch.zeros(1, 6),
+        "detach_utilization": torch.zeros(1),
+        "ft_wrist": torch.zeros(1, 6),
+        "woody_part_force": woody,
+        "collateral_baseline_force": rest,
+    }
+    cfg = HarvestRewardConfig(collateral_mode="deviation", collateral_exclude=("stem_apple",))
+    terms = compute_dense_reward_terms(obs, info, target_junction_name="spur_stem", cfg=cfg)
+    torch.testing.assert_close(terms["collateral"], torch.tensor([3.0]))
+    assert HarvestRewardConfig().collateral_exclude == ()

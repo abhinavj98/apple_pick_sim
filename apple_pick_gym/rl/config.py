@@ -49,6 +49,11 @@ class EnvConfig:
     # only "envelope" for now, so that stays the default; the v2 sim configs select "bend_pull".
     detach_criterion: Literal["envelope", "bend_pull"] = "envelope"
     detach_scale_range: tuple[float, float] | None = (0.85, 1.15)  # bend_pull: per-env F_d scale
+    # [D17n] bend_pull: F_d held flat past this bending angle (None: the quadratic's 38.5 deg minimum;
+    # v2d: 30, the paper's fitted range) and the frame theta_b is measured in ("world": the reset
+    # chord fixed in the world; "spur": carried by the spur tip, so only stem bending counts)
+    bend_pull_theta_max_deg: float | None = None
+    bend_frame: Literal["world", "spur"] = "world"
     success_streak_steps: int = 3
     safety_force_cap_n: float = 40.0
     safety_torque_cap_nm: float = 10.0
@@ -68,6 +73,11 @@ class EnvConfig:
     w_peak_collateral: float = 0.5
     w_collateral: float = 0.02
     collateral_clip_n: float | None = None  # [D17] per-step collateral cap (N); v2 configs: 50
+    # [D17m] "relu_norm": relu(|F| - |F|_rest) per non-target junction (unloading is free);
+    # "deviation": |F - F_rest| against the rest force vectors (any change from rest costs). v2c: deviation
+    collateral_mode: Literal["relu_norm", "deviation"] = "relu_norm"
+    # [D17n] junctions left out of the collateral sum (v2d run 3: ["stem_apple"], the target stem's apple end)
+    collateral_exclude: tuple[str, ...] = ()
     success_bonus: float = 20.0
     failure_penalty: float = -40.0
     w_slack: float = 0.01  # per live step
@@ -75,6 +85,11 @@ class EnvConfig:
     # VIC target leash: bounds the commanded wrench to K_max * offset (200 N/m * 0.15 m = 30 N)
     max_target_pos_offset_m: float | None = 0.15
     max_target_rot_offset_rad: float | None = 0.5
+    # [D17m] no-advance wall: the VIC target may not pass the grasp plane (normal to the grip axis at
+    # reset, TCP +z, into the tree) by more than this (m). None = off; v2c: 0.0 (pull, never push in)
+    max_advance_m: float | None = None
+    # [D17n] commanded-force clamp: ||K_lin (target - tcp)|| <= this (N), after the leash. None = off; v2d: 40
+    max_commanded_force_n: float | None = None
     # [D8] per-step VIC target motion cap, matched to the real rig (60 Hz control): 2 mm/step =
     # 0.12 m/s, 0.01 rad/step = 0.6 rad/s. Real pulls: TCP speed p90 0.03 m/s, per-run peak
     # <= 0.21 m/s, angular <= 0.55 rad/s. The sim is only validated at those speeds, and fast
@@ -86,6 +101,8 @@ class EnvConfig:
     # (sim only; the surrogate supports "world" only). "world" keeps the D1-D16 action.
     action_frame: Literal["world", "tool"] = "world"
     k_lin_max: float = 200.0  # [D17] v2: 500 N/m, the stiffened post-grasp hold
+    # [D17n run 7] floor on the commanded rotational stiffness (N*m/rad); 20 keeps the wrist from swinging
+    k_ang_min: float = 2.0
     # [D17] realized-stiffness DR: applied K = U(lo, hi) * commanded K, per env / axis / episode
     realized_k_scale_range: tuple[float, float] | None = None
     # F/T sensor DR (bias / noise / drift, FtSensorConfig.rl_training)

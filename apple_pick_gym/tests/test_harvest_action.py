@@ -330,3 +330,108 @@ def test_d17_random_grasp_sampling_varies_with_the_seed_and_is_area_uniform_in_t
     assert cos.min() >= math.cos(cap) - 1e-6
     assert abs(cos.mean() - (1 + math.cos(cap)) / 2) < 0.01  # area-uniform: cos(polar) ~ U(cos cap, 1)
     np.testing.assert_allclose(draw(1, "fibonacci"), draw(2, "fibonacci"))  # legacy: seed-independent
+
+
+def test_d17m_no_advance_wall_projects_the_target_back_onto_the_grasp_plane():
+    # [D17m] the robot may pull, never push into the tree: no target position past the plane through
+    # the grasp TCP normal to the grip axis (+ margin). Lateral motion and orientation are untouched.
+    from apple_pick_gym.batched_envs.harvest_action import clamp_target_advance
+
+    start = torch.tensor([[0.0, 0.0, 0.0]] * 4)
+    axis = torch.tensor([[0.0, 1.0, 0.0]] * 4)  # grip axis at reset: into the tree
+    target = _identity_target(4)
+    target[:, :3] = torch.tensor(
+        [
+            [0.01, -0.03, 0.02],  # pulled back: behind the wall
+            [0.01, 0.00, 0.02],  # on the wall
+            [0.01, 0.04, 0.02],  # pushed 40 mm in
+            [0.05, 0.002, -0.01],  # 2 mm in
+        ]
+    )
+    target[2, 3:7] = torch.tensor([0.0, 1.0, 0.0, 0.0])
+    out = clamp_target_advance(target, start, axis, max_advance_m=0.0)
+    expected = target.clone()
+    expected[2, 1] = 0.0
+    expected[3, 1] = 0.0
+    torch.testing.assert_close(out, expected)
+    # with a margin, up to the margin is allowed
+    out5 = clamp_target_advance(target, start, axis, max_advance_m=0.005)
+    torch.testing.assert_close(out5[3], target[3])
+    torch.testing.assert_close(out5[2, :3], torch.tensor([0.01, 0.005, 0.02]))
+
+
+def test_d17m_no_advance_wall_works_along_any_grip_axis_and_from_any_start():
+    from apple_pick_gym.batched_envs.harvest_action import clamp_target_advance
+
+    a = torch.nn.functional.normalize(torch.tensor([[1.0, 2.0, -0.5]]), dim=-1)
+    start = torch.tensor([[0.3, -0.2, 1.1]])
+    target = _identity_target(1)
+    lateral = torch.cross(a, torch.tensor([[0.0, 0.0, 1.0]]), dim=-1)
+    target[:, :3] = start + 0.07 * a + 0.02 * lateral
+    out = clamp_target_advance(target, start, a, max_advance_m=0.0)
+    torch.testing.assert_close(((out[:, :3] - start) * a).sum(-1), torch.zeros(1), atol=1e-6, rtol=0)
+    torch.testing.assert_close(out[:, :3], start + 0.02 * lateral)
+
+
+def test_d17m_action_bounds_wall_is_off_by_default():
+    assert HarvestActionBounds().max_advance_m is None
+    with pytest.raises(ValueError):
+        HarvestActionBounds(max_advance_m=-0.01)
+
+
+def test_d17m_grip_axis_is_tcp_z_from_an_xyzw_quat():
+    from apple_pick_gym.batched_envs.harvest_action import grip_axis
+
+    s = math.sqrt(0.5)
+    q = torch.tensor([[0.0, 0.0, 0.0, 1.0], [s, 0.0, 0.0, s]])  # identity; +90 deg about x
+    torch.testing.assert_close(grip_axis(q), torch.tensor([[0.0, 0.0, 1.0], [0.0, -1.0, 0.0]]))
+
+
+# [D17n] commanded-force clamp: bounds ||K (target - tcp)|| so the policy cannot store a 75 N spring
+def _tcp(n, quat_wxyz=(1.0, 0.0, 0.0, 0.0)):
+    q = torch.tensor([quat_wxyz] * n, dtype=torch.float32)
+    return torch.cat([torch.zeros(n, 3), q], dim=-1)
+
+
+def test_d17n_force_clamp_is_a_no_op_under_the_cap():
+    from apple_pick_gym.batched_envs.harvest_action import clamp_commanded_force
+
+    tcp = _tcp(1)
+    target = tcp.clone()
+    target[:, :3] = torch.tensor([0.05, 0.0, 0.0])  # 500 N/m * 5 cm = 25 N
+    out = clamp_commanded_force(target, tcp, torch.full((1, 3), 500.0), max_force_n=40.0, tool_frame=False)
+    torch.testing.assert_close(out, target)
+
+
+def test_d17n_force_clamp_scales_an_over_cap_offset_to_exactly_the_cap():
+    from apple_pick_gym.batched_envs.harvest_action import clamp_commanded_force
+
+    tcp = _tcp(1)
+    target = tcp.clone()
+    target[:, :3] = torch.tensor([0.15, 0.0, 0.0])  # 75 N
+    target[:, 3:] = torch.tensor([0.0, 1.0, 0.0, 0.0])  # orientation untouched
+    out = clamp_commanded_force(target, tcp, torch.full((1, 3), 500.0), max_force_n=40.0, tool_frame=False)
+    torch.testing.assert_close(out[:, :3], torch.tensor([[0.08, 0.0, 0.0]]))
+    torch.testing.assert_close(out[:, 3:], target[:, 3:])
+
+
+def test_d17n_force_clamp_uses_anisotropic_gains_in_the_tool_frame():
+    import math
+
+    from apple_pick_gym.batched_envs.harvest_action import clamp_commanded_force
+
+    h = math.sqrt(0.5)
+    tcp = _tcp(1, (h, 0.0, 0.0, h))  # TCP turned 90 deg about z: tool x = world y
+    target = tcp.clone()
+    target[:, :3] = torch.tensor([0.0, 0.1, 0.0])  # along tool x
+    k = torch.tensor([[200.0, 600.0, 600.0]])  # tool x is soft: 20 N, under the cap
+    out = clamp_commanded_force(target, tcp, k, max_force_n=40.0, tool_frame=True)
+    torch.testing.assert_close(out, target)
+    world = clamp_commanded_force(target, tcp, k, max_force_n=40.0, tool_frame=False)  # world y: 60 N
+    torch.testing.assert_close(world[:, :3], torch.tensor([[0.0, 40.0 / 600.0, 0.0]]))
+
+
+def test_d17n_force_clamp_is_off_by_default_and_validated():
+    assert HarvestActionBounds().max_commanded_force_n is None
+    with pytest.raises(ValueError):
+        HarvestActionBounds(max_commanded_force_n=0.0)

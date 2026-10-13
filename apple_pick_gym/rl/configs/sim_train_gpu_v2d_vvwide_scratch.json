@@ -1,0 +1,60 @@
+{
+  "env": {
+    "kind": "sim",
+    "world_set": "apple_pick_gym/world_sets/snapshots/harvest_worlds_vvwide_train/shard_00.jsonl",
+    "snapshot": "apple_pick_gym/world_sets/snapshots/harvest_worlds_vvwide_train/shard_00_snapshot.npz",
+    "num_envs": 10048,
+    "max_episode_steps": 250,
+    "device": "cuda:0",
+    "detach_criterion": "bend_pull",
+    "detach_scale_range": [
+      0.8,
+      2.0
+    ],
+    "action_frame": "tool",
+    "k_lin_max": 500.0,
+    "realized_k_scale_range": [
+      0.8,
+      1.2
+    ],
+    "progress_mode": "delta",
+    "w_progress": 10.0,
+    "w_pullout": 0.0,
+    "w_wrist": 0.1,
+    "w_peak_collateral": 0.3,
+    "w_collateral": 0.005,
+    "collateral_clip_n": 50.0,
+    "collateral_mode": "deviation",
+    "w_slack": 0.003,
+    "success_bonus": 60.0,
+    "safety_force_cap_n": 60.0,
+    "safety_torque_cap_nm": 1000000000000.0,
+    "linear_delta_m": 0.002,
+    "angular_delta_rad": 0.005,
+    "max_advance_m": 0.0,
+    "success_streak_steps": 20,
+    "bend_pull_theta_max_deg": 30.0,
+    "bend_frame": "spur",
+    "max_commanded_force_n": 30.0,
+    "collateral_exclude": [
+      "stem_apple"
+    ],
+    "wrist_force_soft_cap_n": 25.0,
+    "k_ang_min": 20.0
+  },
+  "ppo": {
+    "rollouts": 64,
+    "mini_batches": 8,
+    "learning_epochs": 5,
+    "discount_factor": 0.995
+  },
+  "timesteps": 21760,
+  "checkpoint_every_updates": 10,
+  "run_dir": "runs/vic_harvest/v2d_vvwide_scratch_s0",
+  "actor": {
+    "mean_bound": 1.5
+  },
+  "seed": 0,
+  "wandb": true,
+  "video_every": 5
+}

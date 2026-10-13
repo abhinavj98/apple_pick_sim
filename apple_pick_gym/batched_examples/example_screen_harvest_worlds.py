@@ -73,6 +73,8 @@ def make_parser() -> argparse.ArgumentParser:
                             help="Gripper roll about the approach axis, uniform in +-this.")
             sp.add_argument("--grasp-frame", choices=("apple", "world"), default=None,
                             help="world: realize the cone in the world frame (default: the legacy apple frame).")
+            sp.add_argument("--ranges", default=None,
+                            help="Ranges fixture to sample candidates from (default: the env's RL harvest fixture).")
             sp.add_argument("--grasp-sampling", choices=("fibonacci", "random"), default=None,
                             help="random: i.i.d. directions per seed (default: the legacy lattice, the same "
                                  "num_envs directions for every seed).")
@@ -145,6 +147,8 @@ def grasp_env_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         kw["grasp_weld_frame"] = str(args.grasp_frame)
     if getattr(args, "grasp_sampling", None) is not None:
         kw["grasp_sampling"] = str(args.grasp_sampling)
+    if getattr(args, "ranges", None) is not None:
+        kw["ranges_path"] = str(args.ranges)
     return kw
 
 

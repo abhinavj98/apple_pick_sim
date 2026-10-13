@@ -79,6 +79,14 @@ class DetachEnvelopeConfig:
     criterion: Literal["envelope", "bend_pull"] = "envelope"
     bend_pull_coeffs: tuple[float, float, float] = (0.015, -1.155, 26.09)
     detach_scale_range: tuple[float, float] | None = (0.85, 1.15)
+    # [D17n] Bending angle (deg) past which F_d is held flat. None: the quadratic's minimum (38.5 deg).
+    # The paper fitted 10-30 deg, so 30 avoids extrapolating the fit.
+    bend_pull_theta_max_deg: float | None = None
+    # [D17n] Frame of the rest chord theta_b is measured against. "world": the chord at reset, fixed in
+    # the world, so rigid rotation of the spur / plant counts as stem bending. "spur": the rest chord
+    # is carried by the spur tip body (the spur-stem junction's parent), so only the stem's own
+    # bending relative to its spur counts.
+    bend_frame: Literal["world", "spur"] = "world"
 
     def __post_init__(self) -> None:
         if self.criterion not in ("envelope", "bend_pull"):
@@ -89,6 +97,14 @@ class DetachEnvelopeConfig:
                 f"bend_pull_coeffs must be a convex quadratic with its minimum above 0 deg "
                 f"(a > 0, b < 0), got {self.bend_pull_coeffs}"
             )
+        th_max = self.bend_pull_theta_max_deg
+        if th_max is not None and not 0.0 < float(th_max) <= -b / (2.0 * a):
+            raise ValueError(
+                f"bend_pull_theta_max_deg must be in (0, {-b / (2.0 * a):.2f}] (past the quadratic's "
+                f"minimum the curve turns back up), got {th_max}"
+            )
+        if self.bend_frame not in ("world", "spur"):
+            raise ValueError(f"unknown bend_frame {self.bend_frame!r}")
         rng = self.detach_scale_range
         if rng is not None and (len(rng) != 2 or not 0.0 < float(rng[0]) <= float(rng[1])):
             raise ValueError(f"detach_scale_range must be (lo, hi) with 0 < lo <= hi, got {rng}")
@@ -208,15 +224,41 @@ def bend_pull_min_angle_deg(cfg: DetachEnvelopeConfig) -> float:
     return -b / (2.0 * a)
 
 
+def bend_pull_theta_clamp_deg(cfg: DetachEnvelopeConfig) -> float:
+    """[D17n] Bending angle (deg) past which ``F_d`` is held flat: ``bend_pull_theta_max_deg``, or the
+    quadratic's minimum when that is unset."""
+    if cfg.bend_pull_theta_max_deg is not None:
+        return float(cfg.bend_pull_theta_max_deg)
+    return bend_pull_min_angle_deg(cfg)
+
+
 def bend_pull_detach_force(theta_deg: torch.Tensor, scale: torch.Tensor, cfg: DetachEnvelopeConfig) -> torch.Tensor:
     """Stem tension (N) that detaches the fruit at bending angle ``theta_deg``, shape ``(N,)``.
 
-    ``scale * (a theta^2 + b theta + c)`` with ``theta`` clamped to ``[0, theta_min]``: the
-    curve is held flat past its minimum. ``scale`` is the per-env draw (:func:`detach_scales`).
+    ``scale * (a theta^2 + b theta + c)`` with ``theta`` clamped to ``[0, bend_pull_theta_clamp_deg]``:
+    the curve is held flat past it. ``scale`` is the per-env draw (:func:`detach_scales`).
     """
     a, b, c = (float(v) for v in cfg.bend_pull_coeffs)
-    th = torch.clamp(theta_deg, min=0.0, max=bend_pull_min_angle_deg(cfg))
+    th = torch.clamp(theta_deg, min=0.0, max=bend_pull_theta_clamp_deg(cfg))
     return scale.to(th) * (a * th * th + b * th + c)
+
+
+def _rotate_xyzw(quat_xyzw: torch.Tensor, vec: torch.Tensor) -> torch.Tensor:
+    q_xyz, q_w = quat_xyzw[..., :3], quat_xyzw[..., 3:4]
+    t = 2.0 * torch.cross(q_xyz, vec, dim=-1)
+    return vec + q_w * t + torch.cross(q_xyz, t, dim=-1)
+
+
+def to_body_frame(vec_world: torch.Tensor, body_quat_xyzw: torch.Tensor) -> torch.Tensor:
+    """[D17n] ``(N, 3)`` world vectors expressed in the body frame ``R^T v`` (quaternions ``[x, y, z, w]``)."""
+    conj = torch.cat([-body_quat_xyzw[..., :3], body_quat_xyzw[..., 3:4]], dim=-1)
+    return _rotate_xyzw(conj.to(vec_world), vec_world)
+
+
+def carried_rest_chord(rest_chord_body: torch.Tensor, body_quat_xyzw: torch.Tensor) -> torch.Tensor:
+    """[D17n] The rest chord (stored in the spur tip body's frame) carried to the world by the body's
+    current rotation, ``(N, 3)``: the direction an unbent stem would point now."""
+    return _rotate_xyzw(body_quat_xyzw.to(rest_chord_body), rest_chord_body)
 
 
 def chord_angle_deg(chord: torch.Tensor, rest_chord: torch.Tensor) -> torch.Tensor:

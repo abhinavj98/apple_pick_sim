@@ -66,6 +66,19 @@ class HarvestActionBounds:
     # setpoint error, hence the commanded wrench. None keeps the target unbounded.
     max_target_pos_offset_m: float | None = None
     max_target_rot_offset_rad: float | None = None
+    # [D17m] no-advance wall (see clamp_target_advance): the target may not pass the plane through the
+    # grasp TCP normal to the grip axis at reset (TCP +z, into the apple and the tree) by more than
+    # this. The robot pulls, never pushes into the canopy. None keeps the wall off (v1 / v2b).
+    max_advance_m: float | None = None
+    # [D17n] commanded-force clamp (see clamp_commanded_force): ||K_lin (target - tcp)|| <= this (N).
+    # Bounds the spring the policy can wind up behind the leash. None keeps it off (v2c and earlier).
+    max_commanded_force_n: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_advance_m is not None and not self.max_advance_m >= 0.0:
+            raise ValueError(f"max_advance_m must be >= 0 or None, got {self.max_advance_m}")
+        if self.max_commanded_force_n is not None and not self.max_commanded_force_n > 0.0:
+            raise ValueError(f"max_commanded_force_n must be > 0 or None, got {self.max_commanded_force_n}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -210,6 +223,55 @@ def leash_target_pose(
         q_new = q_new / torch.linalg.norm(q_new, dim=-1, keepdim=True).clamp_min(1e-9)
         over = angle > float(max_rot_offset_rad)
         out[:, 3:7] = torch.where(over, q_new, target[:, 3:7])
+    return out
+
+
+def grip_axis(tcp_quat_xyzw: torch.Tensor) -> torch.Tensor:
+    """[D17m] The TCP's +z (grip / approach axis, into the apple) in the world frame, ``(N, 3)``.
+
+    Takes the obs-convention ``[x, y, z, w]`` quaternion (``obs["tcp_quat"]``, the envs' start pose).
+    """
+    ez = torch.zeros_like(tcp_quat_xyzw[:, :3])
+    ez[:, 2] = 1.0
+    return _rotate_by_quat_wxyz(tcp_quat_xyzw[:, [3, 0, 1, 2]], ez)
+
+
+def clamp_commanded_force(
+    target: torch.Tensor, tcp: torch.Tensor, linear_k: torch.Tensor, *, max_force_n: float, tool_frame: bool
+) -> torch.Tensor:
+    """[D17n] Pull the ``(N, 7)`` ``[pos, quat_wxyz]`` target toward the TCP so the commanded linear
+    VIC force ``||K (target - tcp)||`` is at most ``max_force_n``.
+
+    ``linear_k`` (``(N, 3)``) is the commanded per-axis stiffness, along the TCP axes when
+    ``tool_frame`` (``tcp`` is ``[pos, quat_wxyz]``), else world. The offset is scaled uniformly, so the
+    force keeps its direction and lands exactly on the cap. Orientation is untouched. The leash bounds
+    the setpoint error by distance (75 N at K = 500 and 0.15 m); this bounds the force itself, the way
+    a rig's impedance controller saturates its wrench, whatever stiffness the policy picks.
+    """
+    out = target.clone()
+    off = target[:, :3] - tcp[:, :3]
+    off_k = _rotate_by_quat_wxyz(_quat_conj_wxyz(tcp[:, 3:7].to(off)), off) if tool_frame else off
+    force = torch.linalg.norm(linear_k.to(off) * off_k, dim=-1, keepdim=True)
+    scale = torch.clamp(float(max_force_n) / force.clamp_min(1e-12), max=1.0)
+    out[:, :3] = tcp[:, :3] + off * scale
+    return out
+
+
+def clamp_target_advance(
+    target: torch.Tensor, start_pos: torch.Tensor, axis: torch.Tensor, *, max_advance_m: float
+) -> torch.Tensor:
+    """[D17m] Keep the ``(N, 7)`` ``[pos, quat_wxyz]`` target from advancing along ``axis`` past ``start_pos``.
+
+    ``s = (target_pos - start_pos) . axis``; where ``s > max_advance_m`` the position is moved back
+    along ``axis`` onto that plane. Lateral motion, pulling back and the orientation are untouched.
+    ``axis`` (``(N, 3)``, unit) is the grip axis at reset, so the VIC never commands the TCP into the
+    tree past the grasp. The wall is on the integrated target (not the per-step delta), so it cannot
+    leak through accumulation or the tool frame's rotation.
+    """
+    out = target.clone()
+    s = ((target[:, :3] - start_pos) * axis).sum(-1, keepdim=True)
+    excess = torch.clamp(s - float(max_advance_m), min=0.0)
+    out[:, :3] = target[:, :3] - excess * axis
     return out
 
 

@@ -937,7 +937,10 @@ def sample_params(
     omit_set = _coerce_omit(omit)
 
     def _s(seg_ranges: dict, key: str) -> float:
-        return float(rng.uniform(seg_ranges[key]["min"], seg_ranges[key]["max"]))
+        r = seg_ranges[key]
+        if r.get("scale") == "log":  # [D17p] log-uniform (positive bounds, checked at load)
+            return float(10.0 ** rng.uniform(math.log10(r["min"]), math.log10(r["max"])))
+        return float(rng.uniform(r["min"], r["max"]))
 
     def _si(seg_ranges: dict, key: str) -> int:
         return int(rng.integers(seg_ranges[key]["min"], seg_ranges[key]["max"] + 1))
@@ -1675,6 +1678,15 @@ def _validate_vbd_stretch_force(seg: str, seg_data: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _validate_range_scale(rng: dict, field: str) -> None:
+    """Optional ``scale``: ``"linear"`` (default) or ``"log"`` (log-uniform; needs min > 0)."""
+    scale = rng.get("scale", "linear")
+    if scale not in ("linear", "log"):
+        raise ValueError(f"Range {field}: scale must be 'linear' or 'log', got {scale!r}")
+    if scale == "log" and not rng["min"] > 0.0:
+        raise ValueError(f"Range {field}: scale 'log' needs min > 0, got {rng['min']}")
+
+
 def _validate_ranges(data: dict) -> None:
     """Raise ValueError if the range dict is missing required keys or has invalid bounds."""
     required_segments = ("primary", "secondary", "spur", "stem", "apple")
@@ -1723,6 +1735,7 @@ def _validate_ranges(data: dict) -> None:
                 raise ValueError(
                     f"Range {seg}.{key}: min ({rng['min']}) > max ({rng['max']})"
                 )
+            _validate_range_scale(rng, f"{seg}.{key}")
 
         if seg == "primary":
             for key in ("azimuth_deg", "elevation_deg"):

@@ -240,6 +240,7 @@ def test_d7_ranges_are_validated():
 
 from apple_pick_gym.batched_envs.harvest_detach import (  # noqa: E402
     bend_pull_detach_force,
+    bend_pull_theta_clamp_deg,
     bend_pull_utilization,
     chord_angle_deg,
     detach_scales,
@@ -329,3 +330,49 @@ def test_detach_scales_draw_inside_the_range_and_default_to_one_without_one():
 def test_bend_pull_config_rejects_bad_values(kwargs):
     with pytest.raises(ValueError):
         DetachEnvelopeConfig(**kwargs)
+
+
+def test_bend_pull_theta_max_holds_the_curve_flat_past_the_fitted_range():
+    # [D17n] Li et al. fitted 10-30 deg: past theta_max the detach force is held at F_d(theta_max)
+    # instead of following the extrapolated quadratic down to its 38.5 deg minimum.
+    cfg = DetachEnvelopeConfig(criterion="bend_pull", bend_pull_theta_max_deg=30.0)
+    theta = torch.tensor([0.0, 20.0, 30.0, 38.5, 90.0])
+    f = bend_pull_detach_force(theta, torch.ones(5), cfg)
+    f30 = 0.015 * 900.0 - 1.155 * 30.0 + 26.09  # 4.94 N
+    torch.testing.assert_close(f, torch.tensor([26.09, 8.99, f30, f30, f30]), atol=1e-4, rtol=0)
+    assert bend_pull_theta_clamp_deg(cfg) == pytest.approx(30.0)
+    assert bend_pull_theta_clamp_deg(DetachEnvelopeConfig(criterion="bend_pull")) == pytest.approx(38.5)
+
+
+def test_bend_frame_defaults_to_world():
+    assert DetachEnvelopeConfig(criterion="bend_pull").bend_frame == "world"
+    assert DetachEnvelopeConfig(criterion="bend_pull", bend_frame="spur").bend_frame == "spur"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"criterion": "bend_pull", "bend_pull_theta_max_deg": 0.0},
+        {"criterion": "bend_pull", "bend_pull_theta_max_deg": 45.0},  # past the minimum: curve turns up
+        {"criterion": "bend_pull", "bend_frame": "apple"},
+    ],
+)
+def test_bend_pull_theta_max_and_frame_are_validated(kwargs):
+    with pytest.raises(ValueError):
+        DetachEnvelopeConfig(**kwargs)
+
+
+def test_rest_chord_carried_by_the_spur_removes_rigid_spur_rotation():
+    # [D17n] bend_frame="spur": the rest chord is stored in the spur tip body's frame and carried by
+    # its rotation, so a stem that rotates rigidly with the spur has theta_b = 0.
+    from apple_pick_gym.batched_envs.harvest_detach import carried_rest_chord, to_body_frame
+
+    rest = torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]])
+    q0 = torch.tensor([[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 1.0]])  # xyzw identity
+    local = to_body_frame(rest, q0)
+    h = math.sqrt(0.5)
+    q1 = torch.tensor([[h, 0.0, 0.0, h], [0.0, 0.0, 0.0, 1.0]])  # env 0: spur turned 90 deg about x
+    ref = carried_rest_chord(local, q1)
+    torch.testing.assert_close(ref[0], torch.tensor([0.0, 1.0, 0.0]), atol=1e-6, rtol=0)
+    turned = torch.tensor([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]])  # both chords end up along +y
+    torch.testing.assert_close(chord_angle_deg(turned, ref), torch.tensor([0.0, 90.0]), atol=1e-3, rtol=0)

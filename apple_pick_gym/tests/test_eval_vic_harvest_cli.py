@@ -75,3 +75,48 @@ def test_d17_cli_offers_every_baseline():
 
     for name in BASELINES:
         assert build_parser().parse_args(["--baseline", name, "--out", "x.json"]).baseline == name
+
+
+def test_d17m_eval_overrides_the_wall_and_collateral_mode_and_reports_the_advance(tmp_path):
+    # [D17m] score any policy (e.g. a v2b checkpoint) under v2c's wall and collateral
+    args = ev.build_parser().parse_args(
+        [*_ENV, "--baseline", "zero", "--out", str(tmp_path / "x.json"), "--max-advance-m", "0.0", "--collateral-mode", "deviation"]
+    )
+    cfg, wrapper, _policy, _label = ev.build_eval(args)
+    try:
+        assert (cfg.env.max_advance_m, cfg.env.collateral_mode) == (0.0, "deviation")
+        assert wrapper.action_scaler.bounds.max_advance_m == 0.0
+    finally:
+        wrapper.close()
+    args = ev.build_parser().parse_args([*_ENV, "--baseline", "zero", "--out", "x.json", "--max-advance-m", "none"])
+    cfg, wrapper, _policy, _label = ev.build_eval(args)
+    wrapper.close()
+    assert cfg.env.max_advance_m is None
+    out = tmp_path / "pull.json"
+    assert ev.main([*_ENV, "--baseline", "scripted_pull", "--episodes", "1", "--out", str(out)]) == 0
+    m = json.loads(out.read_text())
+    assert m["peak_tcp_advance_mm_mean"] >= 0.0 and m["peak_tcp_advance_mm_max"] >= m["peak_tcp_advance_mm_mean"]
+
+
+def test_d17n_eval_overrides_the_v2d_detach_rules_and_force_clamp(tmp_path):
+    # [D17n] score any policy (e.g. a v2c checkpoint) under v2d's stem-only bend, fit-range hold,
+    # 20-step streak, wide F_d scale and commanded-force clamp
+    args = ev.build_parser().parse_args(
+        [
+            *_ENV, "--baseline", "zero", "--out", str(tmp_path / "x.json"),
+            "--detach-criterion", "bend_pull", "--bend-frame", "spur", "--bend-theta-max-deg", "30",
+            "--success-streak", "20", "--detach-scale", "0.8", "2.0", "--max-commanded-force-n", "40",
+        ]
+    )  # fmt: skip
+    cfg, wrapper, _policy, _label = ev.build_eval(args)
+    try:
+        e = cfg.env
+        assert (e.detach_criterion, e.bend_frame, e.bend_pull_theta_max_deg) == ("bend_pull", "spur", 30.0)
+        assert (e.success_streak_steps, tuple(e.detach_scale_range), e.max_commanded_force_n) == (20, (0.8, 2.0), 40.0)
+        assert wrapper.action_scaler.bounds.max_commanded_force_n == 40.0
+    finally:
+        wrapper.close()
+    args = ev.build_parser().parse_args([*_ENV, "--baseline", "zero", "--out", "x.json", "--max-commanded-force-n", "none"])
+    cfg, wrapper, _policy, _label = ev.build_eval(args)
+    wrapper.close()
+    assert cfg.env.max_commanded_force_n is None

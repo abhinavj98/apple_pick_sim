@@ -80,3 +80,10 @@ uv run python apple_pick_gym/batched_examples/example_screen_harvest_worlds.py s
     --out tmp/harvest_worlds_v3/pass1_v3.jsonl
 ```
 
+
+## vv-wide bend (D17p)
+
+`snapshots/harvest_worlds_vvwide_{train,holdout}/` (not committed): 10,048 / 1,536 worlds from
+`fruiting_system_ranges_rl_harvest_vvwide_bend.json` (spur/stem flexural modulus log-uniform 1e5..1e11 Pa, support kp 100..10,000).
+Two-pass screened (14,289 / 25,216 accepted), then balanced over spur decade x stem decade x kp half-decade. Recipe and scripts:
+`tmp/harvest_worlds_vvwide/` (`run_pass1.sh`, `run_pass2.sh`, `after_pass1.sh`, `select_balanced.py`); decision log D17p.

@@ -122,6 +122,8 @@ class _EpisodeStats:
         self.peak_junction: dict[str, torch.Tensor] = {}
         self.peak_tau, self.peak_wrist_tau = z(), z()
         self.peak_theta = z()
+        # [D17m] peak TCP advance (m) along the reset grip axis, into the tree; None until reported
+        self.peak_advance: torch.Tensor | None = None
         b = lambda: torch.zeros(self.n, dtype=torch.bool, device=self.device)
         self.safety_cap = {k: b() for k in ("target_force", "target_torque", "wrist_force", "wrist_torque")}
         self.prev_target_f = z()
@@ -162,6 +164,11 @@ class _EpisodeStats:
         theta, tension = info.get("theta_b_deg"), info.get("stem_tension")
         if theta is not None:
             self.peak_theta = m(self.peak_theta, theta.to(self.peak_theta))
+        advance = info.get("tcp_advance_m")
+        if advance is not None:
+            if self.peak_advance is None:
+                self.peak_advance = torch.zeros(self.n, device=self.device)
+            self.peak_advance = m(self.peak_advance, advance.to(self.peak_advance))
         edge = won & ~self.success
         if bool(edge.any()):
             axis = info.get("target_junction_axis")
@@ -238,6 +245,15 @@ class _EpisodeStats:
             "Episode / safety trip target force jump > 5x (frac of trips)": (f > 5.0 * p.clamp_min(1e-6)).float().mean(),
         }
 
+    def _advance_summary(self, valid: torch.Tensor) -> dict[str, torch.Tensor]:
+        """[D17m] Peak TCP advance into the tree (mm, >= 0) over valid envs; NaN if the env does not report it."""
+        k = "Episode / peak TCP advance into tree mm"
+        if self.peak_advance is None or not bool(valid.any()):
+            nan = torch.tensor(float("nan"), device=self.device)
+            return {f"{k} (mean)": nan, f"{k} (max)": nan}
+        a = 1000.0 * self.peak_advance[valid].float()
+        return {f"{k} (mean)": a.mean(), f"{k} (max)": a.max()}
+
     def _success_collateral_dist(self, won: torch.Tensor) -> dict[str, torch.Tensor]:
         """Distribution of peak collateral over successful valid envs: a low-force sub-population
         (bend detach) shows in p10 and the < 15 N / < 22 N fractions before it moves the mean."""
@@ -278,6 +294,7 @@ class _EpisodeStats:
             "Episode / peak wrist force > 40 N (frac)": s(self.peak_wrist > _REPORT_FORCE_CAP_N),
             "Episode / peak target force > 40 N (frac)": s(self.peak_force > _REPORT_FORCE_CAP_N),
             "Episode / peak theta_b deg (mean)": s(self.peak_theta),
+            **self._advance_summary(valid),
             "Episode / steps to success (mean)": stt,
             "Episode / reward progress (sum)": s(self.terms["progress"]),
             "Episode / reward pullout (sum)": s(self.terms["pullout"]),

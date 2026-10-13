@@ -63,7 +63,7 @@ def test_defaults_follow_the_plan():
     assert cfg.env.max_target_pos_offset_m is not None  # VIC target leash on for training
 
 
-@pytest.mark.parametrize("name", ["surrogate_smoke.json", "sim_wiring_cpu.json", "sim_wiring_gpu.json", "sim_smoke_gpu.json", "sim_train_gpu.json", "sim_train_gpu_ep250.json", "sim_debug_kl_gpu.json", "sim_train_gpu_ep250_unbounded.json", "sim_train_gpu_d8b_unbounded.json", "sim_train_gpu_d8b_tanh1.json", "sim_train_gpu_d8b_tanh15.json"])
+@pytest.mark.parametrize("name", ["surrogate_smoke.json", "sim_wiring_cpu.json", "sim_wiring_gpu.json", "sim_smoke_gpu.json", "sim_train_gpu.json", "sim_train_gpu_ep250.json", "sim_debug_kl_gpu.json", "sim_train_gpu_ep250_unbounded.json", "sim_train_gpu_d8b_unbounded.json", "sim_train_gpu_d8b_tanh1.json", "sim_train_gpu_d8b_tanh15.json", "sim_train_gpu_v2c.json", "sim_train_gpu_v2d.json"])
 def test_checked_in_configs_load_and_validate(name):
     from pathlib import Path
 
@@ -202,3 +202,84 @@ def test_d17_v2b_config_is_v2_plus_peak_collateral_and_the_rig_speed_cap():
     assert same(v2b) == same(v2)
     assert v2b.ppo == v2.ppo and v2b.actor == v2.actor
     assert v2b.run_dir != v2.run_dir
+
+
+def test_d17m_v2c_config_is_v2b_plus_the_no_advance_wall_and_deviation_collateral():
+    # [D17m] v2b learned a lift-and-push pendulum detach (46 mm toward the tree, lifting the apple, which
+    # the relu collateral scored free). v2c: the target may not advance past the grasp along the grip
+    # axis, and collateral charges any deviation from the rest force vectors. Everything else as v2b.
+    from pathlib import Path
+
+    from apple_pick_gym.rl.trainer import build_env
+
+    d = Path(__file__).resolve().parent.parent / "rl" / "configs"
+    v2b = TrainConfig.load_json(d / "sim_train_gpu_v2b.json")
+    v2c = TrainConfig.load_json(d / "sim_train_gpu_v2c.json")
+    v2c.validate()
+    assert (v2c.env.max_advance_m, v2c.env.collateral_mode) == (0.0, "deviation")
+    assert (v2b.env.max_advance_m, v2b.env.collateral_mode) == (None, "relu_norm")  # v2b reproduces
+    same = lambda c: dataclasses.replace(c.env, max_advance_m=None, collateral_mode="relu_norm")
+    assert same(v2c) == same(v2b)
+    assert v2c.ppo == v2b.ppo and v2c.actor == v2b.actor and v2c.run_dir != v2b.run_dir
+    env = build_env(dataclasses.replace(v2c.env, kind="surrogate", num_envs=2, device="cpu"), seed=0)
+    assert env.action_bounds.max_advance_m == 0.0 and env._reward_cfg.collateral_mode == "deviation"
+
+
+def test_d17m_bad_collateral_mode_or_negative_wall_is_refused():
+    from apple_pick_gym.rl.trainer import build_env
+
+    for bad in ({"collateral_mode": "abs"}, {"max_advance_m": -0.01}):
+        with pytest.raises(ValueError):
+            build_env(dataclasses.replace(TrainConfig().env, kind="surrogate", num_envs=2, device="cpu", **bad), seed=0)
+
+
+def test_d17n_v2d_config_is_v2c_plus_stem_only_bend_fit_range_hold_and_wide_scale():
+    # [D17n] v2c detached with a fast sideways swing: theta_b was measured in the world frame (spur
+    # rotation counted as stem bending), the fit was extrapolated to 38.5 deg, a 3-step (50 ms) spike
+    # counted as a pick and F_d varied only +-15 %. v2d: theta_b against the spur-carried rest chord,
+    # F_d flat past 30 deg, a 20-step streak, F_d scale U(0.8, 2.0). Everything else as v2c.
+    from pathlib import Path
+
+    from apple_pick_gym.rl.trainer import build_env
+
+    d = Path(__file__).resolve().parent.parent / "rl" / "configs"
+    v2c = TrainConfig.load_json(d / "sim_train_gpu_v2c.json")
+    v2d = TrainConfig.load_json(d / "sim_train_gpu_v2d.json")
+    v2d.validate()
+    e = v2d.env
+    assert (e.bend_frame, e.bend_pull_theta_max_deg, e.success_streak_steps) == ("spur", 30.0, 20)
+    assert tuple(e.detach_scale_range) == (0.8, 2.0) and e.max_commanded_force_n == 40.0
+    assert (v2c.env.bend_frame, v2c.env.bend_pull_theta_max_deg, v2c.env.max_commanded_force_n) == ("world", None, None)
+    same = lambda c: dataclasses.replace(
+        c.env,
+        bend_frame="world",
+        bend_pull_theta_max_deg=None,
+        success_streak_steps=3,
+        detach_scale_range=(0.85, 1.15),
+        max_commanded_force_n=None,
+    )
+    assert same(v2d) == same(v2c)
+    assert v2d.ppo == v2c.ppo and v2d.actor == v2c.actor and v2d.run_dir != v2c.run_dir
+    env = build_env(dataclasses.replace(e, kind="surrogate", num_envs=2, device="cpu"), seed=0)
+    det = env._reward_cfg.detach
+    assert (det.bend_frame, det.bend_pull_theta_max_deg, tuple(det.detach_scale_range)) == ("spur", 30.0, (0.8, 2.0))
+    assert env._episode_cfg.success_streak_steps == 20
+    assert env.action_bounds.max_commanded_force_n == 40.0
+
+
+def test_d17n_bad_bend_frame_or_theta_max_is_refused():
+    from apple_pick_gym.rl.trainer import build_env
+
+    base = dataclasses.replace(TrainConfig().env, kind="surrogate", num_envs=2, device="cpu", detach_criterion="bend_pull")
+    for bad in ({"bend_frame": "apple"}, {"bend_pull_theta_max_deg": 60.0}):
+        with pytest.raises(ValueError):
+            build_env(dataclasses.replace(base, **bad), seed=0)
+
+
+def test_d17n_k_ang_min_reaches_the_action_bounds():
+    # [D17n run 7] a soft wrist (K_ang ~11 N*m/rad) let the gripper and apple swing as a pendulum on the stem
+    from apple_pick_gym.rl.trainer import build_env
+
+    assert TrainConfig().env.k_ang_min == 2.0
+    env = build_env(dataclasses.replace(TrainConfig().env, kind="surrogate", num_envs=2, device="cpu", k_ang_min=20.0), seed=0)
+    assert env.action_bounds.k_ang_min == 20.0

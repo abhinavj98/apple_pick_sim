@@ -42,6 +42,9 @@ import torch
 
 from apple_pick_gym.batched_envs.harvest_action import (
     HarvestActionBounds,
+    clamp_commanded_force,
+    clamp_target_advance,
+    grip_axis,
     integrate_delta_pose,
     leash_target_pose,
     split_harvest_action,
@@ -263,10 +266,21 @@ class SurrogateHarvestEnv:
         self._collateral_baseline = {
             j: torch.linalg.norm(w[:, :3], dim=-1).clone() for j, w in info["woody_part_force"].items() if j != self.TARGET_JUNCTION_NAME
         }
+        # [D17m] rest force vectors for collateral_mode="deviation"
+        self._collateral_baseline_force = {
+            j: w[:, :3].clone() for j, w in info["woody_part_force"].items() if j != self.TARGET_JUNCTION_NAME
+        }
         info["collateral_baseline_norm"] = self._collateral_baseline
+        info["collateral_baseline_force"] = self._collateral_baseline_force
+        info["tcp_advance_m"] = self._tcp_advance()
         self._peak_collateral = None  # [D13] running peak collateral, reset per episode
         self._progress_prev = torch.clamp(info["detach_utilization"], min=0.0, max=1.0)
         return obs, info
+
+    def _tcp_advance(self) -> torch.Tensor:
+        """[D17m] TCP travel (m) since the start along the reset grip axis (+ = into the tree), ``(N,)``."""
+        start_pos, start_q = self._start
+        return ((self._x - start_pos) * grip_axis(start_q)).sum(-1)
 
     def _draw_episode_detach(self) -> None:
         """Per-reset detach-criterion draws (the envelope criterion has none beyond D7)."""
@@ -289,6 +303,17 @@ class SurrogateHarvestEnv:
                 max_pos_offset_m=b.max_target_pos_offset_m,
                 max_rot_offset_rad=b.max_target_rot_offset_rad,
             )
+        if b.max_commanded_force_n is not None:  # [D17n] after the leash, before the wall
+            target = clamp_commanded_force(
+                target,
+                torch.cat([self._x, self._q], -1),
+                split.linear_k,
+                max_force_n=b.max_commanded_force_n,
+                tool_frame=self._action_frame == "tool",
+            )
+        if b.max_advance_m is not None:  # [D17m] after the leash: the wall is the hard guarantee
+            start_pos, start_q = self._start
+            target = clamp_target_advance(target, start_pos, grip_axis(start_q), max_advance_m=b.max_advance_m)
         self._target = target
         kp_cmd = torch.cat([split.linear_k, split.angular_k], -1)
         self._kd = 2.0 * split.zeta * torch.sqrt(kp_cmd)
@@ -299,6 +324,8 @@ class SurrogateHarvestEnv:
 
         obs, info = self._observe()
         info["collateral_baseline_norm"] = self._collateral_baseline
+        info["collateral_baseline_force"] = self._collateral_baseline_force
+        info["tcp_advance_m"] = self._tcp_advance()
         outcome = evaluate_harvest_step(
             obs,
             info,
@@ -641,6 +668,7 @@ class SurrogateBendPullEnv(SurrogateHarvestEnv):
         f_plant, t_plant, t_dyn, bend_mag = self._plant_wrench_on_tcp()
         _a, chord, u_hat, _t, f_bend = self._stem_state()
         tension = self.rest_force + t_dyn
+        # the pendulum's pivot is fixed, so bend_frame "spur" and "world" coincide here
         theta = chord_angle_deg(chord, -up_world(n, dev))
         f_d = bend_pull_detach_force(theta, self._detach_scale, self._reward_cfg.detach)
         u = tension / f_d

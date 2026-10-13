@@ -73,6 +73,9 @@ except Exception as e:  # pragma: no cover
 from apple_pick_gym.batched_envs.apple_pick_batched_base_env import ApplePickBatchedBaseEnv
 from apple_pick_gym.batched_envs.harvest_action import (
     HarvestActionBounds,
+    clamp_commanded_force,
+    clamp_target_advance,
+    grip_axis,
     integrate_delta_pose,
     leash_target_pose,
     pack_vic_pose_action,
@@ -81,12 +84,14 @@ from apple_pick_gym.batched_envs.harvest_action import (
 )
 from apple_pick_gym.batched_envs.harvest_detach import (
     bend_pull_detach_force,
+    carried_rest_chord,
     chord_angle_deg,
     detach_index,
     detach_scales,
     junction_wrench_at_anchor,
     shift_moment,
     stem_tension,
+    to_body_frame,
 )
 from apple_pick_gym.batched_envs.harvest_episode import (
     EpisodeConfig,
@@ -245,11 +250,13 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._pending_terminated: torch.Tensor | None = None
         self._last_tcp_pose_wxyz: torch.Tensor | None = None
         self._collateral_baseline_norm: dict[str, torch.Tensor] | None = None
+        self._collateral_baseline_force: dict[str, torch.Tensor] | None = None  # [D17m] rest vectors
         self._progress_prev: torch.Tensor | None = None
         self._peak_collateral: torch.Tensor | None = None
         # [D17] bend-pull criterion state: the stem chord at reset (theta_b = 0) and the per-env
         # detach-force scale, both re-drawn / re-recorded in reset()
         self._rest_chord: torch.Tensor | None = None
+        self._rest_chord_world: torch.Tensor | None = None
         self._detach_scale: torch.Tensor | None = None
         if action_frame not in ("world", "tool"):
             raise ValueError(f"action_frame must be 'world' or 'tool', got {action_frame!r}")
@@ -348,6 +355,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             )
         self._target_junction_idx = self._junction_names.index(self._target_junction_name)
         self._target_child_body = self._resolve_target_child_bodies()
+        self._target_parent_body = self._resolve_target_parent_bodies()
         self._stem_root = self._resolve_stem_root_joints()
 
         b = self._action_bounds
@@ -407,6 +415,20 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         joint_idx = bufs.woody_joint_indices.numpy().reshape(self.num_envs, -1)[:, self._target_junction_idx]
         child = self._sim.scene.cable.model.joint_child.numpy()[joint_idx]
         return torch.as_tensor(child.astype(np.int64), device=self.device)
+
+    def _resolve_target_parent_bodies(self) -> torch.Tensor:
+        """Per env: the cable-model body index of the target junction's parent, the spur tip
+        segment for ``spur_stem`` (``(N,)`` long). [D17n] ``bend_frame="spur"`` carries the rest
+        chord with this body's rotation."""
+        bufs = self._sim.obs_bufs
+        joint_idx = bufs.woody_joint_indices.numpy().reshape(self.num_envs, -1)[:, self._target_junction_idx]
+        parent = self._sim.scene.cable.model.joint_parent.numpy()[joint_idx]
+        return torch.as_tensor(parent.astype(np.int64), device=self.device)
+
+    def _target_parent_quat(self) -> torch.Tensor:
+        """``(N, 4)`` ``[x, y, z, w]`` world rotation of the target junction's parent body (the spur tip)."""
+        body_q = wp.to_torch(self._sim.scene.cable.state_0.body_q).to(device=self.device, dtype=torch.float32)
+        return body_q[self._target_parent_body, 3:7]
 
     def _resolve_stem_root_joints(self) -> dict[str, Any] | None:
         """Per env: the first soft stem cable joint after the target junction (parent = the junction's
@@ -936,6 +958,13 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._publish_detach_state(info)
         if self._collateral_baseline_norm is not None:
             info["collateral_baseline_norm"] = self._collateral_baseline_norm
+        if self._collateral_baseline_force is not None:
+            info["collateral_baseline_force"] = self._collateral_baseline_force
+        if self._start_tcp_pose is not None and self._last_tcp_pose_wxyz is not None:
+            # [D17m] TCP travel since the start along the reset grip axis (+ = into the tree)
+            info["tcp_advance_m"] = (
+                (self._last_tcp_pose_wxyz[:, :3] - self._start_tcp_pose[:, :3]) * grip_axis(self._start_tcp_pose[:, 3:7])
+            ).sum(-1)
         # Raw (privileged, un-sensor-filtered) ft_wrist for reward computation --
         # distinct from obs["ft_wrist"], which is what the policy actually
         # observes. Reward is train-time only, so this privilege is legitimate.
@@ -976,6 +1005,10 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             raise RuntimeError("the bend-pull detach criterion needs a stem_apple junction (stem chord)")
         n = self.num_envs
         rest = chord if self._rest_chord is None else self._rest_chord
+        if self._rest_chord is not None and det.bend_frame == "spur":
+            rest = carried_rest_chord(self._rest_chord, self._target_parent_quat())
+            # [D17n] the world-frame angle too (spur rotation included), for the diagnostics
+            info["theta_b_world_deg"] = chord_angle_deg(chord, self._rest_chord_world)
         scale = (
             torch.ones(n, dtype=torch.float32, device=self.device)
             if self._detach_scale is None
@@ -1023,6 +1056,23 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
                 self._last_tcp_pose_wxyz,
                 max_pos_offset_m=b.max_target_pos_offset_m,
                 max_rot_offset_rad=b.max_target_rot_offset_rad,
+            )
+        if b.max_commanded_force_n is not None and self._last_tcp_pose_wxyz is not None:
+            # [D17n] after the leash, before the wall: bound the commanded spring force, not just its length
+            self._target_pose = clamp_commanded_force(
+                self._target_pose,
+                self._last_tcp_pose_wxyz,
+                split.linear_k,
+                max_force_n=b.max_commanded_force_n,
+                tool_frame=self._action_frame == "tool",
+            )
+        if b.max_advance_m is not None and self._start_tcp_pose is not None:
+            # [D17m] after the leash, so the wall is the hard guarantee: never into the tree past the grasp
+            self._target_pose = clamp_target_advance(
+                self._target_pose,
+                self._start_tcp_pose[:, :3],
+                grip_axis(self._start_tcp_pose[:, 3:7]),
+                max_advance_m=b.max_advance_m,
             )
         packed = pack_vic_pose_action(
             self._target_pose, split.linear_k, split.angular_k, split.zeta, kp_scale=self._realized_k_scale
@@ -1094,19 +1144,29 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         self._rest_chord = None
         if self._reward_cfg.detach.criterion == "bend_pull":
             self._rest_chord = self._target_stem_axis()
+            self._rest_chord_world = self._rest_chord
+            if self._reward_cfg.detach.bend_frame == "spur":
+                # [D17n] keep the rest chord in the spur tip's frame; theta_b then reads stem bending only
+                self._rest_chord = to_body_frame(self._rest_chord, self._target_parent_quat())
             self._detach_scale = detach_scales(
                 self._reward_cfg.detach, self.num_envs, self._dr_rng, device=self.device
             )
         # Rest load on every non-target junction, so the collateral term counts only
         # load the policy adds (harvest_reward.compute_collateral_penalty).
         self._collateral_baseline_norm = None
+        self._collateral_baseline_force = None
         info = self._make_info()
         self._collateral_baseline_norm = {
             name: torch.linalg.norm(w[:, :3], dim=-1).clone()
             for name, w in info["woody_part_force"].items()
             if name != self._target_junction_name
         }
+        # [D17m] rest force vectors, for collateral_mode="deviation"
+        self._collateral_baseline_force = {
+            name: w[:, :3].clone() for name, w in info["woody_part_force"].items() if name != self._target_junction_name
+        }
         info["collateral_baseline_norm"] = self._collateral_baseline_norm
+        info["collateral_baseline_force"] = self._collateral_baseline_force
         self._peak_collateral = None  # [D13] running peak collateral, reset per episode
         self._progress_prev = torch.clamp(info["detach_utilization"], min=0.0, max=1.0)
         return obs, info

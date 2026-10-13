@@ -202,3 +202,56 @@ def test_d17_eval_json_reports_the_bend_pull_state_and_over_40n_peaks():
     for key in ("detach_motion_total_mm_mean", "detach_motion_grip_out_mm_mean", "detach_motion_down_mm_mean",
                 "detach_tilt_deg_mean", "detach_k_lin_tool_x_mean", "detach_k_lin_tool_z_mean"):
         assert math.isfinite(out[key]), key
+
+
+def _advance(env, obs0, info):
+    """Target advance (m) along the reset grip axis (TCP +z at reset), per env."""
+    z0 = quat_rotate_vector(obs0["tcp_quat"], torch.tensor([[0.0, 0.0, 1.0]] * N))
+    return ((info["target_pose"][:, :3] - obs0["tcp_pos"]) * z0).sum(-1)
+
+
+@pytest.mark.parametrize("wall", [None, 0.0])
+def test_d17m_no_advance_wall_stops_a_push_into_the_tree_but_not_a_pull(wall):
+    from apple_pick_gym.batched_envs.harvest_action import HarvestActionBounds
+
+    env = _env(action_bounds=HarvestActionBounds(**_BOUNDS, max_advance_m=wall))
+    obs0, _ = env.reset()
+    for _ in range(20):  # push along tool +z (into the apple / tree) and a little sideways
+        _obs, _r, _t, _tr, info = env.step(_act(dp=(0.002, 0.0, 0.006)))
+    adv = _advance(env, obs0, info)
+    tcp_adv = info["tcp_advance_m"]
+    assert tcp_adv.shape == (N,)
+    if wall is None:
+        assert float(adv.min()) > 0.02  # off: the target goes in
+        assert float(tcp_adv.min()) > 0.01  # and the TCP follows
+    else:
+        assert float(adv.max()) <= 1e-6  # on: never past the grasp plane
+        # the TCP stays near the plane: lag / compliance around it only (measured 3.6 mm vs 25-53 mm off)
+        assert float(tcp_adv.max()) < 0.005
+    env.reset()
+    obs0, _ = env.reset()
+    for _ in range(10):  # pulling back is untouched by the wall
+        _obs, _r, _t, _tr, info = env.step(_act(dp=(0.0, 0.0, -0.006)))
+    assert float(_advance(env, obs0, info).max()) < -0.03
+
+
+def test_d17m_publishes_rest_force_vectors_for_deviation_collateral():
+    env = _env(
+        reward_config=HarvestRewardConfig(
+            detach=DetachEnvelopeConfig(criterion="bend_pull", detach_scale_range=None), collateral_mode="deviation"
+        )
+    )
+    _obs, info = env.reset()
+    base = info["collateral_baseline_force"]
+    assert set(base) == set(info["collateral_baseline_norm"])
+    for name, f in base.items():
+        assert f.shape == (N, 3)
+        torch.testing.assert_close(torch.linalg.norm(f, dim=-1), info["collateral_baseline_norm"][name])
+    from apple_pick_gym.batched_envs.harvest_reward import compute_collateral_penalty
+
+    at_rest = compute_collateral_penalty(
+        info["woody_part_force"], target_junction_name=env.target_junction_name, baseline_force=base, mode="deviation"
+    )
+    torch.testing.assert_close(at_rest, torch.zeros(N), atol=1e-5, rtol=0)
+    _obs, _r, _t, _tr, info = env.step(_act())
+    assert info["collateral_baseline_force"] is base

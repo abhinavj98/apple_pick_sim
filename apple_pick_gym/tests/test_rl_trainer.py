@@ -270,3 +270,22 @@ def test_d17_action_frame_k_lin_max_and_realized_k_dr_reach_the_sim_env(monkeypa
     assert EnvConfig().k_lin_max == 200.0 and EnvConfig().action_frame == "world"  # old configs unchanged
     sur = build_env(EnvConfig(kind="surrogate", num_envs=4, device="cpu", action_frame="tool", realized_k_scale_range=(0.8, 1.2)))
     assert sur.obs_frame == "tool" and sur._realized_k_scale_range == (0.8, 1.2)
+
+
+def test_d17m_checkpoint_loads_across_the_no_advance_wall(tmp_path):
+    # [D17m] the wall is an env constraint applied after the action scaling, not part of it: a
+    # checkpoint saved before the field existed (v2b) loads, and loads into a build with the wall on
+    # (evaluating v2b under v2c); the scaling fields are still checked.
+    cfg = _cfg(tmp_path)
+    run_training(cfg)
+    ckpt = latest_checkpoint(tmp_path / "run")
+    meta = json.loads((ckpt / "meta.json").read_text())
+    assert meta["action_bounds"]["max_advance_m"] is None
+    del meta["action_bounds"]["max_advance_m"]  # an old checkpoint
+    (ckpt / "meta.json").write_text(json.dumps(meta))
+    wrapper, agent = build_training(cfg)
+    load_checkpoint(ckpt, agent, wrapper, cfg)
+    walled = dataclasses.replace(cfg, env=dataclasses.replace(cfg.env, max_advance_m=0.0))
+    wrapper, agent = build_training(walled)
+    assert wrapper.action_scaler.bounds.max_advance_m == 0.0
+    load_checkpoint(ckpt, agent, wrapper, walled)

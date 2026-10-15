@@ -41,7 +41,11 @@ class BatchedHeterogeneousCoupledSim:
         use_settle_cache: bool = False,
         force_settle: bool = False,
         settle_cache_dir: Path | str | None = None,
+        seed_body_q: Any | None = None,
     ) -> None:
+        """``seed_body_q``: an already-settled cable ``body_q`` (e.g. from an episode snapshot of these
+        same worlds) that seeds the welded build in place of the gravity settle. Not a cache entry: it is
+        neither validated against nor written to the settle cache."""
         config.validate()
         self._config = config
         self._per_env_params = tuple(per_env_params)
@@ -77,6 +81,17 @@ class BatchedHeterogeneousCoupledSim:
                 per_env_params=self._per_env_params,
             )
             build_viewer = None
+
+        if seed_body_q is not None:
+            if loaded_checkpoint is not None:
+                raise ValueError("seed_body_q and use_settle_cache are mutually exclusive")
+            import numpy as np
+
+            loaded_checkpoint = SettledCheckpoint(
+                body_q=np.asarray(seed_body_q, dtype=np.float32).reshape(-1, 7), metadata={}
+            )
+            cache_path = None
+            self._settle_cache_path = None
 
         self._settled_checkpoint = loaded_checkpoint
         build_result = build_batched_heterogeneous_scene(

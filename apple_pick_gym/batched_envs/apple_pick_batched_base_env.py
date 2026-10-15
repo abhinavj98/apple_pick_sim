@@ -46,6 +46,7 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
         use_settle_cache: bool = False,
         per_env_params: Sequence[Any] | None = None,
         per_env_grippers: Sequence[GripperProxyConfig] | None = None,
+        seed_body_q: Any | None = None,
     ) -> None:
         if render_mode not in (None, "none"):
             raise ValueError("Only headless operation is supported (render_mode=None).")
@@ -99,6 +100,7 @@ class ApplePickBatchedBaseEnv(gym.Env, ABC):
             ranges,
             per_env_grippers=per_env_grippers,
             use_settle_cache=use_settle_cache,
+            seed_body_q=seed_body_q,
         )
         self._sim.capture_episode_snapshot()
 

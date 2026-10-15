@@ -13,7 +13,7 @@ rationale):
 
 - **Plant** (spur/stem moduli, damping ratios, primary density, support
   kp/roll_kp/zeta) is baked at build from
-  ``fruiting_system_ranges_rl_harvest_real_g05_m1.json`` (real sys-ID data) and the
+  ``fruiting_system_ranges_rl_harvest_true.json`` (real sys-ID data, true geometry) and the
   ``sim_build.support_dr`` block. Fixed for the run, matching the plan's
   "plant DR cannot be re-randomized; baked at build" note.
 - **Arm joint dynamics** (armature, friction, damping) resample on every
@@ -147,7 +147,7 @@ _RL_HARVEST_RANGES_FIXTURE = (
     Path(__file__).resolve().parent.parent.parent
     / "apple_pick_sim"
     / "fixtures"
-    / "fruiting_system_ranges_rl_harvest_real_g05_m1.json"
+    / "fruiting_system_ranges_rl_harvest_true.json"
 )
 # Real sys-ID data (make_rl_harvest_real_fixture.py): CMA materials mu +- 1 sigma, real
 # structure geometry mu +- 0.5 sigma, stem angles uniform over the real range, and the robot
@@ -216,6 +216,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         episode_snapshot_path: Path | str | None = None,
         action_frame: str = "world",
         realized_k_scale_range: tuple[float, float] | None = None,
+        fast_snapshot_build: bool = True,
     ) -> None:
         """``support_dr_sample`` / ``arm_build_dr_scales`` (with ``per_env_params`` and
         ``per_env_grippers``) rebuild exact worlds from a screened world set -- see
@@ -224,6 +225,8 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
         ``episode_snapshot_path`` (a :meth:`save_world_snapshot` file for these same
         worlds) replaces the hold settle: the vetted settled state is restored and becomes
         the reset baseline, so training does not depend on this build's settle outcome.
+        With ``fast_snapshot_build`` the build is seeded from the snapshot's cable poses and skips the
+        gravity and post-grasp settles whose result the snapshot overwrites.
 
         [D17] ``action_frame="tool"`` expresses the pose delta in the current TCP frame and makes
         the per-axis VIC gains act along the TCP axes (``ControllerConfig.vic_gain_frame``).
@@ -335,6 +338,17 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             )
         self._per_env_grippers = list(per_env_grippers)
 
+        # [D17q] a snapshot overwrites the settled state anyway: seed the welded build from its
+        # cable poses (skips the gravity settle) and drop the post-grasp settle
+        seed_body_q = None
+        if episode_snapshot_path is not None and fast_snapshot_build:
+            from apple_pick_sim.coupled_fruiting.episode_state_snapshot import load_snapshot_npz
+
+            seed_body_q = load_snapshot_npz(episode_snapshot_path)[0]["cable_body_q_0"]
+            sim_config = dataclasses.replace(
+                sim_config, scene=dataclasses.replace(sim_config.scene, post_grasp_settle_substeps=0)
+            )
+
         super().__init__(
             num_envs=num_envs,
             render_mode=render_mode,
@@ -347,6 +361,7 @@ class ApplePickVicHarvestEnv(ApplePickBatchedBaseEnv):
             use_settle_cache=use_settle_cache,
             per_env_params=per_env_params,
             per_env_grippers=per_env_grippers,
+            seed_body_q=seed_body_q,
         )
 
         if self._target_junction_name not in self._junction_names:

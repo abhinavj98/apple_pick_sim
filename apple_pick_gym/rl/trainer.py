@@ -126,6 +126,7 @@ def build_env(env_cfg: EnvConfig, *, seed: int = 0):
         device=device,
         dr_seed=seed,
         episode_snapshot_path=env_cfg.snapshot,
+        fast_snapshot_build=env_cfg.fast_snapshot_build,
         action_frame=env_cfg.action_frame,
         realized_k_scale_range=env_cfg.realized_k_scale_range,
         **common,

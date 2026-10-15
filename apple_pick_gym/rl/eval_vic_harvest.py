@@ -186,6 +186,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--env", choices=("sim", "surrogate"))
     p.add_argument("--world-set")
     p.add_argument("--snapshot", help="'none' to hold-settle")
+    p.add_argument("--fast-snapshot-build", choices=("on", "off"),
+                   help="seed the build from the snapshot and skip the settles it overwrites")
     p.add_argument("--num-envs", type=int)
     p.add_argument("--max-episode-steps", type=int)
     p.add_argument("--device")
@@ -249,6 +251,8 @@ def build_eval(args) -> tuple[TrainConfig, Any, Any, str]:
         env_over["max_commanded_force_n"] = None if f.lower() == "none" else float(f)
     if args.snapshot is not None:
         env_over["snapshot"] = None if args.snapshot == "none" else args.snapshot
+    if args.fast_snapshot_build is not None:
+        env_over["fast_snapshot_build"] = args.fast_snapshot_build == "on"
     cfg = dataclasses.replace(cfg, env=dataclasses.replace(cfg.env, **env_over), seed=args.seed)
 
     torch.manual_seed(args.seed)

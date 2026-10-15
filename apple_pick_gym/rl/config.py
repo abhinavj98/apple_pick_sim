@@ -31,6 +31,8 @@ class EnvConfig:
     # sim: world set + (optional) settled snapshot for exactly those worlds, in order
     world_set: str | None = f"{_ALL2000}/shard_00.jsonl"
     snapshot: str | None = f"{_ALL2000}/shard_00_snapshot.npz"
+    # [D17q] seed the build from the snapshot and skip the settles it overwrites
+    fast_snapshot_build: bool = True
     num_envs: int = 2000
     max_episode_steps: int = 500
     device: str = "auto"  # "auto" -> cuda:0 if available, else cpu

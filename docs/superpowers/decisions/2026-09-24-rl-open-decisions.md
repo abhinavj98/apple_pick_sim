@@ -30,6 +30,8 @@ hyperparameters beyond what is listed.
 | D5 | Random still reaches the envelope through force (0.81): keep leash / K range / F_max, rely on the D2 gate | decided, no code change |
 | D17 | Task v2 after the real-robot test (maintainer, 2026-10-02): equator grasps, bend-and-pull detach (Li et al. 2016), tool-frame obs/action, 4-term reward | code done (D17a-h); v3 world set screening; GPU training pending |
 | D17n | v2d (maintainer, 2026-10-04): stem-only bend angle, F_d flat past 30 deg, 20-step streak, F_d x U(0.8, 2.0), 40 N commanded-force clamp | code done; overnight run on 6720 v3 worlds |
+| D17q | Tuned (true) vs wide (wide_true) plant DR under the v2g reward: samples to 0.90, success, spur-end force / torque on unseen plants | done (10 M + 10k-world continuation) |
+| D17r | Exploration std 0.16 (seed 2: 0.20), rerun D17q for 75 M samples x 3 seeds | running |
 
 ## Morning brief (for the 2026-09-25 discussion)
 
@@ -1503,3 +1505,88 @@ traceback at update ~266, `ckpt_000016640`). Analysis: `runs/vic_harvest/analysi
   <= 3 pts. v2e_sysid on v3 is effectively a schedule: memoryless +2, open-loop +2, F/T frozen -1.
   Memory works as a short-horizon filter re-acquired within steps, not a persistent plant estimate (consistent with the D17p probes).
 
+
+## D17q -- Tuned (true) vs wide (wide_true) plant DR: samples to competence, success, spur-end force and torque (maintainer, 2026-10-13/14)
+
+**Question.** Does training on the tuned (sys-ID "true") plant distribution give a better policy *on true plants* than training on the
+wider `wide_true` distribution, for the same sample budget? "Better" = (1) fewer samples to 90 % success, (2) higher success at the
+budget, (3) lower load at the spur end: peak force and torque at the `primary_spur` junction (the branch the fruit hangs from).
+
+**Setup.** Both runs use the v2g reward (`d6a8738`: signed-norm collateral on primary_spur force + 25 N per N*m of torque), the same PPO
+settings and seed 0, from scratch; they differ only in the plant ranges of their worlds. 5,000 train worlds each, 10.24 M samples
+(32 updates x 64 x 5,000), a checkpoint every update (`sim_train_gpu_v2g_{true,widetrue}_10m.json`).
+Eval: deterministic, 1 episode, on **unseen-plant holdouts only** (`harvest_worlds_{true,wide_true}_holdout_newplant`, 982 / 994 valid;
+no plant shared with any train set -- the old holdouts shared ~95 % of their plants with train because consecutive screening seeds
+re-sampled the same 2,048 plants; new screening seeds are spaced 2,048 apart). Every 2nd checkpoint scored with per-world records
+(`eval_vic_harvest` writes `<out>.per_env.npz` since `52e43c4`). Loads are means over **successful** worlds only; paired deltas are over worlds
+both policies picked, 95 % bootstrap CIs. Data and script: `runs/vic_harvest/v2g_10m/{evals_fair,fair_compare.py,fair_compare.txt}`.
+
+**Result on unseen true plants.**
+
+| | true-trained | wide_true-trained |
+| --- | --- | --- |
+| samples to >= 0.90 success | 2.56 M (0.900, u8); 3.84 M (0.909, u12) | not reached in 10.24 M |
+| success at 10.24 M (95 % CI) | 0.919 +- 0.017 | 0.782 +- 0.026 |
+| best checkpoint in budget | 0.925 (u28) | 0.840 (u24) |
+| trips at 10.24 M | 0.069 | 0.055 |
+
+Paired spur-end loads (true minus wide_true, successful-in-both worlds):
+
+| comparison | spur force | spur torque | collateral (reward) | steps |
+| --- | --- | --- | --- | --- |
+| same budget, u32 vs u32 | +8.8 N (+29 %) [8.2, 9.3] | -0.21 N*m (-38 %) [-0.24, -0.18] | +3.1 (+9 %) | 72 vs 162 |
+| best vs best, u28 vs u24 | +7.4 N (+25 %) | -0.15 N*m (-31 %) | +3.2 (+10 %) | 79 vs 152 |
+| matched success, u6 (0.866) vs u24 (0.840) | +2.0 N (+7 %) | -0.20 N*m (-42 %) | -3.5 (-11 %) | 116 vs 150 |
+
+- *Samples and success:* the true-trained policy is ahead from the first checkpoint; the wide_true-trained one needs ~23 M samples to reach 0.90
+  on true plants (D17q 10k-world continuation, below).
+- *Spur torque:* lower for the true-trained policy in every comparison (31-42 %; lower on 83-89 % of shared worlds).
+- *Spur force:* **higher** for the true-trained policy (+7 % at matched success, +25-29 % at the same budget). It tracks the pull on the stem
+  (+24-28 %): the true-trained policy swings the apple down with 22 deg of tilt and detaches at ~35 N stem tension in ~80 steps; the
+  wide_true-trained one pulls out along the grip with a 65-72 mm sideways sweep and detaches at ~29 N in ~150 steps, the sideways lever
+  being the likely source of its higher spur torque. The true-trained policy's force rises as it trains (34 -> 39 N, u8 -> u32) while its
+  success stays flat: it gets faster.
+- *On unseen wide_true plants* the order of trips flips: true-trained best 0.807 (u6) but 0.71 with 28 % trips at 10.24 M;
+  wide_true-trained 0.68-0.76 with 3-6 % trips. Spur torque is again lower for the true-trained policy (-21 to -35 %), force again higher.
+
+**Continuation on 10k worlds (`sim_train_gpu_v2g_{true,widetrue}_10k.json`, init from each 10M run's final checkpoint, +50.56 M samples).**
+On unseen true plants the wide_true-trained policy first reaches 0.90 at ~23 M total samples and peaks at 0.932; the true-trained one stays at
+0.906-0.936 (no measurable gain over its 10 M checkpoint). The ceilings are equal; the gain from tuned DR is samples-to-competence and spur torque.
+Training-side, the true-trained run oscillated between 0.70 and 0.89 stochastic success with 9-30 % trips while its deterministic evals held at 6-9 %
+trips: the exploration noise (std 0.41-0.50 on a [-1, 1] action, i.e. 1.6 mm/step position noise integrating into the target and ~1.9x stiffness
+swings per step) drives the trips and favours fast pulls. -> D17r.
+
+**Caveats.** One seed per condition. The holdout is the true-trained policy's training distribution (the claim is conditional on the
+true sim matching the real tree). The reward was designed with true-plant runs in view and charges torque at a fixed 25 N per N*m.
+Sim junction forces are not real-tree loads; compare them only between policies.
+
+## D17r -- Exploration std 0.16, 20 M budget, rerun true vs wide_true (maintainer, 2026-10-14)
+
+**Why.** D17q's training noise: at std ~0.45 the position noise accumulates to ~3 cm over 100 steps and each step swings the commanded stiffness by
+~1.9x, which trips the 60 N cap during training and rewards fast, hard pulls. Target: <= ~1 cm drift over 100 steps and <= ~30 % stiffness swing per step.
+
+**What.** `actor.initial_log_std` = ln 0.16 = -1.8326 (was -0.7, std 0.50), every other setting as D17q's 10k configs, from scratch, 10,000 worlds
+(`harvest_worlds_{true,wide_true}_train10k`), a checkpoint every update.
+- First a 20 M-sample pair (`sim_train_gpu_v2h_{true,widetrue}_20m.json`): the true run finished (0.60 on unseen true plants at 10 M vs 0.92 at
+  std 0.5 -- low noise slows learning); the wide_true run was stopped in its build.
+- Then (maintainer) 75.52 M samples (118 updates), 3 seeds per DR, videos every 7.5 M (`video_every` 3; an episode is 2.5 M samples),
+  `sim_train_gpu_v2h_{true,widetrue}_75m_s{0,1,2}.json`, run one after the other. True s0 continues the 20 M run (`v2h_true_20m_s0`).
+  Seed 2 runs at std 0.20 (`initial_log_std` -1.6094, maintainer) and its wide_true run stops at 50.56 M (79 updates, maintainer).
+- Eval: every 2nd checkpoint on unseen true plants, every 4th on unseen wide_true plants, + finals, per-world records
+  (`runs/vic_harvest/v2h_75m/`, `aggregate.py`). Resumes keep the run's wandb id (stored in each checkpoint's meta).
+
+**Interim (seeds 0-1 at std 0.16, unseen true plants).**
+
+| | true-trained s0 / s1 | wide_true-trained s0 / s1 |
+| --- | --- | --- |
+| samples to >= 0.90 | 25.6 M / 24.3 M | 58.9 M / 39.7 M |
+| best success | 0.956 (u82) / 0.946 (u90) | 0.925 (u112) / 0.908 (u62) |
+| paired spur force at best (true - wide) | +2.9 N (+9 %) / +4.9 N | |
+| paired spur torque at best (true - wide) | -0.061 N*m (-16 %) / -0.084 N*m | |
+
+Seed 2 (std 0.20), true-trained: 0.90 at 16.6 M (1.5x fewer samples than std 0.16), best 0.947 at u58, spur loads ~1 N higher.
+Full result and verdict: pending the report.
+
+**Note: updates per sample.** One update = 64 steps x 10,000 envs = 640 k samples, 40 gradient steps; collection is 88 s of a ~91 s update and the
+KL-adaptive LR holds per-update KL at ~0.01, so more epochs would not move the policy further per update. More updates per sample needs shorter
+rollouts (`rollouts` 32: 320 k per update, ~2x the updates at the same samples and wall time) -- a follow-up, not changed mid-experiment.

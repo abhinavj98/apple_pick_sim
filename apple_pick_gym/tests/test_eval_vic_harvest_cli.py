@@ -120,3 +120,20 @@ def test_d17n_eval_overrides_the_v2d_detach_rules_and_force_clamp(tmp_path):
     cfg, wrapper, _policy, _label = ev.build_eval(args)
     wrapper.close()
     assert cfg.env.max_commanded_force_n is None
+
+
+def test_d17q_eval_writes_per_env_records_and_success_only_peaks(tmp_path):
+    import numpy as np
+
+    out = tmp_path / "pull.json"
+    assert ev.main([*_ENV, "--baseline", "scripted_pull", "--episodes", "2", "--out", str(out)]) == 0
+    m = json.loads(out.read_text())
+    assert "per_env" not in m
+    rec = np.load(tmp_path / "pull.per_env.npz")
+    for ep in (0, 1):
+        for k in ("success", "invalid", "steps_to_success", "peak_wrist_force_n", "peak_target_force_n"):
+            assert rec[f"ep{ep}/{k}"].shape == (8,), k
+    won = np.concatenate([rec[f"ep{e}/success"] & ~rec[f"ep{e}/invalid"] for e in (0, 1)])
+    assert m["n_success"] == int(won.sum()) > 0
+    wrist = np.concatenate([rec[f"ep{e}/peak_wrist_force_n"] for e in (0, 1)])[won]
+    assert m["peak_wrist_force_n_success_mean"] == pytest.approx(float(wrist.mean()), rel=1e-5)

@@ -12,7 +12,9 @@ Examples::
 
 Writes ``metrics.json``: success / safety rate over valid envs, return, steps to success,
 peak detach index / target / collateral / wrist force, reward-term sums, impedance usage
-(per episode and averaged). Env settings come from the checkpoint's config (or the
+(per episode and averaged), and the peak forces / torques over successful valid envs only
+(``*_success_mean``). Next to it, ``<out>.per_env.npz`` holds every episode's per-env records
+(``ep<k>/<field>``, env i = world i of the world set) for paired comparisons on the same worlds. Env settings come from the checkpoint's config (or the
 defaults for a baseline) and can be overridden with the same flags as training.
 """
 
@@ -71,7 +73,7 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
     obs, _ = wrapper.reset()
     state = wrapper.state()
     policy.reset(wrapper)
-    per_episode = []
+    per_episode, per_env = [], []
     while len(per_episode) < episodes:
         actions = policy.act(wrapper, obs, state)
         obs, _r, terminated, truncated, info = wrapper.step(actions)
@@ -81,6 +83,7 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         log = info.get("log", {})
         if "Episode / success rate" in log:
             per_episode.append({k: float(v) for k, v in log.items() if k.startswith("Episode /")})
+            per_env.append({k: v.cpu().numpy() for k, v in info.get("episode_per_env", {}).items()})
             if not hasattr(policy, "on_step"):  # the recurrent runner resets its state in on_step
                 policy.reset(wrapper)
     keys = {
@@ -164,7 +167,25 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         out[key] = float(np.mean(vals)) if vals else float("nan")
     out["peak_wrist_torque_nm_mean"] = float(np.mean([e["Episode / peak wrist torque N*m (mean)"] for e in per_episode]))
     out["peak_target_torque_nm_mean"] = float(np.mean([e["Episode / peak target torque N*m (mean)"] for e in per_episode]))
+    out.update(success_conditioned(per_env))
     out["episodes"] = per_episode
+    out["per_env"] = per_env  # popped by main into the .per_env.npz
+    return out
+
+
+def success_conditioned(per_env: list[dict[str, np.ndarray]]) -> dict[str, float]:
+    """[D17q] Peak loads over successful valid envs only (pooled over episodes), so a policy that fails or times
+    out more is not flattered by its low-force failures: ``<field>_success_mean`` / ``_success_p90``."""
+    if not per_env or "success" not in per_env[0]:
+        return {}
+    won = np.concatenate([e["success"] & ~e["invalid"] for e in per_env])
+    out = {"n_success": int(won.sum())}
+    for k in per_env[0]:
+        if not k.startswith("peak_"):
+            continue
+        v = np.concatenate([e[k] for e in per_env])[won].astype(np.float64)
+        out[f"{k}_success_mean"] = float(v.mean()) if v.size else float("nan")
+        out[f"{k}_success_p90"] = float(np.quantile(v, 0.9)) if v.size else float("nan")
     return out
 
 
@@ -276,10 +297,17 @@ def main(argv: list[str] | None = None) -> int:
         metrics = evaluate(wrapper, policy, episodes=args.episodes)
     finally:
         wrapper.close()
+    per_env = metrics.pop("per_env")
     metrics["policy"] = label
     metrics["env"] = dataclasses.asdict(cfg.env)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(metrics, indent=2) + "\n")
+    if per_env:
+        np.savez_compressed(
+            Path(args.out).with_suffix(".per_env.npz"),
+            world_set=np.array(str(cfg.env.world_set)),
+            **{f"ep{i}/{k}": v for i, e in enumerate(per_env) for k, v in e.items()},
+        )
     print(
         f"{label}: success {metrics['success_rate']:.3f}, safety {metrics['safety_rate']:.3f}, "
         f"return {metrics['return_mean']:.2f}, peak collateral {metrics['peak_collateral_n_mean']:.2f} N -> {args.out}"

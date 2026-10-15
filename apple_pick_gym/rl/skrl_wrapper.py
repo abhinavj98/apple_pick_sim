@@ -274,6 +274,26 @@ class _EpisodeStats:
             f"{k} < 22 N (frac)": (c < 22.0).float().mean(),
         }
 
+    def per_env(self) -> dict[str, torch.Tensor]:
+        """[D17q] The episode's per-env records (env i = world i of the world set), for paired, success-conditioned
+        comparisons of policies on the same worlds: outcome flags, steps to success, and every peak force /
+        torque (N, N*m) and the at-detach quantities (NaN where the env did not succeed)."""
+        out = {
+            "invalid": self.invalid, "blowup": self.blowup, "success": self.success, "safety": self.safety,
+            "steps_to_success": self.steps_to_success, "return": self.ret,
+            "peak_target_force_n": self.peak_force, "peak_target_torque_nm": self.peak_tau,
+            "peak_collateral_n": self.peak_coll, "peak_wrist_force_n": self.peak_wrist,
+            "peak_wrist_torque_nm": self.peak_wrist_tau, "peak_theta_b_deg": self.peak_theta,
+            "peak_tcp_speed_mps": self.peak_speed, "mean_tcp_speed_mps": self.sum_speed / self.live_steps.clamp_min(1.0),
+            **{f"safety_{k}": v for k, v in self.safety_cap.items()},
+            **{f"peak_force_{k}_n": v for k, v in self.peak_junction.items()},
+            **{f"peak_torque_{k}_nm": v for k, v in self.peak_junction_torque.items()},
+            **{f"detach_{k}": v for k, v in self.at_detach.items()},
+        }
+        if self.peak_advance is not None:
+            out["peak_tcp_advance_m"] = self.peak_advance
+        return {k: v.detach().clone() for k, v in out.items()}
+
     def summary(self) -> dict[str, torch.Tensor]:
         valid = ~self.invalid
         s = lambda x: torch.tensor(0.0, device=self.device) if not bool(valid.any()) else x[valid].float().mean()
@@ -449,6 +469,7 @@ class HarvestSkrlWrapper(Wrapper):
             terminated = terminated | truncated
             log.update(self._stats.summary())
             info = dict(info)
+            info["episode_per_env"] = self._stats.per_env()
             obs, reset_info = self._env.reset()
             self._on_reset(obs, reset_info)
         else:

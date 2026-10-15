@@ -96,6 +96,8 @@ EPISODE_METADATA_KEYS: tuple[str, ...] = (
     "rest_hold_injected",
     # Real→batched: during-run (frame-0) primary_spur junction; build anchors to it.
     "rest_junction_pos",
+    # Real→batched --taut-tcp: build moves the settled apple to the grasp by translation.
+    "grasp_transport",
 )
 
 

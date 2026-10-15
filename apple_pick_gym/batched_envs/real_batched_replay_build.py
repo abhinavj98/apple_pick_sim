@@ -31,8 +31,10 @@ from apple_pick_sim.robot.fr3_robot.controllers.ee_impedance import ImpedanceGai
 from apple_pick_sim.system_id.batched_digital_twin_init import (
     apply_logged_post_grasp_se3_to_cable,
     gripper_proxy_for_real_batched_replay,
+    translate_apple_to_logged_grasp,
     translate_fruiting_worlds,
 )
+from apple_pick_sim.system_id.real_to_batched_sysid import GRASP_TRANSPORT_TRANSLATE_ONLY
 
 # Canonical real-replay VBD settle defaults (pre-grasp free settle / post-grasp welded).
 DEFAULT_PRE_GRASP_SETTLE_SUBSTEPS = 5000
@@ -301,6 +303,33 @@ def anchor_settled_junction_to_rest(
     return shifts
 
 
+def _report_junction_offset_from_logged(
+    env: ApplePickBatchedSysIdEnv,
+    per_env_meta: Sequence[Mapping[str, Any]],
+) -> np.ndarray | None:
+    """Print/return each world's post-settle T junction minus the logged during-run one."""
+    names = list(env.junction_names)
+    if "primary_spur" not in names or any(
+        m.get("rest_junction_pos") is None for m in per_env_meta
+    ):
+        return None
+    n_envs = len(per_env_meta)
+    obs = env._sim.gather_obs()
+    settled = obs["woody_parent_pos"].numpy().reshape(n_envs, len(names), 3)[
+        :, names.index("primary_spur"), :
+    ]
+    logged = np.asarray([m["rest_junction_pos"] for m in per_env_meta], dtype=np.float64)
+    delta = settled.astype(np.float64) - logged
+    print(
+        "taut-tcp post-settle T junction minus logged (mm): "
+        + "  ".join(
+            "[" + " ".join(f"{1e3 * v:+.1f}" for v in row) + "]" for row in delta
+        ),
+        flush=True,
+    )
+    return delta
+
+
 def make_real_replay_build_env_fn(
     *,
     ranges_path: Path,
@@ -443,25 +472,45 @@ def make_real_replay_build_env_fn(
         scene = env._sim.scene
         layout = getattr(scene, "layout", None)
         cable = getattr(scene, "cable", None)
+        metas = (
+            list(per_env_episode_meta)
+            if per_env_episode_meta is not None
+            else [episode_meta] * int(num_envs)
+        )
+        translate_only = all(
+            m.get("grasp_transport") == GRASP_TRANSPORT_TRANSLATE_ONLY for m in metas
+        )
+        if not translate_only and any(
+            m.get("grasp_transport") == GRASP_TRANSPORT_TRANSLATE_ONLY for m in metas
+        ):
+            raise ValueError("mixed grasp_transport across envs; reconvert the dataset")
         if cable is not None:
-            if anchor_rest_junction:
-                build_env_fn.last_rest_junction_shift = anchor_settled_junction_to_rest(
-                    env,
-                    per_env_episode_meta
-                    if per_env_episode_meta is not None
-                    else [episode_meta] * int(num_envs),
-                )
-            if per_env_episode_meta is not None:
-                apply_logged_post_grasp_se3_to_cable(
-                    cable,
-                    dict(episode_meta),
-                    layout=layout,
-                    per_env_meta=per_env_episode_meta,
+            if translate_only:
+                # Taut-TCP datasets: the plant keeps its settled sag (no junction
+                # anchor) and the apple moves to the logged grasp by translation only.
+                gaps = translate_apple_to_logged_grasp(scene, metas)
+                build_env_fn.last_grasp_transport_gap_m = gaps
+                print(
+                    "taut-tcp grasp transport gap mm: "
+                    + " ".join(f"{1e3 * g:.1f}" for g in gaps),
+                    flush=True,
                 )
             else:
-                apply_logged_post_grasp_se3_to_cable(
-                    cable, dict(episode_meta), layout=layout
-                )
+                if anchor_rest_junction:
+                    build_env_fn.last_rest_junction_shift = (
+                        anchor_settled_junction_to_rest(env, metas)
+                    )
+                if per_env_episode_meta is not None:
+                    apply_logged_post_grasp_se3_to_cable(
+                        cable,
+                        dict(episode_meta),
+                        layout=layout,
+                        per_env_meta=per_env_episode_meta,
+                    )
+                else:
+                    apply_logged_post_grasp_se3_to_cable(
+                        cable, dict(episode_meta), layout=layout
+                    )
             # Weld rebuild re-applies fixture support kp/roll; restore candidate
             # values before post-grasp settle so snapshot stores correct drives.
             zeta = sim_config.fruiting_system.joint_damping_ratio
@@ -512,6 +561,10 @@ def make_real_replay_build_env_fn(
                 per_env_params=env._sim.per_env_params,
                 substeps=post_grasp_n,
             )
+            if translate_only:
+                build_env_fn.last_junction_offset_from_logged_m = (
+                    _report_junction_offset_from_logged(env, metas)
+                )
             # Construct snapshots settle→weld before SE(3). Recapture after
             # teleport + post-grasp settle so reset() keeps the relaxed grasp.
             env._sim.capture_episode_snapshot()

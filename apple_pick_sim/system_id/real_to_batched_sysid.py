@@ -50,6 +50,11 @@ DEFAULT_FT_LPF_ORDER = 4
 # Fitted from consistent-marker directions (2026-10-12): s08 12.5, s09 12.6,
 # s10 8.2 mm; pooled median of s08+s09+s10 (n=20) = 12.3 mm.
 DEFAULT_APPLE_STANDOFF_M = 0.0123
+# --taut-tcp: apple surface 2 mm beyond the TCP along tool +Z (rig gripper seat).
+TAUT_TCP_APPLE_STANDOFF_M = 0.002
+# Episode-meta marker read by the replay build: after the free settle, move the
+# apple to the logged grasp by translation only (keep its settled rotation).
+GRASP_TRANSPORT_TRANSLATE_ONLY = "translate_only"
 _TREE_PARQUET_RE = re.compile(r"(?P<tree>s\d+)-d(?P<dir>\d+)\.parquet")
 
 # Convert-time primary T-junction lift: rest snapshot base is sagged vs lengthened.
@@ -415,13 +420,18 @@ def build_episode_metadata_from_real(
     fixture_path: str | Path,
     weld_direction_sign: float = 1.0,
     apple_pose_override: tuple[Any, Any] | None = None,
+    taut_tcp: bool = False,
+    base_lift_m: float = 0.0,
 ) -> dict[str, Any]:
     """Build batched-style episode metadata from one real-world parquet episode.
 
     Uses the same pre/post builders as ``example_view_pre_grasp_settle.py`` so
     converted metadata matches the settle-viewer twin (rebuild + grasp init).
     ``apple_pose_override`` (``(pos, quat_xyzw)``) replaces the logged apple
-    marker at grasp for the taut closure and the weld.
+    marker at grasp for the taut closure and the weld. ``taut_tcp`` builds the
+    primary on the during-run T junction raised by ``base_lift_m`` in +Z (instead of
+    the mass-gated sag lift) and marks the episode for a translate-only grasp
+    transport at build.
     """
     path = Path(input_path)
     fixture = Path(fixture_path)
@@ -440,6 +450,7 @@ def build_episode_metadata_from_real(
         load_dataset_metadata(path),
         fixture_path=fixture,
         apple_pose_override=apple_pose_override,
+        prefer_lengthened_base=not taut_tcp,
     )
     if params.apple_radius is None:
         raise ValueError("native pre-grasp params missing apple_radius")
@@ -448,9 +459,16 @@ def build_episode_metadata_from_real(
         raise ValueError(
             "pre-grasp diagnostics missing apple_mass_kg; cannot apply sag base-Z offset"
         )
-    base_pos = raise_fruiting_base_pos_for_sag(
-        base_pos, apple_mass_kg=float(apple_mass)
-    )
+    if taut_tcp:
+        base_pos = (
+            float(base_pos[0]),
+            float(base_pos[1]),
+            float(base_pos[2]) + float(base_lift_m),
+        )
+    else:
+        base_pos = raise_fruiting_base_pos_for_sag(
+            base_pos, apple_mass_kg=float(apple_mass)
+        )
     dm = load_dataset_metadata(path)
     plan = post_grasp_plan_from_metadata(
         dm,
@@ -521,6 +539,8 @@ def build_episode_metadata_from_real(
         float(x)
         for x in np.asarray(rest_snap["woody_part_start_pos"], dtype=np.float64).reshape(9)[0:3]
     ]
+    if taut_tcp:
+        meta["grasp_transport"] = GRASP_TRANSPORT_TRANSLATE_ONLY
     cam = camera_to_base_4x4_from_dataset_metadata(dm)
     if cam is not None:
         meta["camera_to_base_4x4"] = cam
@@ -824,14 +844,23 @@ def _tcp_derived_apple_poses(
     discovered: list[tuple[Path, int]],
     *,
     standoff_m: float,
+    radius_reduce: str = "median",
+    catalog_spur_tip: bool = False,
 ) -> tuple[dict[int, tuple[Any, Any]], float, dict[str, Any]]:
     """Per-direction grasped apple at ``tcp + (r_tree + c)·z_tool`` and its report.
 
     The apple marker reads up to ~45 mm too deep along the camera ray, so the
     grasped apple comes from the logged TCP: each direction's taut radius is
     solved against its frame-0 spur tip (:func:`taut_apple_radius_from_tcp`) and
-    the tree uses the median.
+    the tree reduces them with ``radius_reduce``: ``"median"``, or ``"min"`` (the
+    largest radius that leaves no direction slack; the rest start stretched).
+
+    ``catalog_spur_tip`` puts the spur tip at the catalog spur length along the
+    during-run T → spur-end marker direction (instead of the spur-end marker) and
+    adds the spur radius to the stem span, matching how the build attaches the stem.
     """
+    if radius_reduce not in ("median", "min"):
+        raise ValueError(f"radius_reduce must be 'median' or 'min', got {radius_reduce!r}")
     from apple_pick_sim.system_id.real_post_grasp_plan import (
         apple_pose_at_tcp,
         post_grasp_plan_from_metadata,
@@ -848,16 +877,26 @@ def _tcp_derived_apple_poses(
         plan = post_grasp_plan_from_metadata(dm, apple_radius_m=1.0, emit_warnings=False)
         pre = dm.get("pre_grasp_geometry") or {}
         snap, _ = select_pre_grasp_woody_snapshot(pre)
+        parts = pre["parts"]
         spur_tip = np.asarray(snap["woody_part_end_pos"], dtype=np.float64).reshape(9)[0:3]
+        stem_span = float(parts["stem"]["length_m"])
+        if catalog_spur_tip:
+            junction = np.asarray(snap["woody_part_start_pos"], dtype=np.float64).reshape(9)[0:3]
+            chord = spur_tip - junction
+            spur_tip = junction + float(parts["spur"]["length_m"]) * chord / float(
+                np.linalg.norm(chord)
+            )
+            stem_span += float(parts["spur"]["radius_m"])
         radius = taut_apple_radius_from_tcp(
             plan.tcp_pos,
             plan.tcp_quat_xyzw,
             spur_tip,
-            stem_length_m=float(pre["parts"]["stem"]["length_m"]),
+            stem_length_m=stem_span,
             standoff_m=float(standoff_m),
         )
         rows.append((int(direction_idx), plan, radius))
-    r_tree = float(np.median([radius for _, _, radius in rows]))
+    radii = [radius for _, _, radius in rows]
+    r_tree = float(np.min(radii) if radius_reduce == "min" else np.median(radii))
     overrides: dict[int, tuple[Any, Any]] = {}
     marker_mm: dict[str, float] = {}
     for direction_idx, plan, _ in rows:
@@ -868,6 +907,8 @@ def _tcp_derived_apple_poses(
         )
     report = {
         "standoff_m": float(standoff_m),
+        "radius_reduce": radius_reduce,
+        "catalog_spur_tip": bool(catalog_spur_tip),
         "apple_radius_m": r_tree,
         "apple_radius_by_direction_mm": {
             str(direction_idx): 1e3 * radius for direction_idx, _, radius in sorted(rows)
@@ -1039,6 +1080,8 @@ def _build_real_episode(
     transport_torque_to_tcp: bool = False,
     inject_rest_hold: bool = True,
     apple_pose_override: tuple[Any, Any] | None = None,
+    taut_tcp: bool = False,
+    base_lift_m: float = 0.0,
 ) -> _ConvertedEpisode:
     """Convert one real parquet into trajectory + metadata (no manifest write)."""
     from apple_pick_sim.system_id.batched_trajectory_store import BatchedEpisodeWriter
@@ -1052,6 +1095,8 @@ def _build_real_episode(
         fixture_path=fixture,
         weld_direction_sign=weld_direction_sign,
         apple_pose_override=apple_pose_override,
+        taut_tcp=taut_tcp,
+        base_lift_m=base_lift_m,
     )
     episode_meta = {
         **episode_meta,
@@ -1490,7 +1535,9 @@ def export_real_tree_folder_to_batched_dataset(
     transport_torque_to_tcp: bool = False,
     inject_rest_hold: bool = True,
     apple_from_tcp: bool = False,
-    apple_standoff_m: float = DEFAULT_APPLE_STANDOFF_M,
+    apple_standoff_m: float | None = None,
+    taut_tcp: bool = False,
+    base_lift_m: float = 0.0,
 ) -> Path:
     """Write a 1×N ``batched_sysid_v1`` dataset from one tree folder of parquets.
 
@@ -1498,7 +1545,16 @@ def export_real_tree_folder_to_batched_dataset(
     direction's grasped apple sits at ``tcp + (r + c)·z_tool`` with ``c =
     apple_standoff_m`` and one taut-closure radius ``r`` per tree (density keeps
     the logged mass).
+
+    ``taut_tcp`` (implies ``apple_from_tcp``) is the taut-at-grasp preset: primary
+    on the mean during-run T junction (no sag lift), catalog spur tip, the minimum
+    per-direction radius (no direction slack), ``c`` defaulting to
+    :data:`TAUT_TCP_APPLE_STANDOFF_M`, and a translate-only grasp transport at build.
+    ``base_lift_m`` raises that base in +Z so a candidate whose sim plant sags by
+    about that much hangs the apple at the grasp with the stem carrying its weight.
     """
+    if base_lift_m and not taut_tcp:
+        raise ValueError("base_lift_m requires taut_tcp")
     from apple_pick_sim.system_id.batched_trajectory_store import episode_filename
 
     src_dir = Path(input_dir)
@@ -1508,9 +1564,14 @@ def export_real_tree_folder_to_batched_dataset(
     apple_overrides: dict[int, tuple[Any, Any]] = {}
     apple_from_tcp_report: dict[str, Any] | None = None
     tree_apple_radius_m: float | None = None
-    if apple_from_tcp:
+    if apple_standoff_m is None:
+        apple_standoff_m = TAUT_TCP_APPLE_STANDOFF_M if taut_tcp else DEFAULT_APPLE_STANDOFF_M
+    if apple_from_tcp or taut_tcp:
         apple_overrides, tree_apple_radius_m, apple_from_tcp_report = _tcp_derived_apple_poses(
-            discovered, standoff_m=float(apple_standoff_m)
+            discovered,
+            standoff_m=float(apple_standoff_m),
+            radius_reduce="min" if taut_tcp else "median",
+            catalog_spur_tip=taut_tcp,
         )
     converted: list[_ConvertedEpisode] = []
     for path, direction_idx in discovered:
@@ -1529,8 +1590,12 @@ def export_real_tree_folder_to_batched_dataset(
                 transport_torque_to_tcp=transport_torque_to_tcp,
                 inject_rest_hold=inject_rest_hold,
                 apple_pose_override=apple_overrides.get(direction_idx),
+                taut_tcp=taut_tcp,
+                base_lift_m=base_lift_m,
             )
         )
+    if apple_from_tcp_report is not None and taut_tcp:
+        apple_from_tcp_report["base_lift_m"] = float(base_lift_m)
     if apple_from_tcp_report is not None and tree_apple_radius_m is not None:
         apple_from_tcp_report["apple_density_kg_m3"] = _apply_tree_apple_radius(
             converted, tree_apple_radius_m
@@ -1565,7 +1630,10 @@ def export_real_tree_folder_to_batched_dataset(
         sim_config=sim_config,
         n_holds=n_holds,
         extra_collection=(
-            {"apple_from_tcp": apple_from_tcp_report}
+            {
+                "apple_from_tcp": apple_from_tcp_report,
+                "geometry_mode": "taut_tcp" if taut_tcp else "apple_from_tcp",
+            }
             if apple_from_tcp_report is not None
             else None
         ),

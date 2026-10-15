@@ -268,6 +268,83 @@ def translate_fruiting_worlds(cable: Any, shifts: np.ndarray) -> None:
     align_proxy_body_q_prev_for_vbd(cable, tuple(range(int(model.body_count))))
 
 
+def translate_apple_to_logged_grasp(
+    scene: Any,
+    per_env_meta: Sequence[Mapping[str, Any]],
+) -> np.ndarray:
+    """Move each settled apple to its logged grasp by translation only; weld at the TCP.
+
+    For ``grasp_transport="translate_only"`` episodes. Call after settle→weld seed and
+    before the post-grasp settle. Per world the apple keeps its settled rotation and
+    moves to ``initial_apple_pos``; the proxy goes to the logged TCP
+    (``initial_tcp_pos`` / ``initial_tcp_quat``). The weld offset becomes
+    ``X_apple⁻¹ X_tcp`` for that pose: written to the weld joint's ``joint_X_p``,
+    the proxy rest (``model.body_q``), ``scene.per_world_proxy_offsets`` and the
+    cached harvest arrays. Woody bodies and the apple's as-built rest are untouched,
+    so the stem→apple joint carries the transport as preload for the plant settle.
+
+    Returns the per-world transport distance (m) from the settled apple.
+    """
+    from apple_pick_sim.coupled_fruiting.proxy_coupling import (
+        prepare_batched_stem_harvest_arrays,
+    )
+
+    cable = scene.cable
+    layout = getattr(scene, "layout", None)
+    if layout is None:
+        raise ValueError("translate_apple_to_logged_grasp requires a batched layout")
+    n_envs = int(layout.num_envs)
+    if len(per_env_meta) != n_envs:
+        raise ValueError(f"per_env_meta length {len(per_env_meta)} != num_envs {n_envs}")
+    weld_tpl = getattr(cable, "gripper_proxy_apple_joint", None)
+    if weld_tpl is None:
+        raise ValueError("cable has no apple↔proxy weld joint (fix_to_apple=False?)")
+
+    bq = cable.state_0.body_q.numpy().reshape(-1, 7).astype(np.float32).copy()
+    bqd = cable.state_0.body_qd.numpy().reshape(-1, 6).astype(np.float32).copy()
+    xp = cable.model.joint_X_p.numpy().reshape(-1, 7).copy()
+    offsets: list[tuple[float, ...]] = []
+    gaps = np.zeros(n_envs, dtype=np.float64)
+    for w, (aid, pid, meta) in enumerate(
+        zip(layout.apple_body_indices, layout.proxy_body_indices, per_env_meta, strict=True)
+    ):
+        apple_pos = _tuple_or_none(meta.get("initial_apple_pos"), 3)
+        tcp_pos = _tuple_or_none(meta.get("initial_tcp_pos"), 3)
+        tcp_quat = _tuple_or_none(meta.get("initial_tcp_quat"), 4)
+        if apple_pos is None or tcp_pos is None or tcp_quat is None:
+            raise ValueError(
+                "translate-only grasp transport requires initial_apple_pos and "
+                "initial_tcp_pos/quat in episode metadata"
+            )
+        aid, pid = int(aid), int(pid)
+        apple_quat = tuple(float(x) for x in bq[aid, 3:7])
+        gaps[w] = float(np.linalg.norm(np.asarray(apple_pos) - bq[aid, 0:3]))
+        offset = proxy_offset_from_apple_and_tcp(
+            apple_pos=apple_pos,  # type: ignore[arg-type]
+            apple_quat_xyzw=apple_quat,  # type: ignore[arg-type]
+            tcp_pos=tcp_pos,  # type: ignore[arg-type]
+            tcp_quat_xyzw=tcp_quat,  # type: ignore[arg-type]
+        )
+        offsets.append(offset)
+        bq[aid, 0:3] = np.asarray(apple_pos, dtype=np.float32)
+        bq[pid, 0:3] = np.asarray(tcp_pos, dtype=np.float32)
+        bq[pid, 3:7] = np.asarray(tcp_quat, dtype=np.float32)
+        bqd[aid] = 0.0
+        bqd[pid] = 0.0
+        xp[layout.joint_index(w, int(weld_tpl))] = np.asarray(offset, dtype=xp.dtype)
+
+    for state in (cable.state_0, cable.state_1):
+        state.body_q.assign(bq)
+        state.body_qd.assign(bqd)
+    cable.model.joint_X_p.assign(xp)
+    align_proxy_body_q_prev_for_vbd(cable, tuple(range(int(cable.model.body_count))))
+    sync_weld_proxy_rest_from_apple_rest(cable, layout=layout, per_env_offsets=offsets)
+    scene.per_world_proxy_offsets = tuple(offsets)
+    if getattr(scene, "stem_harvest_grasp_offsets_wp", None) is not None:
+        prepare_batched_stem_harvest_arrays(scene, layout)
+    return gaps
+
+
 def apply_logged_post_grasp_se3_to_cable(
     cable: Any,
     meta: dict[str, Any],

@@ -293,10 +293,14 @@ def _fruiting_base_from_lengthened_or_rest(
     primary_dir: tuple[float, float, float],
     primary_radius_m: float,
     rest_snapshot_source: str,
+    prefer_lengthened: bool = True,
 ) -> tuple[tuple[float, float, float], float, np.ndarray, str, str]:
-    """Prefer lengthened_snapshot T; else rest/snapshot spur-start centerline."""
+    """Prefer lengthened_snapshot T; else rest/snapshot spur-start centerline.
+
+    ``prefer_lengthened=False`` always uses the rest (during-run) T junction.
+    """
     lengthened = pre.get("lengthened_snapshot")
-    if _snapshot_has_woody(lengthened):
+    if prefer_lengthened and _snapshot_has_woody(lengthened):
         assert isinstance(lengthened, dict)
         spur_start, spur_chord_dir = _woody_spur_start_and_chord_dir(lengthened)
         fruiting_base = surface_to_centerline(
@@ -335,12 +339,14 @@ def map_pre_grasp_geometry(
     primary_dir: tuple[float, float, float],
     strict: bool = False,
     apple_pose_override: tuple[Any, Any] | None = None,
+    prefer_lengthened_base: bool = True,
 ) -> PreGraspMappedGeometry:
     """Map Branch/Spur/Apple shared_endpoints pre-grasp into rod geometry.
 
     ``apple_pose_override`` (``(pos, quat_xyzw)``) replaces the snapshot apple
     marker for the taut closure, stem direction and apple orientation, e.g. the
-    apple derived from the logged robot TCP.
+    apple derived from the logged robot TCP. ``prefer_lengthened_base=False``
+    places the primary on the during-run T junction instead of the lengthened one.
     """
     topo = meta.get("topology") or {}
     names = list(topo.get("junction_names") or [])
@@ -406,6 +412,7 @@ def map_pre_grasp_geometry(
         primary_dir=primary_dir,
         primary_radius_m=primary_r,
         rest_snapshot_source=snap_source,
+        prefer_lengthened=prefer_lengthened_base,
     )
 
     rod_density_diag: dict[str, dict[str, Any]] = {}
@@ -632,6 +639,7 @@ def fruiting_params_from_pre_grasp_meta(
     fixture_path: str | Path,
     strict: bool = False,
     apple_pose_override: tuple[Any, Any] | None = None,
+    prefer_lengthened_base: bool = True,
 ) -> tuple[FruitingSystemParams, tuple[float, float, float], dict[str, Any]]:
     """Build ``FruitingSystemParams`` + base + diagnostics from metadata dict."""
     primary_dir = primary_direction_from_fixture(fixture_path)
@@ -640,6 +648,7 @@ def fruiting_params_from_pre_grasp_meta(
         primary_dir=primary_dir,
         strict=strict,
         apple_pose_override=apple_pose_override,
+        prefer_lengthened_base=prefer_lengthened_base,
     )
     directions = {
         "primary": primary_dir,

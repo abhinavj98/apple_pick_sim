@@ -110,12 +110,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--taut-tcp",
+        action="store_true",
+        help=(
+            "Tree folders only (implies --apple-from-tcp): primary on the mean during-run "
+            "T junction, catalog spur tip, minimum per-direction taut radius, 2 mm "
+            "standoff, and a translate-only apple transport to the logged grasp at build."
+        ),
+    )
+    parser.add_argument(
+        "--base-lift-m",
+        type=float,
+        default=0.0,
+        help=(
+            "With --taut-tcp: raise the during-run T-junction base by this much in +Z "
+            "(expected sim sag under the apple; default 0)."
+        ),
+    )
+    parser.add_argument(
         "--apple-standoff-m",
         type=float,
         default=None,
         help=(
-            "With --apple-from-tcp: apple surface distance beyond the TCP along tool +Z "
-            "(default: DEFAULT_APPLE_STANDOFF_M)."
+            "With --apple-from-tcp / --taut-tcp: apple surface distance beyond the TCP "
+            "along tool +Z (default: DEFAULT_APPLE_STANDOFF_M, or "
+            "TAUT_TCP_APPLE_STANDOFF_M with --taut-tcp)."
         ),
     )
     parser.add_argument(
@@ -166,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.input_dir,
                 base_pos_tolerance_m=float(args.base_pos_tolerance_m),
                 apple_from_tcp=bool(args.apple_from_tcp),
+                taut_tcp=bool(args.taut_tcp),
+                base_lift_m=float(args.base_lift_m),
                 **(
                     {"apple_standoff_m": float(args.apple_standoff_m)}
                     if args.apple_standoff_m is not None
@@ -174,8 +195,13 @@ def main(argv: list[str] | None = None) -> int:
                 **common_kw,
             )
         else:
-            if args.apple_from_tcp or args.apple_standoff_m is not None:
-                parser.error("--apple-from-tcp requires --input-dir (tree folder)")
+            if (
+                args.apple_from_tcp
+                or args.taut_tcp
+                or args.apple_standoff_m is not None
+                or args.base_lift_m
+            ):
+                parser.error("--apple-from-tcp / --taut-tcp require --input-dir (tree folder)")
             out_dir = export_real_episode_to_batched_dataset(
                 args.input,
                 **common_kw,

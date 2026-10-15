@@ -2118,3 +2118,91 @@ def test_folder_convert_writes_rest_junction_pos(tmp_path: Path):
     for d in range(3):
         meta = ds.load_episode_metadata(0, d)
         np.testing.assert_allclose(meta["rest_junction_pos"], [0.0, 1.0, 0.6], atol=1e-12)
+
+
+def test_folder_convert_taut_tcp_preset(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_post_grasp_plan import taut_apple_radius_from_tcp
+    from apple_pick_sim.system_id.real_pre_grasp_params import load_dataset_metadata
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        GRASP_TRANSPORT_TRANSLATE_ONLY,
+        TAUT_TCP_APPLE_STANDOFF_M,
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    src_dir = tmp_path / "s09"
+    src_dir.mkdir()
+    for d in range(3):
+        _write_folder_parquet(
+            src_dir / f"s09-d{d:02d}.parquet",
+            d,
+            post_grasp_apple_offset_xyz=[0.0, 0.01, 0.0] if d == 1 else None,
+        )
+    out_taut = tmp_path / "taut"
+    export_real_tree_folder_to_batched_dataset(
+        src_dir, fixture_path=VARIANCE, output_dir=out_taut, overwrite=True, taut_tcp=True
+    )
+    out_tcp = tmp_path / "tcp"
+    export_real_tree_folder_to_batched_dataset(
+        src_dir, fixture_path=VARIANCE, output_dir=out_tcp, overwrite=True, apple_from_tcp=True
+    )
+    ds = BatchedSysIdDataset(out_taut)
+    ds_tcp = BatchedSysIdDataset(out_tcp)
+
+    # Synthetic tree: TCP (0, 0.9, 0.4), identity quat (tool z = world z); during-run
+    # T junction (0, 1, 0.6) and spur end (0, 1, 0.5), so the spur chord points -Z.
+    parts = load_dataset_metadata(src_dir / "s09-d00.parquet")["pre_grasp_geometry"]["parts"]
+    tip = np.array([0.0, 1.0, 0.6]) - float(parts["spur"]["length_m"]) * np.array([0.0, 0.0, 1.0])
+    c = TAUT_TCP_APPLE_STANDOFF_M
+    r = taut_apple_radius_from_tcp(
+        [0.0, 0.9, 0.4], [0.0, 0.0, 0.0, 1.0], tip,
+        stem_length_m=float(parts["stem"]["length_m"]) + float(parts["spur"]["radius_m"]),
+        standoff_m=c,
+    )
+
+    report = ds.manifest["collection"]["apple_from_tcp"]
+    assert ds.manifest["collection"]["geometry_mode"] == "taut_tcp"
+    assert report["radius_reduce"] == "min"
+    assert report["catalog_spur_tip"] is True
+    assert report["standoff_m"] == pytest.approx(c)
+    assert report["apple_radius_m"] == pytest.approx(r, abs=1e-12)
+    assert 1e3 * r == pytest.approx(min(report["apple_radius_by_direction_mm"].values()))
+    for d in range(3):
+        meta = ds.load_episode_metadata(0, d)
+        assert meta["grasp_transport"] == GRASP_TRANSPORT_TRANSLATE_ONLY
+        np.testing.assert_allclose(meta["initial_apple_pos"], [0.0, 0.9, 0.4 + r + c], atol=1e-9)
+        assert meta["apple_radius"] == pytest.approx(r, abs=1e-12)
+        assert "grasp_transport" not in ds_tcp.load_episode_metadata(0, d)
+    # Taut base is the during-run T junction without the sag lift: it differs from the
+    # lengthened-snapshot base used by --apple-from-tcp.
+    base_taut = np.asarray(ds.load_episode_metadata(0, 0)["fruiting_base_pos"])
+    base_tcp = np.asarray(ds_tcp.load_episode_metadata(0, 0)["fruiting_base_pos"])
+    assert not np.allclose(base_taut, base_tcp, atol=1e-6)
+
+
+def test_folder_convert_taut_tcp_base_lift_raises_base_z(tmp_path: Path):
+    from apple_pick_sim.system_id.batched_trajectory_store import BatchedSysIdDataset
+    from apple_pick_sim.system_id.real_to_batched_sysid import (
+        export_real_tree_folder_to_batched_dataset,
+    )
+
+    src_dir = tmp_path / "s09"
+    src_dir.mkdir()
+    for d in range(2):
+        _write_folder_parquet(src_dir / f"s09-d{d:02d}.parquet", d)
+    bases = {}
+    for lift in (0.0, 0.007):
+        out = tmp_path / f"taut_{lift}"
+        export_real_tree_folder_to_batched_dataset(
+            src_dir, fixture_path=VARIANCE, output_dir=out, overwrite=True,
+            taut_tcp=True, base_lift_m=lift,
+        )
+        ds = BatchedSysIdDataset(out)
+        bases[lift] = np.asarray(ds.load_episode_metadata(0, 0)["fruiting_base_pos"])
+        assert ds.manifest["collection"]["apple_from_tcp"]["base_lift_m"] == pytest.approx(lift)
+    np.testing.assert_allclose(bases[0.007] - bases[0.0], [0.0, 0.0, 0.007], atol=1e-12)
+    with pytest.raises(ValueError, match="requires taut_tcp"):
+        export_real_tree_folder_to_batched_dataset(
+            src_dir, fixture_path=VARIANCE, output_dir=tmp_path / "x", overwrite=True,
+            base_lift_m=0.007,
+        )

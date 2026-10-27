@@ -14,6 +14,11 @@
   grip axis is horizontal, so ``scripted_pull`` itself swings the stem (measured on the
   surrogate: theta_b ~39 deg at detach).
 
+- :class:`ScriptedStemRotatePullPolicy` -- the stem-aware, non-learned baseline: with the spur-stem junction
+  and the stem axis known, swing the TCP rigidly 30 deg about the junction (about the sideways axis, so the
+  apple goes out toward the robot), then pull at a constant rate along the swung stem axis. It never reads
+  the F/T sensor; the env decides detachment.
+
 Each exposes ``reset(wrapper)`` (called after every env reset) and
 ``act(wrapper, obs, state) -> (N, 13)``.
 """
@@ -157,11 +162,107 @@ class ScriptedBendPullPolicy:
         return wrapper.action_scaler.to_policy(a).clamp(-1.0, 1.0)
 
 
+def rotation_matrix(axis: torch.Tensor, angle: torch.Tensor) -> torch.Tensor:
+    """Rodrigues rotation matrices ``(N, 3, 3)`` for unit-or-not ``axis (N, 3)`` and ``angle (N,)`` (rad)."""
+    k = torch.nn.functional.normalize(axis, dim=-1)
+    z = torch.zeros_like(k[:, 0])
+    kx = torch.stack([z, -k[:, 2], k[:, 1], k[:, 2], z, -k[:, 0], -k[:, 1], k[:, 0], z], dim=-1).reshape(-1, 3, 3)
+    eye = torch.eye(3, dtype=k.dtype, device=k.device).expand_as(kx)
+    s, c = torch.sin(angle)[:, None, None], torch.cos(angle)[:, None, None]
+    return eye + s * kx + (1.0 - c) * kx @ kx
+
+
+class ScriptedStemRotatePullPolicy:
+    """Swing ``rotate_deg`` about the spur-stem junction, then pull along the swung stem axis.
+
+    Uses privileged plant state (like the critic): the junction position and the junction -> apple stem
+    axis ``a`` at the first step of an episode. The swing axis is ``a x o`` with ``o`` the outward (away
+    from the plant, toward the robot) grip axis, so it is horizontal for a hanging stem and rotating by
+    ``+rotate_deg`` tips the apple toward ``o``; it falls back to ``o x down`` if ``a`` is parallel to ``o``.
+    Phase 1 turns the target pose rigidly about the junction in ``rotate_step_deg`` steps (position moves
+    on the arc, orientation turns with it); phase 2 moves ``rate_m_per_step`` per step along ``R a``.
+    Gains are fixed. Open loop: no force feedback.
+    """
+
+    name = "scripted_stem_rotate_pull"
+
+    def __init__(
+        self,
+        *,
+        rotate_deg: float = 30.0,
+        rotate_step_deg: float = 2.0,
+        rate_m_per_step: float = 0.002,
+        k_lin: float = 150.0,
+        k_ang: float = 20.0,
+        zeta: float = 0.9,
+    ) -> None:
+        self.rotate = math.radians(float(rotate_deg))
+        self.step = math.radians(float(rotate_step_deg))
+        self.rate = float(rate_m_per_step)
+        self.k_lin, self.k_ang, self.zeta = float(k_lin), float(k_ang), float(zeta)
+        self._turned = 0.0
+        self._pivot: torch.Tensor | None = None
+        self._axis: torch.Tensor | None = None
+        self._pull_dir: torch.Tensor | None = None
+
+    def reset(self, wrapper) -> None:
+        del wrapper
+        self._turned = 0.0
+        self._pivot = self._axis = self._pull_dir = None
+
+    def _latch(self, wrapper) -> None:
+        env = wrapper._env
+        dev = wrapper.device
+        info = env._last_full_obs["woody_part_info"][env.target_junction_name if hasattr(env, "target_junction_name") else "spur_stem"]
+        pivot = info["anchors_pos"][:, 3:6].to(dev, torch.float32)
+        stem = env._target_stem_axis()
+        if stem is None:
+            raise RuntimeError("scripted_stem_rotate_pull needs a stem-apple junction (stem axis unavailable)")
+        stem = stem.to(dev, torch.float32)
+        out = torch.nn.functional.normalize(env.plant_geometry()["weld_direction"].to(dev, torch.float32), dim=-1)
+        axis = torch.cross(stem, out, dim=-1)
+        down = torch.tensor([0.0, 0.0, -1.0], device=dev).expand_as(out)
+        side = torch.cross(out, down, dim=-1)
+        axis = torch.where(torch.linalg.norm(axis, dim=-1, keepdim=True) < 0.1, side, axis)
+        self._pivot = pivot
+        self._axis = torch.nn.functional.normalize(axis, dim=-1)
+        full = rotation_matrix(self._axis, torch.full((pivot.shape[0],), self.rotate, device=dev))
+        self._pull_dir = torch.nn.functional.normalize((full @ stem.unsqueeze(-1)).squeeze(-1), dim=-1)
+
+    def act(self, wrapper, obs, state) -> torch.Tensor:
+        del obs, state
+        from apple_pick_gym.batched_envs.harvest_action import _quat_conj_wxyz, _rotate_by_quat_wxyz
+
+        if self._pivot is None:
+            self._latch(wrapper)
+        env, n = wrapper._env, wrapper.num_envs
+        a = torch.zeros(n, 13, device=wrapper.device)
+        d_ang = min(self.step, max(self.rotate - self._turned, 0.0))
+        if d_ang > 0.0:
+            arm = env._target_pose[:, :3].to(wrapper.device, torch.float32) - self._pivot
+            r = rotation_matrix(self._axis, torch.full((n,), d_ang, device=wrapper.device))
+            a[:, :3] = (r @ arm.unsqueeze(-1)).squeeze(-1) - arm
+            a[:, 3:6] = self._axis * d_ang
+            self._turned += d_ang
+        else:
+            a[:, :3] = self._pull_dir * self.rate
+        if getattr(env, "obs_frame", "world") == "tool":  # express the world delta in the TCP frame
+            q = env._last_tcp_pose_wxyz[:, 3:7].to(wrapper.device, torch.float32)
+            inv = _quat_conj_wxyz(q)
+            a[:, :3] = _rotate_by_quat_wxyz(inv, a[:, :3])
+            a[:, 3:6] = _rotate_by_quat_wxyz(inv, a[:, 3:6])
+        a[:, 6:9] = self.k_lin
+        a[:, 9:12] = self.k_ang
+        a[:, 12] = self.zeta
+        return wrapper.action_scaler.to_policy(a).clamp(-1.0, 1.0)
+
+
 BASELINES = {
     "zero": ZeroPolicy,
     "random": RandomPolicy,
     "scripted_pull": ScriptedPullPolicy,
     "scripted_twist_pull": lambda: ScriptedPullPolicy(rate_m_per_step=0.001, twist_rad_per_step=0.01),
     "scripted_bend_pull": ScriptedBendPullPolicy,
+    "scripted_stem_rotate_pull": ScriptedStemRotatePullPolicy,
     "scripted_down_pull": lambda: ScriptedBendPullPolicy(bend_m=0.0, pull_angle_deg=0.0, name="scripted_down_pull"),
 }

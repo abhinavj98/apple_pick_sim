@@ -194,7 +194,9 @@ class ScriptedStemRotatePullPolicy:
         k_lin: float = 150.0,
         k_ang: float = 20.0,
         zeta: float = 0.9,
+        name: str = "scripted_stem_rotate_pull",
     ) -> None:
+        self.name = name
         self.rotate = math.radians(float(rotate_deg))
         self.step = math.radians(float(rotate_step_deg))
         self.rate = float(rate_m_per_step)
@@ -245,5 +247,6 @@ BASELINES = {
     "scripted_twist_pull": lambda: ScriptedPullPolicy(rate_m_per_step=0.001, twist_rad_per_step=0.01),
     "scripted_bend_pull": ScriptedBendPullPolicy,
     "scripted_stem_rotate_pull": ScriptedStemRotatePullPolicy,
+    "scripted_stem_pull": lambda: ScriptedStemRotatePullPolicy(rotate_deg=0.0, name="scripted_stem_pull"),
     "scripted_down_pull": lambda: ScriptedBendPullPolicy(bend_m=0.0, pull_angle_deg=0.0, name="scripted_down_pull"),
 }

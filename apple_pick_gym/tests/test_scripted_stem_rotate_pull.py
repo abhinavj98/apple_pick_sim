@@ -49,8 +49,10 @@ class _FakeEnv:
         return self.stem_axis
 
 
-def _wrapper(env):
-    return types.SimpleNamespace(_env=env, num_envs=env.n, device="cpu", action_scaler=HarvestActionScaler(HarvestActionBounds()))
+def _wrapper(env, bounds=None):
+    return types.SimpleNamespace(
+        _env=env, num_envs=env.n, device="cpu", action_scaler=HarvestActionScaler(bounds or HarvestActionBounds())
+    )
 
 
 def _world_delta(policy, wrapper):
@@ -147,3 +149,24 @@ def test_gains_are_held_fixed():
     for _ in range(30):
         a2 = p.act(w, None, None)
     torch.testing.assert_close(a1[:, 6:], a2[:, 6:])
+
+
+def test_swing_respects_the_env_rotation_bound_and_still_totals_the_full_angle():
+    """The learned-policy env caps rotation at 0.01 rad / step: the swing must take more, smaller steps, not be clipped."""
+    bounds = HarvestActionBounds(linear_delta_m=0.004, angular_delta_rad=0.01)
+    env = _FakeEnv(1)
+    w = _wrapper(env, bounds)
+    p = ScriptedStemRotatePullPolicy(rotate_deg=30.0, rate_m_per_step=0.002)  # default 2 deg / step is over the bound
+    p.reset(w)
+    pos = env._target_pose[0, :3].clone()
+    rot_total, first_pull = 0.0, None
+    for step in range(120):
+        dp, drot = _world_delta(p, w)
+        assert float(drot.norm()) <= 0.01 + 1e-9
+        pos = pos + dp[0]
+        env._target_pose[:, :3] = pos
+        rot_total += float(drot.norm())
+        if first_pull is None and float(drot.norm()) == 0.0:
+            first_pull = step
+    assert math.degrees(rot_total) == pytest.approx(30.0, abs=0.3)  # orientation really turned by the swing angle
+    assert first_pull is not None and first_pull >= 53  # 30 deg / 0.57 deg per step

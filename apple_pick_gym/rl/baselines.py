@@ -221,9 +221,15 @@ class ScriptedStemRotatePullPolicy:
         q = env._last_tcp_pose_wxyz[:, 3:7].to(dev, torch.float32)
         out = -_rotate_by_quat_wxyz(q, torch.tensor([0.0, 0.0, 1.0], device=dev).expand(n, 3))
         a = torch.zeros(n, 13, device=dev)
-        d_ang = min(self.step, max(self.rotate - self._turned, 0.0))
+        bounds = wrapper.action_scaler.bounds  # the env clips each step's rotation / translation to these caps
+        arm = env._target_pose[:, :3].to(dev, torch.float32) - pivot
+        step = min(
+            self.step,
+            0.95 * float(bounds.angular_delta_rad),  # an over-cap rotation would be clipped and the swing under-turn
+            0.95 * float(bounds.linear_delta_m) / max(float(torch.linalg.norm(arm, dim=-1).max()), 1e-6),
+        )
+        d_ang = min(step, max(self.rotate - self._turned, 0.0))
         if d_ang > 0.0:
-            arm = env._target_pose[:, :3].to(dev, torch.float32) - pivot
             r = rotation_matrix(out, torch.full((n,), d_ang, device=dev))
             a[:, :3] = (r @ arm.unsqueeze(-1)).squeeze(-1) - arm
             a[:, 3:6] = out * d_ang

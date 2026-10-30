@@ -170,3 +170,41 @@ def test_swing_respects_the_env_rotation_bound_and_still_totals_the_full_angle()
             first_pull = step
     assert math.degrees(rot_total) == pytest.approx(30.0, abs=0.3)  # orientation really turned by the swing angle
     assert first_pull is not None and first_pull >= 53  # 30 deg / 0.57 deg per step
+
+
+def test_sideways_mode_tips_the_apple_toward_the_robot_about_a_horizontal_axis():
+    """swing_axis='sideways': rotate about stem x outward (horizontal for a hanging stem), apple moves toward the robot."""
+    env = _FakeEnv(2)
+    w = _wrapper(env)
+    p = ScriptedStemRotatePullPolicy(swing_axis="sideways", rotate_deg=30.0, rate_m_per_step=0.002)
+    p.reset(w)
+    dp, drot = _world_delta(p, w)
+    axis = torch.nn.functional.normalize(drot, dim=-1)
+    assert abs(float(axis[0, 1])) > 0.999  # sideways: along +-y, perpendicular to outward (+x) and to the stem (-z)
+    assert float(dp[0, 0]) > 0.0  # the TCP (holding the apple below the junction) moves outward, toward the robot
+    r = rotation_matrix(axis[:1], torch.tensor([math.radians(2.0)]))[0]
+    assert float((r @ env.stem_axis[0])[0]) > 0.0  # the stem tips toward the robot
+
+
+def test_sideways_mode_totals_the_full_angle_within_the_env_bounds_and_then_pulls_along_the_stem():
+    bounds = HarvestActionBounds(linear_delta_m=0.004, angular_delta_rad=0.01)
+    env = _FakeEnv(1)
+    w = _wrapper(env, bounds)
+    p = ScriptedStemRotatePullPolicy(swing_axis="sideways", rotate_deg=30.0, rate_m_per_step=0.002)
+    p.reset(w)
+    rot_total = 0.0
+    for _ in range(80):
+        dp, drot = _world_delta(p, w)
+        assert float(drot.norm()) <= 0.01 + 1e-9
+        rot_total += float(drot.norm())
+        env._target_pose[:, :3] = env._target_pose[:, :3] + dp
+    assert math.degrees(rot_total) == pytest.approx(30.0, abs=0.3)
+    env.stem_axis = torch.tensor([[math.sin(0.3), 0.0, -math.cos(0.3)]])
+    dp, drot = _world_delta(p, w)
+    assert float(drot.norm()) == pytest.approx(0.0, abs=1e-9)
+    torch.testing.assert_close(dp[0] / dp[0].norm(), env.stem_axis[0], atol=1e-4, rtol=0)
+
+
+def test_sideways_baseline_is_registered():
+    assert BASELINES["scripted_stem_tilt_pull"]().swing_axis == "sideways"
+    assert ScriptedStemRotatePullPolicy().swing_axis == "outward"

@@ -181,6 +181,9 @@ class ScriptedStemRotatePullPolicy:
     ``o`` through the junction (position moves on the arc, orientation turns with it, so the apple swings
     sideways) until ``rotate_deg`` is reached; phase 2 moves ``rate_m_per_step`` per step along the
     current stem axis. Gains are fixed. Open loop in force: the F/T sensor is never read.
+
+    ``swing_axis="sideways"`` swings about ``stem x outward`` instead (horizontal for a hanging stem), which tips the
+    stem and the apple toward the robot -- a bend, where the outward axis is a twist about the grip axis.
     """
 
     name = "scripted_stem_rotate_pull"
@@ -195,8 +198,12 @@ class ScriptedStemRotatePullPolicy:
         k_ang: float = 20.0,
         zeta: float = 0.9,
         name: str = "scripted_stem_rotate_pull",
+        swing_axis: str = "outward",
     ) -> None:
+        if swing_axis not in ("outward", "sideways"):
+            raise ValueError(f"swing_axis must be 'outward' or 'sideways', got {swing_axis!r}")
         self.name = name
+        self.swing_axis = swing_axis
         self.rotate = math.radians(float(rotate_deg))
         self.step = math.radians(float(rotate_step_deg))
         self.rate = float(rate_m_per_step)
@@ -220,6 +227,14 @@ class ScriptedStemRotatePullPolicy:
         stem = torch.nn.functional.normalize(stem.to(dev, torch.float32), dim=-1)
         q = env._last_tcp_pose_wxyz[:, 3:7].to(dev, torch.float32)
         out = -_rotate_by_quat_wxyz(q, torch.tensor([0.0, 0.0, 1.0], device=dev).expand(n, 3))
+        if self.swing_axis == "sideways":
+            # tip the stem (and the apple held below the junction) toward the robot: rotate about stem x outward,
+            # horizontal for a hanging stem; fall back to outward x down if the stem is parallel to the grip axis
+            side = torch.cross(stem, out, dim=-1)
+            down = torch.tensor([0.0, 0.0, -1.0], device=dev).expand_as(out)
+            alt = torch.cross(out, down, dim=-1)
+            side = torch.where(torch.linalg.norm(side, dim=-1, keepdim=True) < 0.1, alt, side)
+            out = torch.nn.functional.normalize(side, dim=-1)  # the swing axis from here on
         a = torch.zeros(n, 13, device=dev)
         bounds = wrapper.action_scaler.bounds  # the env clips each step's rotation / translation to these caps
         arm = env._target_pose[:, :3].to(dev, torch.float32) - pivot
@@ -253,6 +268,7 @@ BASELINES = {
     "scripted_twist_pull": lambda: ScriptedPullPolicy(rate_m_per_step=0.001, twist_rad_per_step=0.01),
     "scripted_bend_pull": ScriptedBendPullPolicy,
     "scripted_stem_rotate_pull": ScriptedStemRotatePullPolicy,
+    "scripted_stem_tilt_pull": lambda: ScriptedStemRotatePullPolicy(swing_axis="sideways", name="scripted_stem_tilt_pull"),
     "scripted_stem_pull": lambda: ScriptedStemRotatePullPolicy(rotate_deg=0.0, name="scripted_stem_pull"),
     "scripted_down_pull": lambda: ScriptedBendPullPolicy(bend_m=0.0, pull_angle_deg=0.0, name="scripted_down_pull"),
 }

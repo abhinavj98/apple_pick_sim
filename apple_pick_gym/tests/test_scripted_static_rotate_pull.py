@@ -113,3 +113,39 @@ def test_needs_a_tool_frame_action():
     p.reset(w)
     with pytest.raises(ValueError, match="tool"):
         p.act(w, _G.repeat(2, 1), None)
+
+
+def test_pull_down_follows_the_live_gravity_direction_in_the_tool_frame():
+    w = _wrapper(n=1)
+    p = ScriptedStaticRotatePullPolicy(rotate_deg=0.0, pull_dir="down", rate_m_per_step=0.001)
+    p.reset(w)
+    dp, drot = _act(p, w)  # gravity along +y
+    assert float(drot.norm()) == 0.0
+    torch.testing.assert_close(dp[0], torch.tensor([0.0, 0.001, 0.0]), atol=1e-7, rtol=0)
+    g = torch.tensor([[0.0, 0.6, 0.8]])  # the gripper has since turned: gravity reads differently, the pull follows it
+    dp, _ = _act(p, w, gravity=g)
+    torch.testing.assert_close(dp[0], torch.tensor([0.0, 0.0006, 0.0008]), atol=1e-7, rtol=0)
+
+
+def test_tip_up_then_pull_down_turns_first_then_pulls_along_gravity():
+    w = _wrapper(n=1)
+    p = ScriptedStaticRotatePullPolicy(rotate_deg=30.0, axis="sideways", rotate_sign=-1.0, pull_dir="down", rate_m_per_step=0.001)
+    p.reset(w)
+    total = torch.zeros(3)
+    for _ in range(70):
+        dp, drot = _act(p, w)
+        total += drot[0]
+        if float(drot[0].norm()) > 0:
+            assert float(dp[0].norm()) == pytest.approx(0.0, abs=1e-9)
+    assert math.degrees(float(total.norm())) == pytest.approx(30.0, abs=0.3)
+    # tip up: the outward axis (-z) turns toward up (-y) under the total rotation
+    r = rotation_matrix(total[None] / total.norm(), torch.tensor([float(total.norm())]))[0]
+    assert float((r @ torch.tensor([0.0, 0.0, -1.0]))[1]) < 0.0
+    dp, drot = _act(p, w)
+    assert float(drot.norm()) == 0.0
+    torch.testing.assert_close(dp[0], torch.tensor([0.0, 0.001, 0.0]), atol=1e-7, rtol=0)
+
+
+def test_bad_pull_dir_is_refused():
+    with pytest.raises(ValueError, match="pull_dir"):
+        ScriptedStaticRotatePullPolicy(pull_dir="sideways")

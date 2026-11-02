@@ -269,7 +269,8 @@ class ScriptedStaticRotatePullPolicy:
     at the first step. Phase 1 rotates ``rotate_step_deg`` per step (capped at the env's rotation bound) about a fixed
     tool-frame axis: ``axis="sideways"`` is ``outward x down`` (``rotate_sign=+1`` turns the outward axis toward down),
     ``axis="outward"`` is the grip axis itself (a twist). Phase 2 commands ``rate_m_per_step`` along tool ``-z``
-    (outward, away from the plant); because tool-frame deltas follow the TCP, the pull runs along the rotated axis.
+    (outward, away from the plant; ``pull_dir="tool"``), so the pull runs along the rotated grip axis, or along gravity
+    read live from the tool-frame obs (``pull_dir="down"``), so it goes straight down whatever the gripper's tilt.
     """
 
     name = "scripted_static_rotate_pull"
@@ -286,9 +287,13 @@ class ScriptedStaticRotatePullPolicy:
         k_ang: float = 20.0,
         zeta: float = 0.9,
         name: str = "scripted_static_rotate_pull",
+        pull_dir: str = "tool",
     ) -> None:
         if axis not in ("sideways", "outward"):
             raise ValueError(f"axis must be 'sideways' or 'outward', got {axis!r}")
+        if pull_dir not in ("tool", "down"):
+            raise ValueError(f"pull_dir must be 'tool' or 'down', got {pull_dir!r}")
+        self.pull_dir = pull_dir
         self.name = name
         self.axis = axis
         self.sign = 1.0 if rotate_sign >= 0 else -1.0
@@ -328,6 +333,9 @@ class ScriptedStaticRotatePullPolicy:
         if d_ang > 1e-9:
             a[:, 3:6] = self._axis * d_ang
             self._turned += d_ang
+        elif self.pull_dir == "down":  # along gravity (live, in the tool frame), whatever the gripper's tilt
+            g = obs[:, wrapper.actor_layout.slice_for("gravity_tool")].float()
+            a[:, :3] = self.rate * torch.nn.functional.normalize(g, dim=-1)
         else:
             a[:, 2] = -self.rate
         a[:, 6:9] = self.k_lin

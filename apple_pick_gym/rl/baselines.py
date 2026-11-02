@@ -261,6 +261,81 @@ class ScriptedStemRotatePullPolicy:
         return wrapper.action_scaler.to_policy(a).clamp(-1.0, 1.0)
 
 
+class ScriptedStaticRotatePullPolicy:
+    """No-oracle baseline: turn the gripper in place by ``rotate_deg``, then pull straight back along the tool axis.
+
+    A fixed open-loop schedule in the tool frame. It reads nothing about the stem or junction and never the F/T
+    sensor; the only observation it uses is gravity in the tool frame (to find the horizontal sideways axis), read once
+    at the first step. Phase 1 rotates ``rotate_step_deg`` per step (capped at the env's rotation bound) about a fixed
+    tool-frame axis: ``axis="sideways"`` is ``outward x down`` (``rotate_sign=+1`` turns the outward axis toward down),
+    ``axis="outward"`` is the grip axis itself (a twist). Phase 2 commands ``rate_m_per_step`` along tool ``-z``
+    (outward, away from the plant); because tool-frame deltas follow the TCP, the pull runs along the rotated axis.
+    """
+
+    name = "scripted_static_rotate_pull"
+
+    def __init__(
+        self,
+        *,
+        rotate_deg: float = 30.0,
+        rotate_step_deg: float = 0.5,
+        axis: str = "sideways",
+        rotate_sign: float = 1.0,
+        rate_m_per_step: float = 0.00105,
+        k_lin: float = 150.0,
+        k_ang: float = 20.0,
+        zeta: float = 0.9,
+        name: str = "scripted_static_rotate_pull",
+    ) -> None:
+        if axis not in ("sideways", "outward"):
+            raise ValueError(f"axis must be 'sideways' or 'outward', got {axis!r}")
+        self.name = name
+        self.axis = axis
+        self.sign = 1.0 if rotate_sign >= 0 else -1.0
+        self.rotate = math.radians(float(rotate_deg))
+        self.step = math.radians(float(rotate_step_deg))
+        self.rate = float(rate_m_per_step)
+        self.k_lin, self.k_ang, self.zeta = float(k_lin), float(k_ang), float(zeta)
+        self._turned = 0.0
+        self._axis: torch.Tensor | None = None
+
+    def reset(self, wrapper) -> None:
+        del wrapper
+        self._turned = 0.0
+        self._axis = None
+
+    def _latch_axis(self, wrapper, obs) -> torch.Tensor:
+        n, dev = wrapper.num_envs, wrapper.device
+        out = torch.tensor([0.0, 0.0, -1.0], device=dev).expand(n, 3)  # tool -z points away from the plant
+        if self.axis == "outward":
+            return self.sign * out
+        down = torch.nn.functional.normalize(obs[:, wrapper.actor_layout.slice_for("gravity_tool")].float(), dim=-1)
+        side = torch.cross(out, down, dim=-1)
+        alt = torch.tensor([1.0, 0.0, 0.0], device=dev).expand(n, 3)  # grip axis parallel to gravity: any sideways axis
+        side = torch.where(torch.linalg.norm(side, dim=-1, keepdim=True) < 0.1, alt, side)
+        return self.sign * torch.nn.functional.normalize(side, dim=-1)
+
+    def act(self, wrapper, obs, state) -> torch.Tensor:
+        del state
+        if getattr(wrapper._env, "obs_frame", "world") != "tool":
+            raise ValueError("scripted_static_rotate_pull needs a tool-frame action (action_frame='tool')")
+        n, dev = wrapper.num_envs, wrapper.device
+        if self._axis is None:
+            self._axis = self._latch_axis(wrapper, obs)
+        a = torch.zeros(n, 13, device=dev)
+        step = min(self.step, 0.95 * float(wrapper.action_scaler.bounds.angular_delta_rad))
+        d_ang = min(step, max(self.rotate - self._turned, 0.0))
+        if d_ang > 1e-9:
+            a[:, 3:6] = self._axis * d_ang
+            self._turned += d_ang
+        else:
+            a[:, 2] = -self.rate
+        a[:, 6:9] = self.k_lin
+        a[:, 9:12] = self.k_ang
+        a[:, 12] = self.zeta
+        return wrapper.action_scaler.to_policy(a).clamp(-1.0, 1.0)
+
+
 BASELINES = {
     "zero": ZeroPolicy,
     "random": RandomPolicy,
@@ -268,6 +343,7 @@ BASELINES = {
     "scripted_twist_pull": lambda: ScriptedPullPolicy(rate_m_per_step=0.001, twist_rad_per_step=0.01),
     "scripted_bend_pull": ScriptedBendPullPolicy,
     "scripted_stem_rotate_pull": ScriptedStemRotatePullPolicy,
+    "scripted_static_rotate_pull": ScriptedStaticRotatePullPolicy,
     "scripted_stem_tilt_pull": lambda: ScriptedStemRotatePullPolicy(swing_axis="sideways", name="scripted_stem_tilt_pull"),
     "scripted_stem_pull": lambda: ScriptedStemRotatePullPolicy(rotate_deg=0.0, name="scripted_stem_pull"),
     "scripted_down_pull": lambda: ScriptedBendPullPolicy(bend_m=0.0, pull_angle_deg=0.0, name="scripted_down_pull"),

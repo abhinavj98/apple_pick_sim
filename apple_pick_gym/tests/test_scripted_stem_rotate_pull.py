@@ -208,3 +208,46 @@ def test_sideways_mode_totals_the_full_angle_within_the_env_bounds_and_then_pull
 def test_sideways_baseline_is_registered():
     assert BASELINES["scripted_stem_tilt_pull"]().swing_axis == "sideways"
     assert ScriptedStemRotatePullPolicy().swing_axis == "outward"
+
+
+def test_swing_step_is_capped_per_env_not_by_the_longest_arm_in_the_batch():
+    bounds = HarvestActionBounds(linear_delta_m=0.004, angular_delta_rad=0.01)
+    env = _FakeEnv(2)
+    env._target_pose[1, :3] = env.pivot[1] + torch.tensor([0.0, 0.0, -0.5])  # one env with a 0.5 m arm (e.g. an invalid world)
+    w = _wrapper(env, bounds)
+    p = ScriptedStemRotatePullPolicy(swing_axis="sideways", rotate_deg=30.0, rate_m_per_step=0.001)
+    p.reset(w)
+    turned = torch.zeros(2)
+    first_pull = [None, None]
+    for step in range(200):
+        dp, drot = _world_delta(p, w)
+        env._target_pose[:, :3] = env._target_pose[:, :3] + dp
+        for i in range(2):
+            if first_pull[i] is None and float(drot[i].norm()) == 0.0:
+                first_pull[i] = step
+        turned += drot.norm(dim=-1)
+    assert math.degrees(float(turned[0])) == pytest.approx(30.0, abs=0.3)
+    assert math.degrees(float(turned[1])) == pytest.approx(30.0, abs=0.3)
+    assert first_pull[0] is not None and first_pull[0] <= 57  # 30 deg / (0.95 * 0.01 rad) = 55.1 steps, not stretched by env 1
+    assert first_pull[1] > first_pull[0]  # the long-arm env needs its own, slower swing (arc <= 0.95 * 4 mm per step)
+
+
+def test_latched_pull_keeps_the_direction_the_stem_had_at_the_end_of_the_swing():
+    env = _FakeEnv(1)
+    w = _wrapper(env, HarvestActionBounds(linear_delta_m=0.004, angular_delta_rad=0.01))
+    live = ScriptedStemRotatePullPolicy(swing_axis="sideways", rotate_deg=30.0, rate_m_per_step=0.001)
+    latched = ScriptedStemRotatePullPolicy(swing_axis="sideways", rotate_deg=30.0, rate_m_per_step=0.001, pull_latch=True)
+    for p in (live, latched):
+        p.reset(w)
+    for _ in range(60):  # swing (both policies see the same env; actions are not applied to the pose here)
+        _world_delta(live, w)
+        _world_delta(latched, w)
+    env.stem_axis = torch.tensor([[math.sin(0.2), 0.0, -math.cos(0.2)]])
+    d_live, _ = _world_delta(live, w)
+    d_latched, _ = _world_delta(latched, w)
+    torch.testing.assert_close(d_live[0] / d_live[0].norm(), env.stem_axis[0], atol=1e-4, rtol=0)
+    env.stem_axis = torch.tensor([[math.sin(-0.5), 0.0, -math.cos(-0.5)]])  # the stem flops; the latched pull must not follow
+    d_live2, _ = _world_delta(live, w)
+    d_latched2, _ = _world_delta(latched, w)
+    torch.testing.assert_close(d_latched2, d_latched)
+    assert not torch.allclose(d_live2, d_live)

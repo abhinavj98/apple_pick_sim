@@ -199,20 +199,24 @@ class ScriptedStemRotatePullPolicy:
         zeta: float = 0.9,
         name: str = "scripted_stem_rotate_pull",
         swing_axis: str = "outward",
+        pull_latch: bool = False,
     ) -> None:
         if swing_axis not in ("outward", "sideways"):
             raise ValueError(f"swing_axis must be 'outward' or 'sideways', got {swing_axis!r}")
         self.name = name
         self.swing_axis = swing_axis
+        self.pull_latch = bool(pull_latch)
         self.rotate = math.radians(float(rotate_deg))
         self.step = math.radians(float(rotate_step_deg))
         self.rate = float(rate_m_per_step)
         self.k_lin, self.k_ang, self.zeta = float(k_lin), float(k_ang), float(zeta)
-        self._turned = 0.0
+        self._turned: torch.Tensor | None = None  # (N,) rad turned so far, per env
+        self._pull_dir: torch.Tensor | None = None  # (N, 3) stem axis latched when an env's swing ends
+        self._latched: torch.Tensor | None = None  # (N,) bool
 
     def reset(self, wrapper) -> None:
         del wrapper
-        self._turned = 0.0
+        self._turned = self._pull_dir = self._latched = None
 
     def act(self, wrapper, obs, state) -> torch.Tensor:
         del obs, state
@@ -238,19 +242,30 @@ class ScriptedStemRotatePullPolicy:
         a = torch.zeros(n, 13, device=dev)
         bounds = wrapper.action_scaler.bounds  # the env clips each step's rotation / translation to these caps
         arm = env._target_pose[:, :3].to(dev, torch.float32) - pivot
-        step = min(
-            self.step,
-            0.95 * float(bounds.angular_delta_rad),  # an over-cap rotation would be clipped and the swing under-turn
-            0.95 * float(bounds.linear_delta_m) / max(float(torch.linalg.norm(arm, dim=-1).max()), 1e-6),
+        if self._turned is None:
+            self._turned = torch.zeros(n, device=dev)
+            self._latched = torch.zeros(n, dtype=torch.bool, device=dev)
+            self._pull_dir = stem.clone()
+        # per-env step: an over-cap rotation or arc would be clipped by the env and the swing under-turn
+        cap = torch.minimum(
+            torch.full((n,), min(self.step, 0.95 * float(bounds.angular_delta_rad)), device=dev),
+            0.95 * float(bounds.linear_delta_m) / torch.linalg.norm(arm, dim=-1).clamp_min(1e-6),
         )
-        d_ang = min(step, max(self.rotate - self._turned, 0.0))
-        if d_ang > 0.0:
-            r = rotation_matrix(out, torch.full((n,), d_ang, device=dev))
-            a[:, :3] = (r @ arm.unsqueeze(-1)).squeeze(-1) - arm
-            a[:, 3:6] = out * d_ang
-            self._turned += d_ang
+        d_ang = torch.minimum(cap, (self.rotate - self._turned).clamp_min(0.0))
+        d_ang = torch.where(d_ang > 1e-9, d_ang, torch.zeros_like(d_ang))
+        swinging = d_ang > 0.0
+        r = rotation_matrix(out, d_ang)
+        arc = (r @ arm.unsqueeze(-1)).squeeze(-1) - arm
+        if self.pull_latch:  # read the stem axis once per env, when its swing ends
+            fresh = ~swinging & ~self._latched
+            self._pull_dir = torch.where(fresh.unsqueeze(-1), stem, self._pull_dir)
+            self._latched = self._latched | ~swinging
+            pull = self._pull_dir
         else:
-            a[:, :3] = stem * self.rate
+            pull = stem
+        a[:, :3] = torch.where(swinging.unsqueeze(-1), arc, pull * self.rate)
+        a[:, 3:6] = out * d_ang.unsqueeze(-1)
+        self._turned = self._turned + d_ang
         if getattr(env, "obs_frame", "world") == "tool":  # express the world delta in the TCP frame
             inv = _quat_conj_wxyz(q)
             a[:, :3] = _rotate_by_quat_wxyz(inv, a[:, :3])

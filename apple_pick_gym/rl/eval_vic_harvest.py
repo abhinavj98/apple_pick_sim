@@ -68,7 +68,21 @@ class RecurrentPolicyRunner:
                 h[:, idx] = 0.0
 
 
-def evaluate(wrapper, policy, *, episodes: int) -> dict:
+_TRACE_KEYS = ("stem_tension", "detach_index", "detach_force", "theta_b_deg", "tcp_advance_m", "target_junction_wrench", "ft_wrist")
+
+
+def _record_trace(trace: dict[str, list], info: dict) -> None:
+    """Append this step's per-env series (CPU copies) to ``trace``; ``frozen`` is the freeze mask before the step."""
+    for k in _TRACE_KEYS:
+        v = info.get(k)
+        if v is not None:
+            trace.setdefault(k, []).append(v.detach().float().cpu().numpy())
+    ep = info["episode"]
+    trace.setdefault("frozen", []).append(ep["frozen"].cpu().numpy())
+    trace.setdefault("success_this_step", []).append(ep["success_this_step"].cpu().numpy())
+
+
+def evaluate(wrapper, policy, *, episodes: int, trace: dict | None = None) -> dict:
     """Roll ``policy`` for ``episodes`` full (synchronized) episodes; aggregate the wrapper's stats."""
     obs, _ = wrapper.reset()
     state = wrapper.state()
@@ -78,6 +92,8 @@ def evaluate(wrapper, policy, *, episodes: int) -> dict:
         actions = policy.act(wrapper, obs, state)
         obs, _r, terminated, truncated, info = wrapper.step(actions)
         state = wrapper.state()
+        if trace is not None and not len(per_episode) >= 1:  # first episode only
+            _record_trace(trace, info)
         if hasattr(policy, "on_step"):
             policy.on_step(terminated | truncated)
         log = info.get("log", {})
@@ -203,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--baseline", choices=tuple(BASELINES))
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--out", required=True, help="metrics JSON path")
+    p.add_argument("--trace", action="store_true", help="also write <out>.trace.npz: per-step series (T, N[, 6]) of the first episode")
     p.add_argument("--config", help="TrainConfig JSON for a baseline's env (default: TrainConfig defaults)")
     p.add_argument("--env", choices=("sim", "surrogate"))
     p.add_argument("--world-set")
@@ -294,7 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     cfg, wrapper, policy, label = build_eval(args)
     try:
-        metrics = evaluate(wrapper, policy, episodes=args.episodes)
+        trace: dict | None = {} if args.trace else None
+        metrics = evaluate(wrapper, policy, episodes=args.episodes, trace=trace)
     finally:
         wrapper.close()
     per_env = metrics.pop("per_env")
@@ -302,6 +320,8 @@ def main(argv: list[str] | None = None) -> int:
     metrics["env"] = dataclasses.asdict(cfg.env)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(metrics, indent=2) + "\n")
+    if trace:
+        np.savez_compressed(Path(args.out).with_suffix(".trace.npz"), **{k: np.stack(v) for k, v in trace.items()})
     if per_env:
         np.savez_compressed(
             Path(args.out).with_suffix(".per_env.npz"),

@@ -46,3 +46,8 @@ def test_snapshot_defaults_to_the_sibling_of_the_world_set():
 
 def test_world_back_pull_option():
     assert _policy("--pull", "world-back").pull_dir == "world_back"
+
+
+def test_trace_flag_defaults_off_and_can_be_enabled():
+    assert build_parser().parse_args(_BASE).trace is False
+    assert build_parser().parse_args([*_BASE, "--trace"]).trace is True

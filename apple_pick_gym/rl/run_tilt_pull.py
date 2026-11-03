@@ -44,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num-envs", type=int, default=1000, help="must equal the world-set size when a snapshot is used")
     p.add_argument("--max-episode-steps", type=int, default=250)
     p.add_argument("--seed", type=int, default=12345)
+    p.add_argument("--trace", action="store_true", help="also write <out>.trace.npz: per-step series of the episode (as eval_vic_harvest --trace)")
     p.add_argument("--tilt-deg", type=float, default=30.0)
     p.add_argument("--tip", choices=("up", "down"), default="up", help="up: the grip axis turns up; down: it turns down")
     p.add_argument("--pull", choices=("back", "down", "world-back"), default="back",
@@ -84,8 +85,9 @@ def main(argv: list[str] | None = None) -> int:
         "--max-episode-steps", str(a.max_episode_steps), "--episodes", "1", "--seed", str(a.seed), "--out", a.out,
     ])
     cfg, wrapper, _, _ = ev.build_eval(ev_args)
+    trace: dict | None = {} if a.trace else None
     try:
-        metrics = ev.evaluate(wrapper, policy, episodes=1)
+        metrics = ev.evaluate(wrapper, policy, episodes=1, trace=trace)
     finally:
         wrapper.close()
     per_env = metrics.pop("per_env")
@@ -95,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(metrics, indent=2) + "\n")
+    if trace:
+        np.savez_compressed(out.with_suffix(".trace.npz"), **{k: np.stack(v) for k, v in trace.items()})
     if per_env:
         np.savez_compressed(
             out.with_suffix(".per_env.npz"),

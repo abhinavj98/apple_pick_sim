@@ -42,3 +42,7 @@ def test_k_ang_above_the_env_cap_is_refused_instead_of_silently_clipped():
 def test_snapshot_defaults_to_the_sibling_of_the_world_set():
     assert snapshot_for("a/b/shard_00.jsonl", None) == "a/b/shard_00_snapshot.npz"
     assert snapshot_for("a/b/shard_00.jsonl", "x.npz") == "x.npz"
+
+
+def test_world_back_pull_option():
+    assert _policy("--pull", "world-back").pull_dir == "world_back"

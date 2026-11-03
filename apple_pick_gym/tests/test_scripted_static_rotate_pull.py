@@ -149,3 +149,22 @@ def test_tip_up_then_pull_down_turns_first_then_pulls_along_gravity():
 def test_bad_pull_dir_is_refused():
     with pytest.raises(ValueError, match="pull_dir"):
         ScriptedStaticRotatePullPolicy(pull_dir="sideways")
+
+
+def test_world_back_pull_is_the_horizontal_outward_direction_whatever_the_tilt():
+    """pull_dir='world_back': along (gravity x sideways axis) -- horizontal, away from the plant, not tilting with the gripper."""
+    w = _wrapper(n=1)
+    p = ScriptedStaticRotatePullPolicy(rotate_deg=0.0, pull_dir="world_back", rate_m_per_step=0.001)
+    p.reset(w)
+    dp, _ = _act(p, w)  # gravity +y, outward -z: horizontal outward is the tool -z axis
+    torch.testing.assert_close(dp[0], torch.tensor([0.0, 0.0, -0.001]), atol=1e-7, rtol=0)
+    g = torch.tensor([[0.0, 0.8, -0.6]])  # the gripper has tipped about its x axis: gravity reads differently in the tool frame
+    dp, _ = _act(p, w, gravity=g)
+    expect = torch.tensor([0.0, -0.6, -0.8]) * 0.001  # unit, perpendicular to gravity and to the tilt axis
+    torch.testing.assert_close(dp[0], expect, atol=1e-7, rtol=0)
+    assert abs(float(dp[0] @ g[0])) < 1e-9  # horizontal in the world
+
+
+def test_world_back_needs_the_sideways_axis():
+    with pytest.raises(ValueError, match="world_back"):
+        ScriptedStaticRotatePullPolicy(axis="outward", pull_dir="world_back")

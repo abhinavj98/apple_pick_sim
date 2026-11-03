@@ -46,7 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=12345)
     p.add_argument("--tilt-deg", type=float, default=30.0)
     p.add_argument("--tip", choices=("up", "down"), default="up", help="up: the grip axis turns up; down: it turns down")
-    p.add_argument("--pull", choices=("back", "down"), default="back", help="back: along the tilted tool axis; down: along gravity")
+    p.add_argument("--pull", choices=("back", "down", "world-back"), default="back",
+                   help="back: along the tilted tool axis (in line with the TCP); down: along gravity; "
+                        "world-back: horizontally away from the plant (does not tilt with the gripper)")
     p.add_argument("--rate-mm", type=float, default=1.05, help="pull speed in mm per control step (1.05 = 0.063 m/s at 60 Hz)")
     p.add_argument("--k-lin", type=float, default=400.0)
     p.add_argument("--k-ang", type=_k_ang, default=K_ANG_CAP, help=f"angular stiffness, N*m/rad (env cap {K_ANG_CAP:g})")
@@ -58,7 +60,7 @@ def build_policy(args: argparse.Namespace) -> ScriptedStaticRotatePullPolicy:
         rotate_deg=args.tilt_deg,
         axis="sideways",
         rotate_sign=-1.0 if args.tip == "up" else 1.0,
-        pull_dir="tool" if args.pull == "back" else "down",
+        pull_dir={"back": "tool", "down": "down", "world-back": "world_back"}[args.pull],
         rate_m_per_step=args.rate_mm / 1000.0,
         k_lin=args.k_lin,
         k_ang=args.k_ang,

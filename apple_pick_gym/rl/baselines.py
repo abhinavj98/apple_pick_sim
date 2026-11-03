@@ -306,8 +306,10 @@ class ScriptedStaticRotatePullPolicy:
     ) -> None:
         if axis not in ("sideways", "outward"):
             raise ValueError(f"axis must be 'sideways' or 'outward', got {axis!r}")
-        if pull_dir not in ("tool", "down"):
-            raise ValueError(f"pull_dir must be 'tool' or 'down', got {pull_dir!r}")
+        if pull_dir not in ("tool", "down", "world_back"):
+            raise ValueError(f"pull_dir must be 'tool', 'down' or 'world_back', got {pull_dir!r}")
+        if pull_dir == "world_back" and axis != "sideways":
+            raise ValueError("pull_dir='world_back' needs the sideways swing axis (it is built from that axis and gravity)")
         self.pull_dir = pull_dir
         self.name = name
         self.axis = axis
@@ -333,7 +335,8 @@ class ScriptedStaticRotatePullPolicy:
         side = torch.cross(out, down, dim=-1)
         alt = torch.tensor([1.0, 0.0, 0.0], device=dev).expand(n, 3)  # grip axis parallel to gravity: any sideways axis
         side = torch.where(torch.linalg.norm(side, dim=-1, keepdim=True) < 0.1, alt, side)
-        return self.sign * torch.nn.functional.normalize(side, dim=-1)
+        self._side = torch.nn.functional.normalize(side, dim=-1)  # the unsigned tilt axis, used by pull_dir='world_back'
+        return self.sign * self._side
 
     def act(self, wrapper, obs, state) -> torch.Tensor:
         del state
@@ -351,6 +354,9 @@ class ScriptedStaticRotatePullPolicy:
         elif self.pull_dir == "down":  # along gravity (live, in the tool frame), whatever the gripper's tilt
             g = obs[:, wrapper.actor_layout.slice_for("gravity_tool")].float()
             a[:, :3] = self.rate * torch.nn.functional.normalize(g, dim=-1)
+        elif self.pull_dir == "world_back":  # horizontal, away from the plant: gravity x tilt axis (= the initial outward axis)
+            g = torch.nn.functional.normalize(obs[:, wrapper.actor_layout.slice_for("gravity_tool")].float(), dim=-1)
+            a[:, :3] = self.rate * torch.nn.functional.normalize(torch.cross(g, self._side, dim=-1), dim=-1)
         else:
             a[:, 2] = -self.rate
         a[:, 6:9] = self.k_lin
